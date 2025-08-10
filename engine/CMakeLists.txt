@@ -5,6 +5,10 @@ add_library(cardinal_engine STATIC)
 target_sources(cardinal_engine PRIVATE
     src/core/window.c
     src/renderer/vulkan_renderer.c
+    src/renderer/vulkan_instance.c
+    src/renderer/vulkan_swapchain.c
+    src/renderer/vulkan_pipeline.c
+    src/renderer/vulkan_commands.c
 )
 
 # Public headers

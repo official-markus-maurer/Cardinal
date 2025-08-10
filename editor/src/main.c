@@ -1,4 +1,5 @@
 #include <cardinal/cardinal.h>
+#include "editor_layer.h"
 
 int main(void) {
     CardinalWindowConfig config = {
@@ -16,12 +17,24 @@ int main(void) {
         return -1;
     }
 
+    // Initialize editor layer with ImGui
+    if (!editor_layer_init(window, &renderer)) {
+        cardinal_renderer_destroy(&renderer);
+        cardinal_window_destroy(window);
+        return -1;
+    }
+
     while (!cardinal_window_should_close(window)) {
         cardinal_window_poll(window);
+        
+        editor_layer_update();
+        editor_layer_render();
+        
         cardinal_renderer_draw_frame(&renderer);
     }
 
     cardinal_renderer_wait_idle(&renderer);
+    editor_layer_shutdown();
     cardinal_renderer_destroy(&renderer);
     cardinal_window_destroy(window);
     return 0;
