@@ -1,0 +1,206 @@
+[
+{
+  "directory": "C:/Users/admin/Desktop/Cardinal/build/_deps/glfw-build/src",
+  "command": "\"C:/Program Files/LLVM/bin/clang.exe\" -DUNICODE -D_CRT_SECURE_NO_WARNINGS -D_GLFW_WIN32 -D_UNICODE @CMakeFiles/glfw.dir/includes_C.rsp -O0 -std=c99 -D_DEBUG -D_DLL -D_MT -Xclang --dependent-lib=msvcrtd -g -Xclang -gcodeview -Wall -Wextra -Wpedantic -o CMakeFiles/glfw.dir/context.c.obj -c C:/Users/admin/Desktop/Cardinal/build/_deps/glfw-src/src/context.c",
+  "file": "C:/Users/admin/Desktop/Cardinal/build/_deps/glfw-src/src/context.c",
+  "output": "_deps/glfw-build/src/CMakeFiles/glfw.dir/context.c.obj"
+},
+{
+  "directory": "C:/Users/admin/Desktop/Cardinal/build/_deps/glfw-build/src",
+  "command": "\"C:/Program Files/LLVM/bin/clang.exe\" -DUNICODE -D_CRT_SECURE_NO_WARNINGS -D_GLFW_WIN32 -D_UNICODE @CMakeFiles/glfw.dir/includes_C.rsp -O0 -std=c99 -D_DEBUG -D_DLL -D_MT -Xclang --dependent-lib=msvcrtd -g -Xclang -gcodeview -Wall -Wextra -Wpedantic -o CMakeFiles/glfw.dir/init.c.obj -c C:/Users/admin/Desktop/Cardinal/build/_deps/glfw-src/src/init.c",
+  "file": "C:/Users/admin/Desktop/Cardinal/build/_deps/glfw-src/src/init.c",
+  "output": "_deps/glfw-build/src/CMakeFiles/glfw.dir/init.c.obj"
+},
+{
+  "directory": "C:/Users/admin/Desktop/Cardinal/build/_deps/glfw-build/src",
+  "command": "\"C:/Program Files/LLVM/bin/clang.exe\" -DUNICODE -D_CRT_SECURE_NO_WARNINGS -D_GLFW_WIN32 -D_UNICODE @CMakeFiles/glfw.dir/includes_C.rsp -O0 -std=c99 -D_DEBUG -D_DLL -D_MT -Xclang --dependent-lib=msvcrtd -g -Xclang -gcodeview -Wall -Wextra -Wpedantic -o CMakeFiles/glfw.dir/input.c.obj -c C:/Users/admin/Desktop/Cardinal/build/_deps/glfw-src/src/input.c",
+  "file": "C:/Users/admin/Desktop/Cardinal/build/_deps/glfw-src/src/input.c",
+  "output": "_deps/glfw-build/src/CMakeFiles/glfw.dir/input.c.obj"
+},
+{
+  "directory": "C:/Users/admin/Desktop/Cardinal/build/_deps/glfw-build/src",
+  "command": "\"C:/Program Files/LLVM/bin/clang.exe\" -DUNICODE -D_CRT_SECURE_NO_WARNINGS -D_GLFW_WIN32 -D_UNICODE @CMakeFiles/glfw.dir/includes_C.rsp -O0 -std=c99 -D_DEBUG -D_DLL -D_MT -Xclang --dependent-lib=msvcrtd -g -Xclang -gcodeview -Wall -Wextra -Wpedantic -o CMakeFiles/glfw.dir/monitor.c.obj -c C:/Users/admin/Desktop/Cardinal/build/_deps/glfw-src/src/monitor.c",
+  "file": "C:/Users/admin/Desktop/Cardinal/build/_deps/glfw-src/src/monitor.c",
+  "output": "_deps/glfw-build/src/CMakeFiles/glfw.dir/monitor.c.obj"
+},
+{
+  "directory": "C:/Users/admin/Desktop/Cardinal/build/_deps/glfw-build/src",
+  "command": "\"C:/Program Files/LLVM/bin/clang.exe\" -DUNICODE -D_CRT_SECURE_NO_WARNINGS -D_GLFW_WIN32 -D_UNICODE @CMakeFiles/glfw.dir/includes_C.rsp -O0 -std=c99 -D_DEBUG -D_DLL -D_MT -Xclang --dependent-lib=msvcrtd -g -Xclang -gcodeview -Wall -Wextra -Wpedantic -o CMakeFiles/glfw.dir/platform.c.obj -c C:/Users/admin/Desktop/Cardinal/build/_deps/glfw-src/src/platform.c",
+  "file": "C:/Users/admin/Desktop/Cardinal/build/_deps/glfw-src/src/platform.c",
+  "output": "_deps/glfw-build/src/CMakeFiles/glfw.dir/platform.c.obj"
+},
+{
+  "directory": "C:/Users/admin/Desktop/Cardinal/build/_deps/glfw-build/src",
+  "command": "\"C:/Program Files/LLVM/bin/clang.exe\" -DUNICODE -D_CRT_SECURE_NO_WARNINGS -D_GLFW_WIN32 -D_UNICODE @CMakeFiles/glfw.dir/includes_C.rsp -O0 -std=c99 -D_DEBUG -D_DLL -D_MT -Xclang --dependent-lib=msvcrtd -g -Xclang -gcodeview -Wall -Wextra -Wpedantic -o CMakeFiles/glfw.dir/vulkan.c.obj -c C:/Users/admin/Desktop/Cardinal/build/_deps/glfw-src/src/vulkan.c",
+  "file": "C:/Users/admin/Desktop/Cardinal/build/_deps/glfw-src/src/vulkan.c",
+  "output": "_deps/glfw-build/src/CMakeFiles/glfw.dir/vulkan.c.obj"
+},
+{
+  "directory": "C:/Users/admin/Desktop/Cardinal/build/_deps/glfw-build/src",
+  "command": "\"C:/Program Files/LLVM/bin/clang.exe\" -DUNICODE -D_CRT_SECURE_NO_WARNINGS -D_GLFW_WIN32 -D_UNICODE @CMakeFiles/glfw.dir/includes_C.rsp -O0 -std=c99 -D_DEBUG -D_DLL -D_MT -Xclang --dependent-lib=msvcrtd -g -Xclang -gcodeview -Wall -Wextra -Wpedantic -o CMakeFiles/glfw.dir/window.c.obj -c C:/Users/admin/Desktop/Cardinal/build/_deps/glfw-src/src/window.c",
+  "file": "C:/Users/admin/Desktop/Cardinal/build/_deps/glfw-src/src/window.c",
+  "output": "_deps/glfw-build/src/CMakeFiles/glfw.dir/window.c.obj"
+},
+{
+  "directory": "C:/Users/admin/Desktop/Cardinal/build/_deps/glfw-build/src",
+  "command": "\"C:/Program Files/LLVM/bin/clang.exe\" -DUNICODE -D_CRT_SECURE_NO_WARNINGS -D_GLFW_WIN32 -D_UNICODE @CMakeFiles/glfw.dir/includes_C.rsp -O0 -std=c99 -D_DEBUG -D_DLL -D_MT -Xclang --dependent-lib=msvcrtd -g -Xclang -gcodeview -Wall -Wextra -Wpedantic -o CMakeFiles/glfw.dir/egl_context.c.obj -c C:/Users/admin/Desktop/Cardinal/build/_deps/glfw-src/src/egl_context.c",
+  "file": "C:/Users/admin/Desktop/Cardinal/build/_deps/glfw-src/src/egl_context.c",
+  "output": "_deps/glfw-build/src/CMakeFiles/glfw.dir/egl_context.c.obj"
+},
+{
+  "directory": "C:/Users/admin/Desktop/Cardinal/build/_deps/glfw-build/src",
+  "command": "\"C:/Program Files/LLVM/bin/clang.exe\" -DUNICODE -D_CRT_SECURE_NO_WARNINGS -D_GLFW_WIN32 -D_UNICODE @CMakeFiles/glfw.dir/includes_C.rsp -O0 -std=c99 -D_DEBUG -D_DLL -D_MT -Xclang --dependent-lib=msvcrtd -g -Xclang -gcodeview -Wall -Wextra -Wpedantic -o CMakeFiles/glfw.dir/osmesa_context.c.obj -c C:/Users/admin/Desktop/Cardinal/build/_deps/glfw-src/src/osmesa_context.c",
+  "file": "C:/Users/admin/Desktop/Cardinal/build/_deps/glfw-src/src/osmesa_context.c",
+  "output": "_deps/glfw-build/src/CMakeFiles/glfw.dir/osmesa_context.c.obj"
+},
+{
+  "directory": "C:/Users/admin/Desktop/Cardinal/build/_deps/glfw-build/src",
+  "command": "\"C:/Program Files/LLVM/bin/clang.exe\" -DUNICODE -D_CRT_SECURE_NO_WARNINGS -D_GLFW_WIN32 -D_UNICODE @CMakeFiles/glfw.dir/includes_C.rsp -O0 -std=c99 -D_DEBUG -D_DLL -D_MT -Xclang --dependent-lib=msvcrtd -g -Xclang -gcodeview -Wall -Wextra -Wpedantic -o CMakeFiles/glfw.dir/null_init.c.obj -c C:/Users/admin/Desktop/Cardinal/build/_deps/glfw-src/src/null_init.c",
+  "file": "C:/Users/admin/Desktop/Cardinal/build/_deps/glfw-src/src/null_init.c",
+  "output": "_deps/glfw-build/src/CMakeFiles/glfw.dir/null_init.c.obj"
+},
+{
+  "directory": "C:/Users/admin/Desktop/Cardinal/build/_deps/glfw-build/src",
+  "command": "\"C:/Program Files/LLVM/bin/clang.exe\" -DUNICODE -D_CRT_SECURE_NO_WARNINGS -D_GLFW_WIN32 -D_UNICODE @CMakeFiles/glfw.dir/includes_C.rsp -O0 -std=c99 -D_DEBUG -D_DLL -D_MT -Xclang --dependent-lib=msvcrtd -g -Xclang -gcodeview -Wall -Wextra -Wpedantic -o CMakeFiles/glfw.dir/null_monitor.c.obj -c C:/Users/admin/Desktop/Cardinal/build/_deps/glfw-src/src/null_monitor.c",
+  "file": "C:/Users/admin/Desktop/Cardinal/build/_deps/glfw-src/src/null_monitor.c",
+  "output": "_deps/glfw-build/src/CMakeFiles/glfw.dir/null_monitor.c.obj"
+},
+{
+  "directory": "C:/Users/admin/Desktop/Cardinal/build/_deps/glfw-build/src",
+  "command": "\"C:/Program Files/LLVM/bin/clang.exe\" -DUNICODE -D_CRT_SECURE_NO_WARNINGS -D_GLFW_WIN32 -D_UNICODE @CMakeFiles/glfw.dir/includes_C.rsp -O0 -std=c99 -D_DEBUG -D_DLL -D_MT -Xclang --dependent-lib=msvcrtd -g -Xclang -gcodeview -Wall -Wextra -Wpedantic -o CMakeFiles/glfw.dir/null_window.c.obj -c C:/Users/admin/Desktop/Cardinal/build/_deps/glfw-src/src/null_window.c",
+  "file": "C:/Users/admin/Desktop/Cardinal/build/_deps/glfw-src/src/null_window.c",
+  "output": "_deps/glfw-build/src/CMakeFiles/glfw.dir/null_window.c.obj"
+},
+{
+  "directory": "C:/Users/admin/Desktop/Cardinal/build/_deps/glfw-build/src",
+  "command": "\"C:/Program Files/LLVM/bin/clang.exe\" -DUNICODE -D_CRT_SECURE_NO_WARNINGS -D_GLFW_WIN32 -D_UNICODE @CMakeFiles/glfw.dir/includes_C.rsp -O0 -std=c99 -D_DEBUG -D_DLL -D_MT -Xclang --dependent-lib=msvcrtd -g -Xclang -gcodeview -Wall -Wextra -Wpedantic -o CMakeFiles/glfw.dir/null_joystick.c.obj -c C:/Users/admin/Desktop/Cardinal/build/_deps/glfw-src/src/null_joystick.c",
+  "file": "C:/Users/admin/Desktop/Cardinal/build/_deps/glfw-src/src/null_joystick.c",
+  "output": "_deps/glfw-build/src/CMakeFiles/glfw.dir/null_joystick.c.obj"
+},
+{
+  "directory": "C:/Users/admin/Desktop/Cardinal/build/_deps/glfw-build/src",
+  "command": "\"C:/Program Files/LLVM/bin/clang.exe\" -DUNICODE -D_CRT_SECURE_NO_WARNINGS -D_GLFW_WIN32 -D_UNICODE @CMakeFiles/glfw.dir/includes_C.rsp -O0 -std=c99 -D_DEBUG -D_DLL -D_MT -Xclang --dependent-lib=msvcrtd -g -Xclang -gcodeview -Wall -Wextra -Wpedantic -o CMakeFiles/glfw.dir/win32_module.c.obj -c C:/Users/admin/Desktop/Cardinal/build/_deps/glfw-src/src/win32_module.c",
+  "file": "C:/Users/admin/Desktop/Cardinal/build/_deps/glfw-src/src/win32_module.c",
+  "output": "_deps/glfw-build/src/CMakeFiles/glfw.dir/win32_module.c.obj"
+},
+{
+  "directory": "C:/Users/admin/Desktop/Cardinal/build/_deps/glfw-build/src",
+  "command": "\"C:/Program Files/LLVM/bin/clang.exe\" -DUNICODE -D_CRT_SECURE_NO_WARNINGS -D_GLFW_WIN32 -D_UNICODE @CMakeFiles/glfw.dir/includes_C.rsp -O0 -std=c99 -D_DEBUG -D_DLL -D_MT -Xclang --dependent-lib=msvcrtd -g -Xclang -gcodeview -Wall -Wextra -Wpedantic -o CMakeFiles/glfw.dir/win32_time.c.obj -c C:/Users/admin/Desktop/Cardinal/build/_deps/glfw-src/src/win32_time.c",
+  "file": "C:/Users/admin/Desktop/Cardinal/build/_deps/glfw-src/src/win32_time.c",
+  "output": "_deps/glfw-build/src/CMakeFiles/glfw.dir/win32_time.c.obj"
+},
+{
+  "directory": "C:/Users/admin/Desktop/Cardinal/build/_deps/glfw-build/src",
+  "command": "\"C:/Program Files/LLVM/bin/clang.exe\" -DUNICODE -D_CRT_SECURE_NO_WARNINGS -D_GLFW_WIN32 -D_UNICODE @CMakeFiles/glfw.dir/includes_C.rsp -O0 -std=c99 -D_DEBUG -D_DLL -D_MT -Xclang --dependent-lib=msvcrtd -g -Xclang -gcodeview -Wall -Wextra -Wpedantic -o CMakeFiles/glfw.dir/win32_thread.c.obj -c C:/Users/admin/Desktop/Cardinal/build/_deps/glfw-src/src/win32_thread.c",
+  "file": "C:/Users/admin/Desktop/Cardinal/build/_deps/glfw-src/src/win32_thread.c",
+  "output": "_deps/glfw-build/src/CMakeFiles/glfw.dir/win32_thread.c.obj"
+},
+{
+  "directory": "C:/Users/admin/Desktop/Cardinal/build/_deps/glfw-build/src",
+  "command": "\"C:/Program Files/LLVM/bin/clang.exe\" -DUNICODE -D_CRT_SECURE_NO_WARNINGS -D_GLFW_WIN32 -D_UNICODE @CMakeFiles/glfw.dir/includes_C.rsp -O0 -std=c99 -D_DEBUG -D_DLL -D_MT -Xclang --dependent-lib=msvcrtd -g -Xclang -gcodeview -Wall -Wextra -Wpedantic -o CMakeFiles/glfw.dir/win32_init.c.obj -c C:/Users/admin/Desktop/Cardinal/build/_deps/glfw-src/src/win32_init.c",
+  "file": "C:/Users/admin/Desktop/Cardinal/build/_deps/glfw-src/src/win32_init.c",
+  "output": "_deps/glfw-build/src/CMakeFiles/glfw.dir/win32_init.c.obj"
+},
+{
+  "directory": "C:/Users/admin/Desktop/Cardinal/build/_deps/glfw-build/src",
+  "command": "\"C:/Program Files/LLVM/bin/clang.exe\" -DUNICODE -D_CRT_SECURE_NO_WARNINGS -D_GLFW_WIN32 -D_UNICODE @CMakeFiles/glfw.dir/includes_C.rsp -O0 -std=c99 -D_DEBUG -D_DLL -D_MT -Xclang --dependent-lib=msvcrtd -g -Xclang -gcodeview -Wall -Wextra -Wpedantic -o CMakeFiles/glfw.dir/win32_joystick.c.obj -c C:/Users/admin/Desktop/Cardinal/build/_deps/glfw-src/src/win32_joystick.c",
+  "file": "C:/Users/admin/Desktop/Cardinal/build/_deps/glfw-src/src/win32_joystick.c",
+  "output": "_deps/glfw-build/src/CMakeFiles/glfw.dir/win32_joystick.c.obj"
+},
+{
+  "directory": "C:/Users/admin/Desktop/Cardinal/build/_deps/glfw-build/src",
+  "command": "\"C:/Program Files/LLVM/bin/clang.exe\" -DUNICODE -D_CRT_SECURE_NO_WARNINGS -D_GLFW_WIN32 -D_UNICODE @CMakeFiles/glfw.dir/includes_C.rsp -O0 -std=c99 -D_DEBUG -D_DLL -D_MT -Xclang --dependent-lib=msvcrtd -g -Xclang -gcodeview -Wall -Wextra -Wpedantic -o CMakeFiles/glfw.dir/win32_monitor.c.obj -c C:/Users/admin/Desktop/Cardinal/build/_deps/glfw-src/src/win32_monitor.c",
+  "file": "C:/Users/admin/Desktop/Cardinal/build/_deps/glfw-src/src/win32_monitor.c",
+  "output": "_deps/glfw-build/src/CMakeFiles/glfw.dir/win32_monitor.c.obj"
+},
+{
+  "directory": "C:/Users/admin/Desktop/Cardinal/build/_deps/glfw-build/src",
+  "command": "\"C:/Program Files/LLVM/bin/clang.exe\" -DUNICODE -D_CRT_SECURE_NO_WARNINGS -D_GLFW_WIN32 -D_UNICODE @CMakeFiles/glfw.dir/includes_C.rsp -O0 -std=c99 -D_DEBUG -D_DLL -D_MT -Xclang --dependent-lib=msvcrtd -g -Xclang -gcodeview -Wall -Wextra -Wpedantic -o CMakeFiles/glfw.dir/win32_window.c.obj -c C:/Users/admin/Desktop/Cardinal/build/_deps/glfw-src/src/win32_window.c",
+  "file": "C:/Users/admin/Desktop/Cardinal/build/_deps/glfw-src/src/win32_window.c",
+  "output": "_deps/glfw-build/src/CMakeFiles/glfw.dir/win32_window.c.obj"
+},
+{
+  "directory": "C:/Users/admin/Desktop/Cardinal/build/_deps/glfw-build/src",
+  "command": "\"C:/Program Files/LLVM/bin/clang.exe\" -DUNICODE -D_CRT_SECURE_NO_WARNINGS -D_GLFW_WIN32 -D_UNICODE @CMakeFiles/glfw.dir/includes_C.rsp -O0 -std=c99 -D_DEBUG -D_DLL -D_MT -Xclang --dependent-lib=msvcrtd -g -Xclang -gcodeview -Wall -Wextra -Wpedantic -o CMakeFiles/glfw.dir/wgl_context.c.obj -c C:/Users/admin/Desktop/Cardinal/build/_deps/glfw-src/src/wgl_context.c",
+  "file": "C:/Users/admin/Desktop/Cardinal/build/_deps/glfw-src/src/wgl_context.c",
+  "output": "_deps/glfw-build/src/CMakeFiles/glfw.dir/wgl_context.c.obj"
+},
+{
+  "directory": "C:/Users/admin/Desktop/Cardinal/build/engine",
+  "command": "\"C:/Program Files/LLVM/bin/clang.exe\" -DCARDINAL_ENGINE_INTERNAL -DGLFW_INCLUDE_VULKAN -DVK_USE_PLATFORM_WIN32_KHR @CMakeFiles/cardinal_engine.dir/includes_C.rsp -O0 -std=c23 -D_DEBUG -D_DLL -D_MT -Xclang --dependent-lib=msvcrtd -g -Xclang -gcodeview -Wall -Wextra -Wpedantic -o CMakeFiles/cardinal_engine.dir/src/core/window.c.obj -c C:/Users/admin/Desktop/Cardinal/engine/src/core/window.c",
+  "file": "C:/Users/admin/Desktop/Cardinal/engine/src/core/window.c",
+  "output": "engine/CMakeFiles/cardinal_engine.dir/src/core/window.c.obj"
+},
+{
+  "directory": "C:/Users/admin/Desktop/Cardinal/build/engine",
+  "command": "\"C:/Program Files/LLVM/bin/clang.exe\" -DCARDINAL_ENGINE_INTERNAL -DGLFW_INCLUDE_VULKAN -DVK_USE_PLATFORM_WIN32_KHR @CMakeFiles/cardinal_engine.dir/includes_C.rsp -O0 -std=c23 -D_DEBUG -D_DLL -D_MT -Xclang --dependent-lib=msvcrtd -g -Xclang -gcodeview -Wall -Wextra -Wpedantic -o CMakeFiles/cardinal_engine.dir/src/renderer/vulkan_renderer.c.obj -c C:/Users/admin/Desktop/Cardinal/engine/src/renderer/vulkan_renderer.c",
+  "file": "C:/Users/admin/Desktop/Cardinal/engine/src/renderer/vulkan_renderer.c",
+  "output": "engine/CMakeFiles/cardinal_engine.dir/src/renderer/vulkan_renderer.c.obj"
+},
+{
+  "directory": "C:/Users/admin/Desktop/Cardinal/build/editor",
+  "command": "\"C:/Program Files/LLVM/bin/clang++.exe\"  @CMakeFiles/imgui_backends.dir/includes_CXX.rsp -O0 -std=c++20 -D_DEBUG -D_DLL -D_MT -Xclang --dependent-lib=msvcrtd -g -Xclang -gcodeview -Wall -Wextra -Wpedantic -o CMakeFiles/imgui_backends.dir/__/_deps/cimgui-src/imgui/backends/imgui_impl_vulkan.cpp.obj -c C:/Users/admin/Desktop/Cardinal/build/_deps/cimgui-src/imgui/backends/imgui_impl_vulkan.cpp",
+  "file": "C:/Users/admin/Desktop/Cardinal/build/_deps/cimgui-src/imgui/backends/imgui_impl_vulkan.cpp",
+  "output": "editor/CMakeFiles/imgui_backends.dir/__/_deps/cimgui-src/imgui/backends/imgui_impl_vulkan.cpp.obj"
+},
+{
+  "directory": "C:/Users/admin/Desktop/Cardinal/build/editor",
+  "command": "\"C:/Program Files/LLVM/bin/clang++.exe\"  @CMakeFiles/imgui_backends.dir/includes_CXX.rsp -O0 -std=c++20 -D_DEBUG -D_DLL -D_MT -Xclang --dependent-lib=msvcrtd -g -Xclang -gcodeview -Wall -Wextra -Wpedantic -o CMakeFiles/imgui_backends.dir/__/_deps/cimgui-src/imgui/backends/imgui_impl_glfw.cpp.obj -c C:/Users/admin/Desktop/Cardinal/build/_deps/cimgui-src/imgui/backends/imgui_impl_glfw.cpp",
+  "file": "C:/Users/admin/Desktop/Cardinal/build/_deps/cimgui-src/imgui/backends/imgui_impl_glfw.cpp",
+  "output": "editor/CMakeFiles/imgui_backends.dir/__/_deps/cimgui-src/imgui/backends/imgui_impl_glfw.cpp.obj"
+},
+{
+  "directory": "C:/Users/admin/Desktop/Cardinal/build/editor",
+  "command": "\"C:/Program Files/LLVM/bin/clang.exe\" -DCIMGUI_DEFINE_ENUMS_AND_STRUCTS -DGLFW_INCLUDE_VULKAN -DIMGUI_DISABLE_OBSOLETE_FUNCTIONS -DIMGUI_DISABLE_OBSOLETE_FUNCTIONS=1 -DIMGUI_IMPL_API=\"extern\t\\\"C\\\"\t__declspec(dllexport)\" -DVK_USE_PLATFORM_WIN32_KHR @CMakeFiles/CardinalEditor.dir/includes_C.rsp -O0 -std=c23 -D_DEBUG -D_DLL -D_MT -Xclang --dependent-lib=msvcrtd -g -Xclang -gcodeview -Wall -Wextra -Wpedantic -o CMakeFiles/CardinalEditor.dir/src/main.c.obj -c C:/Users/admin/Desktop/Cardinal/editor/src/main.c",
+  "file": "C:/Users/admin/Desktop/Cardinal/editor/src/main.c",
+  "output": "editor/CMakeFiles/CardinalEditor.dir/src/main.c.obj"
+},
+{
+  "directory": "C:/Users/admin/Desktop/Cardinal/build/editor",
+  "command": "\"C:/Program Files/LLVM/bin/clang.exe\" -DCIMGUI_DEFINE_ENUMS_AND_STRUCTS -DGLFW_INCLUDE_VULKAN -DIMGUI_DISABLE_OBSOLETE_FUNCTIONS -DIMGUI_DISABLE_OBSOLETE_FUNCTIONS=1 -DIMGUI_IMPL_API=\"extern\t\\\"C\\\"\t__declspec(dllexport)\" -DVK_USE_PLATFORM_WIN32_KHR @CMakeFiles/CardinalEditor.dir/includes_C.rsp -O0 -std=c23 -D_DEBUG -D_DLL -D_MT -Xclang --dependent-lib=msvcrtd -g -Xclang -gcodeview -Wall -Wextra -Wpedantic -o CMakeFiles/CardinalEditor.dir/src/editor_layer.c.obj -c C:/Users/admin/Desktop/Cardinal/editor/src/editor_layer.c",
+  "file": "C:/Users/admin/Desktop/Cardinal/editor/src/editor_layer.c",
+  "output": "editor/CMakeFiles/CardinalEditor.dir/src/editor_layer.c.obj"
+},
+{
+  "directory": "C:/Users/admin/Desktop/Cardinal/build/_deps/cimgui-build",
+  "command": "\"C:/Program Files/LLVM/bin/clang++.exe\" -DIMGUI_DISABLE_OBSOLETE_FUNCTIONS=1 -DIMGUI_IMPL_API=\"extern\t\\\"C\\\"\t__declspec(dllexport)\" -DIMGUI_USER_CONFIG=\\\"../cimconfig.h\\\" @CMakeFiles/cimgui.dir/includes_CXX.rsp -O0 -std=c++14 -D_DEBUG -D_DLL -D_MT -Xclang --dependent-lib=msvcrtd -g -Xclang -gcodeview -Wall -Wextra -Wpedantic -o CMakeFiles/cimgui.dir/cimgui.cpp.obj -c C:/Users/admin/Desktop/Cardinal/build/_deps/cimgui-src/cimgui.cpp",
+  "file": "C:/Users/admin/Desktop/Cardinal/build/_deps/cimgui-src/cimgui.cpp",
+  "output": "_deps/cimgui-build/CMakeFiles/cimgui.dir/cimgui.cpp.obj"
+},
+{
+  "directory": "C:/Users/admin/Desktop/Cardinal/build/_deps/cimgui-build",
+  "command": "\"C:/Program Files/LLVM/bin/clang++.exe\" -DIMGUI_DISABLE_OBSOLETE_FUNCTIONS=1 -DIMGUI_IMPL_API=\"extern\t\\\"C\\\"\t__declspec(dllexport)\" -DIMGUI_USER_CONFIG=\\\"../cimconfig.h\\\" @CMakeFiles/cimgui.dir/includes_CXX.rsp -O0 -std=c++14 -D_DEBUG -D_DLL -D_MT -Xclang --dependent-lib=msvcrtd -g -Xclang -gcodeview -Wall -Wextra -Wpedantic -o CMakeFiles/cimgui.dir/imgui/imgui.cpp.obj -c C:/Users/admin/Desktop/Cardinal/build/_deps/cimgui-src/imgui/imgui.cpp",
+  "file": "C:/Users/admin/Desktop/Cardinal/build/_deps/cimgui-src/imgui/imgui.cpp",
+  "output": "_deps/cimgui-build/CMakeFiles/cimgui.dir/imgui/imgui.cpp.obj"
+},
+{
+  "directory": "C:/Users/admin/Desktop/Cardinal/build/_deps/cimgui-build",
+  "command": "\"C:/Program Files/LLVM/bin/clang++.exe\" -DIMGUI_DISABLE_OBSOLETE_FUNCTIONS=1 -DIMGUI_IMPL_API=\"extern\t\\\"C\\\"\t__declspec(dllexport)\" -DIMGUI_USER_CONFIG=\\\"../cimconfig.h\\\" @CMakeFiles/cimgui.dir/includes_CXX.rsp -O0 -std=c++14 -D_DEBUG -D_DLL -D_MT -Xclang --dependent-lib=msvcrtd -g -Xclang -gcodeview -Wall -Wextra -Wpedantic -o CMakeFiles/cimgui.dir/imgui/imgui_demo.cpp.obj -c C:/Users/admin/Desktop/Cardinal/build/_deps/cimgui-src/imgui/imgui_demo.cpp",
+  "file": "C:/Users/admin/Desktop/Cardinal/build/_deps/cimgui-src/imgui/imgui_demo.cpp",
+  "output": "_deps/cimgui-build/CMakeFiles/cimgui.dir/imgui/imgui_demo.cpp.obj"
+},
+{
+  "directory": "C:/Users/admin/Desktop/Cardinal/build/_deps/cimgui-build",
+  "command": "\"C:/Program Files/LLVM/bin/clang++.exe\" -DIMGUI_DISABLE_OBSOLETE_FUNCTIONS=1 -DIMGUI_IMPL_API=\"extern\t\\\"C\\\"\t__declspec(dllexport)\" -DIMGUI_USER_CONFIG=\\\"../cimconfig.h\\\" @CMakeFiles/cimgui.dir/includes_CXX.rsp -O0 -std=c++14 -D_DEBUG -D_DLL -D_MT -Xclang --dependent-lib=msvcrtd -g -Xclang -gcodeview -Wall -Wextra -Wpedantic -o CMakeFiles/cimgui.dir/imgui/imgui_draw.cpp.obj -c C:/Users/admin/Desktop/Cardinal/build/_deps/cimgui-src/imgui/imgui_draw.cpp",
+  "file": "C:/Users/admin/Desktop/Cardinal/build/_deps/cimgui-src/imgui/imgui_draw.cpp",
+  "output": "_deps/cimgui-build/CMakeFiles/cimgui.dir/imgui/imgui_draw.cpp.obj"
+},
+{
+  "directory": "C:/Users/admin/Desktop/Cardinal/build/_deps/cimgui-build",
+  "command": "\"C:/Program Files/LLVM/bin/clang++.exe\" -DIMGUI_DISABLE_OBSOLETE_FUNCTIONS=1 -DIMGUI_IMPL_API=\"extern\t\\\"C\\\"\t__declspec(dllexport)\" -DIMGUI_USER_CONFIG=\\\"../cimconfig.h\\\" @CMakeFiles/cimgui.dir/includes_CXX.rsp -O0 -std=c++14 -D_DEBUG -D_DLL -D_MT -Xclang --dependent-lib=msvcrtd -g -Xclang -gcodeview -Wall -Wextra -Wpedantic -o CMakeFiles/cimgui.dir/imgui/imgui_tables.cpp.obj -c C:/Users/admin/Desktop/Cardinal/build/_deps/cimgui-src/imgui/imgui_tables.cpp",
+  "file": "C:/Users/admin/Desktop/Cardinal/build/_deps/cimgui-src/imgui/imgui_tables.cpp",
+  "output": "_deps/cimgui-build/CMakeFiles/cimgui.dir/imgui/imgui_tables.cpp.obj"
+},
+{
+  "directory": "C:/Users/admin/Desktop/Cardinal/build/_deps/cimgui-build",
+  "command": "\"C:/Program Files/LLVM/bin/clang++.exe\" -DIMGUI_DISABLE_OBSOLETE_FUNCTIONS=1 -DIMGUI_IMPL_API=\"extern\t\\\"C\\\"\t__declspec(dllexport)\" -DIMGUI_USER_CONFIG=\\\"../cimconfig.h\\\" @CMakeFiles/cimgui.dir/includes_CXX.rsp -O0 -std=c++14 -D_DEBUG -D_DLL -D_MT -Xclang --dependent-lib=msvcrtd -g -Xclang -gcodeview -Wall -Wextra -Wpedantic -o CMakeFiles/cimgui.dir/imgui/imgui_widgets.cpp.obj -c C:/Users/admin/Desktop/Cardinal/build/_deps/cimgui-src/imgui/imgui_widgets.cpp",
+  "file": "C:/Users/admin/Desktop/Cardinal/build/_deps/cimgui-src/imgui/imgui_widgets.cpp",
+  "output": "_deps/cimgui-build/CMakeFiles/cimgui.dir/imgui/imgui_widgets.cpp.obj"
+},
+{
+  "directory": "C:/Users/admin/Desktop/Cardinal/build/client",
+  "command": "\"C:/Program Files/LLVM/bin/clang.exe\" -DGLFW_INCLUDE_VULKAN -DVK_USE_PLATFORM_WIN32_KHR @CMakeFiles/CardinalClient.dir/includes_C.rsp -O0 -std=c23 -D_DEBUG -D_DLL -D_MT -Xclang --dependent-lib=msvcrtd -g -Xclang -gcodeview -Wall -Wextra -Wpedantic -o CMakeFiles/CardinalClient.dir/src/main.c.obj -c C:/Users/admin/Desktop/Cardinal/client/src/main.c",
+  "file": "C:/Users/admin/Desktop/Cardinal/client/src/main.c",
+  "output": "client/CMakeFiles/CardinalClient.dir/src/main.c.obj"
+}
+]
