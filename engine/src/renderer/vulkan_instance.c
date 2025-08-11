@@ -1,28 +1,97 @@
 #include <stdlib.h>
+#include <stdio.h>
+#include <string.h>
 #include <GLFW/glfw3.h>
 #include <vulkan/vulkan.h>
 #include "cardinal/core/window.h"
 #include "vulkan_state.h"
 #include "vulkan_instance.h"
+#include "cardinal/core/log.h"
+
+// Use centralized logger
+static VKAPI_ATTR VkBool32 VKAPI_CALL vk_debug_callback(
+    VkDebugUtilsMessageSeverityFlagBitsEXT severity,
+    VkDebugUtilsMessageTypeFlagsEXT type,
+    const VkDebugUtilsMessengerCallbackDataEXT* callback_data,
+    void* user_data) {
+    char buffer[512];
+    snprintf(buffer, sizeof(buffer), "VK_DEBUG: %s", callback_data->pMessage);
+    LOG_WARN("%s", buffer);
+    return VK_FALSE;
+}
 
 bool vk_create_instance(VulkanState* s) {
-    VkApplicationInfo app = { .sType = VK_STRUCTURE_TYPE_APPLICATION_INFO };
-    app.pApplicationName = "Cardinal";
-    app.applicationVersion = VK_MAKE_API_VERSION(0,1,0,0);
-    app.pEngineName = "Cardinal";
-    app.engineVersion = VK_MAKE_API_VERSION(0,1,0,0);
-    app.apiVersion = VK_API_VERSION_1_3;
+    VkApplicationInfo ai = { .sType = VK_STRUCTURE_TYPE_APPLICATION_INFO };
+    ai.pApplicationName = "Cardinal";
+    ai.applicationVersion = VK_MAKE_VERSION(1,0,0);
+    ai.pEngineName = "Cardinal";
+    ai.engineVersion = VK_MAKE_VERSION(1,0,0);
+    ai.apiVersion = VK_API_VERSION_1_2;
 
-    uint32_t ext_count = 0;
-    const char** extensions = glfwGetRequiredInstanceExtensions(&ext_count);
-    if (!extensions || ext_count == 0) return false;
+    uint32_t glfw_count = 0;
+    const char** glfw_exts = glfwGetRequiredInstanceExtensions(&glfw_count);
 
+    const char* layers[] = { "VK_LAYER_KHRONOS_validation" };
     VkInstanceCreateInfo ci = { .sType = VK_STRUCTURE_TYPE_INSTANCE_CREATE_INFO };
-    ci.pApplicationInfo = &app;
-    ci.enabledExtensionCount = ext_count;
-    ci.ppEnabledExtensionNames = extensions;
+    ci.pApplicationInfo = &ai;
 
-    return vkCreateInstance(&ci, NULL, &s->instance) == VK_SUCCESS;
+    // Build extension list, append debug utils in debug builds if not already present
+    const char** enabled_exts = glfw_exts;
+    uint32_t enabled_ext_count = glfw_count;
+#ifdef _DEBUG
+    bool need_debug_utils = true;
+    for (uint32_t i = 0; i < glfw_count; ++i) {
+        if (strcmp(glfw_exts[i], VK_EXT_DEBUG_UTILS_EXTENSION_NAME) == 0) { need_debug_utils = false; break; }
+    }
+    const char** tmp_exts = NULL;
+    if (need_debug_utils) {
+        tmp_exts = (const char**)malloc(sizeof(char*) * (glfw_count + 1));
+        for (uint32_t i = 0; i < glfw_count; ++i) tmp_exts[i] = glfw_exts[i];
+        tmp_exts[glfw_count] = VK_EXT_DEBUG_UTILS_EXTENSION_NAME;
+        enabled_exts = tmp_exts;
+        enabled_ext_count = glfw_count + 1;
+    }
+#endif
+
+    ci.enabledExtensionCount = enabled_ext_count;
+    ci.ppEnabledExtensionNames = enabled_exts;
+#ifdef _DEBUG
+    ci.enabledLayerCount = 1;
+    ci.ppEnabledLayerNames = layers;
+#else
+    ci.enabledLayerCount = 0;
+    ci.ppEnabledLayerNames = NULL;
+#endif
+
+#ifdef _DEBUG
+    VkDebugUtilsMessengerCreateInfoEXT debug_ci = { .sType = VK_STRUCTURE_TYPE_DEBUG_UTILS_MESSENGER_CREATE_INFO_EXT };
+    debug_ci.messageSeverity = VK_DEBUG_UTILS_MESSAGE_SEVERITY_WARNING_BIT_EXT | VK_DEBUG_UTILS_MESSAGE_SEVERITY_ERROR_BIT_EXT;
+    debug_ci.messageType = VK_DEBUG_UTILS_MESSAGE_TYPE_GENERAL_BIT_EXT | VK_DEBUG_UTILS_MESSAGE_TYPE_VALIDATION_BIT_EXT | VK_DEBUG_UTILS_MESSAGE_TYPE_PERFORMANCE_BIT_EXT;
+    debug_ci.pfnUserCallback = vk_debug_callback;
+    ci.pNext = &debug_ci;
+#endif
+
+    if (vkCreateInstance(&ci, NULL, &s->instance) != VK_SUCCESS) {
+        LOG_ERROR("vk_create_instance: vkCreateInstance failed");
+#ifdef _DEBUG
+        if (tmp_exts) free((void*)tmp_exts);
+#endif
+        return false;
+    }
+
+#ifdef _DEBUG
+    if (tmp_exts) free((void*)tmp_exts);
+    PFN_vkCreateDebugUtilsMessengerEXT dfunc = (PFN_vkCreateDebugUtilsMessengerEXT)vkGetInstanceProcAddr(s->instance, "vkCreateDebugUtilsMessengerEXT");
+    if (dfunc) {
+        VkDebugUtilsMessengerCreateInfoEXT dbg_ci = { .sType = VK_STRUCTURE_TYPE_DEBUG_UTILS_MESSENGER_CREATE_INFO_EXT };
+        dbg_ci.messageSeverity = VK_DEBUG_UTILS_MESSAGE_SEVERITY_WARNING_BIT_EXT | VK_DEBUG_UTILS_MESSAGE_SEVERITY_ERROR_BIT_EXT;
+        dbg_ci.messageType = VK_DEBUG_UTILS_MESSAGE_TYPE_GENERAL_BIT_EXT | VK_DEBUG_UTILS_MESSAGE_TYPE_VALIDATION_BIT_EXT | VK_DEBUG_UTILS_MESSAGE_TYPE_PERFORMANCE_BIT_EXT;
+        dbg_ci.pfnUserCallback = vk_debug_callback;
+        dfunc(s->instance, &dbg_ci, NULL, &s->debug_messenger);
+    }
+#endif
+
+    return true;
 }
 
 bool vk_pick_physical_device(VulkanState* s) {
@@ -81,5 +150,10 @@ void vk_destroy_device_objects(VulkanState* s) {
         s->device = VK_NULL_HANDLE;
     }
     if (s->surface) { vkDestroySurfaceKHR(s->instance, s->surface, NULL); s->surface = VK_NULL_HANDLE; }
+    if (s->debug_messenger) {
+        PFN_vkDestroyDebugUtilsMessengerEXT dfunc = (PFN_vkDestroyDebugUtilsMessengerEXT)vkGetInstanceProcAddr(s->instance, "vkDestroyDebugUtilsMessengerEXT");
+        if (dfunc) { dfunc(s->instance, s->debug_messenger, NULL); }
+        s->debug_messenger = VK_NULL_HANDLE;
+    }
     if (s->instance) { vkDestroyInstance(s->instance, NULL); s->instance = VK_NULL_HANDLE; }
 }

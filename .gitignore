@@ -1,2 +1,7 @@
 build
 .cache
+assets/models
+assets/audio
+assets/textures
+
+cardinal_log.txt

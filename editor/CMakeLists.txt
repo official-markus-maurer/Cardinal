@@ -73,3 +73,11 @@ if(MSVC)
 else()
     target_compile_options(CardinalEditor PRIVATE -Wall -Wextra -Wpedantic)
 endif()
+
+# Copy assets to output directory
+add_custom_command(TARGET CardinalEditor POST_BUILD
+    COMMAND ${CMAKE_COMMAND} -E copy_directory
+    ${CMAKE_SOURCE_DIR}/assets
+    $<TARGET_FILE_DIR:CardinalEditor>/assets
+    COMMENT "Copying assets to editor output directory"
+)

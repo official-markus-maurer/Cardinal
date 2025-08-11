@@ -1,7 +1,9 @@
 #include <cardinal/cardinal.h>
+#include <cardinal/core/log.h>
 #include "editor_layer.h"
 
 int main(void) {
+    cardinal_log_init();
     CardinalWindowConfig config = {
         .title = "Cardinal Editor",
         .width = 1600,
@@ -9,11 +11,12 @@ int main(void) {
         .resizable = true
     };
     CardinalWindow* window = cardinal_window_create(&config);
-    if (!window) return -1;
+    if (!window) { cardinal_log_shutdown(); return -1; }
 
     CardinalRenderer renderer;
     if (!cardinal_renderer_create(&renderer, window)) {
         cardinal_window_destroy(window);
+        cardinal_log_shutdown();
         return -1;
     }
 
@@ -21,6 +24,7 @@ int main(void) {
     if (!editor_layer_init(window, &renderer)) {
         cardinal_renderer_destroy(&renderer);
         cardinal_window_destroy(window);
+        cardinal_log_shutdown();
         return -1;
     }
 
@@ -37,5 +41,6 @@ int main(void) {
     editor_layer_shutdown();
     cardinal_renderer_destroy(&renderer);
     cardinal_window_destroy(window);
+    cardinal_log_shutdown();
     return 0;
 }

@@ -3,6 +3,7 @@
 
 #include <vulkan/vulkan.h>
 #include "renderer.h"
+#include "../assets/scene.h"
 
 #ifdef __cplusplus
 extern "C" {
@@ -23,6 +24,11 @@ void cardinal_renderer_set_ui_callback(CardinalRenderer* renderer, void (*callba
 
 // Execute a one-time command buffer immediately on the graphics queue
 void cardinal_renderer_immediate_submit(CardinalRenderer* renderer, void (*record)(VkCommandBuffer cmd));
+
+// Upload a loaded CPU scene to GPU buffers for basic drawing
+void cardinal_renderer_upload_scene(CardinalRenderer* renderer, const CardinalScene* scene);
+// Clear current GPU scene resources
+void cardinal_renderer_clear_scene(CardinalRenderer* renderer);
 
 #ifdef __cplusplus
 }

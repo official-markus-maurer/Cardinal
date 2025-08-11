@@ -9,10 +9,22 @@
 struct CardinalWindow;
 typedef struct CardinalWindow CardinalWindow;
 
+// GPU mesh buffers for a loaded scene
+typedef struct GpuMesh {
+    VkBuffer vbuf;
+    VkDeviceMemory vmem;
+    VkBuffer ibuf;
+    VkDeviceMemory imem;
+    uint32_t vtx_count;
+    uint32_t idx_count;
+    VkDeviceSize vtx_stride;
+} GpuMesh;
+
 // Shared Vulkan state structure
 typedef struct VulkanState {
     // Instance and device
     VkInstance instance;
+    VkDebugUtilsMessengerEXT debug_messenger;
     VkPhysicalDevice physical_device;
     VkDevice device;
     uint32_t graphics_queue_family;
@@ -36,12 +48,21 @@ typedef struct VulkanState {
     // Commands and synchronization
     VkCommandPool command_pool;
     VkCommandBuffer* command_buffers;
-    VkSemaphore image_available;
-    VkSemaphore render_finished;
-    VkFence in_flight;
+
+    // Frames-in-flight synchronization
+    uint32_t max_frames_in_flight;       // typically 2
+    uint32_t current_frame;              // rotating index [0..max_frames_in_flight)
+    VkSemaphore* image_available_semaphores; // [max_frames_in_flight]
+    VkSemaphore* render_finished_semaphores; // [max_frames_in_flight]
+    VkFence* in_flight_fences;               // [max_frames_in_flight]
+    VkFence* images_in_flight;               // [swapchain_image_count] fence tracking per acquired image
 
     // Optional callback to record UI draw commands per-frame between render pass begin/end
     void (*ui_record_callback)(VkCommandBuffer cmd);
+
+    // Loaded scene GPU buffers
+    GpuMesh* scene_meshes;
+    uint32_t scene_mesh_count;
 } VulkanState;
 
 #endif // VULKAN_STATE_H

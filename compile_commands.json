@@ -127,6 +127,12 @@
 },
 {
   "directory": "C:/Users/admin/Desktop/Cardinal/build/engine",
+  "command": "\"C:/Program Files/LLVM/bin/clang.exe\" -DCARDINAL_ENGINE_INTERNAL -DGLFW_INCLUDE_VULKAN -DVK_USE_PLATFORM_WIN32_KHR @CMakeFiles/cardinal_engine.dir/includes_C.rsp -O0 -std=c23 -D_DEBUG -D_DLL -D_MT -Xclang --dependent-lib=msvcrtd -g -Xclang -gcodeview -Wall -Wextra -Wpedantic -o CMakeFiles/cardinal_engine.dir/src/core/log.c.obj -c C:/Users/admin/Desktop/Cardinal/engine/src/core/log.c",
+  "file": "C:/Users/admin/Desktop/Cardinal/engine/src/core/log.c",
+  "output": "engine/CMakeFiles/cardinal_engine.dir/src/core/log.c.obj"
+},
+{
+  "directory": "C:/Users/admin/Desktop/Cardinal/build/engine",
   "command": "\"C:/Program Files/LLVM/bin/clang.exe\" -DCARDINAL_ENGINE_INTERNAL -DGLFW_INCLUDE_VULKAN -DVK_USE_PLATFORM_WIN32_KHR @CMakeFiles/cardinal_engine.dir/includes_C.rsp -O0 -std=c23 -D_DEBUG -D_DLL -D_MT -Xclang --dependent-lib=msvcrtd -g -Xclang -gcodeview -Wall -Wextra -Wpedantic -o CMakeFiles/cardinal_engine.dir/src/core/window.c.obj -c C:/Users/admin/Desktop/Cardinal/engine/src/core/window.c",
   "file": "C:/Users/admin/Desktop/Cardinal/engine/src/core/window.c",
   "output": "engine/CMakeFiles/cardinal_engine.dir/src/core/window.c.obj"
@@ -160,6 +166,24 @@
   "command": "\"C:/Program Files/LLVM/bin/clang.exe\" -DCARDINAL_ENGINE_INTERNAL -DGLFW_INCLUDE_VULKAN -DVK_USE_PLATFORM_WIN32_KHR @CMakeFiles/cardinal_engine.dir/includes_C.rsp -O0 -std=c23 -D_DEBUG -D_DLL -D_MT -Xclang --dependent-lib=msvcrtd -g -Xclang -gcodeview -Wall -Wextra -Wpedantic -o CMakeFiles/cardinal_engine.dir/src/renderer/vulkan_commands.c.obj -c C:/Users/admin/Desktop/Cardinal/engine/src/renderer/vulkan_commands.c",
   "file": "C:/Users/admin/Desktop/Cardinal/engine/src/renderer/vulkan_commands.c",
   "output": "engine/CMakeFiles/cardinal_engine.dir/src/renderer/vulkan_commands.c.obj"
+},
+{
+  "directory": "C:/Users/admin/Desktop/Cardinal/build/engine",
+  "command": "\"C:/Program Files/LLVM/bin/clang.exe\" -DCARDINAL_ENGINE_INTERNAL -DGLFW_INCLUDE_VULKAN -DVK_USE_PLATFORM_WIN32_KHR @CMakeFiles/cardinal_engine.dir/includes_C.rsp -O0 -std=c23 -D_DEBUG -D_DLL -D_MT -Xclang --dependent-lib=msvcrtd -g -Xclang -gcodeview -Wall -Wextra -Wpedantic -o CMakeFiles/cardinal_engine.dir/src/assets/scene.c.obj -c C:/Users/admin/Desktop/Cardinal/engine/src/assets/scene.c",
+  "file": "C:/Users/admin/Desktop/Cardinal/engine/src/assets/scene.c",
+  "output": "engine/CMakeFiles/cardinal_engine.dir/src/assets/scene.c.obj"
+},
+{
+  "directory": "C:/Users/admin/Desktop/Cardinal/build/engine",
+  "command": "\"C:/Program Files/LLVM/bin/clang.exe\" -DCARDINAL_ENGINE_INTERNAL -DGLFW_INCLUDE_VULKAN -DVK_USE_PLATFORM_WIN32_KHR @CMakeFiles/cardinal_engine.dir/includes_C.rsp -O0 -std=c23 -D_DEBUG -D_DLL -D_MT -Xclang --dependent-lib=msvcrtd -g -Xclang -gcodeview -Wall -Wextra -Wpedantic -o CMakeFiles/cardinal_engine.dir/src/assets/gltf_loader.c.obj -c C:/Users/admin/Desktop/Cardinal/engine/src/assets/gltf_loader.c",
+  "file": "C:/Users/admin/Desktop/Cardinal/engine/src/assets/gltf_loader.c",
+  "output": "engine/CMakeFiles/cardinal_engine.dir/src/assets/gltf_loader.c.obj"
+},
+{
+  "directory": "C:/Users/admin/Desktop/Cardinal/build/engine",
+  "command": "\"C:/Program Files/LLVM/bin/clang.exe\" -DCARDINAL_ENGINE_INTERNAL -DGLFW_INCLUDE_VULKAN -DVK_USE_PLATFORM_WIN32_KHR @CMakeFiles/cardinal_engine.dir/includes_C.rsp -O0 -std=c23 -D_DEBUG -D_DLL -D_MT -Xclang --dependent-lib=msvcrtd -g -Xclang -gcodeview -Wall -Wextra -Wpedantic -o CMakeFiles/cardinal_engine.dir/src/assets/loader.c.obj -c C:/Users/admin/Desktop/Cardinal/engine/src/assets/loader.c",
+  "file": "C:/Users/admin/Desktop/Cardinal/engine/src/assets/loader.c",
+  "output": "engine/CMakeFiles/cardinal_engine.dir/src/assets/loader.c.obj"
 },
 {
   "directory": "C:/Users/admin/Desktop/Cardinal/build/editor",

@@ -2,17 +2,22 @@
 #include <string.h>
 #include <assert.h>
 #include <GLFW/glfw3.h>
+#include <stdio.h>
 
 #include "cardinal/core/window.h"
+#include "cardinal/core/log.h"
 
 static void glfw_error_callback(int error, const char* desc) {
-    (void)error;
-    (void)desc;
+    LOG_ERROR("GLFW error %d: %s", error, desc ? desc : "(null)");
 }
 
 CardinalWindow* cardinal_window_create(const CardinalWindowConfig* config) {
     assert(config);
-    if (!glfwInit()) return NULL;
+    LOG_INFO("cardinal_window_create: begin");
+    if (!glfwInit()) {
+        LOG_ERROR("GLFW init failed");
+        return NULL;
+    }
 
     glfwSetErrorCallback(glfw_error_callback);
 
@@ -21,6 +26,7 @@ CardinalWindow* cardinal_window_create(const CardinalWindowConfig* config) {
 
     GLFWwindow* handle = glfwCreateWindow((int)config->width, (int)config->height, config->title, NULL, NULL);
     if (!handle) {
+        LOG_ERROR("GLFW create window failed");
         glfwTerminate();
         return NULL;
     }
@@ -31,6 +37,7 @@ CardinalWindow* cardinal_window_create(const CardinalWindowConfig* config) {
     win->height = config->height;
     win->should_close = false;
 
+    LOG_INFO("cardinal_window_create: success");
     return win;
 }
 

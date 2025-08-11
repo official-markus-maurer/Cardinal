@@ -1,6 +1,8 @@
 #include <cardinal/cardinal.h>
+#include <cardinal/core/log.h>
 
 int main(void) {
+    cardinal_log_init();
     // Create a window
     CardinalWindowConfig config = {
         .title = "Cardinal Client",
@@ -10,14 +12,13 @@ int main(void) {
     };
     
     CardinalWindow* window = cardinal_window_create(&config);
-    if (!window) {
-        return -1;
-    }
+    if (!window) { cardinal_log_shutdown(); return -1; }
     
     // Create renderer
     CardinalRenderer renderer;
     if (!cardinal_renderer_create(&renderer, window)) {
         cardinal_window_destroy(window);
+        cardinal_log_shutdown();
         return -1;
     }
     
@@ -31,6 +32,7 @@ int main(void) {
     cardinal_renderer_wait_idle(&renderer);
     cardinal_renderer_destroy(&renderer);
     cardinal_window_destroy(window);
+    cardinal_log_shutdown();
     
     return 0;
 }
