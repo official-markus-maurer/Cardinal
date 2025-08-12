@@ -12,6 +12,11 @@ FetchContent_Declare(
 )
 FetchContent_MakeAvailable(cgltf)
 
+# Suppress warnings from cgltf on Windows
+if(WIN32 AND TARGET cgltf)
+    target_compile_definitions(cgltf INTERFACE _CRT_SECURE_NO_WARNINGS)
+endif()
+
 # Engine source files (minimal)
 target_sources(cardinal_engine PRIVATE
     src/core/log.c
@@ -21,6 +26,7 @@ target_sources(cardinal_engine PRIVATE
     src/renderer/vulkan_swapchain.c
     src/renderer/vulkan_pipeline.c
     src/renderer/vulkan_commands.c
+    src/renderer/vulkan_pbr.c
     src/assets/scene.c
     src/assets/gltf_loader.c
     src/assets/loader.c
@@ -48,6 +54,18 @@ target_include_directories(cardinal_engine
     PRIVATE
     src
 )
+
+# Suppress deprecation warnings from cgltf library on Windows
+if(WIN32)
+    target_compile_definitions(cardinal_engine PRIVATE _CRT_SECURE_NO_WARNINGS)
+    # Also suppress specific clang warnings for cgltf
+    if(CMAKE_C_COMPILER_ID MATCHES "Clang")
+        target_compile_options(cardinal_engine PRIVATE 
+            -Wno-deprecated-declarations
+            -Wno-language-extension-token
+        )
+    endif()
+endif()
 
 # Link dependencies
 target_link_libraries(cardinal_engine

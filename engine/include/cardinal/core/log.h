@@ -18,8 +18,15 @@ typedef enum {
     CARDINAL_LOG_LEVEL_FATAL = 5
 } CardinalLogLevel;
 
-// Initialize logging system
+// Initialize logging system with optional log level
 void cardinal_log_init(void);
+void cardinal_log_init_with_level(CardinalLogLevel min_level);
+
+// Set runtime log level
+void cardinal_log_set_level(CardinalLogLevel min_level);
+
+// Get current log level
+CardinalLogLevel cardinal_log_get_level(void);
 
 // Shutdown logging system
 void cardinal_log_shutdown(void);
@@ -27,7 +34,12 @@ void cardinal_log_shutdown(void);
 // Core logging function
 void cardinal_log_output(CardinalLogLevel level, const char* file, int line, const char* fmt, ...);
 
-// Macros for logging
+// Parse log level from string (for command line args)
+CardinalLogLevel cardinal_log_parse_level(const char* level_str);
+
+// Macros for logging - suppress GNU extension warnings
+#pragma clang diagnostic push
+#pragma clang diagnostic ignored "-Wgnu-zero-variadic-macro-arguments"
 #ifdef _DEBUG
     #define CARDINAL_LOG_TRACE(fmt, ...) cardinal_log_output(CARDINAL_LOG_LEVEL_TRACE, __FILE__, __LINE__, fmt, ##__VA_ARGS__)
     #define CARDINAL_LOG_DEBUG(fmt, ...) cardinal_log_output(CARDINAL_LOG_LEVEL_DEBUG, __FILE__, __LINE__, fmt, ##__VA_ARGS__)
@@ -44,6 +56,7 @@ void cardinal_log_output(CardinalLogLevel level, const char* file, int line, con
     #define CARDINAL_LOG_ERROR(fmt, ...) cardinal_log_output(CARDINAL_LOG_LEVEL_ERROR, __FILE__, __LINE__, fmt, ##__VA_ARGS__)
     #define CARDINAL_LOG_FATAL(fmt, ...) cardinal_log_output(CARDINAL_LOG_LEVEL_FATAL, __FILE__, __LINE__, fmt, ##__VA_ARGS__)
 #endif
+#pragma clang diagnostic pop
 
 // Convenience macros with shorter names
 #define LOG_TRACE  CARDINAL_LOG_TRACE

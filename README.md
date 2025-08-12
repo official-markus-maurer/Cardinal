@@ -8,7 +8,7 @@ A minimalistic Vulkan game engine written in pure C23, designed with a clean sep
 - **Vulkan Renderer**: Hardware-accelerated graphics using Vulkan API
 - **GLFW Windowing**: Cross-platform window management
 - **Editor/Client Split**: Separate applications for development and runtime
-- **ImGui Editor**: Future-ready editor using Dear ImGui through cimgui
+- **ImGui Editor**: Integrated editor using Dear ImGui with Vulkan backend
 - **CMake Build System**: Modern dependency management with FetchContent
 
 ## Architecture
@@ -28,12 +28,15 @@ Cardinal/
 ### Engine Core
 
 - **Window Management**: GLFW-based window creation and event handling
-- **Vulkan Renderer**: Minimal Vulkan implementation with:
+- **Vulkan Renderer**: Complete Vulkan implementation with:
   - Instance and device creation
   - Surface management via GLFW
   - Swapchain setup
   - Command buffer recording
-  - Basic clear-color rendering
+  - PBR (Physically Based Rendering) pipeline
+  - Scene rendering with mesh support
+- **Asset Loading**: glTF 2.0 scene loading with cgltf
+- **Scene Management**: Hierarchical scene graph with materials and textures
 
 ## Build Requirements
 
@@ -71,6 +74,7 @@ The client demonstrates basic engine usage:
 
 ```c
 #include <cardinal/cardinal.h>
+#include <cardinal/assets/loader.h>
 
 int main(void) {
     // Create window
@@ -83,17 +87,48 @@ int main(void) {
     CardinalWindow* window = cardinal_window_create(&config);
     
     // Create renderer
-    CardinalRenderer renderer;
-    cardinal_renderer_create(&renderer, window);
+    CardinalRenderer* renderer = cardinal_renderer_create(window);
+    
+    // Load and upload scene (optional)
+    CardinalScene scene;
+    if (cardinal_scene_load("assets/models/scene.gltf", &scene)) {
+        cardinal_renderer_upload_scene(renderer, &scene);
+        
+        // Enable PBR rendering
+        cardinal_renderer_enable_pbr(renderer, true);
+        
+        // Set up camera and lighting
+        CardinalCamera camera = {
+            .position = {0.0f, 0.0f, 5.0f},
+            .target = {0.0f, 0.0f, 0.0f},
+            .up = {0.0f, 1.0f, 0.0f},
+            .fov = 45.0f,
+            .aspect = 1024.0f / 768.0f,
+            .near_plane = 0.1f,
+            .far_plane = 100.0f
+        };
+        cardinal_renderer_set_camera(renderer, &camera);
+        
+        CardinalLight light = {
+            .direction = {-0.5f, -1.0f, -0.3f},
+            .color = {1.0f, 1.0f, 1.0f},
+            .intensity = 3.0f,
+            .ambient = {0.1f, 0.1f, 0.1f}
+        };
+        cardinal_renderer_set_lighting(renderer, &light);
+    }
     
     // Main loop
     while (!cardinal_window_should_close(window)) {
         cardinal_window_poll(window);
-        cardinal_renderer_draw_frame(&renderer);
+        cardinal_renderer_draw_frame(renderer);
     }
     
     // Cleanup
-    cardinal_renderer_destroy(&renderer);
+    if (scene.mesh_count > 0) {
+        cardinal_scene_destroy(&scene);
+    }
+    cardinal_renderer_destroy(renderer);
     cardinal_window_destroy(window);
     return 0;
 }
@@ -101,12 +136,13 @@ int main(void) {
 
 ### Editor Application
 
-Currently provides the same basic functionality as the client. Future versions will include:
+Provides a comprehensive development environment with:
 
-- Scene editing
-- Asset management
-- Visual scripting
-- Debugging tools
+- **Scene Graph Panel**: Hierarchical view of loaded scenes
+- **Asset Browser**: File system navigation and glTF asset loading
+- **PBR Settings Panel**: Real-time camera and lighting controls
+- **ImGui Integration**: Dockable interface with modern UI
+- **Live Scene Loading**: Dynamic glTF/GLB file loading and rendering
 
 ## Dependencies
 
@@ -114,8 +150,8 @@ All dependencies are managed via CMake FetchContent:
 
 - **GLFW 3.4**: Window management and input
 - **Vulkan Headers**: Via system Vulkan SDK
-- **cimgui**: C bindings for Dear ImGui (editor only)
-- **Dear ImGui**: UI framework backends (editor only)
+- **Dear ImGui**: UI framework with Vulkan backend (editor only)
+- **cgltf 1.13**: Header-only glTF 2.0 parser for asset loading
 
 ## Platform Support
 

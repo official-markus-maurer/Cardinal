@@ -3,38 +3,77 @@
 #include <string.h>
 #include "vulkan_state.h"
 #include "vulkan_commands.h"
+#include "cardinal/core/log.h"
+#include "cardinal/renderer/vulkan_pbr.h"
 
 bool vk_create_commands_sync(VulkanState* s) {
-VkCommandPoolCreateInfo cp = { .sType = VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO };
-cp.queueFamilyIndex = s->graphics_queue_family;
-cp.flags = VK_COMMAND_POOL_CREATE_RESET_COMMAND_BUFFER_BIT;
-if (vkCreateCommandPool(s->device, &cp, NULL, &s->command_pool) != VK_SUCCESS) return false;
-
-s->command_buffers = (VkCommandBuffer*)malloc(sizeof(VkCommandBuffer)*s->swapchain_image_count);
-VkCommandBufferAllocateInfo ai = { .sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO };
-ai.commandPool = s->command_pool;
-ai.level = VK_COMMAND_BUFFER_LEVEL_PRIMARY;
-ai.commandBufferCount = s->swapchain_image_count;
-if (vkAllocateCommandBuffers(s->device, &ai, s->command_buffers) != VK_SUCCESS) return false;
-
-// Frames in flight setup (double buffering)
-s->max_frames_in_flight = 2;
+// Use 3 frames in flight for better buffering
+s->max_frames_in_flight = 3;
 s->current_frame = 0;
+
+// Create per-frame command pools
+s->command_pools = (VkCommandPool*)malloc(sizeof(VkCommandPool) * s->max_frames_in_flight);
+for (uint32_t i = 0; i < s->max_frames_in_flight; ++i) {
+    VkCommandPoolCreateInfo cp = { .sType = VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO };
+    cp.queueFamilyIndex = s->graphics_queue_family;
+    cp.flags = VK_COMMAND_POOL_CREATE_TRANSIENT_BIT | VK_COMMAND_POOL_CREATE_RESET_COMMAND_BUFFER_BIT;
+    if (vkCreateCommandPool(s->device, &cp, NULL, &s->command_pools[i]) != VK_SUCCESS) return false;
+}
+
+// Allocate command buffers per frame in flight, not per swapchain image
+s->command_buffers = (VkCommandBuffer*)malloc(sizeof(VkCommandBuffer)*s->max_frames_in_flight);
+for (uint32_t i = 0; i < s->max_frames_in_flight; ++i) {
+    VkCommandBufferAllocateInfo ai = { .sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO };
+    ai.commandPool = s->command_pools[i];
+    ai.level = VK_COMMAND_BUFFER_LEVEL_PRIMARY;
+    ai.commandBufferCount = 1;
+    if (vkAllocateCommandBuffers(s->device, &ai, &s->command_buffers[i]) != VK_SUCCESS) return false;
+}
+
 s->image_available_semaphores = (VkSemaphore*)calloc(s->max_frames_in_flight, sizeof(VkSemaphore));
 s->render_finished_semaphores = (VkSemaphore*)calloc(s->max_frames_in_flight, sizeof(VkSemaphore));
 s->in_flight_fences = (VkFence*)calloc(s->max_frames_in_flight, sizeof(VkFence));
+
+// Allocate images_in_flight array based on swapchain image count
+CARDINAL_LOG_INFO("[INIT] Allocating images_in_flight for %u swapchain images", s->swapchain_image_count);
 s->images_in_flight = (VkFence*)calloc(s->swapchain_image_count, sizeof(VkFence));
 for (uint32_t i = 0; i < s->swapchain_image_count; ++i) s->images_in_flight[i] = VK_NULL_HANDLE;
 
 VkSemaphoreCreateInfo si = { .sType = VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO };
 VkFenceCreateInfo fi = { .sType = VK_STRUCTURE_TYPE_FENCE_CREATE_INFO, .flags = VK_FENCE_CREATE_SIGNALED_BIT };
+CARDINAL_LOG_INFO("[INIT] Creating sync objects for %u frames in flight", s->max_frames_in_flight);
 for (uint32_t i = 0; i < s->max_frames_in_flight; ++i) {
-    vkCreateSemaphore(s->device, &si, NULL, &s->image_available_semaphores[i]);
-    vkCreateSemaphore(s->device, &si, NULL, &s->render_finished_semaphores[i]);
-    vkCreateFence(s->device, &fi, NULL, &s->in_flight_fences[i]);
+    VkResult sem1_result = vkCreateSemaphore(s->device, &si, NULL, &s->image_available_semaphores[i]);
+    VkResult sem2_result = vkCreateSemaphore(s->device, &si, NULL, &s->render_finished_semaphores[i]);
+    VkResult fence_result = vkCreateFence(s->device, &fi, NULL, &s->in_flight_fences[i]);
+    CARDINAL_LOG_INFO("[INIT] Frame %u: image_sem=%p (result=%d), render_sem=%p (result=%d), fence=%p (result=%d, signaled)", 
+                      i, (void*)s->image_available_semaphores[i], sem1_result, 
+                      (void*)s->render_finished_semaphores[i], sem2_result,
+                      (void*)s->in_flight_fences[i], fence_result);
 }
 
 return true;
+}
+
+bool vk_recreate_images_in_flight(VulkanState* s) {
+    if (!s) return false;
+    
+    // Free old array
+    free(s->images_in_flight);
+    
+    // Allocate new array based on current swapchain image count
+    CARDINAL_LOG_INFO("[INIT] Recreating images_in_flight for %u swapchain images", s->swapchain_image_count);
+    s->images_in_flight = (VkFence*)calloc(s->swapchain_image_count, sizeof(VkFence));
+    if (!s->images_in_flight) {
+        CARDINAL_LOG_ERROR("[INIT] Failed to allocate images_in_flight array");
+        return false;
+    }
+    
+    for (uint32_t i = 0; i < s->swapchain_image_count; ++i) {
+        s->images_in_flight[i] = VK_NULL_HANDLE;
+    }
+    
+    return true;
 }
 
 void vk_destroy_commands_sync(VulkanState* s) {
@@ -52,19 +91,38 @@ if (s->image_available_semaphores) {
     free(s->image_available_semaphores); s->image_available_semaphores = NULL;
 }
 free(s->images_in_flight); s->images_in_flight = NULL;
-if (s->command_pool) vkDestroyCommandPool(s->device, s->command_pool, NULL);
-free(s->command_buffers); s->command_buffers = NULL;
+if (s->command_buffers) { free(s->command_buffers); s->command_buffers = NULL; }
+if (s->command_pools) {
+    for (uint32_t i = 0; i < s->max_frames_in_flight; ++i) if (s->command_pools[i]) vkDestroyCommandPool(s->device, s->command_pools[i], NULL);
+    free(s->command_pools); s->command_pools = NULL;
+}
 }
 
 void vk_record_cmd(VulkanState* s, uint32_t image_index) {
-VkCommandBuffer cmd = s->command_buffers[image_index];
+VkCommandBuffer cmd = s->command_buffers[s->current_frame];  // Use current frame, not image index
 
-// Reset the command buffer before recording
-vkResetCommandBuffer(cmd, 0);
+CARDINAL_LOG_INFO("[CMD] Frame %u: Recording command buffer %p for image %u", s->current_frame, (void*)cmd, image_index);
+
+// Reset the command buffer - safe because we waited for the fence
+CARDINAL_LOG_INFO("[CMD] Frame %u: Resetting command buffer %p", s->current_frame, (void*)cmd);
+VkResult reset_result = vkResetCommandBuffer(cmd, 0);
+CARDINAL_LOG_INFO("[CMD] Frame %u: Reset result: %d", s->current_frame, reset_result);
+
+if (reset_result != VK_SUCCESS) {
+    CARDINAL_LOG_ERROR("[CMD] Frame %u: Failed to reset command buffer: %d", s->current_frame, reset_result);
+    return;
+}
 
 VkCommandBufferBeginInfo bi = { .sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO };
-bi.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT; // Add proper usage flags
-vkBeginCommandBuffer(cmd, &bi);
+bi.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
+CARDINAL_LOG_INFO("[CMD] Frame %u: Beginning command buffer %p with flags %u", s->current_frame, (void*)cmd, bi.flags);
+VkResult begin_result = vkBeginCommandBuffer(cmd, &bi);
+CARDINAL_LOG_INFO("[CMD] Frame %u: Begin result: %d", s->current_frame, begin_result);
+
+if (begin_result != VK_SUCCESS) {
+    CARDINAL_LOG_ERROR("[CMD] Frame %u: Failed to begin command buffer: %d", s->current_frame, begin_result);
+    return;
+}
 
 VkClearValue clear; clear.color.float32[0]=0.05f; clear.color.float32[1]=0.05f; clear.color.float32[2]=0.08f; clear.color.float32[3]=1.0f;
 
@@ -77,21 +135,28 @@ rp.pClearValues = &clear;
 
 vkCmdBeginRenderPass(cmd, &rp, VK_SUBPASS_CONTENTS_INLINE);
 
-// Basic scene draw if available
-if (s->pipeline) {
+// Set dynamic viewport and scissor to match swapchain extent
+VkViewport vp = {0};
+vp.x = 0;
+vp.y = 0;
+vp.width = (float)s->swapchain_extent.width;
+vp.height = (float)s->swapchain_extent.height;
+vp.minDepth = 0.0f;
+vp.maxDepth = 1.0f;
+vkCmdSetViewport(cmd, 0, 1, &vp);
+
+VkRect2D sc = {0};
+sc.offset.x = 0;
+sc.offset.y = 0;
+sc.extent = s->swapchain_extent;
+vkCmdSetScissor(cmd, 0, 1, &sc);
+
+// Draw PBR scene if enabled, otherwise use simple pipeline
+if (s->use_pbr_pipeline && s->pbr_pipeline.initialized && s->current_scene) {
+    vk_pbr_render(&s->pbr_pipeline, cmd, s->current_scene);
+} else if (s->pipeline) {
     vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, s->pipeline);
-    for (uint32_t i = 0; i < s->scene_mesh_count; ++i) {
-        GpuMesh* m = &s->scene_meshes[i];
-        if (!m->vbuf || m->vtx_count == 0) continue;
-        VkDeviceSize offsets = 0;
-        vkCmdBindVertexBuffers(cmd, 0, 1, &m->vbuf, &offsets);
-        if (m->ibuf && m->idx_count > 0) {
-            vkCmdBindIndexBuffer(cmd, m->ibuf, 0, VK_INDEX_TYPE_UINT32);
-            vkCmdDrawIndexed(cmd, m->idx_count, 1, 0, 0, 0);
-        } else {
-            vkCmdDraw(cmd, m->vtx_count, 1, 0, 0);
-        }
-    }
+    vkCmdDraw(cmd, 3, 1, 0, 0);
 }
 
 // Allow optional UI callback to record draw calls (e.g., ImGui)
@@ -101,5 +166,12 @@ if (s->ui_record_callback) {
 
 vkCmdEndRenderPass(cmd);
 
-vkEndCommandBuffer(cmd);
+CARDINAL_LOG_INFO("[CMD] Frame %u: Ending command buffer %p", s->current_frame, (void*)cmd);
+VkResult end_result = vkEndCommandBuffer(cmd);
+CARDINAL_LOG_INFO("[CMD] Frame %u: End result: %d", s->current_frame, end_result);
+
+if (end_result != VK_SUCCESS) {
+    CARDINAL_LOG_ERROR("[CMD] Frame %u: Failed to end command buffer: %d", s->current_frame, end_result);
+    return;
+}
 }

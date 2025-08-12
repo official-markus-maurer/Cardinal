@@ -4,6 +4,7 @@
 #include <stdlib.h>
 
 static FILE* s_log_file = NULL;
+static CardinalLogLevel s_min_log_level = CARDINAL_LOG_LEVEL_WARN; // Default to WARN to reduce spam
 
 static const char* level_str(CardinalLogLevel level) {
     switch (level) {
@@ -18,19 +19,54 @@ static const char* level_str(CardinalLogLevel level) {
 }
 
 void cardinal_log_init(void) {
+    cardinal_log_init_with_level(s_min_log_level);
+}
+
+void cardinal_log_init_with_level(CardinalLogLevel min_level) {
+    s_min_log_level = min_level;
+    
 #ifdef _DEBUG
-    s_log_file = fopen("cardinal_log.txt", "w");
-    if (!s_log_file) {
-        s_log_file = fopen("cardinal_log.txt", "a");
+    errno_t err = fopen_s(&s_log_file, "cardinal_log.txt", "w");
+    if (err != 0 || !s_log_file) {
+        err = fopen_s(&s_log_file, "cardinal_log.txt", "a");
     }
     if (s_log_file) {
-        fprintf(s_log_file, "==== Cardinal Log Start ====%s", "\n");
+        fprintf(s_log_file, "==== Cardinal Log Start (Level: %s) ====%s", level_str(min_level), "\n");
         fflush(s_log_file);
     }
 #else
     // In release builds, we still create the log file to capture WARN/ERROR/FATAL if desired
     s_log_file = fopen("cardinal_log.txt", "a");
+    if (s_log_file) {
+        fprintf(s_log_file, "==== Cardinal Log Start (Level: %s) ====%s", level_str(min_level), "\n");
+        fflush(s_log_file);
+    }
 #endif
+}
+
+void cardinal_log_set_level(CardinalLogLevel min_level) {
+    s_min_log_level = min_level;
+    if (s_log_file) {
+        fprintf(s_log_file, "[LOG] Log level changed to: %s\n", level_str(min_level));
+        fflush(s_log_file);
+    }
+}
+
+CardinalLogLevel cardinal_log_get_level(void) {
+    return s_min_log_level;
+}
+
+CardinalLogLevel cardinal_log_parse_level(const char* level_str_input) {
+    if (!level_str_input) return CARDINAL_LOG_LEVEL_INFO;
+    
+    if (strcmp(level_str_input, "TRACE") == 0 || strcmp(level_str_input, "trace") == 0) return CARDINAL_LOG_LEVEL_TRACE;
+    if (strcmp(level_str_input, "DEBUG") == 0 || strcmp(level_str_input, "debug") == 0) return CARDINAL_LOG_LEVEL_DEBUG;
+    if (strcmp(level_str_input, "INFO") == 0 || strcmp(level_str_input, "info") == 0) return CARDINAL_LOG_LEVEL_INFO;
+    if (strcmp(level_str_input, "WARN") == 0 || strcmp(level_str_input, "warn") == 0) return CARDINAL_LOG_LEVEL_WARN;
+    if (strcmp(level_str_input, "ERROR") == 0 || strcmp(level_str_input, "error") == 0) return CARDINAL_LOG_LEVEL_ERROR;
+    if (strcmp(level_str_input, "FATAL") == 0 || strcmp(level_str_input, "fatal") == 0) return CARDINAL_LOG_LEVEL_FATAL;
+    
+    return CARDINAL_LOG_LEVEL_INFO; // Default fallback
 }
 
 void cardinal_log_shutdown(void) {
@@ -42,6 +78,11 @@ void cardinal_log_shutdown(void) {
 }
 
 void cardinal_log_output(CardinalLogLevel level, const char* file, int line, const char* fmt, ...) {
+    // Filter based on minimum log level
+    if (level < s_min_log_level) {
+        return;
+    }
+    
     char timebuf[64];
     time_t t = time(NULL);
     struct tm tm_info;

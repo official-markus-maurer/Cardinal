@@ -31,6 +31,24 @@ static CardinalScene g_scene; // zero-initialized on start
 static char g_scene_path[512] = "";
 static char g_status_msg[256] = "";
 
+// PBR settings
+static bool g_pbr_enabled = false;
+static CardinalCamera g_camera = {
+    .position = {0.0f, 0.0f, 5.0f},
+    .target = {0.0f, 0.0f, 0.0f},
+    .up = {0.0f, 1.0f, 0.0f},
+    .fov = 45.0f,
+    .aspect = 16.0f / 9.0f,
+    .near_plane = 0.1f,
+    .far_plane = 100.0f
+};
+static CardinalLight g_light = {
+    .direction = {-0.5f, -1.0f, -0.3f},
+    .color = {1.0f, 1.0f, 1.0f},
+    .intensity = 3.0f,
+    .ambient = {0.1f, 0.1f, 0.1f}
+};
+
 // Asset browser state
 static char g_assets_dir[512] = "assets";
 struct AssetEntry {
@@ -108,7 +126,8 @@ bool editor_layer_init(CardinalWindow* window, CardinalRenderer* renderer) {
     ImGuiIO& io = ImGui::GetIO();
     io.ConfigFlags |= ImGuiConfigFlags_NavEnableKeyboard;
     io.ConfigFlags |= ImGuiConfigFlags_DockingEnable;
-    io.ConfigFlags |= ImGuiConfigFlags_ViewportsEnable;
+    // Disable multi-viewport for now to avoid Vulkan sync conflicts
+    // io.ConfigFlags |= ImGuiConfigFlags_ViewportsEnable;
 
     setup_imgui_style();
     if (io.ConfigFlags & ImGuiConfigFlags_ViewportsEnable) {
@@ -257,6 +276,65 @@ static void draw_asset_browser_panel() {
     ImGui::End();
 }
 
+static void draw_pbr_settings_panel() {
+    if (ImGui::Begin("PBR Settings")) {
+        // PBR Enable/Disable
+        if (ImGui::Checkbox("Enable PBR Rendering", &g_pbr_enabled)) {
+            if (g_renderer) {
+                cardinal_renderer_enable_pbr(g_renderer, g_pbr_enabled);
+                if (g_pbr_enabled) {
+                    // Update camera and lighting when enabling PBR
+                    cardinal_renderer_set_camera(g_renderer, &g_camera);
+                    cardinal_renderer_set_lighting(g_renderer, &g_light);
+                }
+            }
+        }
+        
+        ImGui::Separator();
+        
+        // Camera Settings
+        if (ImGui::CollapsingHeader("Camera", ImGuiTreeNodeFlags_DefaultOpen)) {
+            bool camera_changed = false;
+            
+            camera_changed |= ImGui::SliderFloat3("Position", g_camera.position, -10.0f, 10.0f);
+            camera_changed |= ImGui::SliderFloat3("Target", g_camera.target, -10.0f, 10.0f);
+            camera_changed |= ImGui::SliderFloat("FOV", &g_camera.fov, 10.0f, 120.0f);
+            camera_changed |= ImGui::SliderFloat("Aspect Ratio", &g_camera.aspect, 0.5f, 3.0f);
+            camera_changed |= ImGui::SliderFloat("Near Plane", &g_camera.near_plane, 0.01f, 1.0f);
+            camera_changed |= ImGui::SliderFloat("Far Plane", &g_camera.far_plane, 10.0f, 1000.0f);
+            
+            if (camera_changed && g_pbr_enabled && g_renderer) {
+                cardinal_renderer_set_camera(g_renderer, &g_camera);
+            }
+        }
+        
+        ImGui::Separator();
+        
+        // Lighting Settings
+        if (ImGui::CollapsingHeader("Lighting", ImGuiTreeNodeFlags_DefaultOpen)) {
+            bool light_changed = false;
+            
+            light_changed |= ImGui::SliderFloat3("Direction", g_light.direction, -1.0f, 1.0f);
+            light_changed |= ImGui::ColorEdit3("Color", g_light.color);
+            light_changed |= ImGui::SliderFloat("Intensity", &g_light.intensity, 0.0f, 10.0f);
+            light_changed |= ImGui::ColorEdit3("Ambient", g_light.ambient);
+            
+            if (light_changed && g_pbr_enabled && g_renderer) {
+                cardinal_renderer_set_lighting(g_renderer, &g_light);
+            }
+        }
+        
+        ImGui::Separator();
+        
+        // Status
+        if (g_renderer) {
+            bool is_pbr_active = cardinal_renderer_is_pbr_enabled(g_renderer);
+            ImGui::Text("PBR Status: %s", is_pbr_active ? "Active" : "Inactive");
+        }
+    }
+    ImGui::End();
+}
+
 static void imgui_record(VkCommandBuffer cmd) {
     ImDrawData* dd = ImGui::GetDrawData();
     ImGui_ImplVulkan_RenderDrawData(dd, cmd);
@@ -295,6 +373,7 @@ void editor_layer_render(void) {
         if (ImGui::BeginMenu("View")) {
             ImGui::MenuItem("Scene Graph", nullptr, true, true);
             ImGui::MenuItem("Assets", nullptr, true, true);
+            ImGui::MenuItem("PBR Settings", nullptr, true, true);
             ImGui::EndMenu();
         }
         ImGui::EndMenuBar();
@@ -302,15 +381,18 @@ void editor_layer_render(void) {
 
     draw_scene_graph_panel();
     draw_asset_browser_panel();
+    draw_pbr_settings_panel();
 
     ImGui::End();
 
-    ImGui::Render();
-
+    // Set up UI callback before render to ensure proper command recording
     cardinal_renderer_set_ui_callback(g_renderer, imgui_record);
 
+    ImGui::Render();
+
+    // Only render platform windows if multi-viewport is enabled
     ImGuiIO& io = ImGui::GetIO();
-    if (io.ConfigFlags & ImGuiConfigFlags_ViewportsEnable) {
+    if ((io.ConfigFlags & ImGuiConfigFlags_ViewportsEnable) != 0) {
         ImGui::UpdatePlatformWindows();
         ImGui::RenderPlatformWindowsDefault();
     }
@@ -319,6 +401,8 @@ void editor_layer_render(void) {
 void editor_layer_shutdown(void) {
     if (g_renderer) {
         cardinal_renderer_set_ui_callback(g_renderer, NULL);
+        // Wait for device idle before cleanup to avoid destroying resources in use
+        cardinal_renderer_wait_idle(g_renderer);
     }
     if (g_scene_loaded) {
         cardinal_scene_destroy(&g_scene);

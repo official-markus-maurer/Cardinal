@@ -3,6 +3,8 @@
 #include <vulkan/vulkan.h>
 #include "vulkan_state.h"
 #include "vulkan_swapchain.h"
+#include "vulkan_pipeline.h"
+#include "vulkan_commands.h"
 
 static VkSurfaceFormatKHR choose_surface_format(const VkSurfaceFormatKHR* formats, uint32_t count) {
     for (uint32_t i=0;i<count;i++) {
@@ -47,7 +49,15 @@ bool vk_create_swapchain(VulkanState* s) {
     sci.imageExtent = extent;
     sci.imageArrayLayers = 1;
     sci.imageUsage = VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT;
-    sci.imageSharingMode = VK_SHARING_MODE_EXCLUSIVE;
+    // Handle queue sharing when graphics and present families differ
+    if (s->graphics_queue_family != s->present_queue_family) {
+        uint32_t queue_families[] = { s->graphics_queue_family, s->present_queue_family };
+        sci.imageSharingMode = VK_SHARING_MODE_CONCURRENT;
+        sci.queueFamilyIndexCount = 2;
+        sci.pQueueFamilyIndices = queue_families;
+    } else {
+        sci.imageSharingMode = VK_SHARING_MODE_EXCLUSIVE;
+    }
     sci.preTransform = caps.currentTransform;
     sci.compositeAlpha = VK_COMPOSITE_ALPHA_OPAQUE_BIT_KHR;
     sci.presentMode = present_mode;
@@ -90,4 +100,32 @@ void vk_destroy_swapchain(VulkanState* s) {
     free(s->swapchain_images); s->swapchain_images = NULL;
     if (s->swapchain) vkDestroySwapchainKHR(s->device, s->swapchain, NULL);
     s->swapchain = VK_NULL_HANDLE;
+}
+
+bool vk_recreate_swapchain(VulkanState* s) {
+    if (!s) return false;
+    
+    // Wait for device to be idle before recreating
+    vkDeviceWaitIdle(s->device);
+    
+    // Destroy old pipeline and swapchain resources
+    vk_destroy_renderpass_pipeline(s);
+    vk_destroy_swapchain(s);
+    
+    // Recreate swapchain
+    if (!vk_create_swapchain(s)) {
+        return false;
+    }
+    
+    // Recreate images_in_flight array for new swapchain image count
+    if (!vk_recreate_images_in_flight(s)) {
+        return false;
+    }
+    
+    // Recreate pipeline with new dimensions
+    if (!vk_create_renderpass_pipeline(s)) {
+        return false;
+    }
+    
+    return true;
 }

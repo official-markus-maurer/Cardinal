@@ -4,6 +4,7 @@
 #include <stdint.h>
 #include <GLFW/glfw3.h>
 #include <vulkan/vulkan.h>
+#include <cardinal/renderer/vulkan_pbr.h>
 
 // Forward declarations
 struct CardinalWindow;
@@ -29,6 +30,9 @@ typedef struct VulkanState {
     VkDevice device;
     uint32_t graphics_queue_family;
     VkQueue graphics_queue;
+    // Present queue (may be same as graphics)
+    uint32_t present_queue_family;
+    VkQueue present_queue;
     
     // Surface and swapchain
     VkSurfaceKHR surface;
@@ -46,7 +50,7 @@ typedef struct VulkanState {
     VkFramebuffer* framebuffers;
     
     // Commands and synchronization
-    VkCommandPool command_pool;
+    VkCommandPool* command_pools;         // [max_frames_in_flight] 
     VkCommandBuffer* command_buffers;
 
     // Frames-in-flight synchronization
@@ -63,6 +67,13 @@ typedef struct VulkanState {
     // Loaded scene GPU buffers
     GpuMesh* scene_meshes;
     uint32_t scene_mesh_count;
+    
+    // Current scene data for PBR rendering
+    const CardinalScene* current_scene;
+    
+    // PBR pipeline
+    VulkanPBRPipeline pbr_pipeline;
+    bool use_pbr_pipeline;
 } VulkanState;
 
 #endif // VULKAN_STATE_H

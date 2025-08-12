@@ -1,15 +1,21 @@
 {
     "cSpell.words": [
+        "cgltf",
+        "Dockable",
         "fmts",
         "glfw",
         "gltf",
         "IMGUI",
         "MSAA",
+        "MSVC",
         "Multisample",
+        "multisampling",
         "renderpass",
         "rpci",
         "Subpasses",
         "swapchain",
-        "VKAPI"
+        "VKAPI",
+        "Wextra",
+        "Wpedantic"
     ]
 }
