@@ -306,7 +306,12 @@ void cardinal_renderer_enable_pbr(CardinalRenderer* renderer, bool enable) {
         // Wait for all GPU operations to complete before creating new resources
         vkDeviceWaitIdle(s->device);
         
-        // Try to create PBR pipeline if it doesn't exist
+        // Destroy existing PBR pipeline if it exists (in case of re-enabling)
+        if (s->pbr_pipeline.initialized) {
+            vk_pbr_pipeline_destroy(&s->pbr_pipeline, s->device);
+        }
+        
+        // Try to create PBR pipeline
         if (vk_pbr_pipeline_create(&s->pbr_pipeline, s->device, s->physical_device,
                                   s->render_pass, s->command_pools[0], s->graphics_queue)) {
             s->use_pbr_pipeline = true;
@@ -415,7 +420,7 @@ void cardinal_renderer_upload_scene(CardinalRenderer* renderer, const CardinalSc
         dst->vtx_count = 0;
         dst->idx_count = 0;
         
-        dst->vtx_stride = sizeof(float)*8;
+        dst->vtx_stride = sizeof(CardinalVertex);
         VkDeviceSize vsize = (VkDeviceSize)src->vertex_count * dst->vtx_stride;
         VkDeviceSize isize = (VkDeviceSize)src->index_count * sizeof(uint32_t);
 

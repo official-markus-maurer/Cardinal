@@ -562,6 +562,34 @@ bool vk_pbr_pipeline_create(VulkanPBRPipeline* pipeline, VkDevice device, VkPhys
         return false;
     }
     
+    // Initialize default material properties
+    PBRMaterialProperties defaultMaterial = {0};
+    defaultMaterial.albedoFactor[0] = 0.8f;  // Light gray
+    defaultMaterial.albedoFactor[1] = 0.8f;
+    defaultMaterial.albedoFactor[2] = 0.8f;
+    defaultMaterial.metallicFactor = 0.0f;
+    defaultMaterial.roughnessFactor = 0.5f;
+    defaultMaterial.emissiveFactor[0] = 0.0f;
+    defaultMaterial.emissiveFactor[1] = 0.0f;
+    defaultMaterial.emissiveFactor[2] = 0.0f;
+    defaultMaterial.normalScale = 1.0f;
+    defaultMaterial.aoStrength = 1.0f;
+    memcpy(pipeline->materialBufferMapped, &defaultMaterial, sizeof(PBRMaterialProperties));
+    
+    // Initialize default lighting
+    PBRLightingData defaultLighting = {0};
+    defaultLighting.lightDirection[0] = -0.5f;
+    defaultLighting.lightDirection[1] = -1.0f;
+    defaultLighting.lightDirection[2] = -0.3f;
+    defaultLighting.lightColor[0] = 1.0f;
+    defaultLighting.lightColor[1] = 1.0f;
+    defaultLighting.lightColor[2] = 1.0f;
+    defaultLighting.lightIntensity = 3.0f;
+    defaultLighting.ambientColor[0] = 0.1f;
+    defaultLighting.ambientColor[1] = 0.1f;
+    defaultLighting.ambientColor[2] = 0.1f;
+    memcpy(pipeline->lightingBufferMapped, &defaultLighting, sizeof(PBRLightingData));
+    
     pipeline->initialized = true;
     CARDINAL_LOG_INFO("PBR pipeline created successfully");
     return true;
@@ -613,13 +641,17 @@ void vk_pbr_pipeline_destroy(VulkanPBRPipeline* pipeline, VkDevice device) {
         vkFreeMemory(device, pipeline->lightingBufferMemory, NULL);
     }
     
-    // Destroy descriptor pool and sets
-    if (pipeline->descriptorPool != VK_NULL_HANDLE) {
-        vkDestroyDescriptorPool(device, pipeline->descriptorPool, NULL);
+    // Free descriptor sets explicitly before destroying pool
+    if (pipeline->descriptorSets && pipeline->descriptorPool != VK_NULL_HANDLE) {
+        vkFreeDescriptorSets(device, pipeline->descriptorPool, pipeline->descriptorSetCount, pipeline->descriptorSets);
+        free(pipeline->descriptorSets);
+        pipeline->descriptorSets = NULL;
     }
     
-    if (pipeline->descriptorSets) {
-        free(pipeline->descriptorSets);
+    // Destroy descriptor pool
+    if (pipeline->descriptorPool != VK_NULL_HANDLE) {
+        vkDestroyDescriptorPool(device, pipeline->descriptorPool, NULL);
+        pipeline->descriptorPool = VK_NULL_HANDLE;
     }
     
     // Destroy pipeline and layout
@@ -816,6 +848,7 @@ bool vk_pbr_load_scene(VulkanPBRPipeline* pipeline, VkDevice device, VkPhysicalD
     
     VkDescriptorPoolCreateInfo poolInfo = {0};
     poolInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO;
+    poolInfo.flags = VK_DESCRIPTOR_POOL_CREATE_FREE_DESCRIPTOR_SET_BIT;
     poolInfo.poolSizeCount = 3;
     poolInfo.pPoolSizes = poolSizes;
     poolInfo.maxSets = 1; // One descriptor set for now
