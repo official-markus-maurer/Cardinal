@@ -3,6 +3,10 @@
 #include <assert.h>
 #include <GLFW/glfw3.h>
 #include <stdio.h>
+#ifdef _WIN32
+#define GLFW_EXPOSE_NATIVE_WIN32
+#include <GLFW/glfw3native.h>
+#endif
 
 #include "cardinal/core/window.h"
 #include "cardinal/core/log.h"
@@ -134,5 +138,14 @@ void cardinal_window_destroy(CardinalWindow* window) {
     }
     glfwTerminate();
     free(window);
+}
+
+void* cardinal_window_get_native_handle(const CardinalWindow* window) {
+    if (!window || !window->handle) return NULL;
+#ifdef _WIN32
+    return (void*)glfwGetWin32Window(window->handle);
+#else
+    return NULL;
+#endif
 }
 

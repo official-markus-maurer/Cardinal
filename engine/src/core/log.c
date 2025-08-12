@@ -1,14 +1,4 @@
 #include "cardinal/core/log.h"
-#include <time.h>
-#include <string.h>
-#include <stdlib.h>
-
-static FILE* s_log_file = NULL;
-static CardinalLogLevel s_min_log_level = CARDINAL_LOG_LEVEL_WARN; // Default to WARN to reduce spam
-
-// TODO: Don't have this optional, spdlog should be our main logging system.
-// Optional spdlog integration when compiled as C++ (editor app links C++)
-#ifdef __cplusplus
 #include <memory>
 #include <mutex>
 #include <vector>
@@ -17,9 +7,14 @@ static CardinalLogLevel s_min_log_level = CARDINAL_LOG_LEVEL_WARN; // Default to
 #include <spdlog/sinks/stdout_color_sinks.h>
 #include <spdlog/sinks/basic_file_sink.h>
 
+static CardinalLogLevel s_min_log_level = CARDINAL_LOG_LEVEL_WARN; // Default to WARN to reduce spam
 static std::shared_ptr<spdlog::logger> s_logger;
 static std::once_flag s_spdlog_init_flag;
 
+/**
+ * @brief Initializes the spdlog logger with console and file sinks.
+ * @param level Initial log level to set.
+ */
 static void ensure_spdlog_logger(CardinalLogLevel level) {
     std::call_once(s_spdlog_init_flag, [level]() {
         try {
@@ -28,7 +23,8 @@ static void ensure_spdlog_logger(CardinalLogLevel level) {
             std::vector<spdlog::sink_ptr> sinks { console_sink, file_sink };
             s_logger = std::make_shared<spdlog::logger>("cardinal", sinks.begin(), sinks.end());
             spdlog::register_logger(s_logger);
-            // Map level
+            
+            // Map Cardinal log level to spdlog level
             spdlog::level::level_enum lvl = spdlog::level::info;
             switch (level) {
                 case CARDINAL_LOG_LEVEL_TRACE: lvl = spdlog::level::trace; break;
@@ -42,12 +38,13 @@ static void ensure_spdlog_logger(CardinalLogLevel level) {
             s_logger->flush_on(spdlog::level::warn);
             spdlog::set_default_logger(s_logger);
             spdlog::set_pattern("[%Y-%m-%d %H:%M:%S] [%^%l%$] %v");
-        } catch (...) {
-            // If spdlog init fails, fallback to C file/console implementation
+        } catch (const std::exception& e) {
+            // If spdlog initialization fails, we can't log the error through spdlog
+            // Fall back to basic console output
+            fprintf(stderr, "Failed to initialize spdlog: %s\n", e.what());
         }
     });
 }
-#endif
 
 /**
  * @brief Returns string representation of log level.
@@ -62,13 +59,11 @@ static const char* level_str(CardinalLogLevel level) {
         case CARDINAL_LOG_LEVEL_WARN:  return "WARN";
         case CARDINAL_LOG_LEVEL_ERROR: return "ERROR";
         case CARDINAL_LOG_LEVEL_FATAL: return "FATAL";
-        default: return "?";
+        default: return "UNKNOWN";
     }
 }
 
-#ifdef __cplusplus
 extern "C" {
-#endif
 
 /**
  * @brief Initializes the logging system with default level.
@@ -85,32 +80,11 @@ void cardinal_log_init(void) {
  */
 void cardinal_log_init_with_level(CardinalLogLevel min_level) {
     s_min_log_level = min_level;
-    
-#ifdef __cplusplus
     ensure_spdlog_logger(min_level);
+    
     if (s_logger) {
         s_logger->info("==== Cardinal Log Start (Level: {}) ====", level_str(min_level));
-        return;
     }
-#endif
-    
-#ifdef _DEBUG
-    errno_t err = fopen_s(&s_log_file, "cardinal_log.txt", "w");
-    if (err != 0 || !s_log_file) {
-        err = fopen_s(&s_log_file, "cardinal_log.txt", "a");
-    }
-    if (s_log_file) {
-        fprintf(s_log_file, "==== Cardinal Log Start (Level: %s) ====%s", level_str(min_level), "\n");
-        fflush(s_log_file);
-    }
-#else
-    // In release builds, we still create the log file to capture WARN/ERROR/FATAL if desired
-    s_log_file = fopen("cardinal_log.txt", "a");
-    if (s_log_file) {
-        fprintf(s_log_file, "==== Cardinal Log Start (Level: %s) ====%s", level_str(min_level), "\n");
-        fflush(s_log_file);
-    }
-#endif
 }
 
 /**
@@ -119,7 +93,7 @@ void cardinal_log_init_with_level(CardinalLogLevel min_level) {
  */
 void cardinal_log_set_level(CardinalLogLevel min_level) {
     s_min_log_level = min_level;
-#ifdef __cplusplus
+    
     if (s_logger) {
         spdlog::level::level_enum lvl = spdlog::level::info;
         switch (min_level) {
@@ -132,12 +106,6 @@ void cardinal_log_set_level(CardinalLogLevel min_level) {
         }
         s_logger->set_level(lvl);
         s_logger->info("[LOG] Log level changed to: {}", level_str(min_level));
-        return;
-    }
-#endif
-    if (s_log_file) {
-        fprintf(s_log_file, "[LOG] Log level changed to: %s\n", level_str(min_level));
-        fflush(s_log_file);
     }
 }
 
@@ -173,17 +141,12 @@ CardinalLogLevel cardinal_log_parse_level(const char* level_str_input) {
  * @todo Ensure thread-safety for multi-threaded environments.
  */
 void cardinal_log_shutdown(void) {
-#ifdef __cplusplus
     if (s_logger) {
         s_logger->info("==== Cardinal Log End ====");
+        s_logger->flush();
         s_logger.reset();
     }
-#endif
-    if (s_log_file) {
-        fprintf(s_log_file, "==== Cardinal Log End ====%s", "\n");
-        fclose(s_log_file);
-        s_log_file = NULL;
-    }
+    spdlog::shutdown();
 }
 
 /**
@@ -200,66 +163,37 @@ void cardinal_log_output(CardinalLogLevel level, const char* file, int line, con
         return;
     }
 
-#ifdef __cplusplus
-    if (s_logger) {
-        // Build formatted message using vsnprintf into buffer
-        char msgbuf[1024];
-        va_list args;
-        va_start(args, fmt);
-        vsnprintf(msgbuf, sizeof(msgbuf), fmt, args);
-        va_end(args);
-        switch (level) {
-            case CARDINAL_LOG_LEVEL_TRACE: s_logger->trace("{}:{}: {}", file, line, msgbuf); break;
-            case CARDINAL_LOG_LEVEL_DEBUG: s_logger->debug("{}:{}: {}", file, line, msgbuf); break;
-            case CARDINAL_LOG_LEVEL_INFO:  s_logger->info ("{}:{}: {}", file, line, msgbuf); break;
-            case CARDINAL_LOG_LEVEL_WARN:  s_logger->warn ("{}:{}: {}", file, line, msgbuf); break;
-            case CARDINAL_LOG_LEVEL_ERROR: s_logger->error("{}:{}: {}", file, line, msgbuf); break;
-            case CARDINAL_LOG_LEVEL_FATAL: s_logger->critical("{}:{}: {}", file, line, msgbuf); break;
+    if (!s_logger) {
+        // If logger is not initialized, try to initialize it
+        ensure_spdlog_logger(s_min_log_level);
+        if (!s_logger) {
+            return; // Still failed, can't log
         }
-        if (level == CARDINAL_LOG_LEVEL_FATAL) {
-#ifdef _DEBUG
-            abort();
-#endif
-        }
-        return;
     }
-#endif
-    
-    char timebuf[64];
-    time_t t = time(NULL);
-    struct tm tm_info;
-#if defined(_WIN32)
-    localtime_s(&tm_info, &t);
-#else
-    localtime_r(&t, &tm_info);
-#endif
-    strftime(timebuf, sizeof(timebuf), "%Y-%m-%d %H:%M:%S", &tm_info);
 
+    // Build formatted message using vsnprintf into buffer
     char msgbuf[1024];
     va_list args;
     va_start(args, fmt);
     vsnprintf(msgbuf, sizeof(msgbuf), fmt, args);
     va_end(args);
 
-    // Console output
-    FILE* out = (level >= CARDINAL_LOG_LEVEL_WARN) ? stderr : stdout;
-    fprintf(out, "[%s] %-5s %s:%d: %s\n", timebuf, level_str(level), file, line, msgbuf);
-
-    // File output
-    if (s_log_file) {
-        fprintf(s_log_file, "[%s] %-5s %s:%d: %s\n", timebuf, level_str(level), file, line, msgbuf);
-        fflush(s_log_file);
+    // Log through spdlog
+    switch (level) {
+        case CARDINAL_LOG_LEVEL_TRACE: s_logger->trace("{}:{}: {}", file, line, msgbuf); break;
+        case CARDINAL_LOG_LEVEL_DEBUG: s_logger->debug("{}:{}: {}", file, line, msgbuf); break;
+        case CARDINAL_LOG_LEVEL_INFO:  s_logger->info ("{}:{}: {}", file, line, msgbuf); break;
+        case CARDINAL_LOG_LEVEL_WARN:  s_logger->warn ("{}:{}: {}", file, line, msgbuf); break;
+        case CARDINAL_LOG_LEVEL_ERROR: s_logger->error("{}:{}: {}", file, line, msgbuf); break;
+        case CARDINAL_LOG_LEVEL_FATAL: s_logger->critical("{}:{}: {}", file, line, msgbuf); break;
     }
 
     if (level == CARDINAL_LOG_LEVEL_FATAL) {
-        // For fatal error, flush and abort in debug builds to get a crash dump
+        s_logger->flush();
 #ifdef _DEBUG
-        if (s_log_file) fflush(s_log_file);
         abort();
 #endif
     }
 }
 
-#ifdef __cplusplus
 } // extern "C"
-#endif

@@ -30,6 +30,9 @@ void cardinal_window_poll(CardinalWindow* window);
 void cardinal_window_destroy(CardinalWindow* window);
 bool cardinal_window_should_close(const CardinalWindow* window);
 
+// Returns a platform-native window handle suitable for surface creation (e.g., HWND on Windows).
+void* cardinal_window_get_native_handle(const CardinalWindow* window);
+
 #ifdef __cplusplus
 }
 #endif

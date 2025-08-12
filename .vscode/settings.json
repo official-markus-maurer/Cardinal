@@ -6,6 +6,7 @@
         "fmts",
         "glfw",
         "gltf",
+        "hinstance",
         "IMGUI",
         "Metalness",
         "MSAA",

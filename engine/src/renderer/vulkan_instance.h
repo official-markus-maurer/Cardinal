@@ -46,4 +46,11 @@ bool vk_create_surface(VulkanState* s, struct CardinalWindow* window);
  */
 void vk_destroy_device_objects(VulkanState* s);
 
+/**
+ * @brief Recreate DebugUtils messenger to reflect current log level.
+ * Call this after changing log level for immediate effect.
+ * Safe to call if validation is disabled (no-op).
+ */
+void vk_recreate_debug_messenger(VulkanState* s);
+
 #endif // VULKAN_INSTANCE_H

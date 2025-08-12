@@ -4,6 +4,9 @@ add_library(cardinal_engine STATIC)
 # Bring in FetchContent (top-level may have included it already, but include is idempotent)
 include(FetchContent)
 
+# Option: enable Vulkan validation layers in any build (can override via -DCARDINAL_ENABLE_VK_VALIDATION=ON)
+option(CARDINAL_ENABLE_VK_VALIDATION "Enable Vulkan validation layers and debug utils" OFF)
+
 # Fetch cgltf (header-only)
 FetchContent_Declare(
     cgltf
@@ -43,6 +46,7 @@ endif()
 target_sources(cardinal_engine PRIVATE
     src/core/log.c
     src/core/window.c
+    src/core/memory.c
     src/renderer/vulkan_renderer.c
     src/renderer/vulkan_instance.c
     src/renderer/vulkan_swapchain.c
@@ -63,6 +67,7 @@ target_sources(cardinal_engine PUBLIC
     BASE_DIRS include
     FILES
     include/cardinal/core/window.h
+    include/cardinal/core/memory.h
     include/cardinal/renderer/renderer.h
     include/cardinal/cardinal.h
     include/cardinal/assets/scene.h
@@ -110,6 +115,11 @@ target_compile_definitions(cardinal_engine
     PRIVATE
     CARDINAL_ENGINE_INTERNAL
 )
+
+# Propagate validation toggle when enabled
+if(CARDINAL_ENABLE_VK_VALIDATION)
+    target_compile_definitions(cardinal_engine PRIVATE CARDINAL_ENABLE_VK_VALIDATION=1)
+endif()
 
 # Compiler-specific options
 if(MSVC)
