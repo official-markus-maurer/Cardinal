@@ -6,6 +6,14 @@
 #include "vulkan_pipeline.h"
 #include "vulkan_commands.h"
 
+/**
+ * @brief Chooses the optimal surface format from available options.
+ * @param formats Array of available formats.
+ * @param count Number of formats.
+ * @return Selected surface format.
+ * 
+ * @todo Add support for HDR formats like VK_FORMAT_B10G11R11_UFLOAT_PACK32.
+ */
 static VkSurfaceFormatKHR choose_surface_format(const VkSurfaceFormatKHR* formats, uint32_t count) {
     for (uint32_t i=0;i<count;i++) {
         if (formats[i].format == VK_FORMAT_B8G8R8A8_UNORM && formats[i].colorSpace == VK_COLOR_SPACE_SRGB_NONLINEAR_KHR)
@@ -14,11 +22,27 @@ static VkSurfaceFormatKHR choose_surface_format(const VkSurfaceFormatKHR* format
     return formats[0];
 }
 
+/**
+ * @brief Selects the preferred present mode.
+ * @param modes Array of available present modes.
+ * @param count Number of modes.
+ * @return Selected present mode.
+ * 
+ * @todo Support variable refresh rate modes if available (VK_KHR_variable_refresh).
+ */
 static VkPresentModeKHR choose_present_mode(const VkPresentModeKHR* modes, uint32_t count) {
     for (uint32_t i=0;i<count;i++) if (modes[i] == VK_PRESENT_MODE_MAILBOX_KHR) return VK_PRESENT_MODE_MAILBOX_KHR;
     return VK_PRESENT_MODE_FIFO_KHR;
 }
 
+/**
+ * @brief Creates the Vulkan swapchain.
+ * @param s Vulkan state.
+ * @return true on success, false on failure.
+ * 
+ * @todo Improve extent selection to handle window resizes dynamically.
+ * @todo Add support for additional image usage flags for compute operations.
+ */
 bool vk_create_swapchain(VulkanState* s) {
     VkSurfaceCapabilitiesKHR caps;
     vkGetPhysicalDeviceSurfaceCapabilitiesKHR(s->physical_device, s->surface, &caps);
@@ -89,6 +113,12 @@ bool vk_create_swapchain(VulkanState* s) {
     return true;
 }
 
+/**
+ * @brief Destroys the swapchain and associated resources.
+ * @param s Vulkan state.
+ * 
+ * @todo Ensure all dependent resources are properly cleaned up before destruction.
+ */
 void vk_destroy_swapchain(VulkanState* s) {
     if (!s) return;
     for (uint32_t i=0;i<s->swapchain_image_count;i++) {
@@ -102,6 +132,14 @@ void vk_destroy_swapchain(VulkanState* s) {
     s->swapchain = VK_NULL_HANDLE;
 }
 
+/**
+ * @brief Recreates the swapchain for window resize or other changes.
+ * @param s Vulkan state.
+ * @return true on success, false on failure.
+ * 
+ * @todo Optimize recreation to minimize frame drops during resize.
+ * @todo Integrate with window event system for automatic recreation.
+ */
 bool vk_recreate_swapchain(VulkanState* s) {
     if (!s) return false;
     

@@ -6,10 +6,44 @@
 
 struct CardinalWindow;
 
+/**
+ * @brief Creates the Vulkan instance.
+ * @param s Pointer to the VulkanState structure.
+ * @return true on success, false on failure.
+ * @todo Dynamically enable/disable validation layers based on build config.
+ * @todo Add support for VK_KHR_portability extension for macOS compatibility.
+ */
 bool vk_create_instance(VulkanState* s);
+
+/**
+ * @brief Selects a suitable physical device.
+ * @param s Pointer to the VulkanState structure.
+ * @return true if device selected, false otherwise.
+ * @todo Refactor to support multi-GPU selection with scoring.
+ */
 bool vk_pick_physical_device(VulkanState* s);
+
+/**
+ * @brief Creates the logical Vulkan device.
+ * @param s Pointer to the VulkanState structure.
+ * @return true on success, false on failure.
+ * @todo Improve queue family selection for dedicated transfer queues.
+ * @todo Enable device extensions like VK_KHR_dynamic_rendering for modern rendering.
+ */
 bool vk_create_device(VulkanState* s);
+
+/**
+ * @brief Creates the Vulkan surface from the window.
+ * @param s Pointer to the VulkanState structure.
+ * @param window Pointer to the CardinalWindow structure.
+ * @return true on success, false on failure.
+ */
 bool vk_create_surface(VulkanState* s, struct CardinalWindow* window);
+
+/**
+ * @brief Destroys Vulkan device objects.
+ * @param s Pointer to the VulkanState structure.
+ */
 void vk_destroy_device_objects(VulkanState* s);
 
 #endif // VULKAN_INSTANCE_H

@@ -6,6 +6,13 @@
 #include "cardinal/core/log.h"
 #include "cardinal/renderer/vulkan_pbr.h"
 
+/**
+ * @brief Creates command pools, buffers, and synchronization objects.
+ * @param s Vulkan state.
+ * @return true on success, false on failure.
+ * 
+ * @todo Add support for multi-threaded command buffer allocation.
+ */
 bool vk_create_commands_sync(VulkanState* s) {
 // Use 3 frames in flight for better buffering
 s->max_frames_in_flight = 3;
@@ -55,6 +62,13 @@ for (uint32_t i = 0; i < s->max_frames_in_flight; ++i) {
 return true;
 }
 
+/**
+ * @brief Recreates the images in flight array after swapchain changes.
+ * @param s Vulkan state.
+ * @return true on success, false on failure.
+ * 
+ * @todo Optimize memory management for frequent recreations.
+ */
 bool vk_recreate_images_in_flight(VulkanState* s) {
     if (!s) return false;
     
@@ -76,6 +90,12 @@ bool vk_recreate_images_in_flight(VulkanState* s) {
     return true;
 }
 
+/**
+ * @brief Destroys command pools, buffers, and sync objects.
+ * @param s Vulkan state.
+ * 
+ * @todo Ensure thread-safe destruction.
+ */
 void vk_destroy_commands_sync(VulkanState* s) {
 if (!s) return;
 if (s->in_flight_fences) {
@@ -98,6 +118,14 @@ if (s->command_pools) {
 }
 }
 
+/**
+ * @brief Records drawing commands into a command buffer.
+ * @param s Vulkan state.
+ * @param image_index Swapchain image index.
+ * 
+ * @todo Implement secondary command buffers for better parallelism.
+ * @todo Enhance error handling for recording failures.
+ */
 void vk_record_cmd(VulkanState* s, uint32_t image_index) {
 VkCommandBuffer cmd = s->command_buffers[s->current_frame];  // Use current frame, not image index
 
@@ -124,14 +152,16 @@ if (begin_result != VK_SUCCESS) {
     return;
 }
 
-VkClearValue clear; clear.color.float32[0]=0.05f; clear.color.float32[1]=0.05f; clear.color.float32[2]=0.08f; clear.color.float32[3]=1.0f;
+VkClearValue clears[2];
+clears[0].color.float32[0] = 0.05f; clears[0].color.float32[1] = 0.05f; clears[0].color.float32[2] = 0.08f; clears[0].color.float32[3] = 1.0f;
+clears[1].depthStencil.depth = 1.0f; clears[1].depthStencil.stencil = 0;
 
-VkRenderPassBeginInfo rp = { .sType = VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO };
+VkRenderPassBeginInfo rp = (VkRenderPassBeginInfo){ .sType = VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO };
 rp.renderPass = s->render_pass;
 rp.framebuffer = s->framebuffers[image_index];
 rp.renderArea.extent = s->swapchain_extent;
-rp.clearValueCount = 1;
-rp.pClearValues = &clear;
+rp.clearValueCount = 2;
+rp.pClearValues = clears;
 
 vkCmdBeginRenderPass(cmd, &rp, VK_SUBPASS_CONTENTS_INLINE);
 

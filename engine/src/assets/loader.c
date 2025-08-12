@@ -6,17 +6,43 @@
 #include "cardinal/assets/gltf_loader.h"
 #include "cardinal/core/log.h"
 
+/**
+ * @brief Finds the file extension in a path.
+ *
+ * @param path The file path.
+ * @return Pointer to the extension string, or NULL if not found.
+ *
+ * @todo Handle paths with multiple dots more robustly.
+ */
 static const char* find_ext(const char* path) {
     if (!path) return NULL;
     const char* dot = strrchr(path, '.');
     return dot ? dot + 1 : NULL;
 }
 
+/**
+ * @brief Converts a string to lowercase.
+ *
+ * @param s The string to convert.
+ *
+ * @todo Ensure UTF-8 compatibility for international characters.
+ */
 static void tolower_str(char* s) {
     if (!s) return;
     for (; *s; ++s) *s = (char)tolower((unsigned char)*s);
 }
 
+/**
+ * @brief Loads a scene from a file.
+ *
+ * @param path Path to the scene file.
+ * @param out_scene Pointer to store the loaded scene.
+ * @return true if successful, false otherwise.
+ *
+ * @todo Add support for additional formats like OBJ and FBX.
+ * @todo Implement asynchronous loading for better performance.
+ * @todo Enhance error reporting with specific failure reasons.
+ */
 bool cardinal_scene_load(const char* path, CardinalScene* out_scene) {
     if (!path || !out_scene) {
         LOG_ERROR("Invalid parameters: path=%p, out_scene=%p", (void*)path, (void*)out_scene);

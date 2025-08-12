@@ -7,6 +7,13 @@
 #include <windows.h>
 #endif
 
+/**
+ * @brief Prints usage information for the program.
+ *
+ * @param program_name The name of the program.
+ *
+ * @todo Add editor-specific command-line options.
+ */
 static void print_usage(const char* program_name) {
     printf("Usage: %s [options]\n", program_name);
     printf("Options:\n");
@@ -14,6 +21,17 @@ static void print_usage(const char* program_name) {
     printf("  --help               Show this help message\n");
 }
 
+/**
+ * @brief Main entry point for the Cardinal Editor application.
+ *
+ * @param argc Number of command-line arguments.
+ * @param argv Array of command-line arguments.
+ * @return Exit code (0 for success).
+ *
+ * @todo Implement cross-platform working directory setup.
+ * @todo Add support for opening specific projects from command line.
+ * @todo Integrate crash reporting and recovery.
+ */
 int main(int argc, char* argv[]) {
     CardinalLogLevel log_level = CARDINAL_LOG_LEVEL_WARN; // Default
     

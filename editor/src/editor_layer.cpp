@@ -22,6 +22,7 @@
 #include <string>
 #include <algorithm>
 #include <filesystem>
+#include <cmath>
 namespace fs = std::filesystem;
 
 static CardinalRenderer* g_renderer = NULL;
@@ -32,22 +33,39 @@ static char g_scene_path[512] = "";
 static char g_status_msg[256] = "";
 
 // PBR settings
-static bool g_pbr_enabled = false;
+static bool g_pbr_enabled = true;  // Enable by default to match renderer
 static CardinalCamera g_camera = {
-    .position = {0.0f, 0.0f, 5.0f},
-    .target = {0.0f, 0.0f, 0.0f},
+    .position = {0.0f, 0.0f, 2.0f},    // Simple camera position looking down -Z
+    .target = {0.0f, 0.0f, 0.0f},      // Looking at origin
     .up = {0.0f, 1.0f, 0.0f},
-    .fov = 45.0f,
+    .fov = 65.0f,
     .aspect = 16.0f / 9.0f,
     .near_plane = 0.1f,
     .far_plane = 100.0f
 };
 static CardinalLight g_light = {
-    .direction = {-0.5f, -1.0f, -0.3f},
-    .color = {1.0f, 1.0f, 1.0f},
-    .intensity = 3.0f,
-    .ambient = {0.1f, 0.1f, 0.1f}
+    .direction = {-0.3f, -0.7f, -0.5f}, // Better directional light angle
+    .color = {1.0f, 1.0f, 0.95f},       // Slightly warmer light
+    .intensity = 8.0f,                  // Increase intensity significantly
+    .ambient = {0.3f, 0.3f, 0.35f}      // Brighter ambient for visibility
 };
+
+// Camera movement state
+static bool g_mouse_captured = false;
+static double g_last_mouse_x = 0.0;
+static double g_last_mouse_y = 0.0;
+static bool g_first_mouse = true;
+static float g_yaw = -90.0f;   // Initially looking down -Z axis
+static float g_pitch = 0.0f;
+static float g_camera_speed = 5.0f;
+static float g_mouse_sensitivity = 0.1f;
+
+// Input state
+static bool g_keys_pressed[1024] = {false};
+static bool g_tab_pressed_last_frame = false;
+
+// Window handle for input
+static GLFWwindow* g_window_handle = nullptr;
 
 // Asset browser state
 static char g_assets_dir[512] = "assets";
@@ -60,6 +78,18 @@ struct AssetEntry {
 static std::vector<AssetEntry> g_asset_entries;
 
 // Load scene helper
+/**
+ * @brief Loads a scene from the given file path.
+ *
+ * This function attempts to load a glTF or glb scene file, updates the global scene state,
+ * and sets status messages accordingly.
+ *
+ * @param path The file path to the scene file.
+ *
+ * @todo Support loading other scene formats besides glTF/glb.
+ * @todo Implement asynchronous loading to prevent UI blocking.
+ * @todo Add progress reporting during loading.
+ */
 static void load_scene_from_path(const char* path) {
     if (!path || !path[0]) {
         return;
@@ -82,10 +112,28 @@ static void load_scene_from_path(const char* path) {
     // Update the input field to reflect last attempted path
     snprintf(g_scene_path, sizeof(g_scene_path), "%s", path);
 }
+/**
+ * @brief Configures the ImGui style for the editor.
+ *
+ * Sets up colors and styles for a dark theme.
+ *
+ * @todo Allow customizable themes or light/dark mode switching.
+ * @todo Optimize style for better accessibility.
+ */
 static void setup_imgui_style() {
     ImGui::StyleColorsDark();
 }
 
+/**
+ * @brief Scans the assets directory and populates the asset entries list.
+ *
+ * Clears existing entries and scans the specified directory for files,
+ * filtering and collecting glTF/glb files.
+ *
+ * @todo Support subdirectories and folder navigation in asset browser.
+ * @todo Add file type icons and previews.
+ * @todo Implement search and filtering in asset list.
+ */
 static void scan_assets_dir() {
     g_asset_entries.clear();
     try {
@@ -114,12 +162,171 @@ static void scan_assets_dir() {
     }
 }
 
+static const float kPI = 3.14159265358979323846f;
+
+/**
+ * @brief Clamps the camera pitch angle to valid range.
+ *
+ * @todo Add configurable pitch limits.
+ */
+static void clamp_pitch() {
+    if (g_pitch > 89.0f) g_pitch = 89.0f;
+    if (g_pitch < -89.0f) g_pitch = -89.0f;
+}
+
+/**
+ * @brief Updates camera target based on yaw and pitch angles.
+ *
+ * @todo Integrate with quaternion-based rotation for smoother control.
+ */
+static void update_camera_from_angles() {
+    // Compute forward direction from yaw/pitch
+    float radYaw = g_yaw * kPI / 180.0f;
+    float radPitch = g_pitch * kPI / 180.0f;
+    float fx = cosf(radYaw) * cosf(radPitch);
+    float fy = sinf(radPitch);
+    float fz = sinf(radYaw) * cosf(radPitch);
+
+    // Normalize forward
+    float len = sqrtf(fx*fx + fy*fy + fz*fz);
+    if (len > 0.0f) { fx /= len; fy /= len; fz /= len; }
+
+    // Update target as position + forward
+    g_camera.target[0] = g_camera.position[0] + fx;
+    g_camera.target[1] = g_camera.position[1] + fy;
+    g_camera.target[2] = g_camera.position[2] + fz;
+}
+
+// Remove GLFW callbacks approach; we will poll input each frame to avoid clobbering ImGui backend callbacks
+
+/**
+ * @brief Sets mouse capture state for camera control.
+ *
+ * @param capture Whether to capture the mouse.
+ *
+ * @todo Handle mouse capture conflicts with ImGui.
+ */
+static void set_mouse_capture(bool capture) {
+    g_mouse_captured = capture;
+    if (!g_window_handle) return;
+    glfwSetInputMode(g_window_handle, GLFW_CURSOR, capture ? GLFW_CURSOR_DISABLED : GLFW_CURSOR_NORMAL);
+    g_first_mouse = true;
+}
+
+/**
+ * @brief Processes input and updates camera movement.
+ *
+ * @param dt Delta time for movement calculations.
+ *
+ * @todo Add configurable key bindings.
+ * @todo Implement smooth acceleration/deceleration.
+ * @todo Support gamepad input.
+ */
+static void process_input_and_move_camera(float dt) {
+    if (!g_window_handle) return;
+
+    // Mouse look when captured
+    if (g_mouse_captured) {
+        double xpos, ypos;
+        glfwGetCursorPos(g_window_handle, &xpos, &ypos);
+        if (g_first_mouse) {
+            g_last_mouse_x = xpos;
+            g_last_mouse_y = ypos;
+            g_first_mouse = false;
+        }
+        double xoffset = xpos - g_last_mouse_x;
+        double yoffset = g_last_mouse_y - ypos; // reverse since y increases downward
+        g_last_mouse_x = xpos;
+        g_last_mouse_y = ypos;
+
+        g_yaw   += (float)xoffset * g_mouse_sensitivity;
+        g_pitch += (float)yoffset * g_mouse_sensitivity;
+        clamp_pitch();
+        update_camera_from_angles();
+    }
+
+    // Poll keys
+    int ctrl = (glfwGetKey(g_window_handle, GLFW_KEY_LEFT_CONTROL) == GLFW_PRESS) || (glfwGetKey(g_window_handle, GLFW_KEY_RIGHT_CONTROL) == GLFW_PRESS);
+    int shift = (glfwGetKey(g_window_handle, GLFW_KEY_LEFT_SHIFT) == GLFW_PRESS) || (glfwGetKey(g_window_handle, GLFW_KEY_RIGHT_SHIFT) == GLFW_PRESS);
+    int w = glfwGetKey(g_window_handle, GLFW_KEY_W) == GLFW_PRESS;
+    int a = glfwGetKey(g_window_handle, GLFW_KEY_A) == GLFW_PRESS;
+    int s = glfwGetKey(g_window_handle, GLFW_KEY_S) == GLFW_PRESS;
+    int d = glfwGetKey(g_window_handle, GLFW_KEY_D) == GLFW_PRESS;
+    int space = glfwGetKey(g_window_handle, GLFW_KEY_SPACE) == GLFW_PRESS;
+
+    // Calculate forward/right vectors from yaw/pitch
+    float radYaw = g_yaw * kPI / 180.0f;
+    float radPitch = g_pitch * kPI / 180.0f;
+    float forward[3] = { cosf(radYaw) * cosf(radPitch), sinf(radPitch), sinf(radYaw) * cosf(radPitch) };
+    float fl = sqrtf(forward[0]*forward[0] + forward[1]*forward[1] + forward[2]*forward[2]);
+    if (fl > 0.0f) { forward[0]/=fl; forward[1]/=fl; forward[2]/=fl; }
+    float up[3] = {0.0f, 1.0f, 0.0f};
+    float right[3] = {
+        forward[2]*up[1] - forward[1]*up[2],
+        forward[0]*up[2] - forward[2]*up[0],
+        forward[1]*up[0] - forward[0]*up[1]
+    };
+    float rl = sqrtf(right[0]*right[0] + right[1]*right[1] + right[2]*right[2]);
+    if (rl > 0.0f) { right[0]/=rl; right[1]/=rl; right[2]/=rl; }
+
+    float speed = g_camera_speed * (ctrl ? 4.0f : 1.0f);
+    float delta = speed * dt;
+
+    if (g_mouse_captured) {
+        if (w) {
+            g_camera.position[0] += forward[0] * delta;
+            g_camera.position[1] += forward[1] * delta;
+            g_camera.position[2] += forward[2] * delta;
+        }
+        if (s) {
+            g_camera.position[0] -= forward[0] * delta;
+            g_camera.position[1] -= forward[1] * delta;
+            g_camera.position[2] -= forward[2] * delta;
+        }
+        if (a) {
+            g_camera.position[0] -= right[0] * delta;
+            g_camera.position[1] -= right[1] * delta;
+            g_camera.position[2] -= right[2] * delta;
+        }
+        if (d) {
+            g_camera.position[0] += right[0] * delta;
+            g_camera.position[1] += right[1] * delta;
+            g_camera.position[2] += right[2] * delta;
+        }
+        if (space) {
+            g_camera.position[1] += delta;
+        }
+        if (shift) {
+            g_camera.position[1] -= delta;
+        }
+
+        update_camera_from_angles();
+
+        if (g_renderer && g_pbr_enabled) {
+            cardinal_renderer_set_camera(g_renderer, &g_camera);
+        }
+    }
+}
+
+/**
+ * @brief Initializes the editor layer.
+ *
+ * Sets up ImGui, descriptor pools, and initial states.
+ *
+ * @param window The window handle.
+ * @param renderer The renderer instance.
+ * @return True if initialization succeeded.
+ *
+ * @todo Improve error handling and recovery.
+ * @todo Add support for multiple renderers or backends.
+ */
 bool editor_layer_init(CardinalWindow* window, CardinalRenderer* renderer) {
     g_renderer = renderer;
     g_scene_loaded = false;
     memset(&g_scene, 0, sizeof(g_scene));
-    g_scene_path[0] = '\0';
-    g_status_msg[0] = '\0';
+
+    // Store window handle for input
+    g_window_handle = window ? (GLFWwindow*)window->handle : nullptr;
 
     IMGUI_CHECKVERSION();
     ImGui::CreateContext();
@@ -185,14 +392,27 @@ bool editor_layer_init(CardinalWindow* window, CardinalRenderer* renderer) {
         return false;
     }
 
-    // Font upload is handled automatically by ImGui Vulkan backend
-
     // Initial asset scan
     scan_assets_dir();
+
+    // Initialize PBR uniforms if PBR is enabled (which it is by default)
+    if (g_pbr_enabled && g_renderer) {
+        cardinal_renderer_set_camera(g_renderer, &g_camera);
+        cardinal_renderer_set_lighting(g_renderer, &g_light);
+    }
 
     return true;
 }
 
+/**
+ * @brief Draws the scene graph panel.
+ *
+ * Displays hierarchical view of scene elements.
+ *
+ * @todo Implement drag-and-drop for hierarchy manipulation.
+ * @todo Add context menus for entities.
+ * @todo Support scene hierarchy editing.
+ */
 static void draw_scene_graph_panel() {
     if (ImGui::Begin("Scene Graph")) {
         if (ImGui::TreeNode("Root")) {
@@ -219,6 +439,15 @@ static void draw_scene_graph_panel() {
     ImGui::End();
 }
 
+/**
+ * @brief Draws the asset browser panel.
+ *
+ * Displays assets list and loading controls.
+ *
+ * @todo Implement asset preview thumbnails.
+ * @todo Add asset import and management features.
+ * @todo Support drag-and-drop to scene.
+ */
 static void draw_asset_browser_panel() {
     if (ImGui::Begin("Assets")) {
         ImGui::Text("Project Assets");
@@ -341,8 +570,25 @@ static void imgui_record(VkCommandBuffer cmd) {
 }
 
 void editor_layer_update(void) {
+    // Toggle mouse capture with Tab (edge detection)
+    bool tab_down = g_window_handle && (glfwGetKey(g_window_handle, GLFW_KEY_TAB) == GLFW_PRESS);
+    if (tab_down && !g_tab_pressed_last_frame) {
+        set_mouse_capture(!g_mouse_captured);
+    }
+    g_tab_pressed_last_frame = tab_down;
+
+    ImGuiIO& io = ImGui::GetIO();
+    float dt = io.DeltaTime > 0.0f ? io.DeltaTime : 1.0f/60.0f;
+
+    if (g_mouse_captured) {
+        io.WantCaptureMouse = false;
+        io.WantCaptureKeyboard = false;
+    }
+
+    process_input_and_move_camera(dt);
 }
 
+// In render, keep as-is; mouse capture only affects input, not UI drawing
 void editor_layer_render(void) {
     ImGui_ImplGlfw_NewFrame();
     ImGui_ImplVulkan_NewFrame();

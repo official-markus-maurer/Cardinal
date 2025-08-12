@@ -24,6 +24,17 @@
 
 
 
+/**
+ * @brief Creates and initializes the Cardinal Renderer.
+ * 
+ * This function sets up the Vulkan state including instance, device, swapchain, and pipelines.
+ * @param out_renderer Pointer to the CardinalRenderer structure to initialize.
+ * @param window Pointer to the CardinalWindow for surface creation.
+ * @return true if creation succeeds, false otherwise.
+ * 
+ * @todo Add support for Vulkan validation layers in debug mode.
+ * @todo Investigate integrating ray tracing extensions for advanced rendering features.
+ */
 bool cardinal_renderer_create(CardinalRenderer* out_renderer, CardinalWindow* window) {
     if (!out_renderer || !window) return false;
     VulkanState* s = (VulkanState*)calloc(1, sizeof(VulkanState));
@@ -60,6 +71,15 @@ bool cardinal_renderer_create(CardinalRenderer* out_renderer, CardinalWindow* wi
     return true;
 }
 
+/**
+ * @brief Draws a single frame using the renderer.
+ * 
+ * Handles synchronization, command recording, submission, and presentation.
+ * @param renderer Pointer to the initialized CardinalRenderer.
+ * 
+ * @todo Optimize synchronization to reduce CPU-GPU stalls.
+ * @todo Add error handling for swapchain recreation on window resize.
+ */
 void cardinal_renderer_draw_frame(CardinalRenderer* renderer) {
     VulkanState* s = (VulkanState*)renderer->_opaque;
 
@@ -141,11 +161,21 @@ void cardinal_renderer_draw_frame(CardinalRenderer* renderer) {
     s->current_frame = (s->current_frame + 1) % s->max_frames_in_flight;
 }
 
+/**
+ * @brief Waits for the device to become idle.
+ * @param renderer Pointer to the CardinalRenderer.
+ */
 void cardinal_renderer_wait_idle(CardinalRenderer* renderer) {
 VulkanState* s = (VulkanState*)renderer->_opaque;
 vkDeviceWaitIdle(s->device);
 }
 
+/**
+ * @brief Destroys GPU buffers for the current scene.
+ * @param s Pointer to the VulkanState structure.
+ * 
+ * @todo Add reference counting for shared buffers.
+ */
 static void destroy_scene_buffers(VulkanState* s) {
     if (!s || !s->scene_meshes) return;
     for (uint32_t i=0;i<s->scene_mesh_count;i++) {
@@ -158,6 +188,12 @@ static void destroy_scene_buffers(VulkanState* s) {
     free(s->scene_meshes); s->scene_meshes = NULL; s->scene_mesh_count = 0;
 }
 
+/**
+ * @brief Destroys the renderer and frees resources.
+ * @param renderer Pointer to the CardinalRenderer to destroy.
+ * 
+ * @todo Ensure all resources are properly cleaned up to prevent leaks.
+ */
 void cardinal_renderer_destroy(CardinalRenderer* renderer) {
 if (!renderer || !renderer->_opaque) return;
 VulkanState* s = (VulkanState*)renderer->_opaque;
@@ -180,6 +216,11 @@ renderer->_opaque = NULL;
 }
 
 // Internal API implementations for editor ImGui integration
+/**
+ * @brief Gets the Vulkan render pass for internal use.
+ * @param renderer Pointer to the CardinalRenderer.
+ * @return The Vulkan render pass.
+ */
 VkRenderPass cardinal_renderer_internal_render_pass(CardinalRenderer* renderer) {
 VulkanState* s = (VulkanState*)renderer->_opaque;
 return s->render_pass;
@@ -207,6 +248,16 @@ VkQueue cardinal_renderer_internal_graphics_queue(CardinalRenderer* renderer) {
 }
 
 // Helper function to create perspective projection matrix
+/**
+ * @brief Creates a perspective projection matrix.
+ * @param fov Field of view in degrees.
+ * @param aspect Aspect ratio.
+ * @param near_plane Near clipping plane.
+ * @param far_plane Far clipping plane.
+ * @param matrix Output 4x4 matrix (16 floats).
+ * 
+ * @todo Support orthographic projection as an alternative.
+ */
 static void create_perspective_matrix(float fov, float aspect, float near_plane, float far_plane, float* matrix) {
     memset(matrix, 0, 16 * sizeof(float));
     
@@ -220,6 +271,15 @@ static void create_perspective_matrix(float fov, float aspect, float near_plane,
 }
 
 // Helper function to create view matrix (look-at)
+/**
+ * @brief Creates a view matrix (look-at).
+ * @param eye Camera position.
+ * @param center Target position.
+ * @param up Up vector.
+ * @param matrix Output 4x4 matrix (16 floats).
+ * 
+ * @todo Add error checking for degenerate cases (e.g., eye == center).
+ */
 static void create_view_matrix(const float* eye, const float* center, const float* up, float* matrix) {
     float f[3] = {center[0] - eye[0], center[1] - eye[1], center[2] - eye[2]};
     float f_len = sqrtf(f[0]*f[0] + f[1]*f[1] + f[2]*f[2]);
@@ -239,11 +299,22 @@ static void create_view_matrix(const float* eye, const float* center, const floa
 }
 
 // Helper function to create identity matrix
+/**
+ * @brief Creates an identity matrix.
+ * @param matrix Output 4x4 matrix (16 floats).
+ */
 static void create_identity_matrix(float* matrix) {
     memset(matrix, 0, 16 * sizeof(float));
     matrix[0] = matrix[5] = matrix[10] = matrix[15] = 1.0f;
 }
 
+/**
+ * @brief Sets the camera parameters for rendering.
+ * @param renderer Pointer to the CardinalRenderer.
+ * @param camera Pointer to the camera data.
+ * 
+ * @todo Support multiple cameras or viewports.
+ */
 void cardinal_renderer_set_camera(CardinalRenderer* renderer, const CardinalCamera* camera) {
     if (!renderer || !camera) return;
     VulkanState* s = (VulkanState*)renderer->_opaque;
@@ -270,6 +341,13 @@ void cardinal_renderer_set_camera(CardinalRenderer* renderer, const CardinalCame
     memcpy(s->pbr_pipeline.uniformBufferMapped, &ubo, sizeof(PBRUniformBufferObject));
 }
 
+/**
+ * @brief Sets the lighting parameters for PBR rendering.
+ * @param renderer Pointer to the CardinalRenderer.
+ * @param light Pointer to the light data.
+ * 
+ * @todo Support multiple light sources.
+ */
 void cardinal_renderer_set_lighting(CardinalRenderer* renderer, const CardinalLight* light) {
     if (!renderer || !light) return;
     VulkanState* s = (VulkanState*)renderer->_opaque;
@@ -298,6 +376,13 @@ void cardinal_renderer_set_lighting(CardinalRenderer* renderer, const CardinalLi
     memcpy(s->pbr_pipeline.lightingBufferMapped, &lighting, sizeof(PBRLightingData));
 }
 
+/**
+ * @brief Enables or disables PBR rendering pipeline.
+ * @param renderer Pointer to the CardinalRenderer.
+ * @param enable True to enable PBR, false to disable.
+ * 
+ * @todo Add smooth transition between pipelines.
+ */
 void cardinal_renderer_enable_pbr(CardinalRenderer* renderer, bool enable) {
     if (!renderer) return;
     VulkanState* s = (VulkanState*)renderer->_opaque;
@@ -363,6 +448,13 @@ VulkanState* s = (VulkanState*)renderer->_opaque;
 s->ui_record_callback = callback;
 }
 
+/**
+ * @brief Submits an immediate command buffer for execution.
+ * @param renderer Pointer to the CardinalRenderer.
+ * @param record Callback to record commands.
+ * 
+ * @todo Add support for secondary command buffers.
+ */
 void cardinal_renderer_immediate_submit(CardinalRenderer* renderer, void (*record)(VkCommandBuffer cmd)) {
     VulkanState* s = (VulkanState*)renderer->_opaque;
 
@@ -392,6 +484,14 @@ void cardinal_renderer_immediate_submit(CardinalRenderer* renderer, void (*recor
     vkFreeCommandBuffers(s->device, s->command_pools[s->current_frame], 1, &cmd);
 }
 
+/**
+ * @brief Uploads scene data to GPU buffers.
+ * @param renderer Pointer to the CardinalRenderer.
+ * @param scene Pointer to the scene data.
+ * 
+ * @todo Optimize buffer uploads using staging buffers and transfers.
+ * @todo Support scene updates without full re-upload.
+ */
 void cardinal_renderer_upload_scene(CardinalRenderer* renderer, const CardinalScene* scene) {
     VulkanState* s = (VulkanState*)renderer->_opaque;
     

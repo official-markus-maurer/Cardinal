@@ -3,6 +3,13 @@
 #include <string.h>
 #include <stdio.h>
 
+/**
+ * @brief Prints usage information for the program.
+ *
+ * @param program_name The name of the program.
+ *
+ * @todo Add more detailed help information and examples.
+ */
 static void print_usage(const char* program_name) {
     printf("Usage: %s [options]\n", program_name);
     printf("Options:\n");
@@ -10,6 +17,17 @@ static void print_usage(const char* program_name) {
     printf("  --help               Show this help message\n");
 }
 
+/**
+ * @brief Main entry point for the Cardinal Client application.
+ *
+ * @param argc Number of command-line arguments.
+ * @param argv Array of command-line arguments.
+ * @return Exit code (0 for success).
+ *
+ * @todo Implement advanced command-line parsing library.
+ * @todo Add support for configuration files.
+ * @todo Integrate profiling and performance metrics.
+ */
 int main(int argc, char* argv[]) {
     CardinalLogLevel log_level = CARDINAL_LOG_LEVEL_WARN; // Default
     

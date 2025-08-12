@@ -4,6 +4,24 @@
 #include <stdlib.h>
 
 // Helper function to find memory type
+/**
+ * @brief Finds a suitable memory type index.
+ * @param physicalDevice Physical device.
+ * @param typeFilter Memory type filter.
+ * @param properties Required memory properties.
+ * @return Memory type index or UINT32_MAX on failure.
+ * 
+ * @todo Cache memory properties for performance.
+ */
+/**
+ * @brief Finds a suitable memory type index.
+ * @param physicalDevice Physical device.
+ * @param typeFilter Memory type filter.
+ * @param properties Required memory properties.
+ * @return Memory type index or UINT32_MAX on failure.
+ * 
+ * @todo Cache memory properties for performance.
+ */
 static uint32_t findMemoryType(VkPhysicalDevice physicalDevice, uint32_t typeFilter, VkMemoryPropertyFlags properties) {
     VkPhysicalDeviceMemoryProperties memProperties;
     vkGetPhysicalDeviceMemoryProperties(physicalDevice, &memProperties);
@@ -19,10 +37,285 @@ static uint32_t findMemoryType(VkPhysicalDevice physicalDevice, uint32_t typeFil
 }
 
 // Forward declaration for createBuffer used below
+/**
+ * @brief Creates a Vulkan buffer and allocates memory.
+ * @param device Logical device.
+ * @param physicalDevice Physical device.
+ * @param size Buffer size.
+ * @param usage Buffer usage flags.
+ * @param properties Memory properties.
+ * @param buffer Output buffer handle.
+ * @param bufferMemory Output memory handle.
+ * @return true on success, false on failure.
+ * 
+ * @todo Add support for dedicated allocation extensions.
+ */
+/**
+ * @brief Creates a Vulkan buffer and allocates memory.
+ * @param device Logical device.
+ * @param physicalDevice Physical device.
+ * @param size Buffer size.
+ * @param usage Buffer usage flags.
+ * @param properties Memory properties.
+ * @param buffer Output buffer handle.
+ * @param bufferMemory Output memory handle.
+ * @return true on success, false on failure.
+ * 
+ * @todo Add support for dedicated allocation extensions.
+ */
 static bool createBuffer(VkDevice device, VkPhysicalDevice physicalDevice, VkDeviceSize size,
                         VkBufferUsageFlags usage, VkMemoryPropertyFlags properties,
                         VkBuffer* buffer, VkDeviceMemory* bufferMemory);
 
+__attribute__((unused))
+/**
+ * @brief Creates a Vulkan texture from CardinalTexture data.
+ * @param device Logical device.
+ * @param physicalDevice Physical device.
+ * @param commandPool Command pool.
+ * @param graphicsQueue Graphics queue.
+ * @param texture Input texture data.
+ * @param textureImage Output image handle.
+ * @param textureImageMemory Output memory handle.
+ * @param textureImageView Output image view handle.
+ * @return true on success, false on failure.
+ * 
+ * @todo Implement mipmapping generation.
+ * @todo Support asynchronous texture loading.
+ */
+/**
+ * @brief Creates a Vulkan texture from CardinalTexture data.
+ * @param device Logical device.
+ * @param physicalDevice Physical device.
+ * @param commandPool Command pool.
+ * @param graphicsQueue Graphics queue.
+ * @param texture Input texture data.
+ * @param textureImage Output image handle.
+ * @param textureImageMemory Output memory handle.
+ * @param textureImageView Output image view handle.
+ * @return true on success, false on failure.
+ * 
+ * @todo Implement mipmapping generation.
+ * @todo Support asynchronous texture loading.
+ */
+static bool createTextureFromData(VkDevice device, VkPhysicalDevice physicalDevice,
+                                 VkCommandPool commandPool, VkQueue graphicsQueue,
+                                 const CardinalTexture* texture, 
+                                 VkImage* textureImage, VkDeviceMemory* textureImageMemory,
+                                 VkImageView* textureImageView) {
+    if (!texture || !texture->data || texture->width == 0 || texture->height == 0) {
+        CARDINAL_LOG_ERROR("Invalid texture data");
+        return false;
+    }
+    
+    const VkFormat format = VK_FORMAT_R8G8B8A8_SRGB;
+    VkDeviceSize imageSize = texture->width * texture->height * 4; // Force RGBA
+    
+    // Create staging buffer
+    VkBuffer stagingBuffer;
+    VkDeviceMemory stagingBufferMemory;
+    
+    if (!createBuffer(device, physicalDevice, imageSize,
+                     VK_BUFFER_USAGE_TRANSFER_SRC_BIT,
+                     VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT,
+                     &stagingBuffer, &stagingBufferMemory)) {
+        return false;
+    }
+    
+    void* data;
+    vkMapMemory(device, stagingBufferMemory, 0, imageSize, 0, &data);
+    
+    // If texture has different channel count, we need to convert to RGBA
+    if (texture->channels == 4) {
+        memcpy(data, texture->data, (size_t)imageSize);
+    } else {
+        // Convert to RGBA
+        unsigned char* src = texture->data;
+        unsigned char* dst = (unsigned char*)data;
+        
+        for (uint32_t i = 0; i < texture->width * texture->height; i++) {
+            if (texture->channels == 3) {
+                dst[i * 4 + 0] = src[i * 3 + 0]; // R
+                dst[i * 4 + 1] = src[i * 3 + 1]; // G
+                dst[i * 4 + 2] = src[i * 3 + 2]; // B
+                dst[i * 4 + 3] = 255;            // A
+            } else if (texture->channels == 1) {
+                dst[i * 4 + 0] = src[i];  // R
+                dst[i * 4 + 1] = src[i];  // G
+                dst[i * 4 + 2] = src[i];  // B
+                dst[i * 4 + 3] = 255;     // A
+            } else {
+                // Unsupported channel count, fill with white
+                dst[i * 4 + 0] = 255;
+                dst[i * 4 + 1] = 255;
+                dst[i * 4 + 2] = 255;
+                dst[i * 4 + 3] = 255;
+            }
+        }
+    }
+    
+    vkUnmapMemory(device, stagingBufferMemory);
+    
+    // Create image
+    VkImageCreateInfo imageInfo = {0};
+    imageInfo.sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO;
+    imageInfo.imageType = VK_IMAGE_TYPE_2D;
+    imageInfo.extent.width = texture->width;
+    imageInfo.extent.height = texture->height;
+    imageInfo.extent.depth = 1;
+    imageInfo.mipLevels = 1;
+    imageInfo.arrayLayers = 1;
+    imageInfo.format = format;
+    imageInfo.tiling = VK_IMAGE_TILING_OPTIMAL;
+    imageInfo.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+    imageInfo.usage = VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_SAMPLED_BIT;
+    imageInfo.samples = VK_SAMPLE_COUNT_1_BIT;
+    imageInfo.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
+    
+    if (vkCreateImage(device, &imageInfo, NULL, textureImage) != VK_SUCCESS) {
+        vkDestroyBuffer(device, stagingBuffer, NULL);
+        vkFreeMemory(device, stagingBufferMemory, NULL);
+        return false;
+    }
+    
+    VkMemoryRequirements memRequirements;
+    vkGetImageMemoryRequirements(device, *textureImage, &memRequirements);
+    
+    VkMemoryAllocateInfo allocInfo = {0};
+    allocInfo.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO;
+    allocInfo.allocationSize = memRequirements.size;
+    allocInfo.memoryTypeIndex = findMemoryType(physicalDevice, memRequirements.memoryTypeBits,
+                                              VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
+    
+    if (vkAllocateMemory(device, &allocInfo, NULL, textureImageMemory) != VK_SUCCESS ||
+        vkBindImageMemory(device, *textureImage, *textureImageMemory, 0) != VK_SUCCESS) {
+        vkDestroyImage(device, *textureImage, NULL);
+        vkDestroyBuffer(device, stagingBuffer, NULL);
+        vkFreeMemory(device, stagingBufferMemory, NULL);
+        return false;
+    }
+    
+    // Copy buffer to image with proper layout transitions
+    VkCommandBufferAllocateInfo allocInfo2 = {0};
+    allocInfo2.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO;
+    allocInfo2.level = VK_COMMAND_BUFFER_LEVEL_PRIMARY;
+    allocInfo2.commandPool = commandPool;
+    allocInfo2.commandBufferCount = 1;
+    
+    VkCommandBuffer commandBuffer;
+    vkAllocateCommandBuffers(device, &allocInfo2, &commandBuffer);
+    
+    VkCommandBufferBeginInfo beginInfo = {0};
+    beginInfo.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
+    beginInfo.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
+    
+    vkBeginCommandBuffer(commandBuffer, &beginInfo);
+    
+    // Transition to transfer destination
+    VkImageMemoryBarrier barrier = {0};
+    barrier.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
+    barrier.oldLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+    barrier.newLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
+    barrier.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+    barrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+    barrier.image = *textureImage;
+    barrier.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+    barrier.subresourceRange.baseMipLevel = 0;
+    barrier.subresourceRange.levelCount = 1;
+    barrier.subresourceRange.baseArrayLayer = 0;
+    barrier.subresourceRange.layerCount = 1;
+    barrier.srcAccessMask = 0;
+    barrier.dstAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
+    
+    vkCmdPipelineBarrier(commandBuffer, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT,
+                        VK_PIPELINE_STAGE_TRANSFER_BIT, 0, 0, NULL, 0, NULL, 1, &barrier);
+    
+    VkBufferImageCopy region = {0};
+    region.bufferOffset = 0;
+    region.bufferRowLength = 0;
+    region.bufferImageHeight = 0;
+    region.imageSubresource.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+    region.imageSubresource.mipLevel = 0;
+    region.imageSubresource.baseArrayLayer = 0;
+    region.imageSubresource.layerCount = 1;
+    region.imageOffset.x = 0;
+    region.imageOffset.y = 0;
+    region.imageOffset.z = 0;
+    region.imageExtent.width = texture->width;
+    region.imageExtent.height = texture->height;
+    region.imageExtent.depth = 1;
+    
+    vkCmdCopyBufferToImage(commandBuffer, stagingBuffer, *textureImage,
+                          VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &region);
+    
+    // Transition to shader read
+    barrier.oldLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
+    barrier.newLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+    barrier.srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
+    barrier.dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
+    
+    vkCmdPipelineBarrier(commandBuffer, VK_PIPELINE_STAGE_TRANSFER_BIT,
+                        VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT, 0, 0, NULL, 0, NULL, 1, &barrier);
+    
+    vkEndCommandBuffer(commandBuffer);
+    
+    VkSubmitInfo submitInfo = {0};
+    submitInfo.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO;
+    submitInfo.commandBufferCount = 1;
+    submitInfo.pCommandBuffers = &commandBuffer;
+    
+    vkQueueSubmit(graphicsQueue, 1, &submitInfo, VK_NULL_HANDLE);
+    vkQueueWaitIdle(graphicsQueue);
+    
+    vkFreeCommandBuffers(device, commandPool, 1, &commandBuffer);
+    vkDestroyBuffer(device, stagingBuffer, NULL);
+    vkFreeMemory(device, stagingBufferMemory, NULL);
+    
+    // Create image view
+    VkImageViewCreateInfo viewInfo = {0};
+    viewInfo.sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO;
+    viewInfo.image = *textureImage;
+    viewInfo.viewType = VK_IMAGE_VIEW_TYPE_2D;
+    viewInfo.format = format;
+    viewInfo.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+    viewInfo.subresourceRange.baseMipLevel = 0;
+    viewInfo.subresourceRange.levelCount = 1;
+    viewInfo.subresourceRange.baseArrayLayer = 0;
+    viewInfo.subresourceRange.layerCount = 1;
+    
+    return vkCreateImageView(device, &viewInfo, NULL, textureImageView) == VK_SUCCESS;
+}
+
+/**
+ * @brief Creates a 1x1 white placeholder texture.
+ * @param device Logical device.
+ * @param physicalDevice Physical device.
+ * @param commandPool Command pool.
+ * @param graphicsQueue Graphics queue.
+ * @param textureImage Output image handle.
+ * @param textureImageMemory Output memory handle.
+ * @param textureImageView Output image view handle.
+ * @param textureSampler Output sampler handle.
+ * @return true on success, false on failure.
+ * 
+ * @todo Support different placeholder colors or patterns.
+ * @todo Integrate with asset caching system to avoid recreation.
+ */
+/**
+ * @brief Creates a 1x1 white placeholder texture.
+ * @param device Logical device.
+ * @param physicalDevice Physical device.
+ * @param commandPool Command pool.
+ * @param graphicsQueue Graphics queue.
+ * @param textureImage Output image handle.
+ * @param textureImageMemory Output memory handle.
+ * @param textureImageView Output image view handle.
+ * @param textureSampler Output sampler handle.
+ * @return true on success, false on failure.
+ * 
+ * @todo Support different placeholder colors or patterns.
+ * @todo Integrate with asset caching system to avoid recreation.
+ */
 static bool createPlaceholderTexture(VkDevice device, VkPhysicalDevice physicalDevice,
                                    VkCommandPool commandPool, VkQueue graphicsQueue,
                                    VkImage* textureImage, VkDeviceMemory* textureImageMemory,
@@ -260,8 +553,29 @@ static bool createBuffer(VkDevice device, VkPhysicalDevice physicalDevice, VkDev
     return true;
 }
 
-// Helper function to copy buffer
 __attribute__((unused))
+/**
+ * @brief Copies data from one buffer to another.
+ * @param device Logical device.
+ * @param commandPool Command pool.
+ * @param graphicsQueue Graphics queue.
+ * @param srcBuffer Source buffer.
+ * @param dstBuffer Destination buffer.
+ * @param size Size to copy.
+ * 
+ * @todo Use DMA queues for better performance if available.
+ */
+/**
+ * @brief Copies data from one buffer to another.
+ * @param device Logical device.
+ * @param commandPool Command pool.
+ * @param graphicsQueue Graphics queue.
+ * @param srcBuffer Source buffer.
+ * @param dstBuffer Destination buffer.
+ * @param size Size to copy.
+ * 
+ * @todo Use DMA queues for better performance if available.
+ */
 static void copyBuffer(VkDevice device, VkCommandPool commandPool, VkQueue graphicsQueue,
                       VkBuffer srcBuffer, VkBuffer dstBuffer, VkDeviceSize size) {
     VkCommandBufferAllocateInfo allocInfo = {0};
@@ -297,6 +611,22 @@ static void copyBuffer(VkDevice device, VkCommandPool commandPool, VkQueue graph
 }
 
 // Helper function to load shader module
+/**
+ * @brief Loads and creates a shader module from SPIR-V file.
+ * @param device Logical device.
+ * @param filename Path to SPIR-V file.
+ * @return Shader module or VK_NULL_HANDLE on failure.
+ * 
+ * @todo Implement shader caching to avoid repeated loading.
+ */
+/**
+ * @brief Loads and creates a shader module from SPIR-V file.
+ * @param device Logical device.
+ * @param filename Path to SPIR-V file.
+ * @return Shader module or VK_NULL_HANDLE on failure.
+ * 
+ * @todo Implement shader caching to avoid repeated loading.
+ */
 static VkShaderModule createShaderModule(VkDevice device, const char* filename) {
     FILE* file = fopen(filename, "rb");
     if (!file) {
@@ -328,6 +658,32 @@ static VkShaderModule createShaderModule(VkDevice device, const char* filename) 
     return shaderModule;
 }
 
+/**
+ * @brief Initializes the PBR rendering pipeline.
+ * @param pipeline PBR pipeline structure.
+ * @param device Logical device.
+ * @param physicalDevice Physical device.
+ * @param renderPass Render pass.
+ * @param commandPool Command pool.
+ * @param graphicsQueue Graphics queue.
+ * @return true on success, false on failure.
+ * 
+ * @todo Support dynamic state for viewport/scissor.
+ * @todo Add push constants for material properties.
+ */
+/**
+ * @brief Initializes the PBR rendering pipeline.
+ * @param pipeline PBR pipeline structure.
+ * @param device Logical device.
+ * @param physicalDevice Physical device.
+ * @param renderPass Render pass.
+ * @param commandPool Command pool.
+ * @param graphicsQueue Graphics queue.
+ * @return true on success, false on failure.
+ * 
+ * @todo Support dynamic state for viewport/scissor.
+ * @todo Add push constants for material properties.
+ */
 bool vk_pbr_pipeline_create(VulkanPBRPipeline* pipeline, VkDevice device, VkPhysicalDevice physicalDevice,
                             VkRenderPass renderPass, VkCommandPool commandPool, VkQueue graphicsQueue) {
     // Suppress unused parameter warnings
@@ -457,8 +813,8 @@ bool vk_pbr_pipeline_create(VulkanPBRPipeline* pipeline, VkDevice device, VkPhys
     rasterizer.rasterizerDiscardEnable = VK_FALSE;
     rasterizer.polygonMode = VK_POLYGON_MODE_FILL;
     rasterizer.lineWidth = 1.0f;
-    rasterizer.cullMode = VK_CULL_MODE_BACK_BIT;
-    rasterizer.frontFace = VK_FRONT_FACE_COUNTER_CLOCKWISE;
+    rasterizer.cullMode = VK_CULL_MODE_NONE;  // TODO: Temporarily disable culling, activate once we render.
+    rasterizer.frontFace = VK_FRONT_FACE_CLOCKWISE;
     rasterizer.depthBiasEnable = VK_FALSE;
     
     // Multisampling
@@ -467,11 +823,11 @@ bool vk_pbr_pipeline_create(VulkanPBRPipeline* pipeline, VkDevice device, VkPhys
     multisampling.sampleShadingEnable = VK_FALSE;
     multisampling.rasterizationSamples = VK_SAMPLE_COUNT_1_BIT;
     
-    // Depth and stencil testing - DISABLED since render pass has no depth attachment
+    // Depth and stencil testing - ENABLED now that render pass has a depth attachment
     VkPipelineDepthStencilStateCreateInfo depthStencil = {0};
     depthStencil.sType = VK_STRUCTURE_TYPE_PIPELINE_DEPTH_STENCIL_STATE_CREATE_INFO;
-    depthStencil.depthTestEnable = VK_FALSE;  // Must be false - no depth attachment in render pass
-    depthStencil.depthWriteEnable = VK_FALSE;
+    depthStencil.depthTestEnable = VK_TRUE;
+    depthStencil.depthWriteEnable = VK_TRUE;
     depthStencil.depthCompareOp = VK_COMPARE_OP_LESS;
     depthStencil.depthBoundsTestEnable = VK_FALSE;
     depthStencil.stencilTestEnable = VK_FALSE;
@@ -595,6 +951,23 @@ bool vk_pbr_pipeline_create(VulkanPBRPipeline* pipeline, VkDevice device, VkPhys
     return true;
 }
 
+/**
+ * @brief Destroys the PBR pipeline and frees all associated resources.
+ *
+ * @param pipeline Pointer to the VulkanPBRPipeline structure to destroy.
+ * @param device The Vulkan logical device.
+ *
+ * @todo Optimize resource cleanup to handle partial destructions.
+ * @todo Add support for Vulkan memory allocator extensions.
+ */
+/**
+ * @brief Destroys the PBR pipeline and frees all associated resources.
+ * @param pipeline Pointer to the VulkanPBRPipeline structure to destroy.
+ * @param device The Vulkan logical device.
+ * 
+ * @todo Optimize resource cleanup to handle partial destructions.
+ * @todo Add support for Vulkan memory allocator extensions.
+ */
 void vk_pbr_pipeline_destroy(VulkanPBRPipeline* pipeline, VkDevice device) {
     if (!pipeline->initialized) return;
     
@@ -671,6 +1044,25 @@ void vk_pbr_pipeline_destroy(VulkanPBRPipeline* pipeline, VkDevice device) {
     CARDINAL_LOG_INFO("PBR pipeline destroyed");
 }
 
+/**
+ * @brief Updates the uniform buffers for the PBR pipeline.
+ *
+ * @param pipeline Pointer to the VulkanPBRPipeline structure.
+ * @param ubo Pointer to the uniform buffer object data.
+ * @param lighting Pointer to the lighting data.
+ *
+ * @todo Implement dynamic uniform buffer updates for real-time changes.
+ * @todo Add support for multiple light sources in lighting data.
+ */
+/**
+ * @brief Updates the uniform buffers for the PBR pipeline.
+ * @param pipeline Pointer to the VulkanPBRPipeline structure.
+ * @param ubo Pointer to the uniform buffer object data.
+ * @param lighting Pointer to the lighting data.
+ * 
+ * @todo Implement dynamic uniform buffer updates for real-time changes.
+ * @todo Add support for multiple light sources in lighting data.
+ */
 void vk_pbr_update_uniforms(VulkanPBRPipeline* pipeline, const PBRUniformBufferObject* ubo,
                             const PBRLightingData* lighting) {
     if (!pipeline->initialized) return;
@@ -682,6 +1074,25 @@ void vk_pbr_update_uniforms(VulkanPBRPipeline* pipeline, const PBRUniformBufferO
     memcpy(pipeline->lightingBufferMapped, lighting, sizeof(PBRLightingData));
 }
 
+/**
+ * @brief Renders the PBR scene using the pipeline.
+ *
+ * @param pipeline Pointer to the VulkanPBRPipeline structure.
+ * @param commandBuffer The command buffer to record rendering commands into.
+ * @param scene Pointer to the scene data to render.
+ *
+ * @todo Implement multi-pass rendering for advanced effects like shadows.
+ * @todo Add support for instanced rendering.
+ */
+/**
+ * @brief Renders the PBR scene using the pipeline.
+ * @param pipeline Pointer to the VulkanPBRPipeline structure.
+ * @param commandBuffer The command buffer to record rendering commands into.
+ * @param scene Pointer to the scene data to render.
+ * 
+ * @todo Implement multi-pass rendering for advanced effects like shadows.
+ * @todo Add support for instanced rendering.
+ */
 void vk_pbr_render(VulkanPBRPipeline* pipeline, VkCommandBuffer commandBuffer, const CardinalScene* scene) {
     if (!pipeline->initialized || !scene) return;
     
@@ -725,6 +1136,21 @@ void vk_pbr_render(VulkanPBRPipeline* pipeline, VkCommandBuffer commandBuffer, c
     }
 }
 
+/**
+ * @brief Loads scene data into the PBR pipeline buffers.
+ *
+ * @param pipeline Pointer to the VulkanPBRPipeline structure.
+ * @param device The Vulkan logical device.
+ * @param physicalDevice The Vulkan physical device.
+ * @param commandPool The command pool for temporary commands.
+ * @param graphicsQueue The graphics queue for submissions.
+ * @param scene Pointer to the scene data to load.
+ * @return true if loading was successful, false otherwise.
+ *
+ * @todo Implement scene streaming for large models.
+ * @todo Add support for loading multiple texture sets per material.
+ * @todo Integrate image-based lighting (IBL) textures.
+ */
 bool vk_pbr_load_scene(VulkanPBRPipeline* pipeline, VkDevice device, VkPhysicalDevice physicalDevice,
                        VkCommandPool commandPool, VkQueue graphicsQueue, const CardinalScene* scene) {
     if (!pipeline->initialized || !scene || scene->mesh_count == 0) {

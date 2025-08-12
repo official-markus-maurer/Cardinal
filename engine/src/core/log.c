@@ -6,6 +6,11 @@
 static FILE* s_log_file = NULL;
 static CardinalLogLevel s_min_log_level = CARDINAL_LOG_LEVEL_WARN; // Default to WARN to reduce spam
 
+/**
+ * @brief Returns string representation of log level.
+ * @param level The log level.
+ * @return String name of the level.
+ */
 static const char* level_str(CardinalLogLevel level) {
     switch (level) {
         case CARDINAL_LOG_LEVEL_TRACE: return "TRACE";
@@ -18,10 +23,21 @@ static const char* level_str(CardinalLogLevel level) {
     }
 }
 
+/**
+ * @brief Initializes the logging system with default level.
+ * 
+ * @todo Refactor to use a configurable logging backend (e.g., spdlog).
+ */
 void cardinal_log_init(void) {
     cardinal_log_init_with_level(s_min_log_level);
 }
 
+/**
+ * @brief Initializes logging with specified minimum level.
+ * @param min_level Minimum level to log.
+ * 
+ * @todo Integrate Vulkan debug utils extension (VK_EXT_debug_utils) for GPU-side logging.
+ */
 void cardinal_log_init_with_level(CardinalLogLevel min_level) {
     s_min_log_level = min_level;
     
@@ -44,6 +60,10 @@ void cardinal_log_init_with_level(CardinalLogLevel min_level) {
 #endif
 }
 
+/**
+ * @brief Sets the minimum log level.
+ * @param min_level New minimum level.
+ */
 void cardinal_log_set_level(CardinalLogLevel min_level) {
     s_min_log_level = min_level;
     if (s_log_file) {
@@ -52,10 +72,19 @@ void cardinal_log_set_level(CardinalLogLevel min_level) {
     }
 }
 
+/**
+ * @brief Gets the current minimum log level.
+ * @return Current log level.
+ */
 CardinalLogLevel cardinal_log_get_level(void) {
     return s_min_log_level;
 }
 
+/**
+ * @brief Parses a string to a log level.
+ * @param level_str_input String representation.
+ * @return Corresponding log level or default.
+ */
 CardinalLogLevel cardinal_log_parse_level(const char* level_str_input) {
     if (!level_str_input) return CARDINAL_LOG_LEVEL_INFO;
     
@@ -69,6 +98,11 @@ CardinalLogLevel cardinal_log_parse_level(const char* level_str_input) {
     return CARDINAL_LOG_LEVEL_INFO; // Default fallback
 }
 
+/**
+ * @brief Shuts down the logging system.
+ * 
+ * @todo Ensure thread-safety for multi-threaded environments.
+ */
 void cardinal_log_shutdown(void) {
     if (s_log_file) {
         fprintf(s_log_file, "==== Cardinal Log End ====%s", "\n");
@@ -77,6 +111,17 @@ void cardinal_log_shutdown(void) {
     }
 }
 
+/**
+ * @brief Outputs a log message.
+ * @param level Log level.
+ * @param file Source file.
+ * @param line Line number.
+ * @param fmt Format string.
+ * @param ... Arguments.
+ * 
+ * @todo Improve performance by implementing asynchronous logging.
+ * @todo Add support for colored console output.
+ */
 void cardinal_log_output(CardinalLogLevel level, const char* file, int line, const char* fmt, ...) {
     // Filter based on minimum log level
     if (level < s_min_log_level) {

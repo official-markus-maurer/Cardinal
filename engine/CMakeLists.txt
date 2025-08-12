@@ -12,6 +12,14 @@ FetchContent_Declare(
 )
 FetchContent_MakeAvailable(cgltf)
 
+# Fetch stb (header-only)
+FetchContent_Declare(
+    stb
+    GIT_REPOSITORY https://github.com/nothings/stb.git
+    GIT_TAG master
+)
+FetchContent_MakeAvailable(stb)
+
 # Suppress warnings from cgltf on Windows
 if(WIN32 AND TARGET cgltf)
     target_compile_definitions(cgltf INTERFACE _CRT_SECURE_NO_WARNINGS)
@@ -30,6 +38,7 @@ target_sources(cardinal_engine PRIVATE
     src/assets/scene.c
     src/assets/gltf_loader.c
     src/assets/loader.c
+    src/assets/texture_loader.c
 )
 
 # Public headers
@@ -51,6 +60,8 @@ target_include_directories(cardinal_engine
     include
     # cgltf header-only include directory
     ${cgltf_SOURCE_DIR}
+    # stb header-only include directory (contains stb_image.h)
+    ${stb_SOURCE_DIR}
     PRIVATE
     src
 )

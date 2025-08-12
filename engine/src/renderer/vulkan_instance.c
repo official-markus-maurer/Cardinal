@@ -8,7 +8,16 @@
 #include "vulkan_instance.h"
 #include "cardinal/core/log.h"
 
-// Use centralized logger
+/**
+ * @brief Vulkan debug callback for validation messages.
+ * @param message_severity Severity level.
+ * @param message_type Type of message.
+ * @param callback_data Message data.
+ * @param user_data User data (unused).
+ * @return VK_FALSE.
+ * 
+ * @todo Make callback configurable for different severity handling.
+ */
 static VKAPI_ATTR VkBool32 VKAPI_CALL debug_callback(
     VkDebugUtilsMessageSeverityFlagBitsEXT message_severity,
     VkDebugUtilsMessageTypeFlagsEXT message_type,
@@ -33,6 +42,14 @@ static VKAPI_ATTR VkBool32 VKAPI_CALL debug_callback(
     return VK_FALSE;
 }
 
+/**
+ * @brief Creates the Vulkan instance.
+ * @param s Vulkan state structure.
+ * @return true on success, false on failure.
+ * 
+ * @todo Dynamically enable/disable validation layers based on build config.
+ * @todo Add support for VK_KHR_portability extension for macOS compatibility.
+ */
 bool vk_create_instance(VulkanState* s) {
     CARDINAL_LOG_INFO("[INSTANCE] Starting Vulkan instance creation");
     VkApplicationInfo ai = { .sType = VK_STRUCTURE_TYPE_APPLICATION_INFO };
@@ -130,6 +147,13 @@ bool vk_create_instance(VulkanState* s) {
     return true;
 }
 
+/**
+ * @brief Selects a suitable physical device.
+ * @param s Vulkan state.
+ * @return true if device selected, false otherwise.
+ * 
+ * @todo Refactor to support multi-GPU selection with scoring.
+ */
 bool vk_pick_physical_device(VulkanState* s) {
     CARDINAL_LOG_INFO("[DEVICE] Starting physical device selection");
     uint32_t count = 0;
@@ -156,6 +180,14 @@ bool vk_pick_physical_device(VulkanState* s) {
     return s->physical_device != VK_NULL_HANDLE;
 }
 
+/**
+ * @brief Creates the logical Vulkan device.
+ * @param s Vulkan state.
+ * @return true on success, false on failure.
+ * 
+ * @todo Improve queue family selection for dedicated transfer queues.
+ * @todo Enable device extensions like VK_KHR_dynamic_rendering for modern rendering.
+ */
 bool vk_create_device(VulkanState* s) {
     CARDINAL_LOG_INFO("[DEVICE] Starting logical device creation");
     uint32_t qf_count = 0;
