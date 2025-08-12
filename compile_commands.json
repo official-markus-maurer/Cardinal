@@ -127,75 +127,117 @@
 },
 {
   "directory": "C:/Users/admin/Desktop/Cardinal/build/engine",
-  "command": "\"C:/Program Files/LLVM/bin/clang.exe\" -DCARDINAL_ENGINE_INTERNAL -DGLFW_INCLUDE_VULKAN -DVK_USE_PLATFORM_WIN32_KHR -D_CRT_SECURE_NO_WARNINGS @CMakeFiles/cardinal_engine.dir/includes_C.rsp -O0 -std=c23 -D_DEBUG -D_DLL -D_MT -Xclang --dependent-lib=msvcrtd -g -Xclang -gcodeview -Wall -Wextra -Wpedantic -Wno-deprecated-declarations -Wno-language-extension-token -o CMakeFiles/cardinal_engine.dir/src/core/log.c.obj -c C:/Users/admin/Desktop/Cardinal/engine/src/core/log.c",
+  "command": "\"C:/Program Files/LLVM/bin/clang++.exe\" -DCARDINAL_ENGINE_INTERNAL -DGLFW_INCLUDE_VULKAN -DSPDLOG_FWRITE_UNLOCKED -DVK_USE_PLATFORM_WIN32_KHR -D_CRT_SECURE_NO_WARNINGS @CMakeFiles/cardinal_engine.dir/includes_CXX.rsp -x c++ -O0 -std=c++20 -D_DEBUG -D_DLL -D_MT -Xclang --dependent-lib=msvcrtd -g -Xclang -gcodeview -Wall -Wextra -Wpedantic -Wno-deprecated-declarations -Wno-language-extension-token -o CMakeFiles/cardinal_engine.dir/src/core/log.c.obj -c C:/Users/admin/Desktop/Cardinal/engine/src/core/log.c",
   "file": "C:/Users/admin/Desktop/Cardinal/engine/src/core/log.c",
   "output": "engine/CMakeFiles/cardinal_engine.dir/src/core/log.c.obj"
 },
 {
   "directory": "C:/Users/admin/Desktop/Cardinal/build/engine",
-  "command": "\"C:/Program Files/LLVM/bin/clang.exe\" -DCARDINAL_ENGINE_INTERNAL -DGLFW_INCLUDE_VULKAN -DVK_USE_PLATFORM_WIN32_KHR -D_CRT_SECURE_NO_WARNINGS @CMakeFiles/cardinal_engine.dir/includes_C.rsp -O0 -std=c23 -D_DEBUG -D_DLL -D_MT -Xclang --dependent-lib=msvcrtd -g -Xclang -gcodeview -Wall -Wextra -Wpedantic -Wno-deprecated-declarations -Wno-language-extension-token -o CMakeFiles/cardinal_engine.dir/src/core/window.c.obj -c C:/Users/admin/Desktop/Cardinal/engine/src/core/window.c",
+  "command": "\"C:/Program Files/LLVM/bin/clang.exe\" -DCARDINAL_ENGINE_INTERNAL -DGLFW_INCLUDE_VULKAN -DSPDLOG_FWRITE_UNLOCKED -DVK_USE_PLATFORM_WIN32_KHR -D_CRT_SECURE_NO_WARNINGS @CMakeFiles/cardinal_engine.dir/includes_C.rsp -O0 -std=c23 -D_DEBUG -D_DLL -D_MT -Xclang --dependent-lib=msvcrtd -g -Xclang -gcodeview -Wall -Wextra -Wpedantic -Wno-deprecated-declarations -Wno-language-extension-token -o CMakeFiles/cardinal_engine.dir/src/core/window.c.obj -c C:/Users/admin/Desktop/Cardinal/engine/src/core/window.c",
   "file": "C:/Users/admin/Desktop/Cardinal/engine/src/core/window.c",
   "output": "engine/CMakeFiles/cardinal_engine.dir/src/core/window.c.obj"
 },
 {
   "directory": "C:/Users/admin/Desktop/Cardinal/build/engine",
-  "command": "\"C:/Program Files/LLVM/bin/clang.exe\" -DCARDINAL_ENGINE_INTERNAL -DGLFW_INCLUDE_VULKAN -DVK_USE_PLATFORM_WIN32_KHR -D_CRT_SECURE_NO_WARNINGS @CMakeFiles/cardinal_engine.dir/includes_C.rsp -O0 -std=c23 -D_DEBUG -D_DLL -D_MT -Xclang --dependent-lib=msvcrtd -g -Xclang -gcodeview -Wall -Wextra -Wpedantic -Wno-deprecated-declarations -Wno-language-extension-token -o CMakeFiles/cardinal_engine.dir/src/renderer/vulkan_renderer.c.obj -c C:/Users/admin/Desktop/Cardinal/engine/src/renderer/vulkan_renderer.c",
+  "command": "\"C:/Program Files/LLVM/bin/clang.exe\" -DCARDINAL_ENGINE_INTERNAL -DGLFW_INCLUDE_VULKAN -DSPDLOG_FWRITE_UNLOCKED -DVK_USE_PLATFORM_WIN32_KHR -D_CRT_SECURE_NO_WARNINGS @CMakeFiles/cardinal_engine.dir/includes_C.rsp -O0 -std=c23 -D_DEBUG -D_DLL -D_MT -Xclang --dependent-lib=msvcrtd -g -Xclang -gcodeview -Wall -Wextra -Wpedantic -Wno-deprecated-declarations -Wno-language-extension-token -o CMakeFiles/cardinal_engine.dir/src/renderer/vulkan_renderer.c.obj -c C:/Users/admin/Desktop/Cardinal/engine/src/renderer/vulkan_renderer.c",
   "file": "C:/Users/admin/Desktop/Cardinal/engine/src/renderer/vulkan_renderer.c",
   "output": "engine/CMakeFiles/cardinal_engine.dir/src/renderer/vulkan_renderer.c.obj"
 },
 {
   "directory": "C:/Users/admin/Desktop/Cardinal/build/engine",
-  "command": "\"C:/Program Files/LLVM/bin/clang.exe\" -DCARDINAL_ENGINE_INTERNAL -DGLFW_INCLUDE_VULKAN -DVK_USE_PLATFORM_WIN32_KHR -D_CRT_SECURE_NO_WARNINGS @CMakeFiles/cardinal_engine.dir/includes_C.rsp -O0 -std=c23 -D_DEBUG -D_DLL -D_MT -Xclang --dependent-lib=msvcrtd -g -Xclang -gcodeview -Wall -Wextra -Wpedantic -Wno-deprecated-declarations -Wno-language-extension-token -o CMakeFiles/cardinal_engine.dir/src/renderer/vulkan_instance.c.obj -c C:/Users/admin/Desktop/Cardinal/engine/src/renderer/vulkan_instance.c",
+  "command": "\"C:/Program Files/LLVM/bin/clang.exe\" -DCARDINAL_ENGINE_INTERNAL -DGLFW_INCLUDE_VULKAN -DSPDLOG_FWRITE_UNLOCKED -DVK_USE_PLATFORM_WIN32_KHR -D_CRT_SECURE_NO_WARNINGS @CMakeFiles/cardinal_engine.dir/includes_C.rsp -O0 -std=c23 -D_DEBUG -D_DLL -D_MT -Xclang --dependent-lib=msvcrtd -g -Xclang -gcodeview -Wall -Wextra -Wpedantic -Wno-deprecated-declarations -Wno-language-extension-token -o CMakeFiles/cardinal_engine.dir/src/renderer/vulkan_instance.c.obj -c C:/Users/admin/Desktop/Cardinal/engine/src/renderer/vulkan_instance.c",
   "file": "C:/Users/admin/Desktop/Cardinal/engine/src/renderer/vulkan_instance.c",
   "output": "engine/CMakeFiles/cardinal_engine.dir/src/renderer/vulkan_instance.c.obj"
 },
 {
   "directory": "C:/Users/admin/Desktop/Cardinal/build/engine",
-  "command": "\"C:/Program Files/LLVM/bin/clang.exe\" -DCARDINAL_ENGINE_INTERNAL -DGLFW_INCLUDE_VULKAN -DVK_USE_PLATFORM_WIN32_KHR -D_CRT_SECURE_NO_WARNINGS @CMakeFiles/cardinal_engine.dir/includes_C.rsp -O0 -std=c23 -D_DEBUG -D_DLL -D_MT -Xclang --dependent-lib=msvcrtd -g -Xclang -gcodeview -Wall -Wextra -Wpedantic -Wno-deprecated-declarations -Wno-language-extension-token -o CMakeFiles/cardinal_engine.dir/src/renderer/vulkan_swapchain.c.obj -c C:/Users/admin/Desktop/Cardinal/engine/src/renderer/vulkan_swapchain.c",
+  "command": "\"C:/Program Files/LLVM/bin/clang.exe\" -DCARDINAL_ENGINE_INTERNAL -DGLFW_INCLUDE_VULKAN -DSPDLOG_FWRITE_UNLOCKED -DVK_USE_PLATFORM_WIN32_KHR -D_CRT_SECURE_NO_WARNINGS @CMakeFiles/cardinal_engine.dir/includes_C.rsp -O0 -std=c23 -D_DEBUG -D_DLL -D_MT -Xclang --dependent-lib=msvcrtd -g -Xclang -gcodeview -Wall -Wextra -Wpedantic -Wno-deprecated-declarations -Wno-language-extension-token -o CMakeFiles/cardinal_engine.dir/src/renderer/vulkan_swapchain.c.obj -c C:/Users/admin/Desktop/Cardinal/engine/src/renderer/vulkan_swapchain.c",
   "file": "C:/Users/admin/Desktop/Cardinal/engine/src/renderer/vulkan_swapchain.c",
   "output": "engine/CMakeFiles/cardinal_engine.dir/src/renderer/vulkan_swapchain.c.obj"
 },
 {
   "directory": "C:/Users/admin/Desktop/Cardinal/build/engine",
-  "command": "\"C:/Program Files/LLVM/bin/clang.exe\" -DCARDINAL_ENGINE_INTERNAL -DGLFW_INCLUDE_VULKAN -DVK_USE_PLATFORM_WIN32_KHR -D_CRT_SECURE_NO_WARNINGS @CMakeFiles/cardinal_engine.dir/includes_C.rsp -O0 -std=c23 -D_DEBUG -D_DLL -D_MT -Xclang --dependent-lib=msvcrtd -g -Xclang -gcodeview -Wall -Wextra -Wpedantic -Wno-deprecated-declarations -Wno-language-extension-token -o CMakeFiles/cardinal_engine.dir/src/renderer/vulkan_pipeline.c.obj -c C:/Users/admin/Desktop/Cardinal/engine/src/renderer/vulkan_pipeline.c",
+  "command": "\"C:/Program Files/LLVM/bin/clang.exe\" -DCARDINAL_ENGINE_INTERNAL -DGLFW_INCLUDE_VULKAN -DSPDLOG_FWRITE_UNLOCKED -DVK_USE_PLATFORM_WIN32_KHR -D_CRT_SECURE_NO_WARNINGS @CMakeFiles/cardinal_engine.dir/includes_C.rsp -O0 -std=c23 -D_DEBUG -D_DLL -D_MT -Xclang --dependent-lib=msvcrtd -g -Xclang -gcodeview -Wall -Wextra -Wpedantic -Wno-deprecated-declarations -Wno-language-extension-token -o CMakeFiles/cardinal_engine.dir/src/renderer/vulkan_pipeline.c.obj -c C:/Users/admin/Desktop/Cardinal/engine/src/renderer/vulkan_pipeline.c",
   "file": "C:/Users/admin/Desktop/Cardinal/engine/src/renderer/vulkan_pipeline.c",
   "output": "engine/CMakeFiles/cardinal_engine.dir/src/renderer/vulkan_pipeline.c.obj"
 },
 {
   "directory": "C:/Users/admin/Desktop/Cardinal/build/engine",
-  "command": "\"C:/Program Files/LLVM/bin/clang.exe\" -DCARDINAL_ENGINE_INTERNAL -DGLFW_INCLUDE_VULKAN -DVK_USE_PLATFORM_WIN32_KHR -D_CRT_SECURE_NO_WARNINGS @CMakeFiles/cardinal_engine.dir/includes_C.rsp -O0 -std=c23 -D_DEBUG -D_DLL -D_MT -Xclang --dependent-lib=msvcrtd -g -Xclang -gcodeview -Wall -Wextra -Wpedantic -Wno-deprecated-declarations -Wno-language-extension-token -o CMakeFiles/cardinal_engine.dir/src/renderer/vulkan_commands.c.obj -c C:/Users/admin/Desktop/Cardinal/engine/src/renderer/vulkan_commands.c",
+  "command": "\"C:/Program Files/LLVM/bin/clang.exe\" -DCARDINAL_ENGINE_INTERNAL -DGLFW_INCLUDE_VULKAN -DSPDLOG_FWRITE_UNLOCKED -DVK_USE_PLATFORM_WIN32_KHR -D_CRT_SECURE_NO_WARNINGS @CMakeFiles/cardinal_engine.dir/includes_C.rsp -O0 -std=c23 -D_DEBUG -D_DLL -D_MT -Xclang --dependent-lib=msvcrtd -g -Xclang -gcodeview -Wall -Wextra -Wpedantic -Wno-deprecated-declarations -Wno-language-extension-token -o CMakeFiles/cardinal_engine.dir/src/renderer/vulkan_commands.c.obj -c C:/Users/admin/Desktop/Cardinal/engine/src/renderer/vulkan_commands.c",
   "file": "C:/Users/admin/Desktop/Cardinal/engine/src/renderer/vulkan_commands.c",
   "output": "engine/CMakeFiles/cardinal_engine.dir/src/renderer/vulkan_commands.c.obj"
 },
 {
   "directory": "C:/Users/admin/Desktop/Cardinal/build/engine",
-  "command": "\"C:/Program Files/LLVM/bin/clang.exe\" -DCARDINAL_ENGINE_INTERNAL -DGLFW_INCLUDE_VULKAN -DVK_USE_PLATFORM_WIN32_KHR -D_CRT_SECURE_NO_WARNINGS @CMakeFiles/cardinal_engine.dir/includes_C.rsp -O0 -std=c23 -D_DEBUG -D_DLL -D_MT -Xclang --dependent-lib=msvcrtd -g -Xclang -gcodeview -Wall -Wextra -Wpedantic -Wno-deprecated-declarations -Wno-language-extension-token -o CMakeFiles/cardinal_engine.dir/src/renderer/vulkan_pbr.c.obj -c C:/Users/admin/Desktop/Cardinal/engine/src/renderer/vulkan_pbr.c",
+  "command": "\"C:/Program Files/LLVM/bin/clang.exe\" -DCARDINAL_ENGINE_INTERNAL -DGLFW_INCLUDE_VULKAN -DSPDLOG_FWRITE_UNLOCKED -DVK_USE_PLATFORM_WIN32_KHR -D_CRT_SECURE_NO_WARNINGS @CMakeFiles/cardinal_engine.dir/includes_C.rsp -O0 -std=c23 -D_DEBUG -D_DLL -D_MT -Xclang --dependent-lib=msvcrtd -g -Xclang -gcodeview -Wall -Wextra -Wpedantic -Wno-deprecated-declarations -Wno-language-extension-token -o CMakeFiles/cardinal_engine.dir/src/renderer/vulkan_pbr.c.obj -c C:/Users/admin/Desktop/Cardinal/engine/src/renderer/vulkan_pbr.c",
   "file": "C:/Users/admin/Desktop/Cardinal/engine/src/renderer/vulkan_pbr.c",
   "output": "engine/CMakeFiles/cardinal_engine.dir/src/renderer/vulkan_pbr.c.obj"
 },
 {
   "directory": "C:/Users/admin/Desktop/Cardinal/build/engine",
-  "command": "\"C:/Program Files/LLVM/bin/clang.exe\" -DCARDINAL_ENGINE_INTERNAL -DGLFW_INCLUDE_VULKAN -DVK_USE_PLATFORM_WIN32_KHR -D_CRT_SECURE_NO_WARNINGS @CMakeFiles/cardinal_engine.dir/includes_C.rsp -O0 -std=c23 -D_DEBUG -D_DLL -D_MT -Xclang --dependent-lib=msvcrtd -g -Xclang -gcodeview -Wall -Wextra -Wpedantic -Wno-deprecated-declarations -Wno-language-extension-token -o CMakeFiles/cardinal_engine.dir/src/assets/scene.c.obj -c C:/Users/admin/Desktop/Cardinal/engine/src/assets/scene.c",
+  "command": "\"C:/Program Files/LLVM/bin/clang.exe\" -DCARDINAL_ENGINE_INTERNAL -DGLFW_INCLUDE_VULKAN -DSPDLOG_FWRITE_UNLOCKED -DVK_USE_PLATFORM_WIN32_KHR -D_CRT_SECURE_NO_WARNINGS @CMakeFiles/cardinal_engine.dir/includes_C.rsp -O0 -std=c23 -D_DEBUG -D_DLL -D_MT -Xclang --dependent-lib=msvcrtd -g -Xclang -gcodeview -Wall -Wextra -Wpedantic -Wno-deprecated-declarations -Wno-language-extension-token -o CMakeFiles/cardinal_engine.dir/src/assets/scene.c.obj -c C:/Users/admin/Desktop/Cardinal/engine/src/assets/scene.c",
   "file": "C:/Users/admin/Desktop/Cardinal/engine/src/assets/scene.c",
   "output": "engine/CMakeFiles/cardinal_engine.dir/src/assets/scene.c.obj"
 },
 {
   "directory": "C:/Users/admin/Desktop/Cardinal/build/engine",
-  "command": "\"C:/Program Files/LLVM/bin/clang.exe\" -DCARDINAL_ENGINE_INTERNAL -DGLFW_INCLUDE_VULKAN -DVK_USE_PLATFORM_WIN32_KHR -D_CRT_SECURE_NO_WARNINGS @CMakeFiles/cardinal_engine.dir/includes_C.rsp -O0 -std=c23 -D_DEBUG -D_DLL -D_MT -Xclang --dependent-lib=msvcrtd -g -Xclang -gcodeview -Wall -Wextra -Wpedantic -Wno-deprecated-declarations -Wno-language-extension-token -o CMakeFiles/cardinal_engine.dir/src/assets/gltf_loader.c.obj -c C:/Users/admin/Desktop/Cardinal/engine/src/assets/gltf_loader.c",
+  "command": "\"C:/Program Files/LLVM/bin/clang.exe\" -DCARDINAL_ENGINE_INTERNAL -DGLFW_INCLUDE_VULKAN -DSPDLOG_FWRITE_UNLOCKED -DVK_USE_PLATFORM_WIN32_KHR -D_CRT_SECURE_NO_WARNINGS @CMakeFiles/cardinal_engine.dir/includes_C.rsp -O0 -std=c23 -D_DEBUG -D_DLL -D_MT -Xclang --dependent-lib=msvcrtd -g -Xclang -gcodeview -Wall -Wextra -Wpedantic -Wno-deprecated-declarations -Wno-language-extension-token -o CMakeFiles/cardinal_engine.dir/src/assets/gltf_loader.c.obj -c C:/Users/admin/Desktop/Cardinal/engine/src/assets/gltf_loader.c",
   "file": "C:/Users/admin/Desktop/Cardinal/engine/src/assets/gltf_loader.c",
   "output": "engine/CMakeFiles/cardinal_engine.dir/src/assets/gltf_loader.c.obj"
 },
 {
   "directory": "C:/Users/admin/Desktop/Cardinal/build/engine",
-  "command": "\"C:/Program Files/LLVM/bin/clang.exe\" -DCARDINAL_ENGINE_INTERNAL -DGLFW_INCLUDE_VULKAN -DVK_USE_PLATFORM_WIN32_KHR -D_CRT_SECURE_NO_WARNINGS @CMakeFiles/cardinal_engine.dir/includes_C.rsp -O0 -std=c23 -D_DEBUG -D_DLL -D_MT -Xclang --dependent-lib=msvcrtd -g -Xclang -gcodeview -Wall -Wextra -Wpedantic -Wno-deprecated-declarations -Wno-language-extension-token -o CMakeFiles/cardinal_engine.dir/src/assets/loader.c.obj -c C:/Users/admin/Desktop/Cardinal/engine/src/assets/loader.c",
+  "command": "\"C:/Program Files/LLVM/bin/clang.exe\" -DCARDINAL_ENGINE_INTERNAL -DGLFW_INCLUDE_VULKAN -DSPDLOG_FWRITE_UNLOCKED -DVK_USE_PLATFORM_WIN32_KHR -D_CRT_SECURE_NO_WARNINGS @CMakeFiles/cardinal_engine.dir/includes_C.rsp -O0 -std=c23 -D_DEBUG -D_DLL -D_MT -Xclang --dependent-lib=msvcrtd -g -Xclang -gcodeview -Wall -Wextra -Wpedantic -Wno-deprecated-declarations -Wno-language-extension-token -o CMakeFiles/cardinal_engine.dir/src/assets/loader.c.obj -c C:/Users/admin/Desktop/Cardinal/engine/src/assets/loader.c",
   "file": "C:/Users/admin/Desktop/Cardinal/engine/src/assets/loader.c",
   "output": "engine/CMakeFiles/cardinal_engine.dir/src/assets/loader.c.obj"
 },
 {
   "directory": "C:/Users/admin/Desktop/Cardinal/build/engine",
-  "command": "\"C:/Program Files/LLVM/bin/clang.exe\" -DCARDINAL_ENGINE_INTERNAL -DGLFW_INCLUDE_VULKAN -DVK_USE_PLATFORM_WIN32_KHR -D_CRT_SECURE_NO_WARNINGS @CMakeFiles/cardinal_engine.dir/includes_C.rsp -O0 -std=c23 -D_DEBUG -D_DLL -D_MT -Xclang --dependent-lib=msvcrtd -g -Xclang -gcodeview -Wall -Wextra -Wpedantic -Wno-deprecated-declarations -Wno-language-extension-token -o CMakeFiles/cardinal_engine.dir/src/assets/texture_loader.c.obj -c C:/Users/admin/Desktop/Cardinal/engine/src/assets/texture_loader.c",
+  "command": "\"C:/Program Files/LLVM/bin/clang.exe\" -DCARDINAL_ENGINE_INTERNAL -DGLFW_INCLUDE_VULKAN -DSPDLOG_FWRITE_UNLOCKED -DVK_USE_PLATFORM_WIN32_KHR -D_CRT_SECURE_NO_WARNINGS @CMakeFiles/cardinal_engine.dir/includes_C.rsp -O0 -std=c23 -D_DEBUG -D_DLL -D_MT -Xclang --dependent-lib=msvcrtd -g -Xclang -gcodeview -Wall -Wextra -Wpedantic -Wno-deprecated-declarations -Wno-language-extension-token -o CMakeFiles/cardinal_engine.dir/src/assets/texture_loader.c.obj -c C:/Users/admin/Desktop/Cardinal/engine/src/assets/texture_loader.c",
   "file": "C:/Users/admin/Desktop/Cardinal/engine/src/assets/texture_loader.c",
   "output": "engine/CMakeFiles/cardinal_engine.dir/src/assets/texture_loader.c.obj"
+},
+{
+  "directory": "C:/Users/admin/Desktop/Cardinal/build/_deps/spdlog-build",
+  "command": "\"C:/Program Files/LLVM/bin/clang++.exe\" -DSPDLOG_COMPILED_LIB -DSPDLOG_FWRITE_UNLOCKED @CMakeFiles/spdlog.dir/includes_CXX.rsp -O0 -std=c++20 -D_DEBUG -D_DLL -D_MT -Xclang --dependent-lib=msvcrtd -g -Xclang -gcodeview -Wall -Wextra -Wpedantic -Wno-language-extension-token -o CMakeFiles/spdlog.dir/src/spdlog.cpp.obj -c C:/Users/admin/Desktop/Cardinal/build/_deps/spdlog-src/src/spdlog.cpp",
+  "file": "C:/Users/admin/Desktop/Cardinal/build/_deps/spdlog-src/src/spdlog.cpp",
+  "output": "_deps/spdlog-build/CMakeFiles/spdlog.dir/src/spdlog.cpp.obj"
+},
+{
+  "directory": "C:/Users/admin/Desktop/Cardinal/build/_deps/spdlog-build",
+  "command": "\"C:/Program Files/LLVM/bin/clang++.exe\" -DSPDLOG_COMPILED_LIB -DSPDLOG_FWRITE_UNLOCKED @CMakeFiles/spdlog.dir/includes_CXX.rsp -O0 -std=c++20 -D_DEBUG -D_DLL -D_MT -Xclang --dependent-lib=msvcrtd -g -Xclang -gcodeview -Wall -Wextra -Wpedantic -Wno-language-extension-token -o CMakeFiles/spdlog.dir/src/stdout_sinks.cpp.obj -c C:/Users/admin/Desktop/Cardinal/build/_deps/spdlog-src/src/stdout_sinks.cpp",
+  "file": "C:/Users/admin/Desktop/Cardinal/build/_deps/spdlog-src/src/stdout_sinks.cpp",
+  "output": "_deps/spdlog-build/CMakeFiles/spdlog.dir/src/stdout_sinks.cpp.obj"
+},
+{
+  "directory": "C:/Users/admin/Desktop/Cardinal/build/_deps/spdlog-build",
+  "command": "\"C:/Program Files/LLVM/bin/clang++.exe\" -DSPDLOG_COMPILED_LIB -DSPDLOG_FWRITE_UNLOCKED @CMakeFiles/spdlog.dir/includes_CXX.rsp -O0 -std=c++20 -D_DEBUG -D_DLL -D_MT -Xclang --dependent-lib=msvcrtd -g -Xclang -gcodeview -Wall -Wextra -Wpedantic -Wno-language-extension-token -o CMakeFiles/spdlog.dir/src/color_sinks.cpp.obj -c C:/Users/admin/Desktop/Cardinal/build/_deps/spdlog-src/src/color_sinks.cpp",
+  "file": "C:/Users/admin/Desktop/Cardinal/build/_deps/spdlog-src/src/color_sinks.cpp",
+  "output": "_deps/spdlog-build/CMakeFiles/spdlog.dir/src/color_sinks.cpp.obj"
+},
+{
+  "directory": "C:/Users/admin/Desktop/Cardinal/build/_deps/spdlog-build",
+  "command": "\"C:/Program Files/LLVM/bin/clang++.exe\" -DSPDLOG_COMPILED_LIB -DSPDLOG_FWRITE_UNLOCKED @CMakeFiles/spdlog.dir/includes_CXX.rsp -O0 -std=c++20 -D_DEBUG -D_DLL -D_MT -Xclang --dependent-lib=msvcrtd -g -Xclang -gcodeview -Wall -Wextra -Wpedantic -Wno-language-extension-token -o CMakeFiles/spdlog.dir/src/file_sinks.cpp.obj -c C:/Users/admin/Desktop/Cardinal/build/_deps/spdlog-src/src/file_sinks.cpp",
+  "file": "C:/Users/admin/Desktop/Cardinal/build/_deps/spdlog-src/src/file_sinks.cpp",
+  "output": "_deps/spdlog-build/CMakeFiles/spdlog.dir/src/file_sinks.cpp.obj"
+},
+{
+  "directory": "C:/Users/admin/Desktop/Cardinal/build/_deps/spdlog-build",
+  "command": "\"C:/Program Files/LLVM/bin/clang++.exe\" -DSPDLOG_COMPILED_LIB -DSPDLOG_FWRITE_UNLOCKED @CMakeFiles/spdlog.dir/includes_CXX.rsp -O0 -std=c++20 -D_DEBUG -D_DLL -D_MT -Xclang --dependent-lib=msvcrtd -g -Xclang -gcodeview -Wall -Wextra -Wpedantic -Wno-language-extension-token -o CMakeFiles/spdlog.dir/src/async.cpp.obj -c C:/Users/admin/Desktop/Cardinal/build/_deps/spdlog-src/src/async.cpp",
+  "file": "C:/Users/admin/Desktop/Cardinal/build/_deps/spdlog-src/src/async.cpp",
+  "output": "_deps/spdlog-build/CMakeFiles/spdlog.dir/src/async.cpp.obj"
+},
+{
+  "directory": "C:/Users/admin/Desktop/Cardinal/build/_deps/spdlog-build",
+  "command": "\"C:/Program Files/LLVM/bin/clang++.exe\" -DSPDLOG_COMPILED_LIB -DSPDLOG_FWRITE_UNLOCKED @CMakeFiles/spdlog.dir/includes_CXX.rsp -O0 -std=c++20 -D_DEBUG -D_DLL -D_MT -Xclang --dependent-lib=msvcrtd -g -Xclang -gcodeview -Wall -Wextra -Wpedantic -Wno-language-extension-token -o CMakeFiles/spdlog.dir/src/cfg.cpp.obj -c C:/Users/admin/Desktop/Cardinal/build/_deps/spdlog-src/src/cfg.cpp",
+  "file": "C:/Users/admin/Desktop/Cardinal/build/_deps/spdlog-src/src/cfg.cpp",
+  "output": "_deps/spdlog-build/CMakeFiles/spdlog.dir/src/cfg.cpp.obj"
+},
+{
+  "directory": "C:/Users/admin/Desktop/Cardinal/build/_deps/spdlog-build",
+  "command": "\"C:/Program Files/LLVM/bin/clang++.exe\" -DSPDLOG_COMPILED_LIB -DSPDLOG_FWRITE_UNLOCKED @CMakeFiles/spdlog.dir/includes_CXX.rsp -O0 -std=c++20 -D_DEBUG -D_DLL -D_MT -Xclang --dependent-lib=msvcrtd -g -Xclang -gcodeview -Wall -Wextra -Wpedantic -Wno-language-extension-token -o CMakeFiles/spdlog.dir/src/bundled_fmtlib_format.cpp.obj -c C:/Users/admin/Desktop/Cardinal/build/_deps/spdlog-src/src/bundled_fmtlib_format.cpp",
+  "file": "C:/Users/admin/Desktop/Cardinal/build/_deps/spdlog-src/src/bundled_fmtlib_format.cpp",
+  "output": "_deps/spdlog-build/CMakeFiles/spdlog.dir/src/bundled_fmtlib_format.cpp.obj"
 },
 {
   "directory": "C:/Users/admin/Desktop/Cardinal/build/editor",
@@ -241,19 +283,19 @@
 },
 {
   "directory": "C:/Users/admin/Desktop/Cardinal/build/editor",
-  "command": "\"C:/Program Files/LLVM/bin/clang.exe\" -DGLFW_INCLUDE_VULKAN -DIMGUI_DISABLE_OBSOLETE_FUNCTIONS -DIMGUI_ENABLE_DOCKING -DVK_USE_PLATFORM_WIN32_KHR @CMakeFiles/CardinalEditor.dir/includes_C.rsp -O0 -std=c23 -D_DEBUG -D_DLL -D_MT -Xclang --dependent-lib=msvcrtd -g -Xclang -gcodeview -Wall -Wextra -Wpedantic -o CMakeFiles/CardinalEditor.dir/src/main.c.obj -c C:/Users/admin/Desktop/Cardinal/editor/src/main.c",
+  "command": "\"C:/Program Files/LLVM/bin/clang.exe\" -DGLFW_INCLUDE_VULKAN -DIMGUI_DISABLE_OBSOLETE_FUNCTIONS -DIMGUI_ENABLE_DOCKING -DSPDLOG_FWRITE_UNLOCKED -DVK_USE_PLATFORM_WIN32_KHR @CMakeFiles/CardinalEditor.dir/includes_C.rsp -O0 -std=c23 -D_DEBUG -D_DLL -D_MT -Xclang --dependent-lib=msvcrtd -g -Xclang -gcodeview -Wall -Wextra -Wpedantic -o CMakeFiles/CardinalEditor.dir/src/main.c.obj -c C:/Users/admin/Desktop/Cardinal/editor/src/main.c",
   "file": "C:/Users/admin/Desktop/Cardinal/editor/src/main.c",
   "output": "editor/CMakeFiles/CardinalEditor.dir/src/main.c.obj"
 },
 {
   "directory": "C:/Users/admin/Desktop/Cardinal/build/editor",
-  "command": "\"C:/Program Files/LLVM/bin/clang++.exe\" -DGLFW_INCLUDE_VULKAN -DIMGUI_DISABLE_OBSOLETE_FUNCTIONS -DIMGUI_ENABLE_DOCKING -DVK_USE_PLATFORM_WIN32_KHR @CMakeFiles/CardinalEditor.dir/includes_CXX.rsp -O0 -std=c++20 -D_DEBUG -D_DLL -D_MT -Xclang --dependent-lib=msvcrtd -g -Xclang -gcodeview -Wall -Wextra -Wpedantic -o CMakeFiles/CardinalEditor.dir/src/editor_layer.cpp.obj -c C:/Users/admin/Desktop/Cardinal/editor/src/editor_layer.cpp",
+  "command": "\"C:/Program Files/LLVM/bin/clang++.exe\" -DGLFW_INCLUDE_VULKAN -DIMGUI_DISABLE_OBSOLETE_FUNCTIONS -DIMGUI_ENABLE_DOCKING -DSPDLOG_FWRITE_UNLOCKED -DVK_USE_PLATFORM_WIN32_KHR @CMakeFiles/CardinalEditor.dir/includes_CXX.rsp -O0 -std=c++20 -D_DEBUG -D_DLL -D_MT -Xclang --dependent-lib=msvcrtd -g -Xclang -gcodeview -Wall -Wextra -Wpedantic -o CMakeFiles/CardinalEditor.dir/src/editor_layer.cpp.obj -c C:/Users/admin/Desktop/Cardinal/editor/src/editor_layer.cpp",
   "file": "C:/Users/admin/Desktop/Cardinal/editor/src/editor_layer.cpp",
   "output": "editor/CMakeFiles/CardinalEditor.dir/src/editor_layer.cpp.obj"
 },
 {
   "directory": "C:/Users/admin/Desktop/Cardinal/build/client",
-  "command": "\"C:/Program Files/LLVM/bin/clang.exe\" -DGLFW_INCLUDE_VULKAN -DVK_USE_PLATFORM_WIN32_KHR @CMakeFiles/CardinalClient.dir/includes_C.rsp -O0 -std=c23 -D_DEBUG -D_DLL -D_MT -Xclang --dependent-lib=msvcrtd -g -Xclang -gcodeview -Wall -Wextra -Wpedantic -o CMakeFiles/CardinalClient.dir/src/main.c.obj -c C:/Users/admin/Desktop/Cardinal/client/src/main.c",
+  "command": "\"C:/Program Files/LLVM/bin/clang.exe\" -DGLFW_INCLUDE_VULKAN -DSPDLOG_FWRITE_UNLOCKED -DVK_USE_PLATFORM_WIN32_KHR @CMakeFiles/CardinalClient.dir/includes_C.rsp -O0 -std=c23 -D_DEBUG -D_DLL -D_MT -Xclang --dependent-lib=msvcrtd -g -Xclang -gcodeview -Wall -Wextra -Wpedantic -o CMakeFiles/CardinalClient.dir/src/main.c.obj -c C:/Users/admin/Desktop/Cardinal/client/src/main.c",
   "file": "C:/Users/admin/Desktop/Cardinal/client/src/main.c",
   "output": "client/CMakeFiles/CardinalClient.dir/src/main.c.obj"
 }

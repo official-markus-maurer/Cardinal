@@ -8,7 +8,7 @@ include(FetchContent)
 FetchContent_Declare(
     cgltf
     GIT_REPOSITORY https://github.com/jkuhlmann/cgltf.git
-    GIT_TAG v1.13
+    GIT_TAG v1.15
 )
 FetchContent_MakeAvailable(cgltf)
 
@@ -19,6 +19,20 @@ FetchContent_Declare(
     GIT_TAG master
 )
 FetchContent_MakeAvailable(stb)
+
+# Fetch spdlog for advanced logging (header-only)
+FetchContent_Declare(
+    spdlog
+    GIT_REPOSITORY https://github.com/gabime/spdlog.git
+    GIT_TAG v1.15.3
+)
+FetchContent_MakeAvailable(spdlog)
+# Suppress specific Clang warning from spdlog internals on Windows
+if(TARGET spdlog)
+    if(WIN32 AND CMAKE_CXX_COMPILER_ID MATCHES "Clang")
+        target_compile_options(spdlog PRIVATE -Wno-language-extension-token)
+    endif()
+endif()
 
 # Suppress warnings from cgltf on Windows
 if(WIN32 AND TARGET cgltf)
@@ -40,6 +54,8 @@ target_sources(cardinal_engine PRIVATE
     src/assets/loader.c
     src/assets/texture_loader.c
 )
+# Compile log.c as C++ to enable spdlog backend
+set_source_files_properties(src/core/log.c PROPERTIES LANGUAGE CXX)
 
 # Public headers
 target_sources(cardinal_engine PUBLIC
@@ -83,6 +99,7 @@ target_link_libraries(cardinal_engine
     PUBLIC
     Vulkan::Vulkan
     glfw
+    spdlog::spdlog_header_only
 )
 
 # Compile definitions

@@ -6,6 +6,49 @@
 static FILE* s_log_file = NULL;
 static CardinalLogLevel s_min_log_level = CARDINAL_LOG_LEVEL_WARN; // Default to WARN to reduce spam
 
+// TODO: Don't have this optional, spdlog should be our main logging system.
+// Optional spdlog integration when compiled as C++ (editor app links C++)
+#ifdef __cplusplus
+#include <memory>
+#include <mutex>
+#include <vector>
+#include <string>
+#include <spdlog/spdlog.h>
+#include <spdlog/sinks/stdout_color_sinks.h>
+#include <spdlog/sinks/basic_file_sink.h>
+
+static std::shared_ptr<spdlog::logger> s_logger;
+static std::once_flag s_spdlog_init_flag;
+
+static void ensure_spdlog_logger(CardinalLogLevel level) {
+    std::call_once(s_spdlog_init_flag, [level]() {
+        try {
+            auto console_sink = std::make_shared<spdlog::sinks::stdout_color_sink_mt>();
+            auto file_sink = std::make_shared<spdlog::sinks::basic_file_sink_mt>("cardinal_log.txt", true);
+            std::vector<spdlog::sink_ptr> sinks { console_sink, file_sink };
+            s_logger = std::make_shared<spdlog::logger>("cardinal", sinks.begin(), sinks.end());
+            spdlog::register_logger(s_logger);
+            // Map level
+            spdlog::level::level_enum lvl = spdlog::level::info;
+            switch (level) {
+                case CARDINAL_LOG_LEVEL_TRACE: lvl = spdlog::level::trace; break;
+                case CARDINAL_LOG_LEVEL_DEBUG: lvl = spdlog::level::debug; break;
+                case CARDINAL_LOG_LEVEL_INFO:  lvl = spdlog::level::info;  break;
+                case CARDINAL_LOG_LEVEL_WARN:  lvl = spdlog::level::warn;  break;
+                case CARDINAL_LOG_LEVEL_ERROR: lvl = spdlog::level::err;   break;
+                case CARDINAL_LOG_LEVEL_FATAL: lvl = spdlog::level::critical; break;
+            }
+            s_logger->set_level(lvl);
+            s_logger->flush_on(spdlog::level::warn);
+            spdlog::set_default_logger(s_logger);
+            spdlog::set_pattern("[%Y-%m-%d %H:%M:%S] [%^%l%$] %v");
+        } catch (...) {
+            // If spdlog init fails, fallback to C file/console implementation
+        }
+    });
+}
+#endif
+
 /**
  * @brief Returns string representation of log level.
  * @param level The log level.
@@ -23,10 +66,12 @@ static const char* level_str(CardinalLogLevel level) {
     }
 }
 
+#ifdef __cplusplus
+extern "C" {
+#endif
+
 /**
  * @brief Initializes the logging system with default level.
- * 
- * @todo Refactor to use a configurable logging backend (e.g., spdlog).
  */
 void cardinal_log_init(void) {
     cardinal_log_init_with_level(s_min_log_level);
@@ -35,11 +80,19 @@ void cardinal_log_init(void) {
 /**
  * @brief Initializes logging with specified minimum level.
  * @param min_level Minimum level to log.
- * 
+ *
  * @todo Integrate Vulkan debug utils extension (VK_EXT_debug_utils) for GPU-side logging.
  */
 void cardinal_log_init_with_level(CardinalLogLevel min_level) {
     s_min_log_level = min_level;
+    
+#ifdef __cplusplus
+    ensure_spdlog_logger(min_level);
+    if (s_logger) {
+        s_logger->info("==== Cardinal Log Start (Level: {}) ====", level_str(min_level));
+        return;
+    }
+#endif
     
 #ifdef _DEBUG
     errno_t err = fopen_s(&s_log_file, "cardinal_log.txt", "w");
@@ -66,6 +119,22 @@ void cardinal_log_init_with_level(CardinalLogLevel min_level) {
  */
 void cardinal_log_set_level(CardinalLogLevel min_level) {
     s_min_log_level = min_level;
+#ifdef __cplusplus
+    if (s_logger) {
+        spdlog::level::level_enum lvl = spdlog::level::info;
+        switch (min_level) {
+            case CARDINAL_LOG_LEVEL_TRACE: lvl = spdlog::level::trace; break;
+            case CARDINAL_LOG_LEVEL_DEBUG: lvl = spdlog::level::debug; break;
+            case CARDINAL_LOG_LEVEL_INFO:  lvl = spdlog::level::info;  break;
+            case CARDINAL_LOG_LEVEL_WARN:  lvl = spdlog::level::warn;  break;
+            case CARDINAL_LOG_LEVEL_ERROR: lvl = spdlog::level::err;   break;
+            case CARDINAL_LOG_LEVEL_FATAL: lvl = spdlog::level::critical; break;
+        }
+        s_logger->set_level(lvl);
+        s_logger->info("[LOG] Log level changed to: {}", level_str(min_level));
+        return;
+    }
+#endif
     if (s_log_file) {
         fprintf(s_log_file, "[LOG] Log level changed to: %s\n", level_str(min_level));
         fflush(s_log_file);
@@ -100,10 +169,16 @@ CardinalLogLevel cardinal_log_parse_level(const char* level_str_input) {
 
 /**
  * @brief Shuts down the logging system.
- * 
+ *
  * @todo Ensure thread-safety for multi-threaded environments.
  */
 void cardinal_log_shutdown(void) {
+#ifdef __cplusplus
+    if (s_logger) {
+        s_logger->info("==== Cardinal Log End ====");
+        s_logger.reset();
+    }
+#endif
     if (s_log_file) {
         fprintf(s_log_file, "==== Cardinal Log End ====%s", "\n");
         fclose(s_log_file);
@@ -118,15 +193,37 @@ void cardinal_log_shutdown(void) {
  * @param line Line number.
  * @param fmt Format string.
  * @param ... Arguments.
- * 
- * @todo Improve performance by implementing asynchronous logging.
- * @todo Add support for colored console output.
  */
 void cardinal_log_output(CardinalLogLevel level, const char* file, int line, const char* fmt, ...) {
     // Filter based on minimum log level
     if (level < s_min_log_level) {
         return;
     }
+
+#ifdef __cplusplus
+    if (s_logger) {
+        // Build formatted message using vsnprintf into buffer
+        char msgbuf[1024];
+        va_list args;
+        va_start(args, fmt);
+        vsnprintf(msgbuf, sizeof(msgbuf), fmt, args);
+        va_end(args);
+        switch (level) {
+            case CARDINAL_LOG_LEVEL_TRACE: s_logger->trace("{}:{}: {}", file, line, msgbuf); break;
+            case CARDINAL_LOG_LEVEL_DEBUG: s_logger->debug("{}:{}: {}", file, line, msgbuf); break;
+            case CARDINAL_LOG_LEVEL_INFO:  s_logger->info ("{}:{}: {}", file, line, msgbuf); break;
+            case CARDINAL_LOG_LEVEL_WARN:  s_logger->warn ("{}:{}: {}", file, line, msgbuf); break;
+            case CARDINAL_LOG_LEVEL_ERROR: s_logger->error("{}:{}: {}", file, line, msgbuf); break;
+            case CARDINAL_LOG_LEVEL_FATAL: s_logger->critical("{}:{}: {}", file, line, msgbuf); break;
+        }
+        if (level == CARDINAL_LOG_LEVEL_FATAL) {
+#ifdef _DEBUG
+            abort();
+#endif
+        }
+        return;
+    }
+#endif
     
     char timebuf[64];
     time_t t = time(NULL);
@@ -162,3 +259,7 @@ void cardinal_log_output(CardinalLogLevel level, const char* file, int line, con
 #endif
     }
 }
+
+#ifdef __cplusplus
+} // extern "C"
+#endif

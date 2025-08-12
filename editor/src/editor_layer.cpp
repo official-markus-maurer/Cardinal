@@ -61,7 +61,6 @@ static float g_camera_speed = 5.0f;
 static float g_mouse_sensitivity = 0.1f;
 
 // Input state
-static bool g_keys_pressed[1024] = {false};
 static bool g_tab_pressed_last_frame = false;
 
 // Window handle for input
