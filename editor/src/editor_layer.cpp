@@ -384,7 +384,20 @@ bool editor_layer_init(CardinalWindow* window, CardinalRenderer* renderer) {
     init_info.MinImageCount = cardinal_renderer_internal_swapchain_image_count(renderer);
     init_info.ImageCount = cardinal_renderer_internal_swapchain_image_count(renderer);
     init_info.MSAASamples = VK_SAMPLE_COUNT_1_BIT;
-    init_info.RenderPass = cardinal_renderer_internal_render_pass(renderer);
+    
+    // Dynamic rendering is required; configure ImGui accordingly
+    init_info.UseDynamicRendering = true;
+    init_info.PipelineRenderingCreateInfo.sType = VK_STRUCTURE_TYPE_PIPELINE_RENDERING_CREATE_INFO_KHR;
+    init_info.PipelineRenderingCreateInfo.pNext = NULL;
+
+    // Get swapchain format for color attachment
+    VkFormat colorFormat = cardinal_renderer_internal_swapchain_format(renderer);
+    init_info.PipelineRenderingCreateInfo.colorAttachmentCount = 1;
+    init_info.PipelineRenderingCreateInfo.pColorAttachmentFormats = &colorFormat;
+    init_info.PipelineRenderingCreateInfo.depthAttachmentFormat = cardinal_renderer_internal_depth_format(renderer);
+    init_info.PipelineRenderingCreateInfo.stencilAttachmentFormat = VK_FORMAT_UNDEFINED;
+
+    init_info.RenderPass = VK_NULL_HANDLE;
 
     if (!ImGui_ImplVulkan_Init(&init_info)) {
         fprintf(stderr, "ImGui Vulkan init failed\n");
@@ -563,6 +576,17 @@ static void draw_pbr_settings_panel() {
     ImGui::End();
 }
 
+/**
+ * @brief Draws the 3D viewport panel.
+ *
+ * Creates a window showing the rendered 3D scene.
+ * For now, this displays a placeholder until we implement offscreen rendering.
+ *
+ * @todo Implement offscreen rendering to texture for proper viewport display.
+ * @todo Add viewport controls like wireframe mode, camera reset.
+ * @todo Handle viewport window resizing and update camera aspect ratio.
+ */
+
 static void imgui_record(VkCommandBuffer cmd) {
     ImDrawData* dd = ImGui::GetDrawData();
     ImGui_ImplVulkan_RenderDrawData(dd, cmd);
@@ -585,6 +609,18 @@ void editor_layer_update(void) {
     }
 
     process_input_and_move_camera(dt);
+
+    // Keep camera aspect synced with the window/swapchain size since the scene renders in the background
+    if (g_renderer && g_pbr_enabled) {
+        VkExtent2D extent = cardinal_renderer_internal_swapchain_extent(g_renderer);
+        if (extent.width > 0 && extent.height > 0) {
+            float new_aspect = (float)extent.width / (float)extent.height;
+            if (fabsf(new_aspect - g_camera.aspect) > 0.001f) {
+                g_camera.aspect = new_aspect;
+                cardinal_renderer_set_camera(g_renderer, &g_camera);
+            }
+        }
+    }
 }
 
 // In render, keep as-is; mouse capture only affects input, not UI drawing
@@ -595,7 +631,7 @@ void editor_layer_render(void) {
 
     ImGuiWindowFlags window_flags = ImGuiWindowFlags_MenuBar | ImGuiWindowFlags_NoTitleBar |
         ImGuiWindowFlags_NoCollapse | ImGuiWindowFlags_NoResize | ImGuiWindowFlags_NoMove | ImGuiWindowFlags_NoBringToFrontOnFocus |
-        ImGuiWindowFlags_NoNavFocus | ImGuiWindowFlags_NoDocking;
+        ImGuiWindowFlags_NoNavFocus | ImGuiWindowFlags_NoDocking | ImGuiWindowFlags_NoBackground;
 
     const ImGuiViewport* viewport = ImGui::GetMainViewport();
     ImGui::SetNextWindowPos(viewport->WorkPos);
@@ -607,7 +643,8 @@ void editor_layer_render(void) {
 
     // Create a central dockspace so panels can appear and be interactive
     ImGuiID dock_id = ImGui::GetID("EditorDockSpace");
-    ImGui::DockSpace(dock_id, ImVec2(0.0f, 0.0f));
+    ImGuiDockNodeFlags dockspace_flags = ImGuiDockNodeFlags_PassthruCentralNode;
+    ImGui::DockSpace(dock_id, ImVec2(0.0f, 0.0f), dockspace_flags);
 
     if (ImGui::BeginMenuBar()) {
         if (ImGui::BeginMenu("File")) {

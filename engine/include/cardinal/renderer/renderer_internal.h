@@ -10,7 +10,6 @@ extern "C" {
 #endif
 
 // Internal API for editor ImGui integration - minimal exposure
-VkRenderPass cardinal_renderer_internal_render_pass(CardinalRenderer* renderer);
 VkCommandBuffer cardinal_renderer_internal_current_cmd(CardinalRenderer* renderer, uint32_t image_index);
 VkDevice cardinal_renderer_internal_device(CardinalRenderer* renderer);
 VkPhysicalDevice cardinal_renderer_internal_physical_device(CardinalRenderer* renderer);
@@ -18,6 +17,9 @@ VkQueue cardinal_renderer_internal_graphics_queue(CardinalRenderer* renderer);
 uint32_t cardinal_renderer_internal_graphics_queue_family(CardinalRenderer* renderer);
 VkInstance cardinal_renderer_internal_instance(CardinalRenderer* renderer);
 uint32_t cardinal_renderer_internal_swapchain_image_count(CardinalRenderer* renderer);
+VkFormat cardinal_renderer_internal_swapchain_format(CardinalRenderer* renderer);
+VkFormat cardinal_renderer_internal_depth_format(CardinalRenderer* renderer);
+VkExtent2D cardinal_renderer_internal_swapchain_extent(CardinalRenderer* renderer);
 
 // UI integration
 void cardinal_renderer_set_ui_callback(CardinalRenderer* renderer, void (*callback)(VkCommandBuffer cmd));

@@ -21,9 +21,8 @@ s->current_frame = 0;
 // Create per-frame command pools
 s->command_pools = (VkCommandPool*)malloc(sizeof(VkCommandPool) * s->max_frames_in_flight);
 for (uint32_t i = 0; i < s->max_frames_in_flight; ++i) {
-    VkCommandPoolCreateInfo cp = { .sType = VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO };
+    VkCommandPoolCreateInfo cp = { .sType = VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO, .flags = VK_COMMAND_POOL_CREATE_RESET_COMMAND_BUFFER_BIT };
     cp.queueFamilyIndex = s->graphics_queue_family;
-    cp.flags = VK_COMMAND_POOL_CREATE_TRANSIENT_BIT | VK_COMMAND_POOL_CREATE_RESET_COMMAND_BUFFER_BIT;
     if (vkCreateCommandPool(s->device, &cp, NULL, &s->command_pools[i]) != VK_SUCCESS) return false;
 }
 
@@ -37,56 +36,68 @@ for (uint32_t i = 0; i < s->max_frames_in_flight; ++i) {
     if (vkAllocateCommandBuffers(s->device, &ai, &s->command_buffers[i]) != VK_SUCCESS) return false;
 }
 
-s->image_available_semaphores = (VkSemaphore*)calloc(s->max_frames_in_flight, sizeof(VkSemaphore));
-s->render_finished_semaphores = (VkSemaphore*)calloc(s->max_frames_in_flight, sizeof(VkSemaphore));
-s->in_flight_fences = (VkFence*)calloc(s->max_frames_in_flight, sizeof(VkFence));
+// Allocate swapchain image layout initialization tracking array
+CARDINAL_LOG_INFO("[INIT] Allocating swapchain_image_layout_initialized for %u swapchain images", s->swapchain_image_count);
+if (s->swapchain_image_layout_initialized) { free(s->swapchain_image_layout_initialized); s->swapchain_image_layout_initialized = NULL; }
+s->swapchain_image_layout_initialized = (bool*)calloc(s->swapchain_image_count, sizeof(bool));
+if (!s->swapchain_image_layout_initialized) return false;
 
-// Allocate images_in_flight array based on swapchain image count
-CARDINAL_LOG_INFO("[INIT] Allocating images_in_flight for %u swapchain images", s->swapchain_image_count);
-s->images_in_flight = (VkFence*)calloc(s->swapchain_image_count, sizeof(VkFence));
-for (uint32_t i = 0; i < s->swapchain_image_count; ++i) s->images_in_flight[i] = VK_NULL_HANDLE;
-
-VkSemaphoreCreateInfo si = { .sType = VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO };
-VkFenceCreateInfo fi = { .sType = VK_STRUCTURE_TYPE_FENCE_CREATE_INFO, .flags = VK_FENCE_CREATE_SIGNALED_BIT };
-CARDINAL_LOG_INFO("[INIT] Creating sync objects for %u frames in flight", s->max_frames_in_flight);
+// Create per-frame binary semaphores for image acquisition
+if (s->image_acquired_semaphores) { free(s->image_acquired_semaphores); s->image_acquired_semaphores = NULL; }
+s->image_acquired_semaphores = (VkSemaphore*)calloc(s->max_frames_in_flight, sizeof(VkSemaphore));
+if (!s->image_acquired_semaphores) return false;
 for (uint32_t i = 0; i < s->max_frames_in_flight; ++i) {
-    VkResult sem1_result = vkCreateSemaphore(s->device, &si, NULL, &s->image_available_semaphores[i]);
-    VkResult sem2_result = vkCreateSemaphore(s->device, &si, NULL, &s->render_finished_semaphores[i]);
-    VkResult fence_result = vkCreateFence(s->device, &fi, NULL, &s->in_flight_fences[i]);
-    CARDINAL_LOG_INFO("[INIT] Frame %u: image_sem=%p (result=%d), render_sem=%p (result=%d), fence=%p (result=%d, signaled)", 
-                      i, (void*)s->image_available_semaphores[i], sem1_result, 
-                      (void*)s->render_finished_semaphores[i], sem2_result,
-                      (void*)s->in_flight_fences[i], fence_result);
+    VkSemaphoreCreateInfo sci = {0};
+    sci.sType = VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO;
+    if (vkCreateSemaphore(s->device, &sci, NULL, &s->image_acquired_semaphores[i]) != VK_SUCCESS) {
+        CARDINAL_LOG_ERROR("[INIT] Failed to create image acquired semaphore for frame %u", i);
+        return false;
+    }
 }
+
+// Create a single timeline semaphore for synchronization
+VkSemaphoreTypeCreateInfo timelineTypeInfo = {0};
+timelineTypeInfo.sType = VK_STRUCTURE_TYPE_SEMAPHORE_TYPE_CREATE_INFO;
+timelineTypeInfo.semaphoreType = VK_SEMAPHORE_TYPE_TIMELINE;
+timelineTypeInfo.initialValue = 0;
+
+VkSemaphoreCreateInfo semCI = {0};
+semCI.sType = VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO;
+semCI.pNext = &timelineTypeInfo;
+
+if (vkCreateSemaphore(s->device, &semCI, NULL, &s->timeline_semaphore) != VK_SUCCESS) {
+    CARDINAL_LOG_ERROR("[INIT] Failed to create timeline semaphore");
+    return false;
+}
+CARDINAL_LOG_INFO("[INIT] Timeline semaphore created: %p", (void*)s->timeline_semaphore);
+
+// Initialize timeline values for first frame
+s->current_frame_value = 0;
+s->image_available_value = 1;  // after acquire
+s->render_complete_value = 2;  // after submit
 
 return true;
 }
 
 /**
- * @brief Recreates the images in flight array after swapchain changes.
+ * @brief Recreates per-image initialization tracking after swapchain changes.
  * @param s Vulkan state.
  * @return true on success, false on failure.
  * 
  * @todo Optimize memory management for frequent recreations.
  */
 bool vk_recreate_images_in_flight(VulkanState* s) {
-    if (!s) return false;
-    
-    // Free old array
-    free(s->images_in_flight);
-    
-    // Allocate new array based on current swapchain image count
-    CARDINAL_LOG_INFO("[INIT] Recreating images_in_flight for %u swapchain images", s->swapchain_image_count);
-    s->images_in_flight = (VkFence*)calloc(s->swapchain_image_count, sizeof(VkFence));
-    if (!s->images_in_flight) {
-        CARDINAL_LOG_ERROR("[INIT] Failed to allocate images_in_flight array");
+    // Repurposed: recreate swapchain_image_layout_initialized to match new swapchain image count
+    if (s->swapchain_image_layout_initialized) {
+        free(s->swapchain_image_layout_initialized);
+        s->swapchain_image_layout_initialized = NULL;
+    }
+    CARDINAL_LOG_INFO("[INIT] Recreating swapchain_image_layout_initialized for %u swapchain images", s->swapchain_image_count);
+    s->swapchain_image_layout_initialized = (bool*)calloc(s->swapchain_image_count, sizeof(bool));
+    if (!s->swapchain_image_layout_initialized) {
+        CARDINAL_LOG_ERROR("[INIT] Failed to allocate swapchain_image_layout_initialized array");
         return false;
     }
-    
-    for (uint32_t i = 0; i < s->swapchain_image_count; ++i) {
-        s->images_in_flight[i] = VK_NULL_HANDLE;
-    }
-    
     return true;
 }
 
@@ -98,19 +109,23 @@ bool vk_recreate_images_in_flight(VulkanState* s) {
  */
 void vk_destroy_commands_sync(VulkanState* s) {
 if (!s) return;
-if (s->in_flight_fences) {
-    for (uint32_t i = 0; i < s->max_frames_in_flight; ++i) if (s->in_flight_fences[i]) vkDestroyFence(s->device, s->in_flight_fences[i], NULL);
-    free(s->in_flight_fences); s->in_flight_fences = NULL;
+
+// Destroy timeline semaphore
+if (s->timeline_semaphore) {
+    vkDestroySemaphore(s->device, s->timeline_semaphore, NULL);
+    s->timeline_semaphore = VK_NULL_HANDLE;
 }
-if (s->render_finished_semaphores) {
-    for (uint32_t i = 0; i < s->max_frames_in_flight; ++i) if (s->render_finished_semaphores[i]) vkDestroySemaphore(s->device, s->render_finished_semaphores[i], NULL);
-    free(s->render_finished_semaphores); s->render_finished_semaphores = NULL;
+
+// Destroy per-frame acquire semaphores
+if (s->image_acquired_semaphores) {
+    for (uint32_t i = 0; i < s->max_frames_in_flight; ++i) {
+        if (s->image_acquired_semaphores[i]) vkDestroySemaphore(s->device, s->image_acquired_semaphores[i], NULL);
+    }
+    free(s->image_acquired_semaphores);
+    s->image_acquired_semaphores = NULL;
 }
-if (s->image_available_semaphores) {
-    for (uint32_t i = 0; i < s->max_frames_in_flight; ++i) if (s->image_available_semaphores[i]) vkDestroySemaphore(s->device, s->image_available_semaphores[i], NULL);
-    free(s->image_available_semaphores); s->image_available_semaphores = NULL;
-}
-free(s->images_in_flight); s->images_in_flight = NULL;
+
+free(s->swapchain_image_layout_initialized); s->swapchain_image_layout_initialized = NULL;
 if (s->command_buffers) { free(s->command_buffers); s->command_buffers = NULL; }
 if (s->command_pools) {
     for (uint32_t i = 0; i < s->max_frames_in_flight; ++i) if (s->command_pools[i]) vkDestroyCommandPool(s->device, s->command_pools[i], NULL);
@@ -156,14 +171,117 @@ VkClearValue clears[2];
 clears[0].color.float32[0] = 0.05f; clears[0].color.float32[1] = 0.05f; clears[0].color.float32[2] = 0.08f; clears[0].color.float32[3] = 1.0f;
 clears[1].depthStencil.depth = 1.0f; clears[1].depthStencil.stencil = 0;
 
-VkRenderPassBeginInfo rp = (VkRenderPassBeginInfo){ .sType = VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO };
-rp.renderPass = s->render_pass;
-rp.framebuffer = s->framebuffers[image_index];
-rp.renderArea.extent = s->swapchain_extent;
-rp.clearValueCount = 2;
-rp.pClearValues = clears;
+// Ensure depth image layout is transitioned once
+if (!s->depth_layout_initialized) {
+    VkImageMemoryBarrier2 barrier = {0};
+    barrier.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2;
+    barrier.srcStageMask = VK_PIPELINE_STAGE_2_TOP_OF_PIPE_BIT;
+    barrier.srcAccessMask = 0;
+    barrier.dstStageMask = VK_PIPELINE_STAGE_2_EARLY_FRAGMENT_TESTS_BIT | VK_PIPELINE_STAGE_2_LATE_FRAGMENT_TESTS_BIT;
+    barrier.dstAccessMask = VK_ACCESS_2_DEPTH_STENCIL_ATTACHMENT_READ_BIT | VK_ACCESS_2_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT;
+    barrier.oldLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+    barrier.newLayout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
+    barrier.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+    barrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+    barrier.image = s->depth_image;
+    barrier.subresourceRange.aspectMask = VK_IMAGE_ASPECT_DEPTH_BIT;
+    barrier.subresourceRange.baseMipLevel = 0;
+    barrier.subresourceRange.levelCount = 1;
+    barrier.subresourceRange.baseArrayLayer = 0;
+    barrier.subresourceRange.layerCount = 1;
 
-vkCmdBeginRenderPass(cmd, &rp, VK_SUBPASS_CONTENTS_INLINE);
+    VkDependencyInfo dep = {0};
+    dep.sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO;
+    dep.imageMemoryBarrierCount = 1;
+    dep.pImageMemoryBarriers = &barrier;
+    s->vkCmdPipelineBarrier2(cmd, &dep);
+    s->depth_layout_initialized = true;
+}
+
+// Transition swapchain image to COLOR_ATTACHMENT_OPTIMAL each frame
+if (!s->swapchain_image_layout_initialized[image_index]) {
+    VkImageMemoryBarrier2 barrier = {0};
+    barrier.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2;
+    barrier.srcStageMask = VK_PIPELINE_STAGE_2_TOP_OF_PIPE_BIT;
+    barrier.srcAccessMask = 0;
+    barrier.dstStageMask = VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT;
+    barrier.dstAccessMask = VK_ACCESS_2_COLOR_ATTACHMENT_READ_BIT | VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT;
+    barrier.oldLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+    barrier.newLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
+    barrier.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+    barrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+    barrier.image = s->swapchain_images[image_index];
+    barrier.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+    barrier.subresourceRange.baseMipLevel = 0;
+    barrier.subresourceRange.levelCount = 1;
+    barrier.subresourceRange.baseArrayLayer = 0;
+    barrier.subresourceRange.layerCount = 1;
+
+    VkDependencyInfo dep = {0};
+    dep.sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO;
+    dep.imageMemoryBarrierCount = 1;
+    dep.pImageMemoryBarriers = &barrier;
+    s->vkCmdPipelineBarrier2(cmd, &dep);
+    s->swapchain_image_layout_initialized[image_index] = true;
+} else {
+    VkImageMemoryBarrier2 barrier = {0};
+    barrier.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2;
+    barrier.srcStageMask = VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT;
+    barrier.srcAccessMask = 0;
+    barrier.dstStageMask = VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT;
+    barrier.dstAccessMask = VK_ACCESS_2_COLOR_ATTACHMENT_READ_BIT | VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT;
+    barrier.oldLayout = VK_IMAGE_LAYOUT_PRESENT_SRC_KHR;
+    barrier.newLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
+    barrier.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+    barrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+    barrier.image = s->swapchain_images[image_index];
+    barrier.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+    barrier.subresourceRange.baseMipLevel = 0;
+    barrier.subresourceRange.levelCount = 1;
+    barrier.subresourceRange.baseArrayLayer = 0;
+    barrier.subresourceRange.layerCount = 1;
+
+    VkDependencyInfo dep = {0};
+    dep.sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO;
+    dep.imageMemoryBarrierCount = 1;
+    dep.pImageMemoryBarriers = &barrier;
+    s->vkCmdPipelineBarrier2(cmd, &dep);
+}
+
+// Use Vulkan 1.3 dynamic rendering (required)
+CARDINAL_LOG_DEBUG("[CMD] Frame %u: Using dynamic rendering", s->current_frame);
+
+// Color attachment for dynamic rendering
+VkRenderingAttachmentInfo colorAttachment = {0};
+colorAttachment.sType = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO;
+colorAttachment.imageView = s->swapchain_image_views[image_index];
+colorAttachment.imageLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
+colorAttachment.loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR;
+colorAttachment.storeOp = VK_ATTACHMENT_STORE_OP_STORE;
+colorAttachment.clearValue = clears[0];
+
+// Depth attachment for dynamic rendering
+VkRenderingAttachmentInfo depthAttachment = {0};
+depthAttachment.sType = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO;
+depthAttachment.imageView = s->depth_image_view;
+depthAttachment.imageLayout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
+depthAttachment.loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR;
+depthAttachment.storeOp = VK_ATTACHMENT_STORE_OP_DONT_CARE;
+depthAttachment.clearValue = clears[1];
+
+// Rendering info
+VkRenderingInfo renderingInfo = {0};
+renderingInfo.sType = VK_STRUCTURE_TYPE_RENDERING_INFO;
+renderingInfo.renderArea.offset.x = 0;
+renderingInfo.renderArea.offset.y = 0;
+renderingInfo.renderArea.extent = s->swapchain_extent;
+renderingInfo.layerCount = 1;
+renderingInfo.colorAttachmentCount = 1;
+renderingInfo.pColorAttachments = &colorAttachment;
+renderingInfo.pDepthAttachment = &depthAttachment;
+renderingInfo.pStencilAttachment = NULL;
+
+s->vkCmdBeginRendering(cmd, &renderingInfo);
 
 // Set dynamic viewport and scissor to match swapchain extent
 VkViewport vp = {0};
@@ -194,7 +312,32 @@ if (s->ui_record_callback) {
     s->ui_record_callback(cmd);
 }
 
-vkCmdEndRenderPass(cmd);
+// End dynamic rendering
+s->vkCmdEndRendering(cmd);
+
+// Transition swapchain image to PRESENT for presentation using sync2
+VkImageMemoryBarrier2 barrier = {0};
+barrier.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2;
+barrier.srcStageMask = VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT;
+barrier.srcAccessMask = VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT;
+barrier.dstStageMask = VK_PIPELINE_STAGE_2_BOTTOM_OF_PIPE_BIT;
+barrier.dstAccessMask = 0;
+barrier.oldLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
+barrier.newLayout = VK_IMAGE_LAYOUT_PRESENT_SRC_KHR;
+barrier.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+barrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+barrier.image = s->swapchain_images[image_index];
+barrier.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+barrier.subresourceRange.baseMipLevel = 0;
+barrier.subresourceRange.levelCount = 1;
+barrier.subresourceRange.baseArrayLayer = 0;
+barrier.subresourceRange.layerCount = 1;
+
+VkDependencyInfo dep = {0};
+dep.sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO;
+dep.imageMemoryBarrierCount = 1;
+dep.pImageMemoryBarriers = &barrier;
+s->vkCmdPipelineBarrier2(cmd, &dep);
 
 CARDINAL_LOG_INFO("[CMD] Frame %u: Ending command buffer %p", s->current_frame, (void*)cmd);
 VkResult end_result = vkEndCommandBuffer(cmd);

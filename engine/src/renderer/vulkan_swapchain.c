@@ -122,10 +122,9 @@ bool vk_create_swapchain(VulkanState* s) {
 void vk_destroy_swapchain(VulkanState* s) {
     if (!s) return;
     for (uint32_t i=0;i<s->swapchain_image_count;i++) {
-        if (s->framebuffers) vkDestroyFramebuffer(s->device, s->framebuffers[i], NULL);
         vkDestroyImageView(s->device, s->swapchain_image_views[i], NULL);
     }
-    free(s->framebuffers); s->framebuffers = NULL;
+    // No framebuffers to destroy when using dynamic rendering
     free(s->swapchain_image_views); s->swapchain_image_views = NULL;
     free(s->swapchain_images); s->swapchain_images = NULL;
     if (s->swapchain) vkDestroySwapchainKHR(s->device, s->swapchain, NULL);
@@ -147,7 +146,7 @@ bool vk_recreate_swapchain(VulkanState* s) {
     vkDeviceWaitIdle(s->device);
     
     // Destroy old pipeline and swapchain resources
-    vk_destroy_renderpass_pipeline(s);
+    vk_destroy_pipeline(s);
     vk_destroy_swapchain(s);
     
     // Recreate swapchain
@@ -155,13 +154,13 @@ bool vk_recreate_swapchain(VulkanState* s) {
         return false;
     }
     
-    // Recreate images_in_flight array for new swapchain image count
+    // Recreate per-image initialization tracking for new swapchain image count
     if (!vk_recreate_images_in_flight(s)) {
         return false;
     }
     
     // Recreate pipeline with new dimensions
-    if (!vk_create_renderpass_pipeline(s)) {
+    if (!vk_create_pipeline(s)) {
         return false;
     }
     

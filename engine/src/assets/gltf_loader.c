@@ -128,6 +128,10 @@ static bool load_texture_with_fallback(const char* original_uri, const char* bas
     // treat it as a concatenation and try decomposed lookups using the prefix before the first token.
     const char* rough_pos = strstr(filename_only, "Roughness");
     const char* metal_pos = strstr(filename_only, "Metalness");
+    const char* base_pos = strstr(filename_only, "BaseColor");
+    const char* normal_pos = strstr(filename_only, "Normal");
+    
+    // Find the first token position for decomposition
     const char* first_token = NULL;
     if (rough_pos && metal_pos) {
         first_token = (rough_pos < metal_pos) ? rough_pos : metal_pos;
@@ -135,7 +139,18 @@ static bool load_texture_with_fallback(const char* original_uri, const char* bas
         first_token = rough_pos;
     } else if (metal_pos) {
         first_token = metal_pos;
+    } else if (base_pos) {
+        first_token = base_pos;
+    } else if (normal_pos) {
+        first_token = normal_pos;
     }
+    
+    // Log the detected tokens for debugging
+    LOG_DEBUG("Analyzing filename: %s", filename_only);
+    if (rough_pos) LOG_DEBUG("  - Found 'Roughness' at position %ld", (long)(rough_pos - filename_only));
+    if (metal_pos) LOG_DEBUG("  - Found 'Metalness' at position %ld", (long)(metal_pos - filename_only));
+    if (base_pos) LOG_DEBUG("  - Found 'BaseColor' at position %ld", (long)(base_pos - filename_only));
+    if (normal_pos) LOG_DEBUG("  - Found 'Normal' at position %ld", (long)(normal_pos - filename_only));
     
     if (first_token) {
         size_t base_len = (size_t)(first_token - filename_only);
@@ -143,6 +158,8 @@ static bool load_texture_with_fallback(const char* original_uri, const char* bas
             char base_name[256];
             strncpy(base_name, filename_only, base_len);
             base_name[base_len] = '\0';
+            
+            LOG_DEBUG("Extracted base name: '%s'", base_name);
             
             // Prepare base_dir prefix like <gltf_dir>/textures/
             char base_dir_prefix[512] = {0};
@@ -153,9 +170,9 @@ static bool load_texture_with_fallback(const char* original_uri, const char* bas
                 strncat(base_dir_prefix, "textures/", sizeof(base_dir_prefix) - dir_len - 1);
             }
             
-            // Candidates in order: base_dir textures (Roughness, Metalness), then assets/textures
-            const char* suffixes[2] = { "Roughness.png", "Metalness.png" };
-            for (int i = 0; i < 2; ++i) {
+            // Candidates in order: base_dir textures (Roughness, Metalness, BaseColor, Normal), then assets/textures
+            const char* suffixes[4] = { "Roughness.png", "Metalness.png", "BaseColor.png", "Normal.png" };
+            for (int i = 0; i < 4; ++i) {
                 if (base_dir_prefix[0] != '\0') {
                     snprintf(texture_path, sizeof(texture_path), "%s%s%s", base_dir_prefix, base_name, suffixes[i]);
                     LOG_DEBUG("Trying decomposed candidate: %s", texture_path);
@@ -165,6 +182,13 @@ static bool load_texture_with_fallback(const char* original_uri, const char* bas
                 }
                 snprintf(texture_path, sizeof(texture_path), "assets/textures/%s%s", base_name, suffixes[i]);
                 LOG_DEBUG("Trying decomposed candidate: %s", texture_path);
+                if (texture_load_from_file(texture_path, &tex_data)) {
+                    goto success;
+                }
+                
+                // Also try the assets/models/textures directory
+                snprintf(texture_path, sizeof(texture_path), "assets/models/textures/%s%s", base_name, suffixes[i]);
+                LOG_DEBUG("Trying models/textures candidate: %s", texture_path);
                 if (texture_load_from_file(texture_path, &tex_data)) {
                     goto success;
                 }
@@ -441,9 +465,12 @@ bool cardinal_gltf_load_scene(const char* path, CardinalScene* out_scene) {
                     card_mat->emissive_texture = (uint32_t)img_idx;
                 }
             }
-            card_mat->emissive_factor[0] = mat->emissive_factor[0];
-            card_mat->emissive_factor[1] = mat->emissive_factor[1];
-            card_mat->emissive_factor[2] = mat->emissive_factor[2];
+            // Only apply non-zero emissive factor; otherwise keep the default (0,0,0)
+            if (mat->emissive_factor[0] > 0.0f || mat->emissive_factor[1] > 0.0f || mat->emissive_factor[2] > 0.0f) {
+                card_mat->emissive_factor[0] = mat->emissive_factor[0];
+                card_mat->emissive_factor[1] = mat->emissive_factor[1];
+                card_mat->emissive_factor[2] = mat->emissive_factor[2];
+            }
             
             material_count++;
             LOG_DEBUG("Material %u loaded: albedo_tex=%u, normal_tex=%u, mr_tex=%u", 
@@ -533,6 +560,13 @@ bool cardinal_gltf_load_scene(const char* path, CardinalScene* out_scene) {
                 vertices[vi].py = (float)v[1];
                 vertices[vi].pz = (float)v[2];
             }
+            // Debug log first few vertices
+            if (vcount > 0) {
+                LOG_DEBUG("First vertex: pos=(%f, %f, %f)", vertices[0].px, vertices[0].py, vertices[0].pz);
+                if (vcount > 1) {
+                    LOG_DEBUG("Second vertex: pos=(%f, %f, %f)", vertices[1].px, vertices[1].py, vertices[1].pz);
+                }
+            }
 
             // Read normals
             if (nrm_acc) {
@@ -603,6 +637,13 @@ bool cardinal_gltf_load_scene(const char* path, CardinalScene* out_scene) {
                 } else {
                     LOG_TRACE("No indices provided and primitive type is not triangles, using unindexed rendering");
                 }
+            }
+            // Debug log first few indices
+            if (index_count > 0 && indices) {
+                uint32_t i0 = indices[0];
+                uint32_t i1 = (index_count > 1) ? indices[1] : 0;
+                uint32_t i2 = (index_count > 2) ? indices[2] : 0;
+                LOG_DEBUG("First indices: %u, %u, %u (of %u)", i0, i1, i2, index_count);
             }
 
             CardinalMesh* dst = &meshes[mesh_write++];

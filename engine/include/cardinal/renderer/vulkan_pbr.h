@@ -5,6 +5,9 @@
 #include <cardinal/assets/scene.h>
 #include <stdbool.h>
 
+// Forward declaration of VulkanAllocator
+typedef struct VulkanAllocator VulkanAllocator;
+
 #ifdef __cplusplus
 extern "C" {
 #endif
@@ -25,6 +28,13 @@ typedef struct PBRMaterialProperties {
     float emissiveFactor[3];
     float normalScale;
     float aoStrength;
+    
+    // Texture indices for material-specific textures when using descriptor indexing
+    uint32_t albedoTextureIndex;
+    uint32_t normalTextureIndex;
+    uint32_t metallicRoughnessTextureIndex;
+    uint32_t aoTextureIndex;
+    uint32_t emissiveTextureIndex;
     float _padding[3];   // Alignment to 16 bytes
 } PBRMaterialProperties;
 
@@ -74,17 +84,21 @@ typedef struct VulkanPBRPipeline {
     VkBuffer indexBuffer;
     VkDeviceMemory indexBufferMemory;
     
+    // Feature support flags
+    bool supportsDescriptorIndexing;
+    
     bool initialized;
 } VulkanPBRPipeline;
 
 // Function declarations
 bool vk_pbr_pipeline_create(VulkanPBRPipeline* pipeline, VkDevice device, VkPhysicalDevice physicalDevice, 
-                            VkRenderPass renderPass, VkCommandPool commandPool, VkQueue graphicsQueue);
+                            VkFormat swapchainFormat, VkFormat depthFormat,
+                            VkCommandPool commandPool, VkQueue graphicsQueue, VulkanAllocator* allocator);
 
-void vk_pbr_pipeline_destroy(VulkanPBRPipeline* pipeline, VkDevice device);
+void vk_pbr_pipeline_destroy(VulkanPBRPipeline* pipeline, VkDevice device, VulkanAllocator* allocator);
 
 bool vk_pbr_load_scene(VulkanPBRPipeline* pipeline, VkDevice device, VkPhysicalDevice physicalDevice,
-                       VkCommandPool commandPool, VkQueue graphicsQueue, const CardinalScene* scene);
+                       VkCommandPool commandPool, VkQueue graphicsQueue, const CardinalScene* scene, VulkanAllocator* allocator);
 
 void vk_pbr_update_uniforms(VulkanPBRPipeline* pipeline, const PBRUniformBufferObject* ubo,
                             const PBRLightingData* lighting);

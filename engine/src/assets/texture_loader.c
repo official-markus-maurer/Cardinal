@@ -43,13 +43,16 @@ bool texture_load_from_file(const char* filepath, TextureData* out_texture) {
     }
     memset(out_texture, 0, sizeof(*out_texture));
 
+    CARDINAL_LOG_INFO("[TEXTURE] Attempting to load texture: %s", filepath);
+
     // Flip vertically to match Vulkan's coordinate system if desired
     stbi_set_flip_vertically_on_load(0);
 
     int w=0,h=0,c=0;
     unsigned char* data = stbi_load(filepath, &w, &h, &c, 4); // force RGBA8
     if (!data) {
-        LOG_ERROR("Failed to load image: %s", filepath);
+        const char* reason = stbi_failure_reason();
+        CARDINAL_LOG_ERROR("[TEXTURE] Failed to load image: %s - STB reason: %s", filepath, reason ? reason : "unknown");
         return false;
     }
 
@@ -57,7 +60,8 @@ bool texture_load_from_file(const char* filepath, TextureData* out_texture) {
     out_texture->width = (uint32_t)w;
     out_texture->height = (uint32_t)h;
     out_texture->channels = 4;
-    LOG_INFO("Loaded texture %s (%ux%u, %u channels)", filepath, out_texture->width, out_texture->height, out_texture->channels);
+    CARDINAL_LOG_INFO("[TEXTURE] Successfully loaded texture %s (%ux%u, %u channels original: %d)", 
+                     filepath, out_texture->width, out_texture->height, out_texture->channels, c);
     return true;
 }
 

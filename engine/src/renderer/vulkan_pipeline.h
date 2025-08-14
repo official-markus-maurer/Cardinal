@@ -9,12 +9,12 @@
  * @param s Pointer to the VulkanState structure.
  * @return true if successful, false otherwise.
  */
-bool vk_create_renderpass_pipeline(VulkanState* s);
+bool vk_create_pipeline(VulkanState* s);
 
 /**
- * @brief Destroys the render pass and graphics pipeline.
+ * @brief Destroys the graphics pipeline.
  * @param s Pointer to the VulkanState structure.
  */
-void vk_destroy_renderpass_pipeline(VulkanState* s);
+void vk_destroy_pipeline(VulkanState* s);
 
 #endif // VULKAN_PIPELINE_H

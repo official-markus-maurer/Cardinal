@@ -1,4 +1,5 @@
 #version 450
+#extension GL_EXT_nonuniform_qualifier : enable
 
 // Input from vertex shader
 layout(location = 0) in vec3 fragWorldPos;
@@ -9,12 +10,15 @@ layout(location = 3) in vec3 fragViewPos;
 // Output color
 layout(location = 0) out vec4 outColor;
 
-// Material textures
+// Material textures - fixed bindings (fallback mode)
 layout(binding = 1) uniform sampler2D albedoMap;
 layout(binding = 2) uniform sampler2D normalMap;
 layout(binding = 3) uniform sampler2D metallicRoughnessMap;
 layout(binding = 4) uniform sampler2D aoMap;
 layout(binding = 5) uniform sampler2D emissiveMap;
+
+// Texture array for descriptor indexing (when available)
+layout(binding = 8) uniform sampler2D textures[];
 
 // Material properties uniform buffer
 layout(binding = 6) uniform MaterialProperties {
@@ -24,6 +28,13 @@ layout(binding = 6) uniform MaterialProperties {
     vec3 emissiveFactor;
     float normalScale;
     float aoStrength;
+    
+    // Texture indices for descriptor indexing
+    uint albedoTextureIndex;
+    uint normalTextureIndex;
+    uint metallicRoughnessTextureIndex;
+    uint aoTextureIndex;
+    uint emissiveTextureIndex;
 } material;
 
 // Lighting uniform buffer
@@ -36,9 +47,22 @@ layout(binding = 7) uniform LightingData {
 
 const float PI = 3.14159265359;
 
+// Sample a texture from either fixed binding or texture array using descriptor indexing
+vec4 sampleTex(uint index, sampler2D fixedSampler) {
+    // When index is zero and fixedSampler is provided, prefer fixed sampler (fallback when no indexing)
+    // Use nonuniformEXT for dynamic indexing of texture array
+    return texture(textures[nonuniformEXT(index)], fragTexCoord);
+}
+
 // Normal mapping function
 vec3 getNormalFromMap() {
-    vec3 tangentNormal = texture(normalMap, fragTexCoord).xyz * 2.0 - 1.0;
+    vec3 nrm;
+    if (material.normalTextureIndex == 0u || material.normalTextureIndex == 0xFFFFFFFFu) {
+        nrm = texture(normalMap, fragTexCoord).xyz;
+    } else {
+        nrm = texture(textures[nonuniformEXT(material.normalTextureIndex)], fragTexCoord).xyz;
+    }
+    vec3 tangentNormal = nrm * 2.0 - 1.0;
     tangentNormal.xy *= material.normalScale;
     
     vec3 Q1 = dFdx(fragWorldPos);
@@ -46,33 +70,32 @@ vec3 getNormalFromMap() {
     vec2 st1 = dFdx(fragTexCoord);
     vec2 st2 = dFdy(fragTexCoord);
     
-    vec3 N = normalize(fragNormal);
     vec3 T = normalize(Q1 * st2.t - Q2 * st1.t);
-    vec3 B = -normalize(cross(N, T));
-    mat3 TBN = mat3(T, B, N);
+    vec3 B = normalize(-Q1 * st2.s + Q2 * st1.s);
+    vec3 N = normalize(fragNormal);
     
+    mat3 TBN = mat3(T, B, N);
     return normalize(TBN * tangentNormal);
 }
 
-// Distribution function (GGX/Trowbridge-Reitz)
+// GGX/Trowbridge-Reitz normal distribution function
 float DistributionGGX(vec3 N, vec3 H, float roughness) {
     float a = roughness * roughness;
     float a2 = a * a;
     float NdotH = max(dot(N, H), 0.0);
     float NdotH2 = NdotH * NdotH;
-    
+
     float num = a2;
     float denom = (NdotH2 * (a2 - 1.0) + 1.0);
     denom = PI * denom * denom;
-    
+
     return num / denom;
 }
 
-// Geometry function (Smith's method)
 float GeometrySchlickGGX(float NdotV, float roughness) {
     float r = (roughness + 1.0);
     float k = (r * r) / 8.0;
-    
+
     float num = NdotV;
     float denom = NdotV * (1.0 - k) + k;
     
@@ -95,12 +118,35 @@ vec3 fresnelSchlick(float cosTheta, vec3 F0) {
 
 void main() {
     // Sample material properties
-    vec3 albedo = pow(texture(albedoMap, fragTexCoord).rgb * material.albedoFactor, vec3(2.2)); // sRGB to linear
-    vec3 metallicRoughness = texture(metallicRoughnessMap, fragTexCoord).rgb;
+    vec3 albedo;
+    if (material.albedoTextureIndex == 0u || material.albedoTextureIndex == 0xFFFFFFFFu) {
+        albedo = texture(albedoMap, fragTexCoord).rgb * material.albedoFactor;
+    } else {
+        albedo = texture(textures[nonuniformEXT(material.albedoTextureIndex)], fragTexCoord).rgb * material.albedoFactor;
+    }
+    
+    vec3 metallicRoughness;
+    if (material.metallicRoughnessTextureIndex == 0u || material.metallicRoughnessTextureIndex == 0xFFFFFFFFu) {
+        metallicRoughness = texture(metallicRoughnessMap, fragTexCoord).rgb;
+    } else {
+        metallicRoughness = texture(textures[nonuniformEXT(material.metallicRoughnessTextureIndex)], fragTexCoord).rgb;
+    }
     float metallic = metallicRoughness.b * material.metallicFactor;
     float roughness = metallicRoughness.g * material.roughnessFactor;
-    float ao = texture(aoMap, fragTexCoord).r * material.aoStrength;
-    vec3 emissive = texture(emissiveMap, fragTexCoord).rgb * material.emissiveFactor;
+    
+    float ao;
+    if (material.aoTextureIndex == 0u || material.aoTextureIndex == 0xFFFFFFFFu) {
+        ao = texture(aoMap, fragTexCoord).r * material.aoStrength;
+    } else {
+        ao = texture(textures[nonuniformEXT(material.aoTextureIndex)], fragTexCoord).r * material.aoStrength;
+    }
+    
+    vec3 emissive;
+    if (material.emissiveTextureIndex == 0u || material.emissiveTextureIndex == 0xFFFFFFFFu) {
+        emissive = texture(emissiveMap, fragTexCoord).rgb * material.emissiveFactor;
+    } else {
+        emissive = texture(textures[nonuniformEXT(material.emissiveTextureIndex)], fragTexCoord).rgb * material.emissiveFactor;
+    }
     
     // Get normal from normal map
     vec3 N = getNormalFromMap();
@@ -141,9 +187,6 @@ void main() {
     
     // HDR tonemapping (Reinhard)
     color = color / (color + vec3(1.0));
-    
-    // Gamma correction
-    color = pow(color, vec3(1.0/2.2));
     
     outColor = vec4(color, 1.0);
 }

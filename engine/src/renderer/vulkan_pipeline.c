@@ -7,6 +7,54 @@
 #include "cardinal/core/log.h"
 
 /**
+ * @brief Query buffer memory requirements using maintenance4 (if available) or legacy path.
+ * @param s VulkanState containing function pointers and device handle.
+ * @param buffer The buffer to query requirements for.
+ * @param requirements Output memory requirements.
+ * @return true if successful, false otherwise.
+ */
+static bool query_buffer_memory_requirements(VulkanState* s, VkBuffer buffer, VkMemoryRequirements* requirements) {
+    if (s->supports_maintenance4 && s->vkGetDeviceBufferMemoryRequirements) {
+        // Use maintenance4 device-level query
+        VkDeviceBufferMemoryRequirements deviceBufferInfo = {0};
+        deviceBufferInfo.sType = VK_STRUCTURE_TYPE_DEVICE_BUFFER_MEMORY_REQUIREMENTS;
+        deviceBufferInfo.pCreateInfo = NULL; // Would need buffer create info - fall back for now
+        
+        // For now, fall back to legacy until we can reconstruct create info
+        vkGetBufferMemoryRequirements(s->device, buffer, requirements);
+        return true;
+    } else {
+        // Legacy path
+        vkGetBufferMemoryRequirements(s->device, buffer, requirements);
+        return true;
+    }
+}
+
+/**
+ * @brief Query image memory requirements using maintenance4 (if available) or legacy path.
+ * @param s VulkanState containing function pointers and device handle.
+ * @param image The image to query requirements for.
+ * @param requirements Output memory requirements.
+ * @return true if successful, false otherwise.
+ */
+static bool query_image_memory_requirements(VulkanState* s, VkImage image, VkMemoryRequirements* requirements) {
+    if (s->supports_maintenance4 && s->vkGetDeviceImageMemoryRequirements) {
+        // Use maintenance4 device-level query
+        VkDeviceImageMemoryRequirements deviceImageInfo = {0};
+        deviceImageInfo.sType = VK_STRUCTURE_TYPE_DEVICE_IMAGE_MEMORY_REQUIREMENTS;
+        deviceImageInfo.pCreateInfo = NULL; // Would need image create info - fall back for now
+        
+        // For now, fall back to legacy until we can reconstruct create info
+        vkGetImageMemoryRequirements(s->device, image, requirements);
+        return true;
+    } else {
+        // Legacy path
+        vkGetImageMemoryRequirements(s->device, image, requirements);
+        return true;
+    }
+}
+
+/**
  * @brief Reads a SPIR-V shader file into memory.
  *
  * @param path Path to the SPIR-V file.
@@ -78,43 +126,11 @@ static bool create_depth_resources(VulkanState* s) {
     imageInfo.samples = VK_SAMPLE_COUNT_1_BIT;
     imageInfo.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
     
-    if (vkCreateImage(s->device, &imageInfo, NULL, &s->depth_image) != VK_SUCCESS) {
-        LOG_ERROR("pipeline: failed to create depth image");
+    // Use VulkanAllocator to allocate and bind image + memory
+    if (!vk_allocator_allocate_image(&s->allocator, &imageInfo, &s->depth_image, &s->depth_image_memory, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT)) {
+        LOG_ERROR("pipeline: allocator failed to create depth image");
         return false;
     }
-    
-    // Allocate memory for depth image
-    VkMemoryRequirements memRequirements;
-    vkGetImageMemoryRequirements(s->device, s->depth_image, &memRequirements);
-    
-    VkPhysicalDeviceMemoryProperties memProperties;
-    vkGetPhysicalDeviceMemoryProperties(s->physical_device, &memProperties);
-    
-    uint32_t memoryTypeIndex = UINT32_MAX;
-    for (uint32_t i = 0; i < memProperties.memoryTypeCount; i++) {
-        if ((memRequirements.memoryTypeBits & (1 << i)) &&
-            (memProperties.memoryTypes[i].propertyFlags & VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT)) {
-            memoryTypeIndex = i;
-            break;
-        }
-    }
-    
-    if (memoryTypeIndex == UINT32_MAX) {
-        LOG_ERROR("pipeline: failed to find suitable memory type for depth image");
-        return false;
-    }
-    
-    VkMemoryAllocateInfo allocInfo = {0};
-    allocInfo.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO;
-    allocInfo.allocationSize = memRequirements.size;
-    allocInfo.memoryTypeIndex = memoryTypeIndex;
-    
-    if (vkAllocateMemory(s->device, &allocInfo, NULL, &s->depth_image_memory) != VK_SUCCESS) {
-        LOG_ERROR("pipeline: failed to allocate depth image memory");
-        return false;
-    }
-    
-    vkBindImageMemory(s->device, s->depth_image, s->depth_image_memory, 0);
     
     // Create depth image view
     VkImageViewCreateInfo viewInfo = {0};
@@ -130,8 +146,15 @@ static bool create_depth_resources(VulkanState* s) {
     
     if (vkCreateImageView(s->device, &viewInfo, NULL, &s->depth_image_view) != VK_SUCCESS) {
         LOG_ERROR("pipeline: failed to create depth image view");
+        // Free image + memory via allocator on failure
+        vk_allocator_free_image(&s->allocator, s->depth_image, s->depth_image_memory);
+        s->depth_image = VK_NULL_HANDLE;
+        s->depth_image_memory = VK_NULL_HANDLE;
         return false;
     }
+    
+    // Initialize layout tracking
+    s->depth_layout_initialized = false;
     
     LOG_INFO("pipeline: depth resources created");
     return true;
@@ -149,14 +172,14 @@ static void destroy_depth_resources(VulkanState* s) {
         vkDestroyImageView(s->device, s->depth_image_view, NULL);
         s->depth_image_view = VK_NULL_HANDLE;
     }
-    if (s->depth_image) {
-        vkDestroyImage(s->device, s->depth_image, NULL);
+    // Free image + memory using allocator
+    if (s->depth_image || s->depth_image_memory) {
+        vk_allocator_free_image(&s->allocator, s->depth_image, s->depth_image_memory);
         s->depth_image = VK_NULL_HANDLE;
-    }
-    if (s->depth_image_memory) {
-        vkFreeMemory(s->device, s->depth_image_memory, NULL);
         s->depth_image_memory = VK_NULL_HANDLE;
     }
+    // Reset layout tracking when depth resources are destroyed
+    s->depth_layout_initialized = false;
 }
 
 /**
@@ -168,58 +191,14 @@ static void destroy_depth_resources(VulkanState* s) {
  * @todo Support multiple render passes for advanced rendering techniques.
  * @todo Implement pipeline caching for faster recreation.
  */
-bool vk_create_renderpass_pipeline(VulkanState* s) {
+bool vk_create_pipeline(VulkanState* s) {
     LOG_INFO("pipeline: create depth resources");
     if (!create_depth_resources(s)) {
         return false;
     }
     
-    LOG_INFO("pipeline: create render pass");
-    VkAttachmentDescription attachments[2] = {0};
-    
-    // Color attachment
-    attachments[0].format = s->swapchain_format;
-    attachments[0].samples = VK_SAMPLE_COUNT_1_BIT;
-    attachments[0].loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR;
-    attachments[0].storeOp = VK_ATTACHMENT_STORE_OP_STORE;
-    attachments[0].initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
-    attachments[0].finalLayout = VK_IMAGE_LAYOUT_PRESENT_SRC_KHR;
-
-    // Depth attachment
-    attachments[1].format = s->depth_format;
-    attachments[1].samples = VK_SAMPLE_COUNT_1_BIT;
-    attachments[1].loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR;
-    attachments[1].storeOp = VK_ATTACHMENT_STORE_OP_DONT_CARE;
-    attachments[1].stencilLoadOp = VK_ATTACHMENT_LOAD_OP_DONT_CARE;
-    attachments[1].stencilStoreOp = VK_ATTACHMENT_STORE_OP_DONT_CARE;
-    attachments[1].initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
-    attachments[1].finalLayout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
-
-    VkAttachmentReference color_ref = {0};
-    color_ref.attachment = 0;
-    color_ref.layout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
-    
-    VkAttachmentReference depth_ref = {0};
-    depth_ref.attachment = 1;
-    depth_ref.layout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
-
-    VkSubpassDescription subpass = {0};
-    subpass.pipelineBindPoint = VK_PIPELINE_BIND_POINT_GRAPHICS;
-    subpass.colorAttachmentCount = 1;
-    subpass.pColorAttachments = &color_ref;
-    subpass.pDepthStencilAttachment = &depth_ref;
-
-    VkRenderPassCreateInfo rpci = { .sType = VK_STRUCTURE_TYPE_RENDER_PASS_CREATE_INFO };
-    rpci.attachmentCount = 2;
-    rpci.pAttachments = attachments;
-    rpci.subpassCount = 1;
-    rpci.pSubpasses = &subpass;
-
-    if (vkCreateRenderPass(s->device, &rpci, NULL, &s->render_pass) != VK_SUCCESS) { 
-        LOG_ERROR("pipeline: vkCreateRenderPass failed"); 
-        return false; 
-    }
-    LOG_INFO("pipeline: render pass created");
+    // Using dynamic rendering - no render pass needed
+    LOG_INFO("pipeline: using dynamic rendering");
 
     // Create shaders from SPIR-V files
     uint8_t* vs_data = NULL; size_t vs_size = 0;
@@ -348,7 +327,17 @@ bool vk_create_renderpass_pipeline(VulkanState* s) {
     pipeline_ci.pColorBlendState = &cb_ci;
     pipeline_ci.pDynamicState = &dynamicState;
     pipeline_ci.layout = s->pipeline_layout;
-    pipeline_ci.renderPass = s->render_pass;
+    
+    // Always use dynamic rendering
+    VkFormat colorFormat = s->swapchain_format;
+    VkPipelineRenderingCreateInfo pipelineRenderingInfo = {0};
+    pipelineRenderingInfo.sType = VK_STRUCTURE_TYPE_PIPELINE_RENDERING_CREATE_INFO;
+    pipelineRenderingInfo.colorAttachmentCount = 1;
+    pipelineRenderingInfo.pColorAttachmentFormats = &colorFormat;
+    pipelineRenderingInfo.depthAttachmentFormat = s->depth_format;
+    pipelineRenderingInfo.stencilAttachmentFormat = VK_FORMAT_UNDEFINED;
+    pipeline_ci.pNext = &pipelineRenderingInfo;
+    pipeline_ci.renderPass = VK_NULL_HANDLE;
     pipeline_ci.subpass = 0;
 
     LOG_INFO("pipeline: calling vkCreateGraphicsPipelines");
@@ -367,24 +356,8 @@ bool vk_create_renderpass_pipeline(VulkanState* s) {
     free(vs_data);
     free(fs_data);
 
-    // Framebuffers
-    LOG_INFO("pipeline: creating framebuffers");
-    s->framebuffers = (VkFramebuffer*)malloc(sizeof(VkFramebuffer)*s->swapchain_image_count);
-    for (uint32_t i=0;i<s->swapchain_image_count;i++) {
-        VkImageView attachments[] = { s->swapchain_image_views[i], s->depth_image_view };
-        VkFramebufferCreateInfo fci = { .sType = VK_STRUCTURE_TYPE_FRAMEBUFFER_CREATE_INFO };
-        fci.renderPass = s->render_pass;
-        fci.attachmentCount = 2;
-        fci.pAttachments = attachments;
-        fci.width = s->swapchain_extent.width;
-        fci.height = s->swapchain_extent.height;
-        fci.layers = 1;
-        if (vkCreateFramebuffer(s->device, &fci, NULL, &s->framebuffers[i]) != VK_SUCCESS) { 
-            LOG_ERROR("pipeline: vkCreateFramebuffer failed"); 
-            return false; 
-        }
-    }
-    LOG_INFO("pipeline: framebuffers created");
+    // Framebuffers are not used with dynamic rendering
+    LOG_INFO("pipeline: dynamic rendering path - no framebuffers");
 
     return true;
 }
@@ -397,17 +370,10 @@ bool vk_create_renderpass_pipeline(VulkanState* s) {
  * @todo Ensure thread-safe destruction of resources.
  * @todo Add logging for destruction events.
  */
-void vk_destroy_renderpass_pipeline(VulkanState* s) {
+void vk_destroy_pipeline(VulkanState* s) {
     if (!s) return;
-    if (s->framebuffers) {
-        for (uint32_t i=0;i<s->swapchain_image_count;i++) {
-            vkDestroyFramebuffer(s->device, s->framebuffers[i], NULL);
-        }
-        free(s->framebuffers);
-        s->framebuffers = NULL;
-    }
     if (s->pipeline) { vkDestroyPipeline(s->device, s->pipeline, NULL); s->pipeline = VK_NULL_HANDLE; }
     if (s->pipeline_layout) { vkDestroyPipelineLayout(s->device, s->pipeline_layout, NULL); s->pipeline_layout = VK_NULL_HANDLE; }
-    if (s->render_pass) { vkDestroyRenderPass(s->device, s->render_pass, NULL); s->render_pass = VK_NULL_HANDLE; }
+    // No render pass/framebuffers to destroy when using dynamic rendering
     destroy_depth_resources(s);
 }

@@ -87,8 +87,8 @@ bool vk_create_instance(VulkanState* s) {
     ai.applicationVersion = VK_MAKE_VERSION(1,0,0);
     ai.pEngineName = "Cardinal";
     ai.engineVersion = VK_MAKE_VERSION(1,0,0);
-    ai.apiVersion = VK_API_VERSION_1_2;
-    CARDINAL_LOG_INFO("[INSTANCE] Using Vulkan API version 1.2");
+    ai.apiVersion = VK_MAKE_API_VERSION(0, 1, 4, 325);
+    CARDINAL_LOG_INFO("[INSTANCE] Using Vulkan API version 1.4.325");
 
     uint32_t glfw_count = 0;
     const char** glfw_exts = glfwGetRequiredInstanceExtensions(&glfw_count);
@@ -224,7 +224,6 @@ bool vk_pick_physical_device(VulkanState* s) {
  * @return true on success, false on failure.
  * 
  * @todo Improve queue family selection for dedicated transfer queues.
- * @todo Enable device extensions like VK_KHR_dynamic_rendering for modern rendering.
  */
 bool vk_create_device(VulkanState* s) {
     CARDINAL_LOG_INFO("[DEVICE] Starting logical device creation");
@@ -246,13 +245,134 @@ bool vk_create_device(VulkanState* s) {
     qci.queueCount = 1;
     qci.pQueuePriorities = &prio;
 
-    const char* device_extensions[] = { VK_KHR_SWAPCHAIN_EXTENSION_NAME };
+    // Query supported Vulkan API version
+    VkPhysicalDeviceProperties physicalDeviceProperties;
+    vkGetPhysicalDeviceProperties(s->physical_device, &physicalDeviceProperties);
+    uint32_t apiVersion = physicalDeviceProperties.apiVersion;
+    uint32_t majorVersion = VK_VERSION_MAJOR(apiVersion);
+    uint32_t minorVersion = VK_VERSION_MINOR(apiVersion);
+    CARDINAL_LOG_INFO("[DEVICE] Physical device supports Vulkan %u.%u.%u", 
+                      majorVersion, minorVersion, VK_VERSION_PATCH(apiVersion));
 
+    // Require Vulkan 1.3 core support
+    bool vulkan_13_supported = (majorVersion > 1) || (majorVersion == 1 && minorVersion >= 3);
+    // Vulkan 1.2 support implies API version >= 1.2 (always true when 1.3 is required)
+    bool vulkan_12_supported = (majorVersion > 1) || (majorVersion == 1 && minorVersion >= 2);
+    if (!vulkan_13_supported) {
+        CARDINAL_LOG_ERROR("[DEVICE] Vulkan 1.3 core is required but not supported (found %u.%u)", majorVersion, minorVersion);
+        free(qfp);
+        return false;
+    }
+    CARDINAL_LOG_INFO("[DEVICE] Vulkan 1.3 core support confirmed");
+
+    // Only require VK_KHR_swapchain extension - dynamic rendering is in 1.3 core
+    const char* device_extensions[] = { 
+        VK_KHR_SWAPCHAIN_EXTENSION_NAME
+    };
+    uint32_t enabled_extension_count = 1;
+
+    // Setup feature chain - order matters for pNext chaining
+    VkPhysicalDeviceVulkan13Features vulkan13Features = {0};
+    vulkan13Features.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_3_FEATURES;
+    
+    VkPhysicalDeviceVulkan12Features vulkan12Features = {0};
+    vulkan12Features.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_2_FEATURES;
+    
+    VkPhysicalDeviceFeatures2 deviceFeatures2 = {0};
+    deviceFeatures2.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2;
+
+    // Query available features first
+    if (vulkan_13_supported) {
+        vulkan13Features.pNext = NULL;
+        vulkan12Features.pNext = &vulkan13Features;
+        deviceFeatures2.pNext = &vulkan12Features;
+        vkGetPhysicalDeviceFeatures2(s->physical_device, &deviceFeatures2);
+        CARDINAL_LOG_INFO("[DEVICE] Queried Vulkan 1.3 features");
+    } else if (vulkan_12_supported) {
+        vulkan12Features.pNext = NULL;
+        deviceFeatures2.pNext = &vulkan12Features;
+        vkGetPhysicalDeviceFeatures2(s->physical_device, &deviceFeatures2);
+        CARDINAL_LOG_INFO("[DEVICE] Queried Vulkan 1.2 features");
+    } else {
+        vkGetPhysicalDeviceFeatures2(s->physical_device, &deviceFeatures2);
+        CARDINAL_LOG_INFO("[DEVICE] Queried base Vulkan features only");
+    }
+
+    // Now setup the actual feature chain for device creation
+    void* featureChainHead = NULL;
+
+    // Enforce core Vulkan 1.3 dynamic rendering and synchronization2
+    vulkan13Features.dynamicRendering = VK_TRUE;
+    vulkan13Features.synchronization2 = VK_TRUE;
+    
+    // Enable maintenance4 if supported for inline uniform blocks and improved memory queries
+    if (vulkan13Features.maintenance4) {
+        vulkan13Features.maintenance4 = VK_TRUE;
+    }
+    
+    CARDINAL_LOG_INFO("[DEVICE] Enabling core Vulkan 1.3 features: dynamicRendering + synchronization2 + maintenance4");
+
+    // Enable useful Vulkan 1.2 features if available
+    if (vulkan_12_supported) {
+        // Explicitly enable descriptor indexing features if supported
+        if (vulkan12Features.descriptorIndexing) {
+            vulkan12Features.descriptorIndexing = VK_TRUE;
+        }
+        if (vulkan12Features.shaderSampledImageArrayNonUniformIndexing) {
+            vulkan12Features.shaderSampledImageArrayNonUniformIndexing = VK_TRUE;
+        }
+        if (vulkan12Features.runtimeDescriptorArray) {
+            vulkan12Features.runtimeDescriptorArray = VK_TRUE;
+        }
+        if (vulkan12Features.descriptorBindingVariableDescriptorCount) {
+            vulkan12Features.descriptorBindingVariableDescriptorCount = VK_TRUE;
+        }
+        
+        // Enable other useful features if supported
+        if (vulkan12Features.timelineSemaphore) {
+            vulkan12Features.timelineSemaphore = VK_TRUE;
+        }
+        if (vulkan12Features.bufferDeviceAddress) {
+            vulkan12Features.bufferDeviceAddress = VK_TRUE;
+        }
+        
+        // Log individual Vulkan 1.2 feature status
+        CARDINAL_LOG_INFO("[DEVICE] Vulkan 1.2 feature status:");
+        CARDINAL_LOG_INFO("[DEVICE]   descriptorIndexing: %s", vulkan12Features.descriptorIndexing ? "enabled" : "disabled");
+        CARDINAL_LOG_INFO("[DEVICE]   shaderSampledImageArrayNonUniformIndexing: %s", vulkan12Features.shaderSampledImageArrayNonUniformIndexing ? "enabled" : "disabled");
+        CARDINAL_LOG_INFO("[DEVICE]   runtimeDescriptorArray: %s", vulkan12Features.runtimeDescriptorArray ? "enabled" : "disabled");
+        CARDINAL_LOG_INFO("[DEVICE]   descriptorBindingVariableDescriptorCount: %s", vulkan12Features.descriptorBindingVariableDescriptorCount ? "enabled" : "disabled");
+        CARDINAL_LOG_INFO("[DEVICE]   timelineSemaphore: %s", vulkan12Features.timelineSemaphore ? "enabled" : "disabled");
+        CARDINAL_LOG_INFO("[DEVICE]   bufferDeviceAddress: %s", vulkan12Features.bufferDeviceAddress ? "enabled" : "disabled");
+        
+        vulkan12Features.pNext = featureChainHead;
+        featureChainHead = &vulkan12Features;
+    } else {
+        CARDINAL_LOG_INFO("[DEVICE] Vulkan 1.2 features: not available (API version < 1.2)");
+    }
+
+    // Enforce Vulkan 1.3 features: both must be enabled
+    CARDINAL_LOG_INFO("[DEVICE] Vulkan 1.3 feature status:");
+    CARDINAL_LOG_INFO("[DEVICE]   synchronization2: %s", vulkan13Features.synchronization2 ? "enabled" : "disabled");
+    CARDINAL_LOG_INFO("[DEVICE]   maintenance4: %s", vulkan13Features.maintenance4 ? "enabled" : "disabled");
+    CARDINAL_LOG_INFO("[DEVICE]   dynamicRendering: %s", vulkan13Features.dynamicRendering ? "enabled" : "disabled");
+    if (!vulkan13Features.synchronization2 || !vulkan13Features.dynamicRendering) {
+        CARDINAL_LOG_ERROR("[DEVICE] Vulkan 1.3 features required but not supported/enabled: sync2=%d dynamicRendering=%d", vulkan13Features.synchronization2, vulkan13Features.dynamicRendering);
+        free(qfp);
+        return false;
+    }
+    vulkan13Features.pNext = featureChainHead;
+    featureChainHead = &vulkan13Features;
+
+    // Set up device creation
+    deviceFeatures2.pNext = featureChainHead;
+    
     VkDeviceCreateInfo dci = { .sType = VK_STRUCTURE_TYPE_DEVICE_CREATE_INFO };
     dci.queueCreateInfoCount = 1;
     dci.pQueueCreateInfos = &qci;
-    dci.enabledExtensionCount = (uint32_t)(sizeof(device_extensions) / sizeof(device_extensions[0]));
+    dci.enabledExtensionCount = enabled_extension_count;
     dci.ppEnabledExtensionNames = device_extensions;
+    dci.pNext = &deviceFeatures2;
 
     CARDINAL_LOG_INFO("[DEVICE] Enabling %u device extension(s)", dci.enabledExtensionCount);
     for (uint32_t i = 0; i < dci.enabledExtensionCount; ++i) {
@@ -268,6 +388,84 @@ bool vk_create_device(VulkanState* s) {
     CARDINAL_LOG_INFO("[DEVICE] Retrieved graphics queue");
     s->present_queue_family = s->graphics_queue_family;
     s->present_queue = s->graphics_queue;
+
+    // Set dynamic rendering support flag and version feature flags
+    s->supports_dynamic_rendering = true; // required
+    s->supports_vulkan_12_features = vulkan_12_supported;
+    s->supports_vulkan_13_features = true; // required
+    s->supports_maintenance4 = vulkan13Features.maintenance4 == VK_TRUE;
+    CARDINAL_LOG_INFO("[DEVICE] Dynamic rendering support: enabled (required)");
+    CARDINAL_LOG_INFO("[DEVICE] Vulkan 1.2 features: %s", s->supports_vulkan_12_features ? "available" : "unavailable");
+    CARDINAL_LOG_INFO("[DEVICE] Vulkan 1.3 features: available (required)");
+    CARDINAL_LOG_INFO("[DEVICE] Vulkan 1.3 maintenance4: %s", s->supports_maintenance4 ? "enabled" : "disabled");
+
+    // Load dynamic rendering function pointers (core)
+    s->vkCmdBeginRendering = (PFN_vkCmdBeginRendering)vkGetDeviceProcAddr(s->device, "vkCmdBeginRendering");
+    s->vkCmdEndRendering = (PFN_vkCmdEndRendering)vkGetDeviceProcAddr(s->device, "vkCmdEndRendering");
+    CARDINAL_LOG_INFO("[DEVICE] Loaded vkCmdBeginRendering: %p, vkCmdEndRendering: %p", (void*)s->vkCmdBeginRendering, (void*)s->vkCmdEndRendering);
+
+    // Load synchronization2 function pointer (core)
+    s->vkCmdPipelineBarrier2 = (PFN_vkCmdPipelineBarrier2)vkGetDeviceProcAddr(s->device, "vkCmdPipelineBarrier2");
+    if (!s->vkCmdPipelineBarrier2) {
+        CARDINAL_LOG_ERROR("[DEVICE] Failed to load vkCmdPipelineBarrier2 (required)");
+        free(qfp);
+        return false;
+    }
+    CARDINAL_LOG_INFO("[DEVICE] Synchronization2 function loaded (vkCmdPipelineBarrier2)");
+
+    // Load maintenance4 core functions (Vulkan 1.3): vkGetDeviceBufferMemoryRequirements / vkGetDeviceImageMemoryRequirements
+    s->vkGetDeviceBufferMemoryRequirements =
+        (PFN_vkGetDeviceBufferMemoryRequirements)vkGetDeviceProcAddr(s->device, "vkGetDeviceBufferMemoryRequirements");
+    s->vkGetDeviceImageMemoryRequirements =
+        (PFN_vkGetDeviceImageMemoryRequirements)vkGetDeviceProcAddr(s->device, "vkGetDeviceImageMemoryRequirements");
+    CARDINAL_LOG_INFO("[DEVICE] maintenance4 functions: BufferReqs=%p ImageReqs=%p",
+                      (void*)s->vkGetDeviceBufferMemoryRequirements, (void*)s->vkGetDeviceImageMemoryRequirements);
+
+    // Load vkQueueSubmit2 (core)
+    s->vkQueueSubmit2 = (PFN_vkQueueSubmit2)vkGetDeviceProcAddr(s->device, "vkQueueSubmit2");
+    if (!s->vkQueueSubmit2) {
+        CARDINAL_LOG_ERROR("[DEVICE] Failed to load vkQueueSubmit2 (required)");
+        free(qfp);
+        return false;
+    }
+    CARDINAL_LOG_INFO("[DEVICE] Loaded vkQueueSubmit2: %p", (void*)s->vkQueueSubmit2);
+
+    // Load timeline semaphore function pointers (Vulkan 1.2 core)
+    s->vkWaitSemaphores = (PFN_vkWaitSemaphores)vkGetDeviceProcAddr(s->device, "vkWaitSemaphores");
+    if (!s->vkWaitSemaphores) {
+        CARDINAL_LOG_ERROR("[DEVICE] Failed to load vkWaitSemaphores (required for timeline semaphores)");
+        free(qfp);
+        return false;
+    }
+    
+    s->vkSignalSemaphore = (PFN_vkSignalSemaphore)vkGetDeviceProcAddr(s->device, "vkSignalSemaphore");
+    if (!s->vkSignalSemaphore) {
+        CARDINAL_LOG_ERROR("[DEVICE] Failed to load vkSignalSemaphore (required for timeline semaphores)");
+        free(qfp);
+        return false;
+    }
+    
+    s->vkGetSemaphoreCounterValue = (PFN_vkGetSemaphoreCounterValue)vkGetDeviceProcAddr(s->device, "vkGetSemaphoreCounterValue");
+    if (!s->vkGetSemaphoreCounterValue) {
+        CARDINAL_LOG_ERROR("[DEVICE] Failed to load vkGetSemaphoreCounterValue (required for timeline semaphores)");
+        free(qfp);
+        return false;
+    }
+    
+    CARDINAL_LOG_INFO("[DEVICE] Timeline semaphore functions loaded: vkWaitSemaphores=%p, vkSignalSemaphore=%p, vkGetSemaphoreCounterValue=%p", 
+                      (void*)s->vkWaitSemaphores, (void*)s->vkSignalSemaphore, (void*)s->vkGetSemaphoreCounterValue);
+
+    // Initialize unified Vulkan allocator
+    if (!vk_allocator_init(&s->allocator,
+                           s->physical_device,
+                           s->device,
+                           s->supports_maintenance4,
+                           s->vkGetDeviceBufferMemoryRequirements,
+                           s->vkGetDeviceImageMemoryRequirements)) {
+        CARDINAL_LOG_ERROR("[DEVICE] Failed to initialize VulkanAllocator");
+        return false;
+    }
+    CARDINAL_LOG_INFO("[DEVICE] VulkanAllocator initialized (maintenance4=%s)", s->supports_maintenance4 ? "yes" : "no");
 
     return true;
 }
@@ -285,6 +483,10 @@ bool vk_create_surface(VulkanState* s, struct CardinalWindow* window) {
 void vk_destroy_device_objects(VulkanState* s) {
     CARDINAL_LOG_INFO("[DESTROY] Destroying device objects and cleanup");
     if (s->device) { vkDeviceWaitIdle(s->device); }
+
+    // Shutdown Vulkan allocator before destroying device
+    vk_allocator_shutdown(&s->allocator);
+
     if (s->device) { vkDestroyDevice(s->device, NULL); s->device = VK_NULL_HANDLE; }
     if (s->debug_messenger) {
         PFN_vkDestroyDebugUtilsMessengerEXT dfunc = (PFN_vkDestroyDebugUtilsMessengerEXT)vkGetInstanceProcAddr(s->instance, "vkDestroyDebugUtilsMessengerEXT");

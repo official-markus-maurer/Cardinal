@@ -12,7 +12,7 @@
 bool vk_create_commands_sync(VulkanState* s);
 
 /**
- * @brief Recreates the images in flight array after swapchain changes.
+ * @brief Recreates per-image initialization tracking after swapchain changes.
  * @param s Pointer to the VulkanState structure.
  * @return true on success, false on failure.
  */

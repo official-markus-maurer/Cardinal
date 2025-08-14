@@ -181,6 +181,12 @@
 },
 {
   "directory": "C:/Users/admin/Desktop/Cardinal/build/engine",
+  "command": "\"C:/Program Files/LLVM/bin/clang.exe\" -DCARDINAL_ENABLE_VK_VALIDATION=1 -DCARDINAL_ENGINE_INTERNAL -DGLFW_INCLUDE_VULKAN -DSPDLOG_FWRITE_UNLOCKED -DVK_USE_PLATFORM_WIN32_KHR -D_CRT_SECURE_NO_WARNINGS @CMakeFiles/cardinal_engine.dir/includes_C.rsp -O0 -std=c23 -D_DEBUG -D_DLL -D_MT -Xclang --dependent-lib=msvcrtd -g -Xclang -gcodeview -Wall -Wextra -Wpedantic -Wno-deprecated-declarations -Wno-language-extension-token -o CMakeFiles/cardinal_engine.dir/src/renderer/vulkan_allocator.c.obj -c C:/Users/admin/Desktop/Cardinal/engine/src/renderer/vulkan_allocator.c",
+  "file": "C:/Users/admin/Desktop/Cardinal/engine/src/renderer/vulkan_allocator.c",
+  "output": "engine/CMakeFiles/cardinal_engine.dir/src/renderer/vulkan_allocator.c.obj"
+},
+{
+  "directory": "C:/Users/admin/Desktop/Cardinal/build/engine",
   "command": "\"C:/Program Files/LLVM/bin/clang.exe\" -DCARDINAL_ENABLE_VK_VALIDATION=1 -DCARDINAL_ENGINE_INTERNAL -DGLFW_INCLUDE_VULKAN -DSPDLOG_FWRITE_UNLOCKED -DVK_USE_PLATFORM_WIN32_KHR -D_CRT_SECURE_NO_WARNINGS @CMakeFiles/cardinal_engine.dir/includes_C.rsp -O0 -std=c23 -D_DEBUG -D_DLL -D_MT -Xclang --dependent-lib=msvcrtd -g -Xclang -gcodeview -Wall -Wextra -Wpedantic -Wno-deprecated-declarations -Wno-language-extension-token -o CMakeFiles/cardinal_engine.dir/src/assets/scene.c.obj -c C:/Users/admin/Desktop/Cardinal/engine/src/assets/scene.c",
   "file": "C:/Users/admin/Desktop/Cardinal/engine/src/assets/scene.c",
   "output": "engine/CMakeFiles/cardinal_engine.dir/src/assets/scene.c.obj"

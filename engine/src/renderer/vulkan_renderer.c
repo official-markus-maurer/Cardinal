@@ -51,21 +51,21 @@ bool cardinal_renderer_create(CardinalRenderer* out_renderer, CardinalWindow* wi
     LOG_INFO("renderer_create: device");
     if (!vk_create_swapchain(s)) { LOG_ERROR("vk_create_swapchain failed"); return false; }
     LOG_INFO("renderer_create: swapchain");
-    if (!vk_create_renderpass_pipeline(s)) { LOG_ERROR("vk_create_renderpass_pipeline failed"); return false; }
+    if (!vk_create_pipeline(s)) { LOG_ERROR("vk_create_pipeline failed"); return false; }
     LOG_INFO("renderer_create: pipeline");
     if (!vk_create_commands_sync(s)) { LOG_ERROR("vk_create_commands_sync failed"); return false; }
     LOG_INFO("renderer_create: commands");
     
     // Initialize PBR pipeline
-    s->use_pbr_pipeline = true;
-    if (s->use_pbr_pipeline) {
-        if (!vk_pbr_pipeline_create(&s->pbr_pipeline, s->device, s->physical_device, 
-                                   s->render_pass, s->command_pools[0], s->graphics_queue)) {
-            LOG_ERROR("vk_pbr_pipeline_create failed");
-            s->use_pbr_pipeline = false;
-        } else {
-            LOG_INFO("renderer_create: PBR pipeline");
-        }
+    s->use_pbr_pipeline = false;
+    if (vk_pbr_pipeline_create(&s->pbr_pipeline, s->device, s->physical_device,
+                              s->swapchain_format, s->depth_format,
+                               s->command_pools[0], s->graphics_queue, &s->allocator)) {
+        s->use_pbr_pipeline = true;
+        LOG_INFO("renderer_create: PBR pipeline");
+    } else {
+        LOG_ERROR("vk_pbr_pipeline_create failed");
+        s->use_pbr_pipeline = false;
     }
 
     return true;
@@ -82,27 +82,40 @@ bool cardinal_renderer_create(CardinalRenderer* out_renderer, CardinalWindow* wi
  */
 void cardinal_renderer_draw_frame(CardinalRenderer* renderer) {
     VulkanState* s = (VulkanState*)renderer->_opaque;
-
+    
     CARDINAL_LOG_INFO("[SYNC] Frame %u: Starting draw_frame", s->current_frame);
-    
-    // Wait for the current frame's fence to ensure the previous submission using this frame is complete
-    CARDINAL_LOG_INFO("[SYNC] Frame %u: Waiting for fence %p", s->current_frame, (void*)s->in_flight_fences[s->current_frame]);
-    VkResult fence_wait = vkWaitForFences(s->device, 1, &s->in_flight_fences[s->current_frame], VK_TRUE, UINT64_MAX);
-    CARDINAL_LOG_INFO("[SYNC] Frame %u: Fence wait result: %d", s->current_frame, fence_wait);
-    
-    if (fence_wait == VK_ERROR_DEVICE_LOST) {
-        CARDINAL_LOG_ERROR("[SYNC] Frame %u: DEVICE LOST during fence wait! GPU crashed", s->current_frame);
-        return;
+
+    // Calculate current frame's timeline values
+    uint64_t frame_base = s->current_frame_value;
+    uint64_t wait_value = frame_base > 0 ? frame_base : 0;  // Wait for previous frame completion
+    uint64_t signal_after_render = frame_base + 1;   // Signal after rendering
+
+    // Wait for previous frame completion using timeline semaphore (CPU-side wait)
+    if (frame_base > 0) {
+        VkSemaphoreWaitInfo wait_info = {0};
+        wait_info.sType = VK_STRUCTURE_TYPE_SEMAPHORE_WAIT_INFO;
+        wait_info.semaphoreCount = 1;
+        wait_info.pSemaphores = &s->timeline_semaphore;
+        wait_info.pValues = &wait_value;
+
+        VkResult wait_result = s->vkWaitSemaphores(s->device, &wait_info, UINT64_MAX);
+        CARDINAL_LOG_INFO("[SYNC] Frame %u: Timeline wait for value %llu, result: %d", s->current_frame, wait_value, wait_result);
+        if (wait_result == VK_ERROR_DEVICE_LOST) {
+            CARDINAL_LOG_ERROR("[SYNC] Frame %u: DEVICE LOST during timeline wait! GPU crashed", s->current_frame);
+            return;
+        }
     }
-    
-    uint32_t image_index = 0;
-    CARDINAL_LOG_INFO("[SYNC] Frame %u: Acquiring image with semaphore %p", s->current_frame, (void*)s->image_available_semaphores[s->current_frame]);
-    VkResult ai = vkAcquireNextImageKHR(s->device, s->swapchain, UINT64_MAX, s->image_available_semaphores[s->current_frame], VK_NULL_HANDLE, &image_index);
+
+    uint32_t image_index;
+    CARDINAL_LOG_INFO("[SYNC] Frame %u: Acquiring image", s->current_frame);
+    VkSemaphore acquire_semaphore = s->image_acquired_semaphores[s->current_frame];
+    VkResult ai = vkAcquireNextImageKHR(s->device, s->swapchain, UINT64_MAX, acquire_semaphore, VK_NULL_HANDLE, &image_index);
     CARDINAL_LOG_INFO("[SYNC] Frame %u: Acquire result: %d, image_index: %u", s->current_frame, ai, image_index);
+
     if (ai == VK_ERROR_OUT_OF_DATE_KHR || ai == VK_SUBOPTIMAL_KHR) {
         // Swapchain is out of date (e.g., window resized), recreate it
         if (vk_recreate_swapchain(s)) {
-            // Recreate images_in_flight array to match new swapchain image count
+            // Recreate per-image initialization tracking to match new swapchain image count
             vk_recreate_images_in_flight(s);
         }
         return; // Skip this frame
@@ -111,45 +124,65 @@ void cardinal_renderer_draw_frame(CardinalRenderer* renderer) {
         return;
     }
 
-    // If a previous frame is using this image, wait for it
-    if (s->images_in_flight[image_index] != VK_NULL_HANDLE) {
-        VkResult wait_prev = vkWaitForFences(s->device, 1, &s->images_in_flight[image_index], VK_TRUE, UINT64_MAX);
-        CARDINAL_LOG_INFO("[SYNC] Frame %u: Wait for previous fence on image %u result: %d", s->current_frame, image_index, wait_prev);
-    }
-    
-    // Mark the image as now being in use by this frame
-    s->images_in_flight[image_index] = s->in_flight_fences[s->current_frame];
-
+    // Record command buffer
     vk_record_cmd(s, image_index);
 
-    VkSemaphore wait_semaphores[] = { s->image_available_semaphores[s->current_frame] };
-    VkPipelineStageFlags wait_stages[] = { VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT };
-    VkSemaphore signal_semaphores[] = { s->render_finished_semaphores[s->current_frame] };
-
-    VkSubmitInfo submit_info = { .sType = VK_STRUCTURE_TYPE_SUBMIT_INFO };
-    submit_info.waitSemaphoreCount = 1;
-    submit_info.pWaitSemaphores = wait_semaphores;
-    submit_info.pWaitDstStageMask = wait_stages;
-    submit_info.commandBufferCount = 1;
     VkCommandBuffer cmd_buf = s->command_buffers[s->current_frame];
-    submit_info.pCommandBuffers = &cmd_buf;
-    submit_info.signalSemaphoreCount = 1;
-    submit_info.pSignalSemaphores = signal_semaphores;
-
-    VkResult rf_reset = vkResetFences(s->device, 1, &s->in_flight_fences[s->current_frame]);
-    CARDINAL_LOG_INFO("[SYNC] Frame %u: Reset fence result: %d", s->current_frame, rf_reset);
-
     CARDINAL_LOG_INFO("[SUBMIT] Frame %u: Submitting cmd %p", s->current_frame, (void*)cmd_buf);
-    VkResult submit_res = vkQueueSubmit(s->graphics_queue, 1, &submit_info, s->in_flight_fences[s->current_frame]);
+
+    // Wait on the binary acquire semaphore before executing rendering commands
+    VkSemaphoreSubmitInfo wait_acquire = {
+        .sType = VK_STRUCTURE_TYPE_SEMAPHORE_SUBMIT_INFO,
+        .semaphore = acquire_semaphore,
+        .value = 0, // ignored for binary semaphores
+        .stageMask = VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT,
+        .deviceIndex = 0
+    };
+
+    // Signal timeline semaphore when rendering completes
+    VkSemaphoreSubmitInfo signal_timeline = {
+        .sType = VK_STRUCTURE_TYPE_SEMAPHORE_SUBMIT_INFO,
+        .semaphore = s->timeline_semaphore,
+        .value = signal_after_render,
+        .stageMask = VK_PIPELINE_STAGE_2_ALL_GRAPHICS_BIT,
+        .deviceIndex = 0
+    };
+
+    VkCommandBufferSubmitInfo cmd_buffer_info = {
+        .sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_SUBMIT_INFO,
+        .commandBuffer = cmd_buf,
+        .deviceMask = 0
+    };
+
+    VkSubmitInfo2 submit_info2 = {
+        .sType = VK_STRUCTURE_TYPE_SUBMIT_INFO_2,
+        .waitSemaphoreInfoCount = 1,
+        .pWaitSemaphoreInfos = &wait_acquire,
+        .commandBufferInfoCount = 1,
+        .pCommandBufferInfos = &cmd_buffer_info,
+        .signalSemaphoreInfoCount = 1,
+        .pSignalSemaphoreInfos = &signal_timeline
+    };
+
+    VkResult submit_res = s->vkQueueSubmit2(s->graphics_queue, 1, &submit_info2, VK_NULL_HANDLE);
     CARDINAL_LOG_INFO("[SUBMIT] Frame %u: Submit result: %d", s->current_frame, submit_res);
     if (submit_res == VK_ERROR_DEVICE_LOST) {
         CARDINAL_LOG_ERROR("[SUBMIT] Frame %u: DEVICE LOST during submit!", s->current_frame);
         return;
     }
 
+    // Wait for rendering completion before present using timeline semaphore (CPU-side wait)
+    VkSemaphoreWaitInfo render_wait = {0};
+    render_wait.sType = VK_STRUCTURE_TYPE_SEMAPHORE_WAIT_INFO;
+    render_wait.semaphoreCount = 1;
+    render_wait.pSemaphores = &s->timeline_semaphore;
+    render_wait.pValues = &signal_after_render;
+
+    s->vkWaitSemaphores(s->device, &render_wait, UINT64_MAX);
+
     VkPresentInfoKHR present_info = { .sType = VK_STRUCTURE_TYPE_PRESENT_INFO_KHR };
-    present_info.waitSemaphoreCount = 1;
-    present_info.pWaitSemaphores = signal_semaphores;
+    present_info.waitSemaphoreCount = 0;  // No binary semaphores needed; CPU guarantees completion
+    present_info.pWaitSemaphores = NULL;
     present_info.swapchainCount = 1;
     present_info.pSwapchains = &s->swapchain;
     present_info.pImageIndices = &image_index;
@@ -158,6 +191,8 @@ void cardinal_renderer_draw_frame(CardinalRenderer* renderer) {
     VkResult present_res = vkQueuePresentKHR(s->present_queue, &present_info);
     CARDINAL_LOG_INFO("[PRESENT] Frame %u: Present result: %d", s->current_frame, present_res);
 
+    // Update timeline values for next frame
+    s->current_frame_value = signal_after_render;
     s->current_frame = (s->current_frame + 1) % s->max_frames_in_flight;
 }
 
@@ -166,8 +201,8 @@ void cardinal_renderer_draw_frame(CardinalRenderer* renderer) {
  * @param renderer Pointer to the CardinalRenderer.
  */
 void cardinal_renderer_wait_idle(CardinalRenderer* renderer) {
-VulkanState* s = (VulkanState*)renderer->_opaque;
-vkDeviceWaitIdle(s->device);
+    VulkanState* s = (VulkanState*)renderer->_opaque;
+    vkDeviceWaitIdle(s->device);
 }
 
 /**
@@ -180,10 +215,12 @@ static void destroy_scene_buffers(VulkanState* s) {
     if (!s || !s->scene_meshes) return;
     for (uint32_t i=0;i<s->scene_mesh_count;i++) {
         GpuMesh* m = &s->scene_meshes[i];
-        if (m->vbuf) vkDestroyBuffer(s->device, m->vbuf, NULL);
-        if (m->vmem) vkFreeMemory(s->device, m->vmem, NULL);
-        if (m->ibuf) vkDestroyBuffer(s->device, m->ibuf, NULL);
-        if (m->imem) vkFreeMemory(s->device, m->imem, NULL);
+        if (m->vbuf != VK_NULL_HANDLE || m->vmem != VK_NULL_HANDLE) {
+            vk_allocator_free_buffer(&s->allocator, m->vbuf, m->vmem);
+        }
+        if (m->ibuf != VK_NULL_HANDLE || m->imem != VK_NULL_HANDLE) {
+            vk_allocator_free_buffer(&s->allocator, m->ibuf, m->imem);
+        }
     }
     free(s->scene_meshes); s->scene_meshes = NULL; s->scene_mesh_count = 0;
 }
@@ -195,51 +232,41 @@ static void destroy_scene_buffers(VulkanState* s) {
  * @todo Ensure all resources are properly cleaned up to prevent leaks.
  */
 void cardinal_renderer_destroy(CardinalRenderer* renderer) {
-if (!renderer || !renderer->_opaque) return;
-VulkanState* s = (VulkanState*)renderer->_opaque;
+    if (!renderer || !renderer->_opaque) return;
+    VulkanState* s = (VulkanState*)renderer->_opaque;
 
-// destroy in reverse order
-vk_destroy_commands_sync(s);
-destroy_scene_buffers(s);
+    // destroy in reverse order
+    vk_destroy_commands_sync(s);
+    destroy_scene_buffers(s);
 
-// Destroy PBR pipeline
-if (s->use_pbr_pipeline) {
-    vk_pbr_pipeline_destroy(&s->pbr_pipeline, s->device);
+    // Destroy PBR pipeline
+    if (s->use_pbr_pipeline) {
+        vk_pbr_pipeline_destroy(&s->pbr_pipeline, s->device, &s->allocator);
+    }
+
+    vk_destroy_pipeline(s);
+    vk_destroy_swapchain(s);
+    vk_destroy_device_objects(s);
+
+    free(s);
+    renderer->_opaque = NULL;
 }
 
-vk_destroy_renderpass_pipeline(s);
-vk_destroy_swapchain(s);
-vk_destroy_device_objects(s);
-
-free(s);
-renderer->_opaque = NULL;
-}
-
-// Internal API implementations for editor ImGui integration
-/**
- * @brief Gets the Vulkan render pass for internal use.
- * @param renderer Pointer to the CardinalRenderer.
- * @return The Vulkan render pass.
- */
-VkRenderPass cardinal_renderer_internal_render_pass(CardinalRenderer* renderer) {
-VulkanState* s = (VulkanState*)renderer->_opaque;
-return s->render_pass;
-}
 
 VkCommandBuffer cardinal_renderer_internal_current_cmd(CardinalRenderer* renderer, uint32_t image_index) {
-VulkanState* s = (VulkanState*)renderer->_opaque;
-(void)image_index; // unused now
-return s->command_buffers[s->current_frame];
+    VulkanState* s = (VulkanState*)renderer->_opaque;
+    (void)image_index; // unused now
+    return s->command_buffers[s->current_frame];
 }
 
 VkDevice cardinal_renderer_internal_device(CardinalRenderer* renderer) {
-VulkanState* s = (VulkanState*)renderer->_opaque;
-return s->device;
+    VulkanState* s = (VulkanState*)renderer->_opaque;
+    return s->device;
 }
 
 VkPhysicalDevice cardinal_renderer_internal_physical_device(CardinalRenderer* renderer) {
-VulkanState* s = (VulkanState*)renderer->_opaque;
-return s->physical_device;
+    VulkanState* s = (VulkanState*)renderer->_opaque;
+    return s->physical_device;
 }
 
 VkQueue cardinal_renderer_internal_graphics_queue(CardinalRenderer* renderer) {
@@ -393,18 +420,19 @@ void cardinal_renderer_enable_pbr(CardinalRenderer* renderer, bool enable) {
         
         // Destroy existing PBR pipeline if it exists (in case of re-enabling)
         if (s->pbr_pipeline.initialized) {
-            vk_pbr_pipeline_destroy(&s->pbr_pipeline, s->device);
+            vk_pbr_pipeline_destroy(&s->pbr_pipeline, s->device, &s->allocator);
         }
         
         // Try to create PBR pipeline
         if (vk_pbr_pipeline_create(&s->pbr_pipeline, s->device, s->physical_device,
-                                  s->render_pass, s->command_pools[0], s->graphics_queue)) {
+                                  s->swapchain_format, s->depth_format,
+                                  s->command_pools[0], s->graphics_queue, &s->allocator)) {
             s->use_pbr_pipeline = true;
             
             // Load current scene if one exists
             if (s->current_scene) {
                 vk_pbr_load_scene(&s->pbr_pipeline, s->device, s->physical_device,
-                                 s->command_pools[0], s->graphics_queue, s->current_scene);
+                                 s->command_pools[0], s->graphics_queue, s->current_scene, &s->allocator);
             }
             
             CARDINAL_LOG_INFO("PBR pipeline enabled");
@@ -415,8 +443,8 @@ void cardinal_renderer_enable_pbr(CardinalRenderer* renderer, bool enable) {
         // Wait for all GPU operations to complete before destroying resources
         vkDeviceWaitIdle(s->device);
         
-        // Destroy PBR pipeline
-        vk_pbr_pipeline_destroy(&s->pbr_pipeline, s->device);
+       // Destroy PBR pipeline
+        vk_pbr_pipeline_destroy(&s->pbr_pipeline, s->device, &s->allocator);
         s->use_pbr_pipeline = false;
         CARDINAL_LOG_INFO("PBR pipeline disabled");
     }
@@ -441,6 +469,21 @@ return s->instance;
 uint32_t cardinal_renderer_internal_swapchain_image_count(CardinalRenderer* renderer) {
     VulkanState* s = (VulkanState*)renderer->_opaque;
     return s->swapchain_image_count;
+}
+
+VkFormat cardinal_renderer_internal_swapchain_format(CardinalRenderer* renderer) {
+    VulkanState* s = (VulkanState*)renderer->_opaque;
+    return s->swapchain_format;
+}
+
+VkFormat cardinal_renderer_internal_depth_format(CardinalRenderer* renderer) {
+    VulkanState* s = (VulkanState*)renderer->_opaque;
+    return s->depth_format;
+}
+
+VkExtent2D cardinal_renderer_internal_swapchain_extent(CardinalRenderer* renderer) {
+    VulkanState* s = (VulkanState*)renderer->_opaque;
+    return s->swapchain_extent;
 }
 
 void cardinal_renderer_set_ui_callback(CardinalRenderer* renderer, void (*callback)(VkCommandBuffer cmd)) {
@@ -474,11 +517,17 @@ void cardinal_renderer_immediate_submit(CardinalRenderer* renderer, void (*recor
 
     vkEndCommandBuffer(cmd);
 
-    VkSubmitInfo submit = { .sType = VK_STRUCTURE_TYPE_SUBMIT_INFO };
-    submit.commandBufferCount = 1;
-    submit.pCommandBuffers = &cmd;
-
-    vkQueueSubmit(s->graphics_queue, 1, &submit, VK_NULL_HANDLE);
+    VkCommandBufferSubmitInfo cmd_info = {
+        .sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_SUBMIT_INFO,
+        .commandBuffer = cmd,
+        .deviceMask = 0
+    };
+    VkSubmitInfo2 submit2 = {
+        .sType = VK_STRUCTURE_TYPE_SUBMIT_INFO_2,
+        .commandBufferInfoCount = 1,
+        .pCommandBufferInfos = &cmd_info
+    };
+    s->vkQueueSubmit2(s->graphics_queue, 1, &submit2, VK_NULL_HANDLE);
     vkQueueWaitIdle(s->graphics_queue);
 
     vkFreeCommandBuffers(s->device, s->command_pools[s->current_frame], 1, &cmd);
@@ -532,33 +581,23 @@ void cardinal_renderer_upload_scene(CardinalRenderer* renderer, const CardinalSc
         // Create CPU-visible buffers and upload directly (simple, not optimal)
         VkBufferCreateInfo vci = { .sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO };
         vci.size = vsize; vci.usage = VK_BUFFER_USAGE_VERTEX_BUFFER_BIT; vci.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
-        vkCreateBuffer(s->device, &vci, NULL, &dst->vbuf);
-        VkMemoryRequirements vrq; vkGetBufferMemoryRequirements(s->device, dst->vbuf, &vrq);
-        VkMemoryAllocateInfo vai = { .sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO };
-        vai.allocationSize = vrq.size; vai.memoryTypeIndex = 0;
-        // findMemoryType is in PBR file; replicate basic host visible here
-        VkPhysicalDeviceMemoryProperties mem_props; vkGetPhysicalDeviceMemoryProperties(s->physical_device, &mem_props);
-        for (uint32_t mt=0; mt<mem_props.memoryTypeCount; ++mt) {
-            if ((vrq.memoryTypeBits & (1u<<mt)) && (mem_props.memoryTypes[mt].propertyFlags & (VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT|VK_MEMORY_PROPERTY_HOST_COHERENT_BIT)) == (VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT|VK_MEMORY_PROPERTY_HOST_COHERENT_BIT)) { vai.memoryTypeIndex = mt; break; }
+        if (!vk_allocator_allocate_buffer(&s->allocator, &vci, &dst->vbuf, &dst->vmem,
+                                          VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT)) {
+            CARDINAL_LOG_ERROR("Failed to allocate vertex buffer for mesh %u", i);
+            continue;
         }
-        vkAllocateMemory(s->device, &vai, NULL, &dst->vmem);
-        vkBindBufferMemory(s->device, dst->vbuf, dst->vmem, 0);
         void* vmap = NULL; vkMapMemory(s->device, dst->vmem, 0, vsize, 0, &vmap); memcpy(vmap, src->vertices, (size_t)vsize); vkUnmapMemory(s->device, dst->vmem);
 
         if (src->index_count > 0 && src->indices) {
             VkBufferCreateInfo ici = { .sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO };
             ici.size = isize; ici.usage = VK_BUFFER_USAGE_INDEX_BUFFER_BIT; ici.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
-            vkCreateBuffer(s->device, &ici, NULL, &dst->ibuf);
-            VkMemoryRequirements irq; vkGetBufferMemoryRequirements(s->device, dst->ibuf, &irq);
-            VkMemoryAllocateInfo iai = { .sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO };
-            iai.allocationSize = irq.size; iai.memoryTypeIndex = 0;
-            for (uint32_t mt=0; mt<mem_props.memoryTypeCount; ++mt) {
-                if ((irq.memoryTypeBits & (1u<<mt)) && (mem_props.memoryTypes[mt].propertyFlags & (VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT|VK_MEMORY_PROPERTY_HOST_COHERENT_BIT)) == (VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT|VK_MEMORY_PROPERTY_HOST_COHERENT_BIT)) { iai.memoryTypeIndex = mt; break; }
+            if (!vk_allocator_allocate_buffer(&s->allocator, &ici, &dst->ibuf, &dst->imem,
+                                              VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT)) {
+                CARDINAL_LOG_ERROR("Failed to allocate index buffer for mesh %u", i);
+            } else {
+                void* imap = NULL; vkMapMemory(s->device, dst->imem, 0, isize, 0, &imap); memcpy(imap, src->indices, (size_t)isize); vkUnmapMemory(s->device, dst->imem);
+                dst->idx_count = src->index_count;
             }
-            vkAllocateMemory(s->device, &iai, NULL, &dst->imem);
-            vkBindBufferMemory(s->device, dst->ibuf, dst->imem, 0);
-            void* imap = NULL; vkMapMemory(s->device, dst->imem, 0, isize, 0, &imap); memcpy(imap, src->indices, (size_t)isize); vkUnmapMemory(s->device, dst->imem);
-            dst->idx_count = src->index_count;
         }
         dst->vtx_count = src->vertex_count;
 
@@ -568,7 +607,7 @@ void cardinal_renderer_upload_scene(CardinalRenderer* renderer, const CardinalSc
     // Load scene into PBR pipeline if enabled
     if (s->use_pbr_pipeline) {
         vk_pbr_load_scene(&s->pbr_pipeline, s->device, s->physical_device,
-                         s->command_pools[0], s->graphics_queue, scene);
+                         s->command_pools[0], s->graphics_queue, scene, &s->allocator);
     }
 
     // Remember pointer for PBR drawing path

@@ -53,6 +53,7 @@ target_sources(cardinal_engine PRIVATE
     src/renderer/vulkan_pipeline.c
     src/renderer/vulkan_commands.c
     src/renderer/vulkan_pbr.c
+    src/renderer/vulkan_allocator.c
     src/assets/scene.c
     src/assets/gltf_loader.c
     src/assets/loader.c
