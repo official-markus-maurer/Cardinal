@@ -2,7 +2,7 @@
 #define VULKAN_PIPELINE_H
 
 #include <stdbool.h>
-#include "vulkan_state.h"
+#include "../../src/renderer/vulkan_state.h"
 
 /**
  * @brief Creates the render pass and graphics pipeline for the Vulkan state.

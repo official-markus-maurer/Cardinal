@@ -55,7 +55,7 @@ static bool g_mouse_captured = false;
 static double g_last_mouse_x = 0.0;
 static double g_last_mouse_y = 0.0;
 static bool g_first_mouse = true;
-static float g_yaw = -90.0f;   // Initially looking down -Z axis
+static float g_yaw = 90.0f;    // Initially looking down -Z axis (adjusted for coordinate system)
 static float g_pitch = 0.0f;
 static float g_camera_speed = 5.0f;
 static float g_mouse_sensitivity = 0.1f;
@@ -260,10 +260,11 @@ static void process_input_and_move_camera(float dt) {
     float fl = sqrtf(forward[0]*forward[0] + forward[1]*forward[1] + forward[2]*forward[2]);
     if (fl > 0.0f) { forward[0]/=fl; forward[1]/=fl; forward[2]/=fl; }
     float up[3] = {0.0f, 1.0f, 0.0f};
+    // Calculate right vector as cross product of forward and up (standard right-handed)
     float right[3] = {
-        forward[2]*up[1] - forward[1]*up[2],
-        forward[0]*up[2] - forward[2]*up[0],
-        forward[1]*up[0] - forward[0]*up[1]
+        forward[1]*up[2] - forward[2]*up[1],
+        forward[2]*up[0] - forward[0]*up[2],
+        forward[0]*up[1] - forward[1]*up[0]
     };
     float rl = sqrtf(right[0]*right[0] + right[1]*right[1] + right[2]*right[2]);
     if (rl > 0.0f) { right[0]/=rl; right[1]/=rl; right[2]/=rl; }

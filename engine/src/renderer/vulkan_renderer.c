@@ -13,13 +13,12 @@
 #include "cardinal/renderer/renderer.h"
 #include "cardinal/renderer/renderer_internal.h"
 #include "cardinal/core/log.h"
-#include "vulkan_swapchain.h"
+#include <cardinal/renderer/vulkan_swapchain.h>
 
 #include "vulkan_state.h"
-#include "vulkan_instance.h"
-#include "vulkan_swapchain.h"
-#include "vulkan_pipeline.h"
-#include "vulkan_commands.h"
+#include <cardinal/renderer/vulkan_instance.h>
+#include <cardinal/renderer/vulkan_pipeline.h>
+#include <cardinal/renderer/vulkan_commands.h>
 #include "cardinal/renderer/vulkan_pbr.h"
 
 

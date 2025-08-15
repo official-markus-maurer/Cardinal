@@ -2,7 +2,7 @@
 #define VULKAN_INSTANCE_H
 
 #include <stdbool.h>
-#include "vulkan_state.h"
+#include "../../src/renderer/vulkan_state.h"
 
 struct CardinalWindow;
 

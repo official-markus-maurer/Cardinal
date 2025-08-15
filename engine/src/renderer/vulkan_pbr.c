@@ -1,533 +1,12 @@
 #include <cardinal/renderer/vulkan_pbr.h>
+#include <cardinal/renderer/util/vulkan_buffer_utils.h>
+#include <cardinal/renderer/util/vulkan_texture_utils.h>
+#include <cardinal/renderer/util/vulkan_shader_utils.h>
+#include <cardinal/renderer/util/vulkan_descriptor_utils.h>
 #include <cardinal/core/log.h>
 #include "vulkan_state.h"
 #include <string.h>
 #include <stdlib.h>
-
-// Helper function to find memory type
-/**
- * @brief Finds a suitable memory type index.
- * @param physicalDevice Physical device.
- * @param typeFilter Memory type filter.
- * @param properties Required memory properties.
- * @return Memory type index or UINT32_MAX on failure.
- * 
- * @todo Cache memory properties for performance.
- */
-__attribute__((unused)) static uint32_t findMemoryType(VkPhysicalDevice physicalDevice, uint32_t typeFilter, VkMemoryPropertyFlags properties) {
-    VkPhysicalDeviceMemoryProperties memProperties;
-    vkGetPhysicalDeviceMemoryProperties(physicalDevice, &memProperties);
-    
-    CARDINAL_LOG_DEBUG("Searching for memory type: typeFilter=0x%X, properties=0x%X, available types=%u", 
-                      typeFilter, properties, memProperties.memoryTypeCount);
-    
-    for (uint32_t i = 0; i < memProperties.memoryTypeCount; i++) {
-        bool typeMatches = (typeFilter & (1 << i)) != 0;
-        bool propertiesMatch = (memProperties.memoryTypes[i].propertyFlags & properties) == properties;
-        
-        CARDINAL_LOG_DEBUG("  Type %u: heap=%u, flags=0x%X, typeMatch=%s, propMatch=%s", 
-                          i, memProperties.memoryTypes[i].heapIndex, 
-                          memProperties.memoryTypes[i].propertyFlags,
-                          typeMatches ? "yes" : "no", propertiesMatch ? "yes" : "no");
-        
-        if (typeMatches && propertiesMatch) {
-            CARDINAL_LOG_DEBUG("Found suitable memory type: index=%u, heap=%u, size=%llu MB", 
-                              i, memProperties.memoryTypes[i].heapIndex,
-                              memProperties.memoryHeaps[memProperties.memoryTypes[i].heapIndex].size / (1024 * 1024));
-            return i;
-        }
-    }
-    
-    CARDINAL_LOG_ERROR("Failed to find suitable memory type! typeFilter=0x%X, properties=0x%X", typeFilter, properties);
-    return UINT32_MAX;
-}
-
-/**
- * @brief Creates a Vulkan buffer and allocates memory using VulkanAllocator.
- * @param allocator VulkanAllocator instance.
- * @param size Buffer size.
- * @param usage Buffer usage flags.
- * @param properties Memory properties.
- * @param buffer Output buffer handle.
- * @param bufferMemory Output memory handle.
- * @return true on success, false on failure.
- */
-static bool createBuffer(VulkanAllocator* allocator, VkDeviceSize size,
-                        VkBufferUsageFlags usage, VkMemoryPropertyFlags properties,
-                        VkBuffer* buffer, VkDeviceMemory* bufferMemory);
-
-__attribute__((unused))
-/**
- * @brief Creates a Vulkan texture from CardinalTexture data.
- * @param device Logical device.
- * @param physicalDevice Physical device.
- * @param commandPool Command pool.
- * @param graphicsQueue Graphics queue.
- * @param texture Input texture data.
- * @param textureImage Output image handle.
- * @param textureImageMemory Output memory handle.
- * @param textureImageView Output image view handle.
- * @return true on success, false on failure.
- * 
- * @todo Implement mipmapping generation.
- * @todo Support asynchronous texture loading.
- */
-static bool createTextureFromData(VulkanAllocator* allocator, VkDevice device,
-                                 VkCommandPool commandPool, VkQueue graphicsQueue,
-                                 const CardinalTexture* texture, 
-                                 VkImage* textureImage, VkDeviceMemory* textureImageMemory,
-                                 VkImageView* textureImageView) {
-    if (!texture || !texture->data || texture->width == 0 || texture->height == 0) {
-        CARDINAL_LOG_ERROR("Invalid texture data");
-        return false;
-    }
-    if (!allocator) {
-        CARDINAL_LOG_ERROR("Allocator is null in createTextureFromData");
-        return false;
-    }
-    
-    CARDINAL_LOG_DEBUG("Creating texture from data: %ux%u, channels=%d", texture->width, texture->height, texture->channels);
-
-    const VkFormat format = VK_FORMAT_R8G8B8A8_SRGB;
-    VkDeviceSize imageSize = texture->width * texture->height * 4; // Force RGBA
-    
-    // Create staging buffer
-    VkBuffer stagingBuffer;
-    VkDeviceMemory stagingBufferMemory;
-    
-    if (!createBuffer(allocator, imageSize,
-                     VK_BUFFER_USAGE_TRANSFER_SRC_BIT,
-                     VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT,
-                     &stagingBuffer, &stagingBufferMemory)) {
-        CARDINAL_LOG_ERROR("Failed to create staging buffer for texture upload (size=%llu)", (unsigned long long)imageSize);
-        return false;
-    }
-    
-    void* data;
-    VkResult mapResult = vkMapMemory(device, stagingBufferMemory, 0, imageSize, 0, &data);
-    if (mapResult != VK_SUCCESS) {
-        CARDINAL_LOG_ERROR("Failed to map staging buffer memory for texture: %d", mapResult);
-        vk_allocator_free_buffer(allocator, stagingBuffer, stagingBufferMemory);
-        return false;
-    }
-    CARDINAL_LOG_DEBUG("Staging buffer mapped for texture data copy");
-    
-    // If texture has different channel count, we need to convert to RGBA
-    if (texture->channels == 4) {
-        memcpy(data, texture->data, (size_t)imageSize);
-    } else {
-        // Convert to RGBA
-        unsigned char* src = texture->data;
-        unsigned char* dst = (unsigned char*)data;
-        
-        for (uint32_t i = 0; i < texture->width * texture->height; i++) {
-            if (texture->channels == 3) {
-                dst[i * 4 + 0] = src[i * 3 + 0]; // R
-                dst[i * 4 + 1] = src[i * 3 + 1]; // G
-                dst[i * 4 + 2] = src[i * 3 + 2]; // B
-                dst[i * 4 + 3] = 255;            // A
-            } else if (texture->channels == 1) {
-                dst[i * 4 + 0] = src[i];  // R
-                dst[i * 4 + 1] = src[i];  // G
-                dst[i * 4 + 2] = src[i];  // B
-                dst[i * 4 + 3] = 255;     // A
-            } else {
-                // Unsupported channel count, fill with white
-                dst[i * 4 + 0] = 255;
-                dst[i * 4 + 1] = 255;
-                dst[i * 4 + 2] = 255;
-                dst[i * 4 + 3] = 255;
-            }
-        }
-    }
-    
-    vkUnmapMemory(device, stagingBufferMemory);
-    CARDINAL_LOG_DEBUG("Staging buffer unmapped; proceeding to create VkImage");
-    
-    // Create image
-    VkImageCreateInfo imageInfo = {0};
-    imageInfo.sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO;
-    imageInfo.imageType = VK_IMAGE_TYPE_2D;
-    imageInfo.extent.width = texture->width;
-    imageInfo.extent.height = texture->height;
-    imageInfo.extent.depth = 1;
-    imageInfo.mipLevels = 1;
-    imageInfo.arrayLayers = 1;
-    imageInfo.format = format;
-    imageInfo.tiling = VK_IMAGE_TILING_OPTIMAL;
-    imageInfo.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
-    imageInfo.usage = VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_SAMPLED_BIT;
-    imageInfo.samples = VK_SAMPLE_COUNT_1_BIT;
-    imageInfo.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
-    
-    // Allocate image and memory via allocator
-    if (!vk_allocator_allocate_image(allocator, &imageInfo, textureImage, textureImageMemory, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT)) {
-        CARDINAL_LOG_ERROR("Allocator failed to create/allocate texture image (%ux%u)", texture->width, texture->height);
-        vk_allocator_free_buffer(allocator, stagingBuffer, stagingBufferMemory);
-        return false;
-    }
-    CARDINAL_LOG_DEBUG("Texture image allocated via allocator: image=%p memory=%p", (void*)(uintptr_t)(*textureImage), (void*)(uintptr_t)(*textureImageMemory));
-    
-    // Copy buffer to image with proper layout transitions
-    VkCommandBufferAllocateInfo allocInfo2 = {0};
-    allocInfo2.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO;
-    allocInfo2.level = VK_COMMAND_BUFFER_LEVEL_PRIMARY;
-    allocInfo2.commandPool = commandPool;
-    allocInfo2.commandBufferCount = 1;
-    
-    VkCommandBuffer commandBuffer;
-    vkAllocateCommandBuffers(device, &allocInfo2, &commandBuffer);
-    CARDINAL_LOG_DEBUG("Allocated command buffer for placeholder upload: cmd=%p", (void*)(uintptr_t)commandBuffer);
-    
-    VkCommandBufferBeginInfo beginInfo = {0};
-    beginInfo.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
-    beginInfo.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
-    
-    vkBeginCommandBuffer(commandBuffer, &beginInfo);
-    CARDINAL_LOG_DEBUG("Began command buffer for placeholder upload");
-    
-    // Vulkan 1.3 sync2 requirement - no fallbacks
-    CARDINAL_LOG_DEBUG("Using vkCmdPipelineBarrier2 for pipeline barriers in texture upload");
-    
-    // Transition to transfer destination
-    VkImageMemoryBarrier2 barrier2 = {0};
-    barrier2.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2;
-    barrier2.srcStageMask = VK_PIPELINE_STAGE_2_TOP_OF_PIPE_BIT;
-    barrier2.srcAccessMask = 0;
-    barrier2.dstStageMask = VK_PIPELINE_STAGE_2_TRANSFER_BIT;
-    barrier2.dstAccessMask = VK_ACCESS_2_TRANSFER_WRITE_BIT;
-    barrier2.oldLayout = VK_IMAGE_LAYOUT_UNDEFINED;
-    barrier2.newLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
-    barrier2.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-    barrier2.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-    barrier2.image = *textureImage;
-    barrier2.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
-    barrier2.subresourceRange.baseMipLevel = 0;
-    barrier2.subresourceRange.levelCount = 1;
-    barrier2.subresourceRange.baseArrayLayer = 0;
-    barrier2.subresourceRange.layerCount = 1;
-
-    VkDependencyInfo dep = {0};
-    dep.sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO;
-    dep.imageMemoryBarrierCount = 1;
-    dep.pImageMemoryBarriers = &barrier2;
-    vkCmdPipelineBarrier2(commandBuffer, &dep);
-    
-    VkBufferImageCopy region = {0};
-    region.bufferOffset = 0;
-    region.bufferRowLength = 0;
-    region.bufferImageHeight = 0;
-    region.imageSubresource.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
-    region.imageSubresource.mipLevel = 0;
-    region.imageSubresource.baseArrayLayer = 0;
-    region.imageSubresource.layerCount = 1;
-    region.imageOffset.x = 0;
-    region.imageOffset.y = 0;
-    region.imageOffset.z = 0;
-    region.imageExtent.width = texture->width;
-    region.imageExtent.height = texture->height;
-    region.imageExtent.depth = 1;
-    
-    vkCmdCopyBufferToImage(commandBuffer, stagingBuffer, *textureImage,
-                          VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &region);
-    
-    // Transition to shader read
-    VkImageMemoryBarrier2 barrier3 = {0};
-    barrier3.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2;
-    barrier3.srcStageMask = VK_PIPELINE_STAGE_2_TRANSFER_BIT;
-    barrier3.srcAccessMask = VK_ACCESS_2_TRANSFER_WRITE_BIT;
-    barrier3.dstStageMask = VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT;
-    barrier3.dstAccessMask = VK_ACCESS_2_SHADER_READ_BIT;
-    barrier3.oldLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
-    barrier3.newLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
-    barrier3.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-    barrier3.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-    barrier3.image = *textureImage;
-    barrier3.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
-    barrier3.subresourceRange.baseMipLevel = 0;
-    barrier3.subresourceRange.levelCount = 1;
-    barrier3.subresourceRange.baseArrayLayer = 0;
-    barrier3.subresourceRange.layerCount = 1;
-
-    VkDependencyInfo dep2 = {0};
-    dep2.sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO;
-    dep2.imageMemoryBarrierCount = 1;
-    dep2.pImageMemoryBarriers = &barrier3;
-    vkCmdPipelineBarrier2(commandBuffer, &dep2);
-    
-    vkEndCommandBuffer(commandBuffer);
-    
-    // Submit using VkSubmitInfo2 with vkQueueSubmit2
-    VkCommandBufferSubmitInfo cmdSubmitInfo = {0};
-    cmdSubmitInfo.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_SUBMIT_INFO;
-    cmdSubmitInfo.commandBuffer = commandBuffer;
-    cmdSubmitInfo.deviceMask = 0; // Single device
-    
-    VkSubmitInfo2 submitInfo2 = {0};
-    submitInfo2.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO_2;
-    submitInfo2.commandBufferInfoCount = 1;
-    submitInfo2.pCommandBufferInfos = &cmdSubmitInfo;
-    
-    vkQueueSubmit2(graphicsQueue, 1, &submitInfo2, VK_NULL_HANDLE);
-    vkQueueWaitIdle(graphicsQueue);
-    
-    vkFreeCommandBuffers(device, commandPool, 1, &commandBuffer);
-    vk_allocator_free_buffer(allocator, stagingBuffer, stagingBufferMemory);
-    
-    // Create image view
-    VkImageViewCreateInfo viewInfo = {0};
-    viewInfo.sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO;
-    viewInfo.image = *textureImage;
-    viewInfo.viewType = VK_IMAGE_VIEW_TYPE_2D;
-    viewInfo.format = format;
-    viewInfo.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
-    viewInfo.subresourceRange.baseMipLevel = 0;
-    viewInfo.subresourceRange.levelCount = 1;
-    viewInfo.subresourceRange.baseArrayLayer = 0;
-    viewInfo.subresourceRange.layerCount = 1;
-    
-    return vkCreateImageView(device, &viewInfo, NULL, textureImageView) == VK_SUCCESS;
-}
-
-/**
- * @brief Creates a 1x1 white placeholder texture.
- * @param device Logical device.
- * @param physicalDevice Physical device.
- * @param commandPool Command pool.
- * @param graphicsQueue Graphics queue.
- * @param textureImage Output image handle.
- * @param textureImageMemory Output memory handle.
- * @param textureImageView Output image view handle.
- * @param textureSampler Output sampler handle.
- * @return true on success, false on failure.
- * 
- * @todo Support different placeholder colors or patterns.
- * @todo Integrate with asset caching system to avoid recreation.
- */
-static bool createPlaceholderTexture(VulkanAllocator* allocator, VkDevice device,
-                                    VkCommandPool commandPool, VkQueue graphicsQueue,
-                                    VkImage* textureImage, VkDeviceMemory* textureImageMemory,
-                                    VkImageView* textureImageView, VkSampler* textureSampler) {
-    // Create a 1x1 white texture
-    const uint32_t width = 1, height = 1;
-    const VkFormat format = VK_FORMAT_R8G8B8A8_SRGB;
-    unsigned char whitePixel[4] = {255, 255, 255, 255};
-    
-    CARDINAL_LOG_DEBUG("Creating placeholder texture: %ux%u, format=%u", width, height, format);
-    
-    // Create staging buffer
-    VkBuffer stagingBuffer;
-    VkDeviceMemory stagingBufferMemory;
-    VkDeviceSize imageSize = width * height * 4;
-    
-    CARDINAL_LOG_DEBUG("Creating staging buffer for placeholder: size=%llu", (unsigned long long)imageSize);
-    if (!createBuffer(allocator, imageSize,
-                     VK_BUFFER_USAGE_TRANSFER_SRC_BIT,
-                     VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT,
-                     &stagingBuffer, &stagingBufferMemory)) {
-        CARDINAL_LOG_ERROR("Failed to create staging buffer for placeholder texture");
-        return false;
-    }
-    
-    void* data;
-    vkMapMemory(device, stagingBufferMemory, 0, imageSize, 0, &data);
-    memcpy(data, whitePixel, (size_t)imageSize);
-    vkUnmapMemory(device, stagingBufferMemory);
-    
-    // Create image via allocator
-    VkImageCreateInfo imageInfo = {0};
-    imageInfo.sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO;
-    imageInfo.imageType = VK_IMAGE_TYPE_2D;
-    imageInfo.extent.width = width;
-    imageInfo.extent.height = height;
-    imageInfo.extent.depth = 1;
-    imageInfo.mipLevels = 1;
-    imageInfo.arrayLayers = 1;
-    imageInfo.format = format;
-    imageInfo.tiling = VK_IMAGE_TILING_OPTIMAL;
-    imageInfo.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
-    imageInfo.usage = VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_SAMPLED_BIT;
-    imageInfo.samples = VK_SAMPLE_COUNT_1_BIT;
-    imageInfo.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
-    
-    if (!vk_allocator_allocate_image(allocator, &imageInfo, textureImage, textureImageMemory, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT)) {
-        CARDINAL_LOG_ERROR("Failed to create/allocate placeholder image via allocator");
-        vk_allocator_free_buffer(allocator, stagingBuffer, stagingBufferMemory);
-        return false;
-    }
-    CARDINAL_LOG_DEBUG("Placeholder image created via allocator: handle=%p", (void*)(uintptr_t)(*textureImage));
-    
-    // Copy buffer to image (simplified, without proper layout transitions)
-    VkCommandBufferAllocateInfo allocInfo2 = {0};
-    allocInfo2.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO;
-    allocInfo2.level = VK_COMMAND_BUFFER_LEVEL_PRIMARY;
-    allocInfo2.commandPool = commandPool;
-    allocInfo2.commandBufferCount = 1;
-    
-    VkCommandBuffer commandBuffer;
-    vkAllocateCommandBuffers(device, &allocInfo2, &commandBuffer);
-    
-    VkCommandBufferBeginInfo beginInfo = {0};
-    beginInfo.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
-    beginInfo.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
-    
-    vkBeginCommandBuffer(commandBuffer, &beginInfo);
-    
-    // Vulkan 1.3 sync2 requirement - no fallbacks
-    
-    // Transition to transfer destination
-    VkImageMemoryBarrier2 barrier2b = {0};
-    barrier2b.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2;
-    barrier2b.srcStageMask = VK_PIPELINE_STAGE_2_TOP_OF_PIPE_BIT;
-    barrier2b.srcAccessMask = 0;
-    barrier2b.dstStageMask = VK_PIPELINE_STAGE_2_TRANSFER_BIT;
-    barrier2b.dstAccessMask = VK_ACCESS_2_TRANSFER_WRITE_BIT;
-    barrier2b.oldLayout = VK_IMAGE_LAYOUT_UNDEFINED;
-    barrier2b.newLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
-    barrier2b.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-    barrier2b.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-    barrier2b.image = *textureImage;
-    barrier2b.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
-    barrier2b.subresourceRange.baseMipLevel = 0;
-    barrier2b.subresourceRange.levelCount = 1;
-    barrier2b.subresourceRange.baseArrayLayer = 0;
-    barrier2b.subresourceRange.layerCount = 1;
-
-    VkDependencyInfo dep3 = {0};
-    dep3.sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO;
-    dep3.imageMemoryBarrierCount = 1;
-    dep3.pImageMemoryBarriers = &barrier2b;
-    vkCmdPipelineBarrier2(commandBuffer, &dep3);
-    
-    VkBufferImageCopy region = {0};
-    region.bufferOffset = 0;
-    region.bufferRowLength = 0;
-    region.bufferImageHeight = 0;
-    region.imageSubresource.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
-    region.imageSubresource.mipLevel = 0;
-    region.imageSubresource.baseArrayLayer = 0;
-    region.imageSubresource.layerCount = 1;
-    region.imageOffset.x = 0;
-    region.imageOffset.y = 0;
-    region.imageOffset.z = 0;
-    region.imageExtent.width = width;
-    region.imageExtent.height = height;
-    region.imageExtent.depth = 1;
-    
-    vkCmdCopyBufferToImage(commandBuffer, stagingBuffer, *textureImage,
-                          VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &region);
-    
-    // Transition to shader read
-    VkImageMemoryBarrier2 barrier2 = {0};
-    barrier2.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2;
-    barrier2.srcStageMask = VK_PIPELINE_STAGE_2_TRANSFER_BIT;
-    barrier2.srcAccessMask = VK_ACCESS_2_TRANSFER_WRITE_BIT;
-    barrier2.dstStageMask = VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT;
-    barrier2.dstAccessMask = VK_ACCESS_2_SHADER_READ_BIT;
-    barrier2.oldLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
-    barrier2.newLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
-    barrier2.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-    barrier2.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-    barrier2.image = *textureImage;
-    barrier2.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
-    barrier2.subresourceRange.baseMipLevel = 0;
-    barrier2.subresourceRange.levelCount = 1;
-    barrier2.subresourceRange.baseArrayLayer = 0;
-    barrier2.subresourceRange.layerCount = 1;
-
-    VkDependencyInfo dep = {0};
-    dep.sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO;
-    dep.imageMemoryBarrierCount = 1;
-    dep.pImageMemoryBarriers = &barrier2;
-    vkCmdPipelineBarrier2(commandBuffer, &dep);
-    
-    vkEndCommandBuffer(commandBuffer);
-    
-    // Vulkan 1.3 requirement: submit using vkQueueSubmit2
-    VkCommandBufferSubmitInfo cmdSubmitInfo = {0};
-    cmdSubmitInfo.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_SUBMIT_INFO;
-    cmdSubmitInfo.commandBuffer = commandBuffer;
-    cmdSubmitInfo.deviceMask = 0;
-    
-    VkSubmitInfo2 submitInfo2 = {0};
-    submitInfo2.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO_2;
-    submitInfo2.commandBufferInfoCount = 1;
-    submitInfo2.pCommandBufferInfos = &cmdSubmitInfo;
-    
-    vkQueueSubmit2(graphicsQueue, 1, &submitInfo2, VK_NULL_HANDLE);
-    vkQueueWaitIdle(graphicsQueue);
-    
-    vkFreeCommandBuffers(device, commandPool, 1, &commandBuffer);
-    vk_allocator_free_buffer(allocator, stagingBuffer, stagingBufferMemory);
-    
-    // Create image view
-    VkImageViewCreateInfo viewInfo = {0};
-    viewInfo.sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO;
-    viewInfo.image = *textureImage;
-    viewInfo.viewType = VK_IMAGE_VIEW_TYPE_2D;
-    viewInfo.format = format;
-    viewInfo.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
-    viewInfo.subresourceRange.baseMipLevel = 0;
-    viewInfo.subresourceRange.levelCount = 1;
-    viewInfo.subresourceRange.baseArrayLayer = 0;
-    viewInfo.subresourceRange.layerCount = 1;
-    
-    if (vkCreateImageView(device, &viewInfo, NULL, textureImageView) != VK_SUCCESS) {
-        return false;
-    }
-    
-    // Create sampler
-    VkSamplerCreateInfo samplerInfo = {0};
-    samplerInfo.sType = VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO;
-    samplerInfo.magFilter = VK_FILTER_LINEAR;
-    samplerInfo.minFilter = VK_FILTER_LINEAR;
-    samplerInfo.addressModeU = VK_SAMPLER_ADDRESS_MODE_REPEAT;
-    samplerInfo.addressModeV = VK_SAMPLER_ADDRESS_MODE_REPEAT;
-    samplerInfo.addressModeW = VK_SAMPLER_ADDRESS_MODE_REPEAT;
-    samplerInfo.anisotropyEnable = VK_FALSE;
-    samplerInfo.maxAnisotropy = 1.0f;
-    samplerInfo.borderColor = VK_BORDER_COLOR_INT_OPAQUE_BLACK;
-    samplerInfo.unnormalizedCoordinates = VK_FALSE;
-    samplerInfo.compareEnable = VK_FALSE;
-    samplerInfo.compareOp = VK_COMPARE_OP_ALWAYS;
-    samplerInfo.mipmapMode = VK_SAMPLER_MIPMAP_MODE_LINEAR;
-    samplerInfo.mipLodBias = 0.0f;
-    samplerInfo.minLod = 0.0f;
-    samplerInfo.maxLod = 0.0f;
-    
-    return vkCreateSampler(device, &samplerInfo, NULL, textureSampler) == VK_SUCCESS;
-}
-
-// Helper function to create buffer
-static bool createBuffer(VulkanAllocator* allocator, VkDeviceSize size,
-                        VkBufferUsageFlags usage, VkMemoryPropertyFlags properties,
-                        VkBuffer* buffer, VkDeviceMemory* bufferMemory) {
-    if (size == 0) {
-        CARDINAL_LOG_ERROR("Cannot create buffer with size 0");
-        return false;
-    }
-    if (!allocator) {
-        CARDINAL_LOG_ERROR("Allocator is null in createBuffer");
-        return false;
-    }
-
-    CARDINAL_LOG_DEBUG("Creating buffer via allocator: size=%llu bytes, usage=0x%X, properties=0x%X", size, usage, properties);
-
-    VkBufferCreateInfo bufferInfo = {0};
-    bufferInfo.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO;
-    bufferInfo.size = size;
-    bufferInfo.usage = usage;
-    bufferInfo.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
-
-    // Use allocator to create buffer + allocate/bind memory
-    if (!vk_allocator_allocate_buffer(allocator, &bufferInfo, buffer, bufferMemory, properties)) {
-        CARDINAL_LOG_ERROR("Allocator failed to create/allocate buffer (size=%llu, usage=0x%X)", size, usage);
-        return false;
-    }
-
-    CARDINAL_LOG_DEBUG("Buffer created via allocator: buffer=%p, memory=%p", (void*)(uintptr_t)(*buffer), (void*)(uintptr_t)(*bufferMemory));
-    return true;
-}
 
 __attribute__((unused))
 /**
@@ -581,66 +60,6 @@ static void copyBuffer(VkDevice device, VkCommandPool commandPool, VkQueue graph
     vkFreeCommandBuffers(device, commandPool, 1, &commandBuffer);
 }
 
-// Helper function to load shader module
-/**
- * @brief Loads and creates a shader module from SPIR-V file.
- * @param device Logical device.
- * @param filename Path to SPIR-V file.
- * @return Shader module or VK_NULL_HANDLE on failure.
- * 
- * @todo Implement shader caching to avoid repeated loading.
- */
-static VkShaderModule createShaderModule(VkDevice device, const char* filename) {
-    CARDINAL_LOG_DEBUG("[PBR] Attempting to load shader file: %s", filename);
-    
-    FILE* file = fopen(filename, "rb");
-    if (!file) {
-        CARDINAL_LOG_ERROR("[PBR] Failed to open shader file: %s", filename);
-        return VK_NULL_HANDLE;
-    }
-    
-    fseek(file, 0, SEEK_END);
-    size_t fileSize = ftell(file);
-    fseek(file, 0, SEEK_SET);
-    
-    CARDINAL_LOG_DEBUG("[PBR] Shader file size: %zu bytes", fileSize);
-    
-    char* code = malloc(fileSize);
-    if (!code) {
-        CARDINAL_LOG_ERROR("[PBR] Failed to allocate memory for shader code");
-        fclose(file);
-        return VK_NULL_HANDLE;
-    }
-    
-    size_t bytesRead = fread(code, 1, fileSize, file);
-    fclose(file);
-    
-    if (bytesRead != fileSize) {
-        CARDINAL_LOG_ERROR("[PBR] Failed to read complete shader file. Expected %zu bytes, read %zu", fileSize, bytesRead);
-        free(code);
-        return VK_NULL_HANDLE;
-    }
-    
-    CARDINAL_LOG_DEBUG("[PBR] Successfully read %zu bytes from shader file", bytesRead);
-    
-    VkShaderModuleCreateInfo createInfo = {0};
-    createInfo.sType = VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO;
-    createInfo.codeSize = fileSize;
-    createInfo.pCode = (const uint32_t*)code;
-    
-    VkShaderModule shaderModule;
-    VkResult result = vkCreateShaderModule(device, &createInfo, NULL, &shaderModule);
-    if (result != VK_SUCCESS) {
-        CARDINAL_LOG_ERROR("[PBR] Failed to create shader module (VkResult: %d): %s", result, filename);
-        free(code);
-        return VK_NULL_HANDLE;
-    }
-    
-    CARDINAL_LOG_INFO("[PBR] Successfully created shader module: %s", filename);
-    free(code);
-    return shaderModule;
-}
-
 /**
  * @brief Initializes the PBR rendering pipeline using dynamic rendering.
  * @param pipeline PBR pipeline structure.
@@ -664,32 +83,15 @@ bool vk_pbr_pipeline_create(VulkanPBRPipeline* pipeline, VkDevice device, VkPhys
     
     CARDINAL_LOG_DEBUG("Starting PBR pipeline creation");
     
-    // Declare variables at the top for C89 compatibility
-    VkPhysicalDeviceVulkan12Features vulkan12Features = {0};
-    VkPhysicalDeviceFeatures2 deviceFeatures2 = {0};
-    bool supportsDescriptorIndexing;
-    
     memset(pipeline, 0, sizeof(VulkanPBRPipeline));
     
-    // Query Vulkan 1.2 features for descriptor indexing support
-    vulkan12Features.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_2_FEATURES;
+    // Descriptor indexing is guaranteed in Vulkan 1.3 - no need to query
+    pipeline->supportsDescriptorIndexing = true;
     
-    deviceFeatures2.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2;
-    deviceFeatures2.pNext = &vulkan12Features;
+    CARDINAL_LOG_DEBUG("Descriptor indexing enabled (Vulkan 1.3 core)");
     
-    vkGetPhysicalDeviceFeatures2(physicalDevice, &deviceFeatures2);
-    CARDINAL_LOG_DEBUG("Queried Vulkan 1.2 features for descriptor indexing capabilities");
-    
-    // Check if descriptor indexing features are available
-    supportsDescriptorIndexing = vulkan12Features.descriptorIndexing &&
-                                vulkan12Features.runtimeDescriptorArray &&
-                                vulkan12Features.shaderSampledImageArrayNonUniformIndexing;
-    
-    // Store descriptor indexing support in pipeline structure
-    pipeline->supportsDescriptorIndexing = supportsDescriptorIndexing;
-    
-    CARDINAL_LOG_INFO("[PBR] Descriptor indexing support: %s", supportsDescriptorIndexing ? "enabled" : "disabled");
-    CARDINAL_LOG_DEBUG("Creating descriptor set layout with %d bindings", supportsDescriptorIndexing ? 9 : 8);
+    CARDINAL_LOG_INFO("[PBR] Descriptor indexing support: enabled");
+    CARDINAL_LOG_DEBUG("Creating descriptor set layout with 9 bindings");
     
     // Create descriptor set layout  
     VkDescriptorSetLayoutBinding bindings[9] = {0};
@@ -700,123 +102,76 @@ bool vk_pbr_pipeline_create(VulkanPBRPipeline* pipeline, VkDevice device, VkPhys
     bindings[0].descriptorCount = 1;
     bindings[0].stageFlags = VK_SHADER_STAGE_VERTEX_BIT;
     
-    // Texture bindings - use the same bindings as traditional mode but with enhanced capabilities if supported
-    if (supportsDescriptorIndexing) {
-        // albedoMap - standard binding
-        bindings[1].binding = 1;
-        bindings[1].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
-        bindings[1].descriptorCount = 1;
-        bindings[1].stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
-        
-        // normalMap - standard binding
-        bindings[2].binding = 2;
-        bindings[2].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
-        bindings[2].descriptorCount = 1;
-        bindings[2].stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
-        
-        // metallicRoughnessMap - standard binding
-        bindings[3].binding = 3;
-        bindings[3].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
-        bindings[3].descriptorCount = 1;
-        bindings[3].stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
-        
-        // aoMap - standard binding
-        bindings[4].binding = 4;
-        bindings[4].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
-        bindings[4].descriptorCount = 1;
-        bindings[4].stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
-        
-        // emissiveMap - standard binding
-        bindings[5].binding = 5;
-        bindings[5].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
-        bindings[5].descriptorCount = 1;
-        bindings[5].stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
-        
-        // Material properties binding
-        bindings[6].binding = 6;
-        bindings[6].descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
-        bindings[6].descriptorCount = 1;
-        bindings[6].stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
-        
-        // Lighting data binding
-        bindings[7].binding = 7;
-        bindings[7].descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
-        bindings[7].descriptorCount = 1;
-        bindings[7].stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
-        
-        // Texture array binding with variable count - MUST be highest binding number
-        bindings[8].binding = 8;
-        bindings[8].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
-        bindings[8].descriptorCount = 1024; // Large array for future expansion
-        bindings[8].stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
-    } else {
-        // Traditional fixed bindings matching shader expectations
-        // albedoMap
-        bindings[1].binding = 1;
-        bindings[1].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
-        bindings[1].descriptorCount = 1;
-        bindings[1].stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
-        
-        // normalMap
-        bindings[2].binding = 2;
-        bindings[2].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
-        bindings[2].descriptorCount = 1;
-        bindings[2].stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
-        
-        // metallicRoughnessMap
-        bindings[3].binding = 3;
-        bindings[3].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
-        bindings[3].descriptorCount = 1;
-        bindings[3].stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
-        
-        // aoMap
-        bindings[4].binding = 4;
-        bindings[4].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
-        bindings[4].descriptorCount = 1;
-        bindings[4].stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
-        
-        // emissiveMap
-        bindings[5].binding = 5;
-        bindings[5].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
-        bindings[5].descriptorCount = 1;
-        bindings[5].stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
-        
-        // Material properties binding
-        bindings[6].binding = 6;
-        bindings[6].descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
-        bindings[6].descriptorCount = 1;
-        bindings[6].stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
-        
-        // Lighting data binding
-        bindings[7].binding = 7;
-        bindings[7].descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
-        bindings[7].descriptorCount = 1;
-        bindings[7].stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
-    }
+    // Texture bindings with descriptor indexing (Vulkan 1.3 core)
+    // albedoMap - standard binding
+    bindings[1].binding = 1;
+    bindings[1].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+    bindings[1].descriptorCount = 1;
+    bindings[1].stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
     
-    // Setup descriptor set layout create info
+    // normalMap - standard binding
+    bindings[2].binding = 2;
+    bindings[2].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+    bindings[2].descriptorCount = 1;
+    bindings[2].stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
+    
+    // metallicRoughnessMap - standard binding
+    bindings[3].binding = 3;
+    bindings[3].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+    bindings[3].descriptorCount = 1;
+    bindings[3].stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
+    
+    // aoMap - standard binding
+    bindings[4].binding = 4;
+    bindings[4].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+    bindings[4].descriptorCount = 1;
+    bindings[4].stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
+    
+    // emissiveMap - standard binding
+    bindings[5].binding = 5;
+    bindings[5].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+    bindings[5].descriptorCount = 1;
+    bindings[5].stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
+    
+    // Material properties binding
+    bindings[6].binding = 6;
+    bindings[6].descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
+    bindings[6].descriptorCount = 1;
+    bindings[6].stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
+    
+    // Lighting data binding
+    bindings[7].binding = 7;
+    bindings[7].descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
+    bindings[7].descriptorCount = 1;
+    bindings[7].stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
+    
+    // Texture array binding with variable count - MUST be highest binding number
+    bindings[8].binding = 8;
+    bindings[8].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+    bindings[8].descriptorCount = 1024; // Large array for future expansion
+    bindings[8].stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
+    
+    // Setup descriptor set layout create info with descriptor indexing (Vulkan 1.3 core)
     VkDescriptorSetLayoutCreateInfo layoutInfo = {0};
     layoutInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO;
-    layoutInfo.bindingCount = supportsDescriptorIndexing ? 9 : 8; // Use extra binding (8) only when indexing is enabled
+    layoutInfo.bindingCount = 9; // Always use 9 bindings with descriptor indexing
     layoutInfo.pBindings = bindings;
     
-    // Enable descriptor indexing flags if supported
+    // Enable descriptor indexing flags
     VkDescriptorSetLayoutBindingFlagsCreateInfo bindingFlags = {0};
     VkDescriptorBindingFlags flags[9] = {0};
     
-    if (supportsDescriptorIndexing) {
-        // Set flags for the highest binding (binding 8) where variable descriptor count is used
-        flags[8] = VK_DESCRIPTOR_BINDING_VARIABLE_DESCRIPTOR_COUNT_BIT |
-                   VK_DESCRIPTOR_BINDING_PARTIALLY_BOUND_BIT |
-                   VK_DESCRIPTOR_BINDING_UPDATE_AFTER_BIND_BIT;
-        
-        bindingFlags.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_BINDING_FLAGS_CREATE_INFO;
-        bindingFlags.bindingCount = 9;
-        bindingFlags.pBindingFlags = flags;
-        
-        layoutInfo.flags = VK_DESCRIPTOR_SET_LAYOUT_CREATE_UPDATE_AFTER_BIND_POOL_BIT;
-        layoutInfo.pNext = &bindingFlags;
-    }
+    // Set flags for the highest binding (binding 8) where variable descriptor count is used
+    flags[8] = VK_DESCRIPTOR_BINDING_VARIABLE_DESCRIPTOR_COUNT_BIT |
+               VK_DESCRIPTOR_BINDING_PARTIALLY_BOUND_BIT |
+               VK_DESCRIPTOR_BINDING_UPDATE_AFTER_BIND_BIT;
+    
+    bindingFlags.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_BINDING_FLAGS_CREATE_INFO;
+    bindingFlags.bindingCount = 9;
+    bindingFlags.pBindingFlags = flags;
+    
+    layoutInfo.flags = VK_DESCRIPTOR_SET_LAYOUT_CREATE_UPDATE_AFTER_BIND_POOL_BIT;
+    layoutInfo.pNext = &bindingFlags;
     
     if (vkCreateDescriptorSetLayout(device, &layoutInfo, NULL, &pipeline->descriptorSetLayout) != VK_SUCCESS) {
         CARDINAL_LOG_ERROR("Failed to create descriptor set layout!");
@@ -837,10 +192,11 @@ bool vk_pbr_pipeline_create(VulkanPBRPipeline* pipeline, VkDevice device, VkPhys
     CARDINAL_LOG_DEBUG("Pipeline layout created: handle=%p", (void*)(uintptr_t)pipeline->pipelineLayout);
     
     // Load shaders
-    VkShaderModule vertShaderModule = createShaderModule(device, "assets/shaders/pbr.vert.spv");
-    VkShaderModule fragShaderModule = createShaderModule(device, "assets/shaders/pbr.frag.spv");
+    VkShaderModule vertShaderModule = VK_NULL_HANDLE;
+    VkShaderModule fragShaderModule = VK_NULL_HANDLE;
     
-    if (vertShaderModule == VK_NULL_HANDLE || fragShaderModule == VK_NULL_HANDLE) {
+    if (!vk_shader_create_module(device, "assets/shaders/pbr.vert.spv", &vertShaderModule) ||
+        !vk_shader_create_module(device, "assets/shaders/pbr.frag.spv", &fragShaderModule)) {
         CARDINAL_LOG_ERROR("Failed to load PBR shaders!");
         return false;
     }
@@ -986,7 +342,7 @@ bool vk_pbr_pipeline_create(VulkanPBRPipeline* pipeline, VkDevice device, VkPhys
     
     // Create uniform buffers
     VkDeviceSize uboSize = sizeof(PBRUniformBufferObject);
-    if (!createBuffer(allocator, uboSize, VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT,
+    if (!vk_buffer_create(allocator, uboSize, VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT,
                      VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT,
                      &pipeline->uniformBuffer, &pipeline->uniformBufferMemory)) {
         CARDINAL_LOG_ERROR("Failed to create PBR UBO buffer (size=%llu)", (unsigned long long)uboSize);
@@ -1002,7 +358,7 @@ bool vk_pbr_pipeline_create(VulkanPBRPipeline* pipeline, VkDevice device, VkPhys
     CARDINAL_LOG_DEBUG("UBO memory mapped at %p", pipeline->uniformBufferMapped);
     
     VkDeviceSize materialSize = sizeof(PBRMaterialProperties);
-    if (!createBuffer(allocator, materialSize, VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT,
+    if (!vk_buffer_create(allocator, materialSize, VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT,
                      VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT,
                      &pipeline->materialBuffer, &pipeline->materialBufferMemory)) {
         CARDINAL_LOG_ERROR("Failed to create PBR material buffer (size=%llu)", (unsigned long long)materialSize);
@@ -1018,7 +374,7 @@ bool vk_pbr_pipeline_create(VulkanPBRPipeline* pipeline, VkDevice device, VkPhys
     CARDINAL_LOG_DEBUG("Material memory mapped at %p", pipeline->materialBufferMapped);
     
     VkDeviceSize lightingSize = sizeof(PBRLightingData);
-    if (!createBuffer(allocator, lightingSize, VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT,
+    if (!vk_buffer_create(allocator, lightingSize, VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT,
                      VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT,
                      &pipeline->lightingBuffer, &pipeline->lightingBufferMemory)) {
         CARDINAL_LOG_ERROR("Failed to create PBR lighting buffer (size=%llu)", (unsigned long long)lightingSize);
@@ -1052,8 +408,8 @@ bool vk_pbr_pipeline_create(VulkanPBRPipeline* pipeline, VkDevice device, VkPhys
     defaultMaterial.metallicRoughnessTextureIndex = 0;
     defaultMaterial.aoTextureIndex = 0;
     defaultMaterial.emissiveTextureIndex = 0;
-    // Propagate descriptor indexing support to shader side
-    defaultMaterial.supportsDescriptorIndexing = pipeline->supportsDescriptorIndexing ? 1u : 0u;
+    // Propagate descriptor indexing support to shader side (always enabled in Vulkan 1.3)
+    defaultMaterial.supportsDescriptorIndexing = 1u;
     
     memcpy(pipeline->materialBufferMapped, &defaultMaterial, sizeof(PBRMaterialProperties));
     
@@ -1227,8 +583,8 @@ void vk_pbr_render(VulkanPBRPipeline* pipeline, VkCommandBuffer commandBuffer, c
             matProps.emissiveTextureIndex = (material->emissive_texture == UINT32_MAX) ? UINT32_MAX : 
                                             (material->emissive_texture < pipeline->textureCount) ? material->emissive_texture : 0;
             
-            // CRITICAL: Set descriptor indexing flag for shader (only if textures are available)
-            matProps.supportsDescriptorIndexing = (pipeline->supportsDescriptorIndexing && pipeline->textureCount > 0) ? 1u : 0u;
+            // CRITICAL: Set descriptor indexing flag for shader (always enabled in Vulkan 1.3, only if textures are available)
+            matProps.supportsDescriptorIndexing = (pipeline->textureCount > 0) ? 1u : 0u;
             
             // Debug logging for material properties
             CARDINAL_LOG_DEBUG("Material %d: albedo_idx=%u, normal_idx=%u, mr_idx=%u, ao_idx=%u, emissive_idx=%u", 
@@ -1308,15 +664,19 @@ bool vk_pbr_load_scene(VulkanPBRPipeline* pipeline, VkDevice device, VkPhysicalD
         pipeline->indexBufferMemory = VK_NULL_HANDLE;
     }
     
-    // Create vertex buffer
+    // Create vertex buffer with device address support
     VkDeviceSize vertexBufferSize = totalVertices * sizeof(CardinalVertex);
-    if (!createBuffer(allocator, vertexBufferSize,
-                     VK_BUFFER_USAGE_VERTEX_BUFFER_BIT,
+    if (!vk_buffer_create(allocator, vertexBufferSize,
+                     VK_BUFFER_USAGE_VERTEX_BUFFER_BIT | VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT,
                      VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT,
                      &pipeline->vertexBuffer, &pipeline->vertexBufferMemory)) {
         CARDINAL_LOG_ERROR("Failed to create PBR vertex buffer");
         return false;
     }
+    
+    // Get vertex buffer device address for potential shader usage
+    VkDeviceAddress vertexBufferAddress = vk_allocator_get_buffer_device_address(allocator, pipeline->vertexBuffer);
+    CARDINAL_LOG_DEBUG("Vertex buffer device address: 0x%llx", (unsigned long long)vertexBufferAddress);
     
     // Map and upload vertex data
     void* vertexData;
@@ -1337,13 +697,17 @@ bool vk_pbr_load_scene(VulkanPBRPipeline* pipeline, VkDevice device, VkPhysicalD
     // Create index buffer if we have indices
     if (totalIndices > 0) {
         VkDeviceSize indexBufferSize = totalIndices * sizeof(uint32_t);
-        if (!createBuffer(allocator, indexBufferSize,
-                         VK_BUFFER_USAGE_INDEX_BUFFER_BIT,
+        if (!vk_buffer_create(allocator, indexBufferSize,
+                         VK_BUFFER_USAGE_INDEX_BUFFER_BIT | VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT,
                          VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT,
                          &pipeline->indexBuffer, &pipeline->indexBufferMemory)) {
             CARDINAL_LOG_ERROR("Failed to create PBR index buffer");
             return false;
         }
+        
+        // Get index buffer device address for potential shader usage
+        VkDeviceAddress indexBufferAddress = vk_allocator_get_buffer_device_address(allocator, pipeline->indexBuffer);
+        CARDINAL_LOG_DEBUG("Index buffer device address: 0x%llx", (unsigned long long)indexBufferAddress);
         
         void* indexData;
         if (vkMapMemory(device, pipeline->indexBufferMemory, 0, indexBufferSize, 0, &indexData) != VK_SUCCESS) {
@@ -1446,7 +810,7 @@ bool vk_pbr_load_scene(VulkanPBRPipeline* pipeline, VkDevice device, VkPhysicalD
             if (!texture->data || texture->width == 0 || texture->height == 0) {
                 CARDINAL_LOG_WARN("Skipping invalid texture %u (%s) - creating placeholder", i, texture->path ? texture->path : "unknown");
                 // Create fallback placeholder for invalid texture slot
-                if (!createPlaceholderTexture(allocator, device, commandPool, graphicsQueue,
+                if (!vk_texture_create_placeholder(allocator, device, commandPool, graphicsQueue,
                                             &pipeline->textureImages[i], &pipeline->textureImageMemories[i],
                                             &pipeline->textureImageViews[i], NULL)) {
                     CARDINAL_LOG_ERROR("Failed to create fallback texture for slot %u", i);
@@ -1459,7 +823,7 @@ bool vk_pbr_load_scene(VulkanPBRPipeline* pipeline, VkDevice device, VkPhysicalD
                              i, texture->width, texture->height, texture->channels,
                              texture->path ? texture->path : "unknown");
             
-            if (createTextureFromData(allocator, device, commandPool, graphicsQueue,
+            if (vk_texture_create_from_data(allocator, device, commandPool, graphicsQueue,
                                      texture, &pipeline->textureImages[i], 
                                      &pipeline->textureImageMemories[i], 
                                      &pipeline->textureImageViews[i])) {
@@ -1467,7 +831,7 @@ bool vk_pbr_load_scene(VulkanPBRPipeline* pipeline, VkDevice device, VkPhysicalD
             } else {
                 CARDINAL_LOG_ERROR("Failed to upload texture %u (%s) - creating placeholder", i, texture->path ? texture->path : "unknown");
                 // Create fallback placeholder for this slot to ensure valid image view
-                if (!createPlaceholderTexture(allocator, device, commandPool, graphicsQueue,
+                if (!vk_texture_create_placeholder(allocator, device, commandPool, graphicsQueue,
                                             &pipeline->textureImages[i], &pipeline->textureImageMemories[i],
                                             &pipeline->textureImageViews[i], NULL)) {
                     CARDINAL_LOG_ERROR("Failed to create fallback texture for slot %u", i);
@@ -1485,7 +849,7 @@ bool vk_pbr_load_scene(VulkanPBRPipeline* pipeline, VkDevice device, VkPhysicalD
         // Fill remaining slots with placeholders if scene had fewer textures than allocated
         for (uint32_t i = scene->texture_count; i < textureCount; i++) {
             CARDINAL_LOG_DEBUG("Creating placeholder texture for unused slot %u", i);
-            if (!createPlaceholderTexture(allocator, device, commandPool, graphicsQueue,
+            if (!vk_texture_create_placeholder(allocator, device, commandPool, graphicsQueue,
                                         &pipeline->textureImages[i], &pipeline->textureImageMemories[i],
                                         &pipeline->textureImageViews[i], NULL)) {
                 CARDINAL_LOG_ERROR("Failed to create placeholder texture for slot %u", i);
@@ -1497,7 +861,7 @@ bool vk_pbr_load_scene(VulkanPBRPipeline* pipeline, VkDevice device, VkPhysicalD
     // If no scene textures, create a single placeholder
     if (!hasSceneTextures) {
         CARDINAL_LOG_INFO("Creating placeholder texture (no scene textures available)");
-        if (!createPlaceholderTexture(allocator, device, commandPool, graphicsQueue,
+        if (!vk_texture_create_placeholder(allocator, device, commandPool, graphicsQueue,
                                      &pipeline->textureImages[0], &pipeline->textureImageMemories[0],
                                      &pipeline->textureImageViews[0], NULL)) {
             CARDINAL_LOG_ERROR("Failed to create placeholder texture");
@@ -1512,18 +876,14 @@ bool vk_pbr_load_scene(VulkanPBRPipeline* pipeline, VkDevice device, VkPhysicalD
     poolSizes[0].type = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
     poolSizes[0].descriptorCount = 2; // UBO + Material
     poolSizes[1].type = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
-    // Allocate descriptors: 5 fixed + extra capacity if descriptor indexing is enabled for binding 8
-    poolSizes[1].descriptorCount = pipeline->supportsDescriptorIndexing ? (5 + 1024) : 5; // 5 fixed + 1024 variable
+    // Allocate descriptors: 5 fixed + 1024 variable for descriptor indexing (Vulkan 1.3 core)
+    poolSizes[1].descriptorCount = 5 + 1024; // 5 fixed + 1024 variable
     poolSizes[2].type = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
     poolSizes[2].descriptorCount = 1; // Lighting
     
     VkDescriptorPoolCreateInfo poolInfo = {0};
     poolInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO;
-    poolInfo.flags = VK_DESCRIPTOR_POOL_CREATE_FREE_DESCRIPTOR_SET_BIT;
-    // Enable update after bind if using descriptor indexing
-    if (pipeline->supportsDescriptorIndexing) {
-        poolInfo.flags |= VK_DESCRIPTOR_POOL_CREATE_UPDATE_AFTER_BIND_BIT;
-    }
+    poolInfo.flags = VK_DESCRIPTOR_POOL_CREATE_FREE_DESCRIPTOR_SET_BIT | VK_DESCRIPTOR_POOL_CREATE_UPDATE_AFTER_BIND_BIT;
     poolInfo.poolSizeCount = 3;
     poolInfo.pPoolSizes = poolSizes;
     poolInfo.maxSets = 1; // One descriptor set for now
@@ -1545,24 +905,22 @@ bool vk_pbr_load_scene(VulkanPBRPipeline* pipeline, VkDevice device, VkPhysicalD
     allocInfo.descriptorSetCount = 1;
     allocInfo.pSetLayouts = &pipeline->descriptorSetLayout;
     
-    // Handle variable descriptor count for descriptor indexing (binding 8)
+    // Handle variable descriptor count for descriptor indexing (binding 8) - Vulkan 1.3 core
     VkDescriptorSetVariableDescriptorCountAllocateInfo variableCountInfo = {0};
     // Use the actual number of textures we will bind for the variable descriptor array
-    uint32_t variableDescriptorCount = pipeline->supportsDescriptorIndexing ? pipeline->textureCount : 0;
+    uint32_t variableDescriptorCount = pipeline->textureCount;
     
-    if (pipeline->supportsDescriptorIndexing) {
-        variableCountInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_VARIABLE_DESCRIPTOR_COUNT_ALLOCATE_INFO;
-        variableCountInfo.descriptorSetCount = 1;
-        variableCountInfo.pDescriptorCounts = &variableDescriptorCount;
-        allocInfo.pNext = &variableCountInfo;
-    }
+    variableCountInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_VARIABLE_DESCRIPTOR_COUNT_ALLOCATE_INFO;
+    variableCountInfo.descriptorSetCount = 1;
+    variableCountInfo.pDescriptorCounts = &variableDescriptorCount;
+    allocInfo.pNext = &variableCountInfo;
     
     if (vkAllocateDescriptorSets(device, &allocInfo, pipeline->descriptorSets) != VK_SUCCESS) {
         CARDINAL_LOG_ERROR("Failed to allocate descriptor sets");
         return false;
     }
-    CARDINAL_LOG_DEBUG("Allocated descriptor set: set=%p, variableCount=%u (supported=%s)",
-                      (void*)(uintptr_t)pipeline->descriptorSets[0], variableDescriptorCount, pipeline->supportsDescriptorIndexing ? "yes" : "no");
+    CARDINAL_LOG_DEBUG("Allocated descriptor set: set=%p, variableCount=%u (descriptor indexing enabled)",
+                      (void*)(uintptr_t)pipeline->descriptorSets[0], variableDescriptorCount);
     
     // Update descriptor sets with uniform buffers and textures
     // variable descriptor indexing path can emit up to 9 writes (UBO + 5 textures + variable array + 2 UBOs)
@@ -1587,108 +945,51 @@ bool vk_pbr_load_scene(VulkanPBRPipeline* pipeline, VkDevice device, VkPhysicalD
     VkDescriptorImageInfo imageInfos[5];
     for (uint32_t i = 0; i < 5; ++i) {
         imageInfos[i].imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
-        // When descriptor indexing is enabled, fixed bindings 1-5 should use placeholder (index 0)
-        // to avoid confusion with the variable array. Only use direct texture mapping when indexing is disabled.
-        uint32_t texIndex = pipeline->supportsDescriptorIndexing ? 0 : ((i < pipeline->textureCount) ? i : 0);
+        // With descriptor indexing (Vulkan 1.3 core), fixed bindings 1-5 use placeholder (index 0)
+        // to avoid confusion with the variable array.
+        uint32_t texIndex = 0;
         imageInfos[i].imageView = pipeline->textureImageViews[texIndex];
         imageInfos[i].sampler = pipeline->textureSampler;
         CARDINAL_LOG_DEBUG("Fixed binding %u uses texture index %u (imageView=%p)", i + 1, texIndex, (void*)(uintptr_t)pipeline->textureImageViews[texIndex]);
     }
     
-    if (pipeline->supportsDescriptorIndexing) {
-        // Bind placeholders for fixed bindings 1-5 (shader will use variable array for actual textures)
-        for (uint32_t b = 1; b <= 5; ++b) {
-            descriptorWrites[writeCount].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
-            descriptorWrites[writeCount].dstSet = pipeline->descriptorSets[0];
-            descriptorWrites[writeCount].dstBinding = b;
-            descriptorWrites[writeCount].dstArrayElement = 0;
-            descriptorWrites[writeCount].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
-            descriptorWrites[writeCount].descriptorCount = 1;
-            descriptorWrites[writeCount].pImageInfo = &imageInfos[b - 1];
-            writeCount++;
-        }
-        // Variable descriptor array: bind all available textures (or 1 if only placeholder)
+    // Bind placeholders for fixed bindings 1-5 (shader will use variable array for actual textures)
+    for (uint32_t b = 1; b <= 5; ++b) {
         descriptorWrites[writeCount].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
         descriptorWrites[writeCount].dstSet = pipeline->descriptorSets[0];
-        descriptorWrites[writeCount].dstBinding = 8; // variable count binding
+        descriptorWrites[writeCount].dstBinding = b;
         descriptorWrites[writeCount].dstArrayElement = 0;
         descriptorWrites[writeCount].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
-        descriptorWrites[writeCount].descriptorCount = pipeline->textureCount;
-        
-        // Build a temporary array of VkDescriptorImageInfo for binding 8
-        VkDescriptorImageInfo* varInfos = (VkDescriptorImageInfo*)malloc(sizeof(VkDescriptorImageInfo) * pipeline->textureCount);
-        if (!varInfos) {
-            CARDINAL_LOG_ERROR("Failed to allocate memory for descriptor image infos");
-            return false;
-        }
-        for (uint32_t i = 0; i < pipeline->textureCount; ++i) {
-            varInfos[i].imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
-            varInfos[i].imageView = pipeline->textureImageViews[i];
-            varInfos[i].sampler = pipeline->textureSampler;
-            if (i < 8) {
-                CARDINAL_LOG_DEBUG("Variable binding 8, array[%u] -> imageView=%p", i, (void*)(uintptr_t)pipeline->textureImageViews[i]);
-            }
-        }
-        descriptorWrites[writeCount].pImageInfo = varInfos;
-        writeCount++;
-        
-        // Update descriptor sets for descriptor indexing path
-        VkDescriptorBufferInfo materialBufferInfo = {0};
-        materialBufferInfo.buffer = pipeline->materialBuffer;
-        materialBufferInfo.offset = 0;
-        materialBufferInfo.range = sizeof(PBRMaterialProperties);
-        
-        descriptorWrites[writeCount].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
-        descriptorWrites[writeCount].dstSet = pipeline->descriptorSets[0];
-        descriptorWrites[writeCount].dstBinding = 6;
-        descriptorWrites[writeCount].dstArrayElement = 0;
-        descriptorWrites[writeCount].descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
         descriptorWrites[writeCount].descriptorCount = 1;
-        descriptorWrites[writeCount].pBufferInfo = &materialBufferInfo;
+        descriptorWrites[writeCount].pImageInfo = &imageInfos[b - 1];
         writeCount++;
-        
-        VkDescriptorBufferInfo lightingBufferInfo = {0};
-        lightingBufferInfo.buffer = pipeline->lightingBuffer;
-        lightingBufferInfo.offset = 0;
-        lightingBufferInfo.range = sizeof(PBRLightingData);
-        
-        descriptorWrites[writeCount].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
-        descriptorWrites[writeCount].dstSet = pipeline->descriptorSets[0];
-        descriptorWrites[writeCount].dstBinding = 7;
-        descriptorWrites[writeCount].dstArrayElement = 0;
-        descriptorWrites[writeCount].descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
-        descriptorWrites[writeCount].descriptorCount = 1;
-        descriptorWrites[writeCount].pBufferInfo = &lightingBufferInfo;
-        writeCount++;
-        
-        // Apply descriptor writes
-        CARDINAL_LOG_DEBUG("Updating descriptor sets (variable binding): writes=%u, sampler=%p, ubo=%p, material=%p, lighting=%p", writeCount,
-                           (void*)(uintptr_t)pipeline->textureSampler,
-                           (void*)(uintptr_t)pipeline->uniformBuffer,
-                           (void*)(uintptr_t)pipeline->materialBuffer,
-                           (void*)(uintptr_t)pipeline->lightingBuffer);
-        vkUpdateDescriptorSets(device, writeCount, descriptorWrites, 0, NULL);
-        CARDINAL_LOG_DEBUG("Descriptor sets updated for variable binding");
-        
-        // Free temporary allocation
-        free(varInfos);
-        
-        CARDINAL_LOG_INFO("PBR scene loaded successfully");
-        return true;
-    } else {
-        // Traditional individual bindings 1-5 use corresponding imageInfos
-        for (uint32_t b = 1; b <= 5; ++b) {
-            descriptorWrites[writeCount].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
-            descriptorWrites[writeCount].dstSet = pipeline->descriptorSets[0];
-            descriptorWrites[writeCount].dstBinding = b;
-            descriptorWrites[writeCount].dstArrayElement = 0;
-            descriptorWrites[writeCount].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
-            descriptorWrites[writeCount].descriptorCount = 1;
-            descriptorWrites[writeCount].pImageInfo = &imageInfos[b - 1];
-            writeCount++;
+    }
+    // Variable descriptor array: bind all available textures (or 1 if only placeholder)
+    descriptorWrites[writeCount].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+    descriptorWrites[writeCount].dstSet = pipeline->descriptorSets[0];
+    descriptorWrites[writeCount].dstBinding = 8; // variable count binding
+    descriptorWrites[writeCount].dstArrayElement = 0;
+    descriptorWrites[writeCount].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+    descriptorWrites[writeCount].descriptorCount = pipeline->textureCount;
+    
+    // Build a temporary array of VkDescriptorImageInfo for binding 8
+    VkDescriptorImageInfo* varInfos = (VkDescriptorImageInfo*)malloc(sizeof(VkDescriptorImageInfo) * pipeline->textureCount);
+    if (!varInfos) {
+        CARDINAL_LOG_ERROR("Failed to allocate memory for descriptor image infos");
+        return false;
+    }
+    for (uint32_t i = 0; i < pipeline->textureCount; ++i) {
+        varInfos[i].imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+        varInfos[i].imageView = pipeline->textureImageViews[i];
+        varInfos[i].sampler = pipeline->textureSampler;
+        if (i < 8) {
+            CARDINAL_LOG_DEBUG("Variable binding 8, array[%u] -> imageView=%p", i, (void*)(uintptr_t)pipeline->textureImageViews[i]);
         }
     }
+    descriptorWrites[writeCount].pImageInfo = varInfos;
+    writeCount++;
     
+    // Update descriptor sets with uniform buffers
     VkDescriptorBufferInfo materialBufferInfo = {0};
     materialBufferInfo.buffer = pipeline->materialBuffer;
     materialBufferInfo.offset = 0;
@@ -1717,13 +1018,17 @@ bool vk_pbr_load_scene(VulkanPBRPipeline* pipeline, VkDevice device, VkPhysicalD
     descriptorWrites[writeCount].pBufferInfo = &lightingBufferInfo;
     writeCount++;
     
-    CARDINAL_LOG_DEBUG("Updating descriptor sets (fixed bindings): writes=%u, sampler=%p, ubo=%p, material=%p, lighting=%p", writeCount,
+    // Apply descriptor writes
+    CARDINAL_LOG_DEBUG("Updating descriptor sets (descriptor indexing): writes=%u, sampler=%p, ubo=%p, material=%p, lighting=%p", writeCount,
                        (void*)(uintptr_t)pipeline->textureSampler,
                        (void*)(uintptr_t)pipeline->uniformBuffer,
                        (void*)(uintptr_t)pipeline->materialBuffer,
                        (void*)(uintptr_t)pipeline->lightingBuffer);
     vkUpdateDescriptorSets(device, writeCount, descriptorWrites, 0, NULL);
-    CARDINAL_LOG_DEBUG("Descriptor sets updated for fixed bindings");
+    CARDINAL_LOG_DEBUG("Descriptor sets updated with descriptor indexing");
+    
+    // Free temporary allocation
+    free(varInfos);
     
     CARDINAL_LOG_INFO("PBR scene loaded successfully");
     return true;

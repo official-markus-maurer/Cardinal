@@ -23,6 +23,7 @@ struct VulkanAllocator {
     // Function pointers (from Vulkan 1.3 core)
     PFN_vkGetDeviceBufferMemoryRequirements fpGetDeviceBufferMemReq;
     PFN_vkGetDeviceImageMemoryRequirements fpGetDeviceImageMemReq;
+    PFN_vkGetBufferDeviceAddress fpGetBufferDeviceAddress;
     // Stats
     uint64_t total_device_mem_allocated;
     uint64_t total_device_mem_freed;
@@ -31,7 +32,8 @@ struct VulkanAllocator {
 // Create/Destroy allocator
 bool vk_allocator_init(VulkanAllocator* alloc, VkPhysicalDevice phys, VkDevice dev,
                        PFN_vkGetDeviceBufferMemoryRequirements bufReq,
-                       PFN_vkGetDeviceImageMemoryRequirements imgReq);
+                       PFN_vkGetDeviceImageMemoryRequirements imgReq,
+                       PFN_vkGetBufferDeviceAddress bufDevAddr);
 void vk_allocator_shutdown(VulkanAllocator* alloc);
 
 // Allocation helpers
@@ -49,6 +51,9 @@ bool vk_allocator_allocate_buffer(VulkanAllocator* alloc,
 
 void vk_allocator_free_image(VulkanAllocator* alloc, VkImage image, VkDeviceMemory memory);
 void vk_allocator_free_buffer(VulkanAllocator* alloc, VkBuffer buffer, VkDeviceMemory memory);
+
+// Buffer device address support
+VkDeviceAddress vk_allocator_get_buffer_device_address(VulkanAllocator* alloc, VkBuffer buffer);
 
 // Mesh representation for scene uploads
 typedef struct GpuMesh {
@@ -105,7 +110,9 @@ typedef struct VulkanState {
     bool supports_dynamic_rendering;        /**< True when dynamic rendering is available and enabled. */
     bool supports_vulkan_12_features;       /**< True when Vulkan 1.2 features are available and enabled. */
     bool supports_vulkan_13_features;       /**< True when Vulkan 1.3 features are available and enabled. */
+    bool supports_vulkan_14_features;       /**< True when Vulkan 1.4 features are available and enabled. */
     bool supports_maintenance4;             /**< True when Vulkan 1.3 maintenance4 is available and enabled. */
+    bool supports_buffer_device_address;    /**< True when buffer device address is available and enabled. */
 
     // Dynamic rendering function pointers (core in Vulkan 1.3)
     PFN_vkCmdBeginRendering vkCmdBeginRendering;     /**< Function pointer for vkCmdBeginRendering. */
@@ -124,9 +131,10 @@ typedef struct VulkanState {
     PFN_vkGetDeviceBufferMemoryRequirements vkGetDeviceBufferMemoryRequirements;   /**< Function pointer for vkGetDeviceBufferMemoryRequirements. */
     PFN_vkGetDeviceImageMemoryRequirements vkGetDeviceImageMemoryRequirements;     /**< Function pointer for vkGetDeviceImageMemoryRequirements. */
 
-    // Pipeline objects for simple pipeline path (non-PBR)
-    VkPipelineLayout pipeline_layout;        /**< Basic pipeline layout. */
-    VkPipeline pipeline;                     /**< Basic graphics pipeline. */
+    /** Buffer device address function pointers (Vulkan 1.2 core, required in 1.3). */
+    PFN_vkGetBufferDeviceAddress vkGetBufferDeviceAddress;                         /**< Function pointer for vkGetBufferDeviceAddress. */
+
+    // Simple pipeline removed - PBR is the only rendering path
 
     // Image layout tracking
     bool depth_layout_initialized;          /**< Whether depth image layout has been transitioned. */

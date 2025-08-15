@@ -2,7 +2,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include "vulkan_state.h"
-#include "vulkan_commands.h"
+#include <cardinal/renderer/vulkan_commands.h>
 #include "cardinal/core/log.h"
 #include "cardinal/renderer/vulkan_pbr.h"
 
@@ -299,7 +299,7 @@ sc.offset.y = 0;
 sc.extent = s->swapchain_extent;
 vkCmdSetScissor(cmd, 0, 1, &sc);
 
-// Draw PBR scene if enabled, otherwise use simple pipeline
+// Draw PBR scene
 if (s->use_pbr_pipeline && s->pbr_pipeline.initialized && s->current_scene) {
     // Ensure PBR uniforms are updated before rendering
     PBRUniformBufferObject ubo;
@@ -309,9 +309,6 @@ if (s->use_pbr_pipeline && s->pbr_pipeline.initialized && s->current_scene) {
     vk_pbr_update_uniforms(&s->pbr_pipeline, &ubo, &lighting);
 
     vk_pbr_render(&s->pbr_pipeline, cmd, s->current_scene);
-} else if (s->pipeline) {
-    vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, s->pipeline);
-    vkCmdDraw(cmd, 3, 1, 0, 0);
 }
 
 // Allow optional UI callback to record draw calls (e.g., ImGui)

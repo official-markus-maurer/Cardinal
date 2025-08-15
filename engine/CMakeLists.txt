@@ -1,3 +1,9 @@
+cmake_minimum_required(VERSION 3.16)
+project(CardinalEngine)
+
+# Find required packages
+find_package(Vulkan REQUIRED)
+
 # Cardinal Engine Library
 add_library(cardinal_engine STATIC)
 
@@ -54,6 +60,10 @@ target_sources(cardinal_engine PRIVATE
     src/renderer/vulkan_commands.c
     src/renderer/vulkan_pbr.c
     src/renderer/vulkan_allocator.c
+    src/renderer/util/vulkan_buffer_utils.c
+    src/renderer/util/vulkan_descriptor_utils.c
+    src/renderer/util/vulkan_shader_utils.c
+    src/renderer/util/vulkan_texture_utils.c
     src/assets/scene.c
     src/assets/gltf_loader.c
     src/assets/loader.c

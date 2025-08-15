@@ -2,9 +2,9 @@
 #include <GLFW/glfw3.h>
 #include <vulkan/vulkan.h>
 #include "vulkan_state.h"
-#include "vulkan_swapchain.h"
-#include "vulkan_pipeline.h"
-#include "vulkan_commands.h"
+#include <cardinal/renderer/vulkan_swapchain.h>
+#include <cardinal/renderer/vulkan_pipeline.h>
+#include <cardinal/renderer/vulkan_commands.h>
 
 /**
  * @brief Chooses the optimal surface format from available options.

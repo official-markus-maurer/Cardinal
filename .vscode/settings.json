@@ -4,6 +4,7 @@
         "BRDF",
         "calloc",
         "cgltf",
+        "DCARDINAL",
         "Dockable",
         "dockspace",
         "fmts",

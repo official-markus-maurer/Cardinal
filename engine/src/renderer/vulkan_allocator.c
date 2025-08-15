@@ -13,8 +13,9 @@
  */
 bool vk_allocator_init(VulkanAllocator* alloc, VkPhysicalDevice phys, VkDevice dev,
                        PFN_vkGetDeviceBufferMemoryRequirements bufReq,
-                       PFN_vkGetDeviceImageMemoryRequirements imgReq) {
-    if (!alloc || !phys || !dev || !bufReq || !imgReq) {
+                       PFN_vkGetDeviceImageMemoryRequirements imgReq,
+                       PFN_vkGetBufferDeviceAddress bufDevAddr) {
+    if (!alloc || !phys || !dev || !bufReq || !imgReq || !bufDevAddr) {
         CARDINAL_LOG_ERROR("[VkAllocator] Invalid parameters for allocator init");
         return false;
     }
@@ -24,10 +25,11 @@ bool vk_allocator_init(VulkanAllocator* alloc, VkPhysicalDevice phys, VkDevice d
     alloc->physical_device = phys;
     alloc->fpGetDeviceBufferMemReq = bufReq;
     alloc->fpGetDeviceImageMemReq = imgReq;
+    alloc->fpGetBufferDeviceAddress = bufDevAddr;
     alloc->total_device_mem_allocated = 0;
     alloc->total_device_mem_freed = 0;
     
-    CARDINAL_LOG_INFO("[VkAllocator] Initialized - maintenance4: required");
+    CARDINAL_LOG_INFO("[VkAllocator] Initialized - maintenance4: required, buffer device address: enabled");
     return true;
 }
 
@@ -247,6 +249,15 @@ bool vk_allocator_allocate_buffer(VulkanAllocator* alloc,
     alloc_info.allocationSize = mem_requirements.size;
     alloc_info.memoryTypeIndex = memory_type_index;
     
+    // Check if buffer uses device address and add required flags
+    VkMemoryAllocateFlagsInfo flags_info = {0};
+    if (buffer_ci->usage & VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT) {
+        flags_info.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_FLAGS_INFO;
+        flags_info.flags = VK_MEMORY_ALLOCATE_DEVICE_ADDRESS_BIT;
+        alloc_info.pNext = &flags_info;
+        CARDINAL_LOG_INFO("[VkAllocator] Adding VK_MEMORY_ALLOCATE_DEVICE_ADDRESS_BIT for buffer with device address usage");
+    }
+    
     result = vkAllocateMemory(alloc->device, &alloc_info, NULL, out_memory);
     CARDINAL_LOG_INFO("[VkAllocator] vkAllocateMemory(Buffer) => %d, mem=%p size=%llu", result, (void*)(*out_memory), (unsigned long long)alloc_info.allocationSize);
     if (result != VK_SUCCESS) {
@@ -347,4 +358,26 @@ void vk_allocator_free_buffer(VulkanAllocator* alloc, VkBuffer buffer, VkDeviceM
     if (buffer != VK_NULL_HANDLE) {
         vkDestroyBuffer(alloc->device, buffer, NULL);
     }
+}
+
+/**
+ * @brief Gets the device address for a buffer (requires buffer device address feature).
+ * @param alloc The allocator instance.
+ * @param buffer Buffer handle to get address for.
+ * @return Device address of the buffer, or 0 on failure.
+ */
+VkDeviceAddress vk_allocator_get_buffer_device_address(VulkanAllocator* alloc, VkBuffer buffer) {
+    if (!alloc || !alloc->fpGetBufferDeviceAddress || buffer == VK_NULL_HANDLE) {
+        CARDINAL_LOG_ERROR("[VkAllocator] Invalid parameters for buffer device address query");
+        return 0;
+    }
+    
+    VkBufferDeviceAddressInfo address_info = {0};
+    address_info.sType = VK_STRUCTURE_TYPE_BUFFER_DEVICE_ADDRESS_INFO;
+    address_info.buffer = buffer;
+    
+    VkDeviceAddress address = alloc->fpGetBufferDeviceAddress(alloc->device, &address_info);
+    CARDINAL_LOG_DEBUG("[VkAllocator] Buffer device address: buffer=%p address=0x%llx", (void*)buffer, (unsigned long long)address);
+    
+    return address;
 }

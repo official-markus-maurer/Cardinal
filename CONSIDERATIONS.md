@@ -1,19 +1,6 @@
 # Considerations
 
 ## TODO Items Sorted by Severity 
-- Start implementing descriptor indexing and buffer device address
-- Run tests or a specific scene/workflow to validate the timeline semaphore changes
-
-## Maintenance4 Integration Strategy
-Custom Allocator Integration**: Build maintenance4 into a unified memory allocator:
-- Create a Cardinal memory allocator that wraps maintenance4 queries
-- Integrate with existing CardinalAllocator for unified memory tracking
-- Benefits: Centralized memory management, better debugging/profiling
-
-### **Currently** ###
-use VkPhysicalDeviceVulkan13Features/Vulkan12Features, etc., to the VkPhysicalDeviceFeatures2 chain and gate usage accordingly.
--> VK_API_VERSION_1_4
-
 
 ### **CRITICAL** - Stability & Correctness Issues
 - **Vulkan Resource Management**: Fix temporary culling disable in renderer (vulkan_pbr.c:816, vulkan_pipeline.c:299)

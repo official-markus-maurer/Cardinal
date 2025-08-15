@@ -2,7 +2,7 @@
 #define VULKAN_SWAPCHAIN_H
 
 #include <stdbool.h>
-#include "vulkan_state.h"
+#include "../../src/renderer/vulkan_state.h"
 
 /**
  * @brief Creates the Vulkan swapchain.
