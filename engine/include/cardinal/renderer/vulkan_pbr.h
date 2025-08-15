@@ -21,6 +21,44 @@ typedef struct PBRUniformBufferObject {
     float _padding1;     // Alignment
 } PBRUniformBufferObject;
 
+// Push constant structure for per-mesh data (model matrix + material properties)
+typedef struct PBRPushConstants {
+    float modelMatrix[16];  // 4x4 model matrix (64 bytes)
+    float albedoFactor[3];  // Material albedo factor (12 bytes)
+    float metallicFactor;   // Material metallic factor (4 bytes)
+    float emissiveFactor[3]; // Material emissive factor (12 bytes)
+    float roughnessFactor;  // Material roughness factor (4 bytes)
+    float normalScale;      // Normal map scale (4 bytes)
+    float aoStrength;       // AO strength (4 bytes)
+    uint32_t albedoTextureIndex;
+    uint32_t normalTextureIndex;
+    uint32_t metallicRoughnessTextureIndex;
+    uint32_t aoTextureIndex;
+    uint32_t emissiveTextureIndex;
+    uint32_t supportsDescriptorIndexing;
+    // Texture transforms (offset, scale, rotation for each texture) - properly aligned
+    float albedoOffset[2];
+    float albedoScale[2];
+    float albedoRotation;
+    float _padding1;
+    float normalOffset[2];
+    float normalScale2[2];  // renamed to avoid conflict with normalScale
+    float normalRotation;
+    float _padding2;
+    float metallicRoughnessOffset[2];
+    float metallicRoughnessScale[2];
+    float metallicRoughnessRotation;
+    float _padding3;
+    float aoOffset[2];
+    float aoScale[2];
+    float aoRotation;
+    float _padding4;
+    float emissiveOffset[2];
+    float emissiveScale[2];
+    float emissiveRotation;
+} PBRPushConstants;
+
+// Legacy material properties structure (kept for compatibility)
 typedef struct PBRMaterialProperties {
     float albedoFactor[3];
     float metallicFactor;

@@ -15,6 +15,13 @@ typedef struct CardinalVertex {
     float u, v;          // Texture coordinates
 } CardinalVertex;
 
+// Texture transform structure
+typedef struct CardinalTextureTransform {
+    float offset[2];    // UV offset
+    float scale[2];     // UV scale
+    float rotation;     // UV rotation in radians
+} CardinalTextureTransform;
+
 // PBR Material structure
 typedef struct CardinalMaterial {
     // Texture indices (into scene texture array)
@@ -31,6 +38,13 @@ typedef struct CardinalMaterial {
     float emissive_factor[3];    // RGB
     float normal_scale;
     float ao_strength;
+    
+    // Texture transforms
+    CardinalTextureTransform albedo_transform;
+    CardinalTextureTransform normal_transform;
+    CardinalTextureTransform metallic_roughness_transform;
+    CardinalTextureTransform ao_transform;
+    CardinalTextureTransform emissive_transform;
 } CardinalMaterial;
 
 // Texture data
@@ -48,6 +62,7 @@ typedef struct CardinalMesh {
     uint32_t* indices;
     uint32_t index_count;
     uint32_t material_index;  // Index into scene materials array
+    float transform[16];      // 4x4 transformation matrix (column-major)
 } CardinalMesh;
 
 typedef struct CardinalScene {

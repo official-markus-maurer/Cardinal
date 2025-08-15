@@ -2,7 +2,9 @@
 #define VULKAN_INSTANCE_H
 
 #include <stdbool.h>
-#include "../../src/renderer/vulkan_state.h"
+
+// Forward declaration to avoid circular includes
+typedef struct VulkanState VulkanState;
 
 struct CardinalWindow;
 

@@ -127,9 +127,9 @@
 },
 {
   "directory": "C:/Users/admin/Desktop/Cardinal/build/engine",
-  "command": "\"C:/Program Files/LLVM/bin/clang++.exe\" -DCARDINAL_ENGINE_INTERNAL -DGLFW_INCLUDE_VULKAN -DSPDLOG_FWRITE_UNLOCKED -DVK_USE_PLATFORM_WIN32_KHR -D_CRT_SECURE_NO_WARNINGS @CMakeFiles/cardinal_engine.dir/includes_CXX.rsp -O0 -std=c++20 -D_DEBUG -D_DLL -D_MT -Xclang --dependent-lib=msvcrtd -g -Xclang -gcodeview -Wno-deprecated-declarations -Wno-language-extension-token -Wall -Wextra -Wpedantic -o CMakeFiles/cardinal_engine.dir/src/core/log.c.obj -c C:/Users/admin/Desktop/Cardinal/engine/src/core/log.c",
-  "file": "C:/Users/admin/Desktop/Cardinal/engine/src/core/log.c",
-  "output": "engine/CMakeFiles/cardinal_engine.dir/src/core/log.c.obj"
+  "command": "\"C:/Program Files/LLVM/bin/clang++.exe\" -DCARDINAL_ENGINE_INTERNAL -DGLFW_INCLUDE_VULKAN -DSPDLOG_FWRITE_UNLOCKED -DVK_USE_PLATFORM_WIN32_KHR -D_CRT_SECURE_NO_WARNINGS @CMakeFiles/cardinal_engine.dir/includes_CXX.rsp -O0 -std=c++20 -D_DEBUG -D_DLL -D_MT -Xclang --dependent-lib=msvcrtd -g -Xclang -gcodeview -Wno-deprecated-declarations -Wno-language-extension-token -Wall -Wextra -Wpedantic -o CMakeFiles/cardinal_engine.dir/src/core/log.cpp.obj -c C:/Users/admin/Desktop/Cardinal/engine/src/core/log.cpp",
+  "file": "C:/Users/admin/Desktop/Cardinal/engine/src/core/log.cpp",
+  "output": "engine/CMakeFiles/cardinal_engine.dir/src/core/log.cpp.obj"
 },
 {
   "directory": "C:/Users/admin/Desktop/Cardinal/build/engine",

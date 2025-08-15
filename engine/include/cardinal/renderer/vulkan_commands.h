@@ -2,7 +2,9 @@
 #define VULKAN_COMMANDS_H
 
 #include <stdbool.h>
-#include "../../src/renderer/vulkan_state.h"
+
+// Forward declaration to avoid circular includes
+typedef struct VulkanState VulkanState;
 
 /**
  * @brief Creates command pools, buffers, and synchronization objects.

@@ -45,8 +45,8 @@ bool texture_load_from_file(const char* filepath, TextureData* out_texture) {
 
     CARDINAL_LOG_INFO("[TEXTURE] Attempting to load texture: %s", filepath);
 
-    // Flip vertically to match Vulkan's coordinate system if desired
-    stbi_set_flip_vertically_on_load(0);
+    // Flip vertically to match Vulkan's coordinate system
+    stbi_set_flip_vertically_on_load(1);
 
     int w=0,h=0,c=0;
     unsigned char* data = stbi_load(filepath, &w, &h, &c, 4); // force RGBA8

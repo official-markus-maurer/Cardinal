@@ -50,6 +50,15 @@ static CardinalLight g_light = {
     .ambient = {0.3f, 0.3f, 0.35f}      // Brighter ambient for visibility
 };
 
+// Material factor overrides for testing
+static float g_material_albedo[3] = {1.0f, 1.0f, 1.0f};
+static float g_material_metallic = 0.0f;
+static float g_material_roughness = 0.5f;
+static float g_material_emissive[3] = {0.0f, 0.0f, 0.0f};
+static float g_material_normal_scale = 1.0f;
+static float g_material_ao_strength = 1.0f;
+static bool g_material_override_enabled = false;
+
 // Camera movement state
 static bool g_mouse_captured = false;
 static double g_last_mouse_x = 0.0;
@@ -563,6 +572,71 @@ static void draw_pbr_settings_panel() {
             
             if (light_changed && g_pbr_enabled && g_renderer) {
                 cardinal_renderer_set_lighting(g_renderer, &g_light);
+                printf("Lighting updated: dir=[%.3f,%.3f,%.3f], color=[%.3f,%.3f,%.3f], intensity=%.3f, ambient=[%.3f,%.3f,%.3f]\n",
+                       g_light.direction[0], g_light.direction[1], g_light.direction[2],
+                       g_light.color[0], g_light.color[1], g_light.color[2], g_light.intensity,
+                       g_light.ambient[0], g_light.ambient[1], g_light.ambient[2]);
+            }
+        }
+        
+        ImGui::Separator();
+        
+        // Material Settings
+        if (ImGui::CollapsingHeader("Material Override", ImGuiTreeNodeFlags_DefaultOpen)) {
+            ImGui::Checkbox("Enable Material Override", &g_material_override_enabled);
+            
+            if (g_material_override_enabled) {
+                ImGui::Separator();
+                ImGui::ColorEdit3("Albedo Factor", g_material_albedo);
+                ImGui::SliderFloat("Metallic Factor", &g_material_metallic, 0.0f, 1.0f);
+                ImGui::SliderFloat("Roughness Factor", &g_material_roughness, 0.0f, 1.0f);
+                ImGui::ColorEdit3("Emissive Factor", g_material_emissive);
+                ImGui::SliderFloat("Normal Scale", &g_material_normal_scale, 0.0f, 2.0f);
+                ImGui::SliderFloat("AO Strength", &g_material_ao_strength, 0.0f, 1.0f);
+                
+                if (ImGui::Button("Apply to All Materials")) {
+                    if (g_scene_loaded && g_scene.material_count > 0) {
+                        // Apply override values to all materials in the scene
+                        for (uint32_t i = 0; i < g_scene.material_count; i++) {
+                            CardinalMaterial* mat = &g_scene.materials[i];
+                            
+                            // Store original values for logging
+                            float orig_albedo[3] = {mat->albedo_factor[0], mat->albedo_factor[1], mat->albedo_factor[2]};
+                            float orig_metallic = mat->metallic_factor;
+                            float orig_roughness = mat->roughness_factor;
+                            
+                            // Apply albedo factor
+                            mat->albedo_factor[0] = g_material_albedo[0];
+                            mat->albedo_factor[1] = g_material_albedo[1];
+                            mat->albedo_factor[2] = g_material_albedo[2];
+                            
+                            // Apply other factors
+                            mat->metallic_factor = g_material_metallic;
+                            mat->roughness_factor = g_material_roughness;
+                            mat->emissive_factor[0] = g_material_emissive[0];
+                            mat->emissive_factor[1] = g_material_emissive[1];
+                            mat->emissive_factor[2] = g_material_emissive[2];
+                            mat->normal_scale = g_material_normal_scale;
+                            mat->ao_strength = g_material_ao_strength;
+                            
+                            // Debug logging
+                            printf("Material %u: albedo [%.3f,%.3f,%.3f]->[%.3f,%.3f,%.3f], metallic %.3f->%.3f, roughness %.3f->%.3f\n",
+                                   i, orig_albedo[0], orig_albedo[1], orig_albedo[2], 
+                                   mat->albedo_factor[0], mat->albedo_factor[1], mat->albedo_factor[2],
+                                   orig_metallic, mat->metallic_factor, orig_roughness, mat->roughness_factor);
+                        }
+                        
+                        // Re-upload the scene to apply changes
+                        if (g_renderer) {
+                            cardinal_renderer_upload_scene(g_renderer, &g_scene);
+                            printf("Scene re-uploaded to renderer\n");
+                        }
+                        
+                        snprintf(g_status_msg, sizeof(g_status_msg), "Applied material override to %u materials", g_scene.material_count);
+                    } else {
+                        snprintf(g_status_msg, sizeof(g_status_msg), "No scene loaded or no materials to modify");
+                    }
+                }
             }
         }
         

@@ -50,7 +50,7 @@ endif()
 
 # Engine source files (minimal)
 target_sources(cardinal_engine PRIVATE
-    src/core/log.c
+    src/core/log.cpp
     src/core/window.c
     src/core/memory.c
     src/renderer/vulkan_renderer.c
@@ -69,8 +69,7 @@ target_sources(cardinal_engine PRIVATE
     src/assets/loader.c
     src/assets/texture_loader.c
 )
-# Compile log.c as C++ to enable spdlog backend
-set_source_files_properties(src/core/log.c PROPERTIES LANGUAGE CXX)
+# log.cpp is now properly a C++ file for spdlog backend
 
 # Public headers
 target_sources(cardinal_engine PUBLIC
@@ -101,8 +100,8 @@ target_include_directories(cardinal_engine
 # Suppress deprecation warnings from cgltf library on Windows
 if(WIN32)
     target_compile_definitions(cardinal_engine PRIVATE _CRT_SECURE_NO_WARNINGS)
-    # Also suppress specific clang warnings for cgltf
-    if(CMAKE_C_COMPILER_ID MATCHES "Clang")
+    # Also suppress specific clang warnings for cgltf and spdlog
+    if(CMAKE_C_COMPILER_ID MATCHES "Clang" OR CMAKE_CXX_COMPILER_ID MATCHES "Clang")
         target_compile_options(cardinal_engine PRIVATE 
             -Wno-deprecated-declarations
             -Wno-language-extension-token

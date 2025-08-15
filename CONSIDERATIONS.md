@@ -1,13 +1,17 @@
 # Considerations
 
 ## TODO Items Sorted by Severity 
+- Add UV & Wireframe rendering mode.
 
 ### **CRITICAL** - Stability & Correctness Issues
+- **Memory Leak in Dynamic Allocator**: MSVC version uses `_aligned_free()` for all pointers, even those allocated with `malloc()` (memory.c:90-96). This causes undefined behavior and potential crashes.
+- **Missing Memory Size Tracking**: Tracked allocator cannot accurately update stats on `free()` calls because it doesn't know the allocation size (memory.c:151-156). This leads to inaccurate memory statistics.
 - **Vulkan Resource Management**: Fix temporary culling disable in renderer (vulkan_pbr.c:816, vulkan_pipeline.c:299)
 - **Error Handling**: Ensure all resources properly cleaned up to prevent leaks (vulkan_renderer.c:195)
 - **Thread Safety**: Ensure thread-safe destruction across the codebase (window.c:126, vulkan_commands.c:97, vulkan_pipeline.c:397, log.c:141)
 - **Error Recovery**: Add error checking for degenerate cases and improve error handling (vulkan_renderer.c:281, editor_layer.cpp:319, gltf_loader.c:292)
 - **Resource Validation**: Add checks for valid resource handles before destruction (vulkan_pipeline.c:145)
+- **Potential Double-Free**: Multiple locations allocate and free arrays without proper null checks, risking double-free errors (vulkan_pbr.c:795-797, vulkan_commands.c:128-132)
 
 ### **HIGH** - Performance & Memory Issues  
 - **Memory Management**: Cache memory properties for performance (vulkan_pbr.c:14, 23)

@@ -179,11 +179,19 @@ bool vk_pbr_pipeline_create(VulkanPBRPipeline* pipeline, VkDevice device, VkPhys
     }
     CARDINAL_LOG_DEBUG("Descriptor set layout created: handle=%p", (void*)(uintptr_t)pipeline->descriptorSetLayout);
     
+    // Create push constant range for model matrix and material properties
+    VkPushConstantRange pushConstantRange = {0};
+    pushConstantRange.stageFlags = VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT;
+    pushConstantRange.offset = 0;
+    pushConstantRange.size = sizeof(PBRPushConstants);
+    
     // Create pipeline layout
     VkPipelineLayoutCreateInfo pipelineLayoutInfo = (VkPipelineLayoutCreateInfo){0};
     pipelineLayoutInfo.sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO;
     pipelineLayoutInfo.setLayoutCount = 1;
     pipelineLayoutInfo.pSetLayouts = &pipeline->descriptorSetLayout;
+    pipelineLayoutInfo.pushConstantRangeCount = 1;
+    pipelineLayoutInfo.pPushConstantRanges = &pushConstantRange;
     
     if (vkCreatePipelineLayout(device, &pipelineLayoutInfo, NULL, &pipeline->pipelineLayout) != VK_SUCCESS) {
         CARDINAL_LOG_ERROR("Failed to create pipeline layout!");
@@ -413,7 +421,7 @@ bool vk_pbr_pipeline_create(VulkanPBRPipeline* pipeline, VkDevice device, VkPhys
     
     memcpy(pipeline->materialBufferMapped, &defaultMaterial, sizeof(PBRMaterialProperties));
     
-    // Initialize default lighting
+    // Initialize default lighting (TODO: Hook up to ImGui)
     PBRLightingData defaultLighting = {0};
     defaultLighting.lightDirection[0] = -0.5f;
     defaultLighting.lightDirection[1] = -1.0f;
@@ -422,9 +430,9 @@ bool vk_pbr_pipeline_create(VulkanPBRPipeline* pipeline, VkDevice device, VkPhys
     defaultLighting.lightColor[1] = 1.0f;
     defaultLighting.lightColor[2] = 1.0f;
     defaultLighting.lightIntensity = 1.0f;  // Reduced from 3.0f
-    defaultLighting.ambientColor[0] = 0.03f;  // Reduced from 0.1f
-    defaultLighting.ambientColor[1] = 0.03f;
-    defaultLighting.ambientColor[2] = 0.03f;
+    defaultLighting.ambientColor[0] = 0.1f;  // Increased for better visibility
+    defaultLighting.ambientColor[1] = 0.1f;
+    defaultLighting.ambientColor[2] = 0.1f;
     memcpy(pipeline->lightingBufferMapped, &defaultLighting, sizeof(PBRLightingData));
     
     pipeline->initialized = true;
@@ -554,56 +562,99 @@ void vk_pbr_render(VulkanPBRPipeline* pipeline, VkCommandBuffer commandBuffer, c
     vkCmdBindVertexBuffers(commandBuffer, 0, 1, vertexBuffers, offsets);
     vkCmdBindIndexBuffer(commandBuffer, pipeline->indexBuffer, 0, VK_INDEX_TYPE_UINT32);
     
+    // Bind descriptor set once (no longer per-mesh since we use push constants for material data)
+    if (pipeline->descriptorSetCount > 0) {
+        vkCmdBindDescriptorSets(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS,
+                                pipeline->pipelineLayout, 0, 1,
+                                &pipeline->descriptorSets[0], 0, NULL);
+    }
+    
     // Render each mesh
     uint32_t indexOffset = 0;
     for (uint32_t i = 0; i < scene->mesh_count; i++) {
         const CardinalMesh* mesh = &scene->meshes[i];
         
-        // Update material properties for this mesh
+        // Prepare push constants with model matrix and material properties
+        PBRPushConstants pushConstants = {0};
+        
+        // Copy model matrix
+        memcpy(pushConstants.modelMatrix, mesh->transform, 16 * sizeof(float));
+        
+        // Set material properties for this mesh
         if (mesh->material_index < scene->material_count) {
             const CardinalMaterial* material = &scene->materials[mesh->material_index];
             
-            PBRMaterialProperties matProps = (PBRMaterialProperties){0};
-            memcpy(matProps.albedoFactor, material->albedo_factor, sizeof(float) * 3);
-            matProps.metallicFactor = material->metallic_factor;
-            matProps.roughnessFactor = material->roughness_factor;
-            memcpy(matProps.emissiveFactor, material->emissive_factor, sizeof(float) * 3);
-            matProps.normalScale = material->normal_scale;
-            matProps.aoStrength = material->ao_strength;
+            memcpy(pushConstants.albedoFactor, material->albedo_factor, sizeof(float) * 3);
+             pushConstants.metallicFactor = material->metallic_factor;
+             memcpy(pushConstants.emissiveFactor, material->emissive_factor, sizeof(float) * 3);
+             pushConstants.roughnessFactor = material->roughness_factor;
+            pushConstants.normalScale = material->normal_scale;
+            pushConstants.aoStrength = material->ao_strength;
             
             // Set texture indices - preserve UINT32_MAX for missing textures, fallback to 0 only for invalid indices
-            matProps.albedoTextureIndex = (material->albedo_texture == UINT32_MAX) ? UINT32_MAX : 
-                                          (material->albedo_texture < pipeline->textureCount) ? material->albedo_texture : 0;
-            matProps.normalTextureIndex = (material->normal_texture == UINT32_MAX) ? UINT32_MAX : 
-                                          (material->normal_texture < pipeline->textureCount) ? material->normal_texture : 0;
-            matProps.metallicRoughnessTextureIndex = (material->metallic_roughness_texture == UINT32_MAX) ? UINT32_MAX : 
-                                                     (material->metallic_roughness_texture < pipeline->textureCount) ? material->metallic_roughness_texture : 0;
-            matProps.aoTextureIndex = (material->ao_texture == UINT32_MAX) ? UINT32_MAX : 
-                                      (material->ao_texture < pipeline->textureCount) ? material->ao_texture : 0;
-            matProps.emissiveTextureIndex = (material->emissive_texture == UINT32_MAX) ? UINT32_MAX : 
-                                            (material->emissive_texture < pipeline->textureCount) ? material->emissive_texture : 0;
+            pushConstants.albedoTextureIndex = (material->albedo_texture == UINT32_MAX) ? UINT32_MAX : 
+                                              (material->albedo_texture < pipeline->textureCount) ? material->albedo_texture : 0;
+            pushConstants.normalTextureIndex = (material->normal_texture == UINT32_MAX) ? UINT32_MAX : 
+                                               (material->normal_texture < pipeline->textureCount) ? material->normal_texture : 0;
+            pushConstants.metallicRoughnessTextureIndex = (material->metallic_roughness_texture == UINT32_MAX) ? UINT32_MAX : 
+                                                         (material->metallic_roughness_texture < pipeline->textureCount) ? material->metallic_roughness_texture : 0;
+            pushConstants.aoTextureIndex = (material->ao_texture == UINT32_MAX) ? UINT32_MAX : 
+                                          (material->ao_texture < pipeline->textureCount) ? material->ao_texture : 0;
+            pushConstants.emissiveTextureIndex = (material->emissive_texture == UINT32_MAX) ? UINT32_MAX : 
+                                                (material->emissive_texture < pipeline->textureCount) ? material->emissive_texture : 0;
+            
+            // Set texture transforms
+            memcpy(pushConstants.albedoOffset, material->albedo_transform.offset, sizeof(float) * 2);
+            memcpy(pushConstants.albedoScale, material->albedo_transform.scale, sizeof(float) * 2);
+            pushConstants.albedoRotation = material->albedo_transform.rotation;
+            
+            memcpy(pushConstants.normalOffset, material->normal_transform.offset, sizeof(float) * 2);
+            memcpy(pushConstants.normalScale2, material->normal_transform.scale, sizeof(float) * 2);
+            pushConstants.normalRotation = material->normal_transform.rotation;
+            
+            memcpy(pushConstants.metallicRoughnessOffset, material->metallic_roughness_transform.offset, sizeof(float) * 2);
+            memcpy(pushConstants.metallicRoughnessScale, material->metallic_roughness_transform.scale, sizeof(float) * 2);
+            pushConstants.metallicRoughnessRotation = material->metallic_roughness_transform.rotation;
+            
+            memcpy(pushConstants.aoOffset, material->ao_transform.offset, sizeof(float) * 2);
+            memcpy(pushConstants.aoScale, material->ao_transform.scale, sizeof(float) * 2);
+            pushConstants.aoRotation = material->ao_transform.rotation;
+            
+            memcpy(pushConstants.emissiveOffset, material->emissive_transform.offset, sizeof(float) * 2);
+            memcpy(pushConstants.emissiveScale, material->emissive_transform.scale, sizeof(float) * 2);
+            pushConstants.emissiveRotation = material->emissive_transform.rotation;
             
             // CRITICAL: Set descriptor indexing flag for shader (always enabled in Vulkan 1.3, only if textures are available)
-            matProps.supportsDescriptorIndexing = (pipeline->textureCount > 0) ? 1u : 0u;
+            pushConstants.supportsDescriptorIndexing = (pipeline->textureCount > 0) ? 1u : 0u;
             
             // Debug logging for material properties
             CARDINAL_LOG_DEBUG("Material %d: albedo_idx=%u, normal_idx=%u, mr_idx=%u, ao_idx=%u, emissive_idx=%u", 
-                              i, matProps.albedoTextureIndex, matProps.normalTextureIndex, matProps.metallicRoughnessTextureIndex, 
-                              matProps.aoTextureIndex, matProps.emissiveTextureIndex);
+                              i, pushConstants.albedoTextureIndex, pushConstants.normalTextureIndex, pushConstants.metallicRoughnessTextureIndex, 
+                              pushConstants.aoTextureIndex, pushConstants.emissiveTextureIndex);
             CARDINAL_LOG_DEBUG("Material %d factors: albedo=[%.3f,%.3f,%.3f], emissive=[%.3f,%.3f,%.3f], metallic=%.3f, roughness=%.3f",
-                              i, matProps.albedoFactor[0], matProps.albedoFactor[1], matProps.albedoFactor[2],
-                              matProps.emissiveFactor[0], matProps.emissiveFactor[1], matProps.emissiveFactor[2], 
-                              matProps.metallicFactor, matProps.roughnessFactor);
-            
-            memcpy(pipeline->materialBufferMapped, &matProps, sizeof(PBRMaterialProperties));
+                              i, pushConstants.albedoFactor[0], pushConstants.albedoFactor[1], pushConstants.albedoFactor[2],
+                              pushConstants.emissiveFactor[0], pushConstants.emissiveFactor[1], pushConstants.emissiveFactor[2], 
+                              pushConstants.metallicFactor, pushConstants.roughnessFactor);
+        } else {
+            // Use default material properties if no material is assigned
+             pushConstants.albedoFactor[0] = pushConstants.albedoFactor[1] = pushConstants.albedoFactor[2] = 1.0f;
+             pushConstants.metallicFactor = 0.0f;
+             pushConstants.emissiveFactor[0] = pushConstants.emissiveFactor[1] = pushConstants.emissiveFactor[2] = 0.0f;
+             pushConstants.roughnessFactor = 0.5f;
+            pushConstants.normalScale = 1.0f;
+            pushConstants.aoStrength = 1.0f;
+            pushConstants.albedoTextureIndex = UINT32_MAX;
+            pushConstants.normalTextureIndex = UINT32_MAX;
+            pushConstants.metallicRoughnessTextureIndex = UINT32_MAX;
+            pushConstants.aoTextureIndex = UINT32_MAX;
+            pushConstants.emissiveTextureIndex = UINT32_MAX;
+            pushConstants.supportsDescriptorIndexing = (pipeline->textureCount > 0) ? 1u : 0u;
         }
         
-        // Bind descriptor set AFTER updating material properties so the latest data is used for this draw
-        if (pipeline->descriptorSetCount > 0) {
-            vkCmdBindDescriptorSets(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS,
-                                    pipeline->pipelineLayout, 0, 1,
-                                    &pipeline->descriptorSets[0], 0, NULL);
-        }
+        // Push constants to GPU
+        vkCmdPushConstants(commandBuffer, pipeline->pipelineLayout, 
+                          VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT,
+                          0, sizeof(PBRPushConstants), &pushConstants);
         
         // Draw the mesh
         vkCmdDrawIndexed(commandBuffer, mesh->index_count, 1, indexOffset, 0, 0);

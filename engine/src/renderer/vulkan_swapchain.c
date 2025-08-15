@@ -121,14 +121,22 @@ bool vk_create_swapchain(VulkanState* s) {
  */
 void vk_destroy_swapchain(VulkanState* s) {
     if (!s) return;
-    for (uint32_t i=0;i<s->swapchain_image_count;i++) {
-        vkDestroyImageView(s->device, s->swapchain_image_views[i], NULL);
+    if (s->swapchain_image_views) {
+        for (uint32_t i=0;i<s->swapchain_image_count;i++) {
+            if (s->swapchain_image_views[i] != VK_NULL_HANDLE) {
+                vkDestroyImageView(s->device, s->swapchain_image_views[i], NULL);
+            }
+        }
+        free(s->swapchain_image_views); s->swapchain_image_views = NULL;
     }
     // No framebuffers to destroy when using dynamic rendering
-    free(s->swapchain_image_views); s->swapchain_image_views = NULL;
-    free(s->swapchain_images); s->swapchain_images = NULL;
-    if (s->swapchain) vkDestroySwapchainKHR(s->device, s->swapchain, NULL);
-    s->swapchain = VK_NULL_HANDLE;
+    if (s->swapchain_images) {
+        free(s->swapchain_images); s->swapchain_images = NULL;
+    }
+    if (s->swapchain != VK_NULL_HANDLE) {
+        vkDestroySwapchainKHR(s->device, s->swapchain, NULL);
+        s->swapchain = VK_NULL_HANDLE;
+    }
 }
 
 /**

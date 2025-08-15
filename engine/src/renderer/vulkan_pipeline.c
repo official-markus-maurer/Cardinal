@@ -7,34 +7,6 @@
 #include "cardinal/core/log.h"
 
 /**
- * @brief Reads a SPIR-V shader file into memory.
- *
- * @param path Path to the SPIR-V file.
- * @param out_data Pointer to store the loaded data.
- * @param out_size Pointer to store the data size.
- * @return true if successful, false otherwise.
- *
- * @todo Implement shader caching to avoid repeated file reads.
- * @todo Add support for compressed shader files.
- */
-static bool read_spv_file(const char* path, uint8_t** out_data, size_t* out_size) {
-    FILE* f = fopen(path, "rb");
-    if (!f) { LOG_ERROR("pipeline: failed to open SPV file"); return false; }
-    fseek(f, 0, SEEK_END);
-    long sz = ftell(f);
-    if (sz <= 0) { fclose(f); LOG_ERROR("pipeline: SPV file size invalid"); return false; }
-    fseek(f, 0, SEEK_SET);
-    uint8_t* data = (uint8_t*)malloc((size_t)sz);
-    if (!data) { fclose(f); LOG_ERROR("pipeline: SPV malloc failed"); return false; }
-    size_t rd = fread(data, 1, (size_t)sz, f);
-    fclose(f);
-    if (rd != (size_t)sz) { free(data); LOG_ERROR("pipeline: SPV read failed"); return false; }
-    *out_data = data;
-    *out_size = (size_t)sz;
-    return true;
-}
-
-/**
  * @brief Creates depth resources for the Vulkan state.
  *
  * @param s Pointer to the VulkanState structure.
@@ -120,12 +92,14 @@ static bool create_depth_resources(VulkanState* s) {
  * @todo Add checks for valid resource handles before destruction.
  */
 static void destroy_depth_resources(VulkanState* s) {
-    if (s->depth_image_view) {
+    if (!s) return;
+    
+    if (s->depth_image_view != VK_NULL_HANDLE) {
         vkDestroyImageView(s->device, s->depth_image_view, NULL);
         s->depth_image_view = VK_NULL_HANDLE;
     }
     // Free image + memory using allocator
-    if (s->depth_image || s->depth_image_memory) {
+    if (s->depth_image != VK_NULL_HANDLE || s->depth_image_memory != VK_NULL_HANDLE) {
         vk_allocator_free_image(&s->allocator, s->depth_image, s->depth_image_memory);
         s->depth_image = VK_NULL_HANDLE;
         s->depth_image_memory = VK_NULL_HANDLE;

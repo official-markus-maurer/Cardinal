@@ -275,6 +275,33 @@ success:
  * @todo Expand to support glTF animations and skins for dynamic scenes.
  */
 /**
+ * @brief Extracts texture transform from cgltf texture view.
+ * @param texture_view The cgltf texture view.
+ * @param out_transform Output texture transform.
+ */
+static void extract_texture_transform(const cgltf_texture_view* texture_view, CardinalTextureTransform* out_transform) {
+    // Initialize to identity transform
+    out_transform->offset[0] = 0.0f;
+    out_transform->offset[1] = 0.0f;
+    out_transform->scale[0] = 1.0f;
+    out_transform->scale[1] = 1.0f;
+    out_transform->rotation = 0.0f;
+    
+    if (texture_view && texture_view->has_transform) {
+        const cgltf_texture_transform* transform = &texture_view->transform;
+        out_transform->offset[0] = transform->offset[0];
+        out_transform->offset[1] = transform->offset[1];
+        out_transform->scale[0] = transform->scale[0];
+        out_transform->scale[1] = transform->scale[1];
+        out_transform->rotation = transform->rotation;
+        LOG_DEBUG("Texture transform: offset=(%.3f,%.3f), scale=(%.3f,%.3f), rotation=%.3f",
+                 out_transform->offset[0], out_transform->offset[1],
+                 out_transform->scale[0], out_transform->scale[1],
+                 out_transform->rotation);
+    }
+}
+
+/**
  * @brief Loads a texture from glTF image data.
  *
  * @param data The parsed glTF data.
@@ -303,16 +330,131 @@ static bool load_texture_from_gltf(const cgltf_data* data, cgltf_size img_idx, c
     }
 }
 
+// Helper function to multiply 4x4 matrices (column-major)
+static void matrix_multiply(const float* a, const float* b, float* result) {
+    for (int i = 0; i < 4; i++) {
+        for (int j = 0; j < 4; j++) {
+            result[i * 4 + j] = 0.0f;
+            for (int k = 0; k < 4; k++) {
+                result[i * 4 + j] += a[i * 4 + k] * b[k * 4 + j];
+            }
+        }
+    }
+}
+
+// Helper function to create identity matrix
+static void matrix_identity(float* matrix) {
+    memset(matrix, 0, 16 * sizeof(float));
+    matrix[0] = matrix[5] = matrix[10] = matrix[15] = 1.0f;
+}
+
+// Helper function to create transformation matrix from TRS
+static void matrix_from_trs(const float* translation, const float* rotation, const float* scale, float* matrix) {
+    // Start with identity
+    matrix_identity(matrix);
+    
+    // Apply scale
+    if (scale) {
+        matrix[0] *= scale[0];
+        matrix[5] *= scale[1];
+        matrix[10] *= scale[2];
+    }
+    
+    // Apply rotation (quaternion to matrix)
+    if (rotation) {
+        float x = rotation[0], y = rotation[1], z = rotation[2], w = rotation[3];
+        float x2 = x + x, y2 = y + y, z2 = z + z;
+        float xx = x * x2, xy = x * y2, xz = x * z2;
+        float yy = y * y2, yz = y * z2, zz = z * z2;
+        float wx = w * x2, wy = w * y2, wz = w * z2;
+        
+        float rot_matrix[16];
+        matrix_identity(rot_matrix);
+        rot_matrix[0] = 1.0f - (yy + zz);
+        rot_matrix[1] = xy + wz;
+        rot_matrix[2] = xz - wy;
+        rot_matrix[4] = xy - wz;
+        rot_matrix[5] = 1.0f - (xx + zz);
+        rot_matrix[6] = yz + wx;
+        rot_matrix[8] = xz + wy;
+        rot_matrix[9] = yz - wx;
+        rot_matrix[10] = 1.0f - (xx + yy);
+        
+        float temp[16];
+        memcpy(temp, matrix, 16 * sizeof(float));
+        matrix_multiply(temp, rot_matrix, matrix);
+    }
+    
+    // Apply translation
+    if (translation) {
+        matrix[12] += translation[0];
+        matrix[13] += translation[1];
+        matrix[14] += translation[2];
+    }
+}
+
+// Helper function to traverse nodes and compute world transforms
+static void process_node(const cgltf_data* data, const cgltf_node* node, const float* parent_transform, 
+                        CardinalMesh* meshes, size_t total_mesh_count) {
+    float local_transform[16];
+    
+    if (node->has_matrix) {
+        // Use provided matrix directly
+        memcpy(local_transform, node->matrix, 16 * sizeof(float));
+    } else {
+        // Build matrix from TRS
+        const float* translation = node->has_translation ? node->translation : NULL;
+        const float* rotation = node->has_rotation ? node->rotation : NULL;
+        const float* scale = node->has_scale ? node->scale : NULL;
+        matrix_from_trs(translation, rotation, scale, local_transform);
+    }
+    
+    // Compute world transform
+    float world_transform[16];
+    if (parent_transform) {
+        matrix_multiply(parent_transform, local_transform, world_transform);
+    } else {
+        memcpy(world_transform, local_transform, 16 * sizeof(float));
+    }
+    
+    // If this node has a mesh, apply the world transform to the correct mesh indices
+    if (node->mesh) {
+        const cgltf_mesh* mesh = node->mesh;
+        cgltf_size mesh_index = mesh - data->meshes; // Get the mesh index in the glTF data
+        
+        // Find the corresponding Cardinal meshes (primitives) for this glTF mesh
+        size_t cardinal_mesh_index = 0;
+        for (cgltf_size mi = 0; mi < mesh_index; ++mi) {
+            cardinal_mesh_index += data->meshes[mi].primitives_count;
+        }
+        
+        // Apply transform to all primitives of this mesh
+        for (cgltf_size pi = 0; pi < mesh->primitives_count; ++pi) {
+            if (cardinal_mesh_index + pi < total_mesh_count) {
+                memcpy(meshes[cardinal_mesh_index + pi].transform, world_transform, 16 * sizeof(float));
+                LOG_TRACE("Applied transform to mesh %zu (glTF mesh %zu, primitive %zu)", 
+                         cardinal_mesh_index + pi, mesh_index, pi);
+            }
+        }
+    }
+    
+    // Recursively process children
+    for (cgltf_size ci = 0; ci < node->children_count; ++ci) {
+        process_node(data, node->children[ci], world_transform, meshes, total_mesh_count);
+    }
+}
+
 /**
  * @brief Loads a glTF scene from file.
  *
  * Parses the glTF file, loads buffers, textures, materials, and meshes.
+ * Now properly processes node hierarchy and transformations.
  *
  * @param path Path to the glTF/glb file.
  * @param out_scene Pointer to the scene structure to fill.
  * @return true on success, false on failure.
  *
- * @todo Support glTF animations, skins, and nodes hierarchy.
+ * @todo Support glTF animations and skins.
  * @todo Implement error recovery and partial loading.
  * @todo Add support for glTF extensions like lights and cameras.
  */
@@ -402,13 +544,21 @@ bool cardinal_gltf_load_scene(const char* path, CardinalScene* out_scene) {
             card_mat->albedo_factor[0] = 1.0f;
             card_mat->albedo_factor[1] = 1.0f;
             card_mat->albedo_factor[2] = 1.0f;
-            card_mat->metallic_factor = 1.0f;
-            card_mat->roughness_factor = 1.0f;
+            card_mat->metallic_factor = 0.0f;  // Non-metallic by default
+            card_mat->roughness_factor = 0.5f; // Medium roughness by default
             card_mat->emissive_factor[0] = 0.0f;
             card_mat->emissive_factor[1] = 0.0f;
             card_mat->emissive_factor[2] = 0.0f;
             card_mat->normal_scale = 1.0f;
             card_mat->ao_strength = 1.0f;
+            
+            // Initialize texture transforms to identity
+            CardinalTextureTransform identity_transform = {{0.0f, 0.0f}, {1.0f, 1.0f}, 0.0f};
+            card_mat->albedo_transform = identity_transform;
+            card_mat->normal_transform = identity_transform;
+            card_mat->metallic_roughness_transform = identity_transform;
+            card_mat->ao_transform = identity_transform;
+            card_mat->emissive_transform = identity_transform;
             
             // Parse PBR metallic roughness
             if (mat->has_pbr_metallic_roughness) {
@@ -429,6 +579,7 @@ bool cardinal_gltf_load_scene(const char* path, CardinalScene* out_scene) {
                     if (img_idx < texture_count) {
                         card_mat->albedo_texture = (uint32_t)img_idx;
                     }
+                    extract_texture_transform(&pbr->base_color_texture, &card_mat->albedo_transform);
                 }
                 
                 // Metallic roughness texture
@@ -437,6 +588,7 @@ bool cardinal_gltf_load_scene(const char* path, CardinalScene* out_scene) {
                     if (img_idx < texture_count) {
                         card_mat->metallic_roughness_texture = (uint32_t)img_idx;
                     }
+                    extract_texture_transform(&pbr->metallic_roughness_texture, &card_mat->metallic_roughness_transform);
                 }
             }
             
@@ -447,6 +599,7 @@ bool cardinal_gltf_load_scene(const char* path, CardinalScene* out_scene) {
                     card_mat->normal_texture = (uint32_t)img_idx;
                 }
                 card_mat->normal_scale = mat->normal_texture.scale;
+                extract_texture_transform(&mat->normal_texture, &card_mat->normal_transform);
             }
             
             // Occlusion texture
@@ -456,6 +609,7 @@ bool cardinal_gltf_load_scene(const char* path, CardinalScene* out_scene) {
                     card_mat->ao_texture = (uint32_t)img_idx;
                 }
                 card_mat->ao_strength = mat->occlusion_texture.scale;
+                extract_texture_transform(&mat->occlusion_texture, &card_mat->ao_transform);
             }
             
             // Emissive texture and factor
@@ -464,6 +618,7 @@ bool cardinal_gltf_load_scene(const char* path, CardinalScene* out_scene) {
                 if (img_idx < texture_count) {
                     card_mat->emissive_texture = (uint32_t)img_idx;
                 }
+                extract_texture_transform(&mat->emissive_texture, &card_mat->emissive_transform);
             }
             // Only apply non-zero emissive factor; otherwise keep the default (0,0,0)
             if (mat->emissive_factor[0] > 0.0f || mat->emissive_factor[1] > 0.0f || mat->emissive_factor[2] > 0.0f) {
@@ -478,6 +633,10 @@ bool cardinal_gltf_load_scene(const char* path, CardinalScene* out_scene) {
                      card_mat->albedo_texture,
                      card_mat->normal_texture,
                      card_mat->metallic_roughness_texture);
+            LOG_DEBUG("Material %u factors: albedo=(%.3f,%.3f,%.3f), metallic=%.3f, roughness=%.3f",
+                     material_count - 1,
+                     card_mat->albedo_factor[0], card_mat->albedo_factor[1], card_mat->albedo_factor[2],
+                     card_mat->metallic_factor, card_mat->roughness_factor);
         }
         LOG_INFO("Successfully loaded %u materials", material_count);
     }
@@ -666,9 +825,32 @@ bool cardinal_gltf_load_scene(const char* path, CardinalScene* out_scene) {
                 dst->material_index = UINT32_MAX; // No material
             }
             
+            // Initialize transform matrix to identity (will be overwritten by node processing)
+            memset(dst->transform, 0, 16 * sizeof(float));
+            dst->transform[0] = dst->transform[5] = dst->transform[10] = dst->transform[15] = 1.0f;
+            
             LOG_TRACE("Mesh %zu complete: %u vertices, %u indices, material=%u", mesh_write, dst->vertex_count, dst->index_count, dst->material_index);
         }
     }
+
+    // Process scene graph to compute proper mesh transforms
+    LOG_DEBUG("Processing scene graph and node transformations...");
+    
+    // Process the default scene if available
+    if (data->scene && data->scene->nodes_count > 0) {
+        LOG_DEBUG("Processing default scene with %zu root nodes", (size_t)data->scene->nodes_count);
+        for (cgltf_size ni = 0; ni < data->scene->nodes_count; ++ni) {
+            process_node(data, data->scene->nodes[ni], NULL, meshes, mesh_count);
+        }
+    } else if (data->nodes_count > 0) {
+        // Fallback: process all nodes as root nodes if no scene is defined
+        LOG_DEBUG("No default scene found, processing %zu nodes as root nodes", (size_t)data->nodes_count);
+        for (cgltf_size ni = 0; ni < data->nodes_count; ++ni) {
+            process_node(data, &data->nodes[ni], NULL, meshes, mesh_count);
+        }
+    }
+    
+    LOG_INFO("Applied transforms to meshes from scene graph");
 
     cgltf_free(data);
     LOG_DEBUG("GLTF data structures freed");

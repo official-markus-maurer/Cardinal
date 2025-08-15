@@ -38,7 +38,10 @@ for (uint32_t i = 0; i < s->max_frames_in_flight; ++i) {
 
 // Allocate swapchain image layout initialization tracking array
 CARDINAL_LOG_INFO("[INIT] Allocating swapchain_image_layout_initialized for %u swapchain images", s->swapchain_image_count);
-if (s->swapchain_image_layout_initialized) { free(s->swapchain_image_layout_initialized); s->swapchain_image_layout_initialized = NULL; }
+if (s->swapchain_image_layout_initialized) {
+    free(s->swapchain_image_layout_initialized);
+    s->swapchain_image_layout_initialized = NULL;
+}
 s->swapchain_image_layout_initialized = (bool*)calloc(s->swapchain_image_count, sizeof(bool));
 if (!s->swapchain_image_layout_initialized) return false;
 

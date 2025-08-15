@@ -68,32 +68,165 @@ void cardinal_memory_reset_stats(void) {
 // -----------------------------
 // Backing dynamic allocator
 // -----------------------------
+// Enhanced allocation tracking with size information
+typedef struct {
+    void* ptr;
+    size_t size;
+    bool is_aligned;
+    bool in_use;
+} AllocInfo;
+
+// Production-ready allocation tracking with better collision handling
+#define MAX_ALLOCS 8192
+#define HASH_MULTIPLIER 0x9e3779b9  // Golden ratio hash multiplier
+static AllocInfo g_alloc_table[MAX_ALLOCS];
+static bool g_alloc_table_init = false;
+static size_t g_active_allocs = 0;
+
+static void init_alloc_table(void) {
+    if (!g_alloc_table_init) {
+        memset(g_alloc_table, 0, sizeof(g_alloc_table));
+        g_alloc_table_init = true;
+        g_active_allocs = 0;
+    }
+}
+
+static size_t hash_ptr(void* ptr) {
+    uintptr_t addr = (uintptr_t)ptr;
+    addr ^= addr >> 16;
+    addr *= HASH_MULTIPLIER;
+    addr ^= addr >> 16;
+    return addr % MAX_ALLOCS;
+}
+
+static void track_alloc(void* ptr, size_t size, bool is_aligned) {
+    if (!ptr) return;
+    init_alloc_table();
+    
+    size_t hash = hash_ptr(ptr);
+    for (size_t i = 0; i < MAX_ALLOCS; ++i) {
+        size_t idx = (hash + i) % MAX_ALLOCS;
+        if (!g_alloc_table[idx].in_use) {
+            g_alloc_table[idx].ptr = ptr;
+            g_alloc_table[idx].size = size;
+            g_alloc_table[idx].is_aligned = is_aligned;
+            g_alloc_table[idx].in_use = true;
+            g_active_allocs++;
+            return;
+        }
+    }
+    // Table full - this is a critical error in production
+    // TODO: For now, just continue without tracking
+}
+
+static AllocInfo* find_alloc(void* ptr) {
+    if (!ptr) return NULL;
+    init_alloc_table();
+    
+    size_t hash = hash_ptr(ptr);
+    for (size_t i = 0; i < MAX_ALLOCS; ++i) {
+        size_t idx = (hash + i) % MAX_ALLOCS;
+        if (g_alloc_table[idx].in_use && g_alloc_table[idx].ptr == ptr) {
+            return &g_alloc_table[idx];
+        }
+    }
+    return NULL;
+}
+
+static bool untrack_alloc(void* ptr, size_t* out_size, bool* out_is_aligned) {
+    AllocInfo* info = find_alloc(ptr);
+    if (info) {
+        if (out_size) *out_size = info->size;
+        if (out_is_aligned) *out_is_aligned = info->is_aligned;
+        info->ptr = NULL;
+        info->size = 0;
+        info->is_aligned = false;
+        info->in_use = false;
+        g_active_allocs--;
+        return true;
+    }
+    return false;
+}
+
 static void* dyn_alloc(CardinalAllocator* self, size_t size, size_t alignment) {
     (void)self;
+    void* ptr = NULL;
+    bool is_aligned = false;
+    
     if (alignment && alignment > alignof(max_align_t)) {
+        is_aligned = true;
     #ifdef _MSC_VER
-        return _aligned_malloc(size, alignment);
+        ptr = _aligned_malloc(size, alignment);
     #else
-        void* p = NULL;
-        if (posix_memalign(&p, alignment, size) != 0) return NULL;
-        return p;
+        if (posix_memalign(&ptr, alignment, size) != 0) return NULL;
     #endif
+    } else {
+        ptr = malloc(size);
     }
-    return malloc(size);
+    
+    if (ptr) {
+        track_alloc(ptr, size, is_aligned);
+    }
+    return ptr;
 }
 
 static void* dyn_realloc(CardinalAllocator* self, void* ptr, size_t old_size, size_t new_size, size_t alignment) {
-    (void)self; (void)old_size; (void)alignment;
-    return realloc(ptr, new_size);
+    (void)self;
+    if (!ptr) return dyn_alloc(self, new_size, alignment);
+    
+    size_t tracked_old_size = 0;
+    bool is_aligned = false;
+    bool was_tracked = untrack_alloc(ptr, &tracked_old_size, &is_aligned);
+    
+    // Use tracked size if available, otherwise fall back to provided old_size
+    size_t actual_old_size = was_tracked ? tracked_old_size : old_size;
+    
+    void* new_ptr = NULL;
+    if (is_aligned || (alignment && alignment > alignof(max_align_t))) {
+        // Handle aligned reallocation manually
+        new_ptr = dyn_alloc(self, new_size, alignment);
+        if (new_ptr && actual_old_size > 0) {
+            size_t copy_size = actual_old_size < new_size ? actual_old_size : new_size;
+            memcpy(new_ptr, ptr, copy_size);
+        }
+        // Free old pointer with correct method
+        if (is_aligned) {
+#ifdef _MSC_VER
+            _aligned_free(ptr);
+#else
+            free(ptr);
+#endif
+        } else {
+            free(ptr);
+        }
+    } else {
+        // Regular realloc for non-aligned allocations
+        new_ptr = realloc(ptr, new_size);
+        if (new_ptr) {
+            track_alloc(new_ptr, new_size, false);
+        }
+    }
+    
+    return new_ptr;
 }
 
 static void dyn_free(CardinalAllocator* self, void* ptr) {
     (void)self;
+    if (!ptr) return;
+    
+    size_t size = 0;
+    bool is_aligned = false;
+    bool was_tracked = untrack_alloc(ptr, &size, &is_aligned);
+    
+    if (was_tracked && is_aligned) {
 #ifdef _MSC_VER
-    _aligned_free(ptr);
+        _aligned_free(ptr);
 #else
-    free(ptr);
+        free(ptr);
 #endif
+    } else {
+        free(ptr);
+    }
 }
 
 // -----------------------------
@@ -136,22 +269,44 @@ static void lin_reset(CardinalAllocator* self) {
 static void* tracked_alloc(CardinalAllocator* self, size_t size, size_t alignment) {
     TrackedState* ts = (TrackedState*)self->state;
     void* p = ts->backing->alloc(ts->backing, size, alignment);
-    if (p && size) stats_on_alloc(ts->category, size);
+    if (p && size) {
+        stats_on_alloc(ts->category, size);
+        // Track this allocation for accurate free statistics
+        track_alloc(p, size, alignment && alignment > alignof(max_align_t));
+    }
     return p;
 }
 static void* tracked_realloc(CardinalAllocator* self, void* ptr, size_t old_size, size_t new_size, size_t alignment) {
     TrackedState* ts = (TrackedState*)self->state;
-    void* p = ts->backing->realloc_fn(ts->backing, ptr, old_size, new_size, alignment);
+    
+    // Get accurate old size if available
+    size_t actual_old_size = old_size;
+    if (ptr) {
+        AllocInfo* info = find_alloc(ptr);
+        if (info) {
+            actual_old_size = info->size;
+        }
+    }
+    
+    void* p = ts->backing->realloc_fn(ts->backing, ptr, actual_old_size, new_size, alignment);
     if (p) {
-        if (new_size > old_size) stats_on_alloc(ts->category, new_size - old_size);
-        else if (old_size > new_size) stats_on_free(ts->category, old_size - new_size);
+        if (new_size > actual_old_size) stats_on_alloc(ts->category, new_size - actual_old_size);
+        else if (actual_old_size > new_size) stats_on_free(ts->category, actual_old_size - new_size);
+        // Track the new allocation
+        track_alloc(p, new_size, alignment && alignment > alignof(max_align_t));
     }
     return p;
 }
 static void tracked_free(CardinalAllocator* self, void* ptr) {
     TrackedState* ts = (TrackedState*)self->state;
-    // We can't know size on generic free; user should provide sizes via realloc when possible.
-    // As a heuristic, we won't decrement stats here; to support accurate frees, prefer using realloc with known sizes or provide sized-free API later.
+    if (ptr) {
+        // Get accurate size from tracking system
+        size_t size = 0;
+        bool is_aligned = false;
+        if (untrack_alloc(ptr, &size, &is_aligned)) {
+            stats_on_free(ts->category, size);
+        }
+    }
     ts->backing->free_fn(ts->backing, ptr);
 }
 static void tracked_reset(CardinalAllocator* self) {

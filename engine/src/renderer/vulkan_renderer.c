@@ -216,9 +216,13 @@ static void destroy_scene_buffers(VulkanState* s) {
         GpuMesh* m = &s->scene_meshes[i];
         if (m->vbuf != VK_NULL_HANDLE || m->vmem != VK_NULL_HANDLE) {
             vk_allocator_free_buffer(&s->allocator, m->vbuf, m->vmem);
+            m->vbuf = VK_NULL_HANDLE;
+            m->vmem = VK_NULL_HANDLE;
         }
         if (m->ibuf != VK_NULL_HANDLE || m->imem != VK_NULL_HANDLE) {
             vk_allocator_free_buffer(&s->allocator, m->ibuf, m->imem);
+            m->ibuf = VK_NULL_HANDLE;
+            m->imem = VK_NULL_HANDLE;
         }
     }
     free(s->scene_meshes); s->scene_meshes = NULL; s->scene_mesh_count = 0;
