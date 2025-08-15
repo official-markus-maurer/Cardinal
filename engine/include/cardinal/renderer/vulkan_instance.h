@@ -1,3 +1,21 @@
+/**
+ * @file vulkan_instance.h
+ * @brief Vulkan instance and device management for Cardinal Engine
+ * 
+ * This module handles the core Vulkan initialization and setup, including:
+ * - Vulkan instance creation with validation layers
+ * - Physical device selection and scoring
+ * - Logical device creation with queue families
+ * - Surface creation for window integration
+ * - Debug messenger setup for validation
+ * 
+ * The module provides a high-level interface for setting up the Vulkan
+ * rendering context that other renderer components depend on.
+ * 
+ * @author Markus Maurer
+ * @version 1.0
+ */
+
 #ifndef VULKAN_INSTANCE_H
 #define VULKAN_INSTANCE_H
 

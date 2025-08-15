@@ -1,3 +1,25 @@
+/**
+ * @file vulkan_buffer_utils.h
+ * @brief Vulkan buffer management utilities for Cardinal Engine
+ * 
+ * This module provides utility functions for creating, managing, and copying
+ * Vulkan buffers. It handles memory allocation, type selection, and efficient
+ * buffer operations commonly needed in graphics applications.
+ * 
+ * Key features:
+ * - Memory type selection based on requirements
+ * - Buffer creation with automatic memory allocation
+ * - Efficient buffer-to-buffer copying operations
+ * - Integration with VulkanAllocator for memory management
+ * - Support for various buffer usage patterns
+ * 
+ * The utilities abstract common buffer operations and provide a simplified
+ * interface for buffer management throughout the rendering pipeline.
+ * 
+ * @author Markus Maurer
+ * @version 1.0
+ */
+
 #ifndef VULKAN_BUFFER_UTILS_H
 #define VULKAN_BUFFER_UTILS_H
 

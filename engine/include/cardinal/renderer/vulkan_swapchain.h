@@ -1,3 +1,26 @@
+/**
+ * @file vulkan_swapchain.h
+ * @brief Vulkan swapchain management for Cardinal Engine
+ * 
+ * This module handles the creation, management, and recreation of Vulkan
+ * swapchains, which are responsible for presenting rendered images to the
+ * screen. The swapchain manages a series of framebuffers that are used
+ * for double/triple buffering.
+ * 
+ * Key responsibilities:
+ * - Swapchain creation with optimal surface format and present mode
+ * - Image view creation for swapchain images
+ * - Swapchain recreation for window resize events
+ * - Synchronization with presentation engine
+ * - Resource cleanup and management
+ * 
+ * The module automatically selects the best available surface format
+ * and present mode based on device capabilities and performance requirements.
+ * 
+ * @author Markus Maurer
+ * @version 1.0
+ */
+
 #ifndef VULKAN_SWAPCHAIN_H
 #define VULKAN_SWAPCHAIN_H
 

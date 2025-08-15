@@ -1,3 +1,32 @@
+/**
+ * @file gltf_loader.c
+ * @brief GLTF asset loading implementation for Cardinal Engine
+ * 
+ * This file implements comprehensive GLTF 2.0 asset loading functionality
+ * for the Cardinal Engine. It handles parsing of GLTF files, extraction
+ * of geometry data, materials, textures, and scene hierarchy information
+ * using the cgltf library.
+ * 
+ * Key features:
+ * - Complete GLTF 2.0 specification support
+ * - Mesh geometry extraction (vertices, indices, normals, UVs)
+ * - PBR material loading (albedo, metallic, roughness, normal maps)
+ * - Texture loading and format conversion
+ * - Scene hierarchy and node transformation parsing
+ * - Fallback handling for missing data (default normals, placeholder textures)
+ * - Memory-efficient loading with proper resource cleanup
+ * 
+ * Supported GLTF features:
+ * - Binary (.glb) and JSON (.gltf) formats
+ * - Embedded and external texture references
+ * - Multiple primitive types per mesh
+ * - PBR metallic-roughness material workflow
+ * - Texture coordinate transformations
+ * 
+ * @author Markus Maurer
+ * @version 1.0
+ */
+
 #include <stdlib.h>
 #include <string.h>
 #include <stdio.h>

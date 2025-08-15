@@ -1,3 +1,37 @@
+/**
+ * @file vulkan_pbr.c
+ * @brief Physically Based Rendering (PBR) pipeline implementation for Cardinal Engine
+ * 
+ * This file implements a complete PBR rendering pipeline using the metallic-roughness
+ * workflow. It handles shader loading, descriptor set management, uniform buffer
+ * updates, texture binding, and the main rendering loop for PBR materials.
+ * 
+ * Key features:
+ * - Metallic-roughness PBR workflow implementation
+ * - Dynamic descriptor indexing for texture arrays
+ * - Efficient uniform buffer management with per-frame updates
+ * - Support for multiple material properties (albedo, metallic, roughness, normal, emissive)
+ * - Texture coordinate transformation support
+ * - Optimized vertex and index buffer management
+ * - Multi-frame synchronization and resource management
+ * 
+ * PBR implementation details:
+ * - Cook-Torrance BRDF for specular reflections
+ * - Lambert diffuse model
+ * - Image-based lighting support preparation
+ * - Gamma correction and tone mapping
+ * - Normal mapping for surface detail
+ * 
+ * Performance optimizations:
+ * - Descriptor indexing to reduce draw calls
+ * - Push constants for per-object data
+ * - Efficient buffer updates with staging
+ * - Vulkan 1.3 synchronization primitives
+ * 
+ * @author Markus Maurer
+ * @version 1.0
+ */
+
 #include <cardinal/renderer/vulkan_pbr.h>
 #include <cardinal/renderer/util/vulkan_buffer_utils.h>
 #include <cardinal/renderer/util/vulkan_texture_utils.h>

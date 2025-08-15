@@ -1,3 +1,25 @@
+/**
+ * @file vulkan_shader_utils.h
+ * @brief Vulkan shader module management utilities for Cardinal Engine
+ * 
+ * This module provides utility functions for loading, creating, and managing
+ * Vulkan shader modules from SPIR-V bytecode. It handles both file-based
+ * shader loading and direct bytecode compilation into shader modules.
+ * 
+ * Key features:
+ * - SPIR-V file loading and validation
+ * - Shader module creation from files or bytecode
+ * - Error handling and validation for shader compilation
+ * - Resource cleanup and management
+ * - Support for all shader stages (vertex, fragment, etc.)
+ * 
+ * The utilities abstract the process of converting SPIR-V bytecode into
+ * Vulkan shader modules that can be used in graphics pipelines.
+ * 
+ * @author Markus Maurer
+ * @version 1.0
+ */
+
 #ifndef VULKAN_SHADER_UTILS_H
 #define VULKAN_SHADER_UTILS_H
 

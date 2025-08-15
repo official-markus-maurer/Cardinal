@@ -1,3 +1,27 @@
+/**
+ * @file vulkan_texture_utils.h
+ * @brief Vulkan texture management utilities for Cardinal Engine
+ * 
+ * This module provides utility functions for creating and managing Vulkan
+ * textures from various data sources. It handles texture creation, format
+ * conversion, mipmap generation, and sampler configuration optimized for
+ * PBR rendering workflows.
+ * 
+ * Key features:
+ * - Texture creation from CardinalTexture data
+ * - Automatic format detection and conversion
+ * - Placeholder texture generation for missing assets
+ * - PBR-optimized texture sampling configuration
+ * - Memory-efficient texture loading with staging buffers
+ * - Support for various texture formats (RGBA, sRGB, etc.)
+ * 
+ * The utilities handle the complex process of uploading texture data to
+ * GPU memory and creating the necessary Vulkan objects for rendering.
+ * 
+ * @author Markus Maurer
+ * @version 1.0
+ */
+
 #ifndef VULKAN_TEXTURE_UTILS_H
 #define VULKAN_TEXTURE_UTILS_H
 

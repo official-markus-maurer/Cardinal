@@ -1,3 +1,25 @@
+/**
+ * @file vulkan_commands.h
+ * @brief Vulkan command buffer and synchronization management for Cardinal Engine
+ * 
+ * This module handles the creation and management of Vulkan command buffers,
+ * command pools, and synchronization primitives (semaphores and fences).
+ * Command buffers are used to record and submit GPU commands for rendering.
+ * 
+ * Key responsibilities:
+ * - Command pool creation for different queue families
+ * - Command buffer allocation and management
+ * - Synchronization object creation (semaphores, fences)
+ * - Command recording for rendering operations
+ * - Frame-in-flight tracking for proper synchronization
+ * 
+ * The module ensures proper synchronization between CPU and GPU operations
+ * and manages multiple frames in flight for optimal performance.
+ * 
+ * @author Markus Maurer
+ * @version 1.0
+ */
+
 #ifndef VULKAN_COMMANDS_H
 #define VULKAN_COMMANDS_H
 

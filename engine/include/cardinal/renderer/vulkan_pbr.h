@@ -1,3 +1,28 @@
+/**
+ * @file vulkan_pbr.h
+ * @brief Physically Based Rendering (PBR) pipeline for Cardinal Engine
+ * 
+ * This module implements a complete PBR rendering pipeline using Vulkan,
+ * supporting modern material workflows with metallic-roughness shading.
+ * The pipeline handles complex material properties, multiple texture types,
+ * and advanced lighting calculations.
+ * 
+ * Key features:
+ * - Metallic-roughness PBR workflow
+ * - Multiple texture support (albedo, normal, metallic-roughness, AO, emissive)
+ * - Texture coordinate transformations (KHR_texture_transform)
+ * - Descriptor indexing for efficient texture binding
+ * - Push constants for per-mesh material properties
+ * - Uniform buffers for scene-wide data
+ * - Optimized vertex and index buffer management
+ * 
+ * The pipeline supports both traditional descriptor sets and modern
+ * descriptor indexing for improved performance with many textures.
+ * 
+ * @author Markus Maurer
+ * @version 1.0
+ */
+
 #ifndef CARDINAL_RENDERER_VULKAN_PBR_H
 #define CARDINAL_RENDERER_VULKAN_PBR_H
 

@@ -1,3 +1,31 @@
+/**
+ * @file vulkan_renderer.c
+ * @brief Main Vulkan renderer implementation for Cardinal Engine
+ * 
+ * This file contains the core implementation of the Cardinal Engine's Vulkan-based
+ * renderer. It manages the complete rendering pipeline from initialization to
+ * frame rendering, including Vulkan state management, resource creation, and
+ * the main render loop.
+ * 
+ * Key responsibilities:
+ * - Vulkan instance and device initialization
+ * - Swapchain creation and management
+ * - Command buffer recording and submission
+ * - PBR pipeline setup and rendering
+ * - Frame synchronization and presentation
+ * - Resource cleanup and destruction
+ * 
+ * The renderer supports:
+ * - Physically Based Rendering (PBR) with metallic-roughness workflow
+ * - Dynamic scene loading and rendering
+ * - Camera and lighting configuration
+ * - UI integration through ImGui callbacks
+ * - Immediate command submission for one-time operations
+ * 
+ * @author Markus Maurer
+ * @version 1.0
+ */
+
 #include <stdlib.h>
 #include <string.h>
 #include <assert.h>

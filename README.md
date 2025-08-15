@@ -178,7 +178,7 @@ All dependencies are managed via CMake FetchContent:
 
 ## License
 
-MIT License - See LICENSE file for details.
+This engine is proprietary.
 
 ## Contributing
 

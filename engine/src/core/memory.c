@@ -1,3 +1,32 @@
+/**
+ * @file memory.c
+ * @brief Memory management system implementation for Cardinal Engine
+ * 
+ * This file implements the Cardinal Engine's comprehensive memory management
+ * system, providing multiple allocation strategies and detailed memory tracking.
+ * The system supports dynamic allocation, linear allocation, and tracked
+ * allocation with per-category statistics.
+ * 
+ * Key features:
+ * - Multiple allocator types (dynamic, linear, tracked)
+ * - Per-category memory usage tracking and statistics
+ * - Aligned memory allocation support
+ * - Memory leak detection and reporting
+ * - Cross-platform compatibility (Windows/MSVC, Linux/GCC)
+ * - Thread-safe statistics collection
+ * 
+ * Allocator types:
+ * - Dynamic: Standard malloc/free wrapper with tracking
+ * - Linear: Fast bump allocator for temporary allocations
+ * - Tracked: Wrapper around other allocators with category tracking
+ * 
+ * Memory categories enable detailed profiling of engine subsystems:
+ * - Renderer, Assets, Audio, Scripting, UI, Game Logic, etc.
+ * 
+ * @author Markus Maurer
+ * @version 1.0
+ */
+
 #include "cardinal/core/memory.h"
 #include <stdlib.h>
 #include <string.h>

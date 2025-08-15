@@ -1,3 +1,27 @@
+/**
+ * @file vulkan_descriptor_utils.h
+ * @brief Vulkan descriptor set management utilities for Cardinal Engine
+ * 
+ * This module provides utility functions for creating and managing Vulkan
+ * descriptor sets, layouts, and pools. It handles the complex process of
+ * setting up descriptor bindings for PBR rendering pipelines with support
+ * for variable descriptor counts and dynamic texture arrays.
+ * 
+ * Key features:
+ * - PBR-optimized descriptor set layout creation
+ * - Variable descriptor count support for texture arrays
+ * - Descriptor pool management with configurable limits
+ * - Descriptor set allocation and updating
+ * - Uniform buffer and texture binding management
+ * - Resource cleanup and destruction
+ * 
+ * The utilities abstract the descriptor management complexity and provide
+ * a streamlined interface for binding resources to shaders in PBR pipelines.
+ * 
+ * @author Markus Maurer
+ * @version 1.0
+ */
+
 #ifndef VULKAN_DESCRIPTOR_UTILS_H
 #define VULKAN_DESCRIPTOR_UTILS_H
 

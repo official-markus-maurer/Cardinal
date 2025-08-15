@@ -1,3 +1,32 @@
+/**
+ * @file window.c
+ * @brief Window management implementation for Cardinal Engine
+ * 
+ * This file implements cross-platform window management functionality using
+ * GLFW. It handles window creation, event processing, input handling, and
+ * integration with the Vulkan rendering system.
+ * 
+ * Key features:
+ * - Cross-platform window creation (Windows, Linux, macOS)
+ * - Vulkan surface integration
+ * - Input event handling (keyboard, mouse)
+ * - Window resize and framebuffer callbacks
+ * - Fullscreen and windowed mode support
+ * - Error handling and logging integration
+ * 
+ * Platform-specific features:
+ * - Windows: Native Win32 handle access
+ * - Linux: Wayland compatibility
+ * - macOS: Metal surface support preparation
+ * 
+ * The implementation provides a clean abstraction over GLFW while
+ * maintaining access to platform-specific functionality when needed
+ * for advanced rendering features.
+ * 
+ * @author Markus Maurer
+ * @version 1.0
+ */
+
 #include <stdlib.h>
 #include <string.h>
 #include <assert.h>

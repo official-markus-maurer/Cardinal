@@ -1,3 +1,27 @@
+/**
+ * @file renderer_internal.h
+ * @brief Internal renderer API for Cardinal Engine
+ * 
+ * This module provides internal access to the Vulkan renderer state for
+ * advanced use cases such as editor integration, UI rendering, and direct
+ * Vulkan resource access. These functions expose low-level Vulkan objects
+ * and should be used with caution.
+ * 
+ * Key features:
+ * - Direct access to Vulkan objects (device, queues, command buffers)
+ * - ImGui/UI integration support
+ * - Immediate command buffer submission
+ * - Swapchain and surface format queries
+ * - Scene upload and management utilities
+ * 
+ * @warning This is an internal API intended for advanced users and editor
+ *          integration. Direct manipulation of Vulkan objects can cause
+ *          rendering issues if not handled properly.
+ * 
+ * @author Markus Maurer
+ * @version 1.0
+ */
+
 #ifndef CARDINAL_RENDERER_INTERNAL_H
 #define CARDINAL_RENDERER_INTERNAL_H
 
