@@ -1,5 +1,4 @@
 #include "vulkan_state.h"
-#include "cardinal/core/memory.h"
 #include "cardinal/core/log.h"
 #include <string.h>
 
@@ -8,15 +7,14 @@
  * @param alloc The allocator to initialize.
  * @param phys Physical device handle.
  * @param dev Device handle.
- * @param maintenance4 Whether maintenance4 is supported.
  * @param bufReq Function pointer for device buffer memory requirements.
  * @param imgReq Function pointer for device image memory requirements.
  * @return true on success, false on failure.
  */
-bool vk_allocator_init(VulkanAllocator* alloc, VkPhysicalDevice phys, VkDevice dev, bool maintenance4,
+bool vk_allocator_init(VulkanAllocator* alloc, VkPhysicalDevice phys, VkDevice dev,
                        PFN_vkGetDeviceBufferMemoryRequirements bufReq,
                        PFN_vkGetDeviceImageMemoryRequirements imgReq) {
-    if (!alloc || !phys || !dev) {
+    if (!alloc || !phys || !dev || !bufReq || !imgReq) {
         CARDINAL_LOG_ERROR("[VkAllocator] Invalid parameters for allocator init");
         return false;
     }
@@ -24,13 +22,12 @@ bool vk_allocator_init(VulkanAllocator* alloc, VkPhysicalDevice phys, VkDevice d
     memset(alloc, 0, sizeof(VulkanAllocator));
     alloc->device = dev;
     alloc->physical_device = phys;
-    alloc->use_maintenance4 = maintenance4;
     alloc->fpGetDeviceBufferMemReq = bufReq;
     alloc->fpGetDeviceImageMemReq = imgReq;
     alloc->total_device_mem_allocated = 0;
     alloc->total_device_mem_freed = 0;
     
-    CARDINAL_LOG_INFO("[VkAllocator] Initialized - maintenance4: %s", maintenance4 ? "enabled" : "disabled");
+    CARDINAL_LOG_INFO("[VkAllocator] Initialized - maintenance4: required");
     return true;
 }
 
@@ -78,7 +75,7 @@ static bool find_memory_type(VulkanAllocator* alloc, uint32_t type_filter, VkMem
 }
 
 /**
- * @brief Allocates memory for an image using maintenance4 or legacy methods.
+ * @brief Allocates memory for an image using maintenance4 (Vulkan 1.3 required).
  * @param alloc The allocator instance.
  * @param image_ci Image create info for maintenance4 queries.
  * @param out_image Output image handle.
@@ -95,9 +92,9 @@ bool vk_allocator_allocate_image(VulkanAllocator* alloc,
         CARDINAL_LOG_ERROR("[VkAllocator] Invalid parameters for image allocation");
         return false;
     }
-    CARDINAL_LOG_INFO("[VkAllocator] allocate_image: extent=%ux%u fmt=%u usage=0x%x props=0x%x maint4=%d",
+    CARDINAL_LOG_INFO("[VkAllocator] allocate_image: extent=%ux%u fmt=%u usage=0x%x props=0x%x",
                       image_ci->extent.width, image_ci->extent.height, image_ci->format, image_ci->usage,
-                      (unsigned)required_props, alloc->use_maintenance4);
+                      (unsigned)required_props);
     
     // Create the image first
     VkResult result = vkCreateImage(alloc->device, image_ci, NULL, out_image);
@@ -107,32 +104,21 @@ bool vk_allocator_allocate_image(VulkanAllocator* alloc,
         return false;
     }
     
-    // Get memory requirements
-    VkMemoryRequirements mem_requirements;
-    if (alloc->use_maintenance4 && alloc->fpGetDeviceImageMemReq) {
-        // Use maintenance4 device-level query for better optimization
-        VkDeviceImageMemoryRequirements device_req = {0};
-        device_req.sType = VK_STRUCTURE_TYPE_DEVICE_IMAGE_MEMORY_REQUIREMENTS;
-        device_req.pNext = NULL;
-        device_req.pCreateInfo = image_ci;
-        
-        VkMemoryRequirements2 mem_req2 = {0};
-        mem_req2.sType = VK_STRUCTURE_TYPE_MEMORY_REQUIREMENTS_2;
-        mem_req2.pNext = NULL;
-        alloc->fpGetDeviceImageMemReq(alloc->device, &device_req, &mem_req2);
-        mem_requirements = mem_req2.memoryRequirements;
-        CARDINAL_LOG_INFO("[VkAllocator] Image mem reqs: size=%llu align=%llu types=0x%x",
-                          (unsigned long long)mem_requirements.size,
-                          (unsigned long long)mem_requirements.alignment,
-                          mem_requirements.memoryTypeBits);
-    } else {
-        // Fall back to legacy method
-        vkGetImageMemoryRequirements(alloc->device, *out_image, &mem_requirements);
-        CARDINAL_LOG_INFO("[VkAllocator] Image mem reqs (legacy): size=%llu align=%llu types=0x%x",
-                          (unsigned long long)mem_requirements.size,
-                          (unsigned long long)mem_requirements.alignment,
-                          mem_requirements.memoryTypeBits);
-    }
+    // Get memory requirements using maintenance4 (Vulkan 1.3 required)
+    VkDeviceImageMemoryRequirements device_req = {0};
+    device_req.sType = VK_STRUCTURE_TYPE_DEVICE_IMAGE_MEMORY_REQUIREMENTS;
+    device_req.pNext = NULL;
+    device_req.pCreateInfo = image_ci;
+    
+    VkMemoryRequirements2 mem_req2 = {0};
+    mem_req2.sType = VK_STRUCTURE_TYPE_MEMORY_REQUIREMENTS_2;
+    mem_req2.pNext = NULL;
+    alloc->fpGetDeviceImageMemReq(alloc->device, &device_req, &mem_req2);
+    VkMemoryRequirements mem_requirements = mem_req2.memoryRequirements;
+    CARDINAL_LOG_INFO("[VkAllocator] Image mem reqs: size=%llu align=%llu types=0x%x",
+                      (unsigned long long)mem_requirements.size,
+                      (unsigned long long)mem_requirements.alignment,
+                      mem_requirements.memoryTypeBits);
     
     if (mem_requirements.size == 0 || mem_requirements.memoryTypeBits == 0) {
         CARDINAL_LOG_ERROR("[VkAllocator] Invalid image memory requirements (size=%llu, types=0x%x)",
@@ -192,7 +178,7 @@ bool vk_allocator_allocate_image(VulkanAllocator* alloc,
 }
 
 /**
- * @brief Allocates memory for a buffer using maintenance4 or legacy methods.
+ * @brief Allocates memory for a buffer using maintenance4 (Vulkan 1.3 required).
  * @param alloc The allocator instance.
  * @param buffer_ci Buffer create info for maintenance4 queries.
  * @param out_buffer Output buffer handle.
@@ -209,9 +195,9 @@ bool vk_allocator_allocate_buffer(VulkanAllocator* alloc,
         CARDINAL_LOG_ERROR("[VkAllocator] Invalid parameters for buffer allocation");
         return false;
     }
-    CARDINAL_LOG_INFO("[VkAllocator] allocate_buffer: size=%llu usage=0x%x sharingMode=%u props=0x%x maint4=%d",
+    CARDINAL_LOG_INFO("[VkAllocator] allocate_buffer: size=%llu usage=0x%x sharingMode=%u props=0x%x",
                       (unsigned long long)buffer_ci->size, buffer_ci->usage, buffer_ci->sharingMode,
-                      (unsigned)required_props, alloc->use_maintenance4);
+                      (unsigned)required_props);
     
     // Create the buffer first
     VkResult result = vkCreateBuffer(alloc->device, buffer_ci, NULL, out_buffer);
@@ -221,32 +207,21 @@ bool vk_allocator_allocate_buffer(VulkanAllocator* alloc,
         return false;
     }
     
-    // Get memory requirements
-    VkMemoryRequirements mem_requirements;
-    if (alloc->use_maintenance4 && alloc->fpGetDeviceBufferMemReq) {
-        // Use maintenance4 device-level query for better optimization
-        VkDeviceBufferMemoryRequirements device_req = {0};
-        device_req.sType = VK_STRUCTURE_TYPE_DEVICE_BUFFER_MEMORY_REQUIREMENTS;
-        device_req.pNext = NULL;
-        device_req.pCreateInfo = buffer_ci;
-        
-        VkMemoryRequirements2 mem_req2 = {0};
-        mem_req2.sType = VK_STRUCTURE_TYPE_MEMORY_REQUIREMENTS_2;
-        mem_req2.pNext = NULL;
-        alloc->fpGetDeviceBufferMemReq(alloc->device, &device_req, &mem_req2);
-        mem_requirements = mem_req2.memoryRequirements;
-        CARDINAL_LOG_INFO("[VkAllocator] Buffer mem reqs: size=%llu align=%llu types=0x%x",
-                          (unsigned long long)mem_requirements.size,
-                          (unsigned long long)mem_requirements.alignment,
-                          mem_requirements.memoryTypeBits);
-    } else {
-        // Fall back to legacy method
-        vkGetBufferMemoryRequirements(alloc->device, *out_buffer, &mem_requirements);
-        CARDINAL_LOG_INFO("[VkAllocator] Buffer mem reqs (legacy): size=%llu align=%llu types=0x%x",
-                          (unsigned long long)mem_requirements.size,
-                          (unsigned long long)mem_requirements.alignment,
-                          mem_requirements.memoryTypeBits);
-    }
+    // Get memory requirements using maintenance4 (Vulkan 1.3 required)
+    VkDeviceBufferMemoryRequirements device_req = {0};
+    device_req.sType = VK_STRUCTURE_TYPE_DEVICE_BUFFER_MEMORY_REQUIREMENTS;
+    device_req.pNext = NULL;
+    device_req.pCreateInfo = buffer_ci;
+    
+    VkMemoryRequirements2 mem_req2 = {0};
+    mem_req2.sType = VK_STRUCTURE_TYPE_MEMORY_REQUIREMENTS_2;
+    mem_req2.pNext = NULL;
+    alloc->fpGetDeviceBufferMemReq(alloc->device, &device_req, &mem_req2);
+    VkMemoryRequirements mem_requirements = mem_req2.memoryRequirements;
+    CARDINAL_LOG_INFO("[VkAllocator] Buffer mem reqs: size=%llu align=%llu types=0x%x",
+                      (unsigned long long)mem_requirements.size,
+                      (unsigned long long)mem_requirements.alignment,
+                      mem_requirements.memoryTypeBits);
     
     if (mem_requirements.size == 0 || mem_requirements.memoryTypeBits == 0) {
         CARDINAL_LOG_ERROR("[VkAllocator] Invalid buffer memory requirements (size=%llu, types=0x%x)",
@@ -314,11 +289,17 @@ void vk_allocator_free_image(VulkanAllocator* alloc, VkImage image, VkDeviceMemo
     
     VkDeviceSize size = 0;
     if (memory != VK_NULL_HANDLE) {
-        // Try to get the memory size for statistics (not always available)
-        VkMemoryRequirements mem_req;
+        // Get allocated memory size for statistics
+        VkMemoryRequirements2 mem_req2 = {0};
+        mem_req2.sType = VK_STRUCTURE_TYPE_MEMORY_REQUIREMENTS_2;
+        mem_req2.pNext = NULL;
         if (image != VK_NULL_HANDLE) {
-            vkGetImageMemoryRequirements(alloc->device, image, &mem_req);
-            size = mem_req.size;
+            VkImageMemoryRequirementsInfo2 img_info = {0};
+            img_info.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_REQUIREMENTS_INFO_2;
+            img_info.pNext = NULL;
+            img_info.image = image;
+            vkGetImageMemoryRequirements2(alloc->device, &img_info, &mem_req2);
+            size = mem_req2.memoryRequirements.size;
         }
         
         vkFreeMemory(alloc->device, memory, NULL);
@@ -344,11 +325,17 @@ void vk_allocator_free_buffer(VulkanAllocator* alloc, VkBuffer buffer, VkDeviceM
     
     VkDeviceSize size = 0;
     if (memory != VK_NULL_HANDLE) {
-        // Try to get the memory size for statistics (not always available)
-        VkMemoryRequirements mem_req;
+        // Get allocated memory size for statistics
+        VkMemoryRequirements2 mem_req2 = {0};
+        mem_req2.sType = VK_STRUCTURE_TYPE_MEMORY_REQUIREMENTS_2;
+        mem_req2.pNext = NULL;
         if (buffer != VK_NULL_HANDLE) {
-            vkGetBufferMemoryRequirements(alloc->device, buffer, &mem_req);
-            size = mem_req.size;
+            VkBufferMemoryRequirementsInfo2 buf_info = {0};
+            buf_info.sType = VK_STRUCTURE_TYPE_BUFFER_MEMORY_REQUIREMENTS_INFO_2;
+            buf_info.pNext = NULL;
+            buf_info.buffer = buffer;
+            vkGetBufferMemoryRequirements2(alloc->device, &buf_info, &mem_req2);
+            size = mem_req2.memoryRequirements.size;
         }
         
         vkFreeMemory(alloc->device, memory, NULL);

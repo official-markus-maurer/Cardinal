@@ -35,6 +35,7 @@ layout(binding = 6) uniform MaterialProperties {
     uint metallicRoughnessTextureIndex;
     uint aoTextureIndex;
     uint emissiveTextureIndex;
+    uint supportsDescriptorIndexing; // 1 if descriptor indexing path is active, 0 otherwise
 } material;
 
 // Lighting uniform buffer
@@ -47,20 +48,28 @@ layout(binding = 7) uniform LightingData {
 
 const float PI = 3.14159265359;
 
-// Sample a texture from either fixed binding or texture array using descriptor indexing
-vec4 sampleTex(uint index, sampler2D fixedSampler) {
-    // When index is zero and fixedSampler is provided, prefer fixed sampler (fallback when no indexing)
-    // Use nonuniformEXT for dynamic indexing of texture array
-    return texture(textures[nonuniformEXT(index)], fragTexCoord);
+// Utility: checks if an index means "no texture"
+bool isNoTex(uint idx) {
+    return idx == 0xFFFFFFFFu; // UINT32_MAX means no texture provided
+}
+
+// Utility: sample from descriptor array with non-uniform index
+vec4 sampleArray(uint idx, vec2 uv) {
+    return texture(textures[nonuniformEXT(idx)], uv);
+}
+
+// Helper to decide if we should use descriptor array
+bool canUseArray(uint idx) {
+    return material.supportsDescriptorIndexing == 1u && !isNoTex(idx);
 }
 
 // Normal mapping function
 vec3 getNormalFromMap() {
     vec3 nrm;
-    if (material.normalTextureIndex == 0u || material.normalTextureIndex == 0xFFFFFFFFu) {
-        nrm = texture(normalMap, fragTexCoord).xyz;
+    if (canUseArray(material.normalTextureIndex)) {
+        nrm = sampleArray(material.normalTextureIndex, fragTexCoord).xyz;
     } else {
-        nrm = texture(textures[nonuniformEXT(material.normalTextureIndex)], fragTexCoord).xyz;
+        nrm = texture(normalMap, fragTexCoord).xyz;
     }
     vec3 tangentNormal = nrm * 2.0 - 1.0;
     tangentNormal.xy *= material.normalScale;
@@ -119,33 +128,33 @@ vec3 fresnelSchlick(float cosTheta, vec3 F0) {
 void main() {
     // Sample material properties
     vec3 albedo;
-    if (material.albedoTextureIndex == 0u || material.albedoTextureIndex == 0xFFFFFFFFu) {
-        albedo = texture(albedoMap, fragTexCoord).rgb * material.albedoFactor;
+    if (canUseArray(material.albedoTextureIndex)) {
+        albedo = sampleArray(material.albedoTextureIndex, fragTexCoord).rgb * material.albedoFactor;
     } else {
-        albedo = texture(textures[nonuniformEXT(material.albedoTextureIndex)], fragTexCoord).rgb * material.albedoFactor;
+        albedo = texture(albedoMap, fragTexCoord).rgb * material.albedoFactor;
     }
     
     vec3 metallicRoughness;
-    if (material.metallicRoughnessTextureIndex == 0u || material.metallicRoughnessTextureIndex == 0xFFFFFFFFu) {
-        metallicRoughness = texture(metallicRoughnessMap, fragTexCoord).rgb;
+    if (canUseArray(material.metallicRoughnessTextureIndex)) {
+        metallicRoughness = sampleArray(material.metallicRoughnessTextureIndex, fragTexCoord).rgb;
     } else {
-        metallicRoughness = texture(textures[nonuniformEXT(material.metallicRoughnessTextureIndex)], fragTexCoord).rgb;
+        metallicRoughness = texture(metallicRoughnessMap, fragTexCoord).rgb;
     }
     float metallic = metallicRoughness.b * material.metallicFactor;
     float roughness = metallicRoughness.g * material.roughnessFactor;
     
     float ao;
-    if (material.aoTextureIndex == 0u || material.aoTextureIndex == 0xFFFFFFFFu) {
-        ao = texture(aoMap, fragTexCoord).r * material.aoStrength;
+    if (canUseArray(material.aoTextureIndex)) {
+        ao = sampleArray(material.aoTextureIndex, fragTexCoord).r * material.aoStrength;
     } else {
-        ao = texture(textures[nonuniformEXT(material.aoTextureIndex)], fragTexCoord).r * material.aoStrength;
+        ao = texture(aoMap, fragTexCoord).r * material.aoStrength;
     }
     
     vec3 emissive;
-    if (material.emissiveTextureIndex == 0u || material.emissiveTextureIndex == 0xFFFFFFFFu) {
-        emissive = texture(emissiveMap, fragTexCoord).rgb * material.emissiveFactor;
+    if (canUseArray(material.emissiveTextureIndex)) {
+        emissive = sampleArray(material.emissiveTextureIndex, fragTexCoord).rgb * material.emissiveFactor;
     } else {
-        emissive = texture(textures[nonuniformEXT(material.emissiveTextureIndex)], fragTexCoord).rgb * material.emissiveFactor;
+        emissive = texture(emissiveMap, fragTexCoord).rgb * material.emissiveFactor;
     }
     
     // Get normal from normal map

@@ -14,7 +14,7 @@
  * 
  * @todo Cache memory properties for performance.
  */
-static uint32_t findMemoryType(VkPhysicalDevice physicalDevice, uint32_t typeFilter, VkMemoryPropertyFlags properties) {
+__attribute__((unused)) static uint32_t findMemoryType(VkPhysicalDevice physicalDevice, uint32_t typeFilter, VkMemoryPropertyFlags properties) {
     VkPhysicalDeviceMemoryProperties memProperties;
     vkGetPhysicalDeviceMemoryProperties(physicalDevice, &memProperties);
     
@@ -1052,6 +1052,8 @@ bool vk_pbr_pipeline_create(VulkanPBRPipeline* pipeline, VkDevice device, VkPhys
     defaultMaterial.metallicRoughnessTextureIndex = 0;
     defaultMaterial.aoTextureIndex = 0;
     defaultMaterial.emissiveTextureIndex = 0;
+    // Propagate descriptor indexing support to shader side
+    defaultMaterial.supportsDescriptorIndexing = pipeline->supportsDescriptorIndexing ? 1u : 0u;
     
     memcpy(pipeline->materialBufferMapped, &defaultMaterial, sizeof(PBRMaterialProperties));
     
@@ -1196,13 +1198,6 @@ void vk_pbr_render(VulkanPBRPipeline* pipeline, VkCommandBuffer commandBuffer, c
     vkCmdBindVertexBuffers(commandBuffer, 0, 1, vertexBuffers, offsets);
     vkCmdBindIndexBuffer(commandBuffer, pipeline->indexBuffer, 0, VK_INDEX_TYPE_UINT32);
     
-    // Bind a single descriptor set (currently we allocate one set shared for all materials)
-    if (pipeline->descriptorSetCount > 0) {
-        vkCmdBindDescriptorSets(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS,
-                                pipeline->pipelineLayout, 0, 1,
-                                &pipeline->descriptorSets[0], 0, NULL);
-    }
-    
     // Render each mesh
     uint32_t indexOffset = 0;
     for (uint32_t i = 0; i < scene->mesh_count; i++) {
@@ -1232,6 +1227,9 @@ void vk_pbr_render(VulkanPBRPipeline* pipeline, VkCommandBuffer commandBuffer, c
             matProps.emissiveTextureIndex = (material->emissive_texture == UINT32_MAX) ? UINT32_MAX : 
                                             (material->emissive_texture < pipeline->textureCount) ? material->emissive_texture : 0;
             
+            // CRITICAL: Set descriptor indexing flag for shader (only if textures are available)
+            matProps.supportsDescriptorIndexing = (pipeline->supportsDescriptorIndexing && pipeline->textureCount > 0) ? 1u : 0u;
+            
             // Debug logging for material properties
             CARDINAL_LOG_DEBUG("Material %d: albedo_idx=%u, normal_idx=%u, mr_idx=%u, ao_idx=%u, emissive_idx=%u", 
                               i, matProps.albedoTextureIndex, matProps.normalTextureIndex, matProps.metallicRoughnessTextureIndex, 
@@ -1242,6 +1240,13 @@ void vk_pbr_render(VulkanPBRPipeline* pipeline, VkCommandBuffer commandBuffer, c
                               matProps.metallicFactor, matProps.roughnessFactor);
             
             memcpy(pipeline->materialBufferMapped, &matProps, sizeof(PBRMaterialProperties));
+        }
+        
+        // Bind descriptor set AFTER updating material properties so the latest data is used for this draw
+        if (pipeline->descriptorSetCount > 0) {
+            vkCmdBindDescriptorSets(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS,
+                                    pipeline->pipelineLayout, 0, 1,
+                                    &pipeline->descriptorSets[0], 0, NULL);
         }
         
         // Draw the mesh
@@ -1267,6 +1272,8 @@ void vk_pbr_render(VulkanPBRPipeline* pipeline, VkCommandBuffer commandBuffer, c
  */
 bool vk_pbr_load_scene(VulkanPBRPipeline* pipeline, VkDevice device, VkPhysicalDevice physicalDevice,
                        VkCommandPool commandPool, VkQueue graphicsQueue, const CardinalScene* scene, VulkanAllocator* allocator) {
+    (void)physicalDevice; // Unused parameter
+    
     if (!pipeline->initialized || !scene || scene->mesh_count == 0) {
         CARDINAL_LOG_WARN("PBR pipeline not initialized or no scene data");
         return true;
@@ -1469,7 +1476,11 @@ bool vk_pbr_load_scene(VulkanPBRPipeline* pipeline, VkDevice device, VkPhysicalD
             }
         }
         
+#ifdef _DEBUG
         CARDINAL_LOG_INFO("Successfully uploaded %u/%u textures", successfulUploads, scene->texture_count);
+#else
+        (void)successfulUploads; // Silence unused variable warning in release builds
+#endif
         
         // Fill remaining slots with placeholders if scene had fewer textures than allocated
         for (uint32_t i = scene->texture_count; i < textureCount; i++) {
@@ -1576,14 +1587,16 @@ bool vk_pbr_load_scene(VulkanPBRPipeline* pipeline, VkDevice device, VkPhysicalD
     VkDescriptorImageInfo imageInfos[5];
     for (uint32_t i = 0; i < 5; ++i) {
         imageInfos[i].imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
-        // If we have uploaded textures, map first 5 to bindings 1..5, otherwise use slot 0
-        uint32_t texIndex = (i < pipeline->textureCount) ? i : 0;
+        // When descriptor indexing is enabled, fixed bindings 1-5 should use placeholder (index 0)
+        // to avoid confusion with the variable array. Only use direct texture mapping when indexing is disabled.
+        uint32_t texIndex = pipeline->supportsDescriptorIndexing ? 0 : ((i < pipeline->textureCount) ? i : 0);
         imageInfos[i].imageView = pipeline->textureImageViews[texIndex];
         imageInfos[i].sampler = pipeline->textureSampler;
+        CARDINAL_LOG_DEBUG("Fixed binding %u uses texture index %u (imageView=%p)", i + 1, texIndex, (void*)(uintptr_t)pipeline->textureImageViews[texIndex]);
     }
     
     if (pipeline->supportsDescriptorIndexing) {
-        // Bind samplers for 1..5 from imageInfos and use binding 8 for variable descriptor array
+        // Bind placeholders for fixed bindings 1-5 (shader will use variable array for actual textures)
         for (uint32_t b = 1; b <= 5; ++b) {
             descriptorWrites[writeCount].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
             descriptorWrites[writeCount].dstSet = pipeline->descriptorSets[0];
@@ -1612,6 +1625,9 @@ bool vk_pbr_load_scene(VulkanPBRPipeline* pipeline, VkDevice device, VkPhysicalD
             varInfos[i].imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
             varInfos[i].imageView = pipeline->textureImageViews[i];
             varInfos[i].sampler = pipeline->textureSampler;
+            if (i < 8) {
+                CARDINAL_LOG_DEBUG("Variable binding 8, array[%u] -> imageView=%p", i, (void*)(uintptr_t)pipeline->textureImageViews[i]);
+            }
         }
         descriptorWrites[writeCount].pImageInfo = varInfos;
         writeCount++;

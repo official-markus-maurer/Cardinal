@@ -16,11 +16,10 @@ struct CardinalScene;
 
 typedef struct VulkanAllocator VulkanAllocator;
 
-// Vulkan-specific allocator, integrates maintenance4 queries and tracks device memory
+// Vulkan-specific allocator, uses maintenance4 queries (Vulkan 1.3 required)
 struct VulkanAllocator {
     VkDevice device;
     VkPhysicalDevice physical_device;
-    bool use_maintenance4;
     // Function pointers (from Vulkan 1.3 core)
     PFN_vkGetDeviceBufferMemoryRequirements fpGetDeviceBufferMemReq;
     PFN_vkGetDeviceImageMemoryRequirements fpGetDeviceImageMemReq;
@@ -30,7 +29,7 @@ struct VulkanAllocator {
 };
 
 // Create/Destroy allocator
-bool vk_allocator_init(VulkanAllocator* alloc, VkPhysicalDevice phys, VkDevice dev, bool maintenance4,
+bool vk_allocator_init(VulkanAllocator* alloc, VkPhysicalDevice phys, VkDevice dev,
                        PFN_vkGetDeviceBufferMemoryRequirements bufReq,
                        PFN_vkGetDeviceImageMemoryRequirements imgReq);
 void vk_allocator_shutdown(VulkanAllocator* alloc);

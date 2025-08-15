@@ -640,10 +640,12 @@ bool cardinal_gltf_load_scene(const char* path, CardinalScene* out_scene) {
             }
             // Debug log first few indices
             if (index_count > 0 && indices) {
+#ifdef _DEBUG
                 uint32_t i0 = indices[0];
                 uint32_t i1 = (index_count > 1) ? indices[1] : 0;
                 uint32_t i2 = (index_count > 2) ? indices[2] : 0;
                 LOG_DEBUG("First indices: %u, %u, %u (of %u)", i0, i1, i2, index_count);
+#endif
             }
 
             CardinalMesh* dst = &meshes[mesh_write++];

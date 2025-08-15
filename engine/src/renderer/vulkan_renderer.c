@@ -366,6 +366,11 @@ void cardinal_renderer_set_camera(CardinalRenderer* renderer, const CardinalCame
     
     // Update the uniform buffer
     memcpy(s->pbr_pipeline.uniformBufferMapped, &ubo, sizeof(PBRUniformBufferObject));
+
+    // Also invoke the centralized PBR uniform updater to keep both UBO and lighting in sync
+    PBRLightingData lighting;
+    memcpy(&lighting, s->pbr_pipeline.lightingBufferMapped, sizeof(PBRLightingData));
+    vk_pbr_update_uniforms(&s->pbr_pipeline, &ubo, &lighting);
 }
 
 /**
@@ -401,6 +406,11 @@ void cardinal_renderer_set_lighting(CardinalRenderer* renderer, const CardinalLi
     
     // Update the lighting buffer
     memcpy(s->pbr_pipeline.lightingBufferMapped, &lighting, sizeof(PBRLightingData));
+
+    // Also invoke the centralized PBR uniform updater to keep both UBO and lighting in sync
+    PBRUniformBufferObject ubo;
+    memcpy(&ubo, s->pbr_pipeline.uniformBufferMapped, sizeof(PBRUniformBufferObject));
+    vk_pbr_update_uniforms(&s->pbr_pipeline, &ubo, &lighting);
 }
 
 /**

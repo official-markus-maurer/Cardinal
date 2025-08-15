@@ -20,12 +20,9 @@ if(NOT CMAKE_BUILD_TYPE)
     set(CMAKE_BUILD_TYPE "Debug" CACHE STRING "Choose the type of build." FORCE)
 endif()
 
-# Compiler flags
+# Compiler flags: keep warnings per-target; avoid propagating to dependencies
 if(MSVC)
-    add_compile_options(/W4 /permissive-)
     add_compile_definitions(_CRT_SECURE_NO_WARNINGS)
-else()
-    add_compile_options(-Wall -Wextra -Wpedantic)
 endif()
 
 # Include FetchContent for dependency management
@@ -50,6 +47,30 @@ set(GLFW_VULKAN_STATIC OFF CACHE BOOL "" FORCE)
 
 # Make dependencies available
 FetchContent_MakeAvailable(glfw)
+
+# Suppress warnings from GLFW internals (we keep strict warnings for our own targets)
+if(TARGET glfw)
+    if(CMAKE_C_COMPILER_ID MATCHES "Clang|AppleClang")
+        target_compile_options(glfw PRIVATE
+            -Wno-unused-parameter
+            -Wno-missing-field-initializers
+            -Wno-incompatible-function-pointer-types
+        )
+    elseif(CMAKE_C_COMPILER_ID STREQUAL "GNU")
+        target_compile_options(glfw PRIVATE
+            -Wno-unused-parameter
+            -Wno-missing-field-initializers
+            -Wno-cast-function-type
+        )
+    elseif(MSVC)
+        target_compile_options(glfw PRIVATE
+            /wd4100  # unreferenced formal parameter
+            /wd4201  # nameless struct/union (commonly used in GLFW)
+            /wd4204  # non-constant aggregate initializer
+            /wd4244  # possible data loss in conversion (benign inside GLFW)
+        )
+    endif()
+endif()
 
 # Engine library
 add_subdirectory(engine)

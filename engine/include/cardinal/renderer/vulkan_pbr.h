@@ -35,7 +35,8 @@ typedef struct PBRMaterialProperties {
     uint32_t metallicRoughnessTextureIndex;
     uint32_t aoTextureIndex;
     uint32_t emissiveTextureIndex;
-    float _padding[3];   // Alignment to 16 bytes
+    uint32_t supportsDescriptorIndexing;  // 1 if supported, 0 if not
+    float _padding[2];   // Alignment to 16 bytes
 } PBRMaterialProperties;
 
 typedef struct PBRLightingData {

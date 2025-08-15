@@ -197,6 +197,7 @@ bool vk_pick_physical_device(VulkanState* s) {
     uint32_t count = 0;
     VkResult result = vkEnumeratePhysicalDevices(s->instance, &count, NULL);
     CARDINAL_LOG_INFO("[DEVICE] Found %u physical devices, enumerate result: %d", count, result);
+    (void)result; // silence unused in non-debug builds
     if (count == 0) {
         CARDINAL_LOG_ERROR("[DEVICE] No physical devices found!");
         return false;
@@ -204,6 +205,7 @@ bool vk_pick_physical_device(VulkanState* s) {
     VkPhysicalDevice* devices = (VkPhysicalDevice*)malloc(sizeof(VkPhysicalDevice) * count);
     result = vkEnumeratePhysicalDevices(s->instance, &count, devices);
     CARDINAL_LOG_INFO("[DEVICE] Enumerate devices result: %d", result);
+    (void)result; // silence unused in non-debug builds
     s->physical_device = devices[0];
     
     // Log device properties
@@ -305,10 +307,13 @@ bool vk_create_device(VulkanState* s) {
     vulkan13Features.dynamicRendering = VK_TRUE;
     vulkan13Features.synchronization2 = VK_TRUE;
     
-    // Enable maintenance4 if supported for inline uniform blocks and improved memory queries
-    if (vulkan13Features.maintenance4) {
-        vulkan13Features.maintenance4 = VK_TRUE;
+    // Require maintenance4 for improved memory queries (no legacy fallbacks)
+    if (!vulkan13Features.maintenance4) {
+        CARDINAL_LOG_ERROR("[DEVICE] maintenance4 is required but not supported by device");
+        free(qfp);
+        return false;
     }
+    vulkan13Features.maintenance4 = VK_TRUE;
     
     CARDINAL_LOG_INFO("[DEVICE] Enabling core Vulkan 1.3 features: dynamicRendering + synchronization2 + maintenance4");
 
@@ -393,11 +398,11 @@ bool vk_create_device(VulkanState* s) {
     s->supports_dynamic_rendering = true; // required
     s->supports_vulkan_12_features = vulkan_12_supported;
     s->supports_vulkan_13_features = true; // required
-    s->supports_maintenance4 = vulkan13Features.maintenance4 == VK_TRUE;
+    s->supports_maintenance4 = true; // required
     CARDINAL_LOG_INFO("[DEVICE] Dynamic rendering support: enabled (required)");
     CARDINAL_LOG_INFO("[DEVICE] Vulkan 1.2 features: %s", s->supports_vulkan_12_features ? "available" : "unavailable");
     CARDINAL_LOG_INFO("[DEVICE] Vulkan 1.3 features: available (required)");
-    CARDINAL_LOG_INFO("[DEVICE] Vulkan 1.3 maintenance4: %s", s->supports_maintenance4 ? "enabled" : "disabled");
+    CARDINAL_LOG_INFO("[DEVICE] Vulkan 1.3 maintenance4: enabled (required)");
 
     // Load dynamic rendering function pointers (core)
     s->vkCmdBeginRendering = (PFN_vkCmdBeginRendering)vkGetDeviceProcAddr(s->device, "vkCmdBeginRendering");
@@ -418,7 +423,12 @@ bool vk_create_device(VulkanState* s) {
         (PFN_vkGetDeviceBufferMemoryRequirements)vkGetDeviceProcAddr(s->device, "vkGetDeviceBufferMemoryRequirements");
     s->vkGetDeviceImageMemoryRequirements =
         (PFN_vkGetDeviceImageMemoryRequirements)vkGetDeviceProcAddr(s->device, "vkGetDeviceImageMemoryRequirements");
-    CARDINAL_LOG_INFO("[DEVICE] maintenance4 functions: BufferReqs=%p ImageReqs=%p",
+    if (!s->vkGetDeviceBufferMemoryRequirements || !s->vkGetDeviceImageMemoryRequirements) {
+        CARDINAL_LOG_ERROR("[DEVICE] Failed to load maintenance4 functions (required)");
+        free(qfp);
+        return false;
+    }
+    CARDINAL_LOG_INFO("[DEVICE] maintenance4 functions loaded: BufferReqs=%p ImageReqs=%p",
                       (void*)s->vkGetDeviceBufferMemoryRequirements, (void*)s->vkGetDeviceImageMemoryRequirements);
 
     // Load vkQueueSubmit2 (core)
@@ -459,13 +469,12 @@ bool vk_create_device(VulkanState* s) {
     if (!vk_allocator_init(&s->allocator,
                            s->physical_device,
                            s->device,
-                           s->supports_maintenance4,
                            s->vkGetDeviceBufferMemoryRequirements,
                            s->vkGetDeviceImageMemoryRequirements)) {
         CARDINAL_LOG_ERROR("[DEVICE] Failed to initialize VulkanAllocator");
         return false;
     }
-    CARDINAL_LOG_INFO("[DEVICE] VulkanAllocator initialized (maintenance4=%s)", s->supports_maintenance4 ? "yes" : "no");
+    CARDINAL_LOG_INFO("[DEVICE] VulkanAllocator initialized (maintenance4=required)");
 
     return true;
 }
@@ -514,5 +523,6 @@ void vk_recreate_debug_messenger(VulkanState* s) {
         ci.pfnUserCallback = debug_callback;
         VkResult r = cfunc(s->instance, &ci, NULL, &s->debug_messenger);
         CARDINAL_LOG_INFO("[INSTANCE] Recreated debug messenger (result=%d) with severity flags: 0x%x", r, ci.messageSeverity);
+        (void)r; // silence unused in non-debug builds
     }
 }

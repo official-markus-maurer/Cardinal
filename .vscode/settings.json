@@ -27,6 +27,8 @@
         "SPIR",
         "Sponza",
         "STBI",
+        "STREQUAL",
+        "strncpy",
         "Subpasses",
         "swapchain",
         "tonemapping",

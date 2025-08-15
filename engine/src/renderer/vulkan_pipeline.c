@@ -6,53 +6,7 @@
 #include "vulkan_pipeline.h"
 #include "cardinal/core/log.h"
 
-/**
- * @brief Query buffer memory requirements using maintenance4 (if available) or legacy path.
- * @param s VulkanState containing function pointers and device handle.
- * @param buffer The buffer to query requirements for.
- * @param requirements Output memory requirements.
- * @return true if successful, false otherwise.
- */
-static bool query_buffer_memory_requirements(VulkanState* s, VkBuffer buffer, VkMemoryRequirements* requirements) {
-    if (s->supports_maintenance4 && s->vkGetDeviceBufferMemoryRequirements) {
-        // Use maintenance4 device-level query
-        VkDeviceBufferMemoryRequirements deviceBufferInfo = {0};
-        deviceBufferInfo.sType = VK_STRUCTURE_TYPE_DEVICE_BUFFER_MEMORY_REQUIREMENTS;
-        deviceBufferInfo.pCreateInfo = NULL; // Would need buffer create info - fall back for now
-        
-        // For now, fall back to legacy until we can reconstruct create info
-        vkGetBufferMemoryRequirements(s->device, buffer, requirements);
-        return true;
-    } else {
-        // Legacy path
-        vkGetBufferMemoryRequirements(s->device, buffer, requirements);
-        return true;
-    }
-}
 
-/**
- * @brief Query image memory requirements using maintenance4 (if available) or legacy path.
- * @param s VulkanState containing function pointers and device handle.
- * @param image The image to query requirements for.
- * @param requirements Output memory requirements.
- * @return true if successful, false otherwise.
- */
-static bool query_image_memory_requirements(VulkanState* s, VkImage image, VkMemoryRequirements* requirements) {
-    if (s->supports_maintenance4 && s->vkGetDeviceImageMemoryRequirements) {
-        // Use maintenance4 device-level query
-        VkDeviceImageMemoryRequirements deviceImageInfo = {0};
-        deviceImageInfo.sType = VK_STRUCTURE_TYPE_DEVICE_IMAGE_MEMORY_REQUIREMENTS;
-        deviceImageInfo.pCreateInfo = NULL; // Would need image create info - fall back for now
-        
-        // For now, fall back to legacy until we can reconstruct create info
-        vkGetImageMemoryRequirements(s->device, image, requirements);
-        return true;
-    } else {
-        // Legacy path
-        vkGetImageMemoryRequirements(s->device, image, requirements);
-        return true;
-    }
-}
 
 /**
  * @brief Reads a SPIR-V shader file into memory.

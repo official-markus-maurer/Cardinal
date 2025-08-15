@@ -1,7 +1,6 @@
 # Considerations
 
 ## TODO Items Sorted by Severity 
-- Integrate maintenance4 memory queries: Replace legacy vkGetBufferMemoryRequirements/vkGetImageMemoryRequirements with vkGetDeviceBufferMemoryRequirements/vkGetDeviceImageMemoryRequirements for better validation and potential performance
 - Start implementing descriptor indexing and buffer device address
 - Run tests or a specific scene/workflow to validate the timeline semaphore changes
 
@@ -10,14 +9,11 @@ Custom Allocator Integration**: Build maintenance4 into a unified memory allocat
 - Create a Cardinal memory allocator that wraps maintenance4 queries
 - Integrate with existing CardinalAllocator for unified memory tracking
 - Benefits: Centralized memory management, better debugging/profiling
-- Considerations: Larger refactor, affects entire codebase
 
 ### **Currently** ###
-continue implementing the dynamic rendering system. add the necessary image layout transitions for dynamic rendering.
 use VkPhysicalDeviceVulkan13Features/Vulkan12Features, etc., to the VkPhysicalDeviceFeatures2 chain and gate usage accordingly.
--> Fix Flicker issue in editor and fix mesh
 -> VK_API_VERSION_1_4
-Remove old fence system for backwards compatibility until full migration
+
 
 ### **CRITICAL** - Stability & Correctness Issues
 - **Vulkan Resource Management**: Fix temporary culling disable in renderer (vulkan_pbr.c:816, vulkan_pipeline.c:299)

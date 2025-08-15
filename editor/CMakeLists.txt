@@ -31,6 +31,28 @@ target_include_directories(imgui_lib PUBLIC
     ${imgui_SOURCE_DIR}/backends
 )
 
+# Suppress noisy warnings from ImGui backends
+if(CMAKE_CXX_COMPILER_ID MATCHES "Clang|AppleClang")
+    target_compile_options(imgui_lib PRIVATE
+        -Wno-unused-parameter
+        -Wno-missing-field-initializers
+        -Wno-incompatible-function-pointer-types
+    )
+elseif(CMAKE_CXX_COMPILER_ID STREQUAL "GNU")
+    target_compile_options(imgui_lib PRIVATE
+        -Wno-unused-parameter
+        -Wno-missing-field-initializers
+        -Wno-cast-function-type
+    )
+elseif(MSVC)
+    target_compile_options(imgui_lib PRIVATE
+        /wd4100  # unreferenced formal parameter
+        /wd4244  # possible data loss in conversion
+        /wd4267  # conversion from 'size_t'
+        /wd4996  # deprecation (e.g., strncpy)
+    )
+endif()
+
 # Ensure imgui library uses same compile-time options as the app to avoid struct layout mismatch
 # Keep these in PUBLIC so consumers inherit identical flags
 target_compile_definitions(imgui_lib PUBLIC

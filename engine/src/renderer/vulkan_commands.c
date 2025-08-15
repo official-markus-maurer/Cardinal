@@ -146,7 +146,7 @@ VkCommandBuffer cmd = s->command_buffers[s->current_frame];  // Use current fram
 
 CARDINAL_LOG_INFO("[CMD] Frame %u: Recording command buffer %p for image %u", s->current_frame, (void*)cmd, image_index);
 
-// Reset the command buffer - safe because we waited for the fence
+// Reset the command buffer - safe because we waited for the timeline semaphore
 CARDINAL_LOG_INFO("[CMD] Frame %u: Resetting command buffer %p", s->current_frame, (void*)cmd);
 VkResult reset_result = vkResetCommandBuffer(cmd, 0);
 CARDINAL_LOG_INFO("[CMD] Frame %u: Reset result: %d", s->current_frame, reset_result);
@@ -301,6 +301,13 @@ vkCmdSetScissor(cmd, 0, 1, &sc);
 
 // Draw PBR scene if enabled, otherwise use simple pipeline
 if (s->use_pbr_pipeline && s->pbr_pipeline.initialized && s->current_scene) {
+    // Ensure PBR uniforms are updated before rendering
+    PBRUniformBufferObject ubo;
+    memcpy(&ubo, s->pbr_pipeline.uniformBufferMapped, sizeof(PBRUniformBufferObject));
+    PBRLightingData lighting;
+    memcpy(&lighting, s->pbr_pipeline.lightingBufferMapped, sizeof(PBRLightingData));
+    vk_pbr_update_uniforms(&s->pbr_pipeline, &ubo, &lighting);
+
     vk_pbr_render(&s->pbr_pipeline, cmd, s->current_scene);
 } else if (s->pipeline) {
     vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, s->pipeline);
