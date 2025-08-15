@@ -647,6 +647,37 @@ static void draw_pbr_settings_panel() {
             bool is_pbr_active = cardinal_renderer_is_pbr_enabled(g_renderer);
             ImGui::Text("PBR Status: %s", is_pbr_active ? "Active" : "Inactive");
         }
+        
+        ImGui::Separator();
+        
+        // Rendering Mode Settings
+        if (ImGui::CollapsingHeader("Rendering Mode", ImGuiTreeNodeFlags_DefaultOpen)) {
+            if (g_renderer) {
+                CardinalRenderingMode current_mode = cardinal_renderer_get_rendering_mode(g_renderer);
+                const char* mode_names[] = { "Normal", "UV Visualization", "Wireframe" };
+                int current_item = (int)current_mode;
+                
+                if (ImGui::Combo("Mode", &current_item, mode_names, 3)) {
+                    CardinalRenderingMode new_mode = (CardinalRenderingMode)current_item;
+                    cardinal_renderer_set_rendering_mode(g_renderer, new_mode);
+                }
+                
+                // Display mode description
+                switch (current_mode) {
+                    case CARDINAL_RENDERING_MODE_NORMAL:
+                        ImGui::TextWrapped("Normal rendering with full PBR shading and materials.");
+                        break;
+                    case CARDINAL_RENDERING_MODE_UV:
+                        ImGui::TextWrapped("UV coordinate visualization. Red = U axis, Green = V axis.");
+                        break;
+                    case CARDINAL_RENDERING_MODE_WIREFRAME:
+                        ImGui::TextWrapped("Wireframe rendering showing mesh topology.");
+                        break;
+                }
+            } else {
+                ImGui::Text("Renderer not available");
+            }
+        }
     }
     ImGui::End();
 }

@@ -6,6 +6,7 @@
 #include <stdint.h>
 #include "cardinal/core/memory.h"
 #include "cardinal/renderer/vulkan_pbr.h"
+#include "cardinal/renderer/renderer.h"
 
 #ifdef __cplusplus
 extern "C" {
@@ -146,9 +147,28 @@ typedef struct VulkanState {
     // UI callback
     void (*ui_record_callback)(VkCommandBuffer cmd);
 
-    // PBR pipeline state
+    // Rendering mode state
+    CardinalRenderingMode current_rendering_mode;
+    
+    // Pipeline states for different rendering modes
     bool use_pbr_pipeline;
     VulkanPBRPipeline pbr_pipeline;
+    
+    // UV and wireframe pipelines (simplified versions)
+    VkPipeline uv_pipeline;
+    VkPipelineLayout uv_pipeline_layout;
+    VkPipeline wireframe_pipeline;
+    VkPipelineLayout wireframe_pipeline_layout;
+    
+    // Shared descriptor set layout for simple pipelines
+    VkDescriptorSetLayout simple_descriptor_layout;
+    VkDescriptorPool simple_descriptor_pool;
+    VkDescriptorSet simple_descriptor_set;
+    
+    // Shared uniform buffer for simple pipelines
+    VkBuffer simple_uniform_buffer;
+    VkDeviceMemory simple_uniform_buffer_memory;
+    void* simple_uniform_buffer_mapped;
 
     // Scene mesh buffers
     GpuMesh* scene_meshes;

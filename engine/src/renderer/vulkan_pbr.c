@@ -637,26 +637,26 @@ void vk_pbr_render(VulkanPBRPipeline* pipeline, VkCommandBuffer commandBuffer, c
             pushConstants.emissiveTextureIndex = (material->emissive_texture == UINT32_MAX) ? UINT32_MAX : 
                                                 (material->emissive_texture < pipeline->textureCount) ? material->emissive_texture : 0;
             
-            // Set texture transforms
-            memcpy(pushConstants.albedoOffset, material->albedo_transform.offset, sizeof(float) * 2);
-            memcpy(pushConstants.albedoScale, material->albedo_transform.scale, sizeof(float) * 2);
-            pushConstants.albedoRotation = material->albedo_transform.rotation;
+            // Set texture transforms using new structure layout
+            memcpy(pushConstants.albedoTransform.offset, material->albedo_transform.offset, sizeof(float) * 2);
+            memcpy(pushConstants.albedoTransform.scale, material->albedo_transform.scale, sizeof(float) * 2);
+            pushConstants.albedoTransform.rotation = material->albedo_transform.rotation;
             
-            memcpy(pushConstants.normalOffset, material->normal_transform.offset, sizeof(float) * 2);
-            memcpy(pushConstants.normalScale2, material->normal_transform.scale, sizeof(float) * 2);
-            pushConstants.normalRotation = material->normal_transform.rotation;
+            memcpy(pushConstants.normalTransform.offset, material->normal_transform.offset, sizeof(float) * 2);
+            memcpy(pushConstants.normalTransform.scale, material->normal_transform.scale, sizeof(float) * 2);
+            pushConstants.normalTransform.rotation = material->normal_transform.rotation;
             
-            memcpy(pushConstants.metallicRoughnessOffset, material->metallic_roughness_transform.offset, sizeof(float) * 2);
-            memcpy(pushConstants.metallicRoughnessScale, material->metallic_roughness_transform.scale, sizeof(float) * 2);
-            pushConstants.metallicRoughnessRotation = material->metallic_roughness_transform.rotation;
+            memcpy(pushConstants.metallicRoughnessTransform.offset, material->metallic_roughness_transform.offset, sizeof(float) * 2);
+            memcpy(pushConstants.metallicRoughnessTransform.scale, material->metallic_roughness_transform.scale, sizeof(float) * 2);
+            pushConstants.metallicRoughnessTransform.rotation = material->metallic_roughness_transform.rotation;
             
-            memcpy(pushConstants.aoOffset, material->ao_transform.offset, sizeof(float) * 2);
-            memcpy(pushConstants.aoScale, material->ao_transform.scale, sizeof(float) * 2);
-            pushConstants.aoRotation = material->ao_transform.rotation;
+            memcpy(pushConstants.aoTransform.offset, material->ao_transform.offset, sizeof(float) * 2);
+            memcpy(pushConstants.aoTransform.scale, material->ao_transform.scale, sizeof(float) * 2);
+            pushConstants.aoTransform.rotation = material->ao_transform.rotation;
             
-            memcpy(pushConstants.emissiveOffset, material->emissive_transform.offset, sizeof(float) * 2);
-            memcpy(pushConstants.emissiveScale, material->emissive_transform.scale, sizeof(float) * 2);
-            pushConstants.emissiveRotation = material->emissive_transform.rotation;
+            memcpy(pushConstants.emissiveTransform.offset, material->emissive_transform.offset, sizeof(float) * 2);
+            memcpy(pushConstants.emissiveTransform.scale, material->emissive_transform.scale, sizeof(float) * 2);
+            pushConstants.emissiveTransform.rotation = material->emissive_transform.rotation;
             
             // CRITICAL: Set descriptor indexing flag for shader (always enabled in Vulkan 1.3, only if textures are available)
             pushConstants.supportsDescriptorIndexing = (pipeline->textureCount > 0) ? 1u : 0u;

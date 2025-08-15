@@ -45,6 +45,7 @@
 
 #include "vulkan_state.h"
 #include <cardinal/renderer/vulkan_instance.h>
+#include "vulkan_simple_pipelines.h"
 #include <cardinal/renderer/vulkan_pipeline.h>
 #include <cardinal/renderer/vulkan_commands.h>
 #include "cardinal/renderer/vulkan_pbr.h"
@@ -93,6 +94,29 @@ bool cardinal_renderer_create(CardinalRenderer* out_renderer, CardinalWindow* wi
     } else {
         LOG_ERROR("vk_pbr_pipeline_create failed");
         s->use_pbr_pipeline = false;
+    }
+    
+    // Initialize rendering mode
+    s->current_rendering_mode = CARDINAL_RENDERING_MODE_NORMAL;
+    
+    // Initialize additional pipeline handles to null
+    s->uv_pipeline = VK_NULL_HANDLE;
+    s->uv_pipeline_layout = VK_NULL_HANDLE;
+    s->wireframe_pipeline = VK_NULL_HANDLE;
+    s->wireframe_pipeline_layout = VK_NULL_HANDLE;
+    s->simple_descriptor_layout = VK_NULL_HANDLE;
+    s->simple_descriptor_pool = VK_NULL_HANDLE;
+    s->simple_descriptor_set = VK_NULL_HANDLE;
+    s->simple_uniform_buffer = VK_NULL_HANDLE;
+    s->simple_uniform_buffer_memory = VK_NULL_HANDLE;
+    s->simple_uniform_buffer_mapped = NULL;
+    
+    // Create simple pipelines (UV and wireframe)
+    if (!vk_create_simple_pipelines(s)) {
+        LOG_ERROR("vk_create_simple_pipelines failed");
+        // Continue anyway, only PBR will work
+    } else {
+        LOG_INFO("renderer_create: simple pipelines");
     }
 
     return true;
@@ -269,6 +293,9 @@ void cardinal_renderer_destroy(CardinalRenderer* renderer) {
     // destroy in reverse order
     vk_destroy_commands_sync(s);
     destroy_scene_buffers(s);
+
+    // Destroy simple pipelines
+    vk_destroy_simple_pipelines(s);
 
     // Destroy PBR pipeline
     if (s->use_pbr_pipeline) {
@@ -662,4 +689,25 @@ void cardinal_renderer_clear_scene(CardinalRenderer* renderer) {
     vkDeviceWaitIdle(s->device);
     
     destroy_scene_buffers(s);
+}
+
+void cardinal_renderer_set_rendering_mode(CardinalRenderer* renderer, CardinalRenderingMode mode) {
+    VulkanState* s = (VulkanState*)renderer->_opaque;
+    if (!s) {
+        CARDINAL_LOG_ERROR("Invalid renderer state");
+        return;
+    }
+    
+    s->current_rendering_mode = mode;
+    CARDINAL_LOG_INFO("Rendering mode changed to: %d", mode);
+}
+
+CardinalRenderingMode cardinal_renderer_get_rendering_mode(CardinalRenderer* renderer) {
+    VulkanState* s = (VulkanState*)renderer->_opaque;
+    if (!s) {
+        CARDINAL_LOG_ERROR("Invalid renderer state");
+        return CARDINAL_RENDERING_MODE_NORMAL;
+    }
+    
+    return s->current_rendering_mode;
 }

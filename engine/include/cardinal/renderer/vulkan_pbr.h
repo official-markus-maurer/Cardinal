@@ -46,6 +46,13 @@ typedef struct PBRUniformBufferObject {
     float _padding1;     // Alignment
 } PBRUniformBufferObject;
 
+// Texture transform structure matching shader layout
+typedef struct PBRTextureTransform {
+    float offset[2];  // vec2
+    float scale[2];   // vec2
+    float rotation;   // float
+} PBRTextureTransform;
+
 // Push constant structure for per-mesh data (model matrix + material properties)
 typedef struct PBRPushConstants {
     float modelMatrix[16];  // 4x4 model matrix (64 bytes)
@@ -61,26 +68,16 @@ typedef struct PBRPushConstants {
     uint32_t aoTextureIndex;
     uint32_t emissiveTextureIndex;
     uint32_t supportsDescriptorIndexing;
-    // Texture transforms (offset, scale, rotation for each texture) - properly aligned
-    float albedoOffset[2];
-    float albedoScale[2];
-    float albedoRotation;
+    // Texture transforms matching shader Material structure layout
+    PBRTextureTransform albedoTransform;
     float _padding1;
-    float normalOffset[2];
-    float normalScale2[2];  // renamed to avoid conflict with normalScale
-    float normalRotation;
+    PBRTextureTransform normalTransform;
     float _padding2;
-    float metallicRoughnessOffset[2];
-    float metallicRoughnessScale[2];
-    float metallicRoughnessRotation;
+    PBRTextureTransform metallicRoughnessTransform;
     float _padding3;
-    float aoOffset[2];
-    float aoScale[2];
-    float aoRotation;
+    PBRTextureTransform aoTransform;
     float _padding4;
-    float emissiveOffset[2];
-    float emissiveScale[2];
-    float emissiveRotation;
+    PBRTextureTransform emissiveTransform;
 } PBRPushConstants;
 
 // Legacy material properties structure (kept for compatibility)

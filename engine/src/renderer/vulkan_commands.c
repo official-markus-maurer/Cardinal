@@ -5,6 +5,7 @@
 #include <cardinal/renderer/vulkan_commands.h>
 #include "cardinal/core/log.h"
 #include "cardinal/renderer/vulkan_pbr.h"
+#include "vulkan_simple_pipelines.h"
 
 /**
  * @brief Creates command pools, buffers, and synchronization objects.
@@ -302,16 +303,54 @@ sc.offset.y = 0;
 sc.extent = s->swapchain_extent;
 vkCmdSetScissor(cmd, 0, 1, &sc);
 
-// Draw PBR scene
-if (s->use_pbr_pipeline && s->pbr_pipeline.initialized && s->current_scene) {
-    // Ensure PBR uniforms are updated before rendering
-    PBRUniformBufferObject ubo;
-    memcpy(&ubo, s->pbr_pipeline.uniformBufferMapped, sizeof(PBRUniformBufferObject));
-    PBRLightingData lighting;
-    memcpy(&lighting, s->pbr_pipeline.lightingBufferMapped, sizeof(PBRLightingData));
-    vk_pbr_update_uniforms(&s->pbr_pipeline, &ubo, &lighting);
-
-    vk_pbr_render(&s->pbr_pipeline, cmd, s->current_scene);
+// Render scene if we have one
+if (s->current_scene) {
+    switch (s->current_rendering_mode) {
+        case CARDINAL_RENDERING_MODE_NORMAL:
+            // Use PBR pipeline for normal rendering
+            if (s->use_pbr_pipeline && s->pbr_pipeline.initialized) {
+                // Ensure PBR uniforms are updated before rendering
+                PBRUniformBufferObject ubo;
+                memcpy(&ubo, s->pbr_pipeline.uniformBufferMapped, sizeof(PBRUniformBufferObject));
+                PBRLightingData lighting;
+                memcpy(&lighting, s->pbr_pipeline.lightingBufferMapped, sizeof(PBRLightingData));
+                vk_pbr_update_uniforms(&s->pbr_pipeline, &ubo, &lighting);
+                vk_pbr_render(&s->pbr_pipeline, cmd, s->current_scene);
+            }
+            break;
+            
+        case CARDINAL_RENDERING_MODE_UV:
+            // Use UV visualization pipeline
+            if (s->uv_pipeline != VK_NULL_HANDLE && s->use_pbr_pipeline && s->pbr_pipeline.initialized) {
+                // Copy matrices from PBR uniform buffer
+                PBRUniformBufferObject* pbr_ubo = (PBRUniformBufferObject*)s->pbr_pipeline.uniformBufferMapped;
+                vk_update_simple_uniforms(s, pbr_ubo->model, pbr_ubo->view, pbr_ubo->proj);
+                vk_render_simple(s, cmd, s->uv_pipeline, s->uv_pipeline_layout);
+            }
+            break;
+            
+        case CARDINAL_RENDERING_MODE_WIREFRAME:
+            // Use wireframe pipeline
+            if (s->wireframe_pipeline != VK_NULL_HANDLE && s->use_pbr_pipeline && s->pbr_pipeline.initialized) {
+                // Copy matrices from PBR uniform buffer
+                PBRUniformBufferObject* pbr_ubo = (PBRUniformBufferObject*)s->pbr_pipeline.uniformBufferMapped;
+                vk_update_simple_uniforms(s, pbr_ubo->model, pbr_ubo->view, pbr_ubo->proj);
+                vk_render_simple(s, cmd, s->wireframe_pipeline, s->wireframe_pipeline_layout);
+            }
+            break;
+            
+        default:
+            CARDINAL_LOG_WARN("Unknown rendering mode: %d, falling back to PBR", s->current_rendering_mode);
+            if (s->use_pbr_pipeline && s->pbr_pipeline.initialized) {
+                PBRUniformBufferObject ubo;
+                memcpy(&ubo, s->pbr_pipeline.uniformBufferMapped, sizeof(PBRUniformBufferObject));
+                PBRLightingData lighting;
+                memcpy(&lighting, s->pbr_pipeline.lightingBufferMapped, sizeof(PBRLightingData));
+                vk_pbr_update_uniforms(&s->pbr_pipeline, &ubo, &lighting);
+                vk_pbr_render(&s->pbr_pipeline, cmd, s->current_scene);
+            }
+            break;
+    }
 }
 
 // Allow optional UI callback to record draw calls (e.g., ImGui)

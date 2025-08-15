@@ -1,0 +1,371 @@
+{
+    "version": "2.0.0",
+    "tasks": [
+        {
+            "label": "Compile Shaders",
+            "dependsOrder": "sequence",
+            "dependsOn": [
+                "Compile PBR Vertex Shader",
+                "Compile PBR Fragment Shader",
+                "Compile UV Vertex Shader",
+                "Compile UV Fragment Shader",
+                "Compile Wireframe Vertex Shader",
+                "Compile Wireframe Fragment Shader"
+            ],
+            "group": "build",
+            "presentation": {
+                "echo": true,
+                "reveal": "always",
+                "focus": false,
+                "panel": "shared",
+                "showReuseMessage": true,
+                "clear": false
+            },
+            "problemMatcher": []
+        },
+        {
+            "label": "Compile PBR Vertex Shader",
+            "type": "shell",
+            "command": "glslc",
+            "args": [
+                "pbr.vert",
+                "-o",
+                "pbr.vert.spv"
+            ],
+            "group": "build",
+            "presentation": {
+                "echo": true,
+                "reveal": "silent",
+                "focus": false,
+                "panel": "shared"
+            },
+            "options": {
+                "cwd": "${workspaceFolder}/assets/shaders"
+            },
+            "problemMatcher": []
+        },
+        {
+            "label": "Compile PBR Fragment Shader",
+            "type": "shell",
+            "command": "glslc",
+            "args": [
+                "pbr.frag",
+                "-o",
+                "pbr.frag.spv"
+            ],
+            "group": "build",
+            "presentation": {
+                "echo": true,
+                "reveal": "silent",
+                "focus": false,
+                "panel": "shared"
+            },
+            "options": {
+                "cwd": "${workspaceFolder}/assets/shaders"
+            },
+            "problemMatcher": []
+        },
+        {
+            "label": "Compile UV Vertex Shader",
+            "type": "shell",
+            "command": "glslc",
+            "args": [
+                "uv.vert",
+                "-o",
+                "uv.vert.spv"
+            ],
+            "group": "build",
+            "presentation": {
+                "echo": true,
+                "reveal": "silent",
+                "focus": false,
+                "panel": "shared"
+            },
+            "options": {
+                "cwd": "${workspaceFolder}/assets/shaders"
+            },
+            "problemMatcher": []
+        },
+        {
+            "label": "Compile UV Fragment Shader",
+            "type": "shell",
+            "command": "glslc",
+            "args": [
+                "uv.frag",
+                "-o",
+                "uv.frag.spv"
+            ],
+            "group": "build",
+            "presentation": {
+                "echo": true,
+                "reveal": "silent",
+                "focus": false,
+                "panel": "shared"
+            },
+            "options": {
+                "cwd": "${workspaceFolder}/assets/shaders"
+            },
+            "problemMatcher": []
+        },
+        {
+            "label": "Compile Wireframe Vertex Shader",
+            "type": "shell",
+            "command": "glslc",
+            "args": [
+                "wireframe.vert",
+                "-o",
+                "wireframe.vert.spv"
+            ],
+            "group": "build",
+            "presentation": {
+                "echo": true,
+                "reveal": "silent",
+                "focus": false,
+                "panel": "shared"
+            },
+            "options": {
+                "cwd": "${workspaceFolder}/assets/shaders"
+            },
+            "problemMatcher": []
+        },
+        {
+            "label": "Compile Wireframe Fragment Shader",
+            "type": "shell",
+            "command": "glslc",
+            "args": [
+                "wireframe.frag",
+                "-o",
+                "wireframe.frag.spv"
+            ],
+            "group": "build",
+            "presentation": {
+                "echo": true,
+                "reveal": "silent",
+                "focus": false,
+                "panel": "shared"
+            },
+            "options": {
+                "cwd": "${workspaceFolder}/assets/shaders"
+            },
+            "problemMatcher": []
+        },
+        {
+            "label": "Configure CMake",
+            "type": "shell",
+            "command": "cmake",
+            "args": [
+                "-S",
+                ".",
+                "-B",
+                "build",
+                "-DCMAKE_BUILD_TYPE=Release"
+            ],
+            "group": "build",
+            "presentation": {
+                "echo": true,
+                "reveal": "always",
+                "focus": false,
+                "panel": "shared",
+                "showReuseMessage": true,
+                "clear": false
+            },
+            "options": {
+                "cwd": "${workspaceFolder}"
+            },
+            "problemMatcher": ["$gcc"]
+        },
+        {
+            "label": "Build Project",
+            "type": "shell",
+            "command": "cmake",
+            "args": [
+                "--build",
+                "build",
+                "--config",
+                "Release"
+            ],
+            "group": {
+                "kind": "build",
+                "isDefault": true
+            },
+            "presentation": {
+                "echo": true,
+                "reveal": "always",
+                "focus": false,
+                "panel": "shared",
+                "showReuseMessage": true,
+                "clear": false
+            },
+            "options": {
+                "cwd": "${workspaceFolder}"
+            },
+            "dependsOn": "Configure CMake",
+            "problemMatcher": ["$gcc"]
+        },
+        {
+            "label": "Copy Assets",
+            "type": "shell",
+            "command": "powershell",
+            "args": [
+                "-Command",
+                "Copy-Item -Path 'assets' -Destination 'build/client' -Recurse -Force; Copy-Item -Path 'assets' -Destination 'build/editor' -Recurse -Force"
+            ],
+            "group": "build",
+            "presentation": {
+                "echo": true,
+                "reveal": "silent",
+                "focus": false,
+                "panel": "shared"
+            },
+            "options": {
+                "cwd": "${workspaceFolder}"
+            },
+            "problemMatcher": []
+        },
+        {
+            "label": "Full Build",
+            "dependsOrder": "sequence",
+            "dependsOn": [
+                "Compile Shaders",
+                "Build Project",
+                "Copy Assets"
+            ],
+            "group": "build",
+            "presentation": {
+                "echo": true,
+                "reveal": "always",
+                "focus": false,
+                "panel": "shared",
+                "showReuseMessage": true,
+                "clear": true
+            },
+            "problemMatcher": []
+        },
+        {
+            "label": "Launch Client",
+            "type": "shell",
+            "command": "./CardinalClient.exe",
+            "args": [],
+            "group": "test",
+            "presentation": {
+                "echo": true,
+                "reveal": "always",
+                "focus": true,
+                "panel": "new",
+                "showReuseMessage": false,
+                "clear": true
+            },
+            "options": {
+                "cwd": "${workspaceFolder}/build/client"
+            },
+            "dependsOn": "Full Build",
+            "problemMatcher": []
+        },
+        {
+            "label": "Launch Editor",
+            "type": "shell",
+            "command": "./CardinalEditor.exe",
+            "args": [],
+            "group": "test",
+            "presentation": {
+                "echo": true,
+                "reveal": "always",
+                "focus": true,
+                "panel": "new",
+                "showReuseMessage": false,
+                "clear": true
+            },
+            "options": {
+                "cwd": "${workspaceFolder}/build/editor"
+            },
+            "dependsOn": "Full Build",
+            "problemMatcher": []
+        },
+        {
+            "label": "Launch Client (Debug)",
+            "type": "shell",
+            "command": "./CardinalClient.exe",
+            "args": [
+                "--log-level",
+                "DEBUG"
+            ],
+            "group": "test",
+            "presentation": {
+                "echo": true,
+                "reveal": "always",
+                "focus": true,
+                "panel": "new",
+                "showReuseMessage": false,
+                "clear": true
+            },
+            "options": {
+                "cwd": "${workspaceFolder}/build/client"
+            },
+            "dependsOn": "Full Build",
+            "problemMatcher": []
+        },
+        {
+            "label": "Launch Editor (Debug)",
+            "type": "shell",
+            "command": "./CardinalEditor.exe",
+            "args": [
+                "--log-level",
+                "DEBUG"
+            ],
+            "group": "test",
+            "presentation": {
+                "echo": true,
+                "reveal": "always",
+                "focus": true,
+                "panel": "new",
+                "showReuseMessage": false,
+                "clear": true
+            },
+            "options": {
+                "cwd": "${workspaceFolder}/build/editor"
+            },
+            "dependsOn": "Full Build",
+            "problemMatcher": []
+        },
+        {
+            "label": "Clean Build",
+            "type": "shell",
+            "command": "powershell",
+            "args": [
+                "-Command",
+                "Remove-Item -Path 'build' -Recurse -Force -ErrorAction SilentlyContinue"
+            ],
+            "group": "build",
+            "presentation": {
+                "echo": true,
+                "reveal": "always",
+                "focus": false,
+                "panel": "shared",
+                "showReuseMessage": true,
+                "clear": false
+            },
+            "options": {
+                "cwd": "${workspaceFolder}"
+            },
+            "problemMatcher": []
+        },
+        {
+            "label": "Rebuild All",
+            "dependsOrder": "sequence",
+            "dependsOn": [
+                "Clean Build",
+                "Full Build"
+            ],
+            "group": "build",
+            "presentation": {
+                "echo": true,
+                "reveal": "always",
+                "focus": false,
+                "panel": "shared",
+                "showReuseMessage": true,
+                "clear": true
+            },
+            "problemMatcher": []
+        }
+    ]
+}

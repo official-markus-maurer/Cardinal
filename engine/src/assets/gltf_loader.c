@@ -319,7 +319,8 @@ static void extract_texture_transform(const cgltf_texture_view* texture_view, Ca
     if (texture_view && texture_view->has_transform) {
         const cgltf_texture_transform* transform = &texture_view->transform;
         out_transform->offset[0] = transform->offset[0];
-        out_transform->offset[1] = transform->offset[1];
+        // Invert Y-offset to account for texture Y-flip during loading
+        out_transform->offset[1] = -transform->offset[1];
         out_transform->scale[0] = transform->scale[0];
         out_transform->scale[1] = transform->scale[1];
         out_transform->rotation = transform->rotation;

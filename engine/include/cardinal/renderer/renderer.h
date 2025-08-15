@@ -48,6 +48,18 @@ typedef struct CardinalLight {
     float ambient[3];     /**< Ambient light color (RGB, 0.0-1.0) */
 } CardinalLight;
 
+/**
+ * @brief Rendering mode enumeration
+ * 
+ * Defines the different rendering modes available in the Cardinal Engine.
+ * Each mode provides a different visualization of the 3D scene.
+ */
+typedef enum CardinalRenderingMode {
+    CARDINAL_RENDERING_MODE_NORMAL = 0,    /**< Standard PBR rendering with textures and lighting */
+    CARDINAL_RENDERING_MODE_UV,            /**< UV coordinate visualization (shows texture coordinates as colors) */
+    CARDINAL_RENDERING_MODE_WIREFRAME      /**< Wireframe rendering (edges only) */
+} CardinalRenderingMode;
+
 #ifdef __cplusplus
 extern "C" {
 #endif
@@ -116,6 +128,20 @@ void cardinal_renderer_set_camera(CardinalRenderer* renderer, const CardinalCame
 void cardinal_renderer_set_lighting(CardinalRenderer* renderer, const CardinalLight* light);
 void cardinal_renderer_enable_pbr(CardinalRenderer* renderer, bool enable);
 bool cardinal_renderer_is_pbr_enabled(CardinalRenderer* renderer);
+
+/**
+ * @brief Set the current rendering mode
+ * @param renderer Pointer to initialized renderer
+ * @param mode Rendering mode to use
+ */
+void cardinal_renderer_set_rendering_mode(CardinalRenderer* renderer, CardinalRenderingMode mode);
+
+/**
+ * @brief Get the current rendering mode
+ * @param renderer Pointer to initialized renderer
+ * @return Current rendering mode
+ */
+CardinalRenderingMode cardinal_renderer_get_rendering_mode(CardinalRenderer* renderer);
 
 #ifdef __cplusplus
 }

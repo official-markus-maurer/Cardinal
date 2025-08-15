@@ -4,12 +4,14 @@ A minimalistic Vulkan game engine written in pure C23, designed with a clean sep
 
 ## Features
 
-- **Pure C23**: Uses the latest C standard for modern language features
-- **Vulkan Renderer**: Hardware-accelerated graphics using Vulkan API
-- **GLFW Windowing**: Cross-platform window management
-- **Editor/Client Split**: Separate applications for development and runtime
-- **ImGui Editor**: Integrated editor using Dear ImGui with Vulkan backend
+- **Pure C23**: Modern C standard with latest language features
+- **Vulkan Renderer**: Hardware-accelerated PBR graphics pipeline
+- **GLFW Windowing**: Cross-platform window and input management
+- **Editor/Client Split**: Separate development and runtime applications
+- **ImGui Editor**: Integrated scene editor with dockable UI
+- **VS Code Integration**: Pre-configured tasks, debugging, and shader compilation
 - **CMake Build System**: Modern dependency management with FetchContent
+- **glTF 2.0 Support**: Complete scene loading with materials and textures
 
 ## Architecture
 
@@ -49,6 +51,8 @@ Cardinal/
 
 ## Building
 
+### Command Line
+
 ```bash
 # Configure
 cmake -B build -S .
@@ -59,6 +63,32 @@ cmake --build build --config Debug
 # Or for Release
 cmake --build build --config Release
 ```
+
+### VS Code Development
+
+The project includes comprehensive VS Code integration with pre-configured tasks and debug configurations:
+
+#### Build Tasks (Ctrl+Shift+P → "Tasks: Run Task")
+
+- **Compile Shaders** - Compiles all GLSL shaders to SPIR-V using `glslc`
+- **Build Project** - Builds the Cardinal project (default: `Ctrl+Shift+B`)
+- **Full Build** - Compiles shaders + builds project + copies assets
+- **Launch Client** / **Launch Editor** - Runs the applications
+- **Launch Client (Debug)** / **Launch Editor (Debug)** - Runs with debug logging
+- **Clean Build** / **Rebuild All** - Clean and rebuild everything
+
+#### Debug Configurations (F5 or Debug Panel)
+
+- **Debug Cardinal Client** - Debug the client application with GDB
+- **Debug Cardinal Editor** - Debug the editor application with GDB
+
+Both debug configurations automatically trigger a full build before launching.
+
+#### Quick Commands
+
+- `Ctrl+Shift+B` - Default build task
+- `F5` - Start debugging
+- `Ctrl+Shift+P` → "Tasks: Run Task" - Access all build tasks
 
 ### Build Outputs
 
@@ -161,20 +191,27 @@ All dependencies are managed via CMake FetchContent:
 
 ## Development
 
+### Getting Started
+
+1. **Clone the repository**
+2. **Install dependencies**: Vulkan SDK, CMake 3.28+, C23-compatible compiler
+3. **Open in VS Code** for the best development experience
+4. **Use `Ctrl+Shift+B`** to build or **`F5`** to debug
+
 ### Code Style
 
-- C23 standard compliance
-- Explicit struct initialization
-- Consistent naming with `cardinal_` prefix
-- Minimal dependencies
-- Clear separation of concerns
+- **C23 standard compliance** with modern language features
+- **Explicit struct initialization** for clarity
+- **Consistent naming** with `cardinal_` prefix for public APIs
+- **Minimal dependencies** - only essential libraries
+- **Clear separation of concerns** between engine, editor, and client
 
 ### Project Goals
 
-1. **Minimalism**: Keep the codebase small and focused
-2. **Performance**: Leverage Vulkan for optimal graphics performance
-3. **Modularity**: Clean separation between engine, editor, and client
-4. **Modern C**: Utilize C23 features for better code quality
+- **Minimalism**: Keep the codebase small and focused
+- **Performance**: Leverage modern Vulkan features for optimal graphics performance
+- **Modularity**: Clean separation between engine, editor, and client
+- **Modern C**: Utilize C23 features for better code quality
 
 ## License
 
