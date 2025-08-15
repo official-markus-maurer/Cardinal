@@ -1,12 +1,12 @@
 /**
  * @file memory.c
  * @brief Memory management system implementation for Cardinal Engine
- * 
+ *
  * This file implements the Cardinal Engine's comprehensive memory management
  * system, providing multiple allocation strategies and detailed memory tracking.
  * The system supports dynamic allocation, linear allocation, and tracked
  * allocation with per-category statistics.
- * 
+ *
  * Key features:
  * - Multiple allocator types (dynamic, linear, tracked)
  * - Per-category memory usage tracking and statistics
@@ -14,25 +14,25 @@
  * - Memory leak detection and reporting
  * - Cross-platform compatibility (Windows/MSVC, Linux/GCC)
  * - Thread-safe statistics collection
- * 
+ *
  * Allocator types:
  * - Dynamic: Standard malloc/free wrapper with tracking
  * - Linear: Fast bump allocator for temporary allocations
  * - Tracked: Wrapper around other allocators with category tracking
- * 
+ *
  * Memory categories enable detailed profiling of engine subsystems:
  * - Renderer, Assets, Audio, Scripting, UI, Game Logic, etc.
- * 
+ *
  * @author Markus Maurer
  * @version 1.0
  */
 
 #include "cardinal/core/memory.h"
+#include <stdint.h>
 #include <stdlib.h>
 #include <string.h>
-#include <stdint.h>
 #ifdef _MSC_VER
-#include <malloc.h>
+    #include <malloc.h>
 #endif
 
 // -----------------------------
@@ -50,7 +50,7 @@ typedef struct LinearState {
 } LinearState;
 
 typedef struct TrackedState {
-    CardinalAllocator* backing; // underlying allocator
+    CardinalAllocator* backing;      // underlying allocator
     CardinalMemoryCategory category; // category we attribute to
 } TrackedState;
 
@@ -59,7 +59,8 @@ typedef struct TrackedState {
 // -----------------------------
 static CardinalGlobalMemoryStats g_stats;
 static void stats_on_alloc(CardinalMemoryCategory cat, size_t size) {
-    if (cat >= CARDINAL_MEMORY_CATEGORY_MAX) cat = CARDINAL_MEMORY_CATEGORY_UNKNOWN;
+    if (cat >= CARDINAL_MEMORY_CATEGORY_MAX)
+        cat = CARDINAL_MEMORY_CATEGORY_UNKNOWN;
     g_stats.categories[cat].total_allocated += size;
     g_stats.categories[cat].current_usage += size;
     if (g_stats.categories[cat].current_usage > g_stats.categories[cat].peak_usage)
@@ -73,7 +74,8 @@ static void stats_on_alloc(CardinalMemoryCategory cat, size_t size) {
     g_stats.total.allocation_count++;
 }
 static void stats_on_free(CardinalMemoryCategory cat, size_t size) {
-    if (cat >= CARDINAL_MEMORY_CATEGORY_MAX) cat = CARDINAL_MEMORY_CATEGORY_UNKNOWN;
+    if (cat >= CARDINAL_MEMORY_CATEGORY_MAX)
+        cat = CARDINAL_MEMORY_CATEGORY_UNKNOWN;
     if (g_stats.categories[cat].current_usage >= size)
         g_stats.categories[cat].current_usage -= size;
     else
@@ -88,7 +90,8 @@ static void stats_on_free(CardinalMemoryCategory cat, size_t size) {
 }
 
 void cardinal_memory_get_stats(CardinalGlobalMemoryStats* out_stats) {
-    if (out_stats) *out_stats = g_stats;
+    if (out_stats)
+        *out_stats = g_stats;
 }
 void cardinal_memory_reset_stats(void) {
     memset(&g_stats, 0, sizeof(g_stats));
@@ -107,7 +110,7 @@ typedef struct {
 
 // Production-ready allocation tracking with better collision handling
 #define MAX_ALLOCS 8192
-#define HASH_MULTIPLIER 0x9e3779b9  // Golden ratio hash multiplier
+#define HASH_MULTIPLIER 0x9e3779b9 // Golden ratio hash multiplier
 static AllocInfo g_alloc_table[MAX_ALLOCS];
 static bool g_alloc_table_init = false;
 static size_t g_active_allocs = 0;
@@ -129,9 +132,10 @@ static size_t hash_ptr(void* ptr) {
 }
 
 static void track_alloc(void* ptr, size_t size, bool is_aligned) {
-    if (!ptr) return;
+    if (!ptr)
+        return;
     init_alloc_table();
-    
+
     size_t hash = hash_ptr(ptr);
     for (size_t i = 0; i < MAX_ALLOCS; ++i) {
         size_t idx = (hash + i) % MAX_ALLOCS;
@@ -149,9 +153,10 @@ static void track_alloc(void* ptr, size_t size, bool is_aligned) {
 }
 
 static AllocInfo* find_alloc(void* ptr) {
-    if (!ptr) return NULL;
+    if (!ptr)
+        return NULL;
     init_alloc_table();
-    
+
     size_t hash = hash_ptr(ptr);
     for (size_t i = 0; i < MAX_ALLOCS; ++i) {
         size_t idx = (hash + i) % MAX_ALLOCS;
@@ -165,8 +170,10 @@ static AllocInfo* find_alloc(void* ptr) {
 static bool untrack_alloc(void* ptr, size_t* out_size, bool* out_is_aligned) {
     AllocInfo* info = find_alloc(ptr);
     if (info) {
-        if (out_size) *out_size = info->size;
-        if (out_is_aligned) *out_is_aligned = info->is_aligned;
+        if (out_size)
+            *out_size = info->size;
+        if (out_is_aligned)
+            *out_is_aligned = info->is_aligned;
         info->ptr = NULL;
         info->size = 0;
         info->is_aligned = false;
@@ -181,35 +188,38 @@ static void* dyn_alloc(CardinalAllocator* self, size_t size, size_t alignment) {
     (void)self;
     void* ptr = NULL;
     bool is_aligned = false;
-    
+
     if (alignment && alignment > alignof(max_align_t)) {
         is_aligned = true;
-    #ifdef _MSC_VER
+#ifdef _MSC_VER
         ptr = _aligned_malloc(size, alignment);
-    #else
-        if (posix_memalign(&ptr, alignment, size) != 0) return NULL;
-    #endif
+#else
+        if (posix_memalign(&ptr, alignment, size) != 0)
+            return NULL;
+#endif
     } else {
         ptr = malloc(size);
     }
-    
+
     if (ptr) {
         track_alloc(ptr, size, is_aligned);
     }
     return ptr;
 }
 
-static void* dyn_realloc(CardinalAllocator* self, void* ptr, size_t old_size, size_t new_size, size_t alignment) {
+static void* dyn_realloc(CardinalAllocator* self, void* ptr, size_t old_size, size_t new_size,
+                         size_t alignment) {
     (void)self;
-    if (!ptr) return dyn_alloc(self, new_size, alignment);
-    
+    if (!ptr)
+        return dyn_alloc(self, new_size, alignment);
+
     size_t tracked_old_size = 0;
     bool is_aligned = false;
     bool was_tracked = untrack_alloc(ptr, &tracked_old_size, &is_aligned);
-    
+
     // Use tracked size if available, otherwise fall back to provided old_size
     size_t actual_old_size = was_tracked ? tracked_old_size : old_size;
-    
+
     void* new_ptr = NULL;
     if (is_aligned || (alignment && alignment > alignof(max_align_t))) {
         // Handle aligned reallocation manually
@@ -235,18 +245,19 @@ static void* dyn_realloc(CardinalAllocator* self, void* ptr, size_t old_size, si
             track_alloc(new_ptr, new_size, false);
         }
     }
-    
+
     return new_ptr;
 }
 
 static void dyn_free(CardinalAllocator* self, void* ptr) {
     (void)self;
-    if (!ptr) return;
-    
+    if (!ptr)
+        return;
+
     size_t size = 0;
     bool is_aligned = false;
     bool was_tracked = untrack_alloc(ptr, &size, &is_aligned);
-    
+
     if (was_tracked && is_aligned) {
 #ifdef _MSC_VER
         _aligned_free(ptr);
@@ -267,24 +278,30 @@ static void* lin_alloc(CardinalAllocator* self, size_t size, size_t alignment) {
     size_t align = alignment ? alignment : sizeof(void*);
     size_t mis = (uintptr_t)(st->buffer + current) % align;
     size_t pad = mis ? (align - mis) : 0;
-    if (current + pad + size > st->capacity) return NULL;
+    if (current + pad + size > st->capacity)
+        return NULL;
     size_t at = current + pad;
     st->offset = at + size;
     return st->buffer + at;
 }
 
-static void* lin_realloc(CardinalAllocator* self, void* ptr, size_t old_size, size_t new_size, size_t alignment) {
-    (void)self; (void)alignment;
-    if (!ptr) return lin_alloc(self, new_size, alignment);
+static void* lin_realloc(CardinalAllocator* self, void* ptr, size_t old_size, size_t new_size,
+                         size_t alignment) {
+    (void)self;
+    (void)alignment;
+    if (!ptr)
+        return lin_alloc(self, new_size, alignment);
     void* n = lin_alloc(self, new_size, alignment);
-    if (!n) return NULL;
+    if (!n)
+        return NULL;
     size_t copy = old_size < new_size ? old_size : new_size;
     memcpy(n, ptr, copy);
     return n;
 }
 
 static void lin_free(CardinalAllocator* self, void* ptr) {
-    (void)self; (void)ptr; /* no-op for linear allocator */
+    (void)self;
+    (void)ptr; /* no-op for linear allocator */
 }
 
 static void lin_reset(CardinalAllocator* self) {
@@ -305,9 +322,10 @@ static void* tracked_alloc(CardinalAllocator* self, size_t size, size_t alignmen
     }
     return p;
 }
-static void* tracked_realloc(CardinalAllocator* self, void* ptr, size_t old_size, size_t new_size, size_t alignment) {
+static void* tracked_realloc(CardinalAllocator* self, void* ptr, size_t old_size, size_t new_size,
+                             size_t alignment) {
     TrackedState* ts = (TrackedState*)self->state;
-    
+
     // Get accurate old size if available
     size_t actual_old_size = old_size;
     if (ptr) {
@@ -316,11 +334,13 @@ static void* tracked_realloc(CardinalAllocator* self, void* ptr, size_t old_size
             actual_old_size = info->size;
         }
     }
-    
+
     void* p = ts->backing->realloc_fn(ts->backing, ptr, actual_old_size, new_size, alignment);
     if (p) {
-        if (new_size > actual_old_size) stats_on_alloc(ts->category, new_size - actual_old_size);
-        else if (actual_old_size > new_size) stats_on_free(ts->category, actual_old_size - new_size);
+        if (new_size > actual_old_size)
+            stats_on_alloc(ts->category, new_size - actual_old_size);
+        else if (actual_old_size > new_size)
+            stats_on_free(ts->category, actual_old_size - new_size);
         // Track the new allocation
         track_alloc(p, new_size, alignment && alignment > alignof(max_align_t));
     }
@@ -340,7 +360,8 @@ static void tracked_free(CardinalAllocator* self, void* ptr) {
 }
 static void tracked_reset(CardinalAllocator* self) {
     TrackedState* ts = (TrackedState*)self->state;
-    if (ts->backing->reset) ts->backing->reset(ts->backing);
+    if (ts->backing->reset)
+        ts->backing->reset(ts->backing);
 }
 
 // -----------------------------
@@ -370,7 +391,8 @@ void cardinal_memory_init(size_t default_linear_capacity) {
     g_dynamic.reset = NULL;
 
     // Linear allocator setup
-    if (default_linear_capacity == 0) default_linear_capacity = 4 * 1024 * 1024; // 4MB default
+    if (default_linear_capacity == 0)
+        default_linear_capacity = 4 * 1024 * 1024; // 4MB default
     g_linear_state.buffer = (uint8_t*)malloc(default_linear_capacity);
     g_linear_state.capacity = g_linear_state.buffer ? default_linear_capacity : 0;
     g_linear_state.offset = 0;
@@ -408,24 +430,38 @@ void cardinal_memory_shutdown(void) {
     }
 }
 
-CardinalAllocator* cardinal_get_dynamic_allocator(void) { return &g_dynamic; }
-CardinalAllocator* cardinal_get_linear_allocator(void) { return &g_linear; }
+CardinalAllocator* cardinal_get_dynamic_allocator(void) {
+    return &g_dynamic;
+}
+CardinalAllocator* cardinal_get_linear_allocator(void) {
+    return &g_linear;
+}
 CardinalAllocator* cardinal_get_allocator_for_category(CardinalMemoryCategory category) {
-    if ((int)category < 0 || category >= CARDINAL_MEMORY_CATEGORY_MAX) return &g_tracked[CARDINAL_MEMORY_CATEGORY_UNKNOWN];
+    if ((int)category < 0 || category >= CARDINAL_MEMORY_CATEGORY_MAX)
+        return &g_tracked[CARDINAL_MEMORY_CATEGORY_UNKNOWN];
     return &g_tracked[category];
 }
 
 CardinalAllocator* cardinal_linear_allocator_create(size_t capacity) {
-    if (capacity == 0) return NULL;
+    if (capacity == 0)
+        return NULL;
     LinearState* st = (LinearState*)malloc(sizeof(LinearState));
-    if (!st) return NULL;
+    if (!st)
+        return NULL;
     st->buffer = (uint8_t*)malloc(capacity);
-    if (!st->buffer) { free(st); return NULL; }
+    if (!st->buffer) {
+        free(st);
+        return NULL;
+    }
     st->capacity = capacity;
     st->offset = 0;
 
     CardinalAllocator* a = (CardinalAllocator*)malloc(sizeof(CardinalAllocator));
-    if (!a) { free(st->buffer); free(st); return NULL; }
+    if (!a) {
+        free(st->buffer);
+        free(st);
+        return NULL;
+    }
     a->type = CARDINAL_ALLOCATOR_LINEAR;
     a->name = "linear_dyn";
     a->category = CARDINAL_MEMORY_CATEGORY_TEMPORARY;
@@ -438,8 +474,10 @@ CardinalAllocator* cardinal_linear_allocator_create(size_t capacity) {
 }
 
 void cardinal_linear_allocator_destroy(CardinalAllocator* allocator) {
-    if (!allocator) return;
-    if (allocator->type != CARDINAL_ALLOCATOR_LINEAR) return;
+    if (!allocator)
+        return;
+    if (allocator->type != CARDINAL_ALLOCATOR_LINEAR)
+        return;
     LinearState* st = (LinearState*)allocator->state;
     if (st) {
         free(st->buffer);

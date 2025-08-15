@@ -1,14 +1,14 @@
-#include <cardinal/renderer/util/vulkan_texture_utils.h>
-#include <cardinal/renderer/util/vulkan_buffer_utils.h>
 #include "../vulkan_state.h"
 #include <cardinal/core/log.h>
-#include <string.h>
+#include <cardinal/renderer/util/vulkan_buffer_utils.h>
+#include <cardinal/renderer/util/vulkan_texture_utils.h>
 #include <stdlib.h>
+#include <string.h>
 
 bool vk_texture_create_from_data(VulkanAllocator* allocator, VkDevice device,
                                  VkCommandPool commandPool, VkQueue graphicsQueue,
-                                 const CardinalTexture* texture, 
-                                 VkImage* textureImage, VkDeviceMemory* textureImageMemory,
+                                 const CardinalTexture* texture, VkImage* textureImage,
+                                 VkDeviceMemory* textureImageMemory,
                                  VkImageView* textureImageView) {
     if (!texture || !texture->data || !textureImage || !textureImageMemory || !textureImageView) {
         LOG_ERROR("Invalid parameters for texture creation");
@@ -16,12 +16,13 @@ bool vk_texture_create_from_data(VulkanAllocator* allocator, VkDevice device,
     }
 
     VkDeviceSize imageSize = texture->width * texture->height * 4; // Always RGBA
-    
+
     // Create staging buffer
     VkBuffer stagingBuffer;
     VkDeviceMemory stagingBufferMemory;
     if (!vk_buffer_create(allocator, imageSize, VK_BUFFER_USAGE_TRANSFER_SRC_BIT,
-                          VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT,
+                          VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT |
+                              VK_MEMORY_PROPERTY_HOST_COHERENT_BIT,
                           &stagingBuffer, &stagingBufferMemory)) {
         LOG_ERROR("Failed to create staging buffer for texture");
         return false;
@@ -30,7 +31,7 @@ bool vk_texture_create_from_data(VulkanAllocator* allocator, VkDevice device,
     // Map memory and copy texture data
     void* data;
     vkMapMemory(device, stagingBufferMemory, 0, imageSize, 0, &data);
-    
+
     if (texture->channels == 4) {
         // Direct copy for RGBA
         memcpy(data, texture->data, imageSize);
@@ -51,7 +52,7 @@ bool vk_texture_create_from_data(VulkanAllocator* allocator, VkDevice device,
         vkFreeMemory(device, stagingBufferMemory, NULL);
         return false;
     }
-    
+
     vkUnmapMemory(device, stagingBufferMemory);
 
     // Create image
@@ -85,8 +86,9 @@ bool vk_texture_create_from_data(VulkanAllocator* allocator, VkDevice device,
     VkMemoryAllocateInfo allocInfo = {
         .sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO,
         .allocationSize = memRequirements.size,
-        .memoryTypeIndex = vk_buffer_find_memory_type(allocator->physical_device, memRequirements.memoryTypeBits, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT)
-    };
+        .memoryTypeIndex =
+            vk_buffer_find_memory_type(allocator->physical_device, memRequirements.memoryTypeBits,
+                                       VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT)};
 
     if (vkAllocateMemory(device, &allocInfo, NULL, textureImageMemory) != VK_SUCCESS) {
         LOG_ERROR("Failed to allocate texture image memory");
@@ -129,12 +131,12 @@ bool vk_texture_create_from_data(VulkanAllocator* allocator, VkDevice device,
         .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
         .image = *textureImage,
         .subresourceRange = {
-            .aspectMask = VK_IMAGE_ASPECT_COLOR_BIT,
-            .baseMipLevel = 0,
-            .levelCount = 1,
-            .baseArrayLayer = 0,
-            .layerCount = 1,
-        }
+                             .aspectMask = VK_IMAGE_ASPECT_COLOR_BIT,
+                             .baseMipLevel = 0,
+                             .levelCount = 1,
+                             .baseArrayLayer = 0,
+                             .layerCount = 1,
+                             }
     };
 
     VkDependencyInfo dependencyInfo = {
@@ -150,21 +152,19 @@ bool vk_texture_create_from_data(VulkanAllocator* allocator, VkDevice device,
         .bufferOffset = 0,
         .bufferRowLength = 0,
         .bufferImageHeight = 0,
-        .imageSubresource = {
-            .aspectMask = VK_IMAGE_ASPECT_COLOR_BIT,
-            .mipLevel = 0,
-            .baseArrayLayer = 0,
-            .layerCount = 1,
-        },
-        .imageOffset = {0, 0, 0},
-        .imageExtent = {
-            texture->width,
-            texture->height,
-            1
-        }
+        .imageSubresource =
+            {
+                               .aspectMask = VK_IMAGE_ASPECT_COLOR_BIT,
+                               .mipLevel = 0,
+                               .baseArrayLayer = 0,
+                               .layerCount = 1,
+                               },
+        .imageOffset = {                                      0,               0,    0 },
+        .imageExtent = {                         texture->width, texture->height,    1 }
     };
 
-    vkCmdCopyBufferToImage(commandBuffer, stagingBuffer, *textureImage, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &region);
+    vkCmdCopyBufferToImage(commandBuffer, stagingBuffer, *textureImage,
+                           VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &region);
 
     // Transition to shader read-only
     barrier.srcStageMask = VK_PIPELINE_STAGE_2_TRANSFER_BIT;
@@ -204,12 +204,12 @@ bool vk_texture_create_from_data(VulkanAllocator* allocator, VkDevice device,
         .viewType = VK_IMAGE_VIEW_TYPE_2D,
         .format = VK_FORMAT_R8G8B8A8_SRGB,
         .subresourceRange = {
-            .aspectMask = VK_IMAGE_ASPECT_COLOR_BIT,
-            .baseMipLevel = 0,
-            .levelCount = 1,
-            .baseArrayLayer = 0,
-            .layerCount = 1,
-        }
+                             .aspectMask = VK_IMAGE_ASPECT_COLOR_BIT,
+                             .baseMipLevel = 0,
+                             .levelCount = 1,
+                             .baseArrayLayer = 0,
+                             .layerCount = 1,
+                             }
     };
 
     if (vkCreateImageView(device, &viewInfo, NULL, textureImageView) != VK_SUCCESS) {
@@ -229,20 +229,17 @@ bool vk_texture_create_placeholder(VulkanAllocator* allocator, VkDevice device,
     (void)format; // Unused parameter
     // Create 1x1 white texture data
     unsigned char whitePixel[4] = {255, 255, 255, 255};
-    
+
     CardinalTexture placeholderTexture = {
-        .data = whitePixel,
-        .width = 1,
-        .height = 1,
-        .channels = 4,
-        .path = "placeholder"
-    };
-    
+        .data = whitePixel, .width = 1, .height = 1, .channels = 4, .path = "placeholder"};
+
     return vk_texture_create_from_data(allocator, device, commandPool, graphicsQueue,
-                                       &placeholderTexture, textureImage, textureImageMemory, textureImageView);
+                                       &placeholderTexture, textureImage, textureImageMemory,
+                                       textureImageView);
 }
 
-bool vk_texture_create_sampler(VkDevice device, VkPhysicalDevice physicalDevice, VkSampler* sampler) {
+bool vk_texture_create_sampler(VkDevice device, VkPhysicalDevice physicalDevice,
+                               VkSampler* sampler) {
     VkPhysicalDeviceProperties properties;
     vkGetPhysicalDeviceProperties(physicalDevice, &properties);
 

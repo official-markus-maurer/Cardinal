@@ -1,10 +1,10 @@
-#include <stdlib.h>
-#include <vulkan/vulkan.h>
-#include <string.h>
-#include <stdio.h>
+#include "cardinal/core/log.h"
 #include "vulkan_state.h"
 #include <cardinal/renderer/vulkan_pipeline.h>
-#include "cardinal/core/log.h"
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <vulkan/vulkan.h>
 
 /**
  * @brief Creates depth resources for the Vulkan state.
@@ -17,9 +17,10 @@
  */
 static bool create_depth_resources(VulkanState* s) {
     // Find a suitable depth format
-    VkFormat candidates[] = {VK_FORMAT_D32_SFLOAT, VK_FORMAT_D32_SFLOAT_S8_UINT, VK_FORMAT_D24_UNORM_S8_UINT};
+    VkFormat candidates[] = {VK_FORMAT_D32_SFLOAT, VK_FORMAT_D32_SFLOAT_S8_UINT,
+                             VK_FORMAT_D24_UNORM_S8_UINT};
     s->depth_format = VK_FORMAT_UNDEFINED;
-    
+
     for (int i = 0; i < 3; i++) {
         VkFormatProperties props;
         vkGetPhysicalDeviceFormatProperties(s->physical_device, candidates[i], &props);
@@ -28,12 +29,12 @@ static bool create_depth_resources(VulkanState* s) {
             break;
         }
     }
-    
+
     if (s->depth_format == VK_FORMAT_UNDEFINED) {
         LOG_ERROR("pipeline: failed to find suitable depth format");
         return false;
     }
-    
+
     // Create depth image
     VkImageCreateInfo imageInfo = {0};
     imageInfo.sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO;
@@ -49,13 +50,14 @@ static bool create_depth_resources(VulkanState* s) {
     imageInfo.usage = VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT;
     imageInfo.samples = VK_SAMPLE_COUNT_1_BIT;
     imageInfo.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
-    
+
     // Use VulkanAllocator to allocate and bind image + memory
-    if (!vk_allocator_allocate_image(&s->allocator, &imageInfo, &s->depth_image, &s->depth_image_memory, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT)) {
+    if (!vk_allocator_allocate_image(&s->allocator, &imageInfo, &s->depth_image,
+                                     &s->depth_image_memory, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT)) {
         LOG_ERROR("pipeline: allocator failed to create depth image");
         return false;
     }
-    
+
     // Create depth image view
     VkImageViewCreateInfo viewInfo = {0};
     viewInfo.sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO;
@@ -67,7 +69,7 @@ static bool create_depth_resources(VulkanState* s) {
     viewInfo.subresourceRange.levelCount = 1;
     viewInfo.subresourceRange.baseArrayLayer = 0;
     viewInfo.subresourceRange.layerCount = 1;
-    
+
     if (vkCreateImageView(s->device, &viewInfo, NULL, &s->depth_image_view) != VK_SUCCESS) {
         LOG_ERROR("pipeline: failed to create depth image view");
         // Free image + memory via allocator on failure
@@ -76,10 +78,10 @@ static bool create_depth_resources(VulkanState* s) {
         s->depth_image_memory = VK_NULL_HANDLE;
         return false;
     }
-    
+
     // Initialize layout tracking
     s->depth_layout_initialized = false;
-    
+
     LOG_INFO("pipeline: depth resources created");
     return true;
 }
@@ -92,8 +94,9 @@ static bool create_depth_resources(VulkanState* s) {
  * @todo Add checks for valid resource handles before destruction.
  */
 static void destroy_depth_resources(VulkanState* s) {
-    if (!s) return;
-    
+    if (!s)
+        return;
+
     if (s->depth_image_view != VK_NULL_HANDLE) {
         vkDestroyImageView(s->device, s->depth_image_view, NULL);
         s->depth_image_view = VK_NULL_HANDLE;
@@ -122,7 +125,7 @@ bool vk_create_pipeline(VulkanState* s) {
     if (!create_depth_resources(s)) {
         return false;
     }
-    
+
     LOG_INFO("pipeline: depth resources created - no simple triangle pipeline needed");
     return true;
 }
@@ -136,6 +139,7 @@ bool vk_create_pipeline(VulkanState* s) {
  * @todo Add logging for destruction events.
  */
 void vk_destroy_pipeline(VulkanState* s) {
-    if (!s) return;
+    if (!s)
+        return;
     destroy_depth_resources(s);
 }

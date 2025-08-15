@@ -1,10 +1,10 @@
+#include "editor_layer.h"
 #include <cardinal/cardinal.h>
 #include <cardinal/core/log.h>
-#include "editor_layer.h"
-#include <string.h>
 #include <stdio.h>
+#include <string.h>
 #ifdef _WIN32
-#include <windows.h>
+    #include <windows.h>
 #endif
 
 /**
@@ -34,7 +34,7 @@ static void print_usage(const char* program_name) {
  */
 int main(int argc, char* argv[]) {
     CardinalLogLevel log_level = CARDINAL_LOG_LEVEL_WARN; // Default
-    
+
     // Parse command line arguments
     for (int i = 1; i < argc; i++) {
         if (strcmp(argv[i], "--log-level") == 0 && i + 1 < argc) {
@@ -45,7 +45,7 @@ int main(int argc, char* argv[]) {
             return 0;
         }
     }
-    
+
     // Ensure working directory is the executable's directory so relative asset paths resolve
 #ifdef _WIN32
     {
@@ -54,7 +54,10 @@ int main(int argc, char* argv[]) {
         if (len > 0 && len < MAX_PATH) {
             // Strip filename to get directory
             for (int i = (int)len - 1; i >= 0; --i) {
-                if (exePath[i] == '\\' || exePath[i] == '/') { exePath[i] = '\0'; break; }
+                if (exePath[i] == '\\' || exePath[i] == '/') {
+                    exePath[i] = '\0';
+                    break;
+                }
             }
             SetCurrentDirectoryA(exePath);
         }
@@ -63,13 +66,12 @@ int main(int argc, char* argv[]) {
 
     cardinal_log_init_with_level(log_level);
     CardinalWindowConfig config = {
-        .title = "Cardinal Editor",
-        .width = 1600,
-        .height = 900,
-        .resizable = true
-    };
+        .title = "Cardinal Editor", .width = 1600, .height = 900, .resizable = true};
     CardinalWindow* window = cardinal_window_create(&config);
-    if (!window) { cardinal_log_shutdown(); return -1; }
+    if (!window) {
+        cardinal_log_shutdown();
+        return -1;
+    }
 
     CardinalRenderer renderer;
     if (!cardinal_renderer_create(&renderer, window)) {
@@ -88,10 +90,10 @@ int main(int argc, char* argv[]) {
 
     while (!cardinal_window_should_close(window)) {
         cardinal_window_poll(window);
-        
+
         editor_layer_update();
         editor_layer_render();
-        
+
         cardinal_renderer_draw_frame(&renderer);
     }
 

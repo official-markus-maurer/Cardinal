@@ -1,7 +1,6 @@
 # Considerations
 
 ## TODO Items Sorted by Severity 
-- Add UV & Wireframe rendering mode.
 
 ### **CRITICAL** - Stability & Correctness Issues
 - **Memory Leak in Dynamic Allocator**: MSVC version uses `_aligned_free()` for all pointers, even those allocated with `malloc()` (memory.c:90-96). This causes undefined behavior and potential crashes.
@@ -60,6 +59,3 @@
 - Use rotating_file_sink or daily_file_sink for better log management.
 - Enable spdlog async mode for even lower overhead on hot paths.
 - Expose a runtime hook to add/remove sinks or change patterns.
-
-*Other*
-- Create a Clang.Tidy format that enforces clean code.

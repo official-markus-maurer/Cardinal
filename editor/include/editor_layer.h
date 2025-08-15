@@ -21,7 +21,7 @@ extern "C" {
  * @todo Document ImGui setup and Vulkan integration details.
  * @todo Add support for customizable UI themes.
  */
-bool editor_layer_init(CardinalWindow* window, CardinalRenderer* renderer);
+bool editor_layer_init(CardinalWindow *window, CardinalRenderer *renderer);
 /**
  * @brief Updates the editor layer state.
  *

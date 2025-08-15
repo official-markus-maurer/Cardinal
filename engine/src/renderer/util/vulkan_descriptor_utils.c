@@ -1,5 +1,5 @@
-#include <cardinal/renderer/util/vulkan_descriptor_utils.h>
 #include <cardinal/core/log.h>
+#include <cardinal/renderer/util/vulkan_descriptor_utils.h>
 #include <stdlib.h>
 
 bool vk_descriptor_create_pbr_layout(VkDevice device, VkDescriptorSetLayout* descriptorSetLayout) {
@@ -12,81 +12,80 @@ bool vk_descriptor_create_pbr_layout(VkDevice device, VkDescriptorSetLayout* des
     VkDescriptorSetLayoutBinding bindings[] = {
         // UBO binding
         {
-            .binding = 0,
-            .descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER,
-            .descriptorCount = 1,
-            .stageFlags = VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT,
-            .pImmutableSamplers = NULL,
-        },
+         .binding = 0,
+         .descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER,
+         .descriptorCount = 1,
+         .stageFlags = VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT,
+         .pImmutableSamplers = NULL,
+         },
         // Lighting UBO binding
         {
-            .binding = 1,
-            .descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER,
-            .descriptorCount = 1,
-            .stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT,
-            .pImmutableSamplers = NULL,
-        },
+         .binding = 1,
+         .descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER,
+         .descriptorCount = 1,
+         .stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT,
+         .pImmutableSamplers = NULL,
+         },
         // Albedo texture binding
         {
-            .binding = 2,
-            .descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
-            .descriptorCount = 1,
-            .stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT,
-            .pImmutableSamplers = NULL,
-        },
+         .binding = 2,
+         .descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
+         .descriptorCount = 1,
+         .stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT,
+         .pImmutableSamplers = NULL,
+         },
         // Normal texture binding
         {
-            .binding = 3,
-            .descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
-            .descriptorCount = 1,
-            .stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT,
-            .pImmutableSamplers = NULL,
-        },
+         .binding = 3,
+         .descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
+         .descriptorCount = 1,
+         .stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT,
+         .pImmutableSamplers = NULL,
+         },
         // Metallic texture binding
         {
-            .binding = 4,
-            .descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
-            .descriptorCount = 1,
-            .stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT,
-            .pImmutableSamplers = NULL,
-        },
+         .binding = 4,
+         .descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
+         .descriptorCount = 1,
+         .stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT,
+         .pImmutableSamplers = NULL,
+         },
         // Roughness texture binding
         {
-            .binding = 5,
-            .descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
-            .descriptorCount = 1,
-            .stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT,
-            .pImmutableSamplers = NULL,
-        },
+         .binding = 5,
+         .descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
+         .descriptorCount = 1,
+         .stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT,
+         .pImmutableSamplers = NULL,
+         },
         // AO texture binding
         {
-            .binding = 6,
-            .descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
-            .descriptorCount = 1,
-            .stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT,
-            .pImmutableSamplers = NULL,
-        },
+         .binding = 6,
+         .descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
+         .descriptorCount = 1,
+         .stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT,
+         .pImmutableSamplers = NULL,
+         },
         // Variable descriptor count for texture array (descriptor indexing)
         {
-            .binding = 7,
-            .descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
-            .descriptorCount = 1000, // Max count, actual count specified at allocation
-            .stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT,
-            .pImmutableSamplers = NULL,
-        }
+         .binding = 7,
+         .descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
+         .descriptorCount = 1000, // Max count, actual count specified at allocation
+ .stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT,
+         .pImmutableSamplers = NULL,
+         }
     };
 
     // Enable descriptor indexing for the last binding
-    VkDescriptorBindingFlags bindingFlags[] = {
-        0, // UBO
-        0, // Lighting UBO
-        0, // Albedo
-        0, // Normal
-        0, // Metallic
-        0, // Roughness
-        0, // AO
-        VK_DESCRIPTOR_BINDING_VARIABLE_DESCRIPTOR_COUNT_BIT | VK_DESCRIPTOR_BINDING_PARTIALLY_BOUND_BIT
-    };
+    VkDescriptorBindingFlags bindingFlags[] = {0, // UBO
+                                               0, // Lighting UBO
+                                               0, // Albedo
+                                               0, // Normal
+                                               0, // Metallic
+                                               0, // Roughness
+                                               0, // AO
+                                               VK_DESCRIPTOR_BINDING_VARIABLE_DESCRIPTOR_COUNT_BIT |
+                                                   VK_DESCRIPTOR_BINDING_PARTIALLY_BOUND_BIT};
 
     VkDescriptorSetLayoutBindingFlagsCreateInfo bindingFlagsInfo = {
         .sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_BINDING_FLAGS_CREATE_INFO,
@@ -110,7 +109,8 @@ bool vk_descriptor_create_pbr_layout(VkDevice device, VkDescriptorSetLayout* des
     return true;
 }
 
-bool vk_descriptor_create_pool(VkDevice device, uint32_t maxSets, uint32_t maxTextures, VkDescriptorPool* descriptorPool) {
+bool vk_descriptor_create_pool(VkDevice device, uint32_t maxSets, uint32_t maxTextures,
+                               VkDescriptorPool* descriptorPool) {
     if (!device || !descriptorPool) {
         LOG_ERROR("Invalid parameters for descriptor pool creation");
         return false;
@@ -118,12 +118,12 @@ bool vk_descriptor_create_pool(VkDevice device, uint32_t maxSets, uint32_t maxTe
 
     VkDescriptorPoolSize poolSizes[] = {
         {
-            .type = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER,
-            .descriptorCount = maxSets * 2, // UBO + Lighting UBO
+         .type = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER,
+         .descriptorCount = maxSets * 2,// UBO + Lighting UBO
         },
         {
-            .type = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
-            .descriptorCount = maxSets * (6 + maxTextures), // Fixed textures + variable array
+         .type = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
+         .descriptorCount = maxSets * (6 + maxTextures), // Fixed textures + variable array
         }
     };
 
@@ -146,7 +146,8 @@ bool vk_descriptor_create_pool(VkDevice device, uint32_t maxSets, uint32_t maxTe
 
 bool vk_descriptor_allocate_sets(VkDevice device, VkDescriptorPool descriptorPool,
                                  VkDescriptorSetLayout descriptorSetLayout, uint32_t setCount,
-                                 uint32_t variableDescriptorCount, VkDescriptorSet* descriptorSets) {
+                                 uint32_t variableDescriptorCount,
+                                 VkDescriptorSet* descriptorSets) {
     if (!device || !descriptorPool || !descriptorSetLayout || !descriptorSets) {
         LOG_ERROR("Invalid parameters for descriptor set allocation");
         return false;
@@ -188,7 +189,7 @@ bool vk_descriptor_allocate_sets(VkDevice device, VkDescriptorPool descriptorPoo
     };
 
     VkResult result = vkAllocateDescriptorSets(device, &allocInfo, descriptorSets);
-    
+
     free(layouts);
     free(variableCounts);
 
@@ -212,7 +213,7 @@ void vk_descriptor_update_sets(VkDevice device, VkDescriptorSet descriptorSet,
     VkWriteDescriptorSet* writes = malloc((2 + imageCount) * sizeof(VkWriteDescriptorSet));
     VkDescriptorBufferInfo* bufferInfos = malloc(2 * sizeof(VkDescriptorBufferInfo));
     VkDescriptorImageInfo* imageInfos = malloc(imageCount * sizeof(VkDescriptorImageInfo));
-    
+
     if (!writes || !bufferInfos || !imageInfos) {
         LOG_ERROR("Failed to allocate memory for descriptor updates");
         free(writes);

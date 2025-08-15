@@ -77,6 +77,11 @@ The project includes comprehensive VS Code integration with pre-configured tasks
 - **Launch Client (Debug)** / **Launch Editor (Debug)** - Runs with debug logging
 - **Clean Build** / **Rebuild All** - Clean and rebuild everything
 
+#### Code Quality Tasks
+
+- **Run Clang-Tidy** - Analyzes code for bugs, style issues, and C23 compliance
+- **Format Code** - Automatically formats all source files using clang-format
+
 #### Debug Configurations (F5 or Debug Panel)
 
 - **Debug Cardinal Client** - Debug the client application with GDB
@@ -205,6 +210,34 @@ All dependencies are managed via CMake FetchContent:
 - **Consistent naming** with `cardinal_` prefix for public APIs
 - **Minimal dependencies** - only essential libraries
 - **Clear separation of concerns** between engine, editor, and client
+
+### Code Quality
+
+The project enforces high code quality standards through automated tooling:
+
+#### Clang-Tidy Configuration
+
+- **C23 compliance checks** - Ensures modern C standard usage
+- **Bug detection** - Identifies potential runtime issues and logic errors
+- **Performance analysis** - Detects inefficient code patterns
+- **Security checks** - CERT C coding standard compliance
+- **Naming conventions** - Enforces `snake_case` for functions/variables, `PascalCase` for types
+- **Cardinal-specific rules** - Custom prefixes and engine-specific patterns
+
+#### Clang-Format Configuration
+
+- **Consistent indentation** - 4 spaces, no tabs
+- **100-character line limit** - Optimal for modern displays
+- **Attach braces style** - `{` on same line as control statements
+- **Pointer alignment** - Left-aligned (`int* ptr`)
+- **Include sorting** - Automatic header organization
+- **C23-optimized formatting** - Modern C language constructs
+
+#### Usage
+
+- Run `Tasks: Run Task` → `Run Clang-Tidy` to analyze code quality
+- Run `Tasks: Run Task` → `Format Code` to auto-format all source files
+- Both tools use project-specific `.clang-tidy` and `.clang-format` configurations
 
 ### Project Goals
 

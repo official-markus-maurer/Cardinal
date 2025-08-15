@@ -1,11 +1,11 @@
 /**
  * @file window.c
  * @brief Window management implementation for Cardinal Engine
- * 
+ *
  * This file implements cross-platform window management functionality using
  * GLFW. It handles window creation, event processing, input handling, and
  * integration with the Vulkan rendering system.
- * 
+ *
  * Key features:
  * - Cross-platform window creation (Windows, Linux, macOS)
  * - Vulkan surface integration
@@ -13,32 +13,32 @@
  * - Window resize and framebuffer callbacks
  * - Fullscreen and windowed mode support
  * - Error handling and logging integration
- * 
+ *
  * Platform-specific features:
  * - Windows: Native Win32 handle access
  * - Linux: Wayland compatibility
  * - macOS: Metal surface support preparation
- * 
+ *
  * The implementation provides a clean abstraction over GLFW while
  * maintaining access to platform-specific functionality when needed
  * for advanced rendering features.
- * 
+ *
  * @author Markus Maurer
  * @version 1.0
  */
 
+#include <GLFW/glfw3.h>
+#include <assert.h>
+#include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#include <assert.h>
-#include <GLFW/glfw3.h>
-#include <stdio.h>
 #ifdef _WIN32
-#define GLFW_EXPOSE_NATIVE_WIN32
-#include <GLFW/glfw3native.h>
+    #define GLFW_EXPOSE_NATIVE_WIN32
+    #include <GLFW/glfw3native.h>
 #endif
 
-#include "cardinal/core/window.h"
 #include "cardinal/core/log.h"
+#include "cardinal/core/window.h"
 
 /**
  * @brief GLFW error callback function.
@@ -63,7 +63,7 @@ static void glfw_error_callback(int error, const char* desc) {
  * @brief Creates a new window with the given configuration.
  * @param config Window configuration.
  * @return Pointer to the created window or NULL on failure.
- * 
+ *
  * @todo Refactor to support multiple window creation.
  * @todo Integrate Vulkan surface creation directly for better renderer compatibility.
  */
@@ -90,7 +90,8 @@ CardinalWindow* cardinal_window_create(const CardinalWindowConfig* config) {
     glfwWindowHint(GLFW_CLIENT_API, GLFW_NO_API);
     glfwWindowHint(GLFW_RESIZABLE, config->resizable ? GLFW_TRUE : GLFW_FALSE);
 
-    GLFWwindow* handle = glfwCreateWindow((int)config->width, (int)config->height, config->title, NULL, NULL);
+    GLFWwindow* handle =
+        glfwCreateWindow((int)config->width, (int)config->height, config->title, NULL, NULL);
     if (!handle) {
         LOG_ERROR("GLFW create window failed");
         glfwTerminate();
@@ -110,7 +111,7 @@ CardinalWindow* cardinal_window_create(const CardinalWindowConfig* config) {
 /**
  * @brief Polls for window events.
  * @param window The window to poll.
- * 
+ *
  * @todo Improve by adding custom event dispatching system.
  */
 /**
@@ -122,7 +123,8 @@ CardinalWindow* cardinal_window_create(const CardinalWindowConfig* config) {
  * @todo Add support for touch and gesture events.
  */
 void cardinal_window_poll(CardinalWindow* window) {
-    if (!window) return;
+    if (!window)
+        return;
     glfwPollEvents();
     window->should_close = glfwWindowShouldClose(window->handle) != 0;
 }
@@ -147,9 +149,10 @@ bool cardinal_window_should_close(const CardinalWindow* window) {
 /**
  * @brief Destroys the window and cleans up resources.
  * @param window The window to destroy.
- * 
+ *
  * @todo Ensure proper cleanup of associated Vulkan resources.
- * @todo Add support for Vulkan extension VK_KHR_portability_subset for better cross-platform handling.
+ * @todo Add support for Vulkan extension VK_KHR_portability_subset for better cross-platform
+ * handling.
  */
 /**
  * @brief Destroys the window and cleans up resources.
@@ -160,7 +163,8 @@ bool cardinal_window_should_close(const CardinalWindow* window) {
  * @todo Clean up associated input callbacks.
  */
 void cardinal_window_destroy(CardinalWindow* window) {
-    if (!window) return;
+    if (!window)
+        return;
     if (window->handle) {
         glfwDestroyWindow(window->handle);
         window->handle = NULL;
@@ -170,11 +174,11 @@ void cardinal_window_destroy(CardinalWindow* window) {
 }
 
 void* cardinal_window_get_native_handle(const CardinalWindow* window) {
-    if (!window || !window->handle) return NULL;
+    if (!window || !window->handle)
+        return NULL;
 #ifdef _WIN32
     return (void*)glfwGetWin32Window(window->handle);
 #else
     return NULL;
 #endif
 }
-

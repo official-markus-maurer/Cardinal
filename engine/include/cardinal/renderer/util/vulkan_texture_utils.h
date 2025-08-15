@@ -1,12 +1,12 @@
 /**
  * @file vulkan_texture_utils.h
  * @brief Vulkan texture management utilities for Cardinal Engine
- * 
+ *
  * This module provides utility functions for creating and managing Vulkan
  * textures from various data sources. It handles texture creation, format
  * conversion, mipmap generation, and sampler configuration optimized for
  * PBR rendering workflows.
- * 
+ *
  * Key features:
  * - Texture creation from CardinalTexture data
  * - Automatic format detection and conversion
@@ -14,10 +14,10 @@
  * - PBR-optimized texture sampling configuration
  * - Memory-efficient texture loading with staging buffers
  * - Support for various texture formats (RGBA, sRGB, etc.)
- * 
+ *
  * The utilities handle the complex process of uploading texture data to
  * GPU memory and creating the necessary Vulkan objects for rendering.
- * 
+ *
  * @author Markus Maurer
  * @version 1.0
  */
@@ -25,10 +25,10 @@
 #ifndef VULKAN_TEXTURE_UTILS_H
 #define VULKAN_TEXTURE_UTILS_H
 
-#include <vulkan/vulkan.h>
 #include <cardinal/assets/scene.h>
-#include <stdint.h>
 #include <stdbool.h>
+#include <stdint.h>
+#include <vulkan/vulkan.h>
 
 // Forward declarations
 typedef struct VulkanAllocator VulkanAllocator;
@@ -45,11 +45,13 @@ typedef struct VulkanAllocator VulkanAllocator;
  * @param textureImageView Output image view handle.
  * @return true on success, false on failure.
  */
-bool vk_texture_create_from_data(VulkanAllocator* allocator, VkDevice device,
-                                 VkCommandPool commandPool, VkQueue graphicsQueue,
-                                 const CardinalTexture* texture, 
-                                 VkImage* textureImage, VkDeviceMemory* textureImageMemory,
-                                 VkImageView* textureImageView);
+bool vk_texture_create_from_data(VulkanAllocator *allocator, VkDevice device,
+                                 VkCommandPool commandPool,
+                                 VkQueue graphicsQueue,
+                                 const CardinalTexture *texture,
+                                 VkImage *textureImage,
+                                 VkDeviceMemory *textureImageMemory,
+                                 VkImageView *textureImageView);
 
 /**
  * @brief Creates a 1x1 white placeholder texture.
@@ -63,10 +65,12 @@ bool vk_texture_create_from_data(VulkanAllocator* allocator, VkDevice device,
  * @param format Optional format (NULL for default VK_FORMAT_R8G8B8A8_SRGB).
  * @return true on success, false on failure.
  */
-bool vk_texture_create_placeholder(VulkanAllocator* allocator, VkDevice device,
-                                   VkCommandPool commandPool, VkQueue graphicsQueue,
-                                   VkImage* textureImage, VkDeviceMemory* textureImageMemory,
-                                   VkImageView* textureImageView, const VkFormat* format);
+bool vk_texture_create_placeholder(VulkanAllocator *allocator, VkDevice device,
+                                   VkCommandPool commandPool,
+                                   VkQueue graphicsQueue, VkImage *textureImage,
+                                   VkDeviceMemory *textureImageMemory,
+                                   VkImageView *textureImageView,
+                                   const VkFormat *format);
 
 /**
  * @brief Creates a texture sampler with standard PBR settings.
@@ -75,6 +79,7 @@ bool vk_texture_create_placeholder(VulkanAllocator* allocator, VkDevice device,
  * @param sampler Output sampler handle.
  * @return true on success, false on failure.
  */
-bool vk_texture_create_sampler(VkDevice device, VkPhysicalDevice physicalDevice, VkSampler* sampler);
+bool vk_texture_create_sampler(VkDevice device, VkPhysicalDevice physicalDevice,
+                               VkSampler *sampler);
 
 #endif // VULKAN_TEXTURE_UTILS_H

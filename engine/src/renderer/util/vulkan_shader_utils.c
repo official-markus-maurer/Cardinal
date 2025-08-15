@@ -1,5 +1,5 @@
-#include <cardinal/renderer/util/vulkan_shader_utils.h>
 #include <cardinal/core/log.h>
+#include <cardinal/renderer/util/vulkan_shader_utils.h>
 #include <stdio.h>
 #include <stdlib.h>
 
@@ -45,13 +45,15 @@ bool vk_shader_create_module(VkDevice device, const char* filename, VkShaderModu
     }
 
     // Create shader module
-    bool result = vk_shader_create_module_from_code(device, (const uint32_t*)code, fileSize, shaderModule);
-    
+    bool result =
+        vk_shader_create_module_from_code(device, (const uint32_t*)code, fileSize, shaderModule);
+
     free(code);
     return result;
 }
 
-bool vk_shader_create_module_from_code(VkDevice device, const uint32_t* code, size_t codeSize, VkShaderModule* shaderModule) {
+bool vk_shader_create_module_from_code(VkDevice device, const uint32_t* code, size_t codeSize,
+                                       VkShaderModule* shaderModule) {
     if (!device || !code || codeSize == 0 || !shaderModule) {
         LOG_ERROR("Invalid parameters for shader module creation from code");
         return false;
