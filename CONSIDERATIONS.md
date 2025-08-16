@@ -11,7 +11,6 @@
 - **Diagnostics**: Add a quick logger function to dump memory stats to the console at runtime
 
 ### **MEDIUM** - Features & Functionality
-- **Multi-threading**: Add support for multi-threaded command buffer allocation (vulkan_commands.c:14)
 - **Secondary Command Buffers**: Implement secondary command buffers for better parallelism (vulkan_commands.c:126, vulkan_renderer.c:456)
 - **Shader Caching**: Implement shader caching to avoid repeated loading (vulkan_pipeline.c:17, vulkan_pbr.c:620, 628)
 - **Pipeline Caching**: Implement pipeline caching for faster recreation (vulkan_pipeline.c:169)
@@ -46,3 +45,5 @@
 - Use rotating_file_sink or daily_file_sink for better log management.
 - Enable spdlog async mode for even lower overhead on hot paths.
 - Expose a runtime hook to add/remove sinks or change patterns.
+
+-> Fix cardinal_log logging and streamline into vscode devtool.

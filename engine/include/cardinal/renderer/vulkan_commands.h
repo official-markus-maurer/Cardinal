@@ -10,12 +10,14 @@
  * Key responsibilities:
  * - Command pool creation for different queue families
  * - Command buffer allocation and management
+ * - Multi-threaded command buffer allocation and secondary command buffers
  * - Synchronization object creation (semaphores, fences)
  * - Command recording for rendering operations
  * - Frame-in-flight tracking for proper synchronization
  *
  * The module ensures proper synchronization between CPU and GPU operations
- * and manages multiple frames in flight for optimal performance.
+ * and manages multiple frames in flight for optimal performance. It now
+ * includes multi-threading support for better parallelism.
  *
  * @author Markus Maurer
  * @version 1.0
@@ -55,5 +57,25 @@ void vk_destroy_commands_sync(VulkanState *s);
  * @param image_index Swapchain image index.
  */
 void vk_record_cmd(VulkanState *s, uint32_t image_index);
+
+/**
+ * @brief Get the multi-threaded command manager for the current Vulkan state.
+ * @return Pointer to the command manager, or NULL if not initialized.
+ */
+struct CardinalMTCommandManager* vk_get_mt_command_manager(void);
+
+/**
+ * @brief Submit a command recording task to the multi-threading subsystem
+ * @param record_func Function to record commands
+ * @param user_data User data to pass to the record function
+ * @param callback Optional callback when task completes
+ * @return true on success, false on failure
+ */
+bool vk_submit_mt_command_task(void (*record_func)(void* data),
+                               void* user_data,
+                               void (*callback)(void* data, bool success));
+
+// === Secondary Command Buffer Functions ===
+// Note: Secondary command buffer functions are implemented internally in vulkan_commands.c
 
 #endif // VULKAN_COMMANDS_H

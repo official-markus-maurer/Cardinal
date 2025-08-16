@@ -61,6 +61,7 @@ target_sources(cardinal_engine PRIVATE
     src/renderer/vulkan_swapchain.c
     src/renderer/vulkan_pipeline.c
     src/renderer/vulkan_commands.c
+    src/renderer/vulkan_mt.c
     src/renderer/vulkan_pbr.c
     src/renderer/vulkan_simple_pipelines.c
     src/renderer/vulkan_allocator.c

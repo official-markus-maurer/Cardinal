@@ -45,6 +45,8 @@
 
 #include "cardinal/assets/material_ref_counting.h"
 #include "cardinal/core/ref_counting.h"
+#include "cardinal/renderer/vulkan_mt.h"
+#include "cardinal/renderer/vulkan_commands.h"
 #include "cardinal/renderer/vulkan_pbr.h"
 #include "vulkan_simple_pipelines.h"
 #include "vulkan_state.h"
@@ -693,7 +695,7 @@ void cardinal_renderer_set_ui_callback(CardinalRenderer* renderer,
  * @param renderer Pointer to the CardinalRenderer.
  * @param record Callback to record commands.
  *
- * @todo Add support for secondary command buffers.
+ * Now supports secondary command buffers when multi-threading subsystem is available.
  */
 void cardinal_renderer_immediate_submit(CardinalRenderer* renderer,
                                         void (*record)(VkCommandBuffer cmd)) {
@@ -726,6 +728,88 @@ void cardinal_renderer_immediate_submit(CardinalRenderer* renderer,
     vkQueueWaitIdle(s->graphics_queue);
 
     vkFreeCommandBuffers(s->device, s->command_pools[s->current_frame], 1, &cmd);
+}
+
+/**
+ * @brief Submits an immediate command buffer with secondary command buffer support.
+ * @param renderer Pointer to the CardinalRenderer.
+ * @param record Callback to record commands.
+ * @param use_secondary Whether to try using secondary command buffers.
+ */
+void cardinal_renderer_immediate_submit_with_secondary(CardinalRenderer* renderer,
+                                                       void (*record)(VkCommandBuffer cmd),
+                                                       bool use_secondary) {
+    VulkanState* s = (VulkanState*)renderer->_opaque;
+    
+    // Check if secondary command buffers are requested and available
+    if (use_secondary) {
+        CardinalMTCommandManager* mt_manager = vk_get_mt_command_manager();
+        if (mt_manager && mt_manager->thread_pools[0].is_active) {
+            // Use secondary command buffer approach
+            VkCommandBufferAllocateInfo ai = {.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO};
+            ai.commandPool = s->command_pools[s->current_frame];
+            ai.level = VK_COMMAND_BUFFER_LEVEL_PRIMARY;
+            ai.commandBufferCount = 1;
+            
+            VkCommandBuffer primary_cmd;
+            vkAllocateCommandBuffers(s->device, &ai, &primary_cmd);
+            
+            VkCommandBufferBeginInfo bi = {.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO};
+            bi.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
+            vkBeginCommandBuffer(primary_cmd, &bi);
+            
+            // Allocate secondary command buffer
+            CardinalSecondaryCommandContext secondary_context;
+            if (cardinal_mt_allocate_secondary_command_buffer(&mt_manager->thread_pools[0], &secondary_context)) {
+                // Set up inheritance info
+                VkCommandBufferInheritanceInfo inheritance_info = {0};
+                inheritance_info.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_INHERITANCE_INFO;
+                inheritance_info.renderPass = VK_NULL_HANDLE;
+                inheritance_info.subpass = 0;
+                inheritance_info.framebuffer = VK_NULL_HANDLE;
+                inheritance_info.occlusionQueryEnable = VK_FALSE;
+                
+                // Begin secondary command buffer
+                if (cardinal_mt_begin_secondary_command_buffer(&secondary_context, &inheritance_info)) {
+                    // Record into secondary buffer
+                    if (record) {
+                        record(secondary_context.command_buffer);
+                    }
+                    
+                    // End secondary buffer
+                    if (cardinal_mt_end_secondary_command_buffer(&secondary_context)) {
+                        // Execute secondary in primary
+                        cardinal_mt_execute_secondary_command_buffers(primary_cmd, &secondary_context, 1);
+                        
+                        vkEndCommandBuffer(primary_cmd);
+                        
+                        VkCommandBufferSubmitInfo cmd_info = {
+                            .sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_SUBMIT_INFO,
+                            .commandBuffer = primary_cmd,
+                            .deviceMask = 0
+                        };
+                        VkSubmitInfo2 submit2 = {
+                            .sType = VK_STRUCTURE_TYPE_SUBMIT_INFO_2,
+                            .commandBufferInfoCount = 1,
+                            .pCommandBufferInfos = &cmd_info
+                        };
+                        s->vkQueueSubmit2(s->graphics_queue, 1, &submit2, VK_NULL_HANDLE);
+                        vkQueueWaitIdle(s->graphics_queue);
+                        
+                        vkFreeCommandBuffers(s->device, s->command_pools[s->current_frame], 1, &primary_cmd);
+                        return;
+                    }
+                }
+            }
+            
+            // Fallback to primary if secondary failed
+            vkEndCommandBuffer(primary_cmd);
+            vkFreeCommandBuffers(s->device, s->command_pools[s->current_frame], 1, &primary_cmd);
+        }
+    }
+    
+    // Fallback to regular immediate submit
+    cardinal_renderer_immediate_submit(renderer, record);
 }
 
 /**
