@@ -90,23 +90,27 @@ static bool create_depth_resources(VulkanState* s) {
  * @brief Destroys depth resources associated with the Vulkan state.
  *
  * @param s Pointer to the VulkanState structure.
- *
- * @todo Add checks for valid resource handles before destruction.
  */
 static void destroy_depth_resources(VulkanState* s) {
-    if (!s)
+    if (!s || !s->device)
         return;
 
+    // Validate and destroy depth image view
     if (s->depth_image_view != VK_NULL_HANDLE) {
         vkDestroyImageView(s->device, s->depth_image_view, NULL);
         s->depth_image_view = VK_NULL_HANDLE;
     }
-    // Free image + memory using allocator
+
+    // Validate and free image + memory using allocator
     if (s->depth_image != VK_NULL_HANDLE || s->depth_image_memory != VK_NULL_HANDLE) {
-        vk_allocator_free_image(&s->allocator, s->depth_image, s->depth_image_memory);
+        // Ensure allocator is valid before freeing
+        if (s->allocator.device != VK_NULL_HANDLE) {
+            vk_allocator_free_image(&s->allocator, s->depth_image, s->depth_image_memory);
+        }
         s->depth_image = VK_NULL_HANDLE;
         s->depth_image_memory = VK_NULL_HANDLE;
     }
+
     // Reset layout tracking when depth resources are destroyed
     s->depth_layout_initialized = false;
 }
@@ -139,7 +143,13 @@ bool vk_create_pipeline(VulkanState* s) {
  * @todo Add logging for destruction events.
  */
 void vk_destroy_pipeline(VulkanState* s) {
-    if (!s)
+    if (!s || !s->device)
         return;
+
+    // Wait for device to be idle before destroying resources
+    vkDeviceWaitIdle(s->device);
+
     destroy_depth_resources(s);
+
+    LOG_INFO("pipeline: pipeline resources destroyed");
 }

@@ -21,6 +21,9 @@
 extern "C" {
 #endif
 
+// Forward declaration for reference counting
+typedef struct CardinalRefCountedResource CardinalRefCountedResource;
+
 /**
  * @brief Vertex format for PBR rendering
  *
@@ -90,6 +93,9 @@ typedef struct CardinalMaterial {
   CardinalTextureTransform
       emissive_transform; /**< Emissive texture transform */
                           /** @} */
+
+  CardinalRefCountedResource
+      *ref_resource; /**< Reference counting resource pointer */
 } CardinalMaterial;
 
 /**
@@ -104,6 +110,8 @@ typedef struct CardinalTexture {
   uint32_t height;     /**< Texture height in pixels */
   uint32_t channels;   /**< Number of color channels (1-4) */
   char *path;          /**< Original file path (for debugging/identification) */
+  CardinalRefCountedResource
+      *ref_resource; /**< Reference counting resource pointer */
 } CardinalTexture;
 
 /**

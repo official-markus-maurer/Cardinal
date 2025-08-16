@@ -43,9 +43,12 @@
 #include "cardinal/renderer/renderer_internal.h"
 #include <cardinal/renderer/vulkan_swapchain.h>
 
+#include "cardinal/assets/material_ref_counting.h"
+#include "cardinal/core/ref_counting.h"
 #include "cardinal/renderer/vulkan_pbr.h"
 #include "vulkan_simple_pipelines.h"
 #include "vulkan_state.h"
+#include <cardinal/renderer/util/vulkan_buffer_utils.h>
 #include <cardinal/renderer/vulkan_commands.h>
 #include <cardinal/renderer/vulkan_instance.h>
 #include <cardinal/renderer/vulkan_pipeline.h>
@@ -88,8 +91,26 @@ bool cardinal_renderer_create(CardinalRenderer* out_renderer, CardinalWindow* wi
         return false;
     }
     LOG_INFO("renderer_create: device");
+
+    // Initialize reference counting system
+    if (!cardinal_ref_counting_init(256)) {
+        LOG_ERROR("cardinal_ref_counting_init failed");
+        return false;
+    }
+    LOG_INFO("renderer_create: ref_counting");
+
+    // Initialize material reference counting
+    if (!cardinal_material_ref_init()) {
+        LOG_ERROR("cardinal_material_ref_counting_init failed");
+        cardinal_ref_counting_shutdown();
+        return false;
+    }
+    LOG_INFO("renderer_create: material_ref_counting");
+
     if (!vk_create_swapchain(s)) {
         LOG_ERROR("vk_create_swapchain failed");
+        cardinal_material_ref_shutdown();
+        cardinal_ref_counting_shutdown();
         return false;
     }
     LOG_INFO("renderer_create: swapchain");
@@ -260,6 +281,7 @@ void cardinal_renderer_draw_frame(CardinalRenderer* renderer) {
     CARDINAL_LOG_INFO("[PRESENT] Frame %u: Presenting image %u", s->current_frame, image_index);
     VkResult present_res = vkQueuePresentKHR(s->present_queue, &present_info);
     CARDINAL_LOG_INFO("[PRESENT] Frame %u: Present result: %d", s->current_frame, present_res);
+    (void)present_res; // Suppress unused variable warning
 
     // Update timeline values for next frame
     s->current_frame_value = signal_after_render;
@@ -316,6 +338,10 @@ void cardinal_renderer_destroy(CardinalRenderer* renderer) {
     // destroy in reverse order
     vk_destroy_commands_sync(s);
     destroy_scene_buffers(s);
+
+    // Shutdown reference counting systems
+    cardinal_material_ref_shutdown();
+    cardinal_ref_counting_shutdown();
 
     // Destroy simple pipelines
     vk_destroy_simple_pipelines(s);
@@ -672,6 +698,9 @@ void cardinal_renderer_upload_scene(CardinalRenderer* renderer, const CardinalSc
         return;
     }
 
+    CARDINAL_LOG_INFO("Uploading scene with %u meshes using optimized staging buffers",
+                      scene->mesh_count);
+
     for (uint32_t i = 0; i < scene->mesh_count; i++) {
         const CardinalMesh* src = &scene->meshes[i];
         GpuMesh* dst = &s->scene_meshes[i];
@@ -693,36 +722,21 @@ void cardinal_renderer_upload_scene(CardinalRenderer* renderer, const CardinalSc
             continue;
         }
 
-        // Create CPU-visible buffers and upload directly (simple, not optimal)
-        VkBufferCreateInfo vci = {.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO};
-        vci.size = vsize;
-        vci.usage = VK_BUFFER_USAGE_VERTEX_BUFFER_BIT;
-        vci.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
-        if (!vk_allocator_allocate_buffer(&s->allocator, &vci, &dst->vbuf, &dst->vmem,
-                                          VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT |
-                                              VK_MEMORY_PROPERTY_HOST_COHERENT_BIT)) {
-            CARDINAL_LOG_ERROR("Failed to allocate vertex buffer for mesh %u", i);
+        // Create vertex buffer using staging buffer for optimal GPU performance
+        if (!vk_buffer_create_with_staging(
+                &s->allocator, s->device, s->command_pools[0], s->graphics_queue, src->vertices,
+                vsize, VK_BUFFER_USAGE_VERTEX_BUFFER_BIT, &dst->vbuf, &dst->vmem)) {
+            CARDINAL_LOG_ERROR("Failed to create vertex buffer for mesh %u", i);
             continue;
         }
-        void* vmap = NULL;
-        vkMapMemory(s->device, dst->vmem, 0, vsize, 0, &vmap);
-        memcpy(vmap, src->vertices, (size_t)vsize);
-        vkUnmapMemory(s->device, dst->vmem);
 
         if (src->index_count > 0 && src->indices) {
-            VkBufferCreateInfo ici = {.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO};
-            ici.size = isize;
-            ici.usage = VK_BUFFER_USAGE_INDEX_BUFFER_BIT;
-            ici.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
-            if (!vk_allocator_allocate_buffer(&s->allocator, &ici, &dst->ibuf, &dst->imem,
-                                              VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT |
-                                                  VK_MEMORY_PROPERTY_HOST_COHERENT_BIT)) {
-                CARDINAL_LOG_ERROR("Failed to allocate index buffer for mesh %u", i);
+            // Create index buffer using staging buffer for optimal GPU performance
+            if (!vk_buffer_create_with_staging(
+                    &s->allocator, s->device, s->command_pools[0], s->graphics_queue, src->indices,
+                    isize, VK_BUFFER_USAGE_INDEX_BUFFER_BIT, &dst->ibuf, &dst->imem)) {
+                CARDINAL_LOG_ERROR("Failed to create index buffer for mesh %u", i);
             } else {
-                void* imap = NULL;
-                vkMapMemory(s->device, dst->imem, 0, isize, 0, &imap);
-                memcpy(imap, src->indices, (size_t)isize);
-                vkUnmapMemory(s->device, dst->imem);
                 dst->idx_count = src->index_count;
             }
         }

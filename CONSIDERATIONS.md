@@ -9,15 +9,12 @@
 - **Error Handling**: Ensure all resources properly cleaned up to prevent leaks (vulkan_renderer.c:195)
 - **Thread Safety**: Ensure thread-safe destruction across the codebase (window.c:126, vulkan_commands.c:97, vulkan_pipeline.c:397, log.c:141)
 - **Error Recovery**: Add error checking for degenerate cases and improve error handling (vulkan_renderer.c:281, editor_layer.cpp:319, gltf_loader.c:292)
-- **Resource Validation**: Add checks for valid resource handles before destruction (vulkan_pipeline.c:145)
 - **Potential Double-Free**: Multiple locations allocate and free arrays without proper null checks, risking double-free errors (vulkan_pbr.c:795-797, vulkan_commands.c:128-132)
 
 ### **HIGH** - Performance & Memory Issues  
 - **Memory Management**: Cache memory properties for performance (vulkan_pbr.c:14, 23)
 - **Async Loading**: Implement asynchronous loading to prevent UI blocking (assets/loader.c:43, texture_loader.c:69, editor_layer.cpp:89, vulkan_pbr.c:84, 99)
-- **Buffer Optimization**: Optimize buffer uploads using staging buffers and transfers (vulkan_renderer.c:492)
 - **Synchronization**: Optimize synchronization to reduce CPU-GPU stalls (vulkan_renderer.c:80)
-- **Reference Counting**: Implement reference counting for shared resources (vulkan_renderer.c:177, texture_loader.c:68, 76, gltf_loader.c:97)
 - **Memory Allocators**: Add support for Vulkan memory allocator extensions (vulkan_pbr.c:961, 969)
 - **Memory Tracking**: Implement header-based tracked allocations so frees update stats precisely (engine/src/core/memory.c, engine/include/cardinal/core/memory.h)
 - **Allocator Adoption**: Sweep the codebase to replace malloc/calloc/realloc/free with category-tagged allocators/macros, starting with assets and renderer paths (engine/src/assets/*, engine/src/renderer/*)

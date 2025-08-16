@@ -113,6 +113,7 @@ bool vk_pbr_pipeline_create(VulkanPBRPipeline* pipeline, VkDevice device,
                             VkPhysicalDevice physicalDevice, VkFormat swapchainFormat,
                             VkFormat depthFormat, VkCommandPool commandPool, VkQueue graphicsQueue,
                             VulkanAllocator* allocator) {
+    (void)physicalDevice; // Suppress unused parameter warning
     // Suppress unused parameter warnings
     (void)commandPool;
     (void)graphicsQueue;
@@ -836,6 +837,7 @@ bool vk_pbr_load_scene(VulkanPBRPipeline* pipeline, VkDevice device,
         vk_allocator_get_buffer_device_address(allocator, pipeline->vertexBuffer);
     CARDINAL_LOG_DEBUG("Vertex buffer device address: 0x%llx",
                        (unsigned long long)vertexBufferAddress);
+    (void)vertexBufferAddress; // Suppress unused variable warning
 
     // Map and upload vertex data
     void* vertexData;
@@ -872,6 +874,7 @@ bool vk_pbr_load_scene(VulkanPBRPipeline* pipeline, VkDevice device,
             vk_allocator_get_buffer_device_address(allocator, pipeline->indexBuffer);
         CARDINAL_LOG_DEBUG("Index buffer device address: 0x%llx",
                            (unsigned long long)indexBufferAddress);
+        (void)indexBufferAddress; // Suppress unused variable warning
 
         void* indexData;
         if (vkMapMemory(device, pipeline->indexBufferMemory, 0, indexBufferSize, 0, &indexData) !=

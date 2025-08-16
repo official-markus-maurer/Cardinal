@@ -37,8 +37,10 @@
 #include "cgltf.h"
 
 #include "cardinal/assets/gltf_loader.h"
+#include "cardinal/assets/material_ref_counting.h"
 #include "cardinal/assets/texture_loader.h"
 #include "cardinal/core/log.h"
+#include "cardinal/core/ref_counting.h"
 
 /**
  * @brief Computes a default normal vector.
@@ -131,6 +133,7 @@ static bool load_texture_with_fallback(const char* original_uri, const char* bas
                                        CardinalTexture* out_texture) {
     char texture_path[512] = {0};
     TextureData tex_data = {0};
+    CardinalRefCountedResource* ref_resource = NULL;
 
     // First attempt: original path relative to glTF
     const char* last_slash = strrchr(base_path, '/');
@@ -147,7 +150,8 @@ static bool load_texture_with_fallback(const char* original_uri, const char* bas
     }
 
     LOG_DEBUG("Trying texture path: %s", texture_path);
-    if (texture_load_from_file(texture_path, &tex_data)) {
+    ref_resource = texture_load_with_ref_counting(texture_path, &tex_data);
+    if (ref_resource) {
         goto success;
     }
 
@@ -282,7 +286,8 @@ static bool load_texture_with_fallback(const char* original_uri, const char* bas
             snprintf(texture_path, sizeof(texture_path), "%s%ctextures%c%s", prefix, sep, sep,
                      filename_only);
             LOG_DEBUG("Trying models->textures remap: %s", texture_path);
-            if (texture_load_from_file(texture_path, &tex_data)) {
+            ref_resource = texture_load_with_ref_counting(texture_path, &tex_data);
+            if (ref_resource) {
                 goto success;
             }
         }
@@ -291,7 +296,8 @@ static bool load_texture_with_fallback(const char* original_uri, const char* bas
     // Third attempt: just the filename in assets/textures relative to CWD
     snprintf(texture_path, sizeof(texture_path), "assets/textures/%s", filename_only);
     LOG_DEBUG("Trying relative path: %s", texture_path);
-    if (texture_load_from_file(texture_path, &tex_data)) {
+    ref_resource = texture_load_with_ref_counting(texture_path, &tex_data);
+    if (ref_resource) {
         goto success;
     }
 
@@ -308,9 +314,12 @@ success:
     if (out_texture->path) {
         strcpy(out_texture->path, texture_path);
     }
+    // Store reference for cleanup
+    out_texture->ref_resource = ref_resource;
 
-    LOG_INFO("Loaded texture %s: %ux%u, %u channels", texture_path, tex_data.width, tex_data.height,
-             tex_data.channels);
+    LOG_INFO("Loaded texture %s: %ux%u, %u channels (ref_count=%u)", texture_path, tex_data.width,
+             tex_data.height, tex_data.channels,
+             ref_resource ? cardinal_ref_get_count(ref_resource) : 0);
     return true;
 }
 
@@ -693,14 +702,40 @@ bool cardinal_gltf_load_scene(const char* path, CardinalScene* out_scene) {
                 card_mat->emissive_factor[2] = mat->emissive_factor[2];
             }
 
-            material_count++;
-            LOG_DEBUG("Material %u loaded: albedo_tex=%u, normal_tex=%u, mr_tex=%u",
-                      material_count - 1, card_mat->albedo_texture, card_mat->normal_texture,
-                      card_mat->metallic_roughness_texture);
-            LOG_DEBUG("Material %u factors: albedo=(%.3f,%.3f,%.3f), metallic=%.3f, roughness=%.3f",
-                      material_count - 1, card_mat->albedo_factor[0], card_mat->albedo_factor[1],
-                      card_mat->albedo_factor[2], card_mat->metallic_factor,
-                      card_mat->roughness_factor);
+            // Try to load material with reference counting
+            CardinalMaterial temp_material;
+            CardinalRefCountedResource* material_ref =
+                cardinal_material_load_with_ref_counting(card_mat, &temp_material);
+            if (material_ref) {
+                // Replace the material with the reference-counted one
+                *card_mat = temp_material;
+                card_mat->ref_resource = material_ref; // Store the reference resource
+                material_count++;
+                LOG_DEBUG("Material %u loaded with ref counting: albedo_tex=%u, normal_tex=%u, "
+                          "mr_tex=%u (ref_count=%u)",
+                          material_count - 1, card_mat->albedo_texture, card_mat->normal_texture,
+                          card_mat->metallic_roughness_texture,
+                          cardinal_ref_get_count(material_ref));
+                LOG_DEBUG(
+                    "Material %u factors: albedo=(%.3f,%.3f,%.3f), metallic=%.3f, roughness=%.3f",
+                    material_count - 1, card_mat->albedo_factor[0], card_mat->albedo_factor[1],
+                    card_mat->albedo_factor[2], card_mat->metallic_factor,
+                    card_mat->roughness_factor);
+            } else {
+                LOG_WARN("Failed to register material %zu with reference counting, using direct "
+                         "material",
+                         i);
+                card_mat->ref_resource = NULL; // No reference resource for direct materials
+                material_count++;
+                LOG_DEBUG("Material %u loaded: albedo_tex=%u, normal_tex=%u, mr_tex=%u",
+                          material_count - 1, card_mat->albedo_texture, card_mat->normal_texture,
+                          card_mat->metallic_roughness_texture);
+                LOG_DEBUG(
+                    "Material %u factors: albedo=(%.3f,%.3f,%.3f), metallic=%.3f, roughness=%.3f",
+                    material_count - 1, card_mat->albedo_factor[0], card_mat->albedo_factor[1],
+                    card_mat->albedo_factor[2], card_mat->metallic_factor,
+                    card_mat->roughness_factor);
+            }
         }
         LOG_INFO("Successfully loaded %u materials", material_count);
     }

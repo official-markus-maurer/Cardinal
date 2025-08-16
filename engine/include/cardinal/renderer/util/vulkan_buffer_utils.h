@@ -69,4 +69,25 @@ void vk_buffer_copy(VkDevice device, VkCommandPool commandPool,
                     VkQueue graphicsQueue, VkBuffer srcBuffer,
                     VkBuffer dstBuffer, VkDeviceSize size);
 
+/**
+ * @brief Creates a buffer with optimal GPU memory using staging buffer
+ * transfer.
+ * @param allocator VulkanAllocator instance.
+ * @param device Logical device.
+ * @param commandPool Command pool.
+ * @param graphicsQueue Graphics queue.
+ * @param data Source data to upload.
+ * @param size Buffer size.
+ * @param usage Buffer usage flags (will add TRANSFER_DST_BIT automatically).
+ * @param buffer Output buffer handle.
+ * @param bufferMemory Output memory handle.
+ * @return true on success, false on failure.
+ */
+bool vk_buffer_create_with_staging(VulkanAllocator *allocator, VkDevice device,
+                                   VkCommandPool commandPool,
+                                   VkQueue graphicsQueue, const void *data,
+                                   VkDeviceSize size, VkBufferUsageFlags usage,
+                                   VkBuffer *buffer,
+                                   VkDeviceMemory *bufferMemory);
+
 #endif // VULKAN_BUFFER_UTILS_H

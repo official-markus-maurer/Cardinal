@@ -215,16 +215,20 @@ CardinalLogLevel cardinal_log_parse_level(const char *level_str);
  *
  * @{
  */
-#define LOG_TRACE CARDINAL_LOG_TRACE /**< Short alias for CARDINAL_LOG_TRACE   \
-                                      */
-#define LOG_DEBUG CARDINAL_LOG_DEBUG /**< Short alias for CARDINAL_LOG_DEBUG   \
-                                      */
-#define LOG_INFO CARDINAL_LOG_INFO   /**< Short alias for CARDINAL_LOG_INFO */
-#define LOG_WARN CARDINAL_LOG_WARN   /**< Short alias for CARDINAL_LOG_WARN */
-#define LOG_ERROR CARDINAL_LOG_ERROR /**< Short alias for CARDINAL_LOG_ERROR   \
-                                      */
-#define LOG_FATAL CARDINAL_LOG_FATAL /**< Short alias for CARDINAL_LOG_FATAL   \
-                                      */
+#define LOG_TRACE                                                              \
+  CARDINAL_LOG_TRACE /**< Short alias for CARDINAL_LOG_TRACE                   \
+                      */
+#define LOG_DEBUG                                                              \
+  CARDINAL_LOG_DEBUG               /**< Short alias for CARDINAL_LOG_DEBUG     \
+                                    */
+#define LOG_INFO CARDINAL_LOG_INFO /**< Short alias for CARDINAL_LOG_INFO */
+#define LOG_WARN CARDINAL_LOG_WARN /**< Short alias for CARDINAL_LOG_WARN */
+#define LOG_ERROR                                                              \
+  CARDINAL_LOG_ERROR /**< Short alias for CARDINAL_LOG_ERROR                   \
+                      */
+#define LOG_FATAL                                                              \
+  CARDINAL_LOG_FATAL /**< Short alias for CARDINAL_LOG_FATAL                   \
+                      */
 /** @} */
 
 /** @} */ // End of LoggingMacros group

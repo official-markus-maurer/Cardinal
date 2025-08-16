@@ -69,6 +69,8 @@ target_sources(cardinal_engine PRIVATE
     src/assets/gltf_loader.c
     src/assets/loader.c
     src/assets/texture_loader.c
+    src/core/ref_counting.c
+    src/assets/material_ref_counting.c
 )
 # log.cpp is now properly a C++ file for spdlog backend
 

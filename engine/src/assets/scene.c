@@ -1,4 +1,6 @@
 #include "cardinal/assets/scene.h"
+#include "cardinal/assets/material_ref_counting.h"
+#include "cardinal/core/ref_counting.h"
 #include <stdlib.h>
 #include <string.h>
 
@@ -24,16 +26,26 @@ void cardinal_scene_destroy(CardinalScene* scene) {
         free(scene->meshes);
     }
 
-    // Free materials (no dynamic allocation within materials currently)
+    // Release reference-counted materials
     if (scene->materials) {
+        for (uint32_t i = 0; i < scene->material_count; ++i) {
+            if (scene->materials[i].ref_resource) {
+                cardinal_material_release_ref_counted(scene->materials[i].ref_resource);
+            }
+        }
         free(scene->materials);
     }
 
-    // Free textures
+    // Release reference-counted textures
     if (scene->textures) {
         for (uint32_t i = 0; i < scene->texture_count; ++i) {
-            free(scene->textures[i].data);
-            free(scene->textures[i].path);
+            if (scene->textures[i].ref_resource) {
+                cardinal_ref_release(scene->textures[i].ref_resource);
+            } else {
+                // Fallback for non-reference-counted textures
+                free(scene->textures[i].data);
+                free(scene->textures[i].path);
+            }
         }
         free(scene->textures);
     }

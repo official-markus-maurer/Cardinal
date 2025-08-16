@@ -140,3 +140,65 @@ void vk_buffer_copy(VkDevice device, VkCommandPool commandPool, VkQueue graphics
 
     vkFreeCommandBuffers(device, commandPool, 1, &commandBuffer);
 }
+
+/**
+ * @brief Creates a buffer with optimal GPU memory using staging buffer transfer.
+ * @param allocator VulkanAllocator instance.
+ * @param device Logical device.
+ * @param commandPool Command pool.
+ * @param graphicsQueue Graphics queue.
+ * @param data Source data to upload.
+ * @param size Buffer size.
+ * @param usage Buffer usage flags (will add TRANSFER_DST_BIT automatically).
+ * @param buffer Output buffer handle.
+ * @param bufferMemory Output memory handle.
+ * @return true on success, false on failure.
+ */
+bool vk_buffer_create_with_staging(VulkanAllocator* allocator, VkDevice device,
+                                   VkCommandPool commandPool, VkQueue graphicsQueue,
+                                   const void* data, VkDeviceSize size, VkBufferUsageFlags usage,
+                                   VkBuffer* buffer, VkDeviceMemory* bufferMemory) {
+    if (!data || size == 0 || !allocator || !buffer || !bufferMemory) {
+        CARDINAL_LOG_ERROR("Invalid parameters for staging buffer creation");
+        return false;
+    }
+
+    // Create staging buffer (CPU-visible)
+    VkBuffer stagingBuffer;
+    VkDeviceMemory stagingBufferMemory;
+    if (!vk_buffer_create(allocator, size, VK_BUFFER_USAGE_TRANSFER_SRC_BIT,
+                          VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT |
+                              VK_MEMORY_PROPERTY_HOST_COHERENT_BIT,
+                          &stagingBuffer, &stagingBufferMemory)) {
+        CARDINAL_LOG_ERROR("Failed to create staging buffer");
+        return false;
+    }
+
+    // Map staging buffer and copy data
+    void* mappedData;
+    if (vkMapMemory(device, stagingBufferMemory, 0, size, 0, &mappedData) != VK_SUCCESS) {
+        CARDINAL_LOG_ERROR("Failed to map staging buffer memory");
+        vk_allocator_free_buffer(allocator, stagingBuffer, stagingBufferMemory);
+        return false;
+    }
+    memcpy(mappedData, data, (size_t)size);
+    vkUnmapMemory(device, stagingBufferMemory);
+
+    // Create destination buffer (GPU-optimal)
+    if (!vk_buffer_create(allocator, size, usage | VK_BUFFER_USAGE_TRANSFER_DST_BIT,
+                          VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, buffer, bufferMemory)) {
+        CARDINAL_LOG_ERROR("Failed to create destination buffer");
+        vk_allocator_free_buffer(allocator, stagingBuffer, stagingBufferMemory);
+        return false;
+    }
+
+    // Copy from staging to destination buffer
+    vk_buffer_copy(device, commandPool, graphicsQueue, stagingBuffer, *buffer, size);
+
+    // Clean up staging buffer
+    vk_allocator_free_buffer(allocator, stagingBuffer, stagingBufferMemory);
+
+    CARDINAL_LOG_DEBUG("Successfully created buffer with staging: size=%llu bytes, usage=0x%X",
+                       (unsigned long long)size, usage);
+    return true;
+}
