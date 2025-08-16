@@ -3,12 +3,13 @@
 
 #include <stdbool.h>
 #include <stdint.h>
+#include "cardinal/core/async_loader.h"
 
 #ifdef __cplusplus
 extern "C" {
 #endif
 
-// Forward declaration for reference counting
+// Forward declarations
 typedef struct CardinalRefCountedResource CardinalRefCountedResource;
 
 // Texture data structure for loading images
@@ -35,6 +36,14 @@ void texture_release_ref_counted(CardinalRefCountedResource *ref_resource);
 
 // Free texture data loaded by texture_load_from_file() (legacy function)
 void texture_data_free(TextureData *texture);
+
+// Load texture asynchronously with reference counting
+// Returns an async task handle that can be used to check status and retrieve
+// results
+CardinalAsyncTask *texture_load_async(const char *filepath,
+                                      CardinalAsyncPriority priority,
+                                      CardinalAsyncCallback callback,
+                                      void *user_data);
 
 #ifdef __cplusplus
 }

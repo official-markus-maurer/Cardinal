@@ -314,9 +314,8 @@ bool vk_pbr_pipeline_create(VulkanPBRPipeline* pipeline, VkDevice device,
     rasterizer.rasterizerDiscardEnable = VK_FALSE;
     rasterizer.polygonMode = VK_POLYGON_MODE_FILL;
     rasterizer.lineWidth = 1.0f;
-    rasterizer.cullMode =
-        VK_CULL_MODE_NONE; // TODO: Temporarily disable culling, activate once we render.
-    rasterizer.frontFace = VK_FRONT_FACE_CLOCKWISE;
+    rasterizer.cullMode = VK_CULL_MODE_BACK_BIT;
+    rasterizer.frontFace = VK_FRONT_FACE_COUNTER_CLOCKWISE; // Standard counter-clockwise winding
     rasterizer.depthBiasEnable = VK_FALSE;
 
     // Multisampling
@@ -517,15 +516,26 @@ void vk_pbr_pipeline_destroy(VulkanPBRPipeline* pipeline, VkDevice device,
     // Destroy textures
     if (pipeline->textureImages) {
         for (uint32_t i = 0; i < pipeline->textureCount; i++) {
-            if (pipeline->textureImageViews[i] != VK_NULL_HANDLE) {
+            if (pipeline->textureImageViews && pipeline->textureImageViews[i] != VK_NULL_HANDLE) {
                 vkDestroyImageView(device, pipeline->textureImageViews[i], NULL);
             }
             vk_allocator_free_image(allocator, pipeline->textureImages[i],
-                                    pipeline->textureImageMemories[i]);
+                                    pipeline->textureImageMemories
+                                        ? pipeline->textureImageMemories[i]
+                                        : VK_NULL_HANDLE);
         }
         free(pipeline->textureImages);
-        free(pipeline->textureImageMemories);
-        free(pipeline->textureImageViews);
+        pipeline->textureImages = NULL;
+
+        if (pipeline->textureImageMemories) {
+            free(pipeline->textureImageMemories);
+            pipeline->textureImageMemories = NULL;
+        }
+
+        if (pipeline->textureImageViews) {
+            free(pipeline->textureImageViews);
+            pipeline->textureImageViews = NULL;
+        }
     }
 
     if (pipeline->textureSampler != VK_NULL_HANDLE) {

@@ -104,6 +104,18 @@ CardinalWindow* cardinal_window_create(const CardinalWindowConfig* config) {
     win->height = config->height;
     win->should_close = false;
 
+    // Initialize mutex for thread safety
+#ifdef _WIN32
+    InitializeCriticalSection(&win->mutex);
+#else
+    if (pthread_mutex_init(&win->mutex, NULL) != 0) {
+        LOG_ERROR("Failed to initialize window mutex");
+        glfwDestroyWindow(win->handle);
+        free(win);
+        return NULL;
+    }
+#endif
+
     LOG_INFO("cardinal_window_create: success");
     return win;
 }
@@ -125,8 +137,23 @@ CardinalWindow* cardinal_window_create(const CardinalWindowConfig* config) {
 void cardinal_window_poll(CardinalWindow* window) {
     if (!window)
         return;
+
+    // Lock mutex for thread-safe polling
+#ifdef _WIN32
+    EnterCriticalSection(&window->mutex);
+#else
+    pthread_mutex_lock(&window->mutex);
+#endif
+
     glfwPollEvents();
     window->should_close = glfwWindowShouldClose(window->handle) != 0;
+
+    // Unlock mutex
+#ifdef _WIN32
+    LeaveCriticalSection(&window->mutex);
+#else
+    pthread_mutex_unlock(&window->mutex);
+#endif
 }
 
 /**
@@ -165,11 +192,29 @@ bool cardinal_window_should_close(const CardinalWindow* window) {
 void cardinal_window_destroy(CardinalWindow* window) {
     if (!window)
         return;
+
+    // Lock mutex for thread-safe destruction
+#ifdef _WIN32
+    EnterCriticalSection(&window->mutex);
+#else
+    pthread_mutex_lock(&window->mutex);
+#endif
+
     if (window->handle) {
         glfwDestroyWindow(window->handle);
         window->handle = NULL;
     }
     glfwTerminate();
+
+    // Unlock and destroy mutex
+#ifdef _WIN32
+    LeaveCriticalSection(&window->mutex);
+    DeleteCriticalSection(&window->mutex);
+#else
+    pthread_mutex_unlock(&window->mutex);
+    pthread_mutex_destroy(&window->mutex);
+#endif
+
     free(window);
 }
 

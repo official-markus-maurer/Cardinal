@@ -1,4 +1,5 @@
 #include "cardinal/assets/texture_loader.h"
+#include "cardinal/core/async_loader.h"
 #include "cardinal/core/log.h"
 #include "cardinal/core/ref_counting.h"
 #include <stdlib.h>
@@ -166,4 +167,43 @@ void texture_data_free(TextureData* texture) {
         texture->data = NULL;
     }
     texture->width = texture->height = texture->channels = 0;
+}
+
+/**
+ * @brief Load texture asynchronously with reference counting
+ *
+ * Loads a texture file in a background thread to prevent UI blocking.
+ * The texture will be automatically registered in the reference counting
+ * system for sharing between multiple users.
+ *
+ * @param filepath Path to the image file
+ * @param priority Loading priority (higher priority tasks are processed first)
+ * @param callback Function to call when loading completes (can be NULL)
+ * @param user_data User data passed to the callback function
+ * @return Async task handle, or NULL on failure
+ *
+ * @note The callback is called on the main thread when processing completed
+ *       tasks with cardinal_async_process_completed_tasks()
+ * @note Use cardinal_async_get_texture_result() to retrieve the loaded texture
+ * @note Call cardinal_async_free_task() when done with the task handle
+ *
+ * @see cardinal_async_get_texture_result()
+ * @see cardinal_async_free_task()
+ * @see cardinal_async_process_completed_tasks()
+ */
+CardinalAsyncTask* texture_load_async(const char* filepath, CardinalAsyncPriority priority,
+                                      CardinalAsyncCallback callback, void* user_data) {
+    if (!filepath) {
+        CARDINAL_LOG_ERROR("texture_load_async: invalid filepath");
+        return NULL;
+    }
+
+    if (!cardinal_async_loader_is_initialized()) {
+        CARDINAL_LOG_ERROR("Async loader not initialized");
+        return NULL;
+    }
+
+    CARDINAL_LOG_INFO("[TEXTURE] Async texture loading requested: %s", filepath);
+
+    return cardinal_async_load_texture(filepath, priority, callback, user_data);
 }

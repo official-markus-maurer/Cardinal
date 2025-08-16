@@ -196,6 +196,12 @@ void cardinal_renderer_draw_frame(CardinalRenderer* renderer) {
         if (wait_result == VK_ERROR_DEVICE_LOST) {
             CARDINAL_LOG_ERROR("[SYNC] Frame %u: DEVICE LOST during timeline wait! GPU crashed",
                                s->current_frame);
+            // Device lost - trigger cleanup and recovery
+            vkDeviceWaitIdle(s->device); // Wait for any remaining operations
+            return;
+        } else if (wait_result != VK_SUCCESS) {
+            CARDINAL_LOG_ERROR("[SYNC] Frame %u: Timeline semaphore wait failed: %d",
+                               s->current_frame, wait_result);
             return;
         }
     }
@@ -215,6 +221,13 @@ void cardinal_renderer_draw_frame(CardinalRenderer* renderer) {
             vk_recreate_images_in_flight(s);
         }
         return; // Skip this frame
+    } else if (ai == VK_ERROR_DEVICE_LOST) {
+        CARDINAL_LOG_ERROR(
+            "[SYNC] Frame %u: DEVICE LOST during swapchain image acquisition! GPU crashed",
+            s->current_frame);
+        // Device lost - trigger cleanup and recovery
+        vkDeviceWaitIdle(s->device); // Wait for any remaining operations
+        return;
     } else if (ai != VK_SUCCESS) {
         CARDINAL_LOG_ERROR("[SYNC] Frame %u: Failed to acquire swapchain image: %d",
                            s->current_frame, ai);
@@ -259,17 +272,47 @@ void cardinal_renderer_draw_frame(CardinalRenderer* renderer) {
     CARDINAL_LOG_INFO("[SUBMIT] Frame %u: Submit result: %d", s->current_frame, submit_res);
     if (submit_res == VK_ERROR_DEVICE_LOST) {
         CARDINAL_LOG_ERROR("[SUBMIT] Frame %u: DEVICE LOST during submit!", s->current_frame);
+        // Device lost - trigger cleanup and recovery
+        vkDeviceWaitIdle(s->device); // Wait for any remaining operations
+        return;
+    } else if (submit_res != VK_SUCCESS) {
+        CARDINAL_LOG_ERROR("[SUBMIT] Frame %u: Queue submit failed: %d", s->current_frame,
+                           submit_res);
         return;
     }
 
     // Wait for rendering completion before present using timeline semaphore (CPU-side wait)
+    // Add error checking for degenerate cases
+    if (!s->device || s->timeline_semaphore == VK_NULL_HANDLE) {
+        CARDINAL_LOG_ERROR("[SYNC] Frame %u: Invalid device or timeline semaphore for render wait",
+                           s->current_frame);
+        return;
+    }
+
+    if (signal_after_render == 0) {
+        CARDINAL_LOG_ERROR("[SYNC] Frame %u: Invalid timeline value (0) for render completion wait",
+                           s->current_frame);
+        return;
+    }
+
     VkSemaphoreWaitInfo render_wait = {0};
     render_wait.sType = VK_STRUCTURE_TYPE_SEMAPHORE_WAIT_INFO;
     render_wait.semaphoreCount = 1;
     render_wait.pSemaphores = &s->timeline_semaphore;
     render_wait.pValues = &signal_after_render;
 
-    s->vkWaitSemaphores(s->device, &render_wait, UINT64_MAX);
+    VkResult wait_res = s->vkWaitSemaphores(s->device, &render_wait, UINT64_MAX);
+    if (wait_res == VK_ERROR_DEVICE_LOST) {
+        CARDINAL_LOG_ERROR("[SYNC] Frame %u: DEVICE LOST during render completion wait!",
+                           s->current_frame);
+        // Device lost - trigger cleanup and recovery
+        vkDeviceWaitIdle(s->device); // Wait for any remaining operations
+        return;
+    } else if (wait_res != VK_SUCCESS) {
+        CARDINAL_LOG_ERROR("[SYNC] Frame %u: Render completion wait failed: %d", s->current_frame,
+                           wait_res);
+        return;
+    }
 
     VkPresentInfoKHR present_info = {.sType = VK_STRUCTURE_TYPE_PRESENT_INFO_KHR};
     present_info.waitSemaphoreCount = 0; // No binary semaphores needed; CPU guarantees completion
@@ -281,7 +324,19 @@ void cardinal_renderer_draw_frame(CardinalRenderer* renderer) {
     CARDINAL_LOG_INFO("[PRESENT] Frame %u: Presenting image %u", s->current_frame, image_index);
     VkResult present_res = vkQueuePresentKHR(s->present_queue, &present_info);
     CARDINAL_LOG_INFO("[PRESENT] Frame %u: Present result: %d", s->current_frame, present_res);
-    (void)present_res; // Suppress unused variable warning
+
+    if (present_res == VK_ERROR_OUT_OF_DATE_KHR || present_res == VK_SUBOPTIMAL_KHR) {
+        // Swapchain is out of date, will be recreated on next frame
+        CARDINAL_LOG_WARN("[PRESENT] Frame %u: Swapchain out of date, will recreate",
+                          s->current_frame);
+    } else if (present_res == VK_ERROR_DEVICE_LOST) {
+        CARDINAL_LOG_ERROR("[PRESENT] Frame %u: DEVICE LOST during present!", s->current_frame);
+        // Device lost - trigger cleanup and recovery
+        vkDeviceWaitIdle(s->device); // Wait for any remaining operations
+        return;
+    } else if (present_res != VK_SUCCESS) {
+        CARDINAL_LOG_ERROR("[PRESENT] Frame %u: Present failed: %d", s->current_frame, present_res);
+    }
 
     // Update timeline values for next frame
     s->current_frame_value = signal_after_render;

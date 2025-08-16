@@ -146,8 +146,12 @@ void vk_destroy_pipeline(VulkanState* s) {
     if (!s || !s->device)
         return;
 
-    // Wait for device to be idle before destroying resources
-    vkDeviceWaitIdle(s->device);
+    // Wait for device to be idle before destroying resources for thread safety
+    VkResult result = vkDeviceWaitIdle(s->device);
+    if (result != VK_SUCCESS) {
+        LOG_ERROR("pipeline: vkDeviceWaitIdle failed during destruction: %d", result);
+        // Continue with destruction anyway to prevent resource leaks
+    }
 
     destroy_depth_resources(s);
 

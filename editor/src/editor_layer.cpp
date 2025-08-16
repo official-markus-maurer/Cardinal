@@ -14,6 +14,7 @@
 #include <cardinal/assets/loader.h>
 #include <cardinal/assets/scene.h>
 #include <cardinal/cardinal.h>
+#include <cardinal/core/async_loader.h>
 #include <cardinal/core/window.h>
 #include <cardinal/renderer/renderer.h>
 #include <cardinal/renderer/renderer_internal.h>
@@ -28,6 +29,8 @@ namespace fs = std::filesystem;
 static CardinalRenderer *g_renderer = NULL;
 static VkDescriptorPool g_descriptor_pool = VK_NULL_HANDLE;
 static bool g_scene_loaded = false;
+static CardinalAsyncTask *g_loading_task = nullptr;
+static bool g_is_loading = false;
 static CardinalScene g_scene; // zero-initialized on start
 static char g_scene_path[512] = "";
 static char g_status_msg[256] = "";
@@ -87,21 +90,86 @@ static std::vector<AssetEntry> g_asset_entries;
 
 // Load scene helper
 /**
- * @brief Loads a scene from the given file path.
+ * @brief Callback function for async scene loading completion
+ */
+static void scene_load_callback(CardinalAsyncTask *task, void *user_data) {
+  const char *path = (const char *)user_data;
+
+  if (cardinal_async_get_task_status(task) == CARDINAL_ASYNC_STATUS_COMPLETED) {
+    CardinalScene loaded_scene;
+    if (cardinal_async_get_scene_result(task, &loaded_scene)) {
+      // Scene was already cleared in load_scene_from_path, just assign new one
+      g_scene = loaded_scene;
+      g_scene_loaded = true;
+
+      // Upload to GPU for drawing
+      if (g_renderer) {
+        cardinal_renderer_upload_scene(g_renderer, &g_scene);
+        
+        // Update camera and lighting after scene upload to ensure proper rendering
+        if (g_pbr_enabled) {
+          cardinal_renderer_set_camera(g_renderer, &g_camera);
+          cardinal_renderer_set_lighting(g_renderer, &g_light);
+        }
+      }
+
+      snprintf(g_status_msg, sizeof(g_status_msg),
+               "Loaded scene: %u mesh(es) from %s",
+               (unsigned)g_scene.mesh_count, path);
+    } else {
+      snprintf(g_status_msg, sizeof(g_status_msg),
+               "Failed to process loaded scene: %s", path);
+    }
+  } else {
+    const char *error_msg = cardinal_async_get_error_message(task);
+    snprintf(g_status_msg, sizeof(g_status_msg), "Failed to load: %s - %s",
+             path, error_msg ? error_msg : "Unknown error");
+  }
+
+  // Cleanup
+  cardinal_async_free_task(task);
+  g_loading_task = nullptr;
+  g_is_loading = false;
+
+  // Free the path copy
+  free((void *)path);
+}
+
+/**
+ * @brief Loads a scene from the given file path asynchronously.
  *
- * This function attempts to load a glTF or glb scene file, updates the global
- * scene state, and sets status messages accordingly.
+ * This function attempts to load a glTF or glb scene file asynchronously
+ * to prevent UI blocking, updates the global scene state, and sets status
+ * messages accordingly.
  *
  * @param path The file path to the scene file.
+ * @param use_async Whether to use asynchronous loading (true) or synchronous
+ * (false)
  *
  * @todo Support loading other scene formats besides glTF/glb.
- * @todo Implement asynchronous loading to prevent UI blocking.
  * @todo Add progress reporting during loading.
  */
-static void load_scene_from_path(const char *path) {
+static void load_scene_from_path(const char *path, bool use_async = true) {
   if (!path || !path[0]) {
     return;
   }
+
+  // Prevent multiple simultaneous loads to avoid race conditions
+  // TODO: Obviously want multiple models to be loadable simultaneously but not the same one at the same time.
+  if (g_is_loading) {
+    snprintf(g_status_msg, sizeof(g_status_msg), "Already loading a scene, please wait...");
+    return;
+  }
+
+  // Cancel any existing loading task
+  if (g_loading_task) {
+    cardinal_async_cancel_task(g_loading_task);
+    cardinal_async_free_task(g_loading_task);
+    g_loading_task = nullptr;
+    g_is_loading = false;
+  }
+
+  // Clean up current scene before loading new one (prevents double-loading conflicts)
   if (g_scene_loaded) {
     cardinal_scene_destroy(&g_scene);
     memset(&g_scene, 0, sizeof(g_scene));
@@ -110,19 +178,56 @@ static void load_scene_from_path(const char *path) {
     if (g_renderer)
       cardinal_renderer_clear_scene(g_renderer);
   }
-  if (cardinal_scene_load(path, &g_scene)) {
-    g_scene_loaded = true;
-    // Upload to GPU for drawing
-    if (g_renderer)
-      cardinal_renderer_upload_scene(g_renderer, &g_scene);
-    snprintf(g_status_msg, sizeof(g_status_msg),
-             "Loaded scene: %u mesh(es) from %s", (unsigned)g_scene.mesh_count,
-             path);
-  } else {
-    snprintf(g_status_msg, sizeof(g_status_msg), "Failed to load: %s", path);
-  }
-  // Update the input field to reflect last attempted path
+
+  // Update the input field to reflect attempted path
   snprintf(g_scene_path, sizeof(g_scene_path), "%s", path);
+
+  if (use_async && cardinal_async_loader_is_initialized()) {
+    // Asynchronous loading
+    g_is_loading = true;
+    snprintf(g_status_msg, sizeof(g_status_msg), "Loading scene: %s...", path);
+
+    // Create a copy of the path for the callback
+    char *path_copy = (char *)malloc(strlen(path) + 1);
+    if (path_copy) {
+      strcpy_s(path_copy, strlen(path) + 1, path);
+
+      g_loading_task = cardinal_scene_load_async(
+          path, CARDINAL_ASYNC_PRIORITY_HIGH, scene_load_callback, path_copy);
+      if (!g_loading_task) {
+        snprintf(g_status_msg, sizeof(g_status_msg),
+                 "Failed to start async loading: %s", path);
+        g_is_loading = false;
+        free(path_copy);
+      }
+    } else {
+      snprintf(g_status_msg, sizeof(g_status_msg),
+               "Memory allocation failed for: %s", path);
+      g_is_loading = false;
+    }
+  } else {
+    // Synchronous loading (fallback)
+    if (g_scene_loaded) {
+      cardinal_scene_destroy(&g_scene);
+      memset(&g_scene, 0, sizeof(g_scene));
+      g_scene_loaded = false;
+      // Clear previous GPU scene
+      if (g_renderer)
+        cardinal_renderer_clear_scene(g_renderer);
+    }
+
+    if (cardinal_scene_load(path, &g_scene)) {
+      g_scene_loaded = true;
+      // Upload to GPU for drawing
+      if (g_renderer)
+        cardinal_renderer_upload_scene(g_renderer, &g_scene);
+      snprintf(g_status_msg, sizeof(g_status_msg),
+               "Loaded scene: %u mesh(es) from %s",
+               (unsigned)g_scene.mesh_count, path);
+    } else {
+      snprintf(g_status_msg, sizeof(g_status_msg), "Failed to load: %s", path);
+    }
+  }
 }
 /**
  * @brief Configures the ImGui style for the editor.
@@ -258,6 +363,11 @@ static void process_input_and_move_camera(float dt) {
   if (!g_window_handle)
     return;
 
+  // Error checking for degenerate cases
+  if (dt <= 0.0f || !isfinite(dt)) {
+    return; // Invalid delta time
+  }
+
   // Mouse look when captured
   if (g_mouse_captured) {
     double xpos, ypos;
@@ -321,6 +431,11 @@ static void process_input_and_move_camera(float dt) {
   float speed = g_camera_speed * (ctrl ? 4.0f : 1.0f);
   float delta = speed * dt;
 
+  // Error checking for degenerate movement values
+  if (!isfinite(speed) || !isfinite(delta)) {
+    return; // Invalid movement calculations
+  }
+
   if (g_mouse_captured) {
     if (w) {
       g_camera.position[0] += forward[0] * delta;
@@ -382,8 +497,8 @@ bool editor_layer_init(CardinalWindow *window, CardinalRenderer *renderer) {
   ImGuiIO &io = ImGui::GetIO();
   io.ConfigFlags |= ImGuiConfigFlags_NavEnableKeyboard;
   io.ConfigFlags |= ImGuiConfigFlags_DockingEnable;
-  // Disable multi-viewport for now to avoid Vulkan sync conflicts
-  // io.ConfigFlags |= ImGuiConfigFlags_ViewportsEnable;
+  // TODO: Disable multi-viewport for now to avoid Vulkan sync conflicts,
+  // implement later io.ConfigFlags |= ImGuiConfigFlags_ViewportsEnable;
 
   setup_imgui_style();
   if (io.ConfigFlags & ImGuiConfigFlags_ViewportsEnable) {
@@ -547,6 +662,18 @@ static void draw_asset_browser_panel() {
     if (ImGui::Button("Load")) {
       load_scene_from_path(g_scene_path);
     }
+
+    // Show loading indicator if async loading is in progress
+    if (g_is_loading) {
+      ImGui::SameLine();
+      // Simple spinner animation
+      static float spinner_time = 0.0f;
+      spinner_time += ImGui::GetIO().DeltaTime;
+      const char *spinner_chars = "|/-\\";
+      int spinner_index = (int)(spinner_time * 4.0f) % 4;
+      ImGui::Text("%c Loading...", spinner_chars[spinner_index]);
+    }
+
     if (g_status_msg[0] != '\0') {
       ImGui::TextWrapped("%s", g_status_msg);
     }
@@ -777,6 +904,21 @@ static void imgui_record(VkCommandBuffer cmd) {
 }
 
 void editor_layer_update(void) {
+  // Process completed async tasks to execute callbacks
+  cardinal_async_process_completed_tasks(0);
+  
+  // Process async loading tasks
+  if (g_loading_task && g_is_loading) {
+    CardinalAsyncStatus status = cardinal_async_get_task_status(g_loading_task);
+    if (status == CARDINAL_ASYNC_STATUS_COMPLETED ||
+        status == CARDINAL_ASYNC_STATUS_FAILED) {
+      // Task is done, callback has already been called
+      cardinal_async_free_task(g_loading_task);
+      g_loading_task = nullptr;
+      g_is_loading = false;
+    }
+  }
+
   // Toggle mouse capture with Tab (edge detection)
   bool tab_down = g_window_handle &&
                   (glfwGetKey(g_window_handle, GLFW_KEY_TAB) == GLFW_PRESS);

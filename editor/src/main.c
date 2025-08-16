@@ -1,5 +1,6 @@
 #include "editor_layer.h"
 #include <cardinal/cardinal.h>
+#include <cardinal/core/async_loader.h>
 #include <cardinal/core/log.h>
 #include <stdio.h>
 #include <string.h>
@@ -65,10 +66,45 @@ int main(int argc, char* argv[]) {
 #endif
 
     cardinal_log_init_with_level(log_level);
+
+    // Initialize memory management system
+    LOG_INFO("Initializing memory management system...");
+    cardinal_memory_init(4 * 1024 * 1024); // 4MB linear allocator
+    LOG_INFO("Memory management system initialized");
+
+    // Initialize async loader system
+    LOG_INFO("Initializing async loader system...");
+    
+    // Check memory allocator first
+    if (!cardinal_get_allocator_for_category(CARDINAL_MEMORY_CATEGORY_ENGINE)) {
+        LOG_ERROR("Engine memory allocator not available");
+        cardinal_memory_shutdown();
+        cardinal_log_shutdown();
+        return -1;
+    }
+    LOG_INFO("Memory allocator check passed");
+    
+    CardinalAsyncLoaderConfig async_config = {
+        .worker_thread_count = 2, // Reduce thread count for debugging
+        .max_queue_size = 100,    // Reduce queue size for debugging
+        .enable_priority_queue = true
+    };
+    
+    LOG_INFO("About to call cardinal_async_loader_init...");
+    if (!cardinal_async_loader_init(&async_config)) {
+        LOG_ERROR("Failed to initialize async loader system");
+        cardinal_memory_shutdown();
+        cardinal_log_shutdown();
+        return -1;
+    }
+    LOG_INFO("Async loader system initialized successfully");
+
     CardinalWindowConfig config = {
         .title = "Cardinal Editor", .width = 1600, .height = 900, .resizable = true};
     CardinalWindow* window = cardinal_window_create(&config);
     if (!window) {
+        cardinal_async_loader_shutdown();
+        cardinal_memory_shutdown();
         cardinal_log_shutdown();
         return -1;
     }
@@ -76,6 +112,8 @@ int main(int argc, char* argv[]) {
     CardinalRenderer renderer;
     if (!cardinal_renderer_create(&renderer, window)) {
         cardinal_window_destroy(window);
+        cardinal_async_loader_shutdown();
+        cardinal_memory_shutdown();
         cardinal_log_shutdown();
         return -1;
     }
@@ -84,6 +122,8 @@ int main(int argc, char* argv[]) {
     if (!editor_layer_init(window, &renderer)) {
         cardinal_renderer_destroy(&renderer);
         cardinal_window_destroy(window);
+        cardinal_async_loader_shutdown();
+        cardinal_memory_shutdown();
         cardinal_log_shutdown();
         return -1;
     }
@@ -101,6 +141,8 @@ int main(int argc, char* argv[]) {
     editor_layer_shutdown();
     cardinal_renderer_destroy(&renderer);
     cardinal_window_destroy(window);
+    cardinal_async_loader_shutdown();
+    cardinal_memory_shutdown();
     cardinal_log_shutdown();
     return 0;
 }

@@ -28,6 +28,7 @@ extern "C" {
 #endif
 
 #include "cardinal/assets/scene.h"
+#include "cardinal/core/async_loader.h"
 
 /**
  * @brief Load a 3D scene from file
@@ -59,6 +60,32 @@ extern "C" {
  * @see cardinal_scene_destroy()
  */
 bool cardinal_scene_load(const char *filepath, CardinalScene *out_scene);
+
+/**
+ * @brief Load a 3D scene from file asynchronously
+ *
+ * Loads a scene file in a background thread to prevent UI blocking.
+ * The callback function will be called when the loading is complete.
+ *
+ * @param filepath Path to the scene file to load
+ * @param priority Loading priority (higher priority tasks are processed first)
+ * @param callback Function to call when loading completes (can be NULL)
+ * @param user_data User data passed to the callback function
+ * @return Async task handle, or NULL on failure
+ *
+ * @note The callback is called on the main thread when processing completed
+ *       tasks with cardinal_async_process_completed_tasks()
+ * @note Use cardinal_async_get_scene_result() to retrieve the loaded scene
+ * @note Call cardinal_async_free_task() when done with the task handle
+ *
+ * @see cardinal_async_get_scene_result()
+ * @see cardinal_async_free_task()
+ * @see cardinal_async_process_completed_tasks()
+ */
+CardinalAsyncTask *cardinal_scene_load_async(const char *filepath,
+                                             CardinalAsyncPriority priority,
+                                             CardinalAsyncCallback callback,
+                                             void *user_data);
 
 #ifdef __cplusplus
 }

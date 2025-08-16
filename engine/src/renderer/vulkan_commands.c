@@ -130,6 +130,11 @@ void vk_destroy_commands_sync(VulkanState* s) {
     if (!s)
         return;
 
+    // Ensure device is idle before destroying resources for thread safety
+    if (s->device != VK_NULL_HANDLE) {
+        vkDeviceWaitIdle(s->device);
+    }
+
     // Destroy timeline semaphore
     if (s->timeline_semaphore) {
         vkDestroySemaphore(s->device, s->timeline_semaphore, NULL);

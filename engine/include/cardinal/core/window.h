@@ -16,6 +16,12 @@
 #include <stdbool.h>
 #include <stdint.h>
 
+#ifdef _WIN32
+#include <windows.h>
+#else
+#include <pthread.h>
+#endif
+
 /** @brief Forward declaration of GLFWwindow to avoid including GLFW in public
  * header */
 struct GLFWwindow;
@@ -43,6 +49,11 @@ typedef struct CardinalWindow {
   uint32_t width;            /**< Current window width in pixels */
   uint32_t height;           /**< Current window height in pixels */
   bool should_close;         /**< Flag indicating if window should close */
+#ifdef _WIN32
+  CRITICAL_SECTION mutex; /**< Mutex for thread-safe operations */
+#else
+  pthread_mutex_t mutex; /**< Mutex for thread-safe operations */
+#endif
 } CardinalWindow;
 
 #ifdef __cplusplus

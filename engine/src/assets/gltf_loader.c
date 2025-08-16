@@ -39,6 +39,7 @@
 #include "cardinal/assets/gltf_loader.h"
 #include "cardinal/assets/material_ref_counting.h"
 #include "cardinal/assets/texture_loader.h"
+#include "cardinal/core/async_loader.h"
 #include "cardinal/core/log.h"
 #include "cardinal/core/ref_counting.h"
 
@@ -131,6 +132,18 @@ static bool create_fallback_texture(CardinalTexture* out_texture) {
  */
 static bool load_texture_with_fallback(const char* original_uri, const char* base_path,
                                        CardinalTexture* out_texture) {
+    // Error checking for degenerate cases
+    if (!original_uri || !base_path || !out_texture) {
+        LOG_ERROR("Invalid parameters: original_uri=%p, base_path=%p, out_texture=%p",
+                  (void*)original_uri, (void*)base_path, (void*)out_texture);
+        return false;
+    }
+
+    if (strlen(original_uri) == 0) {
+        LOG_WARN("Empty texture URI provided, using fallback");
+        return create_fallback_texture(out_texture);
+    }
+
     char texture_path[512] = {0};
     TextureData tex_data = {0};
     CardinalRefCountedResource* ref_resource = NULL;

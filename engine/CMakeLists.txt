@@ -46,11 +46,14 @@ endif()
 # Suppress warnings from cgltf on Windows
 if(WIN32 AND TARGET cgltf)
     target_compile_definitions(cgltf INTERFACE _CRT_SECURE_NO_WARNINGS)
+    if(CMAKE_C_COMPILER_ID MATCHES "Clang")
+        target_compile_options(cgltf INTERFACE -Wno-language-extension-token)
+    endif()
 endif()
 
 # Engine source files (minimal)
 target_sources(cardinal_engine PRIVATE
-    src/core/log.cpp
+    src/core/log.c
     src/core/window.c
     src/core/memory.c
     src/renderer/vulkan_renderer.c
@@ -71,6 +74,7 @@ target_sources(cardinal_engine PRIVATE
     src/assets/texture_loader.c
     src/core/ref_counting.c
     src/assets/material_ref_counting.c
+    src/core/async_loader.c
 )
 # log.cpp is now properly a C++ file for spdlog backend
 
@@ -81,6 +85,7 @@ target_sources(cardinal_engine PUBLIC
     FILES
     include/cardinal/core/window.h
     include/cardinal/core/memory.h
+    include/cardinal/core/async_loader.h
     include/cardinal/renderer/renderer.h
     include/cardinal/cardinal.h
     include/cardinal/assets/scene.h
