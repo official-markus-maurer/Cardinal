@@ -2,8 +2,217 @@
 #include "cardinal/core/async_loader.h"
 #include "cardinal/core/log.h"
 #include "cardinal/core/ref_counting.h"
+#include "cardinal/core/memory.h"
 #include <stdlib.h>
 #include <string.h>
+
+#ifdef _WIN32
+#include <windows.h>
+#else
+#include <pthread.h>
+#endif
+
+// Thread-safe texture cache for multi-threaded loading
+typedef struct TextureCacheEntry {
+    char* filepath;
+    CardinalRefCountedResource* resource;
+    struct TextureCacheEntry* next;
+} TextureCacheEntry;
+
+typedef struct {
+    TextureCacheEntry* entries;
+    uint32_t entry_count;
+    uint32_t max_entries;
+    uint32_t cache_hits;
+    uint32_t cache_misses;
+#ifdef _WIN32
+    CRITICAL_SECTION mutex;
+#else
+    pthread_mutex_t mutex;
+#endif
+    bool initialized;
+} TextureCache;
+
+static TextureCache g_texture_cache = {0};
+
+// Initialize the thread-safe texture cache
+static bool texture_cache_init(uint32_t max_entries) {
+    if (g_texture_cache.initialized) {
+        return true;
+    }
+
+    CardinalAllocator* allocator = cardinal_get_allocator_for_category(CARDINAL_MEMORY_CATEGORY_ASSETS);
+    g_texture_cache.entries = NULL;
+    g_texture_cache.entry_count = 0;
+    g_texture_cache.max_entries = max_entries;
+    g_texture_cache.cache_hits = 0;
+    g_texture_cache.cache_misses = 0;
+
+#ifdef _WIN32
+    InitializeCriticalSection(&g_texture_cache.mutex);
+#else
+    if (pthread_mutex_init(&g_texture_cache.mutex, NULL) != 0) {
+        CARDINAL_LOG_ERROR("Failed to initialize texture cache mutex");
+        return false;
+    }
+#endif
+
+    g_texture_cache.initialized = true;
+    CARDINAL_LOG_INFO("[TEXTURE] Thread-safe texture cache initialized (max_entries=%u)", max_entries);
+    return true;
+}
+
+// Shutdown the texture cache
+static void texture_cache_shutdown(void) {
+    if (!g_texture_cache.initialized) {
+        return;
+    }
+
+#ifdef _WIN32
+    EnterCriticalSection(&g_texture_cache.mutex);
+#else
+    pthread_mutex_lock(&g_texture_cache.mutex);
+#endif
+
+    // Free all cache entries
+    TextureCacheEntry* entry = g_texture_cache.entries;
+    CardinalAllocator* allocator = cardinal_get_allocator_for_category(CARDINAL_MEMORY_CATEGORY_ASSETS);
+    
+    while (entry) {
+        TextureCacheEntry* next = entry->next;
+        if (entry->filepath) {
+            cardinal_free(allocator, entry->filepath);
+        }
+        if (entry->resource) {
+            cardinal_ref_release(entry->resource);
+        }
+        cardinal_free(allocator, entry);
+        entry = next;
+    }
+
+    g_texture_cache.entries = NULL;
+    g_texture_cache.entry_count = 0;
+
+#ifdef _WIN32
+    LeaveCriticalSection(&g_texture_cache.mutex);
+    DeleteCriticalSection(&g_texture_cache.mutex);
+#else
+    pthread_mutex_unlock(&g_texture_cache.mutex);
+    pthread_mutex_destroy(&g_texture_cache.mutex);
+#endif
+
+    g_texture_cache.initialized = false;
+    CARDINAL_LOG_INFO("[TEXTURE] Thread-safe texture cache shutdown");
+}
+
+// Thread-safe cache lookup
+static CardinalRefCountedResource* texture_cache_get(const char* filepath) {
+    if (!g_texture_cache.initialized || !filepath) {
+        return NULL;
+    }
+
+#ifdef _WIN32
+    EnterCriticalSection(&g_texture_cache.mutex);
+#else
+    pthread_mutex_lock(&g_texture_cache.mutex);
+#endif
+
+    TextureCacheEntry* entry = g_texture_cache.entries;
+    while (entry) {
+        if (entry->filepath && strcmp(entry->filepath, filepath) == 0) {
+            CardinalRefCountedResource* resource = cardinal_ref_acquire(entry->resource->identifier);
+            g_texture_cache.cache_hits++;
+#ifdef _WIN32
+            LeaveCriticalSection(&g_texture_cache.mutex);
+#else
+            pthread_mutex_unlock(&g_texture_cache.mutex);
+#endif
+            return resource;
+        }
+        entry = entry->next;
+    }
+
+    g_texture_cache.cache_misses++;
+#ifdef _WIN32
+    LeaveCriticalSection(&g_texture_cache.mutex);
+#else
+    pthread_mutex_unlock(&g_texture_cache.mutex);
+#endif
+
+    return NULL;
+}
+
+// Thread-safe cache insertion
+static bool texture_cache_put(const char* filepath, CardinalRefCountedResource* resource) {
+    if (!g_texture_cache.initialized || !filepath || !resource) {
+        return false;
+    }
+
+#ifdef _WIN32
+    EnterCriticalSection(&g_texture_cache.mutex);
+#else
+    pthread_mutex_lock(&g_texture_cache.mutex);
+#endif
+
+    // Check if we've reached max capacity
+    if (g_texture_cache.entry_count >= g_texture_cache.max_entries) {
+        // Remove oldest entry (simple FIFO eviction)
+        if (g_texture_cache.entries) {
+            TextureCacheEntry* to_remove = g_texture_cache.entries;
+            g_texture_cache.entries = to_remove->next;
+            
+            CardinalAllocator* allocator = cardinal_get_allocator_for_category(CARDINAL_MEMORY_CATEGORY_ASSETS);
+            if (to_remove->filepath) {
+                cardinal_free(allocator, to_remove->filepath);
+            }
+            if (to_remove->resource) {
+                cardinal_ref_release(to_remove->resource);
+            }
+            cardinal_free(allocator, to_remove);
+            g_texture_cache.entry_count--;
+        }
+    }
+
+    // Create new entry
+    CardinalAllocator* allocator = cardinal_get_allocator_for_category(CARDINAL_MEMORY_CATEGORY_ASSETS);
+    TextureCacheEntry* new_entry = cardinal_alloc(allocator, sizeof(TextureCacheEntry));
+    if (!new_entry) {
+#ifdef _WIN32
+        LeaveCriticalSection(&g_texture_cache.mutex);
+#else
+        pthread_mutex_unlock(&g_texture_cache.mutex);
+#endif
+        return false;
+    }
+
+    // Copy filepath
+    size_t filepath_len = strlen(filepath) + 1;
+    new_entry->filepath = cardinal_alloc(allocator, filepath_len);
+    if (!new_entry->filepath) {
+        cardinal_free(allocator, new_entry);
+#ifdef _WIN32
+        LeaveCriticalSection(&g_texture_cache.mutex);
+#else
+        pthread_mutex_unlock(&g_texture_cache.mutex);
+#endif
+        return false;
+    }
+    strcpy(new_entry->filepath, filepath);
+
+    // Add reference to resource
+    new_entry->resource = resource; // Resource is already reference counted
+    new_entry->next = g_texture_cache.entries;
+    g_texture_cache.entries = new_entry;
+    g_texture_cache.entry_count++;
+
+#ifdef _WIN32
+    LeaveCriticalSection(&g_texture_cache.mutex);
+#else
+    pthread_mutex_unlock(&g_texture_cache.mutex);
+#endif
+
+    return true;
+}
 
 // Use official stb_image implementation
 #define STB_IMAGE_IMPLEMENTATION
@@ -100,13 +309,33 @@ CardinalRefCountedResource* texture_load_with_ref_counting(const char* filepath,
         return NULL;
     }
 
-    // Try to acquire existing texture from registry
-    CardinalRefCountedResource* ref_resource = cardinal_ref_acquire(filepath);
+    // Initialize cache if not already done
+    if (!g_texture_cache.initialized) {
+        texture_cache_init(256); // Default cache size
+    }
+
+    // Try to get texture from thread-safe cache first
+    CardinalRefCountedResource* ref_resource = texture_cache_get(filepath);
+    if (ref_resource) {
+        // Copy texture data from cached resource
+        TextureData* existing_texture = (TextureData*)ref_resource->resource;
+        *out_texture = *existing_texture;
+        CARDINAL_LOG_DEBUG("[TEXTURE] Reusing cached texture: %s (ref_count=%u)", filepath,
+                           cardinal_ref_get_count(ref_resource));
+        return ref_resource;
+    }
+
+    // Try to acquire existing texture from global registry (fallback)
+    ref_resource = cardinal_ref_acquire(filepath);
     if (ref_resource) {
         // Copy texture data from existing resource
         TextureData* existing_texture = (TextureData*)ref_resource->resource;
         *out_texture = *existing_texture;
-        CARDINAL_LOG_DEBUG("[TEXTURE] Reusing cached texture: %s (ref_count=%u)", filepath,
+        
+        // Add to cache for faster future access
+        texture_cache_put(filepath, ref_resource);
+        
+        CARDINAL_LOG_DEBUG("[TEXTURE] Reusing registry texture: %s (ref_count=%u)", filepath,
                            cardinal_ref_get_count(ref_resource));
         return ref_resource;
     }
@@ -117,7 +346,8 @@ CardinalRefCountedResource* texture_load_with_ref_counting(const char* filepath,
     }
 
     // Create a copy of texture data for the registry
-    TextureData* texture_copy = (TextureData*)malloc(sizeof(TextureData));
+    CardinalAllocator* allocator = cardinal_get_allocator_for_category(CARDINAL_MEMORY_CATEGORY_ASSETS);
+    TextureData* texture_copy = cardinal_alloc(allocator, sizeof(TextureData));
     if (!texture_copy) {
         CARDINAL_LOG_ERROR("Failed to allocate memory for texture copy");
         texture_data_free(out_texture);
@@ -130,10 +360,13 @@ CardinalRefCountedResource* texture_load_with_ref_counting(const char* filepath,
         cardinal_ref_create(filepath, texture_copy, sizeof(TextureData), texture_data_destructor);
     if (!ref_resource) {
         CARDINAL_LOG_ERROR("Failed to register texture in reference counting system: %s", filepath);
-        free(texture_copy);
+        cardinal_free(allocator, texture_copy);
         texture_data_free(out_texture);
         return NULL;
     }
+
+    // Add to cache for future access
+    texture_cache_put(filepath, ref_resource);
 
     CARDINAL_LOG_INFO("[TEXTURE] Registered new texture for sharing: %s", filepath);
     return ref_resource;
@@ -206,4 +439,79 @@ CardinalAsyncTask* texture_load_async(const char* filepath, CardinalAsyncPriorit
     CARDINAL_LOG_INFO("[TEXTURE] Async texture loading requested: %s", filepath);
 
     return cardinal_async_load_texture(filepath, priority, callback, user_data);
+}
+
+// Public texture cache management functions
+bool texture_cache_initialize(uint32_t max_entries) {
+    return texture_cache_init(max_entries);
+}
+
+void texture_cache_shutdown_system(void) {
+    texture_cache_shutdown();
+}
+
+TextureCacheStats texture_cache_get_stats(void) {
+    TextureCacheStats stats = {0};
+    
+    if (!g_texture_cache.initialized) {
+        return stats;
+    }
+    
+#ifdef _WIN32
+    EnterCriticalSection(&g_texture_cache.mutex);
+#else
+    pthread_mutex_lock(&g_texture_cache.mutex);
+#endif
+    
+    stats.entry_count = g_texture_cache.entry_count;
+     stats.max_entries = g_texture_cache.max_entries;
+     stats.cache_hits = g_texture_cache.cache_hits;
+     stats.cache_misses = g_texture_cache.cache_misses;
+     
+#ifdef _WIN32
+     LeaveCriticalSection(&g_texture_cache.mutex);
+#else
+     pthread_mutex_unlock(&g_texture_cache.mutex);
+#endif
+    
+    return stats;
+}
+
+void texture_cache_clear(void) {
+    if (!g_texture_cache.initialized) {
+        return;
+    }
+    
+#ifdef _WIN32
+    EnterCriticalSection(&g_texture_cache.mutex);
+#else
+    pthread_mutex_lock(&g_texture_cache.mutex);
+#endif
+    
+    // Free all cache entries
+    TextureCacheEntry* entry = g_texture_cache.entries;
+    CardinalAllocator* allocator = cardinal_get_allocator_for_category(CARDINAL_MEMORY_CATEGORY_ASSETS);
+    
+    while (entry) {
+        TextureCacheEntry* next = entry->next;
+        if (entry->filepath) {
+            cardinal_free(allocator, entry->filepath);
+        }
+        if (entry->resource) {
+            cardinal_ref_release(entry->resource);
+        }
+        cardinal_free(allocator, entry);
+        entry = next;
+    }
+    
+    g_texture_cache.entries = NULL;
+    g_texture_cache.entry_count = 0;
+    
+#ifdef _WIN32
+    LeaveCriticalSection(&g_texture_cache.mutex);
+#else
+    pthread_mutex_unlock(&g_texture_cache.mutex);
+#endif
+    
+    CARDINAL_LOG_INFO("[TEXTURE] Cache cleared");
 }

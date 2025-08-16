@@ -45,6 +45,27 @@ CardinalAsyncTask *texture_load_async(const char *filepath,
                                       CardinalAsyncCallback callback,
                                       void *user_data);
 
+// Initialize the thread-safe texture cache with specified maximum entries
+// This is automatically called by texture_load_with_ref_counting if not already initialized
+bool texture_cache_initialize(uint32_t max_entries);
+
+// Shutdown the texture cache and free all cached resources
+void texture_cache_shutdown_system(void);
+
+// Get cache statistics for monitoring
+typedef struct TextureCacheStats {
+    uint32_t entry_count;
+    uint32_t max_entries;
+    uint32_t cache_hits;
+    uint32_t cache_misses;
+} TextureCacheStats;
+
+// Get current cache statistics
+TextureCacheStats texture_cache_get_stats(void);
+
+// Clear all entries from the texture cache
+void texture_cache_clear(void);
+
 #ifdef __cplusplus
 }
 #endif

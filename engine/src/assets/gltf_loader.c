@@ -237,14 +237,16 @@ static bool load_texture_with_fallback(const char* original_uri, const char* bas
                     snprintf(texture_path, sizeof(texture_path), "%s%s%s", base_dir_prefix,
                              base_name, suffixes[i]);
                     LOG_DEBUG("Trying decomposed candidate: %s", texture_path);
-                    if (texture_load_from_file(texture_path, &tex_data)) {
+                    ref_resource = texture_load_with_ref_counting(texture_path, &tex_data);
+                    if (ref_resource) {
                         goto success;
                     }
                 }
                 snprintf(texture_path, sizeof(texture_path), "assets/textures/%s%s", base_name,
                          suffixes[i]);
                 LOG_DEBUG("Trying decomposed candidate: %s", texture_path);
-                if (texture_load_from_file(texture_path, &tex_data)) {
+                ref_resource = texture_load_with_ref_counting(texture_path, &tex_data);
+                if (ref_resource) {
                     goto success;
                 }
 
@@ -252,7 +254,8 @@ static bool load_texture_with_fallback(const char* original_uri, const char* bas
                 snprintf(texture_path, sizeof(texture_path), "assets/models/textures/%s%s",
                          base_name, suffixes[i]);
                 LOG_DEBUG("Trying models/textures candidate: %s", texture_path);
-                if (texture_load_from_file(texture_path, &tex_data)) {
+                ref_resource = texture_load_with_ref_counting(texture_path, &tex_data);
+                if (ref_resource) {
                     goto success;
                 }
             }
@@ -269,7 +272,8 @@ static bool load_texture_with_fallback(const char* original_uri, const char* bas
         // ../textures/filename
         snprintf(texture_path, sizeof(texture_path), "%s../textures/%s", base_dir, filename_only);
         LOG_DEBUG("Trying fallback path: %s", texture_path);
-        if (texture_load_from_file(texture_path, &tex_data)) {
+        ref_resource = texture_load_with_ref_counting(texture_path, &tex_data);
+        if (ref_resource) {
             goto success;
         }
 
@@ -277,7 +281,8 @@ static bool load_texture_with_fallback(const char* original_uri, const char* bas
         snprintf(texture_path, sizeof(texture_path), "%s../../textures/%s", base_dir,
                  filename_only);
         LOG_DEBUG("Trying deeper fallback path: %s", texture_path);
-        if (texture_load_from_file(texture_path, &tex_data)) {
+        ref_resource = texture_load_with_ref_counting(texture_path, &tex_data);
+        if (ref_resource) {
             goto success;
         }
 

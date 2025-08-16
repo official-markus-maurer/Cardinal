@@ -2,6 +2,9 @@
 #include <cardinal/cardinal.h>
 #include <cardinal/core/async_loader.h>
 #include <cardinal/core/log.h>
+#include <cardinal/assets/texture_loader.h>
+#include <cardinal/assets/mesh_loader.h>
+#include <cardinal/assets/material_loader.h>
 #include <stdio.h>
 #include <string.h>
 #ifdef _WIN32
@@ -98,6 +101,13 @@ int main(int argc, char* argv[]) {
         return -1;
     }
     LOG_INFO("Async loader system initialized successfully");
+    
+    // Initialize asset caches with multi-threading support
+    texture_cache_initialize(1000);
+    mesh_cache_initialize(1000);
+    material_cache_initialize(1000);
+    
+    LOG_INFO("Multi-threaded asset caches initialized successfully");
 
     CardinalWindowConfig config = {
         .title = "Cardinal Editor", .width = 1600, .height = 900, .resizable = true};
@@ -141,6 +151,12 @@ int main(int argc, char* argv[]) {
     editor_layer_shutdown();
     cardinal_renderer_destroy(&renderer);
     cardinal_window_destroy(window);
+    
+    // Shutdown asset caches before async loader
+    material_cache_shutdown_system();
+    mesh_cache_shutdown_system();
+    texture_cache_shutdown_system();
+    
     cardinal_async_loader_shutdown();
     cardinal_memory_shutdown();
     cardinal_log_shutdown();

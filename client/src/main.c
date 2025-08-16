@@ -1,5 +1,10 @@
 #include <cardinal/cardinal.h>
 #include <cardinal/core/log.h>
+#include <cardinal/core/memory.h>
+#include <cardinal/core/async_loader.h>
+#include <cardinal/assets/texture_loader.h>
+#include <cardinal/assets/mesh_loader.h>
+#include <cardinal/assets/material_loader.h>
 #include <stdio.h>
 #include <string.h>
 
@@ -43,6 +48,31 @@ int main(int argc, char* argv[]) {
     }
 
     cardinal_log_init_with_level(log_level);
+    
+    // Initialize memory system
+    cardinal_memory_init(1024 * 1024 * 64); // 64MB default capacity
+    
+    // Initialize async loader with multi-threading support
+    CardinalAsyncLoaderConfig async_config = {
+        .worker_thread_count = 4,
+        .max_queue_size = 256,
+        .enable_priority_queue = true
+    };
+    
+    if (!cardinal_async_loader_init(&async_config)) {
+        CARDINAL_LOG_ERROR("Failed to initialize async loader");
+        cardinal_memory_shutdown();
+        cardinal_log_shutdown();
+        return -1;
+    }
+    
+    // Initialize asset caches with multi-threading support
+    texture_cache_initialize(1000);
+    mesh_cache_initialize(1000);
+    material_cache_initialize(1000);
+    
+    CARDINAL_LOG_INFO("Multi-threaded engine initialized successfully");
+    
     // Create a window
     CardinalWindowConfig config = {
         .title = "Cardinal Client", .width = 1024, .height = 768, .resizable = true};
@@ -71,6 +101,21 @@ int main(int argc, char* argv[]) {
     cardinal_renderer_wait_idle(&renderer);
     cardinal_renderer_destroy(&renderer);
     cardinal_window_destroy(window);
+    
+    // Shutdown multi-threaded systems
+    CARDINAL_LOG_INFO("Shutting down multi-threaded engine systems");
+    
+    // Shutdown asset caches
+    texture_cache_shutdown_system();
+    mesh_cache_shutdown_system();
+    material_cache_shutdown_system();
+    
+    // Shutdown async loader
+    cardinal_async_loader_shutdown();
+    
+    // Shutdown memory system
+    cardinal_memory_shutdown();
+    
     cardinal_log_shutdown();
 
     return 0;

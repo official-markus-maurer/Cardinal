@@ -1012,10 +1012,13 @@ void editor_layer_render(void) {
 }
 
 void editor_layer_shutdown(void) {
+  VkDevice device = VK_NULL_HANDLE;
   if (g_renderer) {
     cardinal_renderer_set_ui_callback(g_renderer, NULL);
     // Wait for device idle before cleanup to avoid destroying resources in use
     cardinal_renderer_wait_idle(g_renderer);
+    // Get device handle before ImGui shutdown
+    device = cardinal_renderer_internal_device(g_renderer);
   }
   if (g_scene_loaded) {
     cardinal_scene_destroy(&g_scene);
@@ -1024,8 +1027,7 @@ void editor_layer_shutdown(void) {
   }
   ImGui_ImplVulkan_Shutdown();
   ImGui_ImplGlfw_Shutdown();
-  if (g_descriptor_pool != VK_NULL_HANDLE) {
-    VkDevice device = cardinal_renderer_internal_device(g_renderer);
+  if (g_descriptor_pool != VK_NULL_HANDLE && device != VK_NULL_HANDLE) {
     vkDestroyDescriptorPool(device, g_descriptor_pool, NULL);
     g_descriptor_pool = VK_NULL_HANDLE;
   }

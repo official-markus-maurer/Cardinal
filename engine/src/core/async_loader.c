@@ -6,6 +6,8 @@
 #include "cardinal/core/async_loader.h"
 #include "cardinal/assets/loader.h"
 #include "cardinal/assets/texture_loader.h"
+#include "cardinal/assets/material_loader.h"
+#include "cardinal/assets/mesh_loader.h"
 #include "cardinal/core/log.h"
 #include "cardinal/core/memory.h"
 #include "cardinal/core/ref_counting.h"
@@ -403,6 +405,158 @@ static bool execute_scene_load_task(CardinalAsyncTask* task) {
     return true;
 }
 
+// Wrapper function for material destructor
+static void material_destructor_wrapper(void* data) {
+    material_data_free(data);
+}
+
+static bool execute_material_load_task(CardinalAsyncTask* task) {
+    if (!task || !task->custom_data) {
+        return false;
+    }
+
+    CARDINAL_LOG_DEBUG("Loading material with reference counting");
+
+    const CardinalMaterial* source_material = (const CardinalMaterial*)task->custom_data;
+    
+    // Allocate memory for the material copy
+    CardinalAllocator* allocator = cardinal_get_allocator_for_category(CARDINAL_MEMORY_CATEGORY_ASSETS);
+    CardinalMaterial* material = cardinal_alloc(allocator, sizeof(CardinalMaterial));
+    if (!material) {
+        CardinalAllocator* engine_allocator = cardinal_get_allocator_for_category(CARDINAL_MEMORY_CATEGORY_ENGINE);
+        task->error_message = cardinal_alloc(engine_allocator, 256);
+        if (task->error_message) {
+            snprintf(task->error_message, 256, "Failed to allocate memory for material");
+        }
+        return false;
+    }
+
+    // Copy material data
+    *material = *source_material;
+
+    // Load or acquire reference counted material
+    CardinalMaterial out_material;
+    CardinalRefCountedResource* ref_resource = material_load_with_ref_counting(material, &out_material);
+    
+    if (!ref_resource) {
+        cardinal_free(allocator, material);
+        CardinalAllocator* engine_allocator = cardinal_get_allocator_for_category(CARDINAL_MEMORY_CATEGORY_ENGINE);
+        task->error_message = cardinal_alloc(engine_allocator, 256);
+        if (task->error_message) {
+            snprintf(task->error_message, 256, "Failed to create reference counted material");
+        }
+        return false;
+    }
+
+    // Free the temporary material copy since ref counting system manages it now
+    cardinal_free(allocator, material);
+
+    task->result_data = ref_resource;
+    task->result_size = sizeof(CardinalRefCountedResource);
+
+    CARDINAL_LOG_DEBUG("Successfully loaded material with reference counting");
+    return true;
+}
+
+// Wrapper function for mesh destructor
+static void mesh_destructor_wrapper(void* data) {
+    CardinalMesh* mesh = (CardinalMesh*)data;
+    if (mesh) {
+        CardinalAllocator* allocator = cardinal_get_allocator_for_category(CARDINAL_MEMORY_CATEGORY_ASSETS);
+        if (mesh->vertices) {
+            cardinal_free(allocator, mesh->vertices);
+        }
+        if (mesh->indices) {
+            cardinal_free(allocator, mesh->indices);
+        }
+        cardinal_free(allocator, mesh);
+    }
+}
+
+static bool execute_mesh_load_task(CardinalAsyncTask* task) {
+    if (!task || !task->custom_data) {
+        return false;
+    }
+
+    CARDINAL_LOG_DEBUG("Loading mesh with reference counting");
+
+    const CardinalMesh* source_mesh = (const CardinalMesh*)task->custom_data;
+    
+    // Allocate memory for the mesh copy
+    CardinalAllocator* allocator = cardinal_get_allocator_for_category(CARDINAL_MEMORY_CATEGORY_ASSETS);
+    CardinalMesh* mesh = cardinal_alloc(allocator, sizeof(CardinalMesh));
+    if (!mesh) {
+        CardinalAllocator* engine_allocator = cardinal_get_allocator_for_category(CARDINAL_MEMORY_CATEGORY_ENGINE);
+        task->error_message = cardinal_alloc(engine_allocator, 256);
+        if (task->error_message) {
+            snprintf(task->error_message, 256, "Failed to allocate memory for mesh");
+        }
+        return false;
+    }
+
+    // Copy mesh structure
+    *mesh = *source_mesh;
+
+    // Deep copy vertex data
+    if (source_mesh->vertices && source_mesh->vertex_count > 0) {
+        size_t vertex_size = source_mesh->vertex_count * sizeof(CardinalVertex);
+        mesh->vertices = cardinal_alloc(allocator, vertex_size);
+        if (!mesh->vertices) {
+            cardinal_free(allocator, mesh);
+            CardinalAllocator* engine_allocator = cardinal_get_allocator_for_category(CARDINAL_MEMORY_CATEGORY_ENGINE);
+            task->error_message = cardinal_alloc(engine_allocator, 256);
+            if (task->error_message) {
+                snprintf(task->error_message, 256, "Failed to allocate memory for mesh vertices");
+            }
+            return false;
+        }
+        memcpy(mesh->vertices, source_mesh->vertices, vertex_size);
+    }
+
+    // Deep copy index data
+    if (source_mesh->indices && source_mesh->index_count > 0) {
+        size_t index_size = source_mesh->index_count * sizeof(uint32_t);
+        mesh->indices = cardinal_alloc(allocator, index_size);
+        if (!mesh->indices) {
+            if (mesh->vertices) {
+                cardinal_free(allocator, mesh->vertices);
+            }
+            cardinal_free(allocator, mesh);
+            CardinalAllocator* engine_allocator = cardinal_get_allocator_for_category(CARDINAL_MEMORY_CATEGORY_ENGINE);
+            task->error_message = cardinal_alloc(engine_allocator, 256);
+            if (task->error_message) {
+                snprintf(task->error_message, 256, "Failed to allocate memory for mesh indices");
+            }
+            return false;
+        }
+        memcpy(mesh->indices, source_mesh->indices, index_size);
+    }
+
+    // Generate a unique identifier for the mesh based on its content
+    char mesh_id[128];
+    snprintf(mesh_id, sizeof(mesh_id), "mesh_%u_%u_%p", mesh->vertex_count, mesh->index_count, (void*)mesh);
+
+    // Create reference counted resource
+    CardinalRefCountedResource* ref_resource = cardinal_ref_create(
+        mesh_id, mesh, sizeof(CardinalMesh), mesh_destructor_wrapper);
+
+    if (!ref_resource) {
+        mesh_destructor_wrapper(mesh);
+        CardinalAllocator* engine_allocator = cardinal_get_allocator_for_category(CARDINAL_MEMORY_CATEGORY_ENGINE);
+        task->error_message = cardinal_alloc(engine_allocator, 256);
+        if (task->error_message) {
+            snprintf(task->error_message, 256, "Failed to create reference counted mesh");
+        }
+        return false;
+    }
+
+    task->result_data = ref_resource;
+    task->result_size = sizeof(CardinalRefCountedResource);
+
+    CARDINAL_LOG_DEBUG("Successfully loaded mesh with reference counting");
+    return true;
+}
+
 static bool execute_task(CardinalAsyncTask* task) {
     if (!task)
         return false;
@@ -418,6 +572,14 @@ static bool execute_task(CardinalAsyncTask* task) {
 
         case CARDINAL_ASYNC_TASK_SCENE_LOAD:
             success = execute_scene_load_task(task);
+            break;
+
+        case CARDINAL_ASYNC_TASK_MATERIAL_LOAD:
+            success = execute_material_load_task(task);
+            break;
+
+        case CARDINAL_ASYNC_TASK_MESH_LOAD:
+            success = execute_mesh_load_task(task);
             break;
 
         case CARDINAL_ASYNC_TASK_CUSTOM:
@@ -529,8 +691,10 @@ static void destroy_worker_threads(void) {
         g_async_loader.workers[i].should_exit = true;
     }
 
-    // Wake up all waiting workers
-    condition_signal(&g_async_loader.pending_queue.condition);
+    // Wake up all waiting workers - signal multiple times to ensure all threads wake up
+    for (uint32_t i = 0; i < g_async_loader.worker_count; i++) {
+        condition_signal(&g_async_loader.pending_queue.condition);
+    }
 
     // Wait for all threads to finish
     for (uint32_t i = 0; i < g_async_loader.worker_count; i++) {
@@ -722,6 +886,112 @@ CardinalAsyncTask* cardinal_async_load_scene(const char* file_path, CardinalAsyn
     return task;
 }
 
+CardinalAsyncTask* cardinal_async_load_material(const void* material_data,
+                                                CardinalAsyncPriority priority,
+                                                CardinalAsyncCallback callback, void* user_data) {
+    const CardinalMaterial* material = (const CardinalMaterial*)material_data;
+    if (!g_async_loader.initialized || !material) {
+        return NULL;
+    }
+
+    CardinalAsyncTask* task = create_task(CARDINAL_ASYNC_TASK_MATERIAL_LOAD, priority);
+    if (!task) {
+        return NULL;
+    }
+
+    // Copy material data
+    CardinalAllocator* allocator = cardinal_get_allocator_for_category(CARDINAL_MEMORY_CATEGORY_ENGINE);
+    CardinalMaterial* material_copy = cardinal_alloc(allocator, sizeof(CardinalMaterial));
+    if (!material_copy) {
+        cardinal_free(allocator, task);
+        return NULL;
+    }
+    *material_copy = *material;
+
+    task->custom_data = material_copy;
+    task->callback = callback;
+    task->callback_data = user_data;
+
+    // Submit task to queue
+    if (!task_queue_push(&g_async_loader.pending_queue, task)) {
+        cardinal_free(allocator, material_copy);
+        cardinal_async_free_task(task);
+        return NULL;
+    }
+
+    return task;
+}
+
+CardinalAsyncTask* cardinal_async_load_mesh(const void* mesh_data,
+                                            CardinalAsyncPriority priority,
+                                            CardinalAsyncCallback callback, void* user_data) {
+    const CardinalMesh* mesh = (const CardinalMesh*)mesh_data;
+    if (!g_async_loader.initialized || !mesh) {
+        return NULL;
+    }
+
+    CardinalAsyncTask* task = create_task(CARDINAL_ASYNC_TASK_MESH_LOAD, priority);
+    if (!task) {
+        return NULL;
+    }
+
+    // Copy mesh data
+    CardinalAllocator* allocator = cardinal_get_allocator_for_category(CARDINAL_MEMORY_CATEGORY_ENGINE);
+    CardinalMesh* mesh_copy = cardinal_alloc(allocator, sizeof(CardinalMesh));
+    if (!mesh_copy) {
+        cardinal_free(allocator, task);
+        return NULL;
+    }
+    *mesh_copy = *mesh;
+
+    // Deep copy vertex data
+    if (mesh->vertices && mesh->vertex_count > 0) {
+        size_t vertex_size = mesh->vertex_count * sizeof(CardinalVertex);
+        mesh_copy->vertices = cardinal_alloc(allocator, vertex_size);
+        if (!mesh_copy->vertices) {
+            cardinal_free(allocator, mesh_copy);
+            cardinal_free(allocator, task);
+            return NULL;
+        }
+        memcpy(mesh_copy->vertices, mesh->vertices, vertex_size);
+    }
+
+    // Deep copy index data
+    if (mesh->indices && mesh->index_count > 0) {
+        size_t index_size = mesh->index_count * sizeof(uint32_t);
+        mesh_copy->indices = cardinal_alloc(allocator, index_size);
+        if (!mesh_copy->indices) {
+            if (mesh_copy->vertices) {
+                cardinal_free(allocator, mesh_copy->vertices);
+            }
+            cardinal_free(allocator, mesh_copy);
+            cardinal_free(allocator, task);
+            return NULL;
+        }
+        memcpy(mesh_copy->indices, mesh->indices, index_size);
+    }
+
+    task->custom_data = mesh_copy;
+    task->callback = callback;
+    task->callback_data = user_data;
+
+    // Submit task to queue
+    if (!task_queue_push(&g_async_loader.pending_queue, task)) {
+        // Clean up mesh copy
+        if (mesh_copy->vertices) {
+            cardinal_free(allocator, mesh_copy->vertices);
+        }
+        if (mesh_copy->indices) {
+            cardinal_free(allocator, mesh_copy->indices);
+        }
+        cardinal_free(allocator, mesh_copy);
+        cardinal_async_free_task(task);
+        return NULL;
+    }
+
+    return task;
+}
+
 CardinalAsyncTask* cardinal_async_submit_custom_task(CardinalAsyncTaskFunc task_func,
                                                      void* custom_data,
                                                      CardinalAsyncPriority priority,
@@ -848,6 +1118,48 @@ bool cardinal_async_get_scene_result(CardinalAsyncTask* task, CardinalScene* out
 
     *out_scene = *scene;
     return true;
+}
+
+CardinalRefCountedResource* cardinal_async_get_material_result(CardinalAsyncTask* task,
+                                                               CardinalMaterial* out_material) {
+    if (!task || task->type != CARDINAL_ASYNC_TASK_MATERIAL_LOAD ||
+        task->status != CARDINAL_ASYNC_STATUS_COMPLETED || !out_material) {
+        return NULL;
+    }
+
+    CardinalRefCountedResource* ref_resource = (CardinalRefCountedResource*)task->result_data;
+    if (!ref_resource) {
+        return NULL;
+    }
+
+    // Copy material data
+    CardinalMaterial* material = (CardinalMaterial*)ref_resource->resource;
+    if (material) {
+        *out_material = *material;
+    }
+
+    return ref_resource;
+}
+
+CardinalRefCountedResource* cardinal_async_get_mesh_result(CardinalAsyncTask* task,
+                                                           CardinalMesh* out_mesh) {
+    if (!task || task->type != CARDINAL_ASYNC_TASK_MESH_LOAD ||
+        task->status != CARDINAL_ASYNC_STATUS_COMPLETED || !out_mesh) {
+        return NULL;
+    }
+
+    CardinalRefCountedResource* ref_resource = (CardinalRefCountedResource*)task->result_data;
+    if (!ref_resource) {
+        return NULL;
+    }
+
+    // Copy mesh data
+    CardinalMesh* mesh = (CardinalMesh*)ref_resource->resource;
+    if (mesh) {
+        *out_mesh = *mesh;
+    }
+
+    return ref_resource;
 }
 
 const char* cardinal_async_get_error_message(const CardinalAsyncTask* task) {

@@ -34,6 +34,8 @@ extern "C" {
 typedef struct CardinalScene CardinalScene;
 typedef struct TextureData TextureData;
 typedef struct CardinalRefCountedResource CardinalRefCountedResource;
+typedef struct CardinalMaterial CardinalMaterial;
+typedef struct CardinalMesh CardinalMesh;
 
 /**
  * @brief Task priority levels
@@ -63,7 +65,9 @@ typedef enum {
   CARDINAL_ASYNC_TASK_TEXTURE_LOAD = 0,
   CARDINAL_ASYNC_TASK_SCENE_LOAD = 1,
   CARDINAL_ASYNC_TASK_BUFFER_UPLOAD = 2,
-  CARDINAL_ASYNC_TASK_CUSTOM = 3
+  CARDINAL_ASYNC_TASK_MATERIAL_LOAD = 3,
+  CARDINAL_ASYNC_TASK_MESH_LOAD = 4,
+  CARDINAL_ASYNC_TASK_CUSTOM = 5
 } CardinalAsyncTaskType;
 
 /**
@@ -189,6 +193,32 @@ CardinalAsyncTask *cardinal_async_load_scene(const char *file_path,
                                              void *user_data);
 
 /**
+ * @brief Submit a material loading task
+ * @param material_data Pointer to material data to load
+ * @param priority Task priority
+ * @param callback Completion callback (can be NULL)
+ * @param user_data User data for callback
+ * @return Task handle, or NULL on failure
+ */
+CardinalAsyncTask *cardinal_async_load_material(const void *material_data,
+                                                CardinalAsyncPriority priority,
+                                                CardinalAsyncCallback callback,
+                                                void *user_data);
+
+/**
+ * @brief Submit a mesh loading task
+ * @param mesh_data Pointer to mesh data to load
+ * @param priority Task priority
+ * @param callback Completion callback (can be NULL)
+ * @param user_data User data for callback
+ * @return Task handle, or NULL on failure
+ */
+CardinalAsyncTask *cardinal_async_load_mesh(const void *mesh_data,
+                                            CardinalAsyncPriority priority,
+                                            CardinalAsyncCallback callback,
+                                            void *user_data);
+
+/**
  * @brief Submit a custom task
  * @param task_func Custom task function
  * @param custom_data Data for the custom task
@@ -257,6 +287,26 @@ cardinal_async_get_texture_result(CardinalAsyncTask *task,
  */
 bool cardinal_async_get_scene_result(CardinalAsyncTask *task,
                                      CardinalScene *out_scene);
+
+/**
+ * @brief Get material result from completed task
+ * @param task Completed material loading task
+ * @param out_material Pointer to store material data
+ * @return Reference counted resource, or NULL on failure
+ */
+CardinalRefCountedResource *
+cardinal_async_get_material_result(CardinalAsyncTask *task,
+                                   CardinalMaterial *out_material);
+
+/**
+ * @brief Get mesh result from completed task
+ * @param task Completed mesh loading task
+ * @param out_mesh Pointer to store mesh data
+ * @return Reference counted resource, or NULL on failure
+ */
+CardinalRefCountedResource *
+cardinal_async_get_mesh_result(CardinalAsyncTask *task,
+                               CardinalMesh *out_mesh);
 
 /**
  * @brief Get error message from failed task

@@ -73,6 +73,8 @@ target_sources(cardinal_engine PRIVATE
     src/assets/gltf_loader.c
     src/assets/loader.c
     src/assets/texture_loader.c
+    src/assets/mesh_loader.c
+    src/assets/material_loader.c
     src/core/ref_counting.c
     src/assets/material_ref_counting.c
     src/core/async_loader.c
@@ -92,6 +94,9 @@ target_sources(cardinal_engine PUBLIC
     include/cardinal/assets/scene.h
     include/cardinal/assets/gltf_loader.h
     include/cardinal/assets/loader.h
+    include/cardinal/assets/texture_loader.h
+    include/cardinal/assets/mesh_loader.h
+    include/cardinal/assets/material_loader.h
 )
 
 # Include directories
