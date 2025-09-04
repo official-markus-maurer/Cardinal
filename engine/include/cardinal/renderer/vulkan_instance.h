@@ -20,11 +20,26 @@
 #define VULKAN_INSTANCE_H
 
 #include <stdbool.h>
+#include <stdint.h>
 
 // Forward declaration to avoid circular includes
 typedef struct VulkanState VulkanState;
 
 struct CardinalWindow;
+
+/**
+ * @brief Validation layer statistics structure.
+ */
+typedef struct ValidationStats {
+    uint32_t total_messages;     /**< Total number of validation messages received. */
+    uint32_t error_count;        /**< Number of error messages. */
+    uint32_t warning_count;      /**< Number of warning messages. */
+    uint32_t info_count;         /**< Number of info messages. */
+    uint32_t performance_count;  /**< Number of performance-related messages. */
+    uint32_t validation_count;   /**< Number of validation-related messages. */
+    uint32_t general_count;      /**< Number of general messages. */
+    uint32_t filtered_count;     /**< Number of filtered messages. */
+} ValidationStats;
 
 /**
  * @brief Creates the Vulkan instance.
@@ -73,5 +88,21 @@ void vk_destroy_device_objects(VulkanState *s);
  * Safe to call if validation is disabled (no-op).
  */
 void vk_recreate_debug_messenger(VulkanState *s);
+
+/**
+ * @brief Get current validation layer statistics.
+ * @return Pointer to validation statistics structure.
+ */
+const ValidationStats* vk_get_validation_stats(void);
+
+/**
+ * @brief Reset validation layer statistics.
+ */
+void vk_reset_validation_stats(void);
+
+/**
+ * @brief Log validation statistics summary.
+ */
+void vk_log_validation_stats(void);
 
 #endif // VULKAN_INSTANCE_H

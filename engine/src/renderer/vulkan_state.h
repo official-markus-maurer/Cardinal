@@ -4,6 +4,7 @@
 #include "cardinal/core/memory.h"
 #include "cardinal/renderer/renderer.h"
 #include "cardinal/renderer/vulkan_pbr.h"
+#include "cardinal/renderer/vulkan_mt.h"
 #include <stdbool.h>
 #include <stdint.h>
 #include <vulkan/vulkan.h>
@@ -28,6 +29,8 @@ struct VulkanAllocator {
   // Stats
   uint64_t total_device_mem_allocated;
   uint64_t total_device_mem_freed;
+  // Thread safety
+  cardinal_mutex_t allocation_mutex;
 };
 
 // Create/Destroy allocator
@@ -101,13 +104,18 @@ typedef struct VulkanState {
 
   VkCommandPool *command_pools;     /**< Command pools per frame in flight
                                        (allocated dynamically). */
-  VkCommandBuffer *command_buffers; /**< Command buffers for each frame. */
+  VkCommandBuffer *command_buffers; /**< Primary command buffers for each frame. */
+  VkCommandBuffer *secondary_command_buffers; /**< Secondary command buffers for double buffering. */
+  uint32_t current_command_buffer_index; /**< Index for double buffering (0 or 1). */
 
   uint32_t max_frames_in_flight; /**< Maximum number of frames in flight. */
   uint32_t current_frame;        /**< Index of the current frame. */
 
   VkSemaphore *image_acquired_semaphores; /**< Semaphores signaled when an image
                                              is acquired from the swapchain. */
+  VkSemaphore *render_finished_semaphores; /**< Binary semaphores signaled when
+                                              rendering completes. */
+  VkFence *in_flight_fences; /**< Fences for CPU-GPU synchronization per frame. */
   VkSemaphore
       timeline_semaphore; /**< Timeline semaphore for frame synchronization. */
   uint64_t current_frame_value;   /**< Timeline value for the current frame. */
@@ -214,6 +222,25 @@ typedef struct VulkanState {
 
   // Scene
   const struct CardinalScene *current_scene;
+
+  // Device loss recovery state
+  bool device_lost;                    /**< True when device loss has been detected. */
+  bool recovery_in_progress;           /**< True when recovery is currently being attempted. */
+  uint32_t recovery_attempt_count;     /**< Number of recovery attempts made. */
+  uint32_t max_recovery_attempts;      /**< Maximum number of recovery attempts before giving up. */
+  struct CardinalWindow* window;       /**< Window reference for recovery operations. */
+  
+  // Recovery callbacks
+  void (*device_loss_callback)(void* user_data);     /**< Called when device loss is detected. */
+  void (*recovery_complete_callback)(void* user_data, bool success); /**< Called when recovery completes. */
+  void* recovery_callback_user_data;   /**< User data for recovery callbacks. */
+  
+  // Swapchain optimization state
+  bool swapchain_recreation_pending;   /**< True when swapchain recreation is needed on next frame. */
+  uint64_t last_swapchain_recreation_time; /**< Timestamp of last swapchain recreation (in milliseconds). */
+  uint32_t swapchain_recreation_count; /**< Number of swapchain recreations performed. */
+  uint32_t consecutive_recreation_failures; /**< Number of consecutive recreation failures. */
+  bool frame_pacing_enabled;           /**< True when frame pacing is enabled to reduce recreation frequency. */
 } VulkanState;
 
 #ifdef __cplusplus

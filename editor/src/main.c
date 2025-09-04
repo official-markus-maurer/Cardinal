@@ -2,6 +2,8 @@
 #include <cardinal/cardinal.h>
 #include <cardinal/core/async_loader.h>
 #include <cardinal/core/log.h>
+#include <cardinal/core/ref_counting.h>
+#include <cardinal/core/resource_state.h>
 #include <cardinal/assets/texture_loader.h>
 #include <cardinal/assets/mesh_loader.h>
 #include <cardinal/assets/material_loader.h>
@@ -74,6 +76,27 @@ int main(int argc, char* argv[]) {
     LOG_INFO("Initializing memory management system...");
     cardinal_memory_init(4 * 1024 * 1024); // 4MB linear allocator
     LOG_INFO("Memory management system initialized");
+
+    // Initialize reference counting system
+    LOG_INFO("Initializing reference counting system...");
+    if (!cardinal_ref_counting_init(1009)) {
+        LOG_ERROR("Failed to initialize reference counting system");
+        cardinal_memory_shutdown();
+        cardinal_log_shutdown();
+        return -1;
+    }
+    LOG_INFO("Reference counting system initialized");
+
+    // Initialize resource state tracking system
+    LOG_INFO("Initializing resource state tracking system...");
+    if (!cardinal_resource_state_init(1009)) {
+        LOG_ERROR("Failed to initialize resource state tracking system");
+        cardinal_ref_counting_shutdown();
+        cardinal_memory_shutdown();
+        cardinal_log_shutdown();
+        return -1;
+    }
+    LOG_INFO("Resource state tracking system initialized");
 
     // Initialize async loader system
     LOG_INFO("Initializing async loader system...");

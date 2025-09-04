@@ -2,6 +2,7 @@
 #include "cardinal/core/async_loader.h"
 #include "cardinal/core/log.h"
 #include "cardinal/core/ref_counting.h"
+#include "cardinal/core/resource_state.h"
 #include "cardinal/core/memory.h"
 #include <stdlib.h>
 #include <string.h>
@@ -10,6 +11,8 @@
 #include <windows.h>
 #else
 #include <pthread.h>
+#include <unistd.h>
+#include <sys/syscall.h>
 #endif
 
 // Thread-safe texture cache for multi-threaded loading
@@ -41,7 +44,6 @@ static bool texture_cache_init(uint32_t max_entries) {
         return true;
     }
 
-    CardinalAllocator* allocator = cardinal_get_allocator_for_category(CARDINAL_MEMORY_CATEGORY_ASSETS);
     g_texture_cache.entries = NULL;
     g_texture_cache.entry_count = 0;
     g_texture_cache.max_entries = max_entries;
@@ -120,7 +122,13 @@ static CardinalRefCountedResource* texture_cache_get(const char* filepath) {
     TextureCacheEntry* entry = g_texture_cache.entries;
     while (entry) {
         if (entry->filepath && strcmp(entry->filepath, filepath) == 0) {
-            CardinalRefCountedResource* resource = cardinal_ref_acquire(entry->resource->identifier);
+            // Directly increment reference count of the cached resource
+            CardinalRefCountedResource* resource = entry->resource;
+#ifdef _WIN32
+            InterlockedIncrement((LONG*)&resource->ref_count);
+#else
+            __atomic_add_fetch(&resource->ref_count, 1, __ATOMIC_SEQ_CST);
+#endif
             g_texture_cache.cache_hits++;
 #ifdef _WIN32
             LeaveCriticalSection(&g_texture_cache.mutex);
@@ -314,36 +322,131 @@ CardinalRefCountedResource* texture_load_with_ref_counting(const char* filepath,
         texture_cache_init(256); // Default cache size
     }
 
-    // Try to get texture from thread-safe cache first
-    CardinalRefCountedResource* ref_resource = texture_cache_get(filepath);
-    if (ref_resource) {
-        // Copy texture data from cached resource
-        TextureData* existing_texture = (TextureData*)ref_resource->resource;
-        *out_texture = *existing_texture;
-        CARDINAL_LOG_DEBUG("[TEXTURE] Reusing cached texture: %s (ref_count=%u)", filepath,
-                           cardinal_ref_get_count(ref_resource));
-        return ref_resource;
+    // Check resource state first
+    CardinalResourceState state = cardinal_resource_state_get(filepath);
+    
+    // If resource is already loaded, try to get it from cache/registry
+    if (state == CARDINAL_RESOURCE_STATE_LOADED) {
+        CardinalRefCountedResource* ref_resource = texture_cache_get(filepath);
+        if (ref_resource) {
+            TextureData* existing_texture = (TextureData*)ref_resource->resource;
+            *out_texture = *existing_texture;
+            CARDINAL_LOG_DEBUG("[TEXTURE] Reusing loaded texture: %s (ref_count=%u)", filepath,
+                               cardinal_ref_get_count(ref_resource));
+            return ref_resource;
+        }
+        
+        // Fallback to registry
+        ref_resource = cardinal_ref_acquire(filepath);
+        if (ref_resource) {
+            TextureData* existing_texture = (TextureData*)ref_resource->resource;
+            *out_texture = *existing_texture;
+            texture_cache_put(filepath, ref_resource);
+            CARDINAL_LOG_DEBUG("[TEXTURE] Reusing registry texture: %s (ref_count=%u)", filepath,
+                               cardinal_ref_get_count(ref_resource));
+            return ref_resource;
+        }
+    }
+    
+    // If resource is currently loading, wait for it to complete
+    if (state == CARDINAL_RESOURCE_STATE_LOADING) {
+        CARDINAL_LOG_DEBUG("[TEXTURE] Waiting for texture to finish loading: %s", filepath);
+        if (cardinal_resource_state_wait_for(filepath, CARDINAL_RESOURCE_STATE_LOADED, 5000)) {
+            // Try to get the loaded resource
+            CardinalRefCountedResource* ref_resource = texture_cache_get(filepath);
+            if (!ref_resource) {
+                ref_resource = cardinal_ref_acquire(filepath);
+            }
+            if (ref_resource) {
+                TextureData* existing_texture = (TextureData*)ref_resource->resource;
+                *out_texture = *existing_texture;
+                CARDINAL_LOG_DEBUG("[TEXTURE] Got texture after waiting: %s", filepath);
+                return ref_resource;
+            }
+        } else {
+            CARDINAL_LOG_WARN("[TEXTURE] Timeout waiting for texture to load: %s", filepath);
+        }
+    }
+    
+    // Try to acquire loading access
+    uint32_t thread_id = 0;
+#ifdef _WIN32
+    thread_id = GetCurrentThreadId();
+#else
+    thread_id = (uint32_t)syscall(SYS_gettid);
+#endif
+    // Create a temporary ref resource for state tracking registration
+    CardinalAllocator* temp_allocator = cardinal_get_allocator_for_category(CARDINAL_MEMORY_CATEGORY_ASSETS);
+    CardinalRefCountedResource* temp_ref = cardinal_alloc(temp_allocator, sizeof(CardinalRefCountedResource));
+    if (temp_ref) {
+        memset(temp_ref, 0, sizeof(CardinalRefCountedResource));
+        size_t filepath_len = strlen(filepath) + 1;
+        temp_ref->identifier = cardinal_alloc(temp_allocator, filepath_len);
+        if (temp_ref->identifier) {
+            strcpy(temp_ref->identifier, filepath);
+            temp_ref->ref_count = 1;
+            temp_ref->resource = NULL; // Will be set later
+            temp_ref->destructor = NULL; // Will be set later
+            
+            CARDINAL_LOG_ERROR("[TEXTURE] Attempting to register resource: %s", filepath);
+            // Register with state tracking system
+            CardinalResourceStateTracker* tracker = cardinal_resource_state_register(temp_ref);
+            if (!tracker) {
+                CARDINAL_LOG_WARN("Failed to register texture with state tracking: %s", filepath);
+                cardinal_free(temp_allocator, temp_ref->identifier);
+                cardinal_free(temp_allocator, temp_ref);
+            } else {
+                CARDINAL_LOG_ERROR("[TEXTURE] Successfully registered resource: %s", filepath);
+            }
+        } else {
+            CARDINAL_LOG_ERROR("[TEXTURE] Failed to allocate identifier for: %s", filepath);
+            cardinal_free(temp_allocator, temp_ref);
+        }
+    } else {
+        CARDINAL_LOG_ERROR("[TEXTURE] Failed to allocate temp_ref for: %s", filepath);
     }
 
-    // Try to acquire existing texture from global registry (fallback)
-    ref_resource = cardinal_ref_acquire(filepath);
-    if (ref_resource) {
-        // Copy texture data from existing resource
-        TextureData* existing_texture = (TextureData*)ref_resource->resource;
-        *out_texture = *existing_texture;
-        
-        // Add to cache for faster future access
-        texture_cache_put(filepath, ref_resource);
-        
-        CARDINAL_LOG_DEBUG("[TEXTURE] Reusing registry texture: %s (ref_count=%u)", filepath,
-                           cardinal_ref_get_count(ref_resource));
-        return ref_resource;
-    }
-
-    // Load texture from file
-    if (!texture_load_from_file(filepath, out_texture)) {
+    // Try to acquire loading access
+    CardinalResourceState current_state = cardinal_resource_state_get(filepath);
+    CARDINAL_LOG_ERROR("[TEXTURE] Current resource state for %s: %d", filepath, current_state);
+    if (!cardinal_resource_state_try_acquire_loading(filepath, thread_id)) {
+        // Another thread is loading, wait for completion
+        CARDINAL_LOG_ERROR("[TEXTURE] Failed to acquire loading access for %s, current state: %d", filepath, current_state);
+        CARDINAL_LOG_DEBUG("[TEXTURE] Another thread is loading, waiting: %s", filepath);
+        if (cardinal_resource_state_wait_for(filepath, CARDINAL_RESOURCE_STATE_LOADED, 5000)) {
+            CARDINAL_LOG_DEBUG("[TEXTURE] Wait succeeded, trying to get from cache: %s", filepath);
+            CardinalRefCountedResource* ref_resource = texture_cache_get(filepath);
+            if (!ref_resource) {
+                CARDINAL_LOG_DEBUG("[TEXTURE] Not in cache, trying registry: %s", filepath);
+                ref_resource = cardinal_ref_acquire(filepath);
+            } else {
+                CARDINAL_LOG_DEBUG("[TEXTURE] Found in cache: %s", filepath);
+            }
+            if (ref_resource) {
+                TextureData* existing_texture = (TextureData*)ref_resource->resource;
+                *out_texture = *existing_texture;
+                CARDINAL_LOG_DEBUG("[TEXTURE] Successfully retrieved texture after waiting: %s", filepath);
+                return ref_resource;
+            } else {
+                CARDINAL_LOG_ERROR("[TEXTURE] Resource not found in cache or registry after wait: %s", filepath);
+            }
+        } else {
+            CARDINAL_LOG_ERROR("[TEXTURE] Wait for resource loading timed out: %s", filepath);
+        }
+        CARDINAL_LOG_ERROR("[TEXTURE] Failed to get texture after waiting: %s", filepath);
         return NULL;
     }
+    
+    CARDINAL_LOG_DEBUG("[TEXTURE] Starting texture load: %s", filepath);
+    
+    // Load texture from file
+    CARDINAL_LOG_ERROR("[TEXTURE] About to call texture_load_from_file for: %s", filepath);
+    if (!texture_load_from_file(filepath, out_texture)) {
+        CARDINAL_LOG_ERROR("[TEXTURE] texture_load_from_file failed for: %s", filepath);
+        cardinal_resource_state_set(filepath, CARDINAL_RESOURCE_STATE_ERROR, thread_id);
+        return NULL;
+    }
+    CARDINAL_LOG_ERROR("[TEXTURE] texture_load_from_file succeeded for: %s", filepath);
 
     // Create a copy of texture data for the registry
     CardinalAllocator* allocator = cardinal_get_allocator_for_category(CARDINAL_MEMORY_CATEGORY_ASSETS);
@@ -351,24 +454,37 @@ CardinalRefCountedResource* texture_load_with_ref_counting(const char* filepath,
     if (!texture_copy) {
         CARDINAL_LOG_ERROR("Failed to allocate memory for texture copy");
         texture_data_free(out_texture);
+        cardinal_resource_state_set(filepath, CARDINAL_RESOURCE_STATE_ERROR, thread_id);
         return NULL;
     }
     *texture_copy = *out_texture;
 
     // Register the texture in the reference counting system
-    ref_resource =
+    CardinalRefCountedResource* ref_resource =
         cardinal_ref_create(filepath, texture_copy, sizeof(TextureData), texture_data_destructor);
     if (!ref_resource) {
         CARDINAL_LOG_ERROR("Failed to register texture in reference counting system: %s", filepath);
         cardinal_free(allocator, texture_copy);
         texture_data_free(out_texture);
+        cardinal_resource_state_set(filepath, CARDINAL_RESOURCE_STATE_ERROR, thread_id);
         return NULL;
     }
-
-    // Add to cache for future access
+    
+    // Add to cache for future access BEFORE marking as loaded
+    // This ensures other threads can find the resource when they wake up
     texture_cache_put(filepath, ref_resource);
+    
+    // Register with state tracking system
+    CardinalResourceStateTracker* tracker = cardinal_resource_state_register(ref_resource);
+    if (!tracker) {
+        CARDINAL_LOG_WARN("Failed to register texture with state tracking: %s", filepath);
+    }
+    
+    // Mark as loaded LAST - this will notify waiting threads
+    // By this point, the resource is fully available in cache and registry
+    cardinal_resource_state_set(filepath, CARDINAL_RESOURCE_STATE_LOADED, thread_id);
 
-    CARDINAL_LOG_INFO("[TEXTURE] Registered new texture for sharing: %s", filepath);
+    CARDINAL_LOG_INFO("[TEXTURE] Successfully loaded and registered texture: %s", filepath);
     return ref_resource;
 }
 

@@ -302,7 +302,22 @@
                 "cwd": "${workspaceFolder}/build/client"
             },
             "dependsOn": "Full Build",
-            "problemMatcher": []
+            "problemMatcher": {
+                "owner": "cardinal-log",
+                "fileLocation": ["relative", "${workspaceFolder}"],
+                "pattern": {
+                    "regexp": "^([^(]+)\\((\\d+)\\):\\s*\\[(ERROR|WARN|FATAL)\\]\\s*(.*)$",
+                    "file": 1,
+                    "line": 2,
+                    "severity": 3,
+                    "message": 4
+                },
+                "severity": {
+                    "ERROR": "error",
+                    "WARN": "warning",
+                    "FATAL": "error"
+                }
+            }
         },
         {
             "label": "Launch Editor (Debug)",
@@ -325,7 +340,22 @@
                 "cwd": "${workspaceFolder}/build/editor"
             },
             "dependsOn": "Full Build",
-            "problemMatcher": []
+            "problemMatcher": {
+                "owner": "cardinal-log",
+                "fileLocation": ["relative", "${workspaceFolder}"],
+                "pattern": {
+                    "regexp": "^([^(]+)\\((\\d+)\\):\\s*\\[(ERROR|WARN|FATAL)\\]\\s*(.*)$",
+                    "file": 1,
+                    "line": 2,
+                    "severity": 3,
+                    "message": 4
+                },
+                "severity": {
+                    "ERROR": "error",
+                    "WARN": "warning",
+                    "FATAL": "error"
+                }
+            }
         },
         {
             "label": "Clean Build",
@@ -398,6 +428,43 @@
                     "severity": 4,
                     "message": 5,
                     "code": 6
+                }
+            }
+        },
+        {
+            "label": "View Cardinal Logs",
+            "type": "shell",
+            "command": "powershell",
+            "args": [
+                "-Command",
+                "if (Test-Path 'build/cardinal_debug.log') { Get-Content 'build/cardinal_debug.log' -Wait -Tail 50 } elseif (Test-Path 'cardinal_debug.log') { Get-Content 'cardinal_debug.log' -Wait -Tail 50 } else { Write-Host 'No Cardinal log file found. Run a debug session first.' }"
+            ],
+            "group": "test",
+            "presentation": {
+                "echo": true,
+                "reveal": "always",
+                "focus": true,
+                "panel": "new",
+                "showReuseMessage": false,
+                "clear": true
+            },
+            "options": {
+                "cwd": "${workspaceFolder}"
+            },
+            "problemMatcher": {
+                "owner": "cardinal-log",
+                "fileLocation": ["relative", "${workspaceFolder}"],
+                "pattern": {
+                    "regexp": "^([^(]+)\\((\\d+)\\):\\s*\\[(ERROR|WARN|FATAL)\\]\\s*(.*)$",
+                    "file": 1,
+                    "line": 2,
+                    "severity": 3,
+                    "message": 4
+                },
+                "severity": {
+                    "ERROR": "error",
+                    "WARN": "warning",
+                    "FATAL": "error"
                 }
             }
         },

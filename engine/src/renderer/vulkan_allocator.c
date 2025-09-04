@@ -1,5 +1,6 @@
 #include "cardinal/core/log.h"
 #include "vulkan_state.h"
+#include "vulkan_mt.h"
 #include <string.h>
 
 /**
@@ -28,6 +29,12 @@ bool vk_allocator_init(VulkanAllocator* alloc, VkPhysicalDevice phys, VkDevice d
     alloc->fpGetBufferDeviceAddress = bufDevAddr;
     alloc->total_device_mem_allocated = 0;
     alloc->total_device_mem_freed = 0;
+    
+    // Initialize mutex for thread safety
+    if (!cardinal_mt_mutex_init(&alloc->allocation_mutex)) {
+        CARDINAL_LOG_ERROR("[VkAllocator] Failed to initialize allocation mutex");
+        return false;
+    }
 
     CARDINAL_LOG_INFO(
         "[VkAllocator] Initialized - maintenance4: required, buffer device address: enabled");
@@ -52,6 +59,9 @@ void vk_allocator_shutdown(VulkanAllocator* alloc) {
         CARDINAL_LOG_WARN("[VkAllocator] Memory leak detected: %llu bytes not freed",
                           (unsigned long long)net);
     }
+    
+    // Destroy mutex
+    cardinal_mt_mutex_destroy(&alloc->allocation_mutex);
 
     memset(alloc, 0, sizeof(VulkanAllocator));
 }
@@ -99,6 +109,9 @@ bool vk_allocator_allocate_image(VulkanAllocator* alloc, const VkImageCreateInfo
     CARDINAL_LOG_INFO("[VkAllocator] allocate_image: extent=%ux%u fmt=%u usage=0x%x props=0x%x",
                       image_ci->extent.width, image_ci->extent.height, image_ci->format,
                       image_ci->usage, (unsigned)required_props);
+    
+    // Lock mutex for thread safety
+    cardinal_mt_mutex_lock(&alloc->allocation_mutex);
 
     // Create the image first
     VkResult result = vkCreateImage(alloc->device, image_ci, NULL, out_image);
@@ -142,6 +155,7 @@ bool vk_allocator_allocate_image(VulkanAllocator* alloc, const VkImageCreateInfo
             (unsigned)required_props);
         vkDestroyImage(alloc->device, *out_image, NULL);
         *out_image = VK_NULL_HANDLE;
+        cardinal_mt_mutex_unlock(&alloc->allocation_mutex);
         return false;
     }
     CARDINAL_LOG_INFO("[VkAllocator] Image memory type index: %u", memory_type_index);
@@ -159,6 +173,7 @@ bool vk_allocator_allocate_image(VulkanAllocator* alloc, const VkImageCreateInfo
         CARDINAL_LOG_ERROR("[VkAllocator] Failed to allocate image memory: %d", result);
         vkDestroyImage(alloc->device, *out_image, NULL);
         *out_image = VK_NULL_HANDLE;
+        cardinal_mt_mutex_unlock(&alloc->allocation_mutex);
         return false;
     }
 
@@ -171,6 +186,7 @@ bool vk_allocator_allocate_image(VulkanAllocator* alloc, const VkImageCreateInfo
         vkDestroyImage(alloc->device, *out_image, NULL);
         *out_image = VK_NULL_HANDLE;
         *out_memory = VK_NULL_HANDLE;
+        cardinal_mt_mutex_unlock(&alloc->allocation_mutex);
         return false;
     }
 
@@ -182,7 +198,9 @@ bool vk_allocator_allocate_image(VulkanAllocator* alloc, const VkImageCreateInfo
 
     CARDINAL_LOG_DEBUG("[VkAllocator] Allocated image memory: %llu bytes (type: %u)",
                        (unsigned long long)mem_requirements.size, memory_type_index);
-
+    
+    // Unlock mutex
+    cardinal_mt_mutex_unlock(&alloc->allocation_mutex);
     return true;
 }
 
@@ -206,6 +224,9 @@ bool vk_allocator_allocate_buffer(VulkanAllocator* alloc, const VkBufferCreateIn
         "[VkAllocator] allocate_buffer: size=%llu usage=0x%x sharingMode=%u props=0x%x",
         (unsigned long long)buffer_ci->size, buffer_ci->usage, buffer_ci->sharingMode,
         (unsigned)required_props);
+    
+    // Lock mutex for thread safety
+    cardinal_mt_mutex_lock(&alloc->allocation_mutex);
 
     // Create the buffer first
     VkResult result = vkCreateBuffer(alloc->device, buffer_ci, NULL, out_buffer);
@@ -238,6 +259,7 @@ bool vk_allocator_allocate_buffer(VulkanAllocator* alloc, const VkBufferCreateIn
             (unsigned long long)mem_requirements.size, mem_requirements.memoryTypeBits);
         vkDestroyBuffer(alloc->device, *out_buffer, NULL);
         *out_buffer = VK_NULL_HANDLE;
+        cardinal_mt_mutex_unlock(&alloc->allocation_mutex);
         return false;
     }
 
@@ -250,6 +272,7 @@ bool vk_allocator_allocate_buffer(VulkanAllocator* alloc, const VkBufferCreateIn
             (unsigned)required_props);
         vkDestroyBuffer(alloc->device, *out_buffer, NULL);
         *out_buffer = VK_NULL_HANDLE;
+        cardinal_mt_mutex_unlock(&alloc->allocation_mutex);
         return false;
     }
     CARDINAL_LOG_INFO("[VkAllocator] Buffer memory type index: %u", memory_type_index);
@@ -277,6 +300,7 @@ bool vk_allocator_allocate_buffer(VulkanAllocator* alloc, const VkBufferCreateIn
         CARDINAL_LOG_ERROR("[VkAllocator] Failed to allocate buffer memory: %d", result);
         vkDestroyBuffer(alloc->device, *out_buffer, NULL);
         *out_buffer = VK_NULL_HANDLE;
+        cardinal_mt_mutex_unlock(&alloc->allocation_mutex);
         return false;
     }
 
@@ -289,6 +313,7 @@ bool vk_allocator_allocate_buffer(VulkanAllocator* alloc, const VkBufferCreateIn
         vkDestroyBuffer(alloc->device, *out_buffer, NULL);
         *out_buffer = VK_NULL_HANDLE;
         *out_memory = VK_NULL_HANDLE;
+        cardinal_mt_mutex_unlock(&alloc->allocation_mutex);
         return false;
     }
 
@@ -297,7 +322,9 @@ bool vk_allocator_allocate_buffer(VulkanAllocator* alloc, const VkBufferCreateIn
 
     CARDINAL_LOG_DEBUG("[VkAllocator] Allocated buffer memory: %llu bytes (type: %u)",
                        (unsigned long long)mem_requirements.size, memory_type_index);
-
+    
+    // Unlock mutex
+    cardinal_mt_mutex_unlock(&alloc->allocation_mutex);
     return true;
 }
 
@@ -311,6 +338,9 @@ void vk_allocator_free_image(VulkanAllocator* alloc, VkImage image, VkDeviceMemo
     if (!alloc)
         return;
     CARDINAL_LOG_INFO("[VkAllocator] free_image: image=%p mem=%p", (void*)image, (void*)memory);
+    
+    // Lock mutex for thread safety
+    cardinal_mt_mutex_lock(&alloc->allocation_mutex);
 
     VkDeviceSize size = 0;
     if (memory != VK_NULL_HANDLE) {
@@ -336,6 +366,9 @@ void vk_allocator_free_image(VulkanAllocator* alloc, VkImage image, VkDeviceMemo
     if (image != VK_NULL_HANDLE) {
         vkDestroyImage(alloc->device, image, NULL);
     }
+    
+    // Unlock mutex
+    cardinal_mt_mutex_unlock(&alloc->allocation_mutex);
 }
 
 /**
@@ -348,6 +381,9 @@ void vk_allocator_free_buffer(VulkanAllocator* alloc, VkBuffer buffer, VkDeviceM
     if (!alloc)
         return;
     CARDINAL_LOG_INFO("[VkAllocator] free_buffer: buffer=%p mem=%p", (void*)buffer, (void*)memory);
+    
+    // Lock mutex for thread safety
+    cardinal_mt_mutex_lock(&alloc->allocation_mutex);
 
     VkDeviceSize size = 0;
     if (memory != VK_NULL_HANDLE) {
@@ -374,6 +410,9 @@ void vk_allocator_free_buffer(VulkanAllocator* alloc, VkBuffer buffer, VkDeviceM
     if (buffer != VK_NULL_HANDLE) {
         vkDestroyBuffer(alloc->device, buffer, NULL);
     }
+    
+    // Unlock mutex
+    cardinal_mt_mutex_unlock(&alloc->allocation_mutex);
 }
 
 /**

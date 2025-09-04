@@ -236,6 +236,95 @@ bool cardinal_mt_thread_ids_equal(cardinal_thread_t thread1, cardinal_thread_t t
  */
 uint32_t cardinal_mt_get_optimal_thread_count(void);
 
+/**
+ * @brief Initialize a mutex
+ * @param mutex Mutex to initialize
+ * @return true on success, false on failure
+ */
+bool cardinal_mt_mutex_init(cardinal_mutex_t* mutex);
+
+/**
+ * @brief Destroy a mutex
+ * @param mutex Mutex to destroy
+ */
+void cardinal_mt_mutex_destroy(cardinal_mutex_t* mutex);
+
+/**
+ * @brief Lock a mutex
+ * @param mutex Mutex to lock
+ */
+void cardinal_mt_mutex_lock(cardinal_mutex_t* mutex);
+
+/**
+ * @brief Unlock a mutex
+ * @param mutex Mutex to unlock
+ */
+void cardinal_mt_mutex_unlock(cardinal_mutex_t* mutex);
+
+/**
+ * @brief Initialize a condition variable
+ * @param cond Condition variable to initialize
+ * @return true on success, false on failure
+ */
+bool cardinal_mt_cond_init(cardinal_cond_t* cond);
+
+/**
+ * @brief Destroy a condition variable
+ * @param cond Condition variable to destroy
+ */
+void cardinal_mt_cond_destroy(cardinal_cond_t* cond);
+
+/**
+ * @brief Wait on a condition variable
+ * @param cond Condition variable to wait on
+ * @param mutex Associated mutex (must be locked)
+ */
+void cardinal_mt_cond_wait(cardinal_cond_t* cond, cardinal_mutex_t* mutex);
+
+/**
+ * @brief Signal a condition variable
+ * @param cond Condition variable to signal
+ */
+void cardinal_mt_cond_signal(cardinal_cond_t* cond);
+
+/**
+ * @brief Broadcast to all waiters on a condition variable
+ * @param cond Condition variable to broadcast
+ */
+void cardinal_mt_cond_broadcast(cardinal_cond_t* cond);
+
+/**
+ * @brief Wait on a condition variable with timeout
+ * @param cond Condition variable to wait on
+ * @param mutex Associated mutex (must be locked)
+ * @param timeout_ms Timeout in milliseconds
+ * @return true if signaled, false if timeout
+ */
+bool cardinal_mt_cond_wait_timeout(cardinal_cond_t* cond, cardinal_mutex_t* mutex, uint32_t timeout_ms);
+
+/**
+ * @brief Create a thread
+ * @param thread Pointer to thread handle
+ * @param start_routine Thread function
+ * @param arg Argument to pass to thread function
+ * @return true on success, false on failure
+ */
+bool cardinal_mt_thread_create(cardinal_thread_t* thread, void* (*start_routine)(void*), void* arg);
+
+/**
+ * @brief Join a thread
+ * @param thread Thread to join
+ * @return true on success, false on failure
+ */
+bool cardinal_mt_thread_join(cardinal_thread_t thread);
+
+/**
+ * @brief Detach a thread
+ * @param thread Thread to detach
+ * @return true on success, false on failure
+ */
+bool cardinal_mt_thread_detach(cardinal_thread_t thread);
+
 #ifdef __cplusplus
 }
 #endif

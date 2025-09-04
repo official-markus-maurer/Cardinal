@@ -1,8 +1,8 @@
 cmake_minimum_required(VERSION 3.28)
 project(Cardinal VERSION 1.0.0 LANGUAGES C CXX)
 
-# Set C standard to C23 (newest C spec)
-set(CMAKE_C_STANDARD 23)
+# Set C standard to C17 (widely supported)
+set(CMAKE_C_STANDARD 17)
 set(CMAKE_C_STANDARD_REQUIRED ON)
 set(CMAKE_C_EXTENSIONS OFF)
 
@@ -11,8 +11,8 @@ set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
 
-# Export compile commands for tooling
-set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
+# Export compile commands for tooling (disabled on Windows due to MSBuild issues)
+# set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 
 # Build configuration
 set(CMAKE_CONFIGURATION_TYPES "Debug;Release;RelWithDebInfo" CACHE STRING "" FORCE)

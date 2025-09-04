@@ -151,6 +151,37 @@ void cardinal_renderer_set_rendering_mode(CardinalRenderer *renderer,
 CardinalRenderingMode
 cardinal_renderer_get_rendering_mode(CardinalRenderer *renderer);
 
+/**
+ * @brief Set device loss recovery callbacks
+ * @param renderer Pointer to initialized renderer
+ * @param device_loss_callback Called when device loss is detected (can be NULL)
+ * @param recovery_complete_callback Called when recovery completes (can be NULL)
+ * @param user_data User data passed to callbacks
+ */
+void cardinal_renderer_set_device_loss_callbacks(
+    CardinalRenderer *renderer,
+    void (*device_loss_callback)(void* user_data),
+    void (*recovery_complete_callback)(void* user_data, bool success),
+    void* user_data);
+
+/**
+ * @brief Check if device is currently lost
+ * @param renderer Pointer to initialized renderer
+ * @return true if device is lost, false otherwise
+ */
+bool cardinal_renderer_is_device_lost(CardinalRenderer *renderer);
+
+/**
+ * @brief Get device loss recovery statistics
+ * @param renderer Pointer to initialized renderer
+ * @param out_attempt_count Pointer to store current recovery attempt count
+ * @param out_max_attempts Pointer to store maximum recovery attempts
+ * @return true if renderer is valid, false otherwise
+ */
+bool cardinal_renderer_get_recovery_stats(CardinalRenderer *renderer,
+                                          uint32_t* out_attempt_count,
+                                          uint32_t* out_max_attempts);
+
 #ifdef __cplusplus
 }
 #endif

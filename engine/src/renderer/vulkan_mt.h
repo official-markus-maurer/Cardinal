@@ -234,6 +234,21 @@ bool cardinal_mt_thread_ids_equal(cardinal_thread_t thread1, cardinal_thread_t t
  */
 uint32_t cardinal_mt_get_optimal_thread_count(void);
 
+/**
+ * @brief Broadcast signal to all threads waiting on a condition variable
+ * @param cond Condition variable to broadcast to
+ */
+void cardinal_mt_cond_broadcast(cardinal_cond_t* cond);
+
+/**
+ * @brief Wait on a condition variable with timeout
+ * @param cond Condition variable to wait on
+ * @param mutex Associated mutex (must be locked)
+ * @param timeout_ms Timeout in milliseconds
+ * @return true if signaled, false if timeout
+ */
+bool cardinal_mt_cond_wait_timeout(cardinal_cond_t* cond, cardinal_mutex_t* mutex, uint32_t timeout_ms);
+
 #ifdef __cplusplus
 }
 #endif

@@ -3,6 +3,7 @@
 #include "cardinal/core/async_loader.h"
 #include "cardinal/core/log.h"
 #include "cardinal/core/ref_counting.h"
+#include "cardinal/core/resource_state.h"
 #include "cardinal/core/memory.h"
 #include <stdlib.h>
 #include <string.h>
@@ -11,6 +12,8 @@
 #include <windows.h>
 #else
 #include <pthread.h>
+#include <unistd.h>
+#include <sys/syscall.h>
 #endif
 
 // Thread-safe material cache for multi-threaded loading
@@ -276,40 +279,112 @@ CardinalRefCountedResource* material_load_with_ref_counting(const CardinalMateri
         return NULL;
     }
     
-    // Try to get material from thread-safe cache first
-    CardinalRefCountedResource* ref_resource = material_cache_get(material_id);
-    if (ref_resource) {
-        // Copy material data from cached resource
-        CardinalMaterial* existing_material = (CardinalMaterial*)ref_resource->resource;
-        *out_material = *existing_material;
+    CardinalAllocator* allocator = cardinal_get_allocator_for_category(CARDINAL_MEMORY_CATEGORY_ASSETS);
+    
+    // Check resource state first
+    CardinalResourceState state = cardinal_resource_state_get(material_id);
+    
+    // If resource is already loaded, try to get it from cache/registry
+    if (state == CARDINAL_RESOURCE_STATE_LOADED) {
+        CardinalRefCountedResource* ref_resource = material_cache_get(material_id);
+        if (ref_resource) {
+            CardinalMaterial* existing_material = (CardinalMaterial*)ref_resource->resource;
+            *out_material = *existing_material;
+            cardinal_free(allocator, material_id);
+            CARDINAL_LOG_DEBUG("[MATERIAL] Reusing loaded material: %s (ref_count=%u)", material_id,
+                               cardinal_ref_get_count(ref_resource));
+            return ref_resource;
+        }
         
-        CardinalAllocator* allocator = cardinal_get_allocator_for_category(CARDINAL_MEMORY_CATEGORY_ASSETS);
-        cardinal_free(allocator, material_id);
-        
-        CARDINAL_LOG_DEBUG("[MATERIAL] Reusing cached material: %s (ref_count=%u)", material_id,
-                           cardinal_ref_get_count(ref_resource));
-        return ref_resource;
+        // Fallback to registry
+        ref_resource = cardinal_ref_acquire(material_id);
+        if (ref_resource) {
+            CardinalMaterial* existing_material = (CardinalMaterial*)ref_resource->resource;
+            *out_material = *existing_material;
+            material_cache_put(material_id, ref_resource);
+            cardinal_free(allocator, material_id);
+            CARDINAL_LOG_DEBUG("[MATERIAL] Reusing registry material: %s (ref_count=%u)", material_id,
+                               cardinal_ref_get_count(ref_resource));
+            return ref_resource;
+        }
     }
     
-    // Try to use the existing material reference counting system (fallback)
-    ref_resource = cardinal_material_load_with_ref_counting(material_data, out_material);
+    // If resource is currently loading, wait for it to complete
+    if (state == CARDINAL_RESOURCE_STATE_LOADING) {
+        CARDINAL_LOG_DEBUG("[MATERIAL] Waiting for material to finish loading: %s", material_id);
+        if (cardinal_resource_state_wait_for(material_id, CARDINAL_RESOURCE_STATE_LOADED, 5000)) {
+            CardinalRefCountedResource* ref_resource = material_cache_get(material_id);
+            if (!ref_resource) {
+                ref_resource = cardinal_ref_acquire(material_id);
+            }
+            if (ref_resource) {
+                CardinalMaterial* existing_material = (CardinalMaterial*)ref_resource->resource;
+                *out_material = *existing_material;
+                cardinal_free(allocator, material_id);
+                CARDINAL_LOG_DEBUG("[MATERIAL] Got material after waiting: %s", material_id);
+                return ref_resource;
+            }
+        } else {
+            CARDINAL_LOG_WARN("[MATERIAL] Timeout waiting for material to load: %s", material_id);
+        }
+    }
+    
+    // Try to acquire loading access
+    uint32_t thread_id = 0;
+#ifdef _WIN32
+    thread_id = GetCurrentThreadId();
+#else
+    thread_id = (uint32_t)syscall(SYS_gettid);
+#endif
+    
+    if (!cardinal_resource_state_try_acquire_loading(material_id, thread_id)) {
+        // Another thread is loading, wait for completion
+        CARDINAL_LOG_DEBUG("[MATERIAL] Another thread is loading, waiting: %s", material_id);
+        if (cardinal_resource_state_wait_for(material_id, CARDINAL_RESOURCE_STATE_LOADED, 5000)) {
+            CardinalRefCountedResource* ref_resource = material_cache_get(material_id);
+            if (!ref_resource) {
+                ref_resource = cardinal_ref_acquire(material_id);
+            }
+            if (ref_resource) {
+                CardinalMaterial* existing_material = (CardinalMaterial*)ref_resource->resource;
+                *out_material = *existing_material;
+                cardinal_free(allocator, material_id);
+                return ref_resource;
+            }
+        }
+        CARDINAL_LOG_ERROR("[MATERIAL] Failed to get material after waiting: %s", material_id);
+        cardinal_free(allocator, material_id);
+        return NULL;
+    }
+    
+    CARDINAL_LOG_DEBUG("[MATERIAL] Starting material load: %s", material_id);
+    
+    // Try to use the existing material reference counting system first
+    CardinalRefCountedResource* ref_resource = cardinal_material_load_with_ref_counting(material_data, out_material);
     if (ref_resource) {
+        // Register with state tracking system
+        CardinalResourceStateTracker* tracker = cardinal_resource_state_register(ref_resource);
+        if (!tracker) {
+            CARDINAL_LOG_WARN("Failed to register material with state tracking: %s", material_id);
+        }
+        
         // Add to cache for faster future access
         material_cache_put(material_id, ref_resource);
         
-        CardinalAllocator* allocator = cardinal_get_allocator_for_category(CARDINAL_MEMORY_CATEGORY_ASSETS);
-        cardinal_free(allocator, material_id);
+        // Mark as loaded
+        cardinal_resource_state_set(material_id, CARDINAL_RESOURCE_STATE_LOADED, thread_id);
         
+        cardinal_free(allocator, material_id);
         CARDINAL_LOG_DEBUG("[MATERIAL] Loaded material via registry: %s (ref_count=%u)", material_id,
                            cardinal_ref_get_count(ref_resource));
         return ref_resource;
     }
     
-    // If we reach here, the existing system failed, so we create a new material
-    CardinalAllocator* allocator = cardinal_get_allocator_for_category(CARDINAL_MEMORY_CATEGORY_ASSETS);
+    // If existing system failed, create a new material
     CardinalMaterial* material_copy = cardinal_alloc(allocator, sizeof(CardinalMaterial));
     if (!material_copy) {
         CARDINAL_LOG_ERROR("Failed to allocate memory for material copy");
+        cardinal_resource_state_set(material_id, CARDINAL_RESOURCE_STATE_ERROR, thread_id);
         cardinal_free(allocator, material_id);
         return NULL;
     }
@@ -323,16 +398,26 @@ CardinalRefCountedResource* material_load_with_ref_counting(const CardinalMateri
     if (!ref_resource) {
         CARDINAL_LOG_ERROR("Failed to register material in reference counting system: %s", material_id);
         cardinal_free(allocator, material_copy);
+        cardinal_resource_state_set(material_id, CARDINAL_RESOURCE_STATE_ERROR, thread_id);
         cardinal_free(allocator, material_id);
         return NULL;
+    }
+    
+    // Register with state tracking system
+    CardinalResourceStateTracker* tracker = cardinal_resource_state_register(ref_resource);
+    if (!tracker) {
+        CARDINAL_LOG_WARN("Failed to register material with state tracking: %s", material_id);
     }
     
     // Add to cache for future access
     material_cache_put(material_id, ref_resource);
     
+    // Mark as loaded
+    cardinal_resource_state_set(material_id, CARDINAL_RESOURCE_STATE_LOADED, thread_id);
+    
     cardinal_free(allocator, material_id);
     
-    CARDINAL_LOG_INFO("[MATERIAL] Registered new material for sharing");
+    CARDINAL_LOG_INFO("[MATERIAL] Successfully loaded and registered material");
     return ref_resource;
 }
 

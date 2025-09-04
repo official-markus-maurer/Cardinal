@@ -28,11 +28,21 @@
  */
 
 #include "cardinal/core/memory.h"
+#include <stdalign.h>
+#include <stdbool.h>
+#include <stddef.h>
 #include <stdint.h>
 #include <stdlib.h>
 #include <string.h>
 #ifdef _MSC_VER
     #include <malloc.h>
+    // MSVC compatibility for C11 features
+    #ifndef max_align_t
+        typedef double max_align_t;
+    #endif
+    #ifndef alignof
+        #define alignof(type) __alignof(type)
+    #endif
 #endif
 
 // -----------------------------

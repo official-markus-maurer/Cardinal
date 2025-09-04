@@ -1,4 +1,5 @@
 #include "cardinal/renderer/vulkan_mt.h"
+#include "cardinal/renderer/vulkan_barrier_validation.h"
 #include "vulkan_state.h"
 #include "cardinal/core/log.h"
 #include <stdlib.h>
@@ -19,43 +20,47 @@ CardinalMTSubsystem g_cardinal_mt_subsystem = {0};
 
 #ifdef _WIN32
 
-static bool cardinal_mt_mutex_init(cardinal_mutex_t* mutex) {
+bool cardinal_mt_mutex_init(cardinal_mutex_t* mutex) {
     InitializeCriticalSection(mutex);
     return true;
 }
 
-static void cardinal_mt_mutex_destroy(cardinal_mutex_t* mutex) {
+void cardinal_mt_mutex_destroy(cardinal_mutex_t* mutex) {
     DeleteCriticalSection(mutex);
 }
 
-static void cardinal_mt_mutex_lock(cardinal_mutex_t* mutex) {
+void cardinal_mt_mutex_lock(cardinal_mutex_t* mutex) {
     EnterCriticalSection(mutex);
 }
 
-static void cardinal_mt_mutex_unlock(cardinal_mutex_t* mutex) {
+void cardinal_mt_mutex_unlock(cardinal_mutex_t* mutex) {
     LeaveCriticalSection(mutex);
 }
 
-static bool cardinal_mt_cond_init(cardinal_cond_t* cond) {
+bool cardinal_mt_cond_init(cardinal_cond_t* cond) {
     InitializeConditionVariable(cond);
     return true;
 }
 
-static void cardinal_mt_cond_destroy(cardinal_cond_t* cond) {
+void cardinal_mt_cond_destroy(cardinal_cond_t* cond) {
     // No explicit cleanup needed for Windows condition variables
     (void)cond;
 }
 
-static void cardinal_mt_cond_wait(cardinal_cond_t* cond, cardinal_mutex_t* mutex) {
+void cardinal_mt_cond_wait(cardinal_cond_t* cond, cardinal_mutex_t* mutex) {
     SleepConditionVariableCS(cond, mutex, INFINITE);
 }
 
-static void cardinal_mt_cond_signal(cardinal_cond_t* cond) {
+void cardinal_mt_cond_signal(cardinal_cond_t* cond) {
     WakeConditionVariable(cond);
 }
 
-static void cardinal_mt_cond_broadcast(cardinal_cond_t* cond) {
+void cardinal_mt_cond_broadcast(cardinal_cond_t* cond) {
     WakeAllConditionVariable(cond);
+}
+
+bool cardinal_mt_cond_wait_timeout(cardinal_cond_t* cond, cardinal_mutex_t* mutex, uint32_t timeout_ms) {
+    return SleepConditionVariableCS(cond, mutex, timeout_ms) != 0;
 }
 
 cardinal_thread_t cardinal_mt_get_current_thread_id(void) {
@@ -86,40 +91,52 @@ static void cardinal_mt_join_thread(cardinal_thread_t thread) {
 
 #else
 
-static bool cardinal_mt_mutex_init(cardinal_mutex_t* mutex) {
+bool cardinal_mt_mutex_init(cardinal_mutex_t* mutex) {
     return pthread_mutex_init(mutex, NULL) == 0;
 }
 
-static void cardinal_mt_mutex_destroy(cardinal_mutex_t* mutex) {
+void cardinal_mt_mutex_destroy(cardinal_mutex_t* mutex) {
     pthread_mutex_destroy(mutex);
 }
 
-static void cardinal_mt_mutex_lock(cardinal_mutex_t* mutex) {
+void cardinal_mt_mutex_lock(cardinal_mutex_t* mutex) {
     pthread_mutex_lock(mutex);
 }
 
-static void cardinal_mt_mutex_unlock(cardinal_mutex_t* mutex) {
+void cardinal_mt_mutex_unlock(cardinal_mutex_t* mutex) {
     pthread_mutex_unlock(mutex);
 }
 
-static bool cardinal_mt_cond_init(cardinal_cond_t* cond) {
+bool cardinal_mt_cond_init(cardinal_cond_t* cond) {
     return pthread_cond_init(cond, NULL) == 0;
 }
 
-static void cardinal_mt_cond_destroy(cardinal_cond_t* cond) {
+void cardinal_mt_cond_destroy(cardinal_cond_t* cond) {
     pthread_cond_destroy(cond);
 }
 
-static void cardinal_mt_cond_wait(cardinal_cond_t* cond, cardinal_mutex_t* mutex) {
+void cardinal_mt_cond_wait(cardinal_cond_t* cond, cardinal_mutex_t* mutex) {
     pthread_cond_wait(cond, mutex);
 }
 
-static void cardinal_mt_cond_signal(cardinal_cond_t* cond) {
+void cardinal_mt_cond_signal(cardinal_cond_t* cond) {
     pthread_cond_signal(cond);
 }
 
-static void cardinal_mt_cond_broadcast(cardinal_cond_t* cond) {
+void cardinal_mt_cond_broadcast(cardinal_cond_t* cond) {
     pthread_cond_broadcast(cond);
+}
+
+bool cardinal_mt_cond_wait_timeout(cardinal_cond_t* cond, cardinal_mutex_t* mutex, uint32_t timeout_ms) {
+    struct timespec ts;
+    clock_gettime(CLOCK_REALTIME, &ts);
+    ts.tv_sec += timeout_ms / 1000;
+    ts.tv_nsec += (timeout_ms % 1000) * 1000000;
+    if (ts.tv_nsec >= 1000000000) {
+        ts.tv_sec++;
+        ts.tv_nsec -= 1000000000;
+    }
+    return pthread_cond_timedwait(cond, mutex, &ts) == 0;
 }
 
 cardinal_thread_t cardinal_mt_get_current_thread_id(void) {
@@ -437,6 +454,14 @@ bool cardinal_mt_allocate_secondary_command_buffer(CardinalThreadCommandPool* po
         return false;
     }
     
+    // Note: This function should only be called by the thread that owns the pool
+    // since each thread has its own command pool. However, we add a safety check.
+    cardinal_thread_t current_thread = cardinal_mt_get_current_thread_id();
+    if (!cardinal_mt_thread_ids_equal(pool->thread_id, current_thread)) {
+        CARDINAL_LOG_ERROR("[MT] Attempting to allocate from command pool owned by different thread");
+        return false;
+    }
+    
     if (pool->next_secondary_index >= pool->secondary_buffer_count) {
         CARDINAL_LOG_ERROR("[MT] No more secondary command buffers available in pool");
         return false;
@@ -472,6 +497,12 @@ bool cardinal_mt_begin_secondary_command_buffer(CardinalSecondaryCommandContext*
     }
     
     context->is_recording = true;
+    
+    // Validate secondary command buffer recording
+    if (!cardinal_barrier_validation_validate_secondary_recording(context)) {
+        CARDINAL_LOG_WARN("[MT] Barrier validation failed for secondary command buffer");
+    }
+    
     return true;
 }
 

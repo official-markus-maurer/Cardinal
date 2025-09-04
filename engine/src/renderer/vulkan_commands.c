@@ -1,5 +1,6 @@
 #include "cardinal/core/log.h"
 #include "cardinal/renderer/vulkan_pbr.h"
+#include "cardinal/renderer/vulkan_barrier_validation.h"
 #include "vulkan_simple_pipelines.h"
 #include "vulkan_state.h"
 #include "cardinal/renderer/vulkan_mt.h"
@@ -8,10 +9,26 @@
 #include <string.h>
 #include <vulkan/vulkan.h>
 
+#ifdef _WIN32
+#include <windows.h>
+#else
+#include <unistd.h>
+#include <sys/syscall.h>
+#endif
+
 // Forward declarations for internal functions
 static void vk_record_scene_with_secondary_buffers(VulkanState* s, VkCommandBuffer primary_cmd, uint32_t image_index);
 static void vk_record_scene_direct(VulkanState* s, VkCommandBuffer cmd);
 static void vk_record_scene_commands(VulkanState* s, VkCommandBuffer cmd);
+
+// Helper function to get current thread ID
+static uint32_t get_current_thread_id(void) {
+#ifdef _WIN32
+    return GetCurrentThreadId();
+#else
+    return (uint32_t)syscall(SYS_gettid);
+#endif
+}
 
 /**
  * @brief Creates command pools, buffers, and synchronization objects.
@@ -35,7 +52,7 @@ bool vk_create_commands_sync(VulkanState* s) {
             return false;
     }
 
-    // Allocate command buffers per frame in flight, not per swapchain image
+    // Allocate primary command buffers per frame in flight
     s->command_buffers =
         (VkCommandBuffer*)malloc(sizeof(VkCommandBuffer) * s->max_frames_in_flight);
     for (uint32_t i = 0; i < s->max_frames_in_flight; ++i) {
@@ -46,6 +63,21 @@ bool vk_create_commands_sync(VulkanState* s) {
         if (vkAllocateCommandBuffers(s->device, &ai, &s->command_buffers[i]) != VK_SUCCESS)
             return false;
     }
+
+    // Allocate secondary command buffers for double buffering
+    s->secondary_command_buffers =
+        (VkCommandBuffer*)malloc(sizeof(VkCommandBuffer) * s->max_frames_in_flight);
+    for (uint32_t i = 0; i < s->max_frames_in_flight; ++i) {
+        VkCommandBufferAllocateInfo ai = {.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO};
+        ai.commandPool = s->command_pools[i];
+        ai.level = VK_COMMAND_BUFFER_LEVEL_PRIMARY;
+        ai.commandBufferCount = 1;
+        if (vkAllocateCommandBuffers(s->device, &ai, &s->secondary_command_buffers[i]) != VK_SUCCESS)
+            return false;
+    }
+
+    // Initialize double buffering index
+    s->current_command_buffer_index = 0;
 
     // Allocate swapchain image layout initialization tracking array
     CARDINAL_LOG_INFO(
@@ -74,6 +106,43 @@ bool vk_create_commands_sync(VulkanState* s) {
         if (vkCreateSemaphore(s->device, &sci, NULL, &s->image_acquired_semaphores[i]) !=
             VK_SUCCESS) {
             CARDINAL_LOG_ERROR("[INIT] Failed to create image acquired semaphore for frame %u", i);
+            return false;
+        }
+    }
+
+    // Create per-frame binary semaphores for render completion (GPU-side sync)
+    if (s->render_finished_semaphores) {
+        free(s->render_finished_semaphores);
+        s->render_finished_semaphores = NULL;
+    }
+    s->render_finished_semaphores =
+        (VkSemaphore*)calloc(s->max_frames_in_flight, sizeof(VkSemaphore));
+    if (!s->render_finished_semaphores)
+        return false;
+    for (uint32_t i = 0; i < s->max_frames_in_flight; ++i) {
+        VkSemaphoreCreateInfo sci = {0};
+        sci.sType = VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO;
+        if (vkCreateSemaphore(s->device, &sci, NULL, &s->render_finished_semaphores[i]) !=
+            VK_SUCCESS) {
+            CARDINAL_LOG_ERROR("[INIT] Failed to create render finished semaphore for frame %u", i);
+            return false;
+        }
+    }
+
+    // Create per-frame fences for CPU-GPU synchronization
+    if (s->in_flight_fences) {
+        free(s->in_flight_fences);
+        s->in_flight_fences = NULL;
+    }
+    s->in_flight_fences = (VkFence*)calloc(s->max_frames_in_flight, sizeof(VkFence));
+    if (!s->in_flight_fences)
+        return false;
+    for (uint32_t i = 0; i < s->max_frames_in_flight; ++i) {
+        VkFenceCreateInfo fci = {0};
+        fci.sType = VK_STRUCTURE_TYPE_FENCE_CREATE_INFO;
+        fci.flags = VK_FENCE_CREATE_SIGNALED_BIT; // Start signaled for first frame
+        if (vkCreateFence(s->device, &fci, NULL, &s->in_flight_fences[i]) != VK_SUCCESS) {
+            CARDINAL_LOG_ERROR("[INIT] Failed to create in-flight fence for frame %u", i);
             return false;
         }
     }
@@ -173,11 +242,36 @@ void vk_destroy_commands_sync(VulkanState* s) {
         s->image_acquired_semaphores = NULL;
     }
 
+    // Destroy per-frame render finished semaphores
+    if (s->render_finished_semaphores) {
+        for (uint32_t i = 0; i < s->max_frames_in_flight; ++i) {
+            if (s->render_finished_semaphores[i])
+                vkDestroySemaphore(s->device, s->render_finished_semaphores[i], NULL);
+        }
+        free(s->render_finished_semaphores);
+        s->render_finished_semaphores = NULL;
+    }
+
+    // Destroy per-frame in-flight fences
+    if (s->in_flight_fences) {
+        for (uint32_t i = 0; i < s->max_frames_in_flight; ++i) {
+            if (s->in_flight_fences[i])
+                vkDestroyFence(s->device, s->in_flight_fences[i], NULL);
+        }
+        free(s->in_flight_fences);
+        s->in_flight_fences = NULL;
+    }
+
     free(s->swapchain_image_layout_initialized);
     s->swapchain_image_layout_initialized = NULL;
     if (s->command_buffers) {
         free(s->command_buffers);
         s->command_buffers = NULL;
+    }
+    
+    if (s->secondary_command_buffers) {
+        free(s->secondary_command_buffers);
+        s->secondary_command_buffers = NULL;
     }
     if (s->command_pools) {
         for (uint32_t i = 0; i < s->max_frames_in_flight; ++i)
@@ -197,13 +291,19 @@ void vk_destroy_commands_sync(VulkanState* s) {
  * Enhanced error handling for recording failures.
  */
 void vk_record_cmd(VulkanState* s, uint32_t image_index) {
-    VkCommandBuffer cmd =
-        s->command_buffers[s->current_frame]; // Use current frame, not image index
+    // Double buffering: alternate between primary and secondary command buffers
+    // This allows CPU recording to overlap with GPU execution
+    VkCommandBuffer cmd;
+    if (s->current_command_buffer_index == 0) {
+        cmd = s->command_buffers[s->current_frame];
+    } else {
+        cmd = s->secondary_command_buffers[s->current_frame];
+    }
 
-    CARDINAL_LOG_INFO("[CMD] Frame %u: Recording command buffer %p for image %u", s->current_frame,
-                      (void*)cmd, image_index);
+    CARDINAL_LOG_INFO("[CMD] Frame %u: Recording command buffer %p (buffer %u) for image %u", 
+                      s->current_frame, (void*)cmd, s->current_command_buffer_index, image_index);
 
-    // Reset the command buffer - safe because we waited for the timeline semaphore
+    // Reset the command buffer - safe because we waited for fence synchronization
     CARDINAL_LOG_INFO("[CMD] Frame %u: Resetting command buffer %p", s->current_frame, (void*)cmd);
     VkResult reset_result = vkResetCommandBuffer(cmd, 0);
     CARDINAL_LOG_INFO("[CMD] Frame %u: Reset result: %d", s->current_frame, reset_result);
@@ -260,6 +360,13 @@ void vk_record_cmd(VulkanState* s, uint32_t image_index) {
         dep.sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO;
         dep.imageMemoryBarrierCount = 1;
         dep.pImageMemoryBarriers = &barrier;
+        
+        // Validate pipeline barrier before execution
+        uint32_t thread_id = get_current_thread_id();
+        if (!cardinal_barrier_validation_validate_pipeline_barrier(&dep, cmd, thread_id)) {
+            CARDINAL_LOG_WARN("[CMD] Pipeline barrier validation failed for depth image transition");
+        }
+        
         s->vkCmdPipelineBarrier2(cmd, &dep);
         s->depth_layout_initialized = true;
     }
@@ -288,6 +395,13 @@ void vk_record_cmd(VulkanState* s, uint32_t image_index) {
         dep.sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO;
         dep.imageMemoryBarrierCount = 1;
         dep.pImageMemoryBarriers = &barrier;
+        
+        // Validate pipeline barrier before execution
+        uint32_t thread_id2 = get_current_thread_id();
+        if (!cardinal_barrier_validation_validate_pipeline_barrier(&dep, cmd, thread_id2)) {
+            CARDINAL_LOG_WARN("[CMD] Pipeline barrier validation failed for swapchain image transition (first time)");
+        }
+        
         s->vkCmdPipelineBarrier2(cmd, &dep);
         s->swapchain_image_layout_initialized[image_index] = true;
     } else {
@@ -313,6 +427,13 @@ void vk_record_cmd(VulkanState* s, uint32_t image_index) {
         dep.sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO;
         dep.imageMemoryBarrierCount = 1;
         dep.pImageMemoryBarriers = &barrier;
+        
+        // Validate pipeline barrier before execution
+        uint32_t thread_id3 = get_current_thread_id();
+        if (!cardinal_barrier_validation_validate_pipeline_barrier(&dep, cmd, thread_id3)) {
+            CARDINAL_LOG_WARN("[CMD] Pipeline barrier validation failed for swapchain image transition (subsequent)");
+        }
+        
         s->vkCmdPipelineBarrier2(cmd, &dep);
     }
 
@@ -409,6 +530,13 @@ void vk_record_cmd(VulkanState* s, uint32_t image_index) {
     dep.sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO;
     dep.imageMemoryBarrierCount = 1;
     dep.pImageMemoryBarriers = &barrier;
+    
+    // Validate pipeline barrier before execution
+    uint32_t thread_id4 = get_current_thread_id();
+    if (!cardinal_barrier_validation_validate_pipeline_barrier(&dep, cmd, thread_id4)) {
+        CARDINAL_LOG_WARN("[CMD] Pipeline barrier validation failed for swapchain present transition");
+    }
+    
     s->vkCmdPipelineBarrier2(cmd, &dep);
 
     CARDINAL_LOG_INFO("[CMD] Frame %u: Ending command buffer %p", s->current_frame, (void*)cmd);
@@ -431,6 +559,7 @@ void vk_record_cmd(VulkanState* s, uint32_t image_index) {
  * @param image_index Swapchain image index
  */
 static void vk_record_scene_with_secondary_buffers(VulkanState* s, VkCommandBuffer primary_cmd, uint32_t image_index) {
+    (void)image_index; // Suppress unreferenced parameter warning
     CardinalMTCommandManager* mt_manager = vk_get_mt_command_manager();
     if (!mt_manager || !mt_manager->thread_pools[0].is_active) {
         CARDINAL_LOG_WARN("[MT] Secondary command buffers requested but MT subsystem not available");

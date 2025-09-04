@@ -329,32 +329,17 @@ static bool execute_texture_load_task(CardinalAsyncTask* task) {
     }
 
     CARDINAL_LOG_DEBUG("Loading texture: %s", task->file_path);
-
-    // Load texture using existing texture loader
-    TextureData* texture = cardinal_alloc(
-        cardinal_get_allocator_for_category(CARDINAL_MEMORY_CATEGORY_ASSETS), sizeof(TextureData));
-    if (!texture || !texture_load_from_file(task->file_path, texture)) {
+    
+    // Use the thread-safe texture loader with state tracking
+    TextureData texture_data;
+    CardinalRefCountedResource* ref_resource = texture_load_with_ref_counting(task->file_path, &texture_data);
+    
+    if (!ref_resource) {
         CardinalAllocator* allocator =
             cardinal_get_allocator_for_category(CARDINAL_MEMORY_CATEGORY_ENGINE);
         task->error_message = cardinal_alloc(allocator, 256);
         if (task->error_message) {
             snprintf(task->error_message, 256, "Failed to load texture: %s", task->file_path);
-        }
-        return false;
-    }
-
-    // Create reference counted resource
-    CardinalRefCountedResource* ref_resource = cardinal_ref_create(
-        task->file_path, texture, sizeof(TextureData), texture_destructor_wrapper);
-
-    if (!ref_resource) {
-        CardinalAllocator* allocator =
-            cardinal_get_allocator_for_category(CARDINAL_MEMORY_CATEGORY_ENGINE);
-        cardinal_free(allocator, texture);
-        task->error_message = cardinal_alloc(allocator, 256);
-        if (task->error_message) {
-            snprintf(task->error_message, 256, "Failed to create reference counted texture: %s",
-                     task->file_path);
         }
         return false;
     }
@@ -388,10 +373,10 @@ static bool execute_scene_load_task(CardinalAsyncTask* task) {
 
     // Use existing scene loading function
     if (!cardinal_scene_load(task->file_path, scene)) {
-        CardinalAllocator* allocator =
+        CardinalAllocator* error_allocator =
             cardinal_get_allocator_for_category(CARDINAL_MEMORY_CATEGORY_ENGINE);
         cardinal_free(allocator, scene);
-        task->error_message = cardinal_alloc(allocator, 256);
+        task->error_message = cardinal_alloc(error_allocator, 256);
         if (task->error_message) {
             snprintf(task->error_message, 256, "Failed to load scene: %s", task->file_path);
         }

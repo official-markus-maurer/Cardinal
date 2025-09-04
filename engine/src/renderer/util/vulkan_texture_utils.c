@@ -2,8 +2,25 @@
 #include <cardinal/core/log.h>
 #include <cardinal/renderer/util/vulkan_buffer_utils.h>
 #include <cardinal/renderer/util/vulkan_texture_utils.h>
+#include <cardinal/renderer/vulkan_barrier_validation.h>
 #include <stdlib.h>
 #include <string.h>
+
+#ifdef _WIN32
+#include <windows.h>
+#else
+#include <unistd.h>
+#include <sys/syscall.h>
+#endif
+
+// Helper function to get current thread ID
+static uint32_t get_current_thread_id(void) {
+#ifdef _WIN32
+    return GetCurrentThreadId();
+#else
+    return (uint32_t)syscall(SYS_gettid);
+#endif
+}
 
 bool vk_texture_create_from_data(VulkanAllocator* allocator, VkDevice device,
                                  VkCommandPool commandPool, VkQueue graphicsQueue,
@@ -144,6 +161,17 @@ bool vk_texture_create_from_data(VulkanAllocator* allocator, VkDevice device,
         .imageMemoryBarrierCount = 1,
         .pImageMemoryBarriers = &barrier,
     };
+
+    // Validate pipeline barrier before execution
+    uint32_t thread_id = get_current_thread_id();
+    if (!cardinal_barrier_validation_validate_pipeline_barrier(&dependencyInfo, commandBuffer, thread_id)) {
+        LOG_WARN("Pipeline barrier validation failed for texture transfer transition");
+    }
+
+    // Validate pipeline barrier before execution
+    if (!cardinal_barrier_validation_validate_pipeline_barrier(&dependencyInfo, commandBuffer, thread_id)) {
+        LOG_WARN("Pipeline barrier validation failed for texture shader read transition");
+    }
 
     vkCmdPipelineBarrier2(commandBuffer, &dependencyInfo);
 

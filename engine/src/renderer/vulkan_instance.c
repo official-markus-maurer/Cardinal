@@ -8,51 +8,119 @@
 #include <string.h>
 #include <vulkan/vulkan.h>
 
+// Enhanced error categorization and filtering
+static ValidationStats g_validation_stats = {0};
+
+// Common validation message IDs that can be safely filtered or downgraded
+static bool should_filter_message(int32_t message_id, const char* message_id_name) {
+    (void)message_id; // Suppress unused parameter warning
+    // Filter known non-critical messages
+    if (message_id_name) {
+        // Layer version warnings (already handled gracefully)
+        if (strstr(message_id_name, "Loader-Message") && strstr(message_id_name, "older than")) {
+            return true;
+        }
+        // Swapchain recreation messages (handled by our system)
+        if (strstr(message_id_name, "SWAPCHAIN") && strstr(message_id_name, "out of date")) {
+            return true;
+        }
+    }
+    return false;
+}
+
+static const char* get_message_type_string(VkDebugUtilsMessageTypeFlagsEXT message_type) {
+    if (message_type & VK_DEBUG_UTILS_MESSAGE_TYPE_PERFORMANCE_BIT_EXT) {
+        return "PERFORMANCE";
+    } else if (message_type & VK_DEBUG_UTILS_MESSAGE_TYPE_VALIDATION_BIT_EXT) {
+        return "VALIDATION";
+    } else if (message_type & VK_DEBUG_UTILS_MESSAGE_TYPE_GENERAL_BIT_EXT) {
+        return "GENERAL";
+    }
+    return "UNKNOWN";
+}
+
+static const char* get_severity_string(VkDebugUtilsMessageSeverityFlagBitsEXT message_severity) {
+    if (message_severity & VK_DEBUG_UTILS_MESSAGE_SEVERITY_ERROR_BIT_EXT)
+        return "ERROR";
+    else if (message_severity & VK_DEBUG_UTILS_MESSAGE_SEVERITY_WARNING_BIT_EXT)
+        return "WARNING";
+    else if (message_severity & VK_DEBUG_UTILS_MESSAGE_SEVERITY_INFO_BIT_EXT)
+        return "INFO";
+    else if (message_severity & VK_DEBUG_UTILS_MESSAGE_SEVERITY_VERBOSE_BIT_EXT)
+        return "VERBOSE";
+    return "UNKNOWN";
+}
+
 /**
- * @brief Vulkan debug callback for validation messages.
+ * @brief Enhanced Vulkan debug callback with improved categorization and filtering.
  * @param message_severity Severity level.
- * @param message_type Type of message.
+ * @param message_type Type of message (general, validation, performance).
  * @param callback_data Message data.
  * @param user_data User data (unused).
  * @return VK_FALSE.
- *
- * @todo Make callback configurable for different severity handling. (Include to spdlog?)
  */
 static VKAPI_ATTR VkBool32 VKAPI_CALL
 debug_callback(VkDebugUtilsMessageSeverityFlagBitsEXT message_severity,
                VkDebugUtilsMessageTypeFlagsEXT message_type,
                const VkDebugUtilsMessengerCallbackDataEXT* callback_data, void* user_data) {
-    (void)message_type;
     (void)user_data;
 
-    const char* severity_str = "UNKNOWN";
+    // Update statistics
+    g_validation_stats.total_messages++;
+    
     if (message_severity & VK_DEBUG_UTILS_MESSAGE_SEVERITY_ERROR_BIT_EXT)
-        severity_str = "ERROR";
+        g_validation_stats.error_count++;
     else if (message_severity & VK_DEBUG_UTILS_MESSAGE_SEVERITY_WARNING_BIT_EXT)
-        severity_str = "WARNING";
+        g_validation_stats.warning_count++;
     else if (message_severity & VK_DEBUG_UTILS_MESSAGE_SEVERITY_INFO_BIT_EXT)
-        severity_str = "INFO";
-    else if (message_severity & VK_DEBUG_UTILS_MESSAGE_SEVERITY_VERBOSE_BIT_EXT)
-        severity_str = "VERBOSE";
+        g_validation_stats.info_count++;
+    
+    if (message_type & VK_DEBUG_UTILS_MESSAGE_TYPE_PERFORMANCE_BIT_EXT)
+        g_validation_stats.performance_count++;
+    else if (message_type & VK_DEBUG_UTILS_MESSAGE_TYPE_VALIDATION_BIT_EXT)
+        g_validation_stats.validation_count++;
+    else if (message_type & VK_DEBUG_UTILS_MESSAGE_TYPE_GENERAL_BIT_EXT)
+        g_validation_stats.general_count++;
 
+    const char* severity_str = get_severity_string(message_severity);
+    const char* type_str = get_message_type_string(message_type);
+    
     const char* msg_id_name =
         callback_data && callback_data->pMessageIdName ? callback_data->pMessageIdName : "(no-id)";
     int32_t msg_id_num = callback_data ? callback_data->messageIdNumber : -1;
+    const char* message = callback_data ? callback_data->pMessage : "(null)";
 
-    // Compose a concise message including ID and original message
+    // Apply intelligent filtering
+    if (should_filter_message(msg_id_num, msg_id_name)) {
+        g_validation_stats.filtered_count++;
+        return VK_FALSE;
+    }
+
+    // Enhanced message formatting with categorization
     char buffer[1400];
-    snprintf(buffer, sizeof(buffer), "VK_DEBUG [%s] (%d:%s): %s", severity_str, msg_id_num,
-             msg_id_name, callback_data ? callback_data->pMessage : "(null)");
+    snprintf(buffer, sizeof(buffer), "VK_DEBUG [%s|%s] (%d:%s): %s", 
+             severity_str, type_str, msg_id_num, msg_id_name, message);
 
+    // Log with appropriate level and add context for critical messages
     if (message_severity & VK_DEBUG_UTILS_MESSAGE_SEVERITY_ERROR_BIT_EXT) {
         CARDINAL_LOG_ERROR("%s", buffer);
+        // For validation errors, provide additional context
+        if (message_type & VK_DEBUG_UTILS_MESSAGE_TYPE_VALIDATION_BIT_EXT) {
+            CARDINAL_LOG_ERROR("[VALIDATION] This error indicates a Vulkan specification violation");
+        }
     } else if (message_severity & VK_DEBUG_UTILS_MESSAGE_SEVERITY_WARNING_BIT_EXT) {
-        CARDINAL_LOG_WARN("%s", buffer);
+        // Categorize warnings for better handling
+        if (message_type & VK_DEBUG_UTILS_MESSAGE_TYPE_PERFORMANCE_BIT_EXT) {
+            CARDINAL_LOG_WARN("[PERFORMANCE] %s", buffer);
+        } else {
+            CARDINAL_LOG_WARN("%s", buffer);
+        }
     } else if (message_severity & VK_DEBUG_UTILS_MESSAGE_SEVERITY_INFO_BIT_EXT) {
         CARDINAL_LOG_INFO("%s", buffer);
     } else {
         CARDINAL_LOG_DEBUG("%s", buffer);
     }
+    
     return VK_FALSE;
 }
 
@@ -77,6 +145,43 @@ static bool validation_enabled(void) {
 #else
     return false;
 #endif
+}
+
+/**
+ * @brief Get current validation layer statistics.
+ * @return Pointer to validation statistics structure.
+ */
+const ValidationStats* vk_get_validation_stats(void) {
+    return &g_validation_stats;
+}
+
+/**
+ * @brief Reset validation layer statistics.
+ */
+void vk_reset_validation_stats(void) {
+    memset(&g_validation_stats, 0, sizeof(ValidationStats));
+}
+
+/**
+ * @brief Log validation statistics summary.
+ */
+void vk_log_validation_stats(void) {
+    if (g_validation_stats.total_messages == 0) {
+        CARDINAL_LOG_INFO("[VALIDATION] No validation messages received");
+        return;
+    }
+    
+    CARDINAL_LOG_INFO("[VALIDATION] Statistics Summary:");
+    CARDINAL_LOG_INFO("[VALIDATION]   Total messages: %u", g_validation_stats.total_messages);
+    CARDINAL_LOG_INFO("[VALIDATION]   Errors: %u, Warnings: %u, Info: %u", 
+                      g_validation_stats.error_count, 
+                      g_validation_stats.warning_count, 
+                      g_validation_stats.info_count);
+    CARDINAL_LOG_INFO("[VALIDATION]   By type - Validation: %u, Performance: %u, General: %u", 
+                      g_validation_stats.validation_count, 
+                      g_validation_stats.performance_count, 
+                      g_validation_stats.general_count);
+    CARDINAL_LOG_INFO("[VALIDATION]   Filtered messages: %u", g_validation_stats.filtered_count);
 }
 
 /**

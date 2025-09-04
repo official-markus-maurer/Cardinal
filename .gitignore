@@ -5,4 +5,8 @@ assets/models
 assets/audio
 assets/textures
 
+# Cardinal log files
 cardinal_log.txt
+cardinal_debug.log
+build/cardinal_debug.log
+build_no_spdlog

@@ -42,7 +42,6 @@
 #include <stdlib.h>
 #include <string.h>
 
-__attribute__((unused))
 /**
  * @brief Copies data from one buffer to another.
  * @param device Logical device.
