@@ -80,13 +80,29 @@ static GLFWwindow *g_window_handle = nullptr;
 
 // Asset browser state
 static char g_assets_dir[512] = "assets";
+static char g_current_dir[512] = "assets"; // Current browsing directory
+static char g_search_filter[256] = ""; // Search filter text
+static bool g_show_folders_only = false;
+static bool g_show_gltf_only = false;
+static bool g_show_textures_only = false;
+
+enum AssetType {
+  ASSET_TYPE_FOLDER,
+  ASSET_TYPE_GLTF,
+  ASSET_TYPE_GLB,
+  ASSET_TYPE_TEXTURE,
+  ASSET_TYPE_OTHER
+};
+
 struct AssetEntry {
-  std::string display;  // label shown in UI (rootName/relativePath)
-  std::string fullPath; // full path (or cwd-relative) used for loading
-  bool is_gltf;
-  bool is_glb;
+  std::string display;     // label shown in UI (filename or folder name)
+  std::string fullPath;    // full path used for loading/navigation
+  std::string relativePath; // relative path from assets root
+  AssetType type;
+  bool is_directory;
 };
 static std::vector<AssetEntry> g_asset_entries;
+static std::vector<AssetEntry> g_filtered_entries; // Filtered results
 
 // Load scene helper
 /**
@@ -240,50 +256,145 @@ static void load_scene_from_path(const char *path, bool use_async = true) {
 static void setup_imgui_style() { ImGui::StyleColorsDark(); }
 
 /**
- * @brief Scans the assets directory and populates the asset entries list.
+ * @brief Determines the asset type based on file extension.
+ */
+static AssetType get_asset_type(const std::string& path) {
+  std::string lower = path;
+  std::transform(lower.begin(), lower.end(), lower.begin(),
+                 [](unsigned char c) { return (char)std::tolower(c); });
+  
+  if (lower.size() >= 5 && lower.compare(lower.size() - 5, 5, ".gltf") == 0) {
+    return ASSET_TYPE_GLTF;
+  }
+  if (lower.size() >= 4 && lower.compare(lower.size() - 4, 4, ".glb") == 0) {
+    return ASSET_TYPE_GLB;
+  }
+  if (lower.size() >= 4 && (
+      lower.compare(lower.size() - 4, 4, ".png") == 0 ||
+      lower.compare(lower.size() - 4, 4, ".jpg") == 0 ||
+      lower.compare(lower.size() - 4, 4, ".tga") == 0 ||
+      lower.compare(lower.size() - 4, 4, ".bmp") == 0)) {
+    return ASSET_TYPE_TEXTURE;
+  }
+  if (lower.size() >= 5 && lower.compare(lower.size() - 5, 5, ".jpeg") == 0) {
+    return ASSET_TYPE_TEXTURE;
+  }
+  return ASSET_TYPE_OTHER;
+}
+
+/**
+ * @brief Gets the appropriate icon for an asset type.
+ */
+static const char* get_asset_icon(AssetType type) {
+  switch (type) {
+    case ASSET_TYPE_FOLDER: return "📁";
+    case ASSET_TYPE_GLTF:
+    case ASSET_TYPE_GLB: return "🧊";
+    case ASSET_TYPE_TEXTURE: return "🖼️";
+    default: return "📄";
+  }
+}
+
+/**
+ * @brief Checks if an entry matches the current search filter.
+ */
+static bool matches_filter(const AssetEntry& entry) {
+  // Text search filter
+  if (strlen(g_search_filter) > 0) {
+    std::string lower_display = entry.display;
+    std::string lower_filter = g_search_filter;
+    std::transform(lower_display.begin(), lower_display.end(), lower_display.begin(),
+                   [](unsigned char c) { return (char)std::tolower(c); });
+    std::transform(lower_filter.begin(), lower_filter.end(), lower_filter.begin(),
+                   [](unsigned char c) { return (char)std::tolower(c); });
+    if (lower_display.find(lower_filter) == std::string::npos) {
+      return false;
+    }
+  }
+  
+  // Type filters
+  if (g_show_folders_only && entry.type != ASSET_TYPE_FOLDER) return false;
+  if (g_show_gltf_only && entry.type != ASSET_TYPE_GLTF && entry.type != ASSET_TYPE_GLB) return false;
+  if (g_show_textures_only && entry.type != ASSET_TYPE_TEXTURE) return false;
+  
+  return true;
+}
+
+/**
+ * @brief Scans the current directory and populates the asset entries list.
  *
- * Clears existing entries and scans the specified directory for files,
- * filtering and collecting glTF/glb files.
- *
- * @todo Support subdirectories and folder navigation in asset browser.
- * @todo Add file type icons and previews.
- * @todo Implement search and filtering in asset list.
+ * Scans only the current directory (non-recursive) and categorizes files and folders.
+ * Supports subdirectory navigation, file type icons, and filtering.
  */
 static void scan_assets_dir() {
   g_asset_entries.clear();
+  g_filtered_entries.clear();
+  
   try {
-    fs::path root = fs::path(g_assets_dir);
-    if (!root.empty() && fs::exists(root) && fs::is_directory(root)) {
-      const std::string rootName = root.filename().string().empty()
-                                       ? root.string()
-                                       : root.filename().string();
-      for (auto const &it : fs::recursive_directory_iterator(root)) {
-        if (it.is_regular_file()) {
-          fs::path rel;
-          try {
-            rel = fs::relative(it.path(), root);
-          } catch (...) {
-            rel = it.path().filename();
-          }
-          std::string label =
-              rootName + std::string("/") + rel.generic_string();
-          std::string full = it.path().string();
-          std::replace(label.begin(), label.end(), '\\', '/');
-          std::replace(full.begin(), full.end(), '\\', '/');
-          std::string lower = full;
-          std::transform(lower.begin(), lower.end(), lower.begin(),
-                         [](unsigned char c) { return (char)std::tolower(c); });
-          bool is_gltf = lower.size() >= 5 &&
-                         lower.compare(lower.size() - 5, 5, ".gltf") == 0;
-          bool is_glb = lower.size() >= 4 &&
-                        lower.compare(lower.size() - 4, 4, ".glb") == 0;
-          g_asset_entries.push_back(AssetEntry{label, full, is_gltf, is_glb});
-        }
+    fs::path current_path = fs::path(g_current_dir);
+    fs::path assets_root = fs::path(g_assets_dir);
+    
+    if (!current_path.empty() && fs::exists(current_path) && fs::is_directory(current_path)) {
+      // Add ".." entry for parent directory navigation (if not at root)
+      if (current_path != assets_root && current_path.has_parent_path()) {
+        fs::path parent = current_path.parent_path();
+        std::string parent_str = parent.string();
+        std::replace(parent_str.begin(), parent_str.end(), '\\', '/');
+        
+        AssetEntry parent_entry;
+        parent_entry.display = "..";
+        parent_entry.fullPath = parent_str;
+        parent_entry.relativePath = "..";
+        parent_entry.type = ASSET_TYPE_FOLDER;
+        parent_entry.is_directory = true;
+        g_asset_entries.push_back(parent_entry);
       }
+      
+      // Scan current directory (non-recursive)
+      for (auto const &it : fs::directory_iterator(current_path)) {
+        AssetEntry entry;
+        entry.fullPath = it.path().string();
+        std::replace(entry.fullPath.begin(), entry.fullPath.end(), '\\', '/');
+        entry.display = it.path().filename().string();
+        
+        // Calculate relative path from assets root
+        try {
+          fs::path rel = fs::relative(it.path(), assets_root);
+          entry.relativePath = rel.generic_string();
+        } catch (...) {
+          entry.relativePath = entry.display;
+        }
+        
+        if (it.is_directory()) {
+          entry.type = ASSET_TYPE_FOLDER;
+          entry.is_directory = true;
+        } else if (it.is_regular_file()) {
+          entry.type = get_asset_type(entry.fullPath);
+          entry.is_directory = false;
+        } else {
+          continue; // Skip special files
+        }
+        
+        g_asset_entries.push_back(entry);
+      }
+      
+      // Sort entries: directories first, then files, alphabetically within each group
       std::sort(g_asset_entries.begin(), g_asset_entries.end(),
                 [](const AssetEntry &a, const AssetEntry &b) {
+                  if (a.display == "..") return true;
+                  if (b.display == "..") return false;
+                  if (a.is_directory != b.is_directory) {
+                    return a.is_directory > b.is_directory;
+                  }
                   return a.display < b.display;
                 });
+      
+      // Apply filters
+      for (const auto& entry : g_asset_entries) {
+        if (matches_filter(entry)) {
+          g_filtered_entries.push_back(entry);
+        }
+      }
     }
   } catch (...) {
     // Silently ignore scanning errors; UI will reflect empty list or message
@@ -597,28 +708,86 @@ bool editor_layer_init(CardinalWindow *window, CardinalRenderer *renderer) {
  * @todo Add context menus for entities.
  * @todo Support scene hierarchy editing.
  */
+// Helper function to recursively draw scene nodes
+static void draw_scene_node(CardinalSceneNode* node, int depth = 0) {
+  if (!node) return;
+  
+  // Create a unique ID for ImGui tree node
+  char node_id[256];
+  snprintf(node_id, sizeof(node_id), "%s##%p", node->name ? node->name : "Unnamed Node", (void*)node);
+  
+  bool node_open = ImGui::TreeNode(node_id);
+  
+  // Show node info on the same line
+  ImGui::SameLine();
+  ImGui::TextDisabled("(meshes: %u, children: %u)", node->mesh_count, node->child_count);
+  
+  if (node_open) {
+    // Show transform information
+    if (ImGui::TreeNode("Transform")) {
+      ImGui::Text("Local Transform:");
+      ImGui::Text("  Translation: (%.2f, %.2f, %.2f)", 
+                  node->local_transform[12], node->local_transform[13], node->local_transform[14]);
+      
+      ImGui::Text("World Transform:");
+      ImGui::Text("  Translation: (%.2f, %.2f, %.2f)", 
+                  node->world_transform[12], node->world_transform[13], node->world_transform[14]);
+      ImGui::TreePop();
+    }
+    
+    // Show attached meshes
+    if (node->mesh_count > 0 && ImGui::TreeNode("Meshes")) {
+      for (uint32_t i = 0; i < node->mesh_count; ++i) {
+        uint32_t mesh_idx = node->mesh_indices[i];
+        if (mesh_idx < g_scene.mesh_count) {
+          const CardinalMesh &m = g_scene.meshes[mesh_idx];
+          ImGui::BulletText("Mesh %u: %u vertices, %u indices", mesh_idx,
+                            (unsigned)m.vertex_count, (unsigned)m.index_count);
+        }
+      }
+      ImGui::TreePop();
+    }
+    
+    // Recursively draw child nodes
+    for (uint32_t i = 0; i < node->child_count; ++i) {
+      draw_scene_node(node->children[i], depth + 1);
+    }
+    
+    ImGui::TreePop();
+  }
+}
+
 static void draw_scene_graph_panel() {
   if (ImGui::Begin("Scene Graph")) {
-    if (ImGui::TreeNode("Root")) {
+    if (ImGui::TreeNode("Scene")) {
       ImGui::BulletText("Camera");
       ImGui::BulletText("Directional Light");
+      
       if (g_scene_loaded) {
         if (ImGui::TreeNode("Loaded Scene")) {
-          ImGui::Text("Meshes: %u", (unsigned)g_scene.mesh_count);
-          for (uint32_t i = 0; i < g_scene.mesh_count; ++i) {
-            const CardinalMesh &m = g_scene.meshes[i];
-            ImGui::BulletText("Mesh %u: %u vertices, %u indices", (unsigned)i,
-                              (unsigned)m.vertex_count,
-                              (unsigned)m.index_count);
+          ImGui::Text("Total Meshes: %u", (unsigned)g_scene.mesh_count);
+          ImGui::Text("Root Nodes: %u", (unsigned)g_scene.root_node_count);
+          
+          // Display hierarchical scene nodes
+          if (g_scene.root_node_count > 0) {
+            ImGui::Separator();
+            for (uint32_t i = 0; i < g_scene.root_node_count; ++i) {
+              draw_scene_node(g_scene.root_nodes[i]);
+            }
+          } else {
+            // Fallback to old mesh display if no hierarchy
+            ImGui::Text("No scene hierarchy - showing flat mesh list:");
+            for (uint32_t i = 0; i < g_scene.mesh_count; ++i) {
+              const CardinalMesh &m = g_scene.meshes[i];
+              ImGui::BulletText("Mesh %u: %u vertices, %u indices", (unsigned)i,
+                                (unsigned)m.vertex_count, (unsigned)m.index_count);
+            }
           }
+          
           ImGui::TreePop();
         }
       }
-      if (ImGui::TreeNode("MeshEntity")) {
-        ImGui::Text("Transform");
-        ImGui::Text("MeshRenderer");
-        ImGui::TreePop();
-      }
+      
       ImGui::TreePop();
     }
   }
@@ -628,11 +797,8 @@ static void draw_scene_graph_panel() {
 /**
  * @brief Draws the asset browser panel.
  *
- * Displays assets list and loading controls.
- *
- * @todo Implement asset preview thumbnails.
- * @todo Add asset import and management features.
- * @todo Support drag-and-drop to scene.
+ * Displays assets list with subdirectory navigation, search, filtering, and file icons.
+ * Supports loading scenes and browsing through directory structure.
  */
 static void draw_asset_browser_panel() {
   if (ImGui::Begin("Assets")) {
@@ -640,15 +806,50 @@ static void draw_asset_browser_panel() {
     ImGui::Separator();
 
     // Assets directory controls
-    ImGui::Text("Assets Directory:");
+    ImGui::Text("Assets Root:");
     ImGui::SetNextItemWidth(-FLT_MIN);
     if (ImGui::InputTextWithHint("##assets_dir",
                                  "Relative or absolute path to assets folder",
                                  g_assets_dir, sizeof(g_assets_dir))) {
-      // Optionally debounce; for simplicity, re-scan when text changes
+      // Update current directory to match new root
+      strncpy(g_current_dir, g_assets_dir, sizeof(g_current_dir) - 1);
+      g_current_dir[sizeof(g_current_dir) - 1] = '\0';
       scan_assets_dir();
     }
     if (ImGui::Button("Refresh")) {
+      scan_assets_dir();
+    }
+    
+    // Current directory display
+    ImGui::Text("Current: %s", g_current_dir);
+    
+    ImGui::Separator();
+    
+    // Search and filter controls
+    ImGui::Text("Search & Filter:");
+    ImGui::SetNextItemWidth(-FLT_MIN);
+    if (ImGui::InputTextWithHint("##search_filter", "Search files...",
+                                 g_search_filter, sizeof(g_search_filter))) {
+      scan_assets_dir(); // Re-apply filters
+    }
+    
+    // Filter checkboxes
+    bool filter_changed = false;
+    if (ImGui::Checkbox("Folders Only", &g_show_folders_only)) filter_changed = true;
+    ImGui::SameLine();
+    if (ImGui::Checkbox("glTF/GLB", &g_show_gltf_only)) filter_changed = true;
+    ImGui::SameLine();
+    if (ImGui::Checkbox("Textures", &g_show_textures_only)) filter_changed = true;
+    
+    if (filter_changed) {
+      scan_assets_dir(); // Re-apply filters
+    }
+    
+    if (ImGui::Button("Clear Filters")) {
+      g_search_filter[0] = '\0';
+      g_show_folders_only = false;
+      g_show_gltf_only = false;
+      g_show_textures_only = false;
       scan_assets_dir();
     }
 
@@ -680,25 +881,46 @@ static void draw_asset_browser_panel() {
 
     ImGui::Separator();
 
-    // Dynamic assets list
-    if (g_asset_entries.empty()) {
-      ImGui::TextDisabled("No assets found in '%s'", g_assets_dir);
+    // Dynamic assets list with icons and navigation
+    const auto& entries_to_show = g_filtered_entries.empty() ? g_asset_entries : g_filtered_entries;
+    
+    if (entries_to_show.empty()) {
+      ImGui::TextDisabled("No assets found in '%s'", g_current_dir);
     } else {
       if (ImGui::BeginChild("##assets_list", ImVec2(0, 0), true)) {
-        for (const auto &e : g_asset_entries) {
+        for (const auto &e : entries_to_show) {
+          // Display icon and name
+          ImGui::Text("%s", get_asset_icon(e.type));
+          ImGui::SameLine();
+          
           if (ImGui::Selectable(e.display.c_str())) {
-            // Always populate the path field with the real full path
-            snprintf(g_scene_path, sizeof(g_scene_path), "%s",
-                     e.fullPath.c_str());
-            // If it's a glTF/GLB, load on single click for convenience
-            if (e.is_gltf || e.is_glb) {
-              load_scene_from_path(e.fullPath.c_str());
+            if (e.is_directory) {
+              // Navigate to directory
+              if (e.display == "..") {
+                // Go to parent directory
+                strncpy(g_current_dir, e.fullPath.c_str(), sizeof(g_current_dir) - 1);
+                g_current_dir[sizeof(g_current_dir) - 1] = '\0';
+              } else {
+                // Enter subdirectory
+                strncpy(g_current_dir, e.fullPath.c_str(), sizeof(g_current_dir) - 1);
+                g_current_dir[sizeof(g_current_dir) - 1] = '\0';
+              }
+              scan_assets_dir();
+            } else {
+              // Select file for loading
+              snprintf(g_scene_path, sizeof(g_scene_path), "%s", e.fullPath.c_str());
+              // Auto-load glTF/GLB files
+              if (e.type == ASSET_TYPE_GLTF || e.type == ASSET_TYPE_GLB) {
+                load_scene_from_path(e.fullPath.c_str());
+              }
             }
           }
-          // Additionally, support double-click to load if hovered
-          if ((e.is_gltf || e.is_glb) && ImGui::IsItemHovered() &&
-              ImGui::IsMouseDoubleClicked(0)) {
-            load_scene_from_path(e.fullPath.c_str());
+          
+          // Double-click support for files
+          if (!e.is_directory && ImGui::IsItemHovered() && ImGui::IsMouseDoubleClicked(0)) {
+            if (e.type == ASSET_TYPE_GLTF || e.type == ASSET_TYPE_GLB) {
+              load_scene_from_path(e.fullPath.c_str());
+            }
           }
         }
       }

@@ -39,6 +39,7 @@
 
 #include "cardinal/core/log.h"
 #include "cardinal/core/window.h"
+#include "cardinal/core/transform.h"
 #include "cardinal/renderer/renderer.h"
 #include "cardinal/renderer/renderer_internal.h"
 #include <cardinal/renderer/vulkan_swapchain.h>
@@ -758,10 +759,7 @@ static void create_view_matrix(const float* eye, const float* center, const floa
  * @brief Creates an identity matrix.
  * @param matrix Output 4x4 matrix (16 floats).
  */
-static void create_identity_matrix(float* matrix) {
-    memset(matrix, 0, 16 * sizeof(float));
-    matrix[0] = matrix[5] = matrix[10] = matrix[15] = 1.0f;
-}
+
 
 /**
  * @brief Sets the camera parameters for rendering.
@@ -781,7 +779,7 @@ void cardinal_renderer_set_camera(CardinalRenderer* renderer, const CardinalCame
     PBRUniformBufferObject ubo = {0};
 
     // Create model matrix (identity for now)
-    create_identity_matrix(ubo.model);
+    cardinal_matrix_identity(ubo.model);
 
     // Create view matrix
     create_view_matrix(camera->position, camera->target, camera->up, ubo.view);

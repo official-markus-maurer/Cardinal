@@ -28,6 +28,7 @@
  */
 
 #include <assert.h>
+#include <stdarg.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -42,6 +43,170 @@
 #include "cardinal/core/async_loader.h"
 #include "cardinal/core/log.h"
 #include "cardinal/core/ref_counting.h"
+#include "cardinal/core/transform.h"
+
+// Texture path cache for optimization
+#define TEXTURE_CACHE_SIZE 256
+static struct {
+    char original_uri[256];
+    char resolved_path[512];
+    bool valid;
+} g_texture_path_cache[TEXTURE_CACHE_SIZE];
+static bool g_cache_initialized = false;
+
+/**
+ * @brief Simple hash function for texture cache.
+ */
+static size_t texture_cache_hash(const char* uri) {
+    size_t hash = 5381;
+    for (const char* c = uri; *c; c++) {
+        hash = ((hash << 5) + hash) + *c;
+    }
+    return hash % TEXTURE_CACHE_SIZE;
+}
+
+/**
+ * @brief Initialize texture path cache.
+ */
+static void init_texture_cache(void) {
+    if (!g_cache_initialized) {
+        memset(g_texture_path_cache, 0, sizeof(g_texture_path_cache));
+        g_cache_initialized = true;
+        LOG_DEBUG("Texture path cache initialized");
+    }
+}
+
+/**
+ * @brief Look up cached texture path.
+ */
+static const char* lookup_cached_path(const char* original_uri) {
+    if (!g_cache_initialized) return NULL;
+    
+    size_t index = texture_cache_hash(original_uri);
+    if (g_texture_path_cache[index].valid && 
+        strcmp(g_texture_path_cache[index].original_uri, original_uri) == 0) {
+        LOG_DEBUG("Cache hit for texture: %s -> %s", original_uri, g_texture_path_cache[index].resolved_path);
+        return g_texture_path_cache[index].resolved_path;
+    }
+    return NULL;
+}
+
+/**
+ * @brief Cache a successful texture path.
+ */
+static void cache_texture_path(const char* original_uri, const char* resolved_path) {
+    if (!g_cache_initialized) init_texture_cache();
+    
+    size_t index = texture_cache_hash(original_uri);
+    strncpy(g_texture_path_cache[index].original_uri, original_uri, sizeof(g_texture_path_cache[index].original_uri) - 1);
+    strncpy(g_texture_path_cache[index].resolved_path, resolved_path, sizeof(g_texture_path_cache[index].resolved_path) - 1);
+    g_texture_path_cache[index].original_uri[sizeof(g_texture_path_cache[index].original_uri) - 1] = '\0';
+    g_texture_path_cache[index].resolved_path[sizeof(g_texture_path_cache[index].resolved_path) - 1] = '\0';
+    g_texture_path_cache[index].valid = true;
+    LOG_DEBUG("Cached texture path: %s -> %s", original_uri, resolved_path);
+}
+
+/**
+ * @brief Try loading texture from a specific path.
+ */
+static CardinalRefCountedResource* try_texture_path(const char* path, TextureData* tex_data) {
+    LOG_DEBUG("Trying texture path: %s", path);
+    return texture_load_with_ref_counting(path, tex_data);
+}
+
+/**
+ * @brief Efficiently build path with format string and single buffer.
+ */
+static CardinalRefCountedResource* try_formatted_path(char* buffer, size_t buffer_size, 
+                                                     TextureData* tex_data, const char* format, ...) {
+    va_list args;
+    va_start(args, format);
+    vsnprintf(buffer, buffer_size, format, args);
+    va_end(args);
+    return try_texture_path(buffer, tex_data);
+}
+
+/**
+ * @brief Check if texture URI follows common patterns that suggest specific locations.
+ */
+static bool has_common_texture_pattern(const char* uri) {
+    if (!uri) return false;
+    
+    // Check for absolute paths or URLs - skip fallbacks
+    if (uri[0] == '/' || strstr(uri, "://") || (strlen(uri) > 2 && uri[1] == ':')) {
+        return true;
+    }
+    
+    // Check for common texture type patterns
+    const char* patterns[] = {
+        "diffuse", "albedo", "basecolor", "color",
+        "normal", "bump", "height",
+        "roughness", "metallic", "metalness", "specular",
+        "ao", "ambient", "occlusion",
+        "emission", "emissive"
+    };
+    
+    char lower_uri[256];
+    strncpy(lower_uri, uri, sizeof(lower_uri) - 1);
+    lower_uri[sizeof(lower_uri) - 1] = '\0';
+    
+    // Convert to lowercase for pattern matching
+    for (char* p = lower_uri; *p; p++) {
+        *p = (*p >= 'A' && *p <= 'Z') ? *p + 32 : *p;
+    }
+    
+    for (size_t i = 0; i < sizeof(patterns) / sizeof(patterns[0]); i++) {
+        if (strstr(lower_uri, patterns[i])) {
+            return true;
+        }
+    }
+    
+    return false;
+}
+
+/**
+ * @brief Generate optimized fallback paths in order of likelihood.
+ */
+static bool try_optimized_fallback_paths(const char* original_uri, const char* base_path, 
+                                        char* texture_path, size_t path_size,
+                                        TextureData* tex_data, CardinalRefCountedResource** ref_resource) {
+    // Extract filename and directory components once
+    const char* last_slash = strrchr(base_path, '/');
+    if (!last_slash) last_slash = strrchr(base_path, '\\');
+    
+    const char* filename_only = strrchr(original_uri, '/');
+    if (!filename_only) filename_only = strrchr(original_uri, '\\');
+    if (!filename_only) filename_only = original_uri;
+    else filename_only++;
+    
+    // 1. Most common: relative to glTF file
+    if (last_slash) {
+        size_t dir_len = (size_t)(last_slash - base_path + 1);
+        *ref_resource = try_formatted_path(texture_path, path_size, tex_data, "%.*s%s", (int)dir_len, base_path, original_uri);
+        if (*ref_resource) return true;
+    } else {
+        strncpy(texture_path, original_uri, path_size - 1);
+        texture_path[path_size - 1] = '\0';
+        *ref_resource = try_texture_path(texture_path, tex_data);
+        if (*ref_resource) return true;
+    }
+    
+    // 2. Common asset directories (most likely to succeed)
+    *ref_resource = try_formatted_path(texture_path, path_size, tex_data, "assets/textures/%s", filename_only);
+    if (*ref_resource) return true;
+    
+    *ref_resource = try_formatted_path(texture_path, path_size, tex_data, "assets/models/textures/%s", filename_only);
+    if (*ref_resource) return true;
+    
+    // 3. Parallel textures directory
+    if (last_slash) {
+        size_t dir_len = (size_t)(last_slash - base_path + 1);
+        *ref_resource = try_formatted_path(texture_path, path_size, tex_data, "%.*s../textures/%s", (int)dir_len, base_path, filename_only);
+        if (*ref_resource) return true;
+    }
+    
+    return false;
+}
 
 /**
  * @brief Computes a default normal vector.
@@ -144,42 +309,59 @@ static bool load_texture_with_fallback(const char* original_uri, const char* bas
         return create_fallback_texture(out_texture);
     }
 
+    // Check cache first
+    const char* cached_path = lookup_cached_path(original_uri);
+    if (cached_path) {
+        TextureData tex_data = {0};
+        CardinalRefCountedResource* ref_resource = texture_load_with_ref_counting(cached_path, &tex_data);
+        if (ref_resource) {
+            out_texture->data = tex_data.data;
+            out_texture->width = tex_data.width;
+            out_texture->height = tex_data.height;
+            out_texture->channels = tex_data.channels;
+            out_texture->path = malloc(strlen(cached_path) + 1);
+            if (out_texture->path) {
+                strcpy(out_texture->path, cached_path);
+            }
+            out_texture->ref_resource = ref_resource;
+            LOG_DEBUG("Loaded texture from cache: %s", cached_path);
+            return true;
+        }
+    }
+
     char texture_path[512] = {0};
     TextureData tex_data = {0};
     CardinalRefCountedResource* ref_resource = NULL;
-
-    // First attempt: original path relative to glTF
-    const char* last_slash = strrchr(base_path, '/');
-    if (!last_slash)
-        last_slash = strrchr(base_path, '\\');
-
-    if (last_slash) {
-        size_t dir_len = (size_t)(last_slash - base_path + 1);
-        strncpy(texture_path, base_path, dir_len);
-        texture_path[dir_len] = '\0';
-        strncat(texture_path, original_uri, sizeof(texture_path) - dir_len - 1);
-    } else {
-        strncpy(texture_path, original_uri, sizeof(texture_path) - 1);
+    
+    // Early exit for absolute paths or URLs - try direct load only
+    if (original_uri[0] == '/' || strstr(original_uri, "://") || 
+        (strlen(original_uri) > 2 && original_uri[1] == ':')) {
+        ref_resource = try_texture_path(original_uri, &tex_data);
+        if (ref_resource) {
+            cache_texture_path(original_uri, original_uri);
+            strncpy(texture_path, original_uri, sizeof(texture_path) - 1);
+            goto success;
+        }
+        goto create_fallback;
     }
 
-    LOG_DEBUG("Trying texture path: %s", texture_path);
-    ref_resource = texture_load_with_ref_counting(texture_path, &tex_data);
-    if (ref_resource) {
+    // Try optimized fallback paths first (covers 90% of cases)
+    if (try_optimized_fallback_paths(original_uri, base_path, texture_path, sizeof(texture_path), &tex_data, &ref_resource)) {
         goto success;
     }
 
-    // Extract filename for advanced fallbacks
+    // Advanced fallback: decomposed texture name analysis
+    // Extract filename for pattern matching
     const char* filename_only = strrchr(original_uri, '/');
-    if (!filename_only)
-        filename_only = strrchr(original_uri, '\\');
-    if (!filename_only)
-        filename_only = original_uri;
-    else
-        filename_only++; // Skip the slash
+    if (!filename_only) filename_only = strrchr(original_uri, '\\');
+    if (!filename_only) filename_only = original_uri;
+    else filename_only++;
+    
+    // Find last slash in base_path for directory operations
+    const char* last_slash = strrchr(base_path, '/');
+    if (!last_slash) last_slash = strrchr(base_path, '\\');
 
-    // Hardened mapping: if filename contains both Roughness and Metalness in any order,
-    // treat it as a concatenation and try decomposed lookups using the prefix before the first
-    // token.
+    // Check for composite texture names (e.g., "MaterialRoughnessMetalness.png")
     const char* rough_pos = strstr(filename_only, "Roughness");
     const char* metal_pos = strstr(filename_only, "Metalness");
     const char* base_pos = strstr(filename_only, "BaseColor");
@@ -244,17 +426,14 @@ static bool load_texture_with_fallback(const char* original_uri, const char* bas
                 }
                 snprintf(texture_path, sizeof(texture_path), "assets/textures/%s%s", base_name,
                          suffixes[i]);
-                LOG_DEBUG("Trying decomposed candidate: %s", texture_path);
-                ref_resource = texture_load_with_ref_counting(texture_path, &tex_data);
+                ref_resource = try_texture_path(texture_path, &tex_data);
                 if (ref_resource) {
                     goto success;
                 }
 
-                // Also try the assets/models/textures directory
                 snprintf(texture_path, sizeof(texture_path), "assets/models/textures/%s%s",
                          base_name, suffixes[i]);
-                LOG_DEBUG("Trying models/textures candidate: %s", texture_path);
-                ref_resource = texture_load_with_ref_counting(texture_path, &tex_data);
+                ref_resource = try_texture_path(texture_path, &tex_data);
                 if (ref_resource) {
                     goto success;
                 }
@@ -262,63 +441,42 @@ static bool load_texture_with_fallback(const char* original_uri, const char* bas
         }
     }
 
-    // Second attempt: textures folder parallel to models (../textures and ../../textures)
+    // Additional fallback: deeper directory traversal and path transformations
+    
     if (last_slash) {
         size_t dir_len = (size_t)(last_slash - base_path + 1);
         char base_dir[512];
         strncpy(base_dir, base_path, dir_len);
         base_dir[dir_len] = '\0';
 
-        // ../textures/filename
-        snprintf(texture_path, sizeof(texture_path), "%s../textures/%s", base_dir, filename_only);
-        LOG_DEBUG("Trying fallback path: %s", texture_path);
-        ref_resource = texture_load_with_ref_counting(texture_path, &tex_data);
+        // ../../textures/filename (deeper traversal)
+        snprintf(texture_path, sizeof(texture_path), "%s../../textures/%s", base_dir, filename_only);
+        ref_resource = try_texture_path(texture_path, &tex_data);
         if (ref_resource) {
             goto success;
         }
 
-        // ../../textures/filename
-        snprintf(texture_path, sizeof(texture_path), "%s../../textures/%s", base_dir,
-                 filename_only);
-        LOG_DEBUG("Trying deeper fallback path: %s", texture_path);
-        ref_resource = texture_load_with_ref_counting(texture_path, &tex_data);
-        if (ref_resource) {
-            goto success;
-        }
-
-        // Replace 'models' with 'textures' in the path
+        // Replace 'models' with 'textures' in the path (unique transformation)
         char models_to_textures[512];
         strncpy(models_to_textures, base_dir, sizeof(models_to_textures) - 1);
         models_to_textures[sizeof(models_to_textures) - 1] = '\0';
-        char* models_seg = NULL;
-        if (!models_seg)
-            models_seg = strstr(models_to_textures, "/models/");
-        if (!models_seg)
-            models_seg = strstr(models_to_textures, "\\models\\");
+        char* models_seg = strstr(models_to_textures, "/models/");
+        if (!models_seg) models_seg = strstr(models_to_textures, "\\models\\");
         if (models_seg) {
             size_t prefix_len = (size_t)(models_seg - models_to_textures);
             char prefix[512];
             strncpy(prefix, models_to_textures, prefix_len);
             prefix[prefix_len] = '\0';
             char sep = (models_seg[0] == '/') ? '/' : '\\';
-            snprintf(texture_path, sizeof(texture_path), "%s%ctextures%c%s", prefix, sep, sep,
-                     filename_only);
-            LOG_DEBUG("Trying models->textures remap: %s", texture_path);
-            ref_resource = texture_load_with_ref_counting(texture_path, &tex_data);
+            ref_resource = try_formatted_path(texture_path, sizeof(texture_path), &tex_data, 
+                                             "%s%ctextures%c%s", prefix, sep, sep, filename_only);
             if (ref_resource) {
                 goto success;
             }
         }
     }
 
-    // Third attempt: just the filename in assets/textures relative to CWD
-    snprintf(texture_path, sizeof(texture_path), "assets/textures/%s", filename_only);
-    LOG_DEBUG("Trying relative path: %s", texture_path);
-    ref_resource = texture_load_with_ref_counting(texture_path, &tex_data);
-    if (ref_resource) {
-        goto success;
-    }
-
+create_fallback:
     // Fourth attempt: create fallback texture
     LOG_WARN("Failed to load texture '%s' from all paths, using fallback", original_uri);
     return create_fallback_texture(out_texture);
@@ -334,6 +492,9 @@ success:
     }
     // Store reference for cleanup
     out_texture->ref_resource = ref_resource;
+
+    // Cache the successful path for future use
+    cache_texture_path(original_uri, texture_path);
 
     LOG_INFO("Loaded texture %s: %ux%u, %u channels (ref_count=%u)", texture_path, tex_data.width,
              tex_data.height, tex_data.channels,
@@ -412,68 +573,7 @@ static bool load_texture_from_gltf(const cgltf_data* data, cgltf_size img_idx,
 }
 
 // Helper function to multiply 4x4 matrices (column-major)
-static void matrix_multiply(const float* a, const float* b, float* result) {
-    for (int i = 0; i < 4; i++) {
-        for (int j = 0; j < 4; j++) {
-            result[i * 4 + j] = 0.0f;
-            for (int k = 0; k < 4; k++) {
-                result[i * 4 + j] += a[i * 4 + k] * b[k * 4 + j];
-            }
-        }
-    }
-}
 
-// Helper function to create identity matrix
-static void matrix_identity(float* matrix) {
-    memset(matrix, 0, 16 * sizeof(float));
-    matrix[0] = matrix[5] = matrix[10] = matrix[15] = 1.0f;
-}
-
-// Helper function to create transformation matrix from TRS
-static void matrix_from_trs(const float* translation, const float* rotation, const float* scale,
-                            float* matrix) {
-    // Start with identity
-    matrix_identity(matrix);
-
-    // Apply scale
-    if (scale) {
-        matrix[0] *= scale[0];
-        matrix[5] *= scale[1];
-        matrix[10] *= scale[2];
-    }
-
-    // Apply rotation (quaternion to matrix)
-    if (rotation) {
-        float x = rotation[0], y = rotation[1], z = rotation[2], w = rotation[3];
-        float x2 = x + x, y2 = y + y, z2 = z + z;
-        float xx = x * x2, xy = x * y2, xz = x * z2;
-        float yy = y * y2, yz = y * z2, zz = z * z2;
-        float wx = w * x2, wy = w * y2, wz = w * z2;
-
-        float rot_matrix[16];
-        matrix_identity(rot_matrix);
-        rot_matrix[0] = 1.0f - (yy + zz);
-        rot_matrix[1] = xy + wz;
-        rot_matrix[2] = xz - wy;
-        rot_matrix[4] = xy - wz;
-        rot_matrix[5] = 1.0f - (xx + zz);
-        rot_matrix[6] = yz + wx;
-        rot_matrix[8] = xz + wy;
-        rot_matrix[9] = yz - wx;
-        rot_matrix[10] = 1.0f - (xx + yy);
-
-        float temp[16];
-        memcpy(temp, matrix, 16 * sizeof(float));
-        matrix_multiply(temp, rot_matrix, matrix);
-    }
-
-    // Apply translation
-    if (translation) {
-        matrix[12] += translation[0];
-        matrix[13] += translation[1];
-        matrix[14] += translation[2];
-    }
-}
 
 // Helper function to traverse nodes and compute world transforms
 static void process_node(const cgltf_data* data, const cgltf_node* node,
@@ -489,13 +589,13 @@ static void process_node(const cgltf_data* data, const cgltf_node* node,
         const float* translation = node->has_translation ? node->translation : NULL;
         const float* rotation = node->has_rotation ? node->rotation : NULL;
         const float* scale = node->has_scale ? node->scale : NULL;
-        matrix_from_trs(translation, rotation, scale, local_transform);
+        cardinal_matrix_from_trs(translation, rotation, scale, local_transform);
     }
 
     // Compute world transform
     float world_transform[16];
     if (parent_transform) {
-        matrix_multiply(parent_transform, local_transform, world_transform);
+        cardinal_matrix_multiply(parent_transform, local_transform, world_transform);
     } else {
         memcpy(world_transform, local_transform, 16 * sizeof(float));
     }
@@ -526,6 +626,97 @@ static void process_node(const cgltf_data* data, const cgltf_node* node,
     for (cgltf_size ci = 0; ci < node->children_count; ++ci) {
         process_node(data, node->children[ci], world_transform, meshes, total_mesh_count);
     }
+}
+
+// New function to build scene hierarchy
+static CardinalSceneNode* build_scene_node(const cgltf_data* data, const cgltf_node* gltf_node,
+                                           CardinalMesh* meshes, size_t total_mesh_count) {
+    if (!gltf_node)
+        return NULL;
+
+    // Create the scene node
+    const char* node_name = gltf_node->name ? gltf_node->name : "Unnamed Node";
+    CardinalSceneNode* scene_node = cardinal_scene_node_create(node_name);
+    if (!scene_node) {
+        LOG_ERROR("Failed to create scene node for '%s'", node_name);
+        return NULL;
+    }
+
+    // Set local transform
+    float local_transform[16];
+    if (gltf_node->has_matrix) {
+        // Use the matrix directly
+        for (int i = 0; i < 16; ++i) {
+            local_transform[i] = (float)gltf_node->matrix[i];
+        }
+    } else {
+        // Build from TRS
+        float translation[3] = {0.0f, 0.0f, 0.0f};
+        float rotation[4] = {0.0f, 0.0f, 0.0f, 1.0f};
+        float scale[3] = {1.0f, 1.0f, 1.0f};
+
+        if (gltf_node->has_translation) {
+            translation[0] = (float)gltf_node->translation[0];
+            translation[1] = (float)gltf_node->translation[1];
+            translation[2] = (float)gltf_node->translation[2];
+        }
+        if (gltf_node->has_rotation) {
+            rotation[0] = (float)gltf_node->rotation[0];
+            rotation[1] = (float)gltf_node->rotation[1];
+            rotation[2] = (float)gltf_node->rotation[2];
+            rotation[3] = (float)gltf_node->rotation[3];
+        }
+        if (gltf_node->has_scale) {
+            scale[0] = (float)gltf_node->scale[0];
+            scale[1] = (float)gltf_node->scale[1];
+            scale[2] = (float)gltf_node->scale[2];
+        }
+
+        cardinal_matrix_from_trs(translation, rotation, scale, local_transform);
+    }
+
+    cardinal_scene_node_set_local_transform(scene_node, local_transform);
+
+    // Attach meshes if this node has any
+    if (gltf_node->mesh) {
+        cgltf_size mesh_idx = gltf_node->mesh - data->meshes;
+        const cgltf_mesh* m = gltf_node->mesh;
+
+        // Count how many primitives this mesh has
+        uint32_t primitive_count = (uint32_t)m->primitives_count;
+        if (primitive_count > 0) {
+            // Allocate mesh indices array
+            scene_node->mesh_indices = (uint32_t*)malloc(primitive_count * sizeof(uint32_t));
+            if (!scene_node->mesh_indices) {
+                LOG_ERROR("Failed to allocate mesh indices for node '%s'", scene_node->name ? scene_node->name : "Unnamed");
+                return scene_node;
+            }
+        }
+
+        // Find all primitives for this mesh and attach them
+        size_t mesh_write = 0;
+        for (cgltf_size mi = 0; mi < data->meshes_count; ++mi) {
+            const cgltf_mesh* check_mesh = &data->meshes[mi];
+            for (cgltf_size pi = 0; pi < check_mesh->primitives_count; ++pi) {
+                if (mesh_write < total_mesh_count && mi == mesh_idx) {
+                    // Attach this mesh to the node
+                    scene_node->mesh_indices[scene_node->mesh_count] = (uint32_t)mesh_write;
+                    scene_node->mesh_count++;
+                }
+                mesh_write++;
+            }
+        }
+    }
+
+    // Recursively build child nodes
+    for (cgltf_size ci = 0; ci < gltf_node->children_count; ++ci) {
+        CardinalSceneNode* child = build_scene_node(data, gltf_node->children[ci], meshes, total_mesh_count);
+        if (child) {
+            cardinal_scene_node_add_child(scene_node, child);
+        }
+    }
+
+    return scene_node;
 }
 
 /**
@@ -962,25 +1153,69 @@ bool cardinal_gltf_load_scene(const char* path, CardinalScene* out_scene) {
         }
     }
 
-    // Process scene graph to compute proper mesh transforms
-    LOG_DEBUG("Processing scene graph and node transformations...");
-
-    // Process the default scene if available
+    // Build scene hierarchy
+    LOG_DEBUG("Building scene hierarchy...");
+    
+    CardinalSceneNode** root_nodes = NULL;
+    uint32_t root_node_count = 0;
+    
+    // Build the scene hierarchy
     if (data->scene && data->scene->nodes_count > 0) {
-        LOG_DEBUG("Processing default scene with %zu root nodes", (size_t)data->scene->nodes_count);
+        LOG_DEBUG("Building hierarchy from default scene with %zu root nodes", (size_t)data->scene->nodes_count);
+        root_node_count = (uint32_t)data->scene->nodes_count;
+        root_nodes = (CardinalSceneNode**)calloc(root_node_count, sizeof(CardinalSceneNode*));
+        if (root_nodes) {
+            for (cgltf_size ni = 0; ni < data->scene->nodes_count; ++ni) {
+                root_nodes[ni] = build_scene_node(data, data->scene->nodes[ni], meshes, mesh_count);
+                if (!root_nodes[ni]) {
+                    LOG_WARN("Failed to build scene node %zu", (size_t)ni);
+                }
+            }
+        } else {
+            LOG_ERROR("Failed to allocate memory for root nodes");
+            root_node_count = 0;
+        }
+    } else if (data->nodes_count > 0) {
+        // Fallback: process all nodes as root nodes if no scene is defined
+        LOG_DEBUG("No default scene found, building hierarchy from %zu nodes as root nodes",
+                  (size_t)data->nodes_count);
+        root_node_count = (uint32_t)data->nodes_count;
+        root_nodes = (CardinalSceneNode**)calloc(root_node_count, sizeof(CardinalSceneNode*));
+        if (root_nodes) {
+            for (cgltf_size ni = 0; ni < data->nodes_count; ++ni) {
+                root_nodes[ni] = build_scene_node(data, &data->nodes[ni], meshes, mesh_count);
+                if (!root_nodes[ni]) {
+                    LOG_WARN("Failed to build scene node %zu", (size_t)ni);
+                }
+            }
+        } else {
+            LOG_ERROR("Failed to allocate memory for root nodes");
+            root_node_count = 0;
+        }
+    }
+    
+    // Update transforms for all nodes in the hierarchy
+    if (root_nodes) {
+        for (uint32_t i = 0; i < root_node_count; ++i) {
+            if (root_nodes[i]) {
+                cardinal_scene_node_update_transforms(root_nodes[i], NULL); // NULL for root nodes
+            }
+        }
+    }
+    
+    // Also process the old way for backward compatibility with mesh transforms
+    LOG_DEBUG("Processing scene graph for mesh transforms (backward compatibility)...");
+    if (data->scene && data->scene->nodes_count > 0) {
         for (cgltf_size ni = 0; ni < data->scene->nodes_count; ++ni) {
             process_node(data, data->scene->nodes[ni], NULL, meshes, mesh_count);
         }
     } else if (data->nodes_count > 0) {
-        // Fallback: process all nodes as root nodes if no scene is defined
-        LOG_DEBUG("No default scene found, processing %zu nodes as root nodes",
-                  (size_t)data->nodes_count);
         for (cgltf_size ni = 0; ni < data->nodes_count; ++ni) {
             process_node(data, &data->nodes[ni], NULL, meshes, mesh_count);
         }
     }
 
-    LOG_INFO("Applied transforms to meshes from scene graph");
+    LOG_INFO("Built scene hierarchy with %u root nodes", root_node_count);
 
     cgltf_free(data);
     LOG_DEBUG("GLTF data structures freed");
@@ -991,6 +1226,8 @@ bool cardinal_gltf_load_scene(const char* path, CardinalScene* out_scene) {
     out_scene->material_count = material_count;
     out_scene->textures = textures;
     out_scene->texture_count = texture_count;
+    out_scene->root_nodes = root_nodes;
+    out_scene->root_node_count = root_node_count;
 
     LOG_INFO("GLTF scene loading completed successfully: %u meshes, %u materials, %u textures "
              "loaded from %s",

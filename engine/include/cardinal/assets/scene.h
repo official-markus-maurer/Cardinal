@@ -130,12 +130,37 @@ typedef struct CardinalMesh {
   float transform[16];      /**< 4x4 transformation matrix (column-major) */
 } CardinalMesh;
 
+// Forward declaration for scene node
+typedef struct CardinalSceneNode CardinalSceneNode;
+
+/**
+ * @brief Scene node for hierarchical scene representation
+ *
+ * Represents a node in the scene hierarchy with transformation, name,
+ * and parent-child relationships. Nodes can contain meshes or serve
+ * as transformation containers for organizing the scene.
+ */
+typedef struct CardinalSceneNode {
+  char *name;                    /**< Node name (optional, can be NULL) */
+  float local_transform[16];     /**< Local transformation matrix (column-major) */
+  float world_transform[16];     /**< Cached world transformation matrix */
+  bool world_transform_dirty;    /**< Flag indicating world transform needs update */
+  
+  uint32_t *mesh_indices;        /**< Array of mesh indices attached to this node */
+  uint32_t mesh_count;           /**< Number of meshes attached to this node */
+  
+  CardinalSceneNode *parent;     /**< Parent node (NULL for root nodes) */
+  CardinalSceneNode **children;  /**< Array of child nodes */
+  uint32_t child_count;          /**< Number of child nodes */
+  uint32_t child_capacity;       /**< Allocated capacity for children array */
+} CardinalSceneNode;
+
 /**
  * @brief Complete 3D scene representation
  *
  * Contains all data needed to represent a complete 3D scene, including
- * meshes, materials, and textures. This structure is typically populated
- * by asset loaders and consumed by the rendering system.
+ * meshes, materials, textures, and hierarchical scene nodes. This structure
+ * is typically populated by asset loaders and consumed by the rendering system.
  */
 typedef struct CardinalScene {
   CardinalMesh *meshes; /**< Array of mesh objects in the scene */
@@ -146,14 +171,107 @@ typedef struct CardinalScene {
 
   CardinalTexture *textures; /**< Array of textures used by materials */
   uint32_t texture_count;    /**< Number of textures in the scene */
+  
+  CardinalSceneNode **root_nodes; /**< Array of root scene nodes */
+  uint32_t root_node_count;       /**< Number of root nodes in the scene */
 } CardinalScene;
+
+/**
+ * @brief Create a new scene node
+ *
+ * Allocates and initializes a new scene node with the given name.
+ * The node is created with an identity transform and no children.
+ *
+ * @param name Node name (can be NULL for unnamed nodes)
+ * @return Pointer to the new scene node, or NULL on allocation failure
+ */
+CardinalSceneNode *cardinal_scene_node_create(const char *name);
+
+/**
+ * @brief Destroy a scene node and all its children
+ *
+ * Recursively destroys a scene node and all its child nodes,
+ * freeing all associated memory.
+ *
+ * @param node Pointer to the scene node to destroy
+ *
+ * @note This function handles NULL pointers gracefully
+ */
+void cardinal_scene_node_destroy(CardinalSceneNode *node);
+
+/**
+ * @brief Add a child node to a parent node
+ *
+ * Adds a child node to the parent's children array and sets the
+ * child's parent pointer. The child's world transform will be marked dirty.
+ *
+ * @param parent Parent node to add the child to
+ * @param child Child node to add
+ * @return true on success, false on failure (e.g., allocation error)
+ */
+bool cardinal_scene_node_add_child(CardinalSceneNode *parent, CardinalSceneNode *child);
+
+/**
+ * @brief Remove a child node from its parent
+ *
+ * Removes a child node from its parent's children array and sets the
+ * child's parent pointer to NULL.
+ *
+ * @param child Child node to remove from its parent
+ * @return true on success, false if the node has no parent
+ */
+bool cardinal_scene_node_remove_from_parent(CardinalSceneNode *child);
+
+/**
+ * @brief Find a node by name in the scene hierarchy
+ *
+ * Recursively searches for a node with the given name starting from
+ * the specified root node.
+ *
+ * @param root Root node to start the search from
+ * @param name Name to search for
+ * @return Pointer to the found node, or NULL if not found
+ */
+CardinalSceneNode *cardinal_scene_node_find_by_name(CardinalSceneNode *root, const char *name);
+
+/**
+ * @brief Update world transforms for a node and its children
+ *
+ * Recursively updates the world transformation matrices for a node
+ * and all its children based on their local transforms and parent transforms.
+ *
+ * @param node Node to update (along with its children)
+ * @param parent_world_transform Parent's world transform (NULL for root nodes)
+ */
+void cardinal_scene_node_update_transforms(CardinalSceneNode *node, const float *parent_world_transform);
+
+/**
+ * @brief Set the local transform of a scene node
+ *
+ * Sets the local transformation matrix of a node and marks its world
+ * transform (and all children's) as dirty.
+ *
+ * @param node Node to set the transform for
+ * @param transform 4x4 transformation matrix (column-major)
+ */
+void cardinal_scene_node_set_local_transform(CardinalSceneNode *node, const float *transform);
+
+/**
+ * @brief Get the world transform of a scene node
+ *
+ * Returns the world transformation matrix of a node, updating it if necessary.
+ *
+ * @param node Node to get the world transform for
+ * @return Pointer to the node's world transform matrix
+ */
+const float *cardinal_scene_node_get_world_transform(CardinalSceneNode *node);
 
 /**
  * @brief Destroy and free a scene
  *
  * Properly deallocates all memory associated with a scene, including
- * meshes, materials, textures, and their associated data. The scene
- * pointer becomes invalid after this call.
+ * meshes, materials, textures, scene nodes, and their associated data.
+ * The scene pointer becomes invalid after this call.
  *
  * @param scene Pointer to the scene to destroy
  *

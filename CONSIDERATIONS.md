@@ -16,14 +16,12 @@
 - **Shader Caching**: Implement shader caching to avoid repeated loading (vulkan_pipeline.c:17, vulkan_pbr.c:620, 628)
 - **Pipeline Caching**: Implement pipeline caching for faster recreation (vulkan_pipeline.c:169)
 - **Multiple Render Passes**: Support multiple render passes for advanced rendering techniques (vulkan_pipeline.c:168)
-- **Scene Hierarchy**: Support scene hierarchy and node transformations (scene.c:11, editor_layer.cpp:413)
 - **Asset Management**: Add asset import, preview thumbnails, and management features (editor_layer.cpp:446, 447)
 
 ### **MEDIUM-LOW** - Quality of Life & Usability
 - **Command Line**: Implement advanced command-line parsing and configuration files (client/main.c:27, 28, editor/main.c:15)
 - **UI Improvements**: Add customizable themes, better accessibility, and configurable key bindings (editor_layer.cpp:119, 120, 220)
 - **Input Handling**: Improve input system with gamepad support and smooth controls (editor_layer.cpp:222, 221, window.c:89)
-- **Asset Browser**: Support subdirectories, file icons, search and filtering (editor_layer.cpp:132, 133, 134)
 - **Drag & Drop**: Implement drag-and-drop for hierarchy and scene manipulation (editor_layer.cpp:411, 448)
 - **Progress Reporting**: Add progress reporting during loading operations (editor_layer.cpp:90)
 
@@ -49,7 +47,6 @@
 
 #### **Asset Loading Vulnerabilities**
 - **File I/O Failures**: texture_loader.c has good error handling but limited retry mechanisms for transient failures
-- **GLTF Loading**: gltf_loader.c implements extensive fallback paths but could be more efficient in path resolution
 - **Texture Cache**: Thread-safe implementation but lacks cache eviction policies for memory management
 - **Dependency Resolution**: No system for handling asset dependencies and load ordering
 
