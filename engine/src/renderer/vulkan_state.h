@@ -9,6 +9,11 @@
 #include <stdint.h>
 #include <vulkan/vulkan.h>
 
+// VK_KHR_maintenance8 extension constants
+#ifndef VK_DEPENDENCY_QUEUE_FAMILY_OWNERSHIP_TRANSFER_USE_ALL_STAGES_BIT_KHR
+#define VK_DEPENDENCY_QUEUE_FAMILY_OWNERSHIP_TRANSFER_USE_ALL_STAGES_BIT_KHR 0x00000008
+#endif
+
 #ifdef __cplusplus
 extern "C" {
 #endif
@@ -19,13 +24,18 @@ struct CardinalScene;
 typedef struct VulkanAllocator VulkanAllocator;
 
 // Vulkan-specific allocator, uses maintenance4 queries (Vulkan 1.3 required)
+// with optional maintenance8 extension support for enhanced features
 struct VulkanAllocator {
   VkDevice device;
   VkPhysicalDevice physical_device;
-  // Function pointers (from Vulkan 1.3 core)
+  // Function pointers - maintenance4 (required)
   PFN_vkGetDeviceBufferMemoryRequirements fpGetDeviceBufferMemReq;
   PFN_vkGetDeviceImageMemoryRequirements fpGetDeviceImageMemReq;
   PFN_vkGetBufferDeviceAddress fpGetBufferDeviceAddress;
+  // Function pointers - maintenance8
+  PFN_vkGetDeviceBufferMemoryRequirementsKHR fpGetDeviceBufferMemReqKHR;
+  PFN_vkGetDeviceImageMemoryRequirementsKHR fpGetDeviceImageMemReqKHR;
+  bool supports_maintenance8;
   // Stats
   uint64_t total_device_mem_allocated;
   uint64_t total_device_mem_freed;
@@ -38,7 +48,10 @@ bool vk_allocator_init(VulkanAllocator *alloc, VkPhysicalDevice phys,
                        VkDevice dev,
                        PFN_vkGetDeviceBufferMemoryRequirements bufReq,
                        PFN_vkGetDeviceImageMemoryRequirements imgReq,
-                       PFN_vkGetBufferDeviceAddress bufDevAddr);
+                       PFN_vkGetBufferDeviceAddress bufDevAddr,
+                       PFN_vkGetDeviceBufferMemoryRequirementsKHR bufReqKHR,
+                       PFN_vkGetDeviceImageMemoryRequirementsKHR imgReqKHR,
+                       bool supports_maintenance8);
 void vk_allocator_shutdown(VulkanAllocator *alloc);
 
 // Allocation helpers
@@ -61,6 +74,49 @@ void vk_allocator_free_buffer(VulkanAllocator *alloc, VkBuffer buffer,
 // Buffer device address support
 VkDeviceAddress vk_allocator_get_buffer_device_address(VulkanAllocator *alloc,
                                                        VkBuffer buffer);
+
+// Maintenance8 enhanced synchronization utilities
+typedef struct VkQueueFamilyOwnershipTransferInfo {
+    uint32_t src_queue_family;
+    uint32_t dst_queue_family;
+    VkPipelineStageFlags2 src_stage_mask;
+    VkPipelineStageFlags2 dst_stage_mask;
+    VkAccessFlags2 src_access_mask;
+    VkAccessFlags2 dst_access_mask;
+    bool use_maintenance8_enhancement;
+} VkQueueFamilyOwnershipTransferInfo;
+
+// Enhanced queue family ownership transfer functions
+bool vk_create_enhanced_image_barrier(const VkQueueFamilyOwnershipTransferInfo* transfer_info,
+                                       VkImage image,
+                                       VkImageLayout old_layout,
+                                       VkImageLayout new_layout,
+                                       VkImageSubresourceRange subresource_range,
+                                       VkImageMemoryBarrier2* out_barrier);
+
+bool vk_create_enhanced_buffer_barrier(const VkQueueFamilyOwnershipTransferInfo* transfer_info,
+                                        VkBuffer buffer,
+                                        VkDeviceSize offset,
+                                        VkDeviceSize size,
+                                        VkBufferMemoryBarrier2* out_barrier);
+
+bool vk_record_enhanced_ownership_transfer(VkCommandBuffer cmd,
+                                            const VkQueueFamilyOwnershipTransferInfo* transfer_info,
+                                            uint32_t image_barrier_count,
+                                            const VkImageMemoryBarrier2* image_barriers,
+                                            uint32_t buffer_barrier_count,
+                                            const VkBufferMemoryBarrier2* buffer_barriers,
+                                            PFN_vkCmdPipelineBarrier2 vkCmdPipelineBarrier2_func);
+
+// Helper function to create queue family ownership transfer info
+bool vk_create_queue_family_transfer_info(uint32_t src_queue_family,
+                                           uint32_t dst_queue_family,
+                                           VkPipelineStageFlags2 src_stage_mask,
+                                           VkPipelineStageFlags2 dst_stage_mask,
+                                           VkAccessFlags2 src_access_mask,
+                                           VkAccessFlags2 dst_access_mask,
+                                           bool supports_maintenance8,
+                                           VkQueueFamilyOwnershipTransferInfo* out_transfer_info);
 
 // Mesh representation for scene uploads
 typedef struct GpuMesh {
@@ -138,6 +194,8 @@ typedef struct VulkanState {
                                         */
   bool supports_maintenance4;          /**< True when Vulkan 1.3 maintenance4 is
                                           available and enabled. */
+  bool supports_maintenance8;          /**< True when VK_KHR_maintenance8 extension is
+                                          available and enabled. */
   bool supports_buffer_device_address; /**< True when buffer device address is
                                           available and enabled. */
 
@@ -162,8 +220,7 @@ typedef struct VulkanState {
       vkGetSemaphoreCounterValue; /**< Function pointer for
                                      vkGetSemaphoreCounterValue. */
 
-  /** Maintenance4 device-level memory requirements queries (Vulkan 1.3 core).
-   */
+  /** Maintenance4 device-level memory requirements queries (Vulkan 1.3 core). */
   PFN_vkGetDeviceBufferMemoryRequirements
       vkGetDeviceBufferMemoryRequirements; /**< Function pointer for
                                               vkGetDeviceBufferMemoryRequirements.
@@ -172,6 +229,16 @@ typedef struct VulkanState {
       vkGetDeviceImageMemoryRequirements; /**< Function pointer for
                                              vkGetDeviceImageMemoryRequirements.
                                            */
+
+  /** Maintenance8 extension function pointers (VK_KHR_maintenance8). */
+  PFN_vkGetDeviceBufferMemoryRequirementsKHR
+      vkGetDeviceBufferMemoryRequirementsKHR; /**< Function pointer for
+                                                 vkGetDeviceBufferMemoryRequirementsKHR.
+                                               */
+  PFN_vkGetDeviceImageMemoryRequirementsKHR
+      vkGetDeviceImageMemoryRequirementsKHR; /**< Function pointer for
+                                                vkGetDeviceImageMemoryRequirementsKHR.
+                                              */
 
   /** Buffer device address function pointers (Vulkan 1.2 core, required
    * in 1.3). */

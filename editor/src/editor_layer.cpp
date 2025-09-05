@@ -15,6 +15,7 @@
 #include <cardinal/assets/scene.h>
 #include <cardinal/cardinal.h>
 #include <cardinal/core/async_loader.h>
+#include <cardinal/core/log.h>
 #include <cardinal/core/window.h>
 #include <cardinal/renderer/renderer.h>
 #include <cardinal/renderer/renderer_internal.h>
@@ -85,6 +86,14 @@ static char g_search_filter[256] = ""; // Search filter text
 static bool g_show_folders_only = false;
 static bool g_show_gltf_only = false;
 static bool g_show_textures_only = false;
+
+// Animation system state
+static int g_selected_animation = -1;
+static float g_animation_time = 0.0f;
+static bool g_animation_playing = false;
+static bool g_animation_looping = true;
+static float g_animation_speed = 1.0f;
+static float g_timeline_zoom = 1.0f;
 
 enum AssetType {
   ASSET_TYPE_FOLDER,
@@ -167,6 +176,37 @@ static void scene_load_callback(CardinalAsyncTask *task, void *user_data) {
  */
 static void load_scene_from_path(const char *path, bool use_async = true) {
   if (!path || !path[0]) {
+    return;
+  }
+  
+  // Check if file exists and get its size
+  try {
+    if (!fs::exists(path)) {
+      snprintf(g_status_msg, sizeof(g_status_msg), "File does not exist: %s", path);
+      return;
+    }
+    
+    std::error_code ec;
+    auto file_size = fs::file_size(path, ec);
+    if (ec) {
+      snprintf(g_status_msg, sizeof(g_status_msg), "Cannot access file: %s", path);
+      return;
+    }
+    
+    // Warn about very large files (over 500MB)
+    if (file_size > 524288000) {
+      snprintf(g_status_msg, sizeof(g_status_msg), "Warning: Large file (%.1f MB), loading may take time: %s", 
+               file_size / 1048576.0, path);
+    }
+    
+    // Refuse to load files over 1GB
+    if (file_size > 1073741824) {
+      snprintf(g_status_msg, sizeof(g_status_msg), "File too large (%.1f GB), refusing to load: %s", 
+               file_size / 1073741824.0, path);
+      return;
+    }
+  } catch (...) {
+    snprintf(g_status_msg, sizeof(g_status_msg), "Error checking file: %s", path);
     return;
   }
 
@@ -327,6 +367,7 @@ static bool matches_filter(const AssetEntry& entry) {
  * Supports subdirectory navigation, file type icons, and filtering.
  */
 static void scan_assets_dir() {
+  CARDINAL_LOG_INFO("Starting asset directory scan for: %s", g_current_dir);
   g_asset_entries.clear();
   g_filtered_entries.clear();
   
@@ -334,7 +375,11 @@ static void scan_assets_dir() {
     fs::path current_path = fs::path(g_current_dir);
     fs::path assets_root = fs::path(g_assets_dir);
     
+    CARDINAL_LOG_DEBUG("Current path: %s, Assets root: %s", current_path.string().c_str(), assets_root.string().c_str());
+    
     if (!current_path.empty() && fs::exists(current_path) && fs::is_directory(current_path)) {
+      CARDINAL_LOG_DEBUG("Path exists and is directory, proceeding with scan");
+      
       // Add ".." entry for parent directory navigation (if not at root)
       if (current_path != assets_root && current_path.has_parent_path()) {
         fs::path parent = current_path.parent_path();
@@ -348,35 +393,60 @@ static void scan_assets_dir() {
         parent_entry.type = ASSET_TYPE_FOLDER;
         parent_entry.is_directory = true;
         g_asset_entries.push_back(parent_entry);
+        CARDINAL_LOG_DEBUG("Added parent directory entry: %s", parent_str.c_str());
       }
       
       // Scan current directory (non-recursive)
+      CARDINAL_LOG_DEBUG("Starting directory iteration");
+      size_t entry_count = 0;
       for (auto const &it : fs::directory_iterator(current_path)) {
-        AssetEntry entry;
-        entry.fullPath = it.path().string();
-        std::replace(entry.fullPath.begin(), entry.fullPath.end(), '\\', '/');
-        entry.display = it.path().filename().string();
-        
-        // Calculate relative path from assets root
         try {
-          fs::path rel = fs::relative(it.path(), assets_root);
-          entry.relativePath = rel.generic_string();
+          entry_count++;
+          AssetEntry entry;
+          entry.fullPath = it.path().string();
+          std::replace(entry.fullPath.begin(), entry.fullPath.end(), '\\', '/');
+          entry.display = it.path().filename().string();
+          
+          CARDINAL_LOG_DEBUG("Processing entry #%zu: %s (full: %s)", entry_count, entry.display.c_str(), entry.fullPath.c_str());
+          
+          // Calculate relative path from assets root
+          try {
+            fs::path rel = fs::relative(it.path(), assets_root);
+            entry.relativePath = rel.generic_string();
+            CARDINAL_LOG_DEBUG("Relative path: %s", entry.relativePath.c_str());
+          } catch (const std::exception& e) {
+            CARDINAL_LOG_WARN("Failed to calculate relative path for %s: %s", entry.display.c_str(), e.what());
+            entry.relativePath = entry.display;
+          } catch (...) {
+            CARDINAL_LOG_WARN("Unknown error calculating relative path for %s", entry.display.c_str());
+            entry.relativePath = entry.display;
+          }
+          
+          if (it.is_directory()) {
+            entry.type = ASSET_TYPE_FOLDER;
+            entry.is_directory = true;
+            CARDINAL_LOG_DEBUG("Entry is directory: %s", entry.display.c_str());
+          } else if (it.is_regular_file()) {
+             entry.type = get_asset_type(entry.fullPath);
+             entry.is_directory = false;
+             CARDINAL_LOG_DEBUG("Entry is file: %s (type: %d)", entry.display.c_str(), entry.type);
+           } else {
+            CARDINAL_LOG_DEBUG("Skipping special file: %s", entry.display.c_str());
+            continue; // Skip special files
+          }
+          
+          g_asset_entries.push_back(entry);
+          CARDINAL_LOG_DEBUG("Successfully added entry: %s", entry.display.c_str());
+        } catch (const std::exception& e) {
+          CARDINAL_LOG_ERROR("Exception processing entry #%zu (%s): %s", entry_count, it.path().filename().string().c_str(), e.what());
+          continue;
         } catch (...) {
-          entry.relativePath = entry.display;
+          CARDINAL_LOG_ERROR("Unknown exception processing entry #%zu (%s)", entry_count, it.path().filename().string().c_str());
+          continue;
         }
-        
-        if (it.is_directory()) {
-          entry.type = ASSET_TYPE_FOLDER;
-          entry.is_directory = true;
-        } else if (it.is_regular_file()) {
-          entry.type = get_asset_type(entry.fullPath);
-          entry.is_directory = false;
-        } else {
-          continue; // Skip special files
-        }
-        
-        g_asset_entries.push_back(entry);
       }
+      
+      CARDINAL_LOG_INFO("Found %zu entries before sorting and filtering", g_asset_entries.size());
       
       // Sort entries: directories first, then files, alphabetically within each group
       std::sort(g_asset_entries.begin(), g_asset_entries.end(),
@@ -389,15 +459,26 @@ static void scan_assets_dir() {
                   return a.display < b.display;
                 });
       
+      CARDINAL_LOG_DEBUG("Entries sorted, applying filters");
+      
       // Apply filters
       for (const auto& entry : g_asset_entries) {
         if (matches_filter(entry)) {
           g_filtered_entries.push_back(entry);
         }
       }
+      
+      CARDINAL_LOG_INFO("Asset scan completed: %zu total entries, %zu after filtering", g_asset_entries.size(), g_filtered_entries.size());
+    } else {
+      CARDINAL_LOG_ERROR("Current path is invalid: empty=%d, exists=%d, is_directory=%d", 
+                        current_path.empty(), 
+                        fs::exists(current_path), 
+                        fs::is_directory(current_path));
     }
+  } catch (const std::exception& e) {
+    CARDINAL_LOG_ERROR("Exception during asset directory scan: %s", e.what());
   } catch (...) {
-    // Silently ignore scanning errors; UI will reflect empty list or message
+    CARDINAL_LOG_ERROR("Unknown exception during asset directory scan");
   }
 }
 
@@ -700,6 +781,149 @@ bool editor_layer_init(CardinalWindow *window, CardinalRenderer *renderer) {
 }
 
 /**
+ * @brief Draws the animation controls panel with timeline and playback controls.
+ * 
+ * Displays available animations, playback controls, timeline scrubbing,
+ * and animation properties for the currently loaded scene.
+ */
+static void draw_animation_panel() {
+  if (ImGui::Begin("Animation")) {
+    if (!g_scene_loaded || !g_scene.animation_system || g_scene.animation_system->animation_count == 0) {
+      ImGui::TextDisabled("No animations available");
+      ImGui::TextWrapped("Load a scene with animations to see animation controls.");
+      ImGui::End();
+      return;
+    }
+
+    CardinalAnimationSystem* anim_sys = g_scene.animation_system;
+    
+    // Animation selection
+    ImGui::Text("Animations (%u)", anim_sys->animation_count);
+    ImGui::Separator();
+    
+    // Animation list
+    if (ImGui::BeginChild("##animation_list", ImVec2(0, 120), true)) {
+      for (uint32_t i = 0; i < anim_sys->animation_count; ++i) {
+        CardinalAnimation* anim = &anim_sys->animations[i];
+        const char* name = anim->name ? anim->name : "Unnamed Animation";
+        
+        bool is_selected = (g_selected_animation == (int)i);
+        if (ImGui::Selectable(name, is_selected)) {
+          g_selected_animation = (int)i;
+          g_animation_time = 0.0f; // Reset time when switching animations
+        }
+        
+        // Show animation info
+        ImGui::SameLine();
+        ImGui::TextDisabled("(%.2fs, %u channels)", anim->duration, anim->channel_count);
+      }
+    }
+    ImGui::EndChild();
+    
+    ImGui::Separator();
+    
+    // Playback controls
+    if (g_selected_animation >= 0 && g_selected_animation < (int)anim_sys->animation_count) {
+      CardinalAnimation* current_anim = &anim_sys->animations[g_selected_animation];
+      
+      ImGui::Text("Playback Controls");
+      
+      // Play/Pause button
+       if (g_animation_playing) {
+         if (ImGui::Button("Pause")) {
+           g_animation_playing = false;
+           cardinal_animation_pause(anim_sys, g_selected_animation);
+         }
+       } else {
+         if (ImGui::Button("Play")) {
+           g_animation_playing = true;
+           cardinal_animation_play(anim_sys, g_selected_animation, g_animation_looping, 1.0f);
+         }
+       }
+       
+       ImGui::SameLine();
+       if (ImGui::Button("Stop")) {
+         g_animation_playing = false;
+         g_animation_time = 0.0f;
+         cardinal_animation_stop(anim_sys, g_selected_animation);
+       }
+       
+       ImGui::SameLine();
+       if (ImGui::Checkbox("Loop", &g_animation_looping)) {
+         // Update looping state if animation is playing
+         if (g_animation_playing) {
+           cardinal_animation_play(anim_sys, g_selected_animation, g_animation_looping, 1.0f);
+         }
+       }
+       
+       // Speed control
+       ImGui::SetNextItemWidth(100);
+       if (ImGui::SliderFloat("Speed", &g_animation_speed, 0.1f, 3.0f, "%.1fx")) {
+         cardinal_animation_set_speed(anim_sys, g_selected_animation, g_animation_speed);
+       }
+      
+      // Timeline
+      ImGui::Separator();
+      ImGui::Text("Timeline");
+      
+      // Time display
+      ImGui::Text("Time: %.2f / %.2f seconds", g_animation_time, current_anim->duration);
+      
+      // Timeline scrubber
+      float timeline_width = ImGui::GetContentRegionAvail().x - 20;
+      ImGui::SetNextItemWidth(timeline_width);
+      if (ImGui::SliderFloat("##timeline", &g_animation_time, 0.0f, current_anim->duration, "%.2fs")) {
+        // User is scrubbing the timeline
+        if (g_animation_time < 0.0f) g_animation_time = 0.0f;
+        if (g_animation_time > current_anim->duration) {
+          if (g_animation_looping) {
+            g_animation_time = fmodf(g_animation_time, current_anim->duration);
+          } else {
+            g_animation_time = current_anim->duration;
+            g_animation_playing = false;
+          }
+        }
+      }
+      
+      // Update animation time during playback
+      if (g_animation_playing) {
+        ImGuiIO& io = ImGui::GetIO();
+        g_animation_time += io.DeltaTime * g_animation_speed;
+        
+        if (g_animation_time >= current_anim->duration) {
+          if (g_animation_looping) {
+            g_animation_time = fmodf(g_animation_time, current_anim->duration);
+          } else {
+            g_animation_time = current_anim->duration;
+            g_animation_playing = false;
+          }
+        }
+      }
+      
+      // Animation info
+      ImGui::Separator();
+      ImGui::Text("Animation Info");
+      ImGui::Text("Name: %s", current_anim->name ? current_anim->name : "Unnamed");
+      ImGui::Text("Duration: %.2f seconds", current_anim->duration);
+      ImGui::Text("Channels: %u", current_anim->channel_count);
+      ImGui::Text("Samplers: %u", current_anim->sampler_count);
+      
+      // Channel details (collapsible)
+      if (ImGui::CollapsingHeader("Channels")) {
+        for (uint32_t i = 0; i < current_anim->channel_count; ++i) {
+          CardinalAnimationChannel* channel = &current_anim->channels[i];
+          ImGui::Text("Channel %u: Node %u, Target %d", 
+                     i, channel->target.node_index, (int)channel->target.path);
+        }
+      }
+    } else {
+      ImGui::TextDisabled("Select an animation to see controls");
+    }
+  }
+  ImGui::End();
+}
+
+/**
  * @brief Draws the scene graph panel.
  *
  * Displays hierarchical view of scene elements.
@@ -740,7 +964,16 @@ static void draw_scene_node(CardinalSceneNode* node, int depth = 0) {
       for (uint32_t i = 0; i < node->mesh_count; ++i) {
         uint32_t mesh_idx = node->mesh_indices[i];
         if (mesh_idx < g_scene.mesh_count) {
-          const CardinalMesh &m = g_scene.meshes[mesh_idx];
+          CardinalMesh &m = g_scene.meshes[mesh_idx];
+          
+          // Create unique ID for the checkbox
+          char checkbox_id[64];
+          snprintf(checkbox_id, sizeof(checkbox_id), "Visible##mesh_%u", mesh_idx);
+          
+          // Visibility checkbox
+          ImGui::Checkbox(checkbox_id, &m.visible);
+          ImGui::SameLine();
+          
           ImGui::BulletText("Mesh %u: %u vertices, %u indices", mesh_idx,
                             (unsigned)m.vertex_count, (unsigned)m.index_count);
         }
@@ -768,6 +1001,48 @@ static void draw_scene_graph_panel() {
           ImGui::Text("Total Meshes: %u", (unsigned)g_scene.mesh_count);
           ImGui::Text("Root Nodes: %u", (unsigned)g_scene.root_node_count);
           
+          // Bulk visibility controls
+          ImGui::Separator();
+          ImGui::Text("Bulk Visibility Controls:");
+          
+          if (ImGui::Button("Show All Meshes")) {
+            for (uint32_t i = 0; i < g_scene.mesh_count; ++i) {
+              g_scene.meshes[i].visible = true;
+            }
+          }
+          ImGui::SameLine();
+          if (ImGui::Button("Hide All Meshes")) {
+            for (uint32_t i = 0; i < g_scene.mesh_count; ++i) {
+              g_scene.meshes[i].visible = false;
+            }
+          }
+          
+          // Material-based visibility controls
+          if (ImGui::Button("Show Only Material 0")) {
+            for (uint32_t i = 0; i < g_scene.mesh_count; ++i) {
+              g_scene.meshes[i].visible = (g_scene.meshes[i].material_index == 0);
+            }
+          }
+          ImGui::SameLine();
+          if (ImGui::Button("Show Only Material 1")) {
+            for (uint32_t i = 0; i < g_scene.mesh_count; ++i) {
+              g_scene.meshes[i].visible = (g_scene.meshes[i].material_index == 1);
+            }
+          }
+          
+          // Toggle between materials
+          if (ImGui::Button("Toggle Materials 0/1")) {
+            static bool show_material_0 = true;
+            for (uint32_t i = 0; i < g_scene.mesh_count; ++i) {
+              if (g_scene.meshes[i].material_index == 0) {
+                g_scene.meshes[i].visible = show_material_0;
+              } else if (g_scene.meshes[i].material_index == 1) {
+                g_scene.meshes[i].visible = !show_material_0;
+              }
+            }
+            show_material_0 = !show_material_0;
+          }
+          
           // Display hierarchical scene nodes
           if (g_scene.root_node_count > 0) {
             ImGui::Separator();
@@ -778,7 +1053,16 @@ static void draw_scene_graph_panel() {
             // Fallback to old mesh display if no hierarchy
             ImGui::Text("No scene hierarchy - showing flat mesh list:");
             for (uint32_t i = 0; i < g_scene.mesh_count; ++i) {
-              const CardinalMesh &m = g_scene.meshes[i];
+              CardinalMesh &m = g_scene.meshes[i];
+              
+              // Create unique ID for the checkbox
+              char checkbox_id[64];
+              snprintf(checkbox_id, sizeof(checkbox_id), "Visible##flat_mesh_%u", i);
+              
+              // Visibility checkbox
+              ImGui::Checkbox(checkbox_id, &m.visible);
+              ImGui::SameLine();
+              
               ImGui::BulletText("Mesh %u: %u vertices, %u indices", (unsigned)i,
                                 (unsigned)m.vertex_count, (unsigned)m.index_count);
             }
@@ -882,35 +1166,68 @@ static void draw_asset_browser_panel() {
     ImGui::Separator();
 
     // Dynamic assets list with icons and navigation
+    CARDINAL_LOG_DEBUG("Starting asset browser UI rendering");
     const auto& entries_to_show = g_filtered_entries.empty() ? g_asset_entries : g_filtered_entries;
+    CARDINAL_LOG_DEBUG("Using %s entries, count: %zu", g_filtered_entries.empty() ? "asset" : "filtered", entries_to_show.size());
     
     if (entries_to_show.empty()) {
+      CARDINAL_LOG_DEBUG("No entries to show, displaying empty message");
       ImGui::TextDisabled("No assets found in '%s'", g_current_dir);
     } else {
+      CARDINAL_LOG_DEBUG("Beginning asset list child window");
       if (ImGui::BeginChild("##assets_list", ImVec2(0, 0), true)) {
-        for (const auto &e : entries_to_show) {
+        CARDINAL_LOG_DEBUG("Asset list child window created, iterating %zu entries", entries_to_show.size());
+        for (size_t i = 0; i < entries_to_show.size(); ++i) {
+          const auto &e = entries_to_show[i];
+          CARDINAL_LOG_TRACE("Rendering entry %zu: %s", i, e.display.c_str());
+          
           // Display icon and name
+          CARDINAL_LOG_TRACE("About to render icon for entry %zu", i);
           ImGui::Text("%s", get_asset_icon(e.type));
+          CARDINAL_LOG_TRACE("Icon rendered, adding SameLine");
           ImGui::SameLine();
           
-          if (ImGui::Selectable(e.display.c_str())) {
+          CARDINAL_LOG_TRACE("About to render Selectable for: %s", e.display.c_str());
+          bool selected = ImGui::Selectable(e.display.c_str());
+          CARDINAL_LOG_TRACE("Selectable rendered, selected: %d", selected);
+          
+          if (selected) {
+            CARDINAL_LOG_INFO("Asset browser item clicked: %s (is_directory: %d, type: %d)", e.display.c_str(), e.is_directory, e.type);
+            
             if (e.is_directory) {
               // Navigate to directory
+              CARDINAL_LOG_INFO("Navigating to directory: %s -> %s", g_current_dir, e.fullPath.c_str());
+              
               if (e.display == "..") {
                 // Go to parent directory
+                CARDINAL_LOG_DEBUG("Going to parent directory: %s", e.fullPath.c_str());
                 strncpy(g_current_dir, e.fullPath.c_str(), sizeof(g_current_dir) - 1);
                 g_current_dir[sizeof(g_current_dir) - 1] = '\0';
               } else {
                 // Enter subdirectory
+                CARDINAL_LOG_DEBUG("Entering subdirectory: %s", e.fullPath.c_str());
                 strncpy(g_current_dir, e.fullPath.c_str(), sizeof(g_current_dir) - 1);
                 g_current_dir[sizeof(g_current_dir) - 1] = '\0';
               }
-              scan_assets_dir();
+              
+              CARDINAL_LOG_DEBUG("Current directory updated to: %s", g_current_dir);
+              CARDINAL_LOG_DEBUG("Calling scan_assets_dir() after directory navigation");
+              
+              try {
+                scan_assets_dir();
+                CARDINAL_LOG_DEBUG("scan_assets_dir() completed successfully");
+              } catch (const std::exception& e) {
+                CARDINAL_LOG_ERROR("Exception in scan_assets_dir(): %s", e.what());
+              } catch (...) {
+                CARDINAL_LOG_ERROR("Unknown exception in scan_assets_dir()");
+              }
             } else {
               // Select file for loading
+              CARDINAL_LOG_INFO("File selected: %s (type: %d)", e.fullPath.c_str(), e.type);
               snprintf(g_scene_path, sizeof(g_scene_path), "%s", e.fullPath.c_str());
               // Auto-load glTF/GLB files
               if (e.type == ASSET_TYPE_GLTF || e.type == ASSET_TYPE_GLB) {
+                CARDINAL_LOG_INFO("Auto-loading glTF/GLB file: %s", e.fullPath.c_str());
                 load_scene_from_path(e.fullPath.c_str());
               }
             }
@@ -923,11 +1240,17 @@ static void draw_asset_browser_panel() {
             }
           }
         }
+        CARDINAL_LOG_DEBUG("Finished iterating all entries");
       }
+      CARDINAL_LOG_DEBUG("Ending asset list child window");
       ImGui::EndChild();
+      CARDINAL_LOG_DEBUG("Asset list child window ended successfully");
     }
+    CARDINAL_LOG_DEBUG("Asset browser UI rendering completed");
   }
+  CARDINAL_LOG_DEBUG("Ending asset browser window");
   ImGui::End();
+  CARDINAL_LOG_DEBUG("Asset browser window ended successfully");
 }
 
 static void draw_pbr_settings_panel() {
@@ -1140,6 +1463,28 @@ void editor_layer_update(void) {
       g_is_loading = false;
     }
   }
+  
+  // Update animation system if scene is loaded
+  if (g_scene_loaded && g_scene.animation_system) {
+    ImGuiIO &io = ImGui::GetIO();
+    float dt = io.DeltaTime > 0.0f ? io.DeltaTime : 1.0f / 60.0f;
+    cardinal_animation_system_update(g_scene.animation_system, dt);
+    
+    // Sync editor animation time with animation system state
+    if (g_selected_animation >= 0 && g_selected_animation < (int)g_scene.animation_system->animation_count) {
+      // Find the animation state for the selected animation
+      for (uint32_t i = 0; i < g_scene.animation_system->state_count; ++i) {
+        CardinalAnimationState* state = &g_scene.animation_system->states[i];
+        if (state->animation_index == (uint32_t)g_selected_animation) {
+          g_animation_time = state->current_time;
+          g_animation_playing = state->is_playing;
+          g_animation_looping = state->is_looping;
+          g_animation_speed = state->playback_speed;
+          break;
+        }
+      }
+    }
+  }
 
   // Toggle mouse capture with Tab (edge detection)
   bool tab_down = g_window_handle &&
@@ -1209,21 +1554,39 @@ void editor_layer_render(void) {
       ImGui::MenuItem("Scene Graph", nullptr, true, true);
       ImGui::MenuItem("Assets", nullptr, true, true);
       ImGui::MenuItem("PBR Settings", nullptr, true, true);
+      ImGui::MenuItem("Animation", nullptr, true, true);
       ImGui::EndMenu();
     }
     ImGui::EndMenuBar();
   }
 
+  CARDINAL_LOG_DEBUG("Drawing scene graph panel");
   draw_scene_graph_panel();
+  CARDINAL_LOG_DEBUG("Scene graph panel completed");
+  
+  CARDINAL_LOG_DEBUG("Drawing asset browser panel");
   draw_asset_browser_panel();
+  CARDINAL_LOG_DEBUG("Asset browser panel completed");
+  
+  CARDINAL_LOG_DEBUG("Drawing PBR settings panel");
   draw_pbr_settings_panel();
+  CARDINAL_LOG_DEBUG("PBR settings panel completed");
+  
+  CARDINAL_LOG_DEBUG("Drawing animation panel");
+  draw_animation_panel();
+  CARDINAL_LOG_DEBUG("Animation panel completed");
 
+  CARDINAL_LOG_DEBUG("Ending main dockspace window");
   ImGui::End();
+  CARDINAL_LOG_DEBUG("Main dockspace window ended");
 
   // Set up UI callback before render to ensure proper command recording
+  CARDINAL_LOG_DEBUG("Setting UI callback for renderer");
   cardinal_renderer_set_ui_callback(g_renderer, imgui_record);
+  CARDINAL_LOG_DEBUG("UI callback set, calling ImGui::Render()");
 
   ImGui::Render();
+  CARDINAL_LOG_DEBUG("ImGui::Render() completed");
 
   // Only render platform windows if multi-viewport is enabled
   ImGuiIO &io = ImGui::GetIO();

@@ -69,6 +69,8 @@ typedef struct PBRPushConstants {
   uint32_t aoTextureIndex;
   uint32_t emissiveTextureIndex;
   uint32_t supportsDescriptorIndexing;
+  uint32_t hasSkeleton;    // 1 if mesh has skeletal animation, 0 otherwise
+  uint32_t _padding0;      // Alignment padding
   // Texture transforms matching shader Material structure layout
   PBRTextureTransform albedoTransform;
   float _padding1;
@@ -129,6 +131,12 @@ typedef struct VulkanPBRPipeline {
   VkBuffer lightingBuffer;
   VkDeviceMemory lightingBufferMemory;
   void *lightingBufferMapped;
+
+  // Bone matrices uniform buffer for skeletal animation
+  VkBuffer boneMatricesBuffer;
+  VkDeviceMemory boneMatricesBufferMemory;
+  void *boneMatricesBufferMapped;
+  uint32_t maxBones; // Maximum number of bones supported (default 256)
 
   // Descriptor sets (one per material)
   VkDescriptorSet *descriptorSets;

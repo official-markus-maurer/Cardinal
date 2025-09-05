@@ -4,6 +4,8 @@
 layout(location = 0) in vec3 inPosition;
 layout(location = 1) in vec3 inNormal;
 layout(location = 2) in vec2 inTexCoord;
+layout(location = 3) in vec4 inBoneWeights;
+layout(location = 4) in uvec4 inBoneIndices;
 
 // Uniform buffer for camera and transform data
 layout(binding = 0) uniform UniformBufferObject {
@@ -13,9 +15,15 @@ layout(binding = 0) uniform UniformBufferObject {
     vec3 viewPos;
 } ubo;
 
+// Bone matrices uniform buffer for skeletal animation
+layout(binding = 6) uniform BoneMatrices {
+    mat4 bones[256]; // Support up to 256 bones
+} boneMatrices;
+
 // Push constants for per-mesh data
 layout(push_constant) uniform PushConstants {
     mat4 modelMatrix;
+    uint hasSkeleton; // 1 if mesh has skeletal animation, 0 otherwise
 } pushConstants;
 
 // Output to fragment shader
@@ -25,12 +33,38 @@ layout(location = 2) out vec2 fragTexCoord;
 layout(location = 3) out vec3 fragViewPos;
 
 void main() {
+    vec3 finalPosition = inPosition;
+    vec3 finalNormal = inNormal;
+    
+    // Apply skeletal animation if mesh has a skeleton
+    if (pushConstants.hasSkeleton == 1) {
+        // Calculate bone transformation matrix
+        mat4 boneTransform = mat4(0.0);
+        
+        // Blend up to 4 bone influences
+        for (int i = 0; i < 4; i++) {
+            if (inBoneWeights[i] > 0.0) {
+                uint boneIndex = inBoneIndices[i];
+                if (boneIndex < 256u) {
+                    boneTransform += boneMatrices.bones[boneIndex] * inBoneWeights[i];
+                }
+            }
+        }
+        
+        // Apply bone transformation to position and normal
+        vec4 skinnedPos = boneTransform * vec4(inPosition, 1.0);
+        finalPosition = skinnedPos.xyz;
+        
+        // Transform normal (use 3x3 part of bone matrix)
+        finalNormal = normalize(mat3(boneTransform) * inNormal);
+    }
+    
     // Transform position to world space using push constant model matrix
-    vec4 worldPos = pushConstants.modelMatrix * vec4(inPosition, 1.0);
+    vec4 worldPos = pushConstants.modelMatrix * vec4(finalPosition, 1.0);
     fragWorldPos = worldPos.xyz;
     
     // Transform normal to world space (assuming uniform scaling)
-    fragNormal = normalize(mat3(pushConstants.modelMatrix) * inNormal);
+    fragNormal = normalize(mat3(pushConstants.modelMatrix) * finalNormal);
     
     // Pass through texture coordinates
     fragTexCoord = inTexCoord;

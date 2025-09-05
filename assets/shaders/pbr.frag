@@ -18,7 +18,7 @@ layout(binding = 4) uniform sampler2D aoMap;
 layout(binding = 5) uniform sampler2D emissiveMap;
 
 // Texture array for descriptor indexing (when available)
-layout(binding = 8) uniform sampler2D textures[];
+layout(binding = 9) uniform sampler2D textures[];
 
 // Texture transform structure
 struct TextureTransform {
@@ -58,7 +58,7 @@ layout(push_constant) uniform PushConstants {
 };
 
 // Lighting uniform buffer
-layout(binding = 7) uniform LightingData {
+layout(binding = 8) uniform LightingData {
     vec3 lightDirection;  // Directional light
     vec3 lightColor;
     float lightIntensity;

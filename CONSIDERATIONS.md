@@ -2,7 +2,29 @@
 
 ## TODO Items Sorted by Severity 
 
--> Use maintenance8
+-> Test animation system with animated gltf.
+
+## Vulkan Extensions to Consider for Engine Updates
+
+### **HIGH PRIORITY** - Core Performance & Features
+- **VK_KHR_dynamic_rendering**: Eliminates render pass objects, reduces CPU overhead, more flexible rendering
+- **VK_EXT_mesh_shader**: Modern geometry pipeline replacement, GPU-driven rendering, better culling performance
+- **VK_KHR_buffer_device_address**: Required for ray tracing, enables GPU pointers, better DX12 portability
+- **VK_EXT_descriptor_indexing**: Bindless textures, update-after-bind descriptors, non-uniform indexing
+
+### **MEDIUM PRIORITY** - Advanced Rendering
+- **VK_KHR_ray_tracing_pipeline**: Hardware-accelerated ray tracing for reflections, shadows, GI
+- **VK_KHR_acceleration_structure**: Required for ray tracing, BLAS/TLAS management
+- **VK_KHR_ray_query**: Ray tracing in compute/fragment shaders without full RT pipeline
+- **VK_KHR_shader_maximal_reconvergence**: Better thread divergence behavior for advanced algorithms
+- **VK_KHR_shader_quad_control**: Enhanced texturing operations in control flow
+
+### **LOW PRIORITY** - Quality of Life
+- **VK_EXT_descriptor_buffer**: Direct descriptor memory management, reduced API overhead
+- **VK_KHR_synchronization2**: Improved synchronization API, better barrier management
+- **VK_KHR_dynamic_rendering_local_read**: Framebuffer-local dependencies for dynamic rendering
+- **VK_EXT_extended_dynamic_state**: More dynamic pipeline state, reduced pipeline variants
+- **VK_KHR_push_descriptor**: Push descriptors without descriptor sets, lower overhead for small updates
 
 ### **HIGH** - Performance & Memory Issues  
 - **Memory Management**: Cache memory properties for performance (vulkan_pbr.c:14, 23)
@@ -30,7 +52,6 @@
 - **Format Support**: Add support for more file formats (loader.c:42, texture_loader.c:26, gltf_loader.c:86)
 - **Ray Tracing**: Investigate ray tracing extensions for advanced rendering (vulkan_renderer.c:36)
 - **Multiple Cameras**: Support multiple cameras/viewports (vulkan_renderer.c:316)
-- **Animation Support**: Support glTF animations, skins, and nodes hierarchy (gltf_loader.c:251, 291)
 - **Cross-platform**: Add macOS compatibility and cross-platform improvements (vulkan_instance.h:14, editor/main.c:31)
 - **HDR Support**: Add support for HDR formats and variable refresh rates (vulkan_swapchain.c:15, 31)
 - **Documentation**: Document ImGui setup and Vulkan integration details (editor_layer.h:21)

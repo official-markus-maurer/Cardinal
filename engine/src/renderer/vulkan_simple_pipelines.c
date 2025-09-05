@@ -454,6 +454,10 @@ void vk_render_simple(VulkanState* s, VkCommandBuffer commandBuffer, VkPipeline 
         // Prepare push constants with model matrix and material properties (same as PBR pipeline)
         if (i < s->current_scene->mesh_count) {
             const CardinalMesh* sceneMesh = &s->current_scene->meshes[i];
+            
+            // Skip invisible meshes
+            if (!sceneMesh->visible)
+                continue;
             PBRPushConstants pushConstants = {0};
 
             // Copy model matrix

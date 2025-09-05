@@ -63,6 +63,7 @@ target_sources(cardinal_engine PRIVATE
     src/core/memory.c
     src/core/resource_state.c
     src/core/transform.c
+    src/core/animation.c
     src/renderer/vulkan_renderer.c
     src/renderer/vulkan_instance.c
     src/renderer/vulkan_swapchain.c
@@ -98,6 +99,7 @@ target_sources(cardinal_engine PUBLIC
     include/cardinal/core/memory.h
     include/cardinal/core/async_loader.h
     include/cardinal/core/transform.h
+    include/cardinal/core/animation.h
     include/cardinal/renderer/renderer.h
     include/cardinal/cardinal.h
     include/cardinal/assets/scene.h

@@ -16,6 +16,7 @@
 
 #include <stdbool.h>
 #include <stdint.h>
+#include "cardinal/core/animation.h"
 
 #ifdef __cplusplus
 extern "C" {
@@ -28,13 +29,15 @@ typedef struct CardinalRefCountedResource CardinalRefCountedResource;
  * @brief Vertex format for PBR rendering
  *
  * Defines the vertex layout used throughout the Cardinal Engine's rendering
- * pipeline. Each vertex contains position, normal, and texture coordinate data
- * required for physically-based rendering.
+ * pipeline. Each vertex contains position, normal, texture coordinate data,
+ * and skeletal animation data required for physically-based rendering.
  */
 typedef struct CardinalVertex {
   float px, py, pz; /**< 3D position coordinates (x, y, z) */
   float nx, ny, nz; /**< Surface normal vector (x, y, z) */
   float u, v;       /**< Texture coordinates (u, v) */
+  float bone_weights[4]; /**< Bone weights for skeletal animation (up to 4 bones per vertex) */
+  uint32_t bone_indices[4]; /**< Bone indices for skeletal animation (up to 4 bones per vertex) */
 } CardinalVertex;
 
 /**
@@ -128,6 +131,7 @@ typedef struct CardinalMesh {
   uint32_t index_count;     /**< Number of indices in the mesh */
   uint32_t material_index;  /**< Index into scene materials array */
   float transform[16];      /**< 4x4 transformation matrix (column-major) */
+  bool visible;             /**< Whether this mesh should be rendered */
 } CardinalMesh;
 
 // Forward declaration for scene node
@@ -138,7 +142,8 @@ typedef struct CardinalSceneNode CardinalSceneNode;
  *
  * Represents a node in the scene hierarchy with transformation, name,
  * and parent-child relationships. Nodes can contain meshes or serve
- * as transformation containers for organizing the scene.
+ * as transformation containers for organizing the scene. Extended to
+ * support skeletal animation with bone/joint properties.
  */
 typedef struct CardinalSceneNode {
   char *name;                    /**< Node name (optional, can be NULL) */
@@ -153,6 +158,11 @@ typedef struct CardinalSceneNode {
   CardinalSceneNode **children;  /**< Array of child nodes */
   uint32_t child_count;          /**< Number of child nodes */
   uint32_t child_capacity;       /**< Allocated capacity for children array */
+  
+  // Animation properties
+  bool is_bone;                  /**< Whether this node represents a bone/joint */
+  uint32_t bone_index;           /**< Index in skin's bone array (if is_bone is true) */
+  uint32_t skin_index;           /**< Index of skin this bone belongs to (UINT32_MAX if none) */
 } CardinalSceneNode;
 
 /**
@@ -161,6 +171,7 @@ typedef struct CardinalSceneNode {
  * Contains all data needed to represent a complete 3D scene, including
  * meshes, materials, textures, and hierarchical scene nodes. This structure
  * is typically populated by asset loaders and consumed by the rendering system.
+ * Extended to support animations and skins for skeletal animation.
  */
 typedef struct CardinalScene {
   CardinalMesh *meshes; /**< Array of mesh objects in the scene */
@@ -174,6 +185,11 @@ typedef struct CardinalScene {
   
   CardinalSceneNode **root_nodes; /**< Array of root scene nodes */
   uint32_t root_node_count;       /**< Number of root nodes in the scene */
+  
+  // Animation system
+  CardinalAnimationSystem *animation_system; /**< Animation system for this scene */
+  CardinalSkin *skins;           /**< Array of skins for skeletal animation */
+  uint32_t skin_count;           /**< Number of skins */
 } CardinalScene;
 
 /**

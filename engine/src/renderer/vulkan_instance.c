@@ -397,14 +397,44 @@ bool vk_create_device(VulkanState* s) {
     }
     CARDINAL_LOG_INFO("[DEVICE] Vulkan 1.4 core support confirmed");
 
-    // Only require VK_KHR_swapchain extension - dynamic rendering is in 1.3 core
-    const char* device_extensions[] = {VK_KHR_SWAPCHAIN_EXTENSION_NAME};
+    // Check for VK_KHR_maintenance8 extension availability
+    uint32_t extension_count = 0;
+    vkEnumerateDeviceExtensionProperties(s->physical_device, NULL, &extension_count, NULL);
+    VkExtensionProperties* available_extensions = (VkExtensionProperties*)malloc(sizeof(VkExtensionProperties) * extension_count);
+    vkEnumerateDeviceExtensionProperties(s->physical_device, NULL, &extension_count, available_extensions);
+    
+    bool maintenance8_available = false;
+    for (uint32_t i = 0; i < extension_count; i++) {
+        if (strcmp(available_extensions[i].extensionName, VK_KHR_MAINTENANCE_8_EXTENSION_NAME) == 0) {
+            maintenance8_available = true;
+            CARDINAL_LOG_INFO("[DEVICE] VK_KHR_maintenance8 extension available (spec version %u)", available_extensions[i].specVersion);
+            break;
+        }
+    }
+    free(available_extensions);
+    
+    if (!maintenance8_available) {
+        CARDINAL_LOG_INFO("[DEVICE] VK_KHR_maintenance8 extension not available, using maintenance4 fallback");
+    }
+    
+    // Build device extensions array
+    const char* device_extensions[2] = {VK_KHR_SWAPCHAIN_EXTENSION_NAME};
     uint32_t enabled_extension_count = 1;
+    
+    if (maintenance8_available) {
+        device_extensions[1] = VK_KHR_MAINTENANCE_8_EXTENSION_NAME;
+        enabled_extension_count = 2;
+        CARDINAL_LOG_INFO("[DEVICE] Enabling VK_KHR_maintenance8 extension");
+    }
 
-    // Setup Vulkan 1.4, 1.3, and 1.2 feature chain
+    // Setup feature chain: maintenance8 -> Vulkan 1.4 -> 1.3 -> 1.2
+    VkPhysicalDeviceMaintenance8FeaturesKHR maintenance8Features = {0};
+    maintenance8Features.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_MAINTENANCE_8_FEATURES_KHR;
+    maintenance8Features.pNext = NULL;
+    
     VkPhysicalDeviceVulkan14Features vulkan14Features = {0};
     vulkan14Features.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_4_FEATURES;
-    vulkan14Features.pNext = NULL;
+    vulkan14Features.pNext = maintenance8_available ? &maintenance8Features : NULL;
 
     VkPhysicalDeviceVulkan13Features vulkan13Features = {0};
     vulkan13Features.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_3_FEATURES;
@@ -438,6 +468,14 @@ bool vk_create_device(VulkanState* s) {
         free(qfp);
         return false;
     }
+    
+    // Check maintenance8 features if extension is available
+    if (maintenance8_available) {
+        CARDINAL_LOG_INFO("[DEVICE] Checking VK_KHR_maintenance8 features");
+        // maintenance8 provides: better synchronization, depth/stencil copies, 64 additional access flags
+        // All maintenance8 features are optional, so we enable what's available
+    }
+    
     if (!vulkan12Features.bufferDeviceAddress) {
         CARDINAL_LOG_ERROR("[DEVICE] bufferDeviceAddress is required but not supported by device");
         free(qfp);
@@ -451,6 +489,13 @@ bool vk_create_device(VulkanState* s) {
     vulkan13Features.dynamicRendering = VK_TRUE;
     vulkan13Features.synchronization2 = VK_TRUE;
     vulkan13Features.maintenance4 = VK_TRUE;
+    
+    // Enable maintenance8 features if extension is available
+    if (maintenance8_available) {
+        // Enable all available maintenance8 features for enhanced functionality
+        maintenance8Features.maintenance8 = VK_TRUE;
+        CARDINAL_LOG_INFO("[DEVICE] VK_KHR_maintenance8 features enabled");
+    }
 
     // Enable useful Vulkan 1.4 features if available
     if (vulkan14Features.globalPriorityQuery) {
@@ -475,12 +520,15 @@ bool vk_create_device(VulkanState* s) {
     CARDINAL_LOG_INFO("[DEVICE]   bufferDeviceAddress: enabled");
     CARDINAL_LOG_INFO("[DEVICE] Vulkan 1.3 feature status:");
     CARDINAL_LOG_INFO("[DEVICE]   synchronization2: enabled");
-    CARDINAL_LOG_INFO("[DEVICE]   maintenance4: enabled");
+    CARDINAL_LOG_INFO("[DEVICE]   maintenance4: enabled (TODO: upgrade to maintenance8 extension)");
     CARDINAL_LOG_INFO("[DEVICE]   dynamicRendering: enabled");
 
     CARDINAL_LOG_INFO("[DEVICE] Enabling required Vulkan 1.2 features: bufferDeviceAddress");
     CARDINAL_LOG_INFO("[DEVICE] Enabling required Vulkan 1.3 features: dynamicRendering + "
                       "synchronization2 + maintenance4");
+    if (maintenance8_available) {
+        CARDINAL_LOG_INFO("[DEVICE] Enabling VK_KHR_maintenance8 extension features");
+    }
     CARDINAL_LOG_INFO("[DEVICE] Enabling optional Vulkan 1.4 features where available");
 
     // Set up device creation with complete feature chain
@@ -516,12 +564,15 @@ bool vk_create_device(VulkanState* s) {
     s->supports_vulkan_13_features = true;    // required
     s->supports_vulkan_14_features = true;    // required
     s->supports_maintenance4 = true;          // required
+    s->supports_maintenance8 = maintenance8_available; // optional extension
     s->supports_buffer_device_address = true; // required
     CARDINAL_LOG_INFO("[DEVICE] Dynamic rendering support: enabled (required)");
     CARDINAL_LOG_INFO("[DEVICE] Vulkan 1.2 features: %s",
                       s->supports_vulkan_12_features ? "available" : "unavailable");
     CARDINAL_LOG_INFO("[DEVICE] Vulkan 1.3 features: available (required)");
     CARDINAL_LOG_INFO("[DEVICE] Vulkan 1.3 maintenance4: enabled (required)");
+    CARDINAL_LOG_INFO("[DEVICE] VK_KHR_maintenance8: %s", 
+                      s->supports_maintenance8 ? "enabled" : "not available");
     CARDINAL_LOG_INFO("[DEVICE] Buffer device address: enabled (required)");
 
     // Load dynamic rendering function pointers (core)
@@ -559,6 +610,37 @@ bool vk_create_device(VulkanState* s) {
                       (void*)s->vkGetDeviceBufferMemoryRequirements,
                       (void*)s->vkGetDeviceImageMemoryRequirements);
 
+    // Load maintenance4 extension functions (these are the actual memory requirement functions)
+    // Note: These functions are from VK_KHR_maintenance4, not maintenance8
+    // They are promoted to core in Vulkan 1.3, so we try both core and KHR versions
+    s->vkGetDeviceBufferMemoryRequirementsKHR =
+        (PFN_vkGetDeviceBufferMemoryRequirementsKHR)vkGetDeviceProcAddr(
+            s->device, "vkGetDeviceBufferMemoryRequirements");
+    if (!s->vkGetDeviceBufferMemoryRequirementsKHR) {
+        s->vkGetDeviceBufferMemoryRequirementsKHR =
+            (PFN_vkGetDeviceBufferMemoryRequirementsKHR)vkGetDeviceProcAddr(
+                s->device, "vkGetDeviceBufferMemoryRequirementsKHR");
+    }
+    
+    s->vkGetDeviceImageMemoryRequirementsKHR =
+        (PFN_vkGetDeviceImageMemoryRequirementsKHR)vkGetDeviceProcAddr(
+            s->device, "vkGetDeviceImageMemoryRequirements");
+    if (!s->vkGetDeviceImageMemoryRequirementsKHR) {
+        s->vkGetDeviceImageMemoryRequirementsKHR =
+            (PFN_vkGetDeviceImageMemoryRequirementsKHR)vkGetDeviceProcAddr(
+                s->device, "vkGetDeviceImageMemoryRequirementsKHR");
+    }
+    
+    if (s->vkGetDeviceBufferMemoryRequirementsKHR && s->vkGetDeviceImageMemoryRequirementsKHR) {
+        CARDINAL_LOG_INFO("[DEVICE] Device memory requirement functions loaded: BufferReqs=%p ImageReqs=%p",
+                          (void*)s->vkGetDeviceBufferMemoryRequirementsKHR,
+                          (void*)s->vkGetDeviceImageMemoryRequirementsKHR);
+    } else {
+        CARDINAL_LOG_WARN("[DEVICE] Failed to load device memory requirement functions, using fallback");
+        s->vkGetDeviceBufferMemoryRequirementsKHR = NULL;
+        s->vkGetDeviceImageMemoryRequirementsKHR = NULL;
+    }
+
     // Load vkQueueSubmit2 (core)
     s->vkQueueSubmit2 = (PFN_vkQueueSubmit2)vkGetDeviceProcAddr(s->device, "vkQueueSubmit2");
     if (!s->vkQueueSubmit2) {
@@ -593,12 +675,14 @@ bool vk_create_device(VulkanState* s) {
     // Initialize unified Vulkan allocator
     if (!vk_allocator_init(&s->allocator, s->physical_device, s->device,
                            s->vkGetDeviceBufferMemoryRequirements,
-                           s->vkGetDeviceImageMemoryRequirements, s->vkGetBufferDeviceAddress)) {
+                           s->vkGetDeviceImageMemoryRequirements, s->vkGetBufferDeviceAddress,
+                           s->vkGetDeviceBufferMemoryRequirementsKHR,
+                           s->vkGetDeviceImageMemoryRequirementsKHR, s->supports_maintenance8)) {
         CARDINAL_LOG_ERROR("[DEVICE] Failed to initialize VulkanAllocator");
         return false;
     }
-    CARDINAL_LOG_INFO("[DEVICE] VulkanAllocator initialized (maintenance4=required, buffer device "
-                      "address=enabled)");
+    CARDINAL_LOG_INFO("[DEVICE] VulkanAllocator initialized (maintenance4=required, maintenance8=%s, buffer device "
+                      "address=enabled)", s->supports_maintenance8 ? "enabled" : "not available");
 
     return true;
 }

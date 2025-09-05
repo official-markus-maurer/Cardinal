@@ -47,6 +47,11 @@ CardinalSceneNode *cardinal_scene_node_create(const char *name) {
     node->child_count = 0;
     node->child_capacity = 0;
     
+    // Initialize animation properties
+    node->is_bone = false;
+    node->bone_index = UINT32_MAX;
+    node->skin_index = UINT32_MAX;
+    
     return node;
 }
 
@@ -221,6 +226,19 @@ void cardinal_scene_destroy(CardinalScene* scene) {
             cardinal_scene_node_destroy(scene->root_nodes[i]);
         }
         free(scene->root_nodes);
+    }
+    
+    // Destroy animation system
+    if (scene->animation_system) {
+        cardinal_animation_system_destroy(scene->animation_system);
+    }
+    
+    // Free skins
+    if (scene->skins) {
+        for (uint32_t i = 0; i < scene->skin_count; ++i) {
+            cardinal_skin_destroy(&scene->skins[i]);
+        }
+        free(scene->skins);
     }
 
     memset(scene, 0, sizeof(*scene));

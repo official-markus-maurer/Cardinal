@@ -130,80 +130,85 @@ bool vk_pbr_pipeline_create(VulkanPBRPipeline* pipeline, VkDevice device,
     CARDINAL_LOG_DEBUG("Creating descriptor set layout with 9 bindings");
 
     // Create descriptor set layout
-    VkDescriptorSetLayoutBinding bindings[9] = {0};
+    VkDescriptorSetLayoutBinding bindings[10] = {0};
 
-    // UBO binding
+    // UBO binding (vertex shader)
     bindings[0].binding = 0;
     bindings[0].descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
     bindings[0].descriptorCount = 1;
     bindings[0].stageFlags = VK_SHADER_STAGE_VERTEX_BIT;
 
-    // Texture bindings with descriptor indexing (Vulkan 1.3 core)
-    // albedoMap - standard binding
+    // albedoMap - matches shader binding 1
     bindings[1].binding = 1;
     bindings[1].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
     bindings[1].descriptorCount = 1;
     bindings[1].stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
 
-    // normalMap - standard binding
+    // normalMap - matches shader binding 2
     bindings[2].binding = 2;
     bindings[2].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
     bindings[2].descriptorCount = 1;
     bindings[2].stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
 
-    // metallicRoughnessMap - standard binding
+    // metallicRoughnessMap - matches shader binding 3
     bindings[3].binding = 3;
     bindings[3].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
     bindings[3].descriptorCount = 1;
     bindings[3].stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
 
-    // aoMap - standard binding
+    // aoMap - matches shader binding 4
     bindings[4].binding = 4;
     bindings[4].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
     bindings[4].descriptorCount = 1;
     bindings[4].stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
 
-    // emissiveMap - standard binding
+    // emissiveMap - matches shader binding 5
     bindings[5].binding = 5;
     bindings[5].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
     bindings[5].descriptorCount = 1;
     bindings[5].stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
 
-    // Material properties binding
+    // Bone matrices binding (vertex shader) - moved to binding 6
     bindings[6].binding = 6;
     bindings[6].descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
     bindings[6].descriptorCount = 1;
-    bindings[6].stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
+    bindings[6].stageFlags = VK_SHADER_STAGE_VERTEX_BIT;
 
-    // Lighting data binding
+    // Material properties binding
     bindings[7].binding = 7;
     bindings[7].descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
     bindings[7].descriptorCount = 1;
     bindings[7].stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
 
-    // Texture array binding with variable count - MUST be highest binding number
+    // Lighting data binding - moved to binding 8
     bindings[8].binding = 8;
-    bindings[8].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
-    bindings[8].descriptorCount = 1024; // Large array for future expansion
+    bindings[8].descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
+    bindings[8].descriptorCount = 1;
     bindings[8].stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
+
+    // Texture array binding - matches shader binding 9
+    bindings[9].binding = 9;
+    bindings[9].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+    bindings[9].descriptorCount = 1024; // Large array for descriptor indexing
+    bindings[9].stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
 
     // Setup descriptor set layout create info with descriptor indexing (Vulkan 1.3 core)
     VkDescriptorSetLayoutCreateInfo layoutInfo = {0};
     layoutInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO;
-    layoutInfo.bindingCount = 9; // Always use 9 bindings with descriptor indexing
+    layoutInfo.bindingCount = 10; // Always use 10 bindings with descriptor indexing
     layoutInfo.pBindings = bindings;
 
     // Enable descriptor indexing flags
     VkDescriptorSetLayoutBindingFlagsCreateInfo bindingFlags = {0};
-    VkDescriptorBindingFlags flags[9] = {0};
+    VkDescriptorBindingFlags flags[10] = {0};
 
-    // Set flags for the highest binding (binding 8) where variable descriptor count is used
-    flags[8] = VK_DESCRIPTOR_BINDING_VARIABLE_DESCRIPTOR_COUNT_BIT |
+    // Set flags for binding 9 (texture array) where variable descriptor count is used
+    flags[9] = VK_DESCRIPTOR_BINDING_VARIABLE_DESCRIPTOR_COUNT_BIT |
                VK_DESCRIPTOR_BINDING_PARTIALLY_BOUND_BIT |
                VK_DESCRIPTOR_BINDING_UPDATE_AFTER_BIND_BIT;
 
     bindingFlags.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_BINDING_FLAGS_CREATE_INFO;
-    bindingFlags.bindingCount = 9;
+    bindingFlags.bindingCount = 10;
     bindingFlags.pBindingFlags = flags;
 
     layoutInfo.flags = VK_DESCRIPTOR_SET_LAYOUT_CREATE_UPDATE_AFTER_BIND_POOL_BIT;
@@ -268,7 +273,7 @@ bool vk_pbr_pipeline_create(VulkanPBRPipeline* pipeline, VkDevice device,
     bindingDescription.stride = sizeof(CardinalVertex);
     bindingDescription.inputRate = VK_VERTEX_INPUT_RATE_VERTEX;
 
-    VkVertexInputAttributeDescription attributeDescriptions[3] = {0};
+    VkVertexInputAttributeDescription attributeDescriptions[5] = {0};
     // Position
     attributeDescriptions[0].binding = 0;
     attributeDescriptions[0].location = 0;
@@ -287,11 +292,23 @@ bool vk_pbr_pipeline_create(VulkanPBRPipeline* pipeline, VkDevice device,
     attributeDescriptions[2].format = VK_FORMAT_R32G32_SFLOAT;
     attributeDescriptions[2].offset = sizeof(float) * 6;
 
+    // Bone weights
+    attributeDescriptions[3].binding = 0;
+    attributeDescriptions[3].location = 3;
+    attributeDescriptions[3].format = VK_FORMAT_R32G32B32A32_SFLOAT;
+    attributeDescriptions[3].offset = sizeof(float) * 8;
+
+    // Bone indices
+    attributeDescriptions[4].binding = 0;
+    attributeDescriptions[4].location = 4;
+    attributeDescriptions[4].format = VK_FORMAT_R32G32B32A32_UINT;
+    attributeDescriptions[4].offset = sizeof(float) * 12;
+
     VkPipelineVertexInputStateCreateInfo vertexInputInfo = {0};
     vertexInputInfo.sType = VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO;
     vertexInputInfo.vertexBindingDescriptionCount = 1;
     vertexInputInfo.pVertexBindingDescriptions = &bindingDescription;
-    vertexInputInfo.vertexAttributeDescriptionCount = 3;
+    vertexInputInfo.vertexAttributeDescriptionCount = 5;
     vertexInputInfo.pVertexAttributeDescriptions = attributeDescriptions;
 
     // Input assembly
@@ -455,6 +472,40 @@ bool vk_pbr_pipeline_create(VulkanPBRPipeline* pipeline, VkDevice device,
     }
     CARDINAL_LOG_DEBUG("Lighting memory mapped at %p", pipeline->lightingBufferMapped);
 
+    // Create bone matrices uniform buffer for skeletal animation
+    pipeline->maxBones = 256; // Support up to 256 bones
+    VkDeviceSize boneMatricesSize = pipeline->maxBones * 16 * sizeof(float); // 256 * mat4
+    if (!vk_buffer_create(allocator, boneMatricesSize, VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT,
+                          VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT |
+                              VK_MEMORY_PROPERTY_HOST_COHERENT_BIT,
+                          &pipeline->boneMatricesBuffer, &pipeline->boneMatricesBufferMemory)) {
+        CARDINAL_LOG_ERROR("Failed to create bone matrices buffer (size=%llu)",
+                           (unsigned long long)boneMatricesSize);
+        return false;
+    }
+    CARDINAL_LOG_DEBUG("Bone matrices buffer created: buffer=%p, memory=%p",
+                       (void*)(uintptr_t)pipeline->boneMatricesBuffer,
+                       (void*)(uintptr_t)pipeline->boneMatricesBufferMemory);
+
+    result = vkMapMemory(device, pipeline->boneMatricesBufferMemory, 0, boneMatricesSize, 0,
+                         &pipeline->boneMatricesBufferMapped);
+    if (result != VK_SUCCESS) {
+        CARDINAL_LOG_ERROR("Failed to map bone matrices buffer memory: %d", result);
+        return false;
+    }
+    CARDINAL_LOG_DEBUG("Bone matrices memory mapped at %p", pipeline->boneMatricesBufferMapped);
+
+    // Initialize bone matrices to identity
+    float* boneMatrices = (float*)pipeline->boneMatricesBufferMapped;
+    for (uint32_t i = 0; i < pipeline->maxBones; ++i) {
+        // Set identity matrix for each bone
+        memset(&boneMatrices[i * 16], 0, 16 * sizeof(float));
+        boneMatrices[i * 16 + 0] = 1.0f;  // [0][0]
+        boneMatrices[i * 16 + 5] = 1.0f;  // [1][1]
+        boneMatrices[i * 16 + 10] = 1.0f; // [2][2]
+        boneMatrices[i * 16 + 15] = 1.0f; // [3][3]
+    }
+
     // Initialize default material properties
     PBRMaterialProperties defaultMaterial = {0};
     defaultMaterial.albedoFactor[0] = 0.8f; // Light gray
@@ -596,6 +647,13 @@ void vk_pbr_pipeline_destroy(VulkanPBRPipeline* pipeline, VkDevice device,
         vkDestroyDescriptorSetLayout(device, pipeline->descriptorSetLayout, NULL);
     }
 
+    // Destroy bone matrices buffer
+    if (pipeline->boneMatricesBuffer != VK_NULL_HANDLE ||
+        pipeline->boneMatricesBufferMemory != VK_NULL_HANDLE) {
+        vk_allocator_free_buffer(allocator, pipeline->boneMatricesBuffer,
+                                 pipeline->boneMatricesBufferMemory);
+    }
+
     memset(pipeline, 0, sizeof(VulkanPBRPipeline));
     CARDINAL_LOG_INFO("PBR pipeline destroyed");
 }
@@ -655,6 +713,12 @@ void vk_pbr_render(VulkanPBRPipeline* pipeline, VkCommandBuffer commandBuffer,
     uint32_t indexOffset = 0;
     for (uint32_t i = 0; i < scene->mesh_count; i++) {
         const CardinalMesh* mesh = &scene->meshes[i];
+
+        // Skip invisible meshes
+        if (!mesh->visible) {
+            indexOffset += mesh->index_count;
+            continue;
+        }
 
         // Prepare push constants with model matrix and material properties
         PBRPushConstants pushConstants = {0};
@@ -730,8 +794,31 @@ void vk_pbr_render(VulkanPBRPipeline* pipeline, VkCommandBuffer commandBuffer,
             pushConstants.emissiveTransform.rotation = material->emissive_transform.rotation;
 
             // CRITICAL: Set descriptor indexing flag for shader (always enabled in Vulkan 1.3, only
-            // if textures are available)
-            pushConstants.supportsDescriptorIndexing = (pipeline->textureCount > 0) ? 1u : 0u;
+        // if textures are available)
+        pushConstants.supportsDescriptorIndexing = (pipeline->textureCount > 0) ? 1u : 0u;
+        
+        // Check if this mesh uses skeletal animation
+        pushConstants.hasSkeleton = 0;
+        if (scene->animation_system && scene->skin_count > 0) {
+            // Check if this mesh is associated with any skin
+            for (uint32_t skin_idx = 0; skin_idx < scene->skin_count; ++skin_idx) {
+                const CardinalSkin* skin = &scene->skins[skin_idx];
+                for (uint32_t mesh_idx = 0; mesh_idx < skin->mesh_count; ++mesh_idx) {
+                    if (skin->mesh_indices[mesh_idx] == i) {
+                        pushConstants.hasSkeleton = 1;
+                        
+                        // Update bone matrices for this skin
+                        if (scene->animation_system->bone_matrices) {
+                            memcpy(pipeline->boneMatricesBufferMapped, 
+                                   scene->animation_system->bone_matrices,
+                                   scene->animation_system->bone_matrix_count * sizeof(float));
+                        }
+                        break;
+                    }
+                }
+                if (pushConstants.hasSkeleton) break;
+            }
+        }
 
             // Debug logging for material properties
             CARDINAL_LOG_DEBUG(
@@ -761,6 +848,29 @@ void vk_pbr_render(VulkanPBRPipeline* pipeline, VkCommandBuffer commandBuffer,
             pushConstants.aoTextureIndex = UINT32_MAX;
             pushConstants.emissiveTextureIndex = UINT32_MAX;
             pushConstants.supportsDescriptorIndexing = (pipeline->textureCount > 0) ? 1u : 0u;
+            
+            // Check if this mesh uses skeletal animation
+            pushConstants.hasSkeleton = 0;
+            if (scene->animation_system && scene->skin_count > 0) {
+                // Check if this mesh is associated with any skin
+                for (uint32_t skin_idx = 0; skin_idx < scene->skin_count; ++skin_idx) {
+                    const CardinalSkin* skin = &scene->skins[skin_idx];
+                    for (uint32_t mesh_idx = 0; mesh_idx < skin->mesh_count; ++mesh_idx) {
+                        if (skin->mesh_indices[mesh_idx] == i) {
+                            pushConstants.hasSkeleton = 1;
+                            
+                            // Update bone matrices for this skin
+                            if (scene->animation_system->bone_matrices) {
+                                memcpy(pipeline->boneMatricesBufferMapped, 
+                                       scene->animation_system->bone_matrices,
+                                       scene->animation_system->bone_matrix_count * sizeof(float));
+                            }
+                            break;
+                        }
+                    }
+                    if (pushConstants.hasSkeleton) break;
+                }
+            }
         }
 
         // Push constants to GPU
@@ -1060,12 +1170,12 @@ bool vk_pbr_load_scene(VulkanPBRPipeline* pipeline, VkDevice device,
     // Create descriptor pool and sets
     VkDescriptorPoolSize poolSizes[3] = {0};
     poolSizes[0].type = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
-    poolSizes[0].descriptorCount = 2; // UBO + Material
+    poolSizes[0].descriptorCount = 4; // UBO + Bone Matrices + Material + Lighting
     poolSizes[1].type = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
     // Allocate descriptors: 5 fixed + 1024 variable for descriptor indexing (Vulkan 1.3 core)
     poolSizes[1].descriptorCount = 5 + 1024; // 5 fixed + 1024 variable
     poolSizes[2].type = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
-    poolSizes[2].descriptorCount = 1; // Lighting
+    poolSizes[2].descriptorCount = 0; // Consolidated into poolSizes[0]
 
     VkDescriptorPoolCreateInfo poolInfo = {0};
     poolInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO;
@@ -1133,6 +1243,21 @@ bool vk_pbr_load_scene(VulkanPBRPipeline* pipeline, VkDevice device,
     descriptorWrites[writeCount].pBufferInfo = &bufferInfo;
     writeCount++;
 
+    // Bone matrices buffer - now at binding 6
+    VkDescriptorBufferInfo boneMatricesBufferInfo = {0};
+    boneMatricesBufferInfo.buffer = pipeline->boneMatricesBuffer;
+    boneMatricesBufferInfo.offset = 0;
+    boneMatricesBufferInfo.range = sizeof(float) * 16 * pipeline->maxBones;
+
+    descriptorWrites[writeCount].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+    descriptorWrites[writeCount].dstSet = pipeline->descriptorSets[0];
+    descriptorWrites[writeCount].dstBinding = 6;
+    descriptorWrites[writeCount].dstArrayElement = 0;
+    descriptorWrites[writeCount].descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
+    descriptorWrites[writeCount].descriptorCount = 1;
+    descriptorWrites[writeCount].pBufferInfo = &boneMatricesBufferInfo;
+    writeCount++;
+
     // Prepare image infos for material texture slots (albedo, normal, metallicRoughness, ao,
     // emissive)
     VkDescriptorImageInfo imageInfos[5];
@@ -1161,7 +1286,7 @@ bool vk_pbr_load_scene(VulkanPBRPipeline* pipeline, VkDevice device,
     // Variable descriptor array: bind all available textures (or 1 if only placeholder)
     descriptorWrites[writeCount].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
     descriptorWrites[writeCount].dstSet = pipeline->descriptorSets[0];
-    descriptorWrites[writeCount].dstBinding = 8; // variable count binding
+    descriptorWrites[writeCount].dstBinding = 9; // variable count binding
     descriptorWrites[writeCount].dstArrayElement = 0;
     descriptorWrites[writeCount].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
     descriptorWrites[writeCount].descriptorCount = pipeline->textureCount;
@@ -1178,7 +1303,7 @@ bool vk_pbr_load_scene(VulkanPBRPipeline* pipeline, VkDevice device,
         varInfos[i].imageView = pipeline->textureImageViews[i];
         varInfos[i].sampler = pipeline->textureSampler;
         if (i < 8) {
-            CARDINAL_LOG_DEBUG("Variable binding 8, array[%u] -> imageView=%p", i,
+            CARDINAL_LOG_DEBUG("Variable binding 9, array[%u] -> imageView=%p", i,
                                (void*)(uintptr_t)pipeline->textureImageViews[i]);
         }
     }
@@ -1193,7 +1318,7 @@ bool vk_pbr_load_scene(VulkanPBRPipeline* pipeline, VkDevice device,
 
     descriptorWrites[writeCount].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
     descriptorWrites[writeCount].dstSet = pipeline->descriptorSets[0];
-    descriptorWrites[writeCount].dstBinding = 6;
+    descriptorWrites[writeCount].dstBinding = 7;
     descriptorWrites[writeCount].dstArrayElement = 0;
     descriptorWrites[writeCount].descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
     descriptorWrites[writeCount].descriptorCount = 1;
@@ -1207,7 +1332,7 @@ bool vk_pbr_load_scene(VulkanPBRPipeline* pipeline, VkDevice device,
 
     descriptorWrites[writeCount].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
     descriptorWrites[writeCount].dstSet = pipeline->descriptorSets[0];
-    descriptorWrites[writeCount].dstBinding = 7;
+    descriptorWrites[writeCount].dstBinding = 8;
     descriptorWrites[writeCount].dstArrayElement = 0;
     descriptorWrites[writeCount].descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
     descriptorWrites[writeCount].descriptorCount = 1;
