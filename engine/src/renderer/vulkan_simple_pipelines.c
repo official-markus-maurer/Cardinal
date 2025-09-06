@@ -341,15 +341,26 @@ bool vk_create_simple_pipelines(VulkanState* s) {
     }
 
     // Create UV pipeline
-    if (!create_simple_pipeline(s, "assets/shaders/uv.vert.spv", "assets/shaders/uv.frag.spv",
+    // Build UV shader paths dynamically using username
+    char uv_vert_path[512], uv_frag_path[512];
+    const char* username = getenv("USERNAME");
+    if (!username) username = "admin"; // fallback
+    snprintf(uv_vert_path, sizeof(uv_vert_path), "C:/Users/%s/Documents/Cardinal/assets/shaders/uv.vert.spv", username);
+    snprintf(uv_frag_path, sizeof(uv_frag_path), "C:/Users/%s/Documents/Cardinal/assets/shaders/uv.frag.spv", username);
+    
+    if (!create_simple_pipeline(s, uv_vert_path, uv_frag_path,
                                 &s->uv_pipeline, &s->uv_pipeline_layout, false)) {
         CARDINAL_LOG_ERROR("Failed to create UV pipeline");
         return false;
     }
 
     // Create wireframe pipeline
-    if (!create_simple_pipeline(s, "assets/shaders/wireframe.vert.spv",
-                                "assets/shaders/wireframe.frag.spv", &s->wireframe_pipeline,
+    // Build wireframe shader paths dynamically using username
+    char wireframe_vert_path[512], wireframe_frag_path[512];
+    snprintf(wireframe_vert_path, sizeof(wireframe_vert_path), "C:/Users/%s/Documents/Cardinal/assets/shaders/wireframe.vert.spv", username);
+    snprintf(wireframe_frag_path, sizeof(wireframe_frag_path), "C:/Users/%s/Documents/Cardinal/assets/shaders/wireframe.frag.spv", username);
+    
+    if (!create_simple_pipeline(s, wireframe_vert_path, wireframe_frag_path, &s->wireframe_pipeline,
                                 &s->wireframe_pipeline_layout, true)) {
         CARDINAL_LOG_ERROR("Failed to create wireframe pipeline");
         return false;
@@ -379,6 +390,8 @@ void vk_destroy_simple_pipelines(VulkanState* s) {
     }
 
     if (s->simple_descriptor_pool != VK_NULL_HANDLE) {
+        // Reset the descriptor pool to free all allocated descriptor sets
+        vkResetDescriptorPool(s->device, s->simple_descriptor_pool, 0);
         vkDestroyDescriptorPool(s->device, s->simple_descriptor_pool, NULL);
         s->simple_descriptor_pool = VK_NULL_HANDLE;
     }

@@ -41,6 +41,7 @@ typedef struct CardinalRefCountedResource {
   void (*destructor)(void *resource); /**< Custom destructor function */
   char *identifier;                   /**< Unique identifier for the resource */
   size_t resource_size;               /**< Size of the resource in bytes */
+  struct CardinalRefCountedResource *next; /**< Next resource in hash table chain */
 } CardinalRefCountedResource;
 
 /**

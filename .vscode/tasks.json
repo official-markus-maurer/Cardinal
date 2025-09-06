@@ -30,7 +30,7 @@
             "args": [
                 "pbr.vert",
                 "-o",
-                "pbr.vert.spv"
+                "C:/Users/${env:USERNAME}/Documents/Cardinal/assets/shaders/pbr.vert.spv"
             ],
             "group": "build",
             "presentation": {
@@ -51,7 +51,7 @@
             "args": [
                 "pbr.frag",
                 "-o",
-                "pbr.frag.spv"
+                "C:/Users/${env:USERNAME}/Documents/Cardinal/assets/shaders/pbr.frag.spv"
             ],
             "group": "build",
             "presentation": {
@@ -72,7 +72,7 @@
             "args": [
                 "uv.vert",
                 "-o",
-                "uv.vert.spv"
+                "C:/Users/${env:USERNAME}/Documents/Cardinal/assets/shaders/uv.vert.spv"
             ],
             "group": "build",
             "presentation": {
@@ -93,7 +93,7 @@
             "args": [
                 "uv.frag",
                 "-o",
-                "uv.frag.spv"
+                "C:/Users/${env:USERNAME}/Documents/Cardinal/assets/shaders/uv.frag.spv"
             ],
             "group": "build",
             "presentation": {
@@ -103,7 +103,7 @@
                 "panel": "shared"
             },
             "options": {
-                "cwd": "${workspaceFolder}/assets/shaders"
+                "cwd": "${workspaceFolder}/engine/assets/shaders"
             },
             "problemMatcher": []
         },
@@ -114,7 +114,7 @@
             "args": [
                 "wireframe.vert",
                 "-o",
-                "wireframe.vert.spv"
+                "C:/Users/${env:USERNAME}/Documents/Cardinal/assets/shaders/wireframe.vert.spv"
             ],
             "group": "build",
             "presentation": {
@@ -135,7 +135,7 @@
             "args": [
                 "wireframe.frag",
                 "-o",
-                "wireframe.frag.spv"
+                "C:/Users/${env:USERNAME}/Documents/Cardinal/assets/shaders/wireframe.frag.spv"
             ],
             "group": "build",
             "presentation": {
@@ -203,32 +203,11 @@
             "problemMatcher": ["$gcc"]
         },
         {
-            "label": "Copy Assets",
-            "type": "shell",
-            "command": "powershell",
-            "args": [
-                "-Command",
-                "Copy-Item -Path 'assets' -Destination 'build/client' -Recurse -Force; Copy-Item -Path 'assets' -Destination 'build/editor' -Recurse -Force"
-            ],
-            "group": "build",
-            "presentation": {
-                "echo": true,
-                "reveal": "silent",
-                "focus": false,
-                "panel": "shared"
-            },
-            "options": {
-                "cwd": "${workspaceFolder}"
-            },
-            "problemMatcher": []
-        },
-        {
             "label": "Full Build",
             "dependsOrder": "sequence",
             "dependsOn": [
                 "Compile Shaders",
-                "Build Project",
-                "Copy Assets"
+                "Build Project"
             ],
             "group": "build",
             "presentation": {

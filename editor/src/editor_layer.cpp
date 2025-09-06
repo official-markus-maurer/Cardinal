@@ -13,9 +13,11 @@
 #include "editor_layer.h"
 #include <cardinal/assets/loader.h>
 #include <cardinal/assets/scene.h>
+#include <cardinal/assets/model_manager.h>
 #include <cardinal/cardinal.h>
 #include <cardinal/core/async_loader.h>
 #include <cardinal/core/log.h>
+#include <cardinal/core/transform.h>
 #include <cardinal/core/window.h>
 #include <cardinal/renderer/renderer.h>
 #include <cardinal/renderer/renderer_internal.h>
@@ -32,9 +34,11 @@ static VkDescriptorPool g_descriptor_pool = VK_NULL_HANDLE;
 static bool g_scene_loaded = false;
 static CardinalAsyncTask *g_loading_task = nullptr;
 static bool g_is_loading = false;
-static CardinalScene g_scene; // zero-initialized on start
+static CardinalModelManager g_model_manager; // Model manager for multiple models
+static CardinalScene g_combined_scene; // Combined scene from model manager
 static char g_scene_path[512] = "";
 static char g_status_msg[256] = "";
+static uint32_t g_selected_model_id = 0; // Currently selected model
 
 // PBR settings
 static bool g_pbr_enabled = true; // Enable by default to match renderer
@@ -123,24 +127,45 @@ static void scene_load_callback(CardinalAsyncTask *task, void *user_data) {
   if (cardinal_async_get_task_status(task) == CARDINAL_ASYNC_STATUS_COMPLETED) {
     CardinalScene loaded_scene;
     if (cardinal_async_get_scene_result(task, &loaded_scene)) {
-      // Scene was already cleared in load_scene_from_path, just assign new one
-      g_scene = loaded_scene;
-      g_scene_loaded = true;
-
-      // Upload to GPU for drawing
-      if (g_renderer) {
-        cardinal_renderer_upload_scene(g_renderer, &g_scene);
+      // Extract filename for model name
+      const char* filename = strrchr(path, '/');
+      if (!filename) filename = strrchr(path, '\\');
+      if (!filename) filename = path;
+      else filename++; // Skip the separator
+      
+      // Add the already-loaded scene to the model manager (avoids double-loading)
+      uint32_t model_id = cardinal_model_manager_add_scene(&g_model_manager, &loaded_scene, path, filename);
+      if (model_id != 0) {
+        g_selected_model_id = model_id;
         
-        // Update camera and lighting after scene upload to ensure proper rendering
-        if (g_pbr_enabled) {
-          cardinal_renderer_set_camera(g_renderer, &g_camera);
-          cardinal_renderer_set_lighting(g_renderer, &g_light);
+        // Get the combined scene and upload to GPU
+        const CardinalScene* combined = cardinal_model_manager_get_combined_scene(&g_model_manager);
+        if (combined) {
+          g_combined_scene = *combined; // Copy the scene
+          g_scene_loaded = true;
+          
+          // Upload to GPU for drawing
+          if (g_renderer) {
+            cardinal_renderer_upload_scene(g_renderer, &g_combined_scene);
+            
+            // Update camera and lighting after scene upload to ensure proper rendering
+            if (g_pbr_enabled) {
+              cardinal_renderer_set_camera(g_renderer, &g_camera);
+              cardinal_renderer_set_lighting(g_renderer, &g_light);
+            }
+          }
+          
+          snprintf(g_status_msg, sizeof(g_status_msg),
+                   "Loaded model: %u mesh(es) from %s (ID: %u)",
+                   (unsigned)loaded_scene.mesh_count, filename, model_id);
+        } else {
+          snprintf(g_status_msg, sizeof(g_status_msg),
+                   "Model loaded but failed to get combined scene: %s", filename);
         }
+      } else {
+        snprintf(g_status_msg, sizeof(g_status_msg),
+                 "Failed to add model to manager: %s", filename);
       }
-
-      snprintf(g_status_msg, sizeof(g_status_msg),
-               "Loaded scene: %u mesh(es) from %s",
-               (unsigned)g_scene.mesh_count, path);
     } else {
       snprintf(g_status_msg, sizeof(g_status_msg),
                "Failed to process loaded scene: %s", path);
@@ -225,15 +250,7 @@ static void load_scene_from_path(const char *path, bool use_async = true) {
     g_is_loading = false;
   }
 
-  // Clean up current scene before loading new one (prevents double-loading conflicts)
-  if (g_scene_loaded) {
-    cardinal_scene_destroy(&g_scene);
-    memset(&g_scene, 0, sizeof(g_scene));
-    g_scene_loaded = false;
-    // Clear previous GPU scene
-    if (g_renderer)
-      cardinal_renderer_clear_scene(g_renderer);
-  }
+  // Note: No need to clear scene - model manager handles multiple models
 
   // Update the input field to reflect attempted path
   snprintf(g_scene_path, sizeof(g_scene_path), "%s", path);
@@ -262,27 +279,8 @@ static void load_scene_from_path(const char *path, bool use_async = true) {
       g_is_loading = false;
     }
   } else {
-    // Synchronous loading (fallback)
-    if (g_scene_loaded) {
-      cardinal_scene_destroy(&g_scene);
-      memset(&g_scene, 0, sizeof(g_scene));
-      g_scene_loaded = false;
-      // Clear previous GPU scene
-      if (g_renderer)
-        cardinal_renderer_clear_scene(g_renderer);
-    }
-
-    if (cardinal_scene_load(path, &g_scene)) {
-      g_scene_loaded = true;
-      // Upload to GPU for drawing
-      if (g_renderer)
-        cardinal_renderer_upload_scene(g_renderer, &g_scene);
-      snprintf(g_status_msg, sizeof(g_status_msg),
-               "Loaded scene: %u mesh(es) from %s",
-               (unsigned)g_scene.mesh_count, path);
-    } else {
-      snprintf(g_status_msg, sizeof(g_status_msg), "Failed to load: %s", path);
-    }
+    // Synchronous loading not supported with model manager
+    snprintf(g_status_msg, sizeof(g_status_msg), "Async loading failed for: %s", path);
   }
 }
 /**
@@ -679,7 +677,10 @@ static void process_input_and_move_camera(float dt) {
 bool editor_layer_init(CardinalWindow *window, CardinalRenderer *renderer) {
   g_renderer = renderer;
   g_scene_loaded = false;
-  memset(&g_scene, 0, sizeof(g_scene));
+  memset(&g_combined_scene, 0, sizeof(g_combined_scene));
+  
+  // Initialize model manager
+  cardinal_model_manager_init(&g_model_manager);
 
   // Store window handle for input
   g_window_handle = window ? (GLFWwindow *)window->handle : nullptr;
@@ -788,14 +789,14 @@ bool editor_layer_init(CardinalWindow *window, CardinalRenderer *renderer) {
  */
 static void draw_animation_panel() {
   if (ImGui::Begin("Animation")) {
-    if (!g_scene_loaded || !g_scene.animation_system || g_scene.animation_system->animation_count == 0) {
+    if (!g_scene_loaded || !g_combined_scene.animation_system || g_combined_scene.animation_system->animation_count == 0) {
       ImGui::TextDisabled("No animations available");
       ImGui::TextWrapped("Load a scene with animations to see animation controls.");
       ImGui::End();
       return;
     }
 
-    CardinalAnimationSystem* anim_sys = g_scene.animation_system;
+    CardinalAnimationSystem* anim_sys = g_combined_scene.animation_system;
     
     // Animation selection
     ImGui::Text("Animations (%u)", anim_sys->animation_count);
@@ -963,8 +964,8 @@ static void draw_scene_node(CardinalSceneNode* node, int depth = 0) {
     if (node->mesh_count > 0 && ImGui::TreeNode("Meshes")) {
       for (uint32_t i = 0; i < node->mesh_count; ++i) {
         uint32_t mesh_idx = node->mesh_indices[i];
-        if (mesh_idx < g_scene.mesh_count) {
-          CardinalMesh &m = g_scene.meshes[mesh_idx];
+        if (mesh_idx < g_combined_scene.mesh_count) {
+      CardinalMesh &m = g_combined_scene.meshes[mesh_idx];
           
           // Create unique ID for the checkbox
           char checkbox_id[64];
@@ -998,62 +999,62 @@ static void draw_scene_graph_panel() {
       
       if (g_scene_loaded) {
         if (ImGui::TreeNode("Loaded Scene")) {
-          ImGui::Text("Total Meshes: %u", (unsigned)g_scene.mesh_count);
-          ImGui::Text("Root Nodes: %u", (unsigned)g_scene.root_node_count);
+          ImGui::Text("Total Meshes: %u", (unsigned)g_combined_scene.mesh_count);
+    ImGui::Text("Root Nodes: %u", (unsigned)g_combined_scene.root_node_count);
           
           // Bulk visibility controls
           ImGui::Separator();
           ImGui::Text("Bulk Visibility Controls:");
           
           if (ImGui::Button("Show All Meshes")) {
-            for (uint32_t i = 0; i < g_scene.mesh_count; ++i) {
-              g_scene.meshes[i].visible = true;
-            }
+            for (uint32_t i = 0; i < g_combined_scene.mesh_count; ++i) {
+        g_combined_scene.meshes[i].visible = true;
+      }
           }
           ImGui::SameLine();
           if (ImGui::Button("Hide All Meshes")) {
-            for (uint32_t i = 0; i < g_scene.mesh_count; ++i) {
-              g_scene.meshes[i].visible = false;
-            }
+            for (uint32_t i = 0; i < g_combined_scene.mesh_count; ++i) {
+        g_combined_scene.meshes[i].visible = false;
+      }
           }
           
           // Material-based visibility controls
           if (ImGui::Button("Show Only Material 0")) {
-            for (uint32_t i = 0; i < g_scene.mesh_count; ++i) {
-              g_scene.meshes[i].visible = (g_scene.meshes[i].material_index == 0);
-            }
+            for (uint32_t i = 0; i < g_combined_scene.mesh_count; ++i) {
+        g_combined_scene.meshes[i].visible = (g_combined_scene.meshes[i].material_index == 0);
+      }
           }
           ImGui::SameLine();
           if (ImGui::Button("Show Only Material 1")) {
-            for (uint32_t i = 0; i < g_scene.mesh_count; ++i) {
-              g_scene.meshes[i].visible = (g_scene.meshes[i].material_index == 1);
-            }
+            for (uint32_t i = 0; i < g_combined_scene.mesh_count; ++i) {
+        g_combined_scene.meshes[i].visible = (g_combined_scene.meshes[i].material_index == 1);
+      }
           }
           
           // Toggle between materials
           if (ImGui::Button("Toggle Materials 0/1")) {
             static bool show_material_0 = true;
-            for (uint32_t i = 0; i < g_scene.mesh_count; ++i) {
-              if (g_scene.meshes[i].material_index == 0) {
-                g_scene.meshes[i].visible = show_material_0;
-              } else if (g_scene.meshes[i].material_index == 1) {
-                g_scene.meshes[i].visible = !show_material_0;
-              }
-            }
+            for (uint32_t i = 0; i < g_combined_scene.mesh_count; ++i) {
+        if (g_combined_scene.meshes[i].material_index == 0) {
+          g_combined_scene.meshes[i].visible = show_material_0;
+        } else if (g_combined_scene.meshes[i].material_index == 1) {
+          g_combined_scene.meshes[i].visible = !show_material_0;
+        }
+      }
             show_material_0 = !show_material_0;
           }
           
           // Display hierarchical scene nodes
-          if (g_scene.root_node_count > 0) {
+          if (g_combined_scene.root_node_count > 0) {
             ImGui::Separator();
-            for (uint32_t i = 0; i < g_scene.root_node_count; ++i) {
-              draw_scene_node(g_scene.root_nodes[i]);
+            for (uint32_t i = 0; i < g_combined_scene.root_node_count; ++i) {
+              draw_scene_node(g_combined_scene.root_nodes[i]);
             }
           } else {
             // Fallback to old mesh display if no hierarchy
             ImGui::Text("No scene hierarchy - showing flat mesh list:");
-            for (uint32_t i = 0; i < g_scene.mesh_count; ++i) {
-              CardinalMesh &m = g_scene.meshes[i];
+            for (uint32_t i = 0; i < g_combined_scene.mesh_count; ++i) {
+              CardinalMesh &m = g_combined_scene.meshes[i];
               
               // Create unique ID for the checkbox
               char checkbox_id[64];
@@ -1253,6 +1254,153 @@ static void draw_asset_browser_panel() {
   CARDINAL_LOG_DEBUG("Asset browser window ended successfully");
 }
 
+static void draw_model_manager_panel() {
+  if (ImGui::Begin("Model Manager")) {
+    ImGui::Text("Loaded Models:");
+    ImGui::Separator();
+    
+    // Get model count
+    uint32_t model_count = g_model_manager.model_count;
+    
+    if (model_count == 0) {
+      ImGui::Text("No models loaded");
+      ImGui::TextWrapped("Load models from the Assets panel to see them here.");
+    } else {
+      // Model list with operations
+      if (ImGui::BeginChild("##model_list", ImVec2(0, 300), true)) {
+        for (uint32_t i = 0; i < model_count; i++) {
+          CardinalModelInstance *model = cardinal_model_manager_get_model_by_index(&g_model_manager, i);
+          if (!model) continue;
+          
+          ImGui::PushID((int)model->id);
+          
+          // Model header with selection
+          bool is_selected = (g_selected_model_id == model->id);
+          if (ImGui::Selectable(model->name ? model->name : "Unnamed Model", is_selected)) {
+            g_selected_model_id = model->id;
+            cardinal_model_manager_set_selected(&g_model_manager, model->id);
+          }
+          
+          // Model controls on same line
+          ImGui::SameLine();
+          
+          // Visibility toggle
+          bool visible = model->visible;
+          if (ImGui::Checkbox("##visible", &visible)) {
+            cardinal_model_manager_set_visible(&g_model_manager, model->id, visible);
+          }
+          if (ImGui::IsItemHovered()) {
+            ImGui::SetTooltip("Toggle visibility");
+          }
+          
+          ImGui::SameLine();
+          
+          // Remove button
+          if (ImGui::Button("Remove")) {
+            cardinal_model_manager_remove_model(&g_model_manager, model->id);
+            if (g_selected_model_id == model->id) {
+              g_selected_model_id = 0;
+            }
+            ImGui::PopID();
+            break; // Exit loop since we modified the array
+          }
+          
+          // Show model info when selected
+          if (is_selected) {
+            ImGui::Indent();
+            ImGui::Text("ID: %u", model->id);
+            ImGui::Text("Meshes: %u", model->scene.mesh_count);
+            ImGui::Text("Materials: %u", model->scene.material_count);
+            if (model->file_path) {
+              ImGui::Text("Path: %s", model->file_path);
+            }
+            
+            // Transform controls
+            ImGui::Separator();
+            ImGui::Text("Transform:");
+            
+            // Position (extract from transform matrix)
+            float pos[3] = {model->transform[12], model->transform[13], model->transform[14]};
+            if (ImGui::DragFloat3("Position", pos, 0.1f)) {
+              float new_transform[16];
+              memcpy(new_transform, model->transform, sizeof(new_transform));
+              new_transform[12] = pos[0];
+              new_transform[13] = pos[1];
+              new_transform[14] = pos[2];
+              cardinal_model_manager_set_transform(&g_model_manager, model->id, new_transform);
+            }
+            
+            // Scale (extract from transform matrix - assume uniform scale)
+            float current_scale = sqrtf(model->transform[0] * model->transform[0] + 
+                                       model->transform[1] * model->transform[1] + 
+                                       model->transform[2] * model->transform[2]);
+            float scale = current_scale;
+            if (ImGui::DragFloat("Scale", &scale, 0.01f, 0.01f, 10.0f)) {
+              float scale_matrix[16];
+              cardinal_matrix_identity(scale_matrix);
+              scale_matrix[0] = scale_matrix[5] = scale_matrix[10] = scale;
+              scale_matrix[12] = pos[0];
+              scale_matrix[13] = pos[1];
+              scale_matrix[14] = pos[2];
+              cardinal_model_manager_set_transform(&g_model_manager, model->id, scale_matrix);
+            }
+            
+            // Reset transform button
+            if (ImGui::Button("Reset Transform")) {
+              float identity[16];
+              cardinal_matrix_identity(identity);
+              cardinal_model_manager_set_transform(&g_model_manager, model->id, identity);
+            }
+            
+            ImGui::Unindent();
+          }
+          
+          ImGui::PopID();
+        }
+      }
+      ImGui::EndChild();
+      
+      ImGui::Separator();
+      
+      // Bulk operations
+      ImGui::Text("Bulk Operations:");
+      if (ImGui::Button("Show All")) {
+        for (uint32_t i = 0; i < model_count; i++) {
+          CardinalModelInstance *model = cardinal_model_manager_get_model_by_index(&g_model_manager, i);
+          if (model) {
+            cardinal_model_manager_set_visible(&g_model_manager, model->id, true);
+          }
+        }
+      }
+      ImGui::SameLine();
+      if (ImGui::Button("Hide All")) {
+        for (uint32_t i = 0; i < model_count; i++) {
+          CardinalModelInstance *model = cardinal_model_manager_get_model_by_index(&g_model_manager, i);
+          if (model) {
+            cardinal_model_manager_set_visible(&g_model_manager, model->id, false);
+          }
+        }
+      }
+      ImGui::SameLine();
+      if (ImGui::Button("Remove All")) {
+        // Remove all models (iterate backwards to avoid index issues)
+        for (int i = (int)model_count - 1; i >= 0; i--) {
+          CardinalModelInstance *model = cardinal_model_manager_get_model_by_index(&g_model_manager, (uint32_t)i);
+          if (model) {
+            cardinal_model_manager_remove_model(&g_model_manager, model->id);
+          }
+        }
+        g_selected_model_id = 0;
+      }
+    }
+    
+    ImGui::Separator();
+    ImGui::Text("Total Models: %u", model_count);
+    ImGui::Text("Total Meshes: %u", cardinal_model_manager_get_total_mesh_count(&g_model_manager));
+  }
+  ImGui::End();
+}
+
 static void draw_pbr_settings_panel() {
   if (ImGui::Begin("PBR Settings")) {
     // PBR Enable/Disable
@@ -1334,10 +1482,10 @@ static void draw_pbr_settings_panel() {
         ImGui::SliderFloat("AO Strength", &g_material_ao_strength, 0.0f, 1.0f);
 
         if (ImGui::Button("Apply to All Materials")) {
-          if (g_scene_loaded && g_scene.material_count > 0) {
+          if (g_scene_loaded && g_combined_scene.material_count > 0) {
             // Apply override values to all materials in the scene
-            for (uint32_t i = 0; i < g_scene.material_count; i++) {
-              CardinalMaterial *mat = &g_scene.materials[i];
+            for (uint32_t i = 0; i < g_combined_scene.material_count; i++) {
+              CardinalMaterial *mat = &g_combined_scene.materials[i];
 
               // Store original values for logging
               float orig_albedo[3] = {mat->albedo_factor[0],
@@ -1371,13 +1519,13 @@ static void draw_pbr_settings_panel() {
 
             // Re-upload the scene to apply changes
             if (g_renderer) {
-              cardinal_renderer_upload_scene(g_renderer, &g_scene);
+              cardinal_renderer_upload_scene(g_renderer, &g_combined_scene);
               printf("Scene re-uploaded to renderer\n");
             }
 
             snprintf(g_status_msg, sizeof(g_status_msg),
                      "Applied material override to %u materials",
-                     g_scene.material_count);
+                     g_combined_scene.material_count);
           } else {
             snprintf(g_status_msg, sizeof(g_status_msg),
                      "No scene loaded or no materials to modify");
@@ -1452,6 +1600,41 @@ void editor_layer_update(void) {
   // Process completed async tasks to execute callbacks
   cardinal_async_process_completed_tasks(0);
   
+  // Update model manager (processes async loading and marks scene dirty when needed)
+  cardinal_model_manager_update(&g_model_manager);
+  
+  // Check if combined scene needs to be re-uploaded to renderer
+  const CardinalScene* combined = cardinal_model_manager_get_combined_scene(&g_model_manager);
+  if (combined && g_renderer) {
+    // Always re-upload when we get a combined scene since the model manager
+    // rebuilds the scene in-place when dirty, so pointer comparison isn't reliable
+    static uint32_t last_mesh_count = 0;
+    static uint32_t last_material_count = 0;
+    static uint32_t last_texture_count = 0;
+    
+    // Check if scene content has changed by comparing counts
+    bool scene_changed = (combined->mesh_count != last_mesh_count ||
+                         combined->material_count != last_material_count ||
+                         combined->texture_count != last_texture_count);
+    
+    if (scene_changed) {
+      // Re-upload the combined scene to the renderer
+      cardinal_renderer_upload_scene(g_renderer, combined);
+      g_combined_scene = *combined; // Update our local copy
+      
+      // Update tracking variables
+      last_mesh_count = combined->mesh_count;
+      last_material_count = combined->material_count;
+      last_texture_count = combined->texture_count;
+      
+      // Update camera and lighting after scene upload
+      if (g_pbr_enabled) {
+        cardinal_renderer_set_camera(g_renderer, &g_camera);
+        cardinal_renderer_set_lighting(g_renderer, &g_light);
+      }
+    }
+  }
+  
   // Process async loading tasks
   if (g_loading_task && g_is_loading) {
     CardinalAsyncStatus status = cardinal_async_get_task_status(g_loading_task);
@@ -1465,16 +1648,16 @@ void editor_layer_update(void) {
   }
   
   // Update animation system if scene is loaded
-  if (g_scene_loaded && g_scene.animation_system) {
+  if (g_scene_loaded && g_combined_scene.animation_system) {
     ImGuiIO &io = ImGui::GetIO();
     float dt = io.DeltaTime > 0.0f ? io.DeltaTime : 1.0f / 60.0f;
-    cardinal_animation_system_update(g_scene.animation_system, dt);
+    cardinal_animation_system_update(g_combined_scene.animation_system, dt);
     
     // Sync editor animation time with animation system state
-    if (g_selected_animation >= 0 && g_selected_animation < (int)g_scene.animation_system->animation_count) {
+    if (g_selected_animation >= 0 && g_selected_animation < (int)g_combined_scene.animation_system->animation_count) {
       // Find the animation state for the selected animation
-      for (uint32_t i = 0; i < g_scene.animation_system->state_count; ++i) {
-        CardinalAnimationState* state = &g_scene.animation_system->states[i];
+      for (uint32_t i = 0; i < g_combined_scene.animation_system->state_count; ++i) {
+        CardinalAnimationState* state = &g_combined_scene.animation_system->states[i];
         if (state->animation_index == (uint32_t)g_selected_animation) {
           g_animation_time = state->current_time;
           g_animation_playing = state->is_playing;
@@ -1553,6 +1736,7 @@ void editor_layer_render(void) {
     if (ImGui::BeginMenu("View")) {
       ImGui::MenuItem("Scene Graph", nullptr, true, true);
       ImGui::MenuItem("Assets", nullptr, true, true);
+      ImGui::MenuItem("Model Manager", nullptr, true, true);
       ImGui::MenuItem("PBR Settings", nullptr, true, true);
       ImGui::MenuItem("Animation", nullptr, true, true);
       ImGui::EndMenu();
@@ -1567,6 +1751,10 @@ void editor_layer_render(void) {
   CARDINAL_LOG_DEBUG("Drawing asset browser panel");
   draw_asset_browser_panel();
   CARDINAL_LOG_DEBUG("Asset browser panel completed");
+  
+  CARDINAL_LOG_DEBUG("Drawing model manager panel");
+  draw_model_manager_panel();
+  CARDINAL_LOG_DEBUG("Model manager panel completed");
   
   CARDINAL_LOG_DEBUG("Drawing PBR settings panel");
   draw_pbr_settings_panel();
@@ -1597,24 +1785,37 @@ void editor_layer_render(void) {
 }
 
 void editor_layer_shutdown(void) {
-  VkDevice device = VK_NULL_HANDLE;
   if (g_renderer) {
     cardinal_renderer_set_ui_callback(g_renderer, NULL);
     // Wait for device idle before cleanup to avoid destroying resources in use
     cardinal_renderer_wait_idle(g_renderer);
-    // Get device handle before ImGui shutdown
-    device = cardinal_renderer_internal_device(g_renderer);
   }
+  
   if (g_scene_loaded) {
-    cardinal_scene_destroy(&g_scene);
-    memset(&g_scene, 0, sizeof(g_scene));
+    cardinal_scene_destroy(&g_combined_scene);
+    memset(&g_combined_scene, 0, sizeof(g_combined_scene));
     g_scene_loaded = false;
   }
+  
+  // Clean up model manager
+  cardinal_model_manager_destroy(&g_model_manager);
+  
+  // Shutdown ImGui and destroy descriptor pool BEFORE renderer destruction
+  // This ensures the Vulkan device is still valid when we clean up ImGui resources
   ImGui_ImplVulkan_Shutdown();
   ImGui_ImplGlfw_Shutdown();
-  if (g_descriptor_pool != VK_NULL_HANDLE && device != VK_NULL_HANDLE) {
-    vkDestroyDescriptorPool(device, g_descriptor_pool, NULL);
-    g_descriptor_pool = VK_NULL_HANDLE;
+  
+  // Destroy ImGui descriptor pool while device is still valid
+  if (g_descriptor_pool != VK_NULL_HANDLE && g_renderer) {
+    VkDevice device = cardinal_renderer_internal_device(g_renderer);
+    if (device != VK_NULL_HANDLE) {
+      // Reset the descriptor pool to free all allocated descriptor sets
+      // This ensures no descriptor sets remain when we destroy the pool
+      vkResetDescriptorPool(device, g_descriptor_pool, 0);
+      vkDestroyDescriptorPool(device, g_descriptor_pool, NULL);
+      g_descriptor_pool = VK_NULL_HANDLE;
+    }
   }
+  
   ImGui::DestroyContext();
 }

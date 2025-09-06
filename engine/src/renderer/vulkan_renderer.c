@@ -268,6 +268,18 @@ void cardinal_renderer_draw_frame(CardinalRenderer* renderer) {
     uint64_t frame_base = s->current_frame_value;
     uint64_t signal_after_render = frame_base + 1;
 
+    // Check if swapchain is valid before attempting to acquire image
+    if (s->swapchain == VK_NULL_HANDLE) {
+        CARDINAL_LOG_WARN("[SWAPCHAIN] Frame %u: Swapchain is null, attempting recreation", s->current_frame);
+        if (vk_recreate_swapchain(s)) {
+            vk_recreate_images_in_flight(s);
+            CARDINAL_LOG_INFO("[SWAPCHAIN] Frame %u: Swapchain recreation successful after null check", s->current_frame);
+        } else {
+            CARDINAL_LOG_ERROR("[SWAPCHAIN] Frame %u: Failed to recreate null swapchain", s->current_frame);
+            return;
+        }
+    }
+
     uint32_t image_index;
     CARDINAL_LOG_INFO("[SYNC] Frame %u: Acquiring image", s->current_frame);
     VkSemaphore acquire_semaphore = s->image_acquired_semaphores[s->current_frame];
@@ -494,6 +506,10 @@ void cardinal_renderer_destroy(CardinalRenderer* renderer) {
     // Destroy simple pipelines
     vk_destroy_simple_pipelines(s);
 
+    // Wait for all GPU operations to complete before destroying PBR pipeline
+    // This ensures descriptor sets are not in use when destroyed
+    vkDeviceWaitIdle(s->device);
+    
     // Destroy PBR pipeline
     if (s->use_pbr_pipeline) {
         vk_pbr_pipeline_destroy(&s->pbr_pipeline, s->device, &s->allocator);

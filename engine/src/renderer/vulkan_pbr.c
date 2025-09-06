@@ -123,6 +123,7 @@ bool vk_pbr_pipeline_create(VulkanPBRPipeline* pipeline, VkDevice device,
 
     // Descriptor indexing is guaranteed in Vulkan 1.3 - no need to query
     pipeline->supportsDescriptorIndexing = true;
+    pipeline->totalIndexCount = 0;
 
     CARDINAL_LOG_DEBUG("Descriptor indexing enabled (Vulkan 1.3 core)");
 
@@ -248,8 +249,15 @@ bool vk_pbr_pipeline_create(VulkanPBRPipeline* pipeline, VkDevice device,
     VkShaderModule vertShaderModule = VK_NULL_HANDLE;
     VkShaderModule fragShaderModule = VK_NULL_HANDLE;
 
-    if (!vk_shader_create_module(device, "assets/shaders/pbr.vert.spv", &vertShaderModule) ||
-        !vk_shader_create_module(device, "assets/shaders/pbr.frag.spv", &fragShaderModule)) {
+    // Build shader paths dynamically using username
+    char vert_path[512], frag_path[512];
+    const char* username = getenv("USERNAME");
+    if (!username) username = "admin"; // fallback
+    snprintf(vert_path, sizeof(vert_path), "C:/Users/%s/Documents/Cardinal/assets/shaders/pbr.vert.spv", username);
+    snprintf(frag_path, sizeof(frag_path), "C:/Users/%s/Documents/Cardinal/assets/shaders/pbr.frag.spv", username);
+    
+    if (!vk_shader_create_module(device, vert_path, &vertShaderModule) ||
+        !vk_shader_create_module(device, frag_path, &fragShaderModule)) {
         CARDINAL_LOG_ERROR("Failed to load PBR shaders!");
         return false;
     }
@@ -620,16 +628,16 @@ void vk_pbr_pipeline_destroy(VulkanPBRPipeline* pipeline, VkDevice device,
                                  pipeline->lightingBufferMemory);
     }
 
-    // Free descriptor sets explicitly before destroying pool
-    if (pipeline->descriptorSets && pipeline->descriptorPool != VK_NULL_HANDLE) {
-        vkFreeDescriptorSets(device, pipeline->descriptorPool, pipeline->descriptorSetCount,
-                             pipeline->descriptorSets);
+    // Free descriptor sets array (descriptor sets are automatically freed when pool is destroyed)
+    if (pipeline->descriptorSets) {
         free(pipeline->descriptorSets);
         pipeline->descriptorSets = NULL;
     }
 
-    // Destroy descriptor pool
+    // Reset and destroy descriptor pool (ensures all descriptor sets are freed)
     if (pipeline->descriptorPool != VK_NULL_HANDLE) {
+        // Reset the descriptor pool to free all allocated descriptor sets
+        vkResetDescriptorPool(device, pipeline->descriptorPool, 0);
         vkDestroyDescriptorPool(device, pipeline->descriptorPool, NULL);
         pipeline->descriptorPool = VK_NULL_HANDLE;
     }
@@ -713,6 +721,15 @@ void vk_pbr_render(VulkanPBRPipeline* pipeline, VkCommandBuffer commandBuffer,
     uint32_t indexOffset = 0;
     for (uint32_t i = 0; i < scene->mesh_count; i++) {
         const CardinalMesh* mesh = &scene->meshes[i];
+
+        // Validate mesh data to prevent Vulkan validation errors
+        if (!mesh->vertices || mesh->vertex_count == 0 || 
+            !mesh->indices || mesh->index_count == 0 ||
+            mesh->index_count > 1000000000) { // Sanity check for corrupted data
+            CARDINAL_LOG_ERROR("Invalid mesh data at index %u: vertices=%p, vertex_count=%u, indices=%p, index_count=%u",
+                               i, (void*)mesh->vertices, mesh->vertex_count, (void*)mesh->indices, mesh->index_count);
+            continue; // Skip corrupted mesh without incrementing indexOffset
+        }
 
         // Skip invisible meshes
         if (!mesh->visible) {
@@ -878,6 +895,13 @@ void vk_pbr_render(VulkanPBRPipeline* pipeline, VkCommandBuffer commandBuffer,
                            VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT, 0,
                            sizeof(PBRPushConstants), &pushConstants);
 
+        // Validate index buffer bounds before drawing
+        if (indexOffset + mesh->index_count > pipeline->totalIndexCount) {
+            CARDINAL_LOG_ERROR("Index buffer overflow: indexOffset=%u + index_count=%u > totalIndexCount=%u",
+                               indexOffset, mesh->index_count, pipeline->totalIndexCount);
+            break; // Stop rendering to prevent validation errors
+        }
+
         // Draw the mesh
         vkCmdDrawIndexed(commandBuffer, mesh->index_count, 1, indexOffset, 0, 0);
         indexOffset += mesh->index_count;
@@ -1016,6 +1040,10 @@ bool vk_pbr_load_scene(VulkanPBRPipeline* pipeline, VkDevice device,
             vertexBaseOffset += mesh->vertex_count;
         }
         vkUnmapMemory(device, pipeline->indexBufferMemory);
+        
+        // Store total index count for bounds checking
+        pipeline->totalIndexCount = totalIndices;
+        CARDINAL_LOG_DEBUG("Index buffer created with %u total indices", totalIndices);
     }
 
     // Clean up existing textures if any
@@ -1168,20 +1196,19 @@ bool vk_pbr_load_scene(VulkanPBRPipeline* pipeline, VkDevice device,
     }
 
     // Create descriptor pool and sets
-    VkDescriptorPoolSize poolSizes[3] = {0};
+    VkDescriptorPoolSize poolSizes[2] = {0};
     poolSizes[0].type = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
     poolSizes[0].descriptorCount = 4; // UBO + Bone Matrices + Material + Lighting
     poolSizes[1].type = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
     // Allocate descriptors: 5 fixed + 1024 variable for descriptor indexing (Vulkan 1.3 core)
     poolSizes[1].descriptorCount = 5 + 1024; // 5 fixed + 1024 variable
-    poolSizes[2].type = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
-    poolSizes[2].descriptorCount = 0; // Consolidated into poolSizes[0]
+    // Note: Removed third pool size entry that had descriptorCount = 0 (Vulkan spec violation)
 
     VkDescriptorPoolCreateInfo poolInfo = {0};
     poolInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO;
     poolInfo.flags = VK_DESCRIPTOR_POOL_CREATE_FREE_DESCRIPTOR_SET_BIT |
                      VK_DESCRIPTOR_POOL_CREATE_UPDATE_AFTER_BIND_BIT;
-    poolInfo.poolSizeCount = 3;
+    poolInfo.poolSizeCount = 2; // Fixed: was 3, now 2 to exclude zero-count entry
     poolInfo.pPoolSizes = poolSizes;
     poolInfo.maxSets = 1; // One descriptor set for now
 

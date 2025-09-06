@@ -154,6 +154,7 @@ typedef struct VulkanPBRPipeline {
   VkDeviceMemory vertexBufferMemory;
   VkBuffer indexBuffer;
   VkDeviceMemory indexBufferMemory;
+  uint32_t totalIndexCount; // Total number of indices in the index buffer
 
   // Feature support flags
   bool supportsDescriptorIndexing;

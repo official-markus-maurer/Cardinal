@@ -292,6 +292,8 @@ void vk_descriptor_update_sets(VkDevice device, VkDescriptorSet descriptorSet,
 
 void vk_descriptor_destroy_pool(VkDevice device, VkDescriptorPool descriptorPool) {
     if (device && descriptorPool != VK_NULL_HANDLE) {
+        // Reset the descriptor pool to free all allocated descriptor sets
+        vkResetDescriptorPool(device, descriptorPool, 0);
         vkDestroyDescriptorPool(device, descriptorPool, NULL);
     }
 }

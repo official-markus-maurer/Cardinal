@@ -84,6 +84,7 @@ target_sources(cardinal_engine PRIVATE
     src/assets/texture_loader.c
     src/assets/mesh_loader.c
     src/assets/material_loader.c
+    src/assets/model_manager.c
     src/core/ref_counting.c
     src/assets/material_ref_counting.c
     src/core/async_loader.c
@@ -108,6 +109,7 @@ target_sources(cardinal_engine PUBLIC
     include/cardinal/assets/texture_loader.h
     include/cardinal/assets/mesh_loader.h
     include/cardinal/assets/material_loader.h
+    include/cardinal/assets/model_manager.h
 )
 
 # Include directories

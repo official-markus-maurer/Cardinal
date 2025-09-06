@@ -65,7 +65,7 @@ static CardinalRefCountedResource* find_resource(const char* identifier) {
         if (strcmp(current->identifier, identifier) == 0) {
             return current;
         }
-        current = (CardinalRefCountedResource*)current->resource; // Next in chain
+        current = current->next; // Use proper next field
     }
 
     return NULL;
@@ -87,7 +87,7 @@ static void remove_resource(const char* identifier) {
     while (*current) {
         if (strcmp((*current)->identifier, identifier) == 0) {
             CardinalRefCountedResource* to_remove = *current;
-            *current = (CardinalRefCountedResource*)to_remove->resource; // Next in chain
+            *current = to_remove->next; // Use proper next field
 
             // Free the resource using its destructor
             if (to_remove->destructor && to_remove->resource) {
@@ -101,7 +101,7 @@ static void remove_resource(const char* identifier) {
             ATOMIC_DECREMENT(&g_registry.total_resources);
             return;
         }
-        current = (CardinalRefCountedResource**)&(*current)->resource;
+        current = &(*current)->next; // Use proper next field
     }
 }
 
@@ -141,7 +141,7 @@ void cardinal_ref_counting_shutdown(void) {
     for (size_t i = 0; i < g_registry.bucket_count; i++) {
         CardinalRefCountedResource* current = g_registry.buckets[i];
         while (current) {
-            CardinalRefCountedResource* next = (CardinalRefCountedResource*)current->resource;
+            CardinalRefCountedResource* next = current->next; // Use proper next field
 
             CARDINAL_LOG_WARN("Resource '%s' still has %u references during shutdown",
                               current->identifier, ATOMIC_LOAD(&current->ref_count));
@@ -198,6 +198,7 @@ CardinalRefCountedResource* cardinal_ref_create(const char* identifier, void* re
     ref_resource->ref_count = 1;
     ref_resource->destructor = destructor;
     ref_resource->resource_size = resource_size;
+    ref_resource->next = NULL; // Initialize next pointer
 
     // Copy identifier
     size_t id_len = strlen(identifier) + 1;
@@ -213,10 +214,9 @@ CardinalRefCountedResource* cardinal_ref_create(const char* identifier, void* re
     uint32_t hash = hash_string(identifier);
     size_t bucket_index = hash % g_registry.bucket_count;
 
-    // Insert at the beginning of the chain (store next pointer in resource field temporarily)
-    CardinalRefCountedResource* old_head = g_registry.buckets[bucket_index];
+    // Insert at the beginning of the chain using proper next field
+    ref_resource->next = g_registry.buckets[bucket_index];
     g_registry.buckets[bucket_index] = ref_resource;
-    ref_resource->resource = old_head; // Temporarily store next pointer
 
     ATOMIC_INCREMENT(&g_registry.total_resources);
 
@@ -291,7 +291,7 @@ void cardinal_ref_debug_print_resources(void) {
             while (current) {
                 CARDINAL_LOG_INFO("  - '%s': ref_count=%u, size=%zu bytes", current->identifier,
                                   ATOMIC_LOAD(&current->ref_count), current->resource_size);
-                current = (CardinalRefCountedResource*)current->resource;
+                current = current->next; // Use proper next field
             }
         }
     }
