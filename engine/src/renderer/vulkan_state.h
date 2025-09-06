@@ -21,6 +21,8 @@ extern "C" {
 // Forward declare scene for PBR
 struct CardinalScene;
 
+#include "cardinal/renderer/vulkan_mesh_shader.h"
+
 typedef struct VulkanAllocator VulkanAllocator;
 
 // Vulkan-specific allocator, uses maintenance4 queries (Vulkan 1.3 required)
@@ -196,7 +198,13 @@ typedef struct VulkanState {
                                           available and enabled. */
   bool supports_maintenance8;          /**< True when VK_KHR_maintenance8 extension is
                                           available and enabled. */
+  bool supports_mesh_shader;            /**< True when VK_EXT_mesh_shader extension is
+                                          available and enabled. */
+  bool supports_descriptor_indexing;    /**< True when VK_EXT_descriptor_indexing extension is
+                                          available and enabled. */
   bool supports_buffer_device_address; /**< True when buffer device address is
+                                          available and enabled. */
+  bool supports_descriptor_buffer;     /**< True when VK_EXT_descriptor_buffer extension is
                                           available and enabled. */
 
   // Dynamic rendering function pointers (core in Vulkan 1.3)
@@ -246,6 +254,44 @@ typedef struct VulkanState {
       vkGetBufferDeviceAddress; /**< Function pointer for
                                    vkGetBufferDeviceAddress. */
 
+  /** Descriptor buffer extension function pointers (VK_EXT_descriptor_buffer). */
+  PFN_vkGetDescriptorSetLayoutSizeEXT
+      vkGetDescriptorSetLayoutSizeEXT; /**< Function pointer for
+                                          vkGetDescriptorSetLayoutSizeEXT. */
+  PFN_vkGetDescriptorSetLayoutBindingOffsetEXT
+      vkGetDescriptorSetLayoutBindingOffsetEXT; /**< Function pointer for
+                                                   vkGetDescriptorSetLayoutBindingOffsetEXT. */
+  PFN_vkGetDescriptorEXT
+      vkGetDescriptorEXT; /**< Function pointer for vkGetDescriptorEXT. */
+  PFN_vkCmdBindDescriptorBuffersEXT
+      vkCmdBindDescriptorBuffersEXT; /**< Function pointer for
+                                        vkCmdBindDescriptorBuffersEXT. */
+  PFN_vkCmdSetDescriptorBufferOffsetsEXT
+      vkCmdSetDescriptorBufferOffsetsEXT; /**< Function pointer for
+                                             vkCmdSetDescriptorBufferOffsetsEXT. */
+  PFN_vkCmdBindDescriptorBufferEmbeddedSamplersEXT
+      vkCmdBindDescriptorBufferEmbeddedSamplersEXT; /**< Function pointer for
+                                                       vkCmdBindDescriptorBufferEmbeddedSamplersEXT. */
+  PFN_vkGetBufferOpaqueCaptureDescriptorDataEXT
+      vkGetBufferOpaqueCaptureDescriptorDataEXT; /**< Function pointer for
+                                                    vkGetBufferOpaqueCaptureDescriptorDataEXT. */
+  PFN_vkGetImageOpaqueCaptureDescriptorDataEXT
+      vkGetImageOpaqueCaptureDescriptorDataEXT; /**< Function pointer for
+                                                   vkGetImageOpaqueCaptureDescriptorDataEXT. */
+  PFN_vkGetImageViewOpaqueCaptureDescriptorDataEXT
+      vkGetImageViewOpaqueCaptureDescriptorDataEXT; /**< Function pointer for
+                                                       vkGetImageViewOpaqueCaptureDescriptorDataEXT. */
+  PFN_vkGetSamplerOpaqueCaptureDescriptorDataEXT
+      vkGetSamplerOpaqueCaptureDescriptorDataEXT; /**< Function pointer for
+                                                     vkGetSamplerOpaqueCaptureDescriptorDataEXT. */
+
+  // Descriptor buffer extension availability
+  bool descriptor_buffer_extension_available; /**< Whether VK_EXT_descriptor_buffer is available. */
+
+  // Descriptor buffer properties
+  VkDeviceSize descriptor_buffer_uniform_buffer_size;        /**< Size of uniform buffer descriptor */
+  VkDeviceSize descriptor_buffer_combined_image_sampler_size; /**< Size of combined image sampler descriptor */
+
   // Simple pipeline removed - PBR is the only rendering path
 
   // Image layout tracking
@@ -266,6 +312,10 @@ typedef struct VulkanState {
   // Pipeline states for different rendering modes
   bool use_pbr_pipeline;
   VulkanPBRPipeline pbr_pipeline;
+
+  // Mesh shader pipeline support
+  bool use_mesh_shader_pipeline;
+  MeshShaderPipeline mesh_shader_pipeline;
 
   // UV and wireframe pipelines (simplified versions)
   VkPipeline uv_pipeline;
@@ -289,6 +339,11 @@ typedef struct VulkanState {
 
   // Scene
   const struct CardinalScene *current_scene;
+
+  // Mesh shader draw data pending cleanup (to avoid premature memory deallocation)
+  MeshShaderDrawData* pending_cleanup_draw_data;
+  uint32_t pending_cleanup_count;
+  uint32_t pending_cleanup_capacity;
 
   // Device loss recovery state
   bool device_lost;                    /**< True when device loss has been detected. */

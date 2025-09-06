@@ -4,14 +4,13 @@
 
 -> Test animation system with animated gltf.
 -> robustBufferAccess2?
+-> Mesh shader needs fixing.
 
 ## Vulkan Extensions to Consider for Engine Updates
 
 ### **HIGH PRIORITY** - Core Performance & Features
 - **VK_KHR_dynamic_rendering**: Eliminates render pass objects, reduces CPU overhead, more flexible rendering
-- **VK_EXT_mesh_shader**: Modern geometry pipeline replacement, GPU-driven rendering, better culling performance
 - **VK_KHR_buffer_device_address**: Required for ray tracing, enables GPU pointers, better DX12 portability
-- **VK_EXT_descriptor_indexing**: Bindless textures, update-after-bind descriptors, non-uniform indexing
 
 ### **MEDIUM PRIORITY** - Advanced Rendering
 - **VK_KHR_ray_tracing_pipeline**: Hardware-accelerated ray tracing for reflections, shadows, GI
@@ -21,7 +20,6 @@
 - **VK_KHR_shader_quad_control**: Enhanced texturing operations in control flow
 
 ### **LOW PRIORITY** - Quality of Life
-- **VK_EXT_descriptor_buffer**: Direct descriptor memory management, reduced API overhead
 - **VK_KHR_synchronization2**: Improved synchronization API, better barrier management
 - **VK_KHR_dynamic_rendering_local_read**: Framebuffer-local dependencies for dynamic rendering
 - **VK_EXT_extended_dynamic_state**: More dynamic pipeline state, reduced pipeline variants

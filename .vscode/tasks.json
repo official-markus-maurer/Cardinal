@@ -103,7 +103,7 @@
                 "panel": "shared"
             },
             "options": {
-                "cwd": "${workspaceFolder}/engine/assets/shaders"
+                "cwd": "${workspaceFolder}/assets/shaders"
             },
             "problemMatcher": []
         },

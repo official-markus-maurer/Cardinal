@@ -397,18 +397,33 @@ bool vk_create_device(VulkanState* s) {
     }
     CARDINAL_LOG_INFO("[DEVICE] Vulkan 1.4 core support confirmed");
 
-    // Check for VK_KHR_maintenance8 extension availability
+    // Check for VK_KHR_maintenance8, VK_EXT_mesh_shader, VK_KHR_fragment_shading_rate, VK_EXT_descriptor_indexing, and VK_EXT_descriptor_buffer extension availability
     uint32_t extension_count = 0;
     vkEnumerateDeviceExtensionProperties(s->physical_device, NULL, &extension_count, NULL);
     VkExtensionProperties* available_extensions = (VkExtensionProperties*)malloc(sizeof(VkExtensionProperties) * extension_count);
     vkEnumerateDeviceExtensionProperties(s->physical_device, NULL, &extension_count, available_extensions);
     
     bool maintenance8_available = false;
+    bool mesh_shader_available = false;
+    bool fragment_shading_rate_available = false;
+    bool descriptor_indexing_available = false;
+    bool descriptor_buffer_available = false;
     for (uint32_t i = 0; i < extension_count; i++) {
         if (strcmp(available_extensions[i].extensionName, VK_KHR_MAINTENANCE_8_EXTENSION_NAME) == 0) {
             maintenance8_available = true;
             CARDINAL_LOG_INFO("[DEVICE] VK_KHR_maintenance8 extension available (spec version %u)", available_extensions[i].specVersion);
-            break;
+        } else if (strcmp(available_extensions[i].extensionName, VK_EXT_MESH_SHADER_EXTENSION_NAME) == 0) {
+            mesh_shader_available = true;
+            CARDINAL_LOG_INFO("[DEVICE] VK_EXT_mesh_shader extension available (spec version %u)", available_extensions[i].specVersion);
+        } else if (strcmp(available_extensions[i].extensionName, VK_KHR_FRAGMENT_SHADING_RATE_EXTENSION_NAME) == 0) {
+            fragment_shading_rate_available = true;
+            CARDINAL_LOG_INFO("[DEVICE] VK_KHR_fragment_shading_rate extension available (spec version %u)", available_extensions[i].specVersion);
+        } else if (strcmp(available_extensions[i].extensionName, VK_EXT_DESCRIPTOR_INDEXING_EXTENSION_NAME) == 0) {
+            descriptor_indexing_available = true;
+            CARDINAL_LOG_INFO("[DEVICE] VK_EXT_descriptor_indexing extension available (spec version %u)", available_extensions[i].specVersion);
+        } else if (strcmp(available_extensions[i].extensionName, VK_EXT_DESCRIPTOR_BUFFER_EXTENSION_NAME) == 0) {
+            descriptor_buffer_available = true;
+            CARDINAL_LOG_INFO("[DEVICE] VK_EXT_descriptor_buffer extension available (spec version %u)", available_extensions[i].specVersion);
         }
     }
     free(available_extensions);
@@ -417,24 +432,82 @@ bool vk_create_device(VulkanState* s) {
         CARDINAL_LOG_INFO("[DEVICE] VK_KHR_maintenance8 extension not available, using maintenance4 fallback");
     }
     
+    if (!mesh_shader_available) {
+        CARDINAL_LOG_INFO("[DEVICE] VK_EXT_mesh_shader extension not available, using traditional vertex pipeline");
+    }
+    
+    // Check mesh shader dependencies
+    if (mesh_shader_available && !fragment_shading_rate_available) {
+        CARDINAL_LOG_ERROR("[DEVICE] VK_EXT_mesh_shader requires VK_KHR_fragment_shading_rate but it's not available");
+        mesh_shader_available = false;
+    }
+    
     // Build device extensions array
-    const char* device_extensions[2] = {VK_KHR_SWAPCHAIN_EXTENSION_NAME};
+    const char* device_extensions[8] = {VK_KHR_SWAPCHAIN_EXTENSION_NAME};
     uint32_t enabled_extension_count = 1;
     
     if (maintenance8_available) {
-        device_extensions[1] = VK_KHR_MAINTENANCE_8_EXTENSION_NAME;
-        enabled_extension_count = 2;
+        device_extensions[enabled_extension_count] = VK_KHR_MAINTENANCE_8_EXTENSION_NAME;
+        enabled_extension_count++;
         CARDINAL_LOG_INFO("[DEVICE] Enabling VK_KHR_maintenance8 extension");
     }
+    
+    if (mesh_shader_available) {
+        device_extensions[enabled_extension_count] = VK_KHR_FRAGMENT_SHADING_RATE_EXTENSION_NAME;
+        enabled_extension_count++;
+        device_extensions[enabled_extension_count] = VK_EXT_MESH_SHADER_EXTENSION_NAME;
+        enabled_extension_count++;
+        CARDINAL_LOG_INFO("[DEVICE] Enabling VK_KHR_fragment_shading_rate extension (required for mesh shaders)");
+        CARDINAL_LOG_INFO("[DEVICE] Enabling VK_EXT_mesh_shader extension");
+    }
+    
+    if (descriptor_indexing_available) {
+        device_extensions[enabled_extension_count] = VK_EXT_DESCRIPTOR_INDEXING_EXTENSION_NAME;
+        enabled_extension_count++;
+        CARDINAL_LOG_INFO("[DEVICE] Enabling VK_EXT_descriptor_indexing extension");
+    }
+    
+    if (descriptor_buffer_available) {
+        device_extensions[enabled_extension_count] = VK_EXT_DESCRIPTOR_BUFFER_EXTENSION_NAME;
+        enabled_extension_count++;
+        CARDINAL_LOG_INFO("[DEVICE] Enabling VK_EXT_descriptor_buffer extension");
+    }
 
-    // Setup feature chain: maintenance8 -> Vulkan 1.4 -> 1.3 -> 1.2
+    // Setup feature chain: descriptor_buffer -> mesh_shader -> multiview -> fragment_shading_rate -> maintenance8 -> Vulkan 1.4 -> 1.3 -> 1.2
+    VkPhysicalDeviceDescriptorBufferFeaturesEXT descriptorBufferFeatures = {0};
+    descriptorBufferFeatures.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_DESCRIPTOR_BUFFER_FEATURES_EXT;
+    descriptorBufferFeatures.pNext = NULL;
+    
+    VkPhysicalDeviceMeshShaderFeaturesEXT meshShaderFeatures = {0};
+    meshShaderFeatures.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_MESH_SHADER_FEATURES_EXT;
+    if (descriptor_buffer_available) {
+        meshShaderFeatures.pNext = (void*)&descriptorBufferFeatures;
+    } else {
+        meshShaderFeatures.pNext = NULL;
+    }
+    
+    // Required dependencies for mesh shaders
+    VkPhysicalDeviceMultiviewFeatures multiviewFeatures = {0};
+    multiviewFeatures.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_MULTIVIEW_FEATURES;
+    if (mesh_shader_available) {
+        multiviewFeatures.pNext = (void*)&meshShaderFeatures;
+    } else if (descriptor_buffer_available) {
+        multiviewFeatures.pNext = (void*)&descriptorBufferFeatures;
+    } else {
+        multiviewFeatures.pNext = NULL;
+    }
+    
+    VkPhysicalDeviceFragmentShadingRateFeaturesKHR fragmentShadingRateFeatures = {0};
+    fragmentShadingRateFeatures.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FRAGMENT_SHADING_RATE_FEATURES_KHR;
+    fragmentShadingRateFeatures.pNext = &multiviewFeatures;
+    
     VkPhysicalDeviceMaintenance8FeaturesKHR maintenance8Features = {0};
     maintenance8Features.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_MAINTENANCE_8_FEATURES_KHR;
-    maintenance8Features.pNext = NULL;
+    maintenance8Features.pNext = (void*)&fragmentShadingRateFeatures;
     
     VkPhysicalDeviceVulkan14Features vulkan14Features = {0};
     vulkan14Features.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_4_FEATURES;
-    vulkan14Features.pNext = maintenance8_available ? &maintenance8Features : NULL;
+    vulkan14Features.pNext = maintenance8_available ? (void*)&maintenance8Features : (void*)&fragmentShadingRateFeatures;
 
     VkPhysicalDeviceVulkan13Features vulkan13Features = {0};
     vulkan13Features.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_3_FEATURES;
@@ -476,6 +549,60 @@ bool vk_create_device(VulkanState* s) {
         // All maintenance8 features are optional, so we enable what's available
     }
     
+    // Check mesh shader features if extension is available
+    if (mesh_shader_available) {
+        CARDINAL_LOG_INFO("[DEVICE] Checking VK_EXT_mesh_shader features");
+        if (!meshShaderFeatures.meshShader) {
+            CARDINAL_LOG_ERROR("[DEVICE] meshShader feature is required but not supported by device");
+            free(qfp);
+            return false;
+        }
+        if (!meshShaderFeatures.taskShader) {
+            CARDINAL_LOG_INFO("[DEVICE] taskShader feature not supported, mesh shaders will run without task stage");
+        }
+    }
+    
+    // Check descriptor indexing features if extension is available (now part of Vulkan 1.2)
+    if (descriptor_indexing_available) {
+        CARDINAL_LOG_INFO("[DEVICE] Checking VK_EXT_descriptor_indexing features (via Vulkan 1.2)");
+        if (!vulkan12Features.descriptorBindingVariableDescriptorCount) {
+            CARDINAL_LOG_ERROR("[DEVICE] descriptorBindingVariableDescriptorCount is required but not supported by device");
+            free(qfp);
+            return false;
+        }
+        if (!vulkan12Features.descriptorBindingSampledImageUpdateAfterBind) {
+            CARDINAL_LOG_ERROR("[DEVICE] descriptorBindingSampledImageUpdateAfterBind is required but not supported by device");
+            free(qfp);
+            return false;
+        }
+        if (!vulkan12Features.shaderSampledImageArrayNonUniformIndexing) {
+            CARDINAL_LOG_ERROR("[DEVICE] shaderSampledImageArrayNonUniformIndexing is required but not supported by device");
+            free(qfp);
+            return false;
+        }
+        if (!vulkan12Features.runtimeDescriptorArray) {
+            CARDINAL_LOG_ERROR("[DEVICE] runtimeDescriptorArray is required but not supported by device");
+            free(qfp);
+            return false;
+        }
+    }
+    
+    // Check descriptor buffer features if extension is available
+    if (descriptor_buffer_available) {
+        CARDINAL_LOG_INFO("[DEVICE] Checking VK_EXT_descriptor_buffer features");
+        if (!descriptorBufferFeatures.descriptorBuffer) {
+            CARDINAL_LOG_ERROR("[DEVICE] descriptorBuffer feature is required but not supported by device");
+            free(qfp);
+            return false;
+        }
+        if (!descriptorBufferFeatures.descriptorBufferImageLayoutIgnored) {
+            CARDINAL_LOG_INFO("[DEVICE] descriptorBufferImageLayoutIgnored not supported, will need to manage image layouts manually");
+        }
+        if (!descriptorBufferFeatures.descriptorBufferPushDescriptors) {
+            CARDINAL_LOG_INFO("[DEVICE] descriptorBufferPushDescriptors not supported, will use regular descriptor buffers only");
+        }
+    }
+    
     if (!vulkan12Features.bufferDeviceAddress) {
         CARDINAL_LOG_ERROR("[DEVICE] bufferDeviceAddress is required but not supported by device");
         free(qfp);
@@ -495,6 +622,56 @@ bool vk_create_device(VulkanState* s) {
         // Enable all available maintenance8 features for enhanced functionality
         maintenance8Features.maintenance8 = VK_TRUE;
         CARDINAL_LOG_INFO("[DEVICE] VK_KHR_maintenance8 features enabled");
+    }
+    
+    // Enable mesh shader features if extension is available
+    if (mesh_shader_available) {
+        // Enable required dependencies first
+        multiviewFeatures.multiview = VK_TRUE;
+        fragmentShadingRateFeatures.primitiveFragmentShadingRate = VK_TRUE;
+        
+        // Enable mesh shader features
+        meshShaderFeatures.meshShader = VK_TRUE;
+        if (meshShaderFeatures.taskShader) {
+            meshShaderFeatures.taskShader = VK_TRUE;
+            CARDINAL_LOG_INFO("[DEVICE] VK_EXT_mesh_shader features enabled: meshShader + taskShader (with dependencies)");
+        } else {
+            CARDINAL_LOG_INFO("[DEVICE] VK_EXT_mesh_shader features enabled: meshShader only (with dependencies)");
+        }
+        CARDINAL_LOG_INFO("[DEVICE] Enabled mesh shader dependencies: multiview + primitiveFragmentShadingRate");
+    }
+    
+    // Enable descriptor indexing features if extension is available (now part of Vulkan 1.2)
+    if (descriptor_indexing_available) {
+        // Enable all required descriptor indexing features for bindless textures
+        vulkan12Features.descriptorBindingVariableDescriptorCount = VK_TRUE;
+        vulkan12Features.descriptorBindingSampledImageUpdateAfterBind = VK_TRUE;
+        vulkan12Features.shaderSampledImageArrayNonUniformIndexing = VK_TRUE;
+        vulkan12Features.runtimeDescriptorArray = VK_TRUE;
+        vulkan12Features.descriptorBindingPartiallyBound = VK_TRUE;
+        vulkan12Features.shaderUniformBufferArrayNonUniformIndexing = VK_TRUE;
+        vulkan12Features.shaderStorageBufferArrayNonUniformIndexing = VK_TRUE;
+        vulkan12Features.shaderStorageImageArrayNonUniformIndexing = VK_TRUE;
+        CARDINAL_LOG_INFO("[DEVICE] VK_EXT_descriptor_indexing features enabled via Vulkan 1.2: bindless textures + update-after-bind + non-uniform indexing");
+    }
+    
+    // Enable descriptor buffer features if extension is available
+    if (descriptor_buffer_available) {
+        // Enable core descriptor buffer functionality
+        descriptorBufferFeatures.descriptorBuffer = VK_TRUE;
+        
+        // Enable optional features if supported
+        if (descriptorBufferFeatures.descriptorBufferImageLayoutIgnored) {
+            descriptorBufferFeatures.descriptorBufferImageLayoutIgnored = VK_TRUE;
+            CARDINAL_LOG_INFO("[DEVICE] VK_EXT_descriptor_buffer features enabled: descriptorBuffer + descriptorBufferImageLayoutIgnored");
+        } else {
+            CARDINAL_LOG_INFO("[DEVICE] VK_EXT_descriptor_buffer features enabled: descriptorBuffer only");
+        }
+        
+        if (descriptorBufferFeatures.descriptorBufferPushDescriptors) {
+            descriptorBufferFeatures.descriptorBufferPushDescriptors = VK_TRUE;
+            CARDINAL_LOG_INFO("[DEVICE] VK_EXT_descriptor_buffer push descriptors enabled");
+        }
     }
 
     // Enable useful Vulkan 1.4 features if available
@@ -565,6 +742,10 @@ bool vk_create_device(VulkanState* s) {
     s->supports_vulkan_14_features = true;    // required
     s->supports_maintenance4 = true;          // required
     s->supports_maintenance8 = maintenance8_available; // optional extension
+    s->supports_mesh_shader = mesh_shader_available; // optional extension
+    s->supports_descriptor_indexing = descriptor_indexing_available; // optional extension
+    s->supports_descriptor_buffer = descriptor_buffer_available; // optional extension
+    s->descriptor_buffer_extension_available = descriptor_buffer_available; // for descriptor buffer utils
     s->supports_buffer_device_address = true; // required
     CARDINAL_LOG_INFO("[DEVICE] Dynamic rendering support: enabled (required)");
     CARDINAL_LOG_INFO("[DEVICE] Vulkan 1.2 features: %s",
@@ -573,6 +754,12 @@ bool vk_create_device(VulkanState* s) {
     CARDINAL_LOG_INFO("[DEVICE] Vulkan 1.3 maintenance4: enabled (required)");
     CARDINAL_LOG_INFO("[DEVICE] VK_KHR_maintenance8: %s", 
                       s->supports_maintenance8 ? "enabled" : "not available");
+    CARDINAL_LOG_INFO("[DEVICE] VK_EXT_mesh_shader: %s", 
+                      s->supports_mesh_shader ? "enabled" : "not available");
+    CARDINAL_LOG_INFO("[DEVICE] VK_EXT_descriptor_indexing: %s", 
+                      s->supports_descriptor_indexing ? "enabled" : "not available");
+    CARDINAL_LOG_INFO("[DEVICE] VK_EXT_descriptor_buffer: %s", 
+                      s->supports_descriptor_buffer ? "enabled" : "not available");
     CARDINAL_LOG_INFO("[DEVICE] Buffer device address: enabled (required)");
 
     // Load dynamic rendering function pointers (core)
@@ -671,6 +858,59 @@ bool vk_create_device(VulkanState* s) {
     }
     CARDINAL_LOG_INFO("[DEVICE] Buffer device address function loaded: vkGetBufferDeviceAddress=%p",
                       (void*)s->vkGetBufferDeviceAddress);
+
+    // Load VK_EXT_descriptor_buffer function pointers (if available)
+    if (descriptor_buffer_available) {
+        s->vkGetDescriptorSetLayoutSizeEXT = (PFN_vkGetDescriptorSetLayoutSizeEXT)
+            vkGetDeviceProcAddr(s->device, "vkGetDescriptorSetLayoutSizeEXT");
+        s->vkGetDescriptorSetLayoutBindingOffsetEXT = (PFN_vkGetDescriptorSetLayoutBindingOffsetEXT)
+            vkGetDeviceProcAddr(s->device, "vkGetDescriptorSetLayoutBindingOffsetEXT");
+        s->vkGetDescriptorEXT = (PFN_vkGetDescriptorEXT)
+            vkGetDeviceProcAddr(s->device, "vkGetDescriptorEXT");
+        s->vkCmdBindDescriptorBuffersEXT = (PFN_vkCmdBindDescriptorBuffersEXT)
+            vkGetDeviceProcAddr(s->device, "vkCmdBindDescriptorBuffersEXT");
+        s->vkCmdSetDescriptorBufferOffsetsEXT = (PFN_vkCmdSetDescriptorBufferOffsetsEXT)
+            vkGetDeviceProcAddr(s->device, "vkCmdSetDescriptorBufferOffsetsEXT");
+        s->vkCmdBindDescriptorBufferEmbeddedSamplersEXT = (PFN_vkCmdBindDescriptorBufferEmbeddedSamplersEXT)
+            vkGetDeviceProcAddr(s->device, "vkCmdBindDescriptorBufferEmbeddedSamplersEXT");
+        s->vkGetBufferOpaqueCaptureDescriptorDataEXT = (PFN_vkGetBufferOpaqueCaptureDescriptorDataEXT)
+            vkGetDeviceProcAddr(s->device, "vkGetBufferOpaqueCaptureDescriptorDataEXT");
+        s->vkGetImageOpaqueCaptureDescriptorDataEXT = (PFN_vkGetImageOpaqueCaptureDescriptorDataEXT)
+            vkGetDeviceProcAddr(s->device, "vkGetImageOpaqueCaptureDescriptorDataEXT");
+        s->vkGetImageViewOpaqueCaptureDescriptorDataEXT = (PFN_vkGetImageViewOpaqueCaptureDescriptorDataEXT)
+            vkGetDeviceProcAddr(s->device, "vkGetImageViewOpaqueCaptureDescriptorDataEXT");
+        s->vkGetSamplerOpaqueCaptureDescriptorDataEXT = (PFN_vkGetSamplerOpaqueCaptureDescriptorDataEXT)
+            vkGetDeviceProcAddr(s->device, "vkGetSamplerOpaqueCaptureDescriptorDataEXT");
+
+        if (s->vkGetDescriptorSetLayoutSizeEXT && s->vkGetDescriptorSetLayoutBindingOffsetEXT &&
+            s->vkGetDescriptorEXT && s->vkCmdBindDescriptorBuffersEXT && s->vkCmdSetDescriptorBufferOffsetsEXT) {
+            CARDINAL_LOG_INFO("[DEVICE] VK_EXT_descriptor_buffer functions loaded successfully");
+            s->supports_descriptor_buffer = true;
+            
+            // Get descriptor buffer properties
+            VkPhysicalDeviceDescriptorBufferPropertiesEXT desc_buffer_props = {
+                .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_DESCRIPTOR_BUFFER_PROPERTIES_EXT
+            };
+            
+            VkPhysicalDeviceProperties2 props2 = {
+                .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PROPERTIES_2,
+                .pNext = &desc_buffer_props
+            };
+            
+            vkGetPhysicalDeviceProperties2(s->physical_device, &props2);
+            s->descriptor_buffer_uniform_buffer_size = desc_buffer_props.uniformBufferDescriptorSize;
+            s->descriptor_buffer_combined_image_sampler_size = desc_buffer_props.combinedImageSamplerDescriptorSize;
+            
+            CARDINAL_LOG_INFO("[DEVICE] Descriptor buffer sizes: UBO=%llu, CombinedImageSampler=%llu",
+                              (unsigned long long)s->descriptor_buffer_uniform_buffer_size,
+                              (unsigned long long)s->descriptor_buffer_combined_image_sampler_size);
+        } else {
+            CARDINAL_LOG_WARN("[DEVICE] Failed to load some VK_EXT_descriptor_buffer functions");
+            s->supports_descriptor_buffer = false;
+        }
+    } else {
+        s->supports_descriptor_buffer = false;
+    }
 
     // Initialize unified Vulkan allocator
     if (!vk_allocator_init(&s->allocator, s->physical_device, s->device,

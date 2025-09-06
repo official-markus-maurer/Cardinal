@@ -390,6 +390,12 @@ void vk_destroy_simple_pipelines(VulkanState* s) {
     }
 
     if (s->simple_descriptor_pool != VK_NULL_HANDLE) {
+        // Wait for device to be idle before resetting descriptor pool to prevent validation errors
+        VkResult waitResult = vkDeviceWaitIdle(s->device);
+        if (waitResult != VK_SUCCESS) {
+            CARDINAL_LOG_WARN("vkDeviceWaitIdle failed before resetting simple descriptor pool: %d", waitResult);
+        }
+        
         // Reset the descriptor pool to free all allocated descriptor sets
         vkResetDescriptorPool(s->device, s->simple_descriptor_pool, 0);
         vkDestroyDescriptorPool(s->device, s->simple_descriptor_pool, NULL);

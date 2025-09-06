@@ -40,6 +40,10 @@ static char g_scene_path[512] = "";
 static char g_status_msg[256] = "";
 static uint32_t g_selected_model_id = 0; // Currently selected model
 
+// Scene upload synchronization
+static bool g_scene_upload_pending = false;
+static CardinalScene g_pending_scene; // Scene waiting to be uploaded
+
 // PBR settings
 static bool g_pbr_enabled = true; // Enable by default to match renderer
 static CardinalCamera g_camera = {
@@ -538,6 +542,28 @@ static void set_mouse_capture(bool capture) {
   glfwSetInputMode(g_window_handle, GLFW_CURSOR,
                    capture ? GLFW_CURSOR_DISABLED : GLFW_CURSOR_NORMAL);
   g_first_mouse = true;
+}
+
+/**
+ * @brief Process pending scene uploads safely after frame rendering is complete
+ */
+void editor_layer_process_pending_uploads() {
+  if (g_scene_upload_pending && g_renderer) {
+    // Wait for any pending GPU work to complete before uploading scene
+    cardinal_renderer_wait_idle(g_renderer);
+    
+    // Now it's safe to upload the scene
+    cardinal_renderer_upload_scene(g_renderer, &g_pending_scene);
+    g_combined_scene = g_pending_scene; // Update our local copy
+    
+    // Update camera and lighting after scene upload
+    if (g_pbr_enabled) {
+      cardinal_renderer_set_camera(g_renderer, &g_camera);
+      cardinal_renderer_set_lighting(g_renderer, &g_light);
+    }
+    
+    g_scene_upload_pending = false;
+  }
 }
 
 /**
@@ -1550,10 +1576,10 @@ static void draw_pbr_settings_panel() {
       if (g_renderer) {
         CardinalRenderingMode current_mode =
             cardinal_renderer_get_rendering_mode(g_renderer);
-        const char *mode_names[] = {"Normal", "UV Visualization", "Wireframe"};
+        const char *mode_names[] = {"Normal", "UV Visualization", "Wireframe", "Mesh Shader"};
         int current_item = (int)current_mode;
 
-        if (ImGui::Combo("Mode", &current_item, mode_names, 3)) {
+        if (ImGui::Combo("Mode", &current_item, mode_names, 4)) {
           CardinalRenderingMode new_mode = (CardinalRenderingMode)current_item;
           cardinal_renderer_set_rendering_mode(g_renderer, new_mode);
         }
@@ -1570,6 +1596,9 @@ static void draw_pbr_settings_panel() {
           break;
         case CARDINAL_RENDERING_MODE_WIREFRAME:
           ImGui::TextWrapped("Wireframe rendering showing mesh topology.");
+          break;
+        case CARDINAL_RENDERING_MODE_MESH_SHADER:
+          ImGui::TextWrapped("GPU-driven mesh shader rendering with task/mesh shaders.");
           break;
         }
       } else {
@@ -1618,20 +1647,15 @@ void editor_layer_update(void) {
                          combined->texture_count != last_texture_count);
     
     if (scene_changed) {
-      // Re-upload the combined scene to the renderer
-      cardinal_renderer_upload_scene(g_renderer, combined);
-      g_combined_scene = *combined; // Update our local copy
+      // Instead of uploading immediately, defer the upload to avoid race conditions
+      // with command buffer recording
+      g_pending_scene = *combined;
+      g_scene_upload_pending = true;
       
       // Update tracking variables
       last_mesh_count = combined->mesh_count;
       last_material_count = combined->material_count;
       last_texture_count = combined->texture_count;
-      
-      // Update camera and lighting after scene upload
-      if (g_pbr_enabled) {
-        cardinal_renderer_set_camera(g_renderer, &g_camera);
-        cardinal_renderer_set_lighting(g_renderer, &g_light);
-      }
     }
   }
   
@@ -1782,6 +1806,8 @@ void editor_layer_render(void) {
     ImGui::UpdatePlatformWindows();
     ImGui::RenderPlatformWindowsDefault();
   }
+  
+  // Scene uploads are now processed in main loop after frame rendering
 }
 
 void editor_layer_shutdown(void) {

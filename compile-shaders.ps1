@@ -19,51 +19,76 @@ if (!(Test-Path $outputDir)) {
 Write-Host "Compiling PBR vertex shader..."
 glslc pbr.vert -o "$outputDir\pbr.vert.spv"
 if ($LASTEXITCODE -eq 0) {
-    Write-Host "✓ PBR vertex shader compiled successfully"
+    Write-Host "[OK] PBR vertex shader compiled successfully"
 } else {
-    Write-Host "✗ Failed to compile PBR vertex shader"
+    Write-Host "[ERROR] Failed to compile PBR vertex shader"
 }
 
 Write-Host "Compiling PBR fragment shader..."
 glslc pbr.frag -o "$outputDir\pbr.frag.spv"
 if ($LASTEXITCODE -eq 0) {
-    Write-Host "✓ PBR fragment shader compiled successfully"
+    Write-Host "[OK] PBR fragment shader compiled successfully"
 } else {
-    Write-Host "✗ Failed to compile PBR fragment shader"
+    Write-Host "[ERROR] Failed to compile PBR fragment shader"
 }
 
 # Compile UV shaders
 Write-Host "Compiling UV vertex shader..."
 glslc uv.vert -o "$outputDir\uv.vert.spv"
 if ($LASTEXITCODE -eq 0) {
-    Write-Host "✓ UV vertex shader compiled successfully"
+    Write-Host "[OK] UV vertex shader compiled successfully"
 } else {
-    Write-Host "✗ Failed to compile UV vertex shader"
+    Write-Host "[ERROR] Failed to compile UV vertex shader"
 }
 
 Write-Host "Compiling UV fragment shader..."
 glslc uv.frag -o "$outputDir\uv.frag.spv"
 if ($LASTEXITCODE -eq 0) {
-    Write-Host "✓ UV fragment shader compiled successfully"
+    Write-Host "[OK] UV fragment shader compiled successfully"
 } else {
-    Write-Host "✗ Failed to compile UV fragment shader"
+    Write-Host "[ERROR] Failed to compile UV fragment shader"
 }
 
 # Compile wireframe shaders
 Write-Host "Compiling wireframe vertex shader..."
 glslc wireframe.vert -o "$outputDir\wireframe.vert.spv"
 if ($LASTEXITCODE -eq 0) {
-    Write-Host "✓ Wireframe vertex shader compiled successfully"
+    Write-Host "[OK] Wireframe vertex shader compiled successfully"
 } else {
-    Write-Host "✗ Failed to compile wireframe vertex shader"
+    Write-Host "[ERROR] Failed to compile wireframe vertex shader"
 }
 
 Write-Host "Compiling wireframe fragment shader..."
 glslc wireframe.frag -o "$outputDir\wireframe.frag.spv"
 if ($LASTEXITCODE -eq 0) {
-    Write-Host "✓ Wireframe fragment shader compiled successfully"
+    Write-Host "[OK] Wireframe fragment shader compiled successfully"
 } else {
-    Write-Host "✗ Failed to compile wireframe fragment shader"
+    Write-Host "[ERROR] Failed to compile wireframe fragment shader"
+}
+
+# Compile mesh shaders
+Write-Host "Compiling task shader..."
+glslc task.task -o "$outputDir\task.task.spv" --target-spv=spv1.4
+if ($LASTEXITCODE -eq 0) {
+    Write-Host "[OK] Task shader compiled successfully"
+} else {
+    Write-Host "[ERROR] Failed to compile task shader"
+}
+
+Write-Host "Compiling mesh shader..."
+glslc mesh.mesh -o "$outputDir\mesh.mesh.spv" --target-spv=spv1.4
+if ($LASTEXITCODE -eq 0) {
+    Write-Host "[OK] Mesh shader compiled successfully"
+} else {
+    Write-Host "[ERROR] Failed to compile mesh shader"
+}
+
+Write-Host "Compiling mesh fragment shader..."
+glslc mesh.frag -o "$outputDir\mesh.frag.spv"
+if ($LASTEXITCODE -eq 0) {
+    Write-Host "[OK] Mesh fragment shader compiled successfully"
+} else {
+    Write-Host "[ERROR] Failed to compile mesh fragment shader"
 }
 
 Write-Host "Shader compilation complete!"

@@ -23,6 +23,9 @@
 #include <stdbool.h>
 #include <stdint.h>
 
+// Forward declarations
+typedef struct CardinalSceneNode CardinalSceneNode;
+
 #ifdef __cplusplus
 extern "C" {
 #endif
@@ -303,7 +306,7 @@ bool cardinal_animation_interpolate(CardinalAnimationInterpolation interpolation
  * @param bone_matrices Output array for bone matrices
  * @return true on success, false on failure
  */
-bool cardinal_skin_update_bone_matrices(const CardinalSkin *skin, const struct CardinalSceneNode **scene_nodes, float *bone_matrices);
+bool cardinal_skin_update_bone_matrices(const CardinalSkin *skin, const CardinalSceneNode **scene_nodes, float *bone_matrices);
 
 /**
  * @brief Destroy a skin and free its resources

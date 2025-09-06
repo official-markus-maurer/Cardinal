@@ -36,6 +36,14 @@ void editor_layer_update(void);
  * @todo Add viewport rendering for scene preview.
  */
 void editor_layer_render(void);
+
+/**
+ * @brief Process any pending scene uploads after frame rendering is complete.
+ *
+ * This ensures descriptor sets aren't recreated while command buffers are executing.
+ */
+void editor_layer_process_pending_uploads(void);
+
 /**
  * @brief Shuts down the editor layer and frees resources.
  *

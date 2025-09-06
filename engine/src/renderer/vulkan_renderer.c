@@ -49,6 +49,7 @@
 #include "cardinal/renderer/vulkan_mt.h"
 #include "cardinal/renderer/vulkan_commands.h"
 #include "cardinal/renderer/vulkan_pbr.h"
+#include "cardinal/renderer/vulkan_mesh_shader.h"
 #include "cardinal/renderer/vulkan_barrier_validation.h"
 #include "vulkan_simple_pipelines.h"
 #include "vulkan_state.h"
@@ -152,6 +153,42 @@ bool cardinal_renderer_create(CardinalRenderer* out_renderer, CardinalWindow* wi
     } else {
         LOG_ERROR("vk_pbr_pipeline_create failed");
         s->use_pbr_pipeline = false;
+    }
+
+    // Initialize mesh shader pipeline
+    s->use_mesh_shader_pipeline = false;
+    if (s->supports_mesh_shader) {
+        // Initialize mesh shader system first
+        if (!vk_mesh_shader_init(s)) {
+            LOG_ERROR("vk_mesh_shader_init failed");
+            s->use_mesh_shader_pipeline = false;
+        } else {
+            // Create default mesh shader pipeline configuration
+        MeshShaderPipelineConfig config = {0};
+        // TODO: Remove username hardcoding.
+        config.mesh_shader_path = "C:\\Users\\admin\\Documents\\Cardinal\\assets\\shaders\\mesh.mesh.spv";
+        config.task_shader_path = "C:\\Users\\admin\\Documents\\Cardinal\\assets\\shaders\\task.task.spv";
+        config.fragment_shader_path = "C:\\Users\\admin\\Documents\\Cardinal\\assets\\shaders\\mesh.frag.spv";
+        config.max_vertices_per_meshlet = 64;
+        config.max_primitives_per_meshlet = 126;
+        config.cull_mode = VK_CULL_MODE_BACK_BIT;
+        config.front_face = VK_FRONT_FACE_COUNTER_CLOCKWISE;
+        config.polygon_mode = VK_POLYGON_MODE_FILL;
+        config.blend_enable = false;
+        config.depth_test_enable = true;
+        config.depth_write_enable = true;
+        config.depth_compare_op = VK_COMPARE_OP_LESS;
+        
+            if (vk_mesh_shader_create_pipeline(s, &config, s->swapchain_format, s->depth_format, &s->mesh_shader_pipeline)) {
+                s->use_mesh_shader_pipeline = true;
+                LOG_INFO("renderer_create: Mesh shader pipeline");
+            } else {
+                LOG_ERROR("vk_mesh_shader_create_pipeline failed");
+                s->use_mesh_shader_pipeline = false;
+            }
+        }
+    } else {
+        LOG_INFO("Mesh shaders not supported on this device");
     }
 
     // Initialize rendering mode
@@ -263,6 +300,12 @@ void cardinal_renderer_draw_frame(CardinalRenderer* renderer) {
     // Reset fence for this frame
     vkResetFences(s->device, 1, &current_fence);
     CARDINAL_LOG_INFO("[SYNC] Frame %u: Conditional fence synchronization completed", s->current_frame);
+    
+    // Prepare mesh shader rendering after fence synchronization to ensure descriptor sets
+    // are updated when no command buffers are using them (prevents validation errors)
+    if (s->current_rendering_mode == CARDINAL_RENDERING_MODE_MESH_SHADER) {
+        vk_prepare_mesh_shader_rendering(s);
+    }
 
     // Calculate timeline values for legacy compatibility
     uint64_t frame_base = s->current_frame_value;
@@ -385,6 +428,16 @@ void cardinal_renderer_draw_frame(CardinalRenderer* renderer) {
                            submit_res);
         return;
     }
+
+    // Wait for device to be idle before processing cleanup to ensure command buffers complete
+    VkResult idle_result = vkDeviceWaitIdle(s->device);
+    if (idle_result != VK_SUCCESS) {
+        CARDINAL_LOG_ERROR("[SYNC] Frame %u: Failed to wait for device idle before cleanup: %d", s->current_frame, idle_result);
+        return;
+    }
+    
+    // Process pending mesh shader draw data cleanup after ensuring GPU completion
+    vk_mesh_shader_process_pending_cleanup(s);
 
     // Use GPU-side synchronization for present - no CPU wait needed!
     VkSemaphore render_finished = s->render_finished_semaphores[s->current_frame];
@@ -515,6 +568,23 @@ void cardinal_renderer_destroy(CardinalRenderer* renderer) {
         vk_pbr_pipeline_destroy(&s->pbr_pipeline, s->device, &s->allocator);
     }
 
+    // Process any remaining pending mesh shader cleanup BEFORE destroying allocator
+    vk_mesh_shader_process_pending_cleanup(s);
+    
+    // Free pending cleanup list
+    if (s->pending_cleanup_draw_data) {
+        free(s->pending_cleanup_draw_data);
+        s->pending_cleanup_draw_data = NULL;
+        s->pending_cleanup_count = 0;
+        s->pending_cleanup_capacity = 0;
+    }
+    
+    // Destroy mesh shader pipeline BEFORE destroying allocator
+    if (s->use_mesh_shader_pipeline) {
+        vk_mesh_shader_destroy_pipeline(s, &s->mesh_shader_pipeline);
+        vk_mesh_shader_cleanup(s);
+    }
+
     vk_destroy_pipeline(s);
     vk_destroy_swapchain(s);
     vk_destroy_device_objects(s);
@@ -630,6 +700,12 @@ static bool vk_recover_from_device_loss(VulkanState* s) {
         vk_pbr_pipeline_destroy(&s->pbr_pipeline, s->device, &s->allocator);
         s->use_pbr_pipeline = false;
     }
+    if (s->use_mesh_shader_pipeline) {
+        // Wait for all GPU operations to complete before destroying mesh shader pipeline
+        vkDeviceWaitIdle(s->device);
+        vk_mesh_shader_destroy_pipeline(s, &s->mesh_shader_pipeline);
+        s->use_mesh_shader_pipeline = false;
+    }
     vk_destroy_simple_pipelines(s);
     vk_destroy_pipeline(s);
     
@@ -681,6 +757,31 @@ static bool vk_recover_from_device_loss(VulkanState* s) {
                 failure_point = "PBR scene reload";
                 success = false;
             }
+        }
+    }
+
+    // Recreate mesh shader pipeline if it was enabled and supported
+    if (success && s->supports_mesh_shader) {
+        // Create default mesh shader pipeline configuration
+        MeshShaderPipelineConfig config = {0};
+        config.mesh_shader_path = "C:\\Users\\admin\\Documents\\Cardinal\\assets\\shaders\\mesh.mesh.spv";
+        config.task_shader_path = "C:\\Users\\admin\\Documents\\Cardinal\\assets\\shaders\\task.task.spv";
+        config.fragment_shader_path = "C:\\Users\\admin\\Documents\\Cardinal\\assets\\shaders\\mesh.frag.spv";
+        config.max_vertices_per_meshlet = 64;
+        config.max_primitives_per_meshlet = 126;
+        config.cull_mode = VK_CULL_MODE_BACK_BIT;
+        config.front_face = VK_FRONT_FACE_COUNTER_CLOCKWISE;
+        config.polygon_mode = VK_POLYGON_MODE_FILL;
+        config.blend_enable = false;
+        config.depth_test_enable = true;
+        config.depth_write_enable = true;
+        config.depth_compare_op = VK_COMPARE_OP_LESS;
+        
+        if (!vk_mesh_shader_create_pipeline(s, &config, s->swapchain_format, s->depth_format, &s->mesh_shader_pipeline)) {
+            failure_point = "mesh shader pipeline";
+            success = false;
+        } else {
+            s->use_mesh_shader_pipeline = true;
         }
     }
     
@@ -914,6 +1015,69 @@ bool cardinal_renderer_is_pbr_enabled(CardinalRenderer* renderer) {
         return false;
     VulkanState* s = (VulkanState*)renderer->_opaque;
     return s->use_pbr_pipeline;
+}
+
+/**
+ * @brief Enables or disables mesh shader rendering pipeline.
+ * @param renderer Pointer to the CardinalRenderer.
+ * @param enable True to enable mesh shaders, false to disable.
+ */
+void cardinal_renderer_enable_mesh_shader(CardinalRenderer* renderer, bool enable) {
+    if (!renderer)
+        return;
+    VulkanState* s = (VulkanState*)renderer->_opaque;
+
+    if (enable && !s->use_mesh_shader_pipeline && s->supports_mesh_shader) {
+        // Wait for all GPU operations to complete before creating new resources
+        vkDeviceWaitIdle(s->device);
+
+        // Create default mesh shader pipeline configuration
+        MeshShaderPipelineConfig config = {0};
+        config.mesh_shader_path = "C:\\Users\\admin\\Documents\\Cardinal\\assets\\shaders\\mesh.mesh.spv";
+        config.task_shader_path = "C:\\Users\\admin\\Documents\\Cardinal\\assets\\shaders\\task.task.spv";
+        config.fragment_shader_path = "C:\\Users\\admin\\Documents\\Cardinal\\assets\\shaders\\mesh.frag.spv";
+        config.max_vertices_per_meshlet = 64;
+        config.max_primitives_per_meshlet = 126;
+        config.cull_mode = VK_CULL_MODE_BACK_BIT;
+        config.front_face = VK_FRONT_FACE_COUNTER_CLOCKWISE;
+        config.polygon_mode = VK_POLYGON_MODE_FILL;
+        config.blend_enable = false;
+        config.depth_test_enable = true;
+        config.depth_write_enable = true;
+        config.depth_compare_op = VK_COMPARE_OP_LESS;
+        
+        // Try to create mesh shader pipeline
+        if (vk_mesh_shader_create_pipeline(s, &config, s->swapchain_format, s->depth_format, &s->mesh_shader_pipeline)) {
+            s->use_mesh_shader_pipeline = true;
+            CARDINAL_LOG_INFO("Mesh shader pipeline enabled");
+        } else {
+            CARDINAL_LOG_ERROR("Failed to enable mesh shader pipeline");
+        }
+    } else if (!enable && s->use_mesh_shader_pipeline) {
+        // Wait for all GPU operations to complete before destroying resources
+        vkDeviceWaitIdle(s->device);
+
+        // Destroy mesh shader pipeline
+        vk_mesh_shader_destroy_pipeline(s, &s->mesh_shader_pipeline);
+        s->use_mesh_shader_pipeline = false;
+        CARDINAL_LOG_INFO("Mesh shader pipeline disabled");
+    } else if (enable && !s->supports_mesh_shader) {
+        CARDINAL_LOG_WARN("Mesh shaders not supported on this device");
+    }
+}
+
+bool cardinal_renderer_is_mesh_shader_enabled(CardinalRenderer* renderer) {
+    if (!renderer)
+        return false;
+    VulkanState* s = (VulkanState*)renderer->_opaque;
+    return s->use_mesh_shader_pipeline;
+}
+
+bool cardinal_renderer_supports_mesh_shader(CardinalRenderer* renderer) {
+    if (!renderer)
+        return false;
+    VulkanState* s = (VulkanState*)renderer->_opaque;
+    return s->supports_mesh_shader;
 }
 
 uint32_t cardinal_renderer_internal_graphics_queue_family(CardinalRenderer* renderer) {
@@ -1173,7 +1337,19 @@ void cardinal_renderer_set_rendering_mode(CardinalRenderer* renderer, CardinalRe
         return;
     }
 
+    // Store previous mode to detect changes
+    CardinalRenderingMode previous_mode = s->current_rendering_mode;
     s->current_rendering_mode = mode;
+    
+    // Handle mesh shader pipeline enable/disable based on mode
+    if (mode == CARDINAL_RENDERING_MODE_MESH_SHADER && previous_mode != CARDINAL_RENDERING_MODE_MESH_SHADER) {
+        // Switching to mesh shader mode - enable mesh shader pipeline
+        cardinal_renderer_enable_mesh_shader(renderer, true);
+    } else if (mode != CARDINAL_RENDERING_MODE_MESH_SHADER && previous_mode == CARDINAL_RENDERING_MODE_MESH_SHADER) {
+        // Switching away from mesh shader mode - disable mesh shader pipeline
+        cardinal_renderer_enable_mesh_shader(renderer, false);
+    }
+    
     CARDINAL_LOG_INFO("Rendering mode changed to: %d", mode);
 }
 

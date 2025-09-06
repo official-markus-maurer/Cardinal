@@ -113,6 +113,9 @@ int main(int argc, char* argv[]) {
     // Shutdown async loader
     cardinal_async_loader_shutdown();
     
+    // Shutdown reference counting system before memory shutdown
+    cardinal_ref_counting_shutdown();
+    
     // Shutdown memory system
     cardinal_memory_shutdown();
     

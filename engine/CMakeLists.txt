@@ -32,6 +32,17 @@ FetchContent_Declare(
 )
 FetchContent_MakeAvailable(stb)
 
+# Fetch GLFW for window management
+FetchContent_Declare(
+    glfw
+    GIT_REPOSITORY https://github.com/glfw/glfw.git
+    GIT_TAG 3.3.8
+)
+set(GLFW_BUILD_DOCS OFF CACHE BOOL "" FORCE)
+set(GLFW_BUILD_TESTS OFF CACHE BOOL "" FORCE)
+set(GLFW_BUILD_EXAMPLES OFF CACHE BOOL "" FORCE)
+FetchContent_MakeAvailable(glfw)
+
 # Conditionally fetch spdlog for advanced logging (header-only)
 if(CARDINAL_USE_SPDLOG)
     FetchContent_Declare(
@@ -73,9 +84,12 @@ target_sources(cardinal_engine PRIVATE
     src/renderer/vulkan_barrier_validation.c
     src/renderer/vulkan_pbr.c
     src/renderer/vulkan_simple_pipelines.c
+    src/renderer/vulkan_mesh_shader.c
+    src/renderer/vulkan_descriptor_indexing.c
     src/renderer/vulkan_allocator.c
     src/renderer/util/vulkan_buffer_utils.c
     src/renderer/util/vulkan_descriptor_utils.c
+    src/renderer/util/vulkan_descriptor_buffer_utils.c
     src/renderer/util/vulkan_shader_utils.c
     src/renderer/util/vulkan_texture_utils.c
     src/assets/scene.c

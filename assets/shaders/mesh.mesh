@@ -1,0 +1,98 @@
+#version 450
+#extension GL_EXT_mesh_shader : require
+
+// Mesh shader for GPU-driven rendering with meshlets
+
+layout(local_size_x = 32, local_size_y = 1, local_size_z = 1) in;
+layout(triangles, max_vertices = 64, max_primitives = 126) out;
+
+// Input structures
+struct GpuMeshlet {
+    uint vertex_offset;
+    uint vertex_count;
+    uint primitive_offset;
+    uint primitive_count;
+};
+
+struct Vertex {
+    vec3 position;
+    vec3 normal;
+    vec2 texcoord;
+};
+
+// Storage buffers
+layout(set = 0, binding = 0) readonly buffer MeshletBuffer {
+    GpuMeshlet meshlets[];
+};
+
+layout(set = 0, binding = 1) readonly buffer VertexBuffer {
+    Vertex vertices[];
+};
+
+layout(set = 0, binding = 3) readonly buffer PrimitiveBuffer {
+    uint primitive_indices[];
+};
+
+// Uniform buffer for transformation matrices
+layout(set = 0, binding = 4) uniform UniformBuffer {
+    mat4 model;
+    mat4 view;
+    mat4 proj;
+    mat4 mvp;
+    uint materialIndex;
+} ubo;
+
+// Output vertex attributes
+layout(location = 0) out vec3 fragWorldPos[];
+layout(location = 1) out vec3 fragNormal[];
+layout(location = 2) out vec2 fragTexCoord[];
+layout(location = 3) out flat uint fragMaterialIndex[];
+
+void main() {
+    uint meshlet_index = gl_WorkGroupID.x;
+    uint thread_id = gl_LocalInvocationID.x;
+    
+    // Bounds check
+    if (meshlet_index >= meshlets.length()) {
+        return;
+    }
+    
+    GpuMeshlet meshlet = meshlets[meshlet_index];
+    
+    // Set mesh output sizes
+    SetMeshOutputsEXT(meshlet.vertex_count, meshlet.primitive_count);
+    
+    // Process vertices
+    if (thread_id < meshlet.vertex_count) {
+        uint vertex_index = meshlet.vertex_offset + thread_id;
+        Vertex vertex = vertices[vertex_index];
+        
+        // Transform vertex position
+        vec4 world_pos = ubo.model * vec4(vertex.position, 1.0);
+        gl_MeshVerticesEXT[thread_id].gl_Position = ubo.mvp * vec4(vertex.position, 1.0);
+        
+        // Output vertex attributes
+        fragWorldPos[thread_id] = world_pos.xyz;
+        fragNormal[thread_id] = normalize(mat3(ubo.model) * vertex.normal);
+        fragTexCoord[thread_id] = vertex.texcoord;
+        fragMaterialIndex[thread_id] = ubo.materialIndex;
+    }
+    
+    // Process primitives (triangles)
+    uint primitive_count = (meshlet.primitive_count + 31) / 32; // Round up for thread distribution
+    for (uint i = 0; i < primitive_count; i++) {
+        uint primitive_id = thread_id + i * 32;
+        if (primitive_id < meshlet.primitive_count) {
+            uint base_index = meshlet.primitive_offset + primitive_id * 3;
+            
+            // Bounds check for primitive indices
+            if (base_index + 2 < primitive_indices.length()) {
+                gl_PrimitiveTriangleIndicesEXT[primitive_id] = uvec3(
+                    primitive_indices[base_index],
+                    primitive_indices[base_index + 1],
+                    primitive_indices[base_index + 2]
+                );
+            }
+        }
+    }
+}

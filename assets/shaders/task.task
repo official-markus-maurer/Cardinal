@@ -1,0 +1,117 @@
+#version 450
+#extension GL_EXT_mesh_shader : require
+
+// Task shader for GPU-driven culling and meshlet dispatch
+
+layout(local_size_x = 32, local_size_y = 1, local_size_z = 1) in;
+
+// Input structures
+struct GpuDrawCommand {
+    uint meshlet_offset;
+    uint meshlet_count;
+    uint instance_count;
+    uint first_instance;
+};
+
+struct GpuMeshlet {
+    uint vertex_offset;
+    uint vertex_count;
+    uint primitive_offset;
+    uint primitive_count;
+};
+
+// Storage buffers
+layout(set = 0, binding = 0) readonly buffer DrawCommandBuffer {
+    GpuDrawCommand draw_commands[];
+};
+
+layout(set = 0, binding = 1) readonly buffer MeshletBuffer {
+    GpuMeshlet meshlets[];
+};
+
+// Uniform buffer for culling data
+layout(set = 0, binding = 2) uniform CullingData {
+    mat4 view_proj;
+    vec4 frustum_planes[6]; // Left, Right, Bottom, Top, Near, Far
+    vec3 camera_pos;
+    float lod_bias;
+    vec2 viewport_size;
+    float near_plane;
+    float far_plane;
+} culling;
+
+// Task payload to pass data to mesh shader
+struct TaskPayload {
+    uint meshlet_indices[32]; // Up to 32 meshlets per workgroup
+    uint visible_count;
+};
+
+taskPayloadSharedEXT TaskPayload payload;
+
+// Frustum culling function
+bool is_meshlet_visible(uint meshlet_index) {
+    // For now, assume all meshlets are visible
+    // In a real implementation, you would:
+    // 1. Calculate meshlet bounding box/sphere
+    // 2. Test against frustum planes
+    // 3. Perform occlusion culling
+    // 4. Apply LOD selection
+    return true;
+}
+
+// Distance-based LOD calculation
+float calculate_lod(vec3 meshlet_center) {
+    float distance = length(culling.camera_pos - meshlet_center);
+    return distance * culling.lod_bias;
+}
+
+void main() {
+    uint thread_id = gl_LocalInvocationID.x;
+    uint group_id = gl_WorkGroupID.x;
+    
+    // Initialize payload
+    if (thread_id == 0) {
+        payload.visible_count = 0;
+    }
+    
+    barrier();
+    
+    // Bounds check for draw commands
+    if (group_id >= draw_commands.length()) {
+        return;
+    }
+    
+    GpuDrawCommand draw_cmd = draw_commands[group_id];
+    
+    // Process meshlets in this draw command
+    uint meshlets_per_thread = (draw_cmd.meshlet_count + 31) / 32; // Round up
+    
+    for (uint i = 0; i < meshlets_per_thread; i++) {
+        uint meshlet_local_index = thread_id + i * 32;
+        
+        if (meshlet_local_index < draw_cmd.meshlet_count) {
+            uint meshlet_global_index = draw_cmd.meshlet_offset + meshlet_local_index;
+            
+            // Bounds check for meshlets
+            if (meshlet_global_index < meshlets.length()) {
+                // Perform culling tests
+                if (is_meshlet_visible(meshlet_global_index)) {
+                    // Add to visible list (atomic operation)
+                    uint visible_index = atomicAdd(payload.visible_count, 1);
+                    
+                    if (visible_index < 32) { // Limit to payload size
+                        payload.meshlet_indices[visible_index] = meshlet_global_index;
+                    }
+                }
+            }
+        }
+    }
+    
+    barrier();
+    
+    // Dispatch mesh shader workgroups for visible meshlets
+    if (thread_id == 0) {
+        uint mesh_workgroups = min(payload.visible_count, 32);
+        EmitMeshTasksEXT(mesh_workgroups, 1, 1);
+    }
+}

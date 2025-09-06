@@ -3,7 +3,9 @@
 #include "cardinal/core/log.h"
 #include <cardinal/renderer/vulkan_commands.h>
 #include <cardinal/renderer/vulkan_pipeline.h>
+#include "vulkan_simple_pipelines.h"
 #include <cardinal/renderer/vulkan_swapchain.h>
+#include <cardinal/renderer/vulkan_mesh_shader.h>
 #include <stdlib.h>
 #include <vulkan/vulkan.h>
 #ifdef _WIN32
@@ -460,6 +462,12 @@ bool vk_recreate_swapchain(VulkanState* s) {
     // Destroy old pipeline and swapchain resources
     vk_destroy_pipeline(s);
     
+    // Destroy mesh shader pipeline during swapchain recreation to prevent descriptor set validation errors
+    if (s->use_mesh_shader_pipeline) {
+        vk_mesh_shader_destroy_pipeline(s, &s->mesh_shader_pipeline);
+        // Note: mesh shader pipeline will be recreated later if needed
+    }
+    
     // Clean up old swapchain resources manually since we cleared the state
     if (old_image_views) {
         for (uint32_t i = 0; i < old_image_count; i++) {
@@ -534,6 +542,71 @@ bool vk_recreate_swapchain(VulkanState* s) {
         s->swapchain_format = old_format;
         
         return false;
+    }
+    
+    // Recreate simple pipelines (UV and wireframe)
+    if (!vk_create_simple_pipelines(s)) {
+        CARDINAL_LOG_ERROR("[SWAPCHAIN] Failed to recreate simple pipelines");
+        
+        // Track consecutive failures
+        s->consecutive_recreation_failures++;
+        
+        // Clean up the newly created swapchain and tracking
+        if (s->swapchain_image_layout_initialized) {
+            free(s->swapchain_image_layout_initialized);
+            s->swapchain_image_layout_initialized = NULL;
+        }
+        vk_destroy_swapchain(s);
+        
+        // Restore basic state
+        s->swapchain_extent = old_extent;
+        s->swapchain_format = old_format;
+        
+        return false;
+    }
+    
+    // Recreate mesh shader pipeline if it was previously enabled
+    if (s->use_mesh_shader_pipeline && s->supports_mesh_shader) {
+        MeshShaderPipelineConfig config = {
+            .mesh_shader_path = "shaders/mesh.spv",
+            .task_shader_path = "shaders/task.spv",
+            .fragment_shader_path = "shaders/mesh_frag.spv",
+            .topology = VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST,
+            .polygon_mode = VK_POLYGON_MODE_FILL,
+            .cull_mode = VK_CULL_MODE_BACK_BIT,
+            .front_face = VK_FRONT_FACE_COUNTER_CLOCKWISE,
+            .depth_test_enable = true,
+            .depth_write_enable = true,
+            .depth_compare_op = VK_COMPARE_OP_LESS,
+            .blend_enable = false,
+            .src_color_blend_factor = VK_BLEND_FACTOR_ONE,
+            .dst_color_blend_factor = VK_BLEND_FACTOR_ZERO,
+            .color_blend_op = VK_BLEND_OP_ADD,
+            .max_vertices_per_meshlet = 64,
+            .max_primitives_per_meshlet = 126
+        };
+        
+        if (!vk_mesh_shader_create_pipeline(s, &config, s->swapchain_format, s->depth_format, &s->mesh_shader_pipeline)) {
+            CARDINAL_LOG_ERROR("[SWAPCHAIN] Failed to recreate mesh shader pipeline");
+            
+            // Track consecutive failures
+            s->consecutive_recreation_failures++;
+            
+            // Clean up the newly created swapchain and tracking
+            if (s->swapchain_image_layout_initialized) {
+                free(s->swapchain_image_layout_initialized);
+                s->swapchain_image_layout_initialized = NULL;
+            }
+            vk_destroy_swapchain(s);
+            
+            // Restore basic state
+            s->swapchain_extent = old_extent;
+            s->swapchain_format = old_format;
+            
+            return false;
+        }
+        
+        CARDINAL_LOG_INFO("[SWAPCHAIN] Mesh shader pipeline recreated successfully");
     }
 
     // Reset failure counter on successful recreation

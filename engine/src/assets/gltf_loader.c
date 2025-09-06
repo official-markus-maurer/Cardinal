@@ -1434,8 +1434,8 @@ bool cardinal_gltf_load_scene(const char* path, CardinalScene* out_scene) {
     LOG_INFO("Built scene hierarchy with %u root nodes", root_node_count);
 
     // Initialize animation system
-    uint32_t max_animations = data->animations_count > 0 ? data->animations_count : 10;
-    uint32_t max_skins = data->skins_count > 0 ? data->skins_count : 10;
+    uint32_t max_animations = data->animations_count > 0 ? (uint32_t)data->animations_count : 10;
+    uint32_t max_skins = data->skins_count > 0 ? (uint32_t)data->skins_count : 10;
     out_scene->animation_system = cardinal_animation_system_create(max_animations, max_skins);
     if (!out_scene->animation_system) {
         LOG_WARN("Failed to create animation system");

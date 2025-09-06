@@ -59,6 +59,12 @@ void vk_destroy_commands_sync(VulkanState *s);
 void vk_record_cmd(VulkanState *s, uint32_t image_index);
 
 /**
+ * @brief Prepares mesh shader rendering by updating descriptor sets.
+ * @param s Pointer to the VulkanState structure.
+ */
+void vk_prepare_mesh_shader_rendering(VulkanState *s);
+
+/**
  * @brief Get the multi-threaded command manager for the current Vulkan state.
  * @return Pointer to the command manager, or NULL if not initialized.
  */

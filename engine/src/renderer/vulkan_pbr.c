@@ -636,6 +636,12 @@ void vk_pbr_pipeline_destroy(VulkanPBRPipeline* pipeline, VkDevice device,
 
     // Reset and destroy descriptor pool (ensures all descriptor sets are freed)
     if (pipeline->descriptorPool != VK_NULL_HANDLE) {
+        // Wait for device to be idle before resetting descriptor pool to prevent validation errors
+        VkResult waitResult = vkDeviceWaitIdle(device);
+        if (waitResult != VK_SUCCESS) {
+            CARDINAL_LOG_WARN("vkDeviceWaitIdle failed before resetting descriptor pool: %d", waitResult);
+        }
+        
         // Reset the descriptor pool to free all allocated descriptor sets
         vkResetDescriptorPool(device, pipeline->descriptorPool, 0);
         vkDestroyDescriptorPool(device, pipeline->descriptorPool, NULL);
@@ -1046,6 +1052,14 @@ bool vk_pbr_load_scene(VulkanPBRPipeline* pipeline, VkDevice device,
         CARDINAL_LOG_DEBUG("Index buffer created with %u total indices", totalIndices);
     }
 
+    // Wait for all GPU operations to complete before destroying descriptor-bound resources
+    // This prevents validation errors about destroying descriptor sets while command buffers are recording
+    VkResult waitResult = vkDeviceWaitIdle(device);
+    if (waitResult != VK_SUCCESS) {
+        CARDINAL_LOG_ERROR("vkDeviceWaitIdle failed during texture cleanup: %d", waitResult);
+        // Continue with cleanup anyway to prevent resource leaks
+    }
+
     // Clean up existing textures if any
     if (pipeline->textureImages) {
         for (uint32_t i = 0; i < pipeline->textureCount; i++) {
@@ -1195,35 +1209,67 @@ bool vk_pbr_load_scene(VulkanPBRPipeline* pipeline, VkDevice device,
         pipeline->textureCount = 1;
     }
 
-    // Create descriptor pool and sets
-    VkDescriptorPoolSize poolSizes[2] = {0};
-    poolSizes[0].type = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
-    poolSizes[0].descriptorCount = 4; // UBO + Bone Matrices + Material + Lighting
-    poolSizes[1].type = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
-    // Allocate descriptors: 5 fixed + 1024 variable for descriptor indexing (Vulkan 1.3 core)
-    poolSizes[1].descriptorCount = 5 + 1024; // 5 fixed + 1024 variable
-    // Note: Removed third pool size entry that had descriptorCount = 0 (Vulkan spec violation)
-
-    VkDescriptorPoolCreateInfo poolInfo = {0};
-    poolInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO;
-    poolInfo.flags = VK_DESCRIPTOR_POOL_CREATE_FREE_DESCRIPTOR_SET_BIT |
-                     VK_DESCRIPTOR_POOL_CREATE_UPDATE_AFTER_BIND_BIT;
-    poolInfo.poolSizeCount = 2; // Fixed: was 3, now 2 to exclude zero-count entry
-    poolInfo.pPoolSizes = poolSizes;
-    poolInfo.maxSets = 1; // One descriptor set for now
-
-    if (vkCreateDescriptorPool(device, &poolInfo, NULL, &pipeline->descriptorPool) != VK_SUCCESS) {
-        CARDINAL_LOG_ERROR("Failed to create descriptor pool");
-        return false;
+    // Always recreate descriptor pool to avoid descriptor set validation errors
+    // This ensures descriptor sets are not in use when destroyed
+    bool need_new_descriptor_pool = true;
+    
+    if (pipeline->descriptorPool != VK_NULL_HANDLE) {
+        CARDINAL_LOG_DEBUG("Recreating descriptor pool for PBR pipeline to avoid validation errors");
+        // Wait for device to be idle before destroying descriptor pool
+        VkResult poolWaitResult = vkDeviceWaitIdle(device);
+        if (poolWaitResult != VK_SUCCESS) {
+            CARDINAL_LOG_WARN("vkDeviceWaitIdle failed before destroying descriptor pool: %d", poolWaitResult);
+        }
+        
+        // Free descriptor sets array (descriptor sets are automatically freed when pool is destroyed)
+        if (pipeline->descriptorSets) {
+            free(pipeline->descriptorSets);
+            pipeline->descriptorSets = NULL;
+            pipeline->descriptorSetCount = 0;
+        }
+        
+        // Destroy the entire descriptor pool (automatically frees all descriptor sets)
+        vkDestroyDescriptorPool(device, pipeline->descriptorPool, NULL);
+        pipeline->descriptorPool = VK_NULL_HANDLE;
+    } else {
+        CARDINAL_LOG_DEBUG("Creating new descriptor pool for PBR pipeline");
     }
-    CARDINAL_LOG_DEBUG(
-        "Descriptor pool created: handle=%p, flags=0x%X, counts: UBO=%u, IMG=%u, LIGHT=%u",
-        (void*)(uintptr_t)pipeline->descriptorPool, poolInfo.flags, poolSizes[0].descriptorCount,
-        poolSizes[1].descriptorCount, poolSizes[2].descriptorCount);
 
-    // Allocate descriptor set
+    // Create descriptor pool only if needed
+    if (need_new_descriptor_pool) {
+        VkDescriptorPoolSize poolSizes[2] = {0};
+        poolSizes[0].type = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
+        poolSizes[0].descriptorCount = 5; // UBO + Bone Matrices + Material + Lighting + extra buffer
+        poolSizes[1].type = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+        // Allocate descriptors: 5 fixed + 1024 variable for descriptor indexing (Vulkan 1.3 core)
+        poolSizes[1].descriptorCount = 5 + 1024; // 5 fixed + 1024 variable
+        // Note: Removed third pool size entry that had descriptorCount = 0 (Vulkan spec violation)
+
+        VkDescriptorPoolCreateInfo poolInfo = {0};
+        poolInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO;
+        poolInfo.flags = VK_DESCRIPTOR_POOL_CREATE_FREE_DESCRIPTOR_SET_BIT |
+                         VK_DESCRIPTOR_POOL_CREATE_UPDATE_AFTER_BIND_BIT;
+        poolInfo.poolSizeCount = 2; // Fixed: was 3, now 2 to exclude zero-count entry
+        poolInfo.pPoolSizes = poolSizes;
+        poolInfo.maxSets = 1; // One descriptor set for now
+
+        if (vkCreateDescriptorPool(device, &poolInfo, NULL, &pipeline->descriptorPool) != VK_SUCCESS) {
+            CARDINAL_LOG_ERROR("Failed to create descriptor pool");
+            return false;
+        }
+        CARDINAL_LOG_DEBUG(
+            "Descriptor pool created: handle=%p, flags=0x%X, counts: UBO=%u, IMG=%u",
+            (void*)(uintptr_t)pipeline->descriptorPool, poolInfo.flags, poolSizes[0].descriptorCount,
+            poolSizes[1].descriptorCount);
+    }
+
+    // Allocate descriptor set (always needed, whether pool is new or reused)
     pipeline->descriptorSetCount = 1;
     pipeline->descriptorSets = (VkDescriptorSet*)malloc(sizeof(VkDescriptorSet));
+    if (!pipeline->descriptorSets) {
+        CARDINAL_LOG_ERROR("Failed to allocate memory for descriptor sets array");
+        return false;
+    }
 
     VkDescriptorSetAllocateInfo allocInfo = {0};
     allocInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO;

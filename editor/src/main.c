@@ -168,6 +168,10 @@ int main(int argc, char* argv[]) {
         editor_layer_render();
 
         cardinal_renderer_draw_frame(&renderer);
+        
+        // Process any pending scene uploads AFTER frame rendering is complete
+        // This ensures descriptor sets aren't recreated while command buffers are executing
+        editor_layer_process_pending_uploads();
     }
 
     cardinal_renderer_wait_idle(&renderer);
@@ -181,6 +185,10 @@ int main(int argc, char* argv[]) {
     texture_cache_shutdown_system();
     
     cardinal_async_loader_shutdown();
+    
+    // Shutdown reference counting system before memory shutdown
+    cardinal_ref_counting_shutdown();
+    
     cardinal_memory_shutdown();
     cardinal_log_shutdown();
     return 0;

@@ -59,7 +59,8 @@ typedef enum CardinalRenderingMode {
       0, /**< Standard PBR rendering with textures and lighting */
   CARDINAL_RENDERING_MODE_UV, /**< UV coordinate visualization (shows texture
                                  coordinates as colors) */
-  CARDINAL_RENDERING_MODE_WIREFRAME /**< Wireframe rendering (edges only) */
+  CARDINAL_RENDERING_MODE_WIREFRAME, /**< Wireframe rendering (edges only) */
+  CARDINAL_RENDERING_MODE_MESH_SHADER /**< GPU-driven mesh shader rendering */
 } CardinalRenderingMode;
 
 #ifdef __cplusplus
@@ -134,6 +135,27 @@ void cardinal_renderer_set_lighting(CardinalRenderer *renderer,
                                     const CardinalLight *light);
 void cardinal_renderer_enable_pbr(CardinalRenderer *renderer, bool enable);
 bool cardinal_renderer_is_pbr_enabled(CardinalRenderer *renderer);
+
+/**
+ * @brief Enable or disable mesh shader rendering pipeline
+ * @param renderer Pointer to initialized renderer
+ * @param enable True to enable mesh shaders, false to disable
+ */
+void cardinal_renderer_enable_mesh_shader(CardinalRenderer *renderer, bool enable);
+
+/**
+ * @brief Check if mesh shader pipeline is enabled
+ * @param renderer Pointer to initialized renderer
+ * @return True if mesh shader pipeline is enabled
+ */
+bool cardinal_renderer_is_mesh_shader_enabled(CardinalRenderer *renderer);
+
+/**
+ * @brief Check if mesh shaders are supported on this device
+ * @param renderer Pointer to initialized renderer
+ * @return True if mesh shaders are supported
+ */
+bool cardinal_renderer_supports_mesh_shader(CardinalRenderer *renderer);
 
 /**
  * @brief Set the current rendering mode

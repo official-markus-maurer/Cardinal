@@ -27,6 +27,8 @@ struct Material {
     uint aoTextureIndex;
     uint emissiveTextureIndex;
     uint supportsDescriptorIndexing;
+    uint hasSkeleton;
+    uint _padding0;
     TextureTransform albedoTransform;
     float _padding1;
     TextureTransform normalTransform;
@@ -38,10 +40,11 @@ struct Material {
     TextureTransform emissiveTransform;
 };
 
-// Push constants for per-mesh material properties
+// Push constants for per-mesh data (matching PBRPushConstants)
 layout(push_constant) uniform PushConstants {
-    layout(offset = 64) Material material;
-};
+    mat4 modelMatrix;
+    Material material;
+} pushConstants;
 
 // Function to apply texture transform (same as PBR pipeline)
 vec2 applyTextureTransform(vec2 uv, TextureTransform transform) {
@@ -74,7 +77,7 @@ vec2 applyTextureTransform(vec2 uv, TextureTransform transform) {
 
 void main() {
     // Apply albedo texture transform to UV coordinates for visualization
-    vec2 transformedUV = applyTextureTransform(fragTexCoord, material.albedoTransform);
+    vec2 transformedUV = applyTextureTransform(fragTexCoord, pushConstants.material.albedoTransform);
     
     // Visualize transformed UV coordinates as colors
     // U coordinate maps to red channel

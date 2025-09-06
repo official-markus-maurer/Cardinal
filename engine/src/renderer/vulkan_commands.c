@@ -1,10 +1,13 @@
 #include "cardinal/core/log.h"
 #include "cardinal/renderer/vulkan_pbr.h"
+#include "cardinal/renderer/vulkan_mesh_shader.h"
 #include "cardinal/renderer/vulkan_barrier_validation.h"
 #include "vulkan_simple_pipelines.h"
 #include "vulkan_state.h"
 #include "cardinal/renderer/vulkan_mt.h"
 #include <cardinal/renderer/vulkan_commands.h>
+#include "cardinal/core/transform.h"
+#include "cardinal/renderer/util/vulkan_descriptor_buffer_utils_minimal.h"
 #include <stdlib.h>
 #include <string.h>
 #include <vulkan/vulkan.h>
@@ -291,6 +294,9 @@ void vk_destroy_commands_sync(VulkanState* s) {
  * Enhanced error handling for recording failures.
  */
 void vk_record_cmd(VulkanState* s, uint32_t image_index) {
+    // Note: Mesh shader descriptor set preparation is now handled in cardinal_renderer_draw_frame
+    // before command buffer recording to prevent race conditions with swapchain recreation
+
     // Double buffering: alternate between primary and secondary command buffers
     // This allows CPU recording to overlap with GPU execution
     VkCommandBuffer cmd;
@@ -691,6 +697,86 @@ static void vk_record_scene_commands(VulkanState* s, VkCommandBuffer cmd) {
             }
             break;
 
+        case CARDINAL_RENDERING_MODE_MESH_SHADER:
+            // Use mesh shader pipeline
+            if (s->use_mesh_shader_pipeline && s->mesh_shader_pipeline.pipeline != VK_NULL_HANDLE && s->current_scene) {
+                // Convert scene meshes to meshlets and render
+                for (uint32_t i = 0; i < s->current_scene->mesh_count; i++) {
+                    const CardinalMesh* mesh = &s->current_scene->meshes[i];
+                    
+                    // Skip invisible meshes
+                    if (!mesh->visible) {
+                        continue;
+                    }
+                    
+                    // Convert mesh to meshlets
+                    GpuMeshlet* meshlets = NULL;
+                    uint32_t meshlet_count = 0;
+                    
+                    if (vk_mesh_shader_convert_scene_mesh(mesh, 64, 126, &meshlets, &meshlet_count)) {
+                        // Create draw data for this mesh
+                        MeshShaderDrawData draw_data = {0};
+                        
+                        // Create GPU buffers for mesh shader rendering
+                        if (vk_mesh_shader_create_draw_data(s, meshlets, meshlet_count,
+                                                           mesh->vertices, mesh->vertex_count * sizeof(CardinalVertex),
+                                                           mesh->indices, mesh->index_count,
+                                                           &draw_data)) {
+                            // Update mesh descriptor buffer with per-mesh data
+                            // Fragment descriptor buffer is already updated in vk_prepare_mesh_shader_rendering()
+                            
+                            // Update descriptor buffers for mesh shader
+                            VkBuffer material_buffer = s->use_pbr_pipeline ? s->pbr_pipeline.materialBuffer : VK_NULL_HANDLE;
+                            VkBuffer lighting_buffer = s->use_pbr_pipeline ? s->pbr_pipeline.lightingBuffer : VK_NULL_HANDLE;
+                            VkImageView* texture_views = s->use_pbr_pipeline ? s->pbr_pipeline.textureImageViews : NULL;
+                            VkSampler sampler = s->use_pbr_pipeline ? s->pbr_pipeline.textureSampler : VK_NULL_HANDLE;
+                            uint32_t texture_count = s->use_pbr_pipeline ? s->pbr_pipeline.textureCount : 0;
+                            
+                            if (!vk_mesh_shader_update_descriptor_buffers(s, &s->mesh_shader_pipeline, &draw_data,
+                                                                          material_buffer, lighting_buffer,
+                                                                          texture_views, sampler, texture_count)) {
+                                CARDINAL_LOG_ERROR("Failed to update mesh shader descriptor buffers");
+                                free(meshlets);
+                                vk_mesh_shader_destroy_draw_data(s, &draw_data);
+                                continue;
+                            }
+                            
+                            // Use mesh shader draw function
+                            vk_mesh_shader_draw(cmd, s, &s->mesh_shader_pipeline, &draw_data);
+                            
+                            CARDINAL_LOG_DEBUG("Mesh shader rendering: mesh %u with %u meshlets", i, meshlet_count);
+                            
+                            // Add draw data to pending cleanup list (cleanup after frame submission)
+                            if (!vk_mesh_shader_add_pending_cleanup(s, &draw_data)) {
+                                CARDINAL_LOG_WARN("Failed to add draw data to pending cleanup for mesh %u", i);
+                                // Fallback to immediate cleanup if pending cleanup fails
+                                vk_mesh_shader_destroy_draw_data(s, &draw_data);
+                            }
+                        } else {
+                            CARDINAL_LOG_WARN("Failed to create draw data for mesh %u", i);
+                        }
+                        
+                        // Clean up meshlets
+                        free(meshlets);
+                    } else {
+                        CARDINAL_LOG_WARN("Failed to convert mesh %u to meshlets", i);
+                    }
+                }
+            } else {
+                CARDINAL_LOG_WARN("Mesh shader pipeline not available or no scene loaded, falling back to PBR");
+                if (s->use_pbr_pipeline && s->pbr_pipeline.initialized) {
+                    PBRUniformBufferObject ubo;
+                    memcpy(&ubo, s->pbr_pipeline.uniformBufferMapped,
+                           sizeof(PBRUniformBufferObject));
+                    PBRLightingData lighting;
+                    memcpy(&lighting, s->pbr_pipeline.lightingBufferMapped,
+                           sizeof(PBRLightingData));
+                    vk_pbr_update_uniforms(&s->pbr_pipeline, &ubo, &lighting);
+                    vk_pbr_render(&s->pbr_pipeline, cmd, s->current_scene);
+                }
+            }
+            break;
+
         default:
             CARDINAL_LOG_WARN("Unknown rendering mode: %d, falling back to PBR",
                               s->current_rendering_mode);
@@ -705,6 +791,34 @@ static void vk_record_scene_commands(VulkanState* s, VkCommandBuffer cmd) {
                 vk_pbr_render(&s->pbr_pipeline, cmd, s->current_scene);
             }
             break;
+    }
+}
+
+/**
+ * @brief Prepares mesh shader rendering by updating descriptor sets before command buffer recording
+ * @param s Vulkan state
+ */
+void vk_prepare_mesh_shader_rendering(VulkanState* s) {
+    if (!s->use_mesh_shader_pipeline || s->mesh_shader_pipeline.pipeline == VK_NULL_HANDLE || !s->current_scene) {
+        return;
+    }
+    
+    // Update fragment descriptor buffers with PBR data outside of command buffer recording
+    // This prevents descriptor buffer updates during command buffer recording which causes validation errors
+    VkBuffer material_buffer = s->use_pbr_pipeline ? s->pbr_pipeline.materialBuffer : VK_NULL_HANDLE;
+    VkBuffer lighting_buffer = s->use_pbr_pipeline ? s->pbr_pipeline.lightingBuffer : VK_NULL_HANDLE;
+    VkImageView* texture_views = s->use_pbr_pipeline ? s->pbr_pipeline.textureImageViews : NULL;
+    VkSampler sampler = s->use_pbr_pipeline ? s->pbr_pipeline.textureSampler : VK_NULL_HANDLE;
+    uint32_t texture_count = s->use_pbr_pipeline ? s->pbr_pipeline.textureCount : 0;
+    
+    // Call the mesh shader descriptor buffer update function
+    // Note: Using NULL for draw_data since this is preparation phase
+    if (!vk_mesh_shader_update_descriptor_buffers(s, &s->mesh_shader_pipeline, NULL,
+                                                  material_buffer, lighting_buffer,
+                                                  texture_views, sampler, texture_count)) {
+        CARDINAL_LOG_ERROR("[MESH_SHADER] Failed to update descriptor buffers during preparation");
+    } else {
+        CARDINAL_LOG_DEBUG("[MESH_SHADER] Updated descriptor buffers during preparation (bindless textures: %u)", texture_count);
     }
 }
 
