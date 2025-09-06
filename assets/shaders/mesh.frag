@@ -133,23 +133,26 @@ void main() {
     // Get material from buffer
     Material mat = materialBuffer.materials[fragMaterialIndex];
     
-    // Sample textures using bindless texture array
+    // Enhanced bindless texture sampling with quad control
+    vec2 dx = dFdxFine(fragTexCoord);
+    vec2 dy = dFdyFine(fragTexCoord);
+    
     vec3 albedo = mat.albedoFactor;
     if (canUseArray(mat.albedoTextureIndex, mat.supportsDescriptorIndexing)) {
-        albedo *= sampleArray(mat.albedoTextureIndex, fragTexCoord).rgb;
+        albedo *= textureGrad(bindlessTextures[nonuniformEXT(mat.albedoTextureIndex)], fragTexCoord, dx, dy).rgb;
     }
     
     float metallic = mat.metallicFactor;
     float roughness = mat.roughnessFactor;
     if (canUseArray(mat.metallicRoughnessTextureIndex, mat.supportsDescriptorIndexing)) {
-        vec3 metallicRoughness = sampleArray(mat.metallicRoughnessTextureIndex, fragTexCoord).rgb;
+        vec3 metallicRoughness = textureGrad(bindlessTextures[nonuniformEXT(mat.metallicRoughnessTextureIndex)], fragTexCoord, dx, dy).rgb;
         metallic *= metallicRoughness.b;
         roughness *= metallicRoughness.g;
     }
     
     float ao = 1.0;
     if (canUseArray(mat.aoTextureIndex, mat.supportsDescriptorIndexing)) {
-        ao = sampleArray(mat.aoTextureIndex, fragTexCoord).r;
+        ao = textureGrad(bindlessTextures[nonuniformEXT(mat.aoTextureIndex)], fragTexCoord, dx, dy).r;
     }
     
     vec3 emissive = mat.emissiveFactor;

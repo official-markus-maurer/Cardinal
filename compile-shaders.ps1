@@ -17,7 +17,7 @@ if (!(Test-Path $outputDir)) {
 
 # Compile PBR shaders
 Write-Host "Compiling PBR vertex shader..."
-glslc pbr.vert -o "$outputDir\pbr.vert.spv"
+glslc --target-env=vulkan1.1 pbr.vert -o "$outputDir\pbr.vert.spv"
 if ($LASTEXITCODE -eq 0) {
     Write-Host "[OK] PBR vertex shader compiled successfully"
 } else {
@@ -25,7 +25,7 @@ if ($LASTEXITCODE -eq 0) {
 }
 
 Write-Host "Compiling PBR fragment shader..."
-glslc pbr.frag -o "$outputDir\pbr.frag.spv"
+glslc --target-env=vulkan1.1 pbr.frag -o "$outputDir\pbr.frag.spv"
 if ($LASTEXITCODE -eq 0) {
     Write-Host "[OK] PBR fragment shader compiled successfully"
 } else {
@@ -34,7 +34,7 @@ if ($LASTEXITCODE -eq 0) {
 
 # Compile UV shaders
 Write-Host "Compiling UV vertex shader..."
-glslc uv.vert -o "$outputDir\uv.vert.spv"
+glslc --target-env=vulkan1.1 uv.vert -o "$outputDir\uv.vert.spv"
 if ($LASTEXITCODE -eq 0) {
     Write-Host "[OK] UV vertex shader compiled successfully"
 } else {
@@ -42,7 +42,7 @@ if ($LASTEXITCODE -eq 0) {
 }
 
 Write-Host "Compiling UV fragment shader..."
-glslc uv.frag -o "$outputDir\uv.frag.spv"
+glslc --target-env=vulkan1.1 uv.frag -o "$outputDir\uv.frag.spv"
 if ($LASTEXITCODE -eq 0) {
     Write-Host "[OK] UV fragment shader compiled successfully"
 } else {
@@ -51,7 +51,7 @@ if ($LASTEXITCODE -eq 0) {
 
 # Compile wireframe shaders
 Write-Host "Compiling wireframe vertex shader..."
-glslc wireframe.vert -o "$outputDir\wireframe.vert.spv"
+glslc --target-env=vulkan1.1 wireframe.vert -o "$outputDir\wireframe.vert.spv"
 if ($LASTEXITCODE -eq 0) {
     Write-Host "[OK] Wireframe vertex shader compiled successfully"
 } else {
@@ -59,7 +59,7 @@ if ($LASTEXITCODE -eq 0) {
 }
 
 Write-Host "Compiling wireframe fragment shader..."
-glslc wireframe.frag -o "$outputDir\wireframe.frag.spv"
+glslc --target-env=vulkan1.1 wireframe.frag -o "$outputDir\wireframe.frag.spv"
 if ($LASTEXITCODE -eq 0) {
     Write-Host "[OK] Wireframe fragment shader compiled successfully"
 } else {
@@ -84,7 +84,7 @@ if ($LASTEXITCODE -eq 0) {
 }
 
 Write-Host "Compiling mesh fragment shader..."
-glslc mesh.frag -o "$outputDir\mesh.frag.spv"
+glslc --target-env=vulkan1.1 mesh.frag -o "$outputDir\mesh.frag.spv"
 if ($LASTEXITCODE -eq 0) {
     Write-Host "[OK] Mesh fragment shader compiled successfully"
 } else {

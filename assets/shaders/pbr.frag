@@ -111,19 +111,31 @@ bool canUseArray(uint idx) {
     return material.supportsDescriptorIndexing == 1u && !isNoTex(idx);
 }
 
-// Normal mapping function
+// Enhanced normal mapping function with quad control
 vec3 getNormalFromMap(vec2 uv) {
-    vec3 nrm = canUseArray(material.normalTextureIndex) ? 
-        sampleArray(material.normalTextureIndex, uv).xyz : 
-        texture(normalMap, uv).xyz;
+    vec3 nrm;
+    
+    // Use quad control for enhanced texture sampling in conditional branches
+    if (canUseArray(material.normalTextureIndex)) {
+        // Enhanced derivatives for bindless texture sampling
+        vec2 dx = dFdxFine(uv);
+        vec2 dy = dFdyFine(uv);
+        nrm = textureGrad(textures[nonuniformEXT(material.normalTextureIndex)], uv, dx, dy).xyz;
+    } else {
+        // Standard sampling with improved derivatives
+        vec2 dx = dFdxFine(uv);
+        vec2 dy = dFdyFine(uv);
+        nrm = textureGrad(normalMap, uv, dx, dy).xyz;
+    }
     
     vec3 tangentNormal = nrm * 2.0 - 1.0;
     tangentNormal.xy *= material.normalScale;
     
-    vec3 Q1 = dFdx(fragWorldPos);
-    vec3 Q2 = dFdy(fragWorldPos);
-    vec2 st1 = dFdx(fragTexCoord);
-    vec2 st2 = dFdy(fragTexCoord);
+    // Enhanced derivative calculations with quad control
+    vec3 Q1 = dFdxFine(fragWorldPos);
+    vec3 Q2 = dFdyFine(fragWorldPos);
+    vec2 st1 = dFdxFine(fragTexCoord);
+    vec2 st2 = dFdyFine(fragTexCoord);
     
     vec3 T = normalize(Q1 * st2.t - Q2 * st1.t);
     vec3 B = normalize(-Q1 * st2.s + Q2 * st1.s);
@@ -179,29 +191,52 @@ void main() {
     vec2 aoUV = applyTextureTransform(fragTexCoord, material.aoTransform);
     vec2 emissiveUV = applyTextureTransform(fragTexCoord, material.emissiveTransform);
     
-    // Sample material properties with transformed UVs
+    // Enhanced material property sampling with quad control
     vec3 albedo = vec3(material.albedoFactor);
     if (canUseArray(material.albedoTextureIndex)) {
-        albedo *= sampleArray(material.albedoTextureIndex, albedoUV).rgb;
+        // Use enhanced derivatives for transformed UV coordinates
+        vec2 dx = dFdxFine(albedoUV);
+        vec2 dy = dFdyFine(albedoUV);
+        albedo *= textureGrad(textures[nonuniformEXT(material.albedoTextureIndex)], albedoUV, dx, dy).rgb;
     } else {
-        albedo *= texture(albedoMap, albedoUV).rgb;
+        vec2 dx = dFdxFine(albedoUV);
+        vec2 dy = dFdyFine(albedoUV);
+        albedo *= textureGrad(albedoMap, albedoUV, dx, dy).rgb;
     }
     
-    vec3 metallicRoughness = canUseArray(material.metallicRoughnessTextureIndex) ?
-        sampleArray(material.metallicRoughnessTextureIndex, metallicRoughnessUV).rgb :
-        texture(metallicRoughnessMap, metallicRoughnessUV).rgb;
+    vec3 metallicRoughness;
+    if (canUseArray(material.metallicRoughnessTextureIndex)) {
+        vec2 dx = dFdxFine(metallicRoughnessUV);
+        vec2 dy = dFdyFine(metallicRoughnessUV);
+        metallicRoughness = textureGrad(textures[nonuniformEXT(material.metallicRoughnessTextureIndex)], metallicRoughnessUV, dx, dy).rgb;
+    } else {
+        vec2 dx = dFdxFine(metallicRoughnessUV);
+        vec2 dy = dFdyFine(metallicRoughnessUV);
+        metallicRoughness = textureGrad(metallicRoughnessMap, metallicRoughnessUV, dx, dy).rgb;
+    }
     float metallic = metallicRoughness.b * material.metallicFactor;
     float roughness = metallicRoughness.g * material.roughnessFactor;
     
-    float ao = canUseArray(material.aoTextureIndex) ?
-        sampleArray(material.aoTextureIndex, aoUV).r * material.aoStrength :
-        texture(aoMap, aoUV).r * material.aoStrength;
+    float ao;
+    if (canUseArray(material.aoTextureIndex)) {
+        vec2 dx = dFdxFine(aoUV);
+        vec2 dy = dFdyFine(aoUV);
+        ao = textureGrad(textures[nonuniformEXT(material.aoTextureIndex)], aoUV, dx, dy).r * material.aoStrength;
+    } else {
+        vec2 dx = dFdxFine(aoUV);
+        vec2 dy = dFdyFine(aoUV);
+        ao = textureGrad(aoMap, aoUV, dx, dy).r * material.aoStrength;
+    }
     
     vec3 emissive = vec3(material.emissiveFactor);
     if (canUseArray(material.emissiveTextureIndex)) {
-        emissive *= sampleArray(material.emissiveTextureIndex, emissiveUV).rgb;
+        vec2 dx = dFdxFine(emissiveUV);
+        vec2 dy = dFdyFine(emissiveUV);
+        emissive *= textureGrad(textures[nonuniformEXT(material.emissiveTextureIndex)], emissiveUV, dx, dy).rgb;
     } else {
-        emissive *= texture(emissiveMap, emissiveUV).rgb;
+        vec2 dx = dFdxFine(emissiveUV);
+        vec2 dy = dFdyFine(emissiveUV);
+        emissive *= textureGrad(emissiveMap, emissiveUV, dx, dy).rgb;
     }
     
     // Get normal from normal map

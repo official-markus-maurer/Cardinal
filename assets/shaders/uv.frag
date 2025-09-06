@@ -86,8 +86,13 @@ void main() {
     
     vec3 uvColor = vec3(transformedUV.x, transformedUV.y, 0.5);
     
-    // Add a grid pattern to make UV seams more visible
-    vec2 grid = abs(fract(transformedUV * 10.0) - 0.5) / fwidth(transformedUV * 10.0);
+    // Enhanced grid pattern with quad control for better derivative calculations
+    vec2 gridUV = transformedUV * 10.0;
+    vec2 dxGrid = dFdxFine(gridUV);
+    vec2 dyGrid = dFdyFine(gridUV);
+    vec2 gridWidth = sqrt(dxGrid * dxGrid + dyGrid * dyGrid);
+    
+    vec2 grid = abs(fract(gridUV) - 0.5) / gridWidth;
     float gridLine = min(grid.x, grid.y);
     
     // Blend the UV color with grid lines

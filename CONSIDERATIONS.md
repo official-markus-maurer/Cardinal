@@ -16,8 +16,6 @@
 - **VK_KHR_ray_tracing_pipeline**: Hardware-accelerated ray tracing for reflections, shadows, GI
 - **VK_KHR_acceleration_structure**: Required for ray tracing, BLAS/TLAS management
 - **VK_KHR_ray_query**: Ray tracing in compute/fragment shaders without full RT pipeline
-- **VK_KHR_shader_maximal_reconvergence**: Better thread divergence behavior for advanced algorithms
-- **VK_KHR_shader_quad_control**: Enhanced texturing operations in control flow
 
 ### **LOW PRIORITY** - Quality of Life
 - **VK_KHR_synchronization2**: Improved synchronization API, better barrier management

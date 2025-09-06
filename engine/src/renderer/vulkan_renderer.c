@@ -191,6 +191,20 @@ bool cardinal_renderer_create(CardinalRenderer* out_renderer, CardinalWindow* wi
         LOG_INFO("Mesh shaders not supported on this device");
     }
 
+    // Initialize compute shader support
+    s->compute_shader_initialized = false;
+    s->compute_descriptor_pool = VK_NULL_HANDLE;
+    s->compute_command_pool = VK_NULL_HANDLE;
+    s->compute_command_buffer = VK_NULL_HANDLE;
+    
+    if (vk_compute_init(s)) {
+        s->compute_shader_initialized = true;
+        LOG_INFO("renderer_create: Compute shader support");
+    } else {
+        LOG_ERROR("vk_compute_init failed");
+        s->compute_shader_initialized = false;
+    }
+
     // Initialize rendering mode
     s->current_rendering_mode = CARDINAL_RENDERING_MODE_NORMAL;
 
@@ -548,6 +562,12 @@ void cardinal_renderer_destroy(CardinalRenderer* renderer) {
     // destroy in reverse order
     vk_destroy_commands_sync(s);
     destroy_scene_buffers(s);
+    
+    // Cleanup compute shader support
+    if (s->compute_shader_initialized) {
+        vk_compute_cleanup(s);
+        s->compute_shader_initialized = false;
+    }
 
     // Shutdown reference counting systems
     cardinal_material_ref_shutdown();

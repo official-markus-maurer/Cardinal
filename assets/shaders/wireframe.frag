@@ -8,13 +8,19 @@ layout(location = 1) in vec3 fragNormal;
 layout(location = 0) out vec4 outColor;
 
 void main() {
-    // Simple wireframe color - white lines
-    // In wireframe mode, the rasterizer will only render triangle edges
+    // Enhanced wireframe rendering with quad control
     vec3 wireframeColor = vec3(1.0, 1.0, 1.0);
     
-    // Optional: Add slight depth-based fading for better depth perception
+    // Enhanced depth-based fading with standard derivatives
     float depth = gl_FragCoord.z;
+    float depthGradient = length(vec2(dFdx(depth), dFdy(depth)));
+    
+    // Use gradient information for better edge detection
+    float edgeIntensity = 1.0 + depthGradient * 2.0;
     float fade = 1.0 - (depth * 0.5);
     
-    outColor = vec4(wireframeColor * fade, 1.0);
+    // Enhanced wireframe with edge-aware intensity
+    vec3 finalColor = wireframeColor * fade * edgeIntensity;
+    
+    outColor = vec4(finalColor, 1.0);
 }

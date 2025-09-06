@@ -408,6 +408,8 @@ bool vk_create_device(VulkanState* s) {
     bool fragment_shading_rate_available = false;
     bool descriptor_indexing_available = false;
     bool descriptor_buffer_available = false;
+    bool shader_quad_control_available = false;
+    bool shader_maximal_reconvergence_available = false;
     for (uint32_t i = 0; i < extension_count; i++) {
         if (strcmp(available_extensions[i].extensionName, VK_KHR_MAINTENANCE_8_EXTENSION_NAME) == 0) {
             maintenance8_available = true;
@@ -424,6 +426,12 @@ bool vk_create_device(VulkanState* s) {
         } else if (strcmp(available_extensions[i].extensionName, VK_EXT_DESCRIPTOR_BUFFER_EXTENSION_NAME) == 0) {
             descriptor_buffer_available = true;
             CARDINAL_LOG_INFO("[DEVICE] VK_EXT_descriptor_buffer extension available (spec version %u)", available_extensions[i].specVersion);
+        } else if (strcmp(available_extensions[i].extensionName, VK_KHR_SHADER_QUAD_CONTROL_EXTENSION_NAME) == 0) {
+            shader_quad_control_available = true;
+            CARDINAL_LOG_INFO("[DEVICE] VK_KHR_shader_quad_control extension available (spec version %u)", available_extensions[i].specVersion);
+        } else if (strcmp(available_extensions[i].extensionName, VK_KHR_SHADER_MAXIMAL_RECONVERGENCE_EXTENSION_NAME) == 0) {
+            shader_maximal_reconvergence_available = true;
+            CARDINAL_LOG_INFO("[DEVICE] VK_KHR_shader_maximal_reconvergence extension available (spec version %u)", available_extensions[i].specVersion);
         }
     }
     free(available_extensions);
@@ -442,8 +450,14 @@ bool vk_create_device(VulkanState* s) {
         mesh_shader_available = false;
     }
     
+    // Check shader quad control dependencies
+    if (shader_quad_control_available && !shader_maximal_reconvergence_available) {
+        CARDINAL_LOG_ERROR("[DEVICE] VK_KHR_shader_quad_control requires VK_KHR_shader_maximal_reconvergence but it's not available");
+        shader_quad_control_available = false;
+    }
+    
     // Build device extensions array
-    const char* device_extensions[8] = {VK_KHR_SWAPCHAIN_EXTENSION_NAME};
+    const char* device_extensions[10] = {VK_KHR_SWAPCHAIN_EXTENSION_NAME};
     uint32_t enabled_extension_count = 1;
     
     if (maintenance8_available) {
@@ -472,16 +486,46 @@ bool vk_create_device(VulkanState* s) {
         enabled_extension_count++;
         CARDINAL_LOG_INFO("[DEVICE] Enabling VK_EXT_descriptor_buffer extension");
     }
+    
+    if (shader_maximal_reconvergence_available) {
+        device_extensions[enabled_extension_count] = VK_KHR_SHADER_MAXIMAL_RECONVERGENCE_EXTENSION_NAME;
+        enabled_extension_count++;
+        CARDINAL_LOG_INFO("[DEVICE] Enabling VK_KHR_shader_maximal_reconvergence extension");
+    }
+    
+    if (shader_quad_control_available) {
+        device_extensions[enabled_extension_count] = VK_KHR_SHADER_QUAD_CONTROL_EXTENSION_NAME;
+        enabled_extension_count++;
+        CARDINAL_LOG_INFO("[DEVICE] Enabling VK_KHR_shader_quad_control extension");
+    }
 
-    // Setup feature chain: descriptor_buffer -> mesh_shader -> multiview -> fragment_shading_rate -> maintenance8 -> Vulkan 1.4 -> 1.3 -> 1.2
+    // Setup feature chain: shader_quad_control -> shader_maximal_reconvergence -> descriptor_buffer -> mesh_shader -> multiview -> fragment_shading_rate -> maintenance8 -> Vulkan 1.4 -> 1.3 -> 1.2
+    VkPhysicalDeviceShaderQuadControlFeaturesKHR shaderQuadControlFeatures = {0};
+    shaderQuadControlFeatures.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SHADER_QUAD_CONTROL_FEATURES_KHR;
+    shaderQuadControlFeatures.pNext = NULL;
+    
+    VkPhysicalDeviceShaderMaximalReconvergenceFeaturesKHR shaderMaximalReconvergenceFeatures = {0};
+    shaderMaximalReconvergenceFeatures.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SHADER_MAXIMAL_RECONVERGENCE_FEATURES_KHR;
+    if (shader_quad_control_available) {
+        shaderMaximalReconvergenceFeatures.pNext = (void*)&shaderQuadControlFeatures;
+    } else {
+        shaderMaximalReconvergenceFeatures.pNext = NULL;
+    }
+    
     VkPhysicalDeviceDescriptorBufferFeaturesEXT descriptorBufferFeatures = {0};
     descriptorBufferFeatures.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_DESCRIPTOR_BUFFER_FEATURES_EXT;
-    descriptorBufferFeatures.pNext = NULL;
+    if (shader_maximal_reconvergence_available) {
+        descriptorBufferFeatures.pNext = (void*)&shaderMaximalReconvergenceFeatures;
+    } else {
+        descriptorBufferFeatures.pNext = NULL;
+    }
     
     VkPhysicalDeviceMeshShaderFeaturesEXT meshShaderFeatures = {0};
     meshShaderFeatures.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_MESH_SHADER_FEATURES_EXT;
     if (descriptor_buffer_available) {
         meshShaderFeatures.pNext = (void*)&descriptorBufferFeatures;
+    } else if (shader_maximal_reconvergence_available) {
+        meshShaderFeatures.pNext = (void*)&shaderMaximalReconvergenceFeatures;
     } else {
         meshShaderFeatures.pNext = NULL;
     }
@@ -493,6 +537,8 @@ bool vk_create_device(VulkanState* s) {
         multiviewFeatures.pNext = (void*)&meshShaderFeatures;
     } else if (descriptor_buffer_available) {
         multiviewFeatures.pNext = (void*)&descriptorBufferFeatures;
+    } else if (shader_maximal_reconvergence_available) {
+        multiviewFeatures.pNext = (void*)&shaderMaximalReconvergenceFeatures;
     } else {
         multiviewFeatures.pNext = NULL;
     }
@@ -673,6 +719,27 @@ bool vk_create_device(VulkanState* s) {
             CARDINAL_LOG_INFO("[DEVICE] VK_EXT_descriptor_buffer push descriptors enabled");
         }
     }
+    
+    // Enable shader quad control features if extension is available
+    if (shader_quad_control_available) {
+        CARDINAL_LOG_INFO("[DEVICE] Checking VK_KHR_shader_quad_control features");
+        if (!shaderQuadControlFeatures.shaderQuadControl) {
+            CARDINAL_LOG_ERROR("[DEVICE] shaderQuadControl feature is required but not supported by device");
+            free(qfp);
+            return false;
+        }
+        
+        // Enable shader quad control functionality
+        shaderQuadControlFeatures.shaderQuadControl = VK_TRUE;
+        CARDINAL_LOG_INFO("[DEVICE] VK_KHR_shader_quad_control features enabled: shaderQuadControl");
+    }
+    
+    // Enable shader maximal reconvergence features if extension is available
+    if (shader_maximal_reconvergence_available) {
+        // Enable shader maximal reconvergence functionality
+        shaderMaximalReconvergenceFeatures.shaderMaximalReconvergence = VK_TRUE;
+        CARDINAL_LOG_INFO("[DEVICE] VK_KHR_shader_maximal_reconvergence features enabled: shaderMaximalReconvergence");
+    }
 
     // Enable useful Vulkan 1.4 features if available
     if (vulkan14Features.globalPriorityQuery) {
@@ -746,6 +813,8 @@ bool vk_create_device(VulkanState* s) {
     s->supports_descriptor_indexing = descriptor_indexing_available; // optional extension
     s->supports_descriptor_buffer = descriptor_buffer_available; // optional extension
     s->descriptor_buffer_extension_available = descriptor_buffer_available; // for descriptor buffer utils
+    s->supports_shader_quad_control = shader_quad_control_available; // optional extension
+    s->supports_shader_maximal_reconvergence = shader_maximal_reconvergence_available; // optional extension
     s->supports_buffer_device_address = true; // required
     CARDINAL_LOG_INFO("[DEVICE] Dynamic rendering support: enabled (required)");
     CARDINAL_LOG_INFO("[DEVICE] Vulkan 1.2 features: %s",
@@ -760,6 +829,10 @@ bool vk_create_device(VulkanState* s) {
                       s->supports_descriptor_indexing ? "enabled" : "not available");
     CARDINAL_LOG_INFO("[DEVICE] VK_EXT_descriptor_buffer: %s", 
                       s->supports_descriptor_buffer ? "enabled" : "not available");
+    CARDINAL_LOG_INFO("[DEVICE] VK_KHR_shader_quad_control: %s", 
+                      s->supports_shader_quad_control ? "enabled" : "not available");
+    CARDINAL_LOG_INFO("[DEVICE] VK_KHR_shader_maximal_reconvergence: %s", 
+                      s->supports_shader_maximal_reconvergence ? "enabled" : "not available");
     CARDINAL_LOG_INFO("[DEVICE] Buffer device address: enabled (required)");
 
     // Load dynamic rendering function pointers (core)

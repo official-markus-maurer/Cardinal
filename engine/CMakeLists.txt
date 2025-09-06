@@ -85,6 +85,7 @@ target_sources(cardinal_engine PRIVATE
     src/renderer/vulkan_pbr.c
     src/renderer/vulkan_simple_pipelines.c
     src/renderer/vulkan_mesh_shader.c
+    src/renderer/vulkan_compute.c
     src/renderer/vulkan_descriptor_indexing.c
     src/renderer/vulkan_allocator.c
     src/renderer/util/vulkan_buffer_utils.c

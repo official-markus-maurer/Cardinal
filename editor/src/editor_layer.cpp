@@ -1831,17 +1831,10 @@ void editor_layer_shutdown(void) {
   ImGui_ImplVulkan_Shutdown();
   ImGui_ImplGlfw_Shutdown();
   
-  // Destroy ImGui descriptor pool while device is still valid
-  if (g_descriptor_pool != VK_NULL_HANDLE && g_renderer) {
-    VkDevice device = cardinal_renderer_internal_device(g_renderer);
-    if (device != VK_NULL_HANDLE) {
-      // Reset the descriptor pool to free all allocated descriptor sets
-      // This ensures no descriptor sets remain when we destroy the pool
-      vkResetDescriptorPool(device, g_descriptor_pool, 0);
-      vkDestroyDescriptorPool(device, g_descriptor_pool, NULL);
-      g_descriptor_pool = VK_NULL_HANDLE;
-    }
-  }
+  // NOTE: ImGui_ImplVulkan_Shutdown() handles descriptor pool cleanup internally
+  // Manual descriptor pool destruction removed to prevent double-free heap corruption
+  // The descriptor pool will be cleaned up by ImGui's internal shutdown process
+  g_descriptor_pool = VK_NULL_HANDLE;
   
   ImGui::DestroyContext();
 }

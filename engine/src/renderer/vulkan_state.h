@@ -22,6 +22,7 @@ extern "C" {
 struct CardinalScene;
 
 #include "cardinal/renderer/vulkan_mesh_shader.h"
+#include "cardinal/renderer/vulkan_compute.h"
 
 typedef struct VulkanAllocator VulkanAllocator;
 
@@ -206,6 +207,10 @@ typedef struct VulkanState {
                                           available and enabled. */
   bool supports_descriptor_buffer;     /**< True when VK_EXT_descriptor_buffer extension is
                                           available and enabled. */
+  bool supports_shader_quad_control;   /**< True when VK_KHR_shader_quad_control extension is
+                                          available and enabled. */
+  bool supports_shader_maximal_reconvergence; /**< True when VK_KHR_shader_maximal_reconvergence extension is
+                                                 available and enabled. */
 
   // Dynamic rendering function pointers (core in Vulkan 1.3)
   PFN_vkCmdBeginRendering
@@ -316,6 +321,12 @@ typedef struct VulkanState {
   // Mesh shader pipeline support
   bool use_mesh_shader_pipeline;
   MeshShaderPipeline mesh_shader_pipeline;
+
+  // Compute shader support
+  bool compute_shader_initialized;
+  VkDescriptorPool compute_descriptor_pool;
+  VkCommandPool compute_command_pool;
+  VkCommandBuffer compute_command_buffer;
 
   // UV and wireframe pipelines (simplified versions)
   VkPipeline uv_pipeline;
