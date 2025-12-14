@@ -4,7 +4,7 @@
 
 bool vk_descriptor_create_pbr_layout(VkDevice device, VkDescriptorSetLayout* descriptorSetLayout) {
     if (!device || !descriptorSetLayout) {
-        LOG_ERROR("Invalid parameters for descriptor set layout creation");
+        CARDINAL_LOG_ERROR("Invalid parameters for descriptor set layout creation");
         return false;
     }
 
@@ -102,7 +102,7 @@ bool vk_descriptor_create_pbr_layout(VkDevice device, VkDescriptorSetLayout* des
 
     VkResult result = vkCreateDescriptorSetLayout(device, &layoutInfo, NULL, descriptorSetLayout);
     if (result != VK_SUCCESS) {
-        LOG_ERROR("Failed to create descriptor set layout: %d", result);
+        CARDINAL_LOG_ERROR("Failed to create descriptor set layout: %d", result);
         return false;
     }
 
@@ -112,7 +112,7 @@ bool vk_descriptor_create_pbr_layout(VkDevice device, VkDescriptorSetLayout* des
 bool vk_descriptor_create_pool(VkDevice device, uint32_t maxSets, uint32_t maxTextures,
                                VkDescriptorPool* descriptorPool) {
     if (!device || !descriptorPool) {
-        LOG_ERROR("Invalid parameters for descriptor pool creation");
+        CARDINAL_LOG_ERROR("Invalid parameters for descriptor pool creation");
         return false;
     }
 
@@ -137,7 +137,7 @@ bool vk_descriptor_create_pool(VkDevice device, uint32_t maxSets, uint32_t maxTe
 
     VkResult result = vkCreateDescriptorPool(device, &poolInfo, NULL, descriptorPool);
     if (result != VK_SUCCESS) {
-        LOG_ERROR("Failed to create descriptor pool: %d", result);
+        CARDINAL_LOG_ERROR("Failed to create descriptor pool: %d", result);
         return false;
     }
 
@@ -149,13 +149,13 @@ bool vk_descriptor_allocate_sets(VkDevice device, VkDescriptorPool descriptorPoo
                                  uint32_t variableDescriptorCount,
                                  VkDescriptorSet* descriptorSets) {
     if (!device || !descriptorPool || !descriptorSetLayout || !descriptorSets) {
-        LOG_ERROR("Invalid parameters for descriptor set allocation");
+        CARDINAL_LOG_ERROR("Invalid parameters for descriptor set allocation");
         return false;
     }
 
     VkDescriptorSetLayout* layouts = malloc(setCount * sizeof(VkDescriptorSetLayout));
     if (!layouts) {
-        LOG_ERROR("Failed to allocate memory for descriptor set layouts");
+        CARDINAL_LOG_ERROR("Failed to allocate memory for descriptor set layouts");
         return false;
     }
 
@@ -165,7 +165,7 @@ bool vk_descriptor_allocate_sets(VkDevice device, VkDescriptorPool descriptorPoo
 
     uint32_t* variableCounts = malloc(setCount * sizeof(uint32_t));
     if (!variableCounts) {
-        LOG_ERROR("Failed to allocate memory for variable descriptor counts");
+        CARDINAL_LOG_ERROR("Failed to allocate memory for variable descriptor counts");
         free(layouts);
         return false;
     }
@@ -194,7 +194,7 @@ bool vk_descriptor_allocate_sets(VkDevice device, VkDescriptorPool descriptorPoo
     free(variableCounts);
 
     if (result != VK_SUCCESS) {
-        LOG_ERROR("Failed to allocate descriptor sets: %d", result);
+        CARDINAL_LOG_ERROR("Failed to allocate descriptor sets: %d", result);
         return false;
     }
 
@@ -206,7 +206,7 @@ void vk_descriptor_update_sets(VkDevice device, VkDescriptorSet descriptorSet,
                                VkBuffer lightingBuffer, VkDeviceSize lightingBufferSize,
                                VkImageView* imageViews, VkSampler sampler, uint32_t imageCount) {
     if (!device || !descriptorSet) {
-        LOG_ERROR("Invalid parameters for descriptor set update");
+        CARDINAL_LOG_ERROR("Invalid parameters for descriptor set update");
         return;
     }
 
@@ -215,7 +215,7 @@ void vk_descriptor_update_sets(VkDevice device, VkDescriptorSet descriptorSet,
     VkDescriptorImageInfo* imageInfos = malloc(imageCount * sizeof(VkDescriptorImageInfo));
 
     if (!writes || !bufferInfos || !imageInfos) {
-        LOG_ERROR("Failed to allocate memory for descriptor updates");
+        CARDINAL_LOG_ERROR("Failed to allocate memory for descriptor updates");
         free(writes);
         free(bufferInfos);
         free(imageInfos);

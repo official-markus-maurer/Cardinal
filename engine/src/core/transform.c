@@ -1,10 +1,10 @@
 #include "cardinal/core/transform.h"
+#include <float.h>
 #include <math.h>
 #include <string.h>
-#include <float.h>
 
 #ifndef M_PI
-#define M_PI 3.14159265358979323846
+    #define M_PI 3.14159265358979323846
 #endif
 
 // === Matrix Operations ===
@@ -25,7 +25,8 @@ void cardinal_matrix_multiply(const float* a, const float* b, float* result) {
     }
 }
 
-void cardinal_matrix_from_trs(const float* translation, const float* rotation, const float* scale, float* matrix) {
+void cardinal_matrix_from_trs(const float* translation, const float* rotation, const float* scale,
+                              float* matrix) {
     // Start with identity
     cardinal_matrix_identity(matrix);
 
@@ -69,7 +70,8 @@ void cardinal_matrix_from_trs(const float* translation, const float* rotation, c
     }
 }
 
-bool cardinal_matrix_decompose(const float* matrix, float* translation, float* rotation, float* scale) {
+bool cardinal_matrix_decompose(const float* matrix, float* translation, float* rotation,
+                               float* scale) {
     // Extract translation
     if (translation) {
         translation[0] = matrix[12];
@@ -100,9 +102,15 @@ bool cardinal_matrix_decompose(const float* matrix, float* translation, float* r
     if (rotation) {
         // Remove scaling from the matrix
         float rot_matrix[9];
-        rot_matrix[0] = matrix[0] / sx; rot_matrix[1] = matrix[1] / sx; rot_matrix[2] = matrix[2] / sx;
-        rot_matrix[3] = matrix[4] / sy; rot_matrix[4] = matrix[5] / sy; rot_matrix[5] = matrix[6] / sy;
-        rot_matrix[6] = matrix[8] / sz; rot_matrix[7] = matrix[9] / sz; rot_matrix[8] = matrix[10] / sz;
+        rot_matrix[0] = matrix[0] / sx;
+        rot_matrix[1] = matrix[1] / sx;
+        rot_matrix[2] = matrix[2] / sx;
+        rot_matrix[3] = matrix[4] / sy;
+        rot_matrix[4] = matrix[5] / sy;
+        rot_matrix[5] = matrix[6] / sy;
+        rot_matrix[6] = matrix[8] / sz;
+        rot_matrix[7] = matrix[9] / sz;
+        rot_matrix[8] = matrix[10] / sz;
 
         // Convert rotation matrix to quaternion
         float trace = rot_matrix[0] + rot_matrix[4] + rot_matrix[8];
@@ -140,117 +148,69 @@ bool cardinal_matrix_invert(const float* matrix, float* result) {
     float inv[16], det;
     int i;
 
-    inv[0] = matrix[5] * matrix[10] * matrix[15] -
-             matrix[5] * matrix[11] * matrix[14] -
-             matrix[9] * matrix[6] * matrix[15] +
-             matrix[9] * matrix[7] * matrix[14] +
-             matrix[13] * matrix[6] * matrix[11] -
-             matrix[13] * matrix[7] * matrix[10];
+    inv[0] = matrix[5] * matrix[10] * matrix[15] - matrix[5] * matrix[11] * matrix[14] -
+             matrix[9] * matrix[6] * matrix[15] + matrix[9] * matrix[7] * matrix[14] +
+             matrix[13] * matrix[6] * matrix[11] - matrix[13] * matrix[7] * matrix[10];
 
-    inv[4] = -matrix[4] * matrix[10] * matrix[15] +
-              matrix[4] * matrix[11] * matrix[14] +
-              matrix[8] * matrix[6] * matrix[15] -
-              matrix[8] * matrix[7] * matrix[14] -
-              matrix[12] * matrix[6] * matrix[11] +
-              matrix[12] * matrix[7] * matrix[10];
+    inv[4] = -matrix[4] * matrix[10] * matrix[15] + matrix[4] * matrix[11] * matrix[14] +
+             matrix[8] * matrix[6] * matrix[15] - matrix[8] * matrix[7] * matrix[14] -
+             matrix[12] * matrix[6] * matrix[11] + matrix[12] * matrix[7] * matrix[10];
 
-    inv[8] = matrix[4] * matrix[9] * matrix[15] -
-             matrix[4] * matrix[11] * matrix[13] -
-             matrix[8] * matrix[5] * matrix[15] +
-             matrix[8] * matrix[7] * matrix[13] +
-             matrix[12] * matrix[5] * matrix[11] -
-             matrix[12] * matrix[7] * matrix[9];
+    inv[8] = matrix[4] * matrix[9] * matrix[15] - matrix[4] * matrix[11] * matrix[13] -
+             matrix[8] * matrix[5] * matrix[15] + matrix[8] * matrix[7] * matrix[13] +
+             matrix[12] * matrix[5] * matrix[11] - matrix[12] * matrix[7] * matrix[9];
 
-    inv[12] = -matrix[4] * matrix[9] * matrix[14] +
-               matrix[4] * matrix[10] * matrix[13] +
-               matrix[8] * matrix[5] * matrix[14] -
-               matrix[8] * matrix[6] * matrix[13] -
-               matrix[12] * matrix[5] * matrix[10] +
-               matrix[12] * matrix[6] * matrix[9];
+    inv[12] = -matrix[4] * matrix[9] * matrix[14] + matrix[4] * matrix[10] * matrix[13] +
+              matrix[8] * matrix[5] * matrix[14] - matrix[8] * matrix[6] * matrix[13] -
+              matrix[12] * matrix[5] * matrix[10] + matrix[12] * matrix[6] * matrix[9];
 
-    inv[1] = -matrix[1] * matrix[10] * matrix[15] +
-              matrix[1] * matrix[11] * matrix[14] +
-              matrix[9] * matrix[2] * matrix[15] -
-              matrix[9] * matrix[3] * matrix[14] -
-              matrix[13] * matrix[2] * matrix[11] +
-              matrix[13] * matrix[3] * matrix[10];
+    inv[1] = -matrix[1] * matrix[10] * matrix[15] + matrix[1] * matrix[11] * matrix[14] +
+             matrix[9] * matrix[2] * matrix[15] - matrix[9] * matrix[3] * matrix[14] -
+             matrix[13] * matrix[2] * matrix[11] + matrix[13] * matrix[3] * matrix[10];
 
-    inv[5] = matrix[0] * matrix[10] * matrix[15] -
-             matrix[0] * matrix[11] * matrix[14] -
-             matrix[8] * matrix[2] * matrix[15] +
-             matrix[8] * matrix[3] * matrix[14] +
-             matrix[12] * matrix[2] * matrix[11] -
-             matrix[12] * matrix[3] * matrix[10];
+    inv[5] = matrix[0] * matrix[10] * matrix[15] - matrix[0] * matrix[11] * matrix[14] -
+             matrix[8] * matrix[2] * matrix[15] + matrix[8] * matrix[3] * matrix[14] +
+             matrix[12] * matrix[2] * matrix[11] - matrix[12] * matrix[3] * matrix[10];
 
-    inv[9] = -matrix[0] * matrix[9] * matrix[15] +
-              matrix[0] * matrix[11] * matrix[13] +
-              matrix[8] * matrix[1] * matrix[15] -
-              matrix[8] * matrix[3] * matrix[13] -
-              matrix[12] * matrix[1] * matrix[11] +
-              matrix[12] * matrix[3] * matrix[9];
+    inv[9] = -matrix[0] * matrix[9] * matrix[15] + matrix[0] * matrix[11] * matrix[13] +
+             matrix[8] * matrix[1] * matrix[15] - matrix[8] * matrix[3] * matrix[13] -
+             matrix[12] * matrix[1] * matrix[11] + matrix[12] * matrix[3] * matrix[9];
 
-    inv[13] = matrix[0] * matrix[9] * matrix[14] -
-              matrix[0] * matrix[10] * matrix[13] -
-              matrix[8] * matrix[1] * matrix[14] +
-              matrix[8] * matrix[2] * matrix[13] +
-              matrix[12] * matrix[1] * matrix[10] -
-              matrix[12] * matrix[2] * matrix[9];
+    inv[13] = matrix[0] * matrix[9] * matrix[14] - matrix[0] * matrix[10] * matrix[13] -
+              matrix[8] * matrix[1] * matrix[14] + matrix[8] * matrix[2] * matrix[13] +
+              matrix[12] * matrix[1] * matrix[10] - matrix[12] * matrix[2] * matrix[9];
 
-    inv[2] = matrix[1] * matrix[6] * matrix[15] -
-             matrix[1] * matrix[7] * matrix[14] -
-             matrix[5] * matrix[2] * matrix[15] +
-             matrix[5] * matrix[3] * matrix[14] +
-             matrix[13] * matrix[2] * matrix[7] -
-             matrix[13] * matrix[3] * matrix[6];
+    inv[2] = matrix[1] * matrix[6] * matrix[15] - matrix[1] * matrix[7] * matrix[14] -
+             matrix[5] * matrix[2] * matrix[15] + matrix[5] * matrix[3] * matrix[14] +
+             matrix[13] * matrix[2] * matrix[7] - matrix[13] * matrix[3] * matrix[6];
 
-    inv[6] = -matrix[0] * matrix[6] * matrix[15] +
-              matrix[0] * matrix[7] * matrix[14] +
-              matrix[4] * matrix[2] * matrix[15] -
-              matrix[4] * matrix[3] * matrix[14] -
-              matrix[12] * matrix[2] * matrix[7] +
-              matrix[12] * matrix[3] * matrix[6];
+    inv[6] = -matrix[0] * matrix[6] * matrix[15] + matrix[0] * matrix[7] * matrix[14] +
+             matrix[4] * matrix[2] * matrix[15] - matrix[4] * matrix[3] * matrix[14] -
+             matrix[12] * matrix[2] * matrix[7] + matrix[12] * matrix[3] * matrix[6];
 
-    inv[10] = matrix[0] * matrix[5] * matrix[15] -
-              matrix[0] * matrix[7] * matrix[13] -
-              matrix[4] * matrix[1] * matrix[15] +
-              matrix[4] * matrix[3] * matrix[13] +
-              matrix[12] * matrix[1] * matrix[7] -
-              matrix[12] * matrix[3] * matrix[5];
+    inv[10] = matrix[0] * matrix[5] * matrix[15] - matrix[0] * matrix[7] * matrix[13] -
+              matrix[4] * matrix[1] * matrix[15] + matrix[4] * matrix[3] * matrix[13] +
+              matrix[12] * matrix[1] * matrix[7] - matrix[12] * matrix[3] * matrix[5];
 
-    inv[14] = -matrix[0] * matrix[5] * matrix[14] +
-               matrix[0] * matrix[6] * matrix[13] +
-               matrix[4] * matrix[1] * matrix[14] -
-               matrix[4] * matrix[2] * matrix[13] -
-               matrix[12] * matrix[1] * matrix[6] +
-               matrix[12] * matrix[2] * matrix[5];
+    inv[14] = -matrix[0] * matrix[5] * matrix[14] + matrix[0] * matrix[6] * matrix[13] +
+              matrix[4] * matrix[1] * matrix[14] - matrix[4] * matrix[2] * matrix[13] -
+              matrix[12] * matrix[1] * matrix[6] + matrix[12] * matrix[2] * matrix[5];
 
-    inv[3] = -matrix[1] * matrix[6] * matrix[11] +
-              matrix[1] * matrix[7] * matrix[10] +
-              matrix[5] * matrix[2] * matrix[11] -
-              matrix[5] * matrix[3] * matrix[10] -
-              matrix[9] * matrix[2] * matrix[7] +
-              matrix[9] * matrix[3] * matrix[6];
+    inv[3] = -matrix[1] * matrix[6] * matrix[11] + matrix[1] * matrix[7] * matrix[10] +
+             matrix[5] * matrix[2] * matrix[11] - matrix[5] * matrix[3] * matrix[10] -
+             matrix[9] * matrix[2] * matrix[7] + matrix[9] * matrix[3] * matrix[6];
 
-    inv[7] = matrix[0] * matrix[6] * matrix[11] -
-             matrix[0] * matrix[7] * matrix[10] -
-             matrix[4] * matrix[2] * matrix[11] +
-             matrix[4] * matrix[3] * matrix[10] +
-             matrix[8] * matrix[2] * matrix[7] -
-             matrix[8] * matrix[3] * matrix[6];
+    inv[7] = matrix[0] * matrix[6] * matrix[11] - matrix[0] * matrix[7] * matrix[10] -
+             matrix[4] * matrix[2] * matrix[11] + matrix[4] * matrix[3] * matrix[10] +
+             matrix[8] * matrix[2] * matrix[7] - matrix[8] * matrix[3] * matrix[6];
 
-    inv[11] = -matrix[0] * matrix[5] * matrix[11] +
-               matrix[0] * matrix[7] * matrix[9] +
-               matrix[4] * matrix[1] * matrix[11] -
-               matrix[4] * matrix[3] * matrix[9] -
-               matrix[8] * matrix[1] * matrix[7] +
-               matrix[8] * matrix[3] * matrix[5];
+    inv[11] = -matrix[0] * matrix[5] * matrix[11] + matrix[0] * matrix[7] * matrix[9] +
+              matrix[4] * matrix[1] * matrix[11] - matrix[4] * matrix[3] * matrix[9] -
+              matrix[8] * matrix[1] * matrix[7] + matrix[8] * matrix[3] * matrix[5];
 
-    inv[15] = matrix[0] * matrix[5] * matrix[10] -
-              matrix[0] * matrix[6] * matrix[9] -
-              matrix[4] * matrix[1] * matrix[10] +
-              matrix[4] * matrix[2] * matrix[9] +
-              matrix[8] * matrix[1] * matrix[6] -
-              matrix[8] * matrix[2] * matrix[5];
+    inv[15] = matrix[0] * matrix[5] * matrix[10] - matrix[0] * matrix[6] * matrix[9] -
+              matrix[4] * matrix[1] * matrix[10] + matrix[4] * matrix[2] * matrix[9] +
+              matrix[8] * matrix[1] * matrix[6] - matrix[8] * matrix[2] * matrix[5];
 
     det = matrix[0] * inv[0] + matrix[1] * inv[4] + matrix[2] * inv[8] + matrix[3] * inv[12];
 
@@ -292,25 +252,22 @@ void cardinal_transform_vector(const float* matrix, const float* vector, float* 
 void cardinal_transform_normal(const float* matrix, const float* normal, float* result) {
     // For normals, we need to use the inverse transpose of the upper 3x3 matrix
     float inv_transpose[9];
-    
+
     // Extract 3x3 upper-left matrix
-    float mat3[9] = {
-        matrix[0], matrix[1], matrix[2],
-        matrix[4], matrix[5], matrix[6],
-        matrix[8], matrix[9], matrix[10]
-    };
-    
+    float mat3[9] = {matrix[0], matrix[1], matrix[2], matrix[4], matrix[5],
+                     matrix[6], matrix[8], matrix[9], matrix[10]};
+
     // Calculate determinant
     float det = mat3[0] * (mat3[4] * mat3[8] - mat3[5] * mat3[7]) -
                 mat3[1] * (mat3[3] * mat3[8] - mat3[5] * mat3[6]) +
                 mat3[2] * (mat3[3] * mat3[7] - mat3[4] * mat3[6]);
-    
+
     if (fabsf(det) < FLT_EPSILON) {
         // Fallback to simple transformation if matrix is singular
         cardinal_transform_vector(matrix, normal, result);
         return;
     }
-    
+
     // Calculate inverse transpose
     float inv_det = 1.0f / det;
     inv_transpose[0] = (mat3[4] * mat3[8] - mat3[5] * mat3[7]) * inv_det;
@@ -322,7 +279,7 @@ void cardinal_transform_normal(const float* matrix, const float* normal, float* 
     inv_transpose[6] = (mat3[3] * mat3[7] - mat3[4] * mat3[6]) * inv_det;
     inv_transpose[7] = (mat3[1] * mat3[6] - mat3[0] * mat3[7]) * inv_det;
     inv_transpose[8] = (mat3[0] * mat3[4] - mat3[1] * mat3[3]) * inv_det;
-    
+
     // Transform normal
     float x = normal[0], y = normal[1], z = normal[2];
     result[0] = inv_transpose[0] * x + inv_transpose[3] * y + inv_transpose[6] * z;
@@ -342,7 +299,7 @@ void cardinal_quaternion_identity(float* quaternion) {
 void cardinal_quaternion_multiply(const float* a, const float* b, float* result) {
     float ax = a[0], ay = a[1], az = a[2], aw = a[3];
     float bx = b[0], by = b[1], bz = b[2], bw = b[3];
-    
+
     result[0] = aw * bx + ax * bw + ay * bz - az * by;
     result[1] = aw * by - ax * bz + ay * bw + az * bx;
     result[2] = aw * bz + ax * by - ay * bx + az * bw;
@@ -352,7 +309,7 @@ void cardinal_quaternion_multiply(const float* a, const float* b, float* result)
 void cardinal_quaternion_normalize(float* quaternion) {
     float x = quaternion[0], y = quaternion[1], z = quaternion[2], w = quaternion[3];
     float length = sqrtf(x * x + y * y + z * z + w * w);
-    
+
     if (length > FLT_EPSILON) {
         float inv_length = 1.0f / length;
         quaternion[0] *= inv_length;
@@ -384,7 +341,7 @@ void cardinal_quaternion_to_matrix3(const float* quaternion, float* matrix) {
 
 void cardinal_quaternion_to_matrix4(const float* quaternion, float* matrix) {
     cardinal_matrix_identity(matrix);
-    
+
     float x = quaternion[0], y = quaternion[1], z = quaternion[2], w = quaternion[3];
     float x2 = x + x, y2 = y + y, z2 = z + z;
     float xx = x * x2, xy = x * y2, xz = x * z2;
@@ -418,7 +375,7 @@ void cardinal_quaternion_from_euler(float pitch, float yaw, float roll, float* q
 
 void cardinal_quaternion_to_euler(const float* quaternion, float* pitch, float* yaw, float* roll) {
     float x = quaternion[0], y = quaternion[1], z = quaternion[2], w = quaternion[3];
-    
+
     // Roll (x-axis rotation)
     float sinr_cosp = 2 * (w * x + y * z);
     float cosr_cosp = 1 - 2 * (x * x + y * y);
@@ -464,7 +421,7 @@ void cardinal_matrix_get_scale(const float* matrix, float* scale) {
     scale[0] = sqrtf(matrix[0] * matrix[0] + matrix[1] * matrix[1] + matrix[2] * matrix[2]);
     scale[1] = sqrtf(matrix[4] * matrix[4] + matrix[5] * matrix[5] + matrix[6] * matrix[6]);
     scale[2] = sqrtf(matrix[8] * matrix[8] + matrix[9] * matrix[9] + matrix[10] * matrix[10]);
-    
+
     // Check for negative determinant (reflection)
     float det = matrix[0] * (matrix[5] * matrix[10] - matrix[6] * matrix[9]) -
                 matrix[1] * (matrix[4] * matrix[10] - matrix[6] * matrix[8]) +

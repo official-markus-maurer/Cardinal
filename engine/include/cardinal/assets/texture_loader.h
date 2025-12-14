@@ -1,9 +1,9 @@
 #ifndef CARDINAL_ASSETS_TEXTURE_LOADER_H
 #define CARDINAL_ASSETS_TEXTURE_LOADER_H
 
+#include "cardinal/core/async_loader.h"
 #include <stdbool.h>
 #include <stdint.h>
-#include "cardinal/core/async_loader.h"
 
 #ifdef __cplusplus
 extern "C" {
@@ -46,7 +46,8 @@ CardinalAsyncTask *texture_load_async(const char *filepath,
                                       void *user_data);
 
 // Initialize the thread-safe texture cache with specified maximum entries
-// This is automatically called by texture_load_with_ref_counting if not already initialized
+// This is automatically called by texture_load_with_ref_counting if not already
+// initialized
 bool texture_cache_initialize(uint32_t max_entries);
 
 // Shutdown the texture cache and free all cached resources
@@ -54,10 +55,10 @@ void texture_cache_shutdown_system(void);
 
 // Get cache statistics for monitoring
 typedef struct TextureCacheStats {
-    uint32_t entry_count;
-    uint32_t max_entries;
-    uint32_t cache_hits;
-    uint32_t cache_misses;
+  uint32_t entry_count;
+  uint32_t max_entries;
+  uint32_t cache_hits;
+  uint32_t cache_misses;
 } TextureCacheStats;
 
 // Get current cache statistics

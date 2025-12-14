@@ -26,6 +26,10 @@
 #include <stdbool.h>
 #include <vulkan/vulkan.h>
 
+#ifdef __cplusplus
+extern "C" {
+#endif
+
 /**
  * @brief Creates a Vulkan shader module from a SPIR-V file.
  * @param device Logical device.
@@ -54,5 +58,9 @@ bool vk_shader_create_module_from_code(VkDevice device, const uint32_t *code,
  * @param shaderModule Shader module to destroy.
  */
 void vk_shader_destroy_module(VkDevice device, VkShaderModule shaderModule);
+
+#ifdef __cplusplus
+}
+#endif
 
 #endif // VULKAN_SHADER_UTILS_H

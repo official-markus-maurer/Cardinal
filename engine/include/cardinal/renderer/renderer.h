@@ -59,7 +59,7 @@ typedef enum CardinalRenderingMode {
       0, /**< Standard PBR rendering with textures and lighting */
   CARDINAL_RENDERING_MODE_UV, /**< UV coordinate visualization (shows texture
                                  coordinates as colors) */
-  CARDINAL_RENDERING_MODE_WIREFRAME, /**< Wireframe rendering (edges only) */
+  CARDINAL_RENDERING_MODE_WIREFRAME,  /**< Wireframe rendering (edges only) */
   CARDINAL_RENDERING_MODE_MESH_SHADER /**< GPU-driven mesh shader rendering */
 } CardinalRenderingMode;
 
@@ -85,6 +85,19 @@ typedef struct CardinalRenderer {
  */
 bool cardinal_renderer_create(CardinalRenderer *out_renderer,
                               CardinalWindow *window);
+
+/**
+ * @brief Create a headless renderer without a window/swapchain
+ * @param
+ * out_renderer Pointer to renderer structure to initialize
+ * @param width
+ * Logical framebuffer width
+ * @param height Logical framebuffer height
+ *
+ * @return true on success, false on failure
+ */
+bool cardinal_renderer_create_headless(CardinalRenderer *out_renderer,
+                                       uint32_t width, uint32_t height);
 
 /**
  * @brief Render a single frame
@@ -141,7 +154,8 @@ bool cardinal_renderer_is_pbr_enabled(CardinalRenderer *renderer);
  * @param renderer Pointer to initialized renderer
  * @param enable True to enable mesh shaders, false to disable
  */
-void cardinal_renderer_enable_mesh_shader(CardinalRenderer *renderer, bool enable);
+void cardinal_renderer_enable_mesh_shader(CardinalRenderer *renderer,
+                                          bool enable);
 
 /**
  * @brief Check if mesh shader pipeline is enabled
@@ -177,14 +191,14 @@ cardinal_renderer_get_rendering_mode(CardinalRenderer *renderer);
  * @brief Set device loss recovery callbacks
  * @param renderer Pointer to initialized renderer
  * @param device_loss_callback Called when device loss is detected (can be NULL)
- * @param recovery_complete_callback Called when recovery completes (can be NULL)
+ * @param recovery_complete_callback Called when recovery completes (can be
+ * NULL)
  * @param user_data User data passed to callbacks
  */
 void cardinal_renderer_set_device_loss_callbacks(
-    CardinalRenderer *renderer,
-    void (*device_loss_callback)(void* user_data),
-    void (*recovery_complete_callback)(void* user_data, bool success),
-    void* user_data);
+    CardinalRenderer *renderer, void (*device_loss_callback)(void *user_data),
+    void (*recovery_complete_callback)(void *user_data, bool success),
+    void *user_data);
 
 /**
  * @brief Check if device is currently lost
@@ -201,8 +215,27 @@ bool cardinal_renderer_is_device_lost(CardinalRenderer *renderer);
  * @return true if renderer is valid, false otherwise
  */
 bool cardinal_renderer_get_recovery_stats(CardinalRenderer *renderer,
-                                          uint32_t* out_attempt_count,
-                                          uint32_t* out_max_attempts);
+                                          uint32_t *out_attempt_count,
+                                          uint32_t *out_max_attempts);
+
+/**
+ * @brief Enable or disable present skipping (test mode)
+ * @param renderer
+ * Pointer to initialized renderer
+ * @param skip True to skip present calls,
+ * false to present normally
+ */
+void cardinal_renderer_set_skip_present(CardinalRenderer *renderer, bool skip);
+
+/**
+ * @brief Enable or disable headless mode (no swapchain acquire/present)
+ *
+ * @param renderer Pointer to initialized renderer
+ * @param enable True to
+ * enable headless mode
+ */
+void cardinal_renderer_set_headless_mode(CardinalRenderer *renderer,
+                                         bool enable);
 
 #ifdef __cplusplus
 }

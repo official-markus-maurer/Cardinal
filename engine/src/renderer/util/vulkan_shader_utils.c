@@ -5,13 +5,13 @@
 
 bool vk_shader_create_module(VkDevice device, const char* filename, VkShaderModule* shaderModule) {
     if (!filename || !shaderModule) {
-        LOG_ERROR("Invalid parameters for shader module creation");
+        CARDINAL_LOG_ERROR("Invalid parameters for shader module creation");
         return false;
     }
 
     FILE* file = fopen(filename, "rb");
     if (!file) {
-        LOG_ERROR("Failed to open shader file: %s", filename);
+        CARDINAL_LOG_ERROR("Failed to open shader file: %s", filename);
         return false;
     }
 
@@ -21,7 +21,7 @@ bool vk_shader_create_module(VkDevice device, const char* filename, VkShaderModu
     fseek(file, 0, SEEK_SET);
 
     if (fileSize <= 0) {
-        LOG_ERROR("Invalid shader file size: %ld", fileSize);
+        CARDINAL_LOG_ERROR("Invalid shader file size: %ld", fileSize);
         fclose(file);
         return false;
     }
@@ -29,7 +29,7 @@ bool vk_shader_create_module(VkDevice device, const char* filename, VkShaderModu
     // Allocate buffer for shader code
     char* code = malloc(fileSize);
     if (!code) {
-        LOG_ERROR("Failed to allocate memory for shader code");
+        CARDINAL_LOG_ERROR("Failed to allocate memory for shader code");
         fclose(file);
         return false;
     }
@@ -39,7 +39,7 @@ bool vk_shader_create_module(VkDevice device, const char* filename, VkShaderModu
     fclose(file);
 
     if (bytesRead != (size_t)fileSize) {
-        LOG_ERROR("Failed to read complete shader file");
+        CARDINAL_LOG_ERROR("Failed to read complete shader file");
         free(code);
         return false;
     }
@@ -55,7 +55,7 @@ bool vk_shader_create_module(VkDevice device, const char* filename, VkShaderModu
 bool vk_shader_create_module_from_code(VkDevice device, const uint32_t* code, size_t codeSize,
                                        VkShaderModule* shaderModule) {
     if (!device || !code || codeSize == 0 || !shaderModule) {
-        LOG_ERROR("Invalid parameters for shader module creation from code");
+        CARDINAL_LOG_ERROR("Invalid parameters for shader module creation from code");
         return false;
     }
 
@@ -67,7 +67,7 @@ bool vk_shader_create_module_from_code(VkDevice device, const uint32_t* code, si
 
     VkResult result = vkCreateShaderModule(device, &createInfo, NULL, shaderModule);
     if (result != VK_SUCCESS) {
-        LOG_ERROR("Failed to create shader module: %d", result);
+        CARDINAL_LOG_ERROR("Failed to create shader module: %d", result);
         return false;
     }
 

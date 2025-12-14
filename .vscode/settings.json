@@ -56,6 +56,7 @@
         "strncpy",
         "Subpasses",
         "swapchain",
+        "swapchains",
         "TLAS",
         "tonemapping",
         "Uncategorized",

@@ -14,9 +14,9 @@
 #ifndef CARDINAL_ASSETS_SCENE_H
 #define CARDINAL_ASSETS_SCENE_H
 
+#include "cardinal/core/animation.h"
 #include <stdbool.h>
 #include <stdint.h>
-#include "cardinal/core/animation.h"
 
 #ifdef __cplusplus
 extern "C" {
@@ -33,11 +33,13 @@ typedef struct CardinalRefCountedResource CardinalRefCountedResource;
  * and skeletal animation data required for physically-based rendering.
  */
 typedef struct CardinalVertex {
-  float px, py, pz; /**< 3D position coordinates (x, y, z) */
-  float nx, ny, nz; /**< Surface normal vector (x, y, z) */
-  float u, v;       /**< Texture coordinates (u, v) */
-  float bone_weights[4]; /**< Bone weights for skeletal animation (up to 4 bones per vertex) */
-  uint32_t bone_indices[4]; /**< Bone indices for skeletal animation (up to 4 bones per vertex) */
+  float px, py, pz;      /**< 3D position coordinates (x, y, z) */
+  float nx, ny, nz;      /**< Surface normal vector (x, y, z) */
+  float u, v;            /**< Texture coordinates (u, v) */
+  float bone_weights[4]; /**< Bone weights for skeletal animation (up to 4 bones
+                            per vertex) */
+  uint32_t bone_indices[4]; /**< Bone indices for skeletal animation (up to 4
+                               bones per vertex) */
 } CardinalVertex;
 
 /**
@@ -146,23 +148,25 @@ typedef struct CardinalSceneNode CardinalSceneNode;
  * support skeletal animation with bone/joint properties.
  */
 typedef struct CardinalSceneNode {
-  char *name;                    /**< Node name (optional, can be NULL) */
-  float local_transform[16];     /**< Local transformation matrix (column-major) */
-  float world_transform[16];     /**< Cached world transformation matrix */
-  bool world_transform_dirty;    /**< Flag indicating world transform needs update */
-  
-  uint32_t *mesh_indices;        /**< Array of mesh indices attached to this node */
-  uint32_t mesh_count;           /**< Number of meshes attached to this node */
-  
-  CardinalSceneNode *parent;     /**< Parent node (NULL for root nodes) */
-  CardinalSceneNode **children;  /**< Array of child nodes */
-  uint32_t child_count;          /**< Number of child nodes */
-  uint32_t child_capacity;       /**< Allocated capacity for children array */
-  
+  char *name;                 /**< Node name (optional, can be NULL) */
+  float local_transform[16];  /**< Local transformation matrix (column-major) */
+  float world_transform[16];  /**< Cached world transformation matrix */
+  bool world_transform_dirty; /**< Flag indicating world transform needs update
+                               */
+
+  uint32_t *mesh_indices; /**< Array of mesh indices attached to this node */
+  uint32_t mesh_count;    /**< Number of meshes attached to this node */
+
+  CardinalSceneNode *parent;    /**< Parent node (NULL for root nodes) */
+  CardinalSceneNode **children; /**< Array of child nodes */
+  uint32_t child_count;         /**< Number of child nodes */
+  uint32_t child_capacity;      /**< Allocated capacity for children array */
+
   // Animation properties
-  bool is_bone;                  /**< Whether this node represents a bone/joint */
-  uint32_t bone_index;           /**< Index in skin's bone array (if is_bone is true) */
-  uint32_t skin_index;           /**< Index of skin this bone belongs to (UINT32_MAX if none) */
+  bool is_bone;        /**< Whether this node represents a bone/joint */
+  uint32_t bone_index; /**< Index in skin's bone array (if is_bone is true) */
+  uint32_t skin_index; /**< Index of skin this bone belongs to (UINT32_MAX if
+                          none) */
 } CardinalSceneNode;
 
 /**
@@ -182,14 +186,19 @@ typedef struct CardinalScene {
 
   CardinalTexture *textures; /**< Array of textures used by materials */
   uint32_t texture_count;    /**< Number of textures in the scene */
-  
+
   CardinalSceneNode **root_nodes; /**< Array of root scene nodes */
   uint32_t root_node_count;       /**< Number of root nodes in the scene */
-  
+
+  CardinalSceneNode **all_nodes; /**< Flat array of all scene nodes, indexed by
+                                    glTF node index */
+  uint32_t all_node_count;       /**< Total number of nodes in the scene */
+
   // Animation system
-  CardinalAnimationSystem *animation_system; /**< Animation system for this scene */
-  CardinalSkin *skins;           /**< Array of skins for skeletal animation */
-  uint32_t skin_count;           /**< Number of skins */
+  CardinalAnimationSystem
+      *animation_system; /**< Animation system for this scene */
+  CardinalSkin *skins;   /**< Array of skins for skeletal animation */
+  uint32_t skin_count;   /**< Number of skins */
 } CardinalScene;
 
 /**
@@ -225,7 +234,8 @@ void cardinal_scene_node_destroy(CardinalSceneNode *node);
  * @param child Child node to add
  * @return true on success, false on failure (e.g., allocation error)
  */
-bool cardinal_scene_node_add_child(CardinalSceneNode *parent, CardinalSceneNode *child);
+bool cardinal_scene_node_add_child(CardinalSceneNode *parent,
+                                   CardinalSceneNode *child);
 
 /**
  * @brief Remove a child node from its parent
@@ -248,7 +258,8 @@ bool cardinal_scene_node_remove_from_parent(CardinalSceneNode *child);
  * @param name Name to search for
  * @return Pointer to the found node, or NULL if not found
  */
-CardinalSceneNode *cardinal_scene_node_find_by_name(CardinalSceneNode *root, const char *name);
+CardinalSceneNode *cardinal_scene_node_find_by_name(CardinalSceneNode *root,
+                                                    const char *name);
 
 /**
  * @brief Update world transforms for a node and its children
@@ -259,7 +270,8 @@ CardinalSceneNode *cardinal_scene_node_find_by_name(CardinalSceneNode *root, con
  * @param node Node to update (along with its children)
  * @param parent_world_transform Parent's world transform (NULL for root nodes)
  */
-void cardinal_scene_node_update_transforms(CardinalSceneNode *node, const float *parent_world_transform);
+void cardinal_scene_node_update_transforms(CardinalSceneNode *node,
+                                           const float *parent_world_transform);
 
 /**
  * @brief Set the local transform of a scene node
@@ -270,7 +282,8 @@ void cardinal_scene_node_update_transforms(CardinalSceneNode *node, const float 
  * @param node Node to set the transform for
  * @param transform 4x4 transformation matrix (column-major)
  */
-void cardinal_scene_node_set_local_transform(CardinalSceneNode *node, const float *transform);
+void cardinal_scene_node_set_local_transform(CardinalSceneNode *node,
+                                             const float *transform);
 
 /**
  * @brief Get the world transform of a scene node

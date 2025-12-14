@@ -1,12 +1,12 @@
 #include "editor_layer.h"
+#include <cardinal/assets/material_loader.h>
+#include <cardinal/assets/mesh_loader.h>
+#include <cardinal/assets/texture_loader.h>
 #include <cardinal/cardinal.h>
 #include <cardinal/core/async_loader.h>
 #include <cardinal/core/log.h>
 #include <cardinal/core/ref_counting.h>
 #include <cardinal/core/resource_state.h>
-#include <cardinal/assets/texture_loader.h>
-#include <cardinal/assets/mesh_loader.h>
-#include <cardinal/assets/material_loader.h>
 #include <stdio.h>
 #include <string.h>
 #ifdef _WIN32
@@ -73,64 +73,63 @@ int main(int argc, char* argv[]) {
     cardinal_log_init_with_level(log_level);
 
     // Initialize memory management system
-    LOG_INFO("Initializing memory management system...");
+    CARDINAL_LOG_INFO("Initializing memory management system...");
     cardinal_memory_init(4 * 1024 * 1024); // 4MB linear allocator
-    LOG_INFO("Memory management system initialized");
+    CARDINAL_LOG_INFO("Memory management system initialized");
 
     // Initialize reference counting system
-    LOG_INFO("Initializing reference counting system...");
+    CARDINAL_LOG_INFO("Initializing reference counting system...");
     if (!cardinal_ref_counting_init(1009)) {
-        LOG_ERROR("Failed to initialize reference counting system");
+        CARDINAL_LOG_ERROR("Failed to initialize reference counting system");
         cardinal_memory_shutdown();
         cardinal_log_shutdown();
         return -1;
     }
-    LOG_INFO("Reference counting system initialized");
+    CARDINAL_LOG_INFO("Reference counting system initialized");
 
     // Initialize resource state tracking system
-    LOG_INFO("Initializing resource state tracking system...");
+    CARDINAL_LOG_INFO("Initializing resource state tracking system...");
     if (!cardinal_resource_state_init(1009)) {
-        LOG_ERROR("Failed to initialize resource state tracking system");
+        CARDINAL_LOG_ERROR("Failed to initialize resource state tracking system");
         cardinal_ref_counting_shutdown();
         cardinal_memory_shutdown();
         cardinal_log_shutdown();
         return -1;
     }
-    LOG_INFO("Resource state tracking system initialized");
+    CARDINAL_LOG_INFO("Resource state tracking system initialized");
 
     // Initialize async loader system
-    LOG_INFO("Initializing async loader system...");
-    
+    CARDINAL_LOG_INFO("Initializing async loader system...");
+
     // Check memory allocator first
     if (!cardinal_get_allocator_for_category(CARDINAL_MEMORY_CATEGORY_ENGINE)) {
-        LOG_ERROR("Engine memory allocator not available");
+        CARDINAL_LOG_ERROR("Engine memory allocator not available");
         cardinal_memory_shutdown();
         cardinal_log_shutdown();
         return -1;
     }
-    LOG_INFO("Memory allocator check passed");
-    
+    CARDINAL_LOG_INFO("Memory allocator check passed");
+
     CardinalAsyncLoaderConfig async_config = {
         .worker_thread_count = 2, // Reduce thread count for debugging
         .max_queue_size = 100,    // Reduce queue size for debugging
-        .enable_priority_queue = true
-    };
-    
-    LOG_INFO("About to call cardinal_async_loader_init...");
+        .enable_priority_queue = true};
+
+    CARDINAL_LOG_INFO("About to call cardinal_async_loader_init...");
     if (!cardinal_async_loader_init(&async_config)) {
-        LOG_ERROR("Failed to initialize async loader system");
+        CARDINAL_LOG_ERROR("Failed to initialize async loader system");
         cardinal_memory_shutdown();
         cardinal_log_shutdown();
         return -1;
     }
-    LOG_INFO("Async loader system initialized successfully");
-    
+    CARDINAL_LOG_INFO("Async loader system initialized successfully");
+
     // Initialize asset caches with multi-threading support
     texture_cache_initialize(1000);
     mesh_cache_initialize(1000);
     material_cache_initialize(1000);
-    
-    LOG_INFO("Multi-threaded asset caches initialized successfully");
+
+    CARDINAL_LOG_INFO("Multi-threaded asset caches initialized successfully");
 
     CardinalWindowConfig config = {
         .title = "Cardinal Editor", .width = 1600, .height = 900, .resizable = true};
@@ -168,9 +167,10 @@ int main(int argc, char* argv[]) {
         editor_layer_render();
 
         cardinal_renderer_draw_frame(&renderer);
-        
+
         // Process any pending scene uploads AFTER frame rendering is complete
         // This ensures descriptor sets aren't recreated while command buffers are executing
+        CARDINAL_LOG_DEBUG("[EDITOR] Processing pending uploads after frame draw");
         editor_layer_process_pending_uploads();
     }
 
@@ -178,17 +178,20 @@ int main(int argc, char* argv[]) {
     editor_layer_shutdown();
     cardinal_renderer_destroy(&renderer);
     cardinal_window_destroy(window);
-    
+
     // Shutdown asset caches before async loader
     material_cache_shutdown_system();
     mesh_cache_shutdown_system();
     texture_cache_shutdown_system();
-    
+
     cardinal_async_loader_shutdown();
-    
+
+    // Shutdown resource state tracking system before reference counting
+    cardinal_resource_state_shutdown();
+
     // Shutdown reference counting system before memory shutdown
     cardinal_ref_counting_shutdown();
-    
+
     cardinal_memory_shutdown();
     cardinal_log_shutdown();
     return 0;

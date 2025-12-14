@@ -38,19 +38,21 @@
 #include <GLFW/glfw3.h>
 
 #include "cardinal/core/log.h"
-#include "cardinal/core/window.h"
 #include "cardinal/core/transform.h"
+#include "cardinal/core/window.h"
 #include "cardinal/renderer/renderer.h"
 #include "cardinal/renderer/renderer_internal.h"
 #include <cardinal/renderer/vulkan_swapchain.h>
 
 #include "cardinal/assets/material_ref_counting.h"
 #include "cardinal/core/ref_counting.h"
-#include "cardinal/renderer/vulkan_mt.h"
-#include "cardinal/renderer/vulkan_commands.h"
-#include "cardinal/renderer/vulkan_pbr.h"
-#include "cardinal/renderer/vulkan_mesh_shader.h"
 #include "cardinal/renderer/vulkan_barrier_validation.h"
+#include "cardinal/renderer/vulkan_commands.h"
+#include "cardinal/renderer/vulkan_mesh_shader.h"
+#include "cardinal/renderer/vulkan_mt.h"
+#include "cardinal/renderer/vulkan_pbr.h"
+#include "cardinal/renderer/vulkan_sync_manager.h"
+#include "vulkan_buffer_manager.h"
 #include "vulkan_simple_pipelines.h"
 #include "vulkan_state.h"
 #include <cardinal/renderer/util/vulkan_buffer_utils.h>
@@ -59,7 +61,229 @@
 #include <cardinal/renderer/vulkan_pipeline.h>
 
 // Forward declarations
-static bool vk_recover_from_device_loss(VulkanState* s);
+static void vk_handle_window_resize(uint32_t width, uint32_t height, void* user_data) {
+    VulkanState* s = (VulkanState*)user_data;
+    if (!s)
+        return;
+    s->swapchain.window_resize_pending = true;
+    s->swapchain.pending_width = width;
+    s->swapchain.pending_height = height;
+    s->swapchain.recreation_pending = true;
+    CARDINAL_LOG_INFO("[SWAPCHAIN] Resize event: %ux%u, marking recreation pending", width, height);
+}
+
+/**
+ * @brief Initializes the core Vulkan instance, surface, and device.
+ */
+static bool init_vulkan_core(VulkanState* s, CardinalWindow* window) {
+    CARDINAL_LOG_WARN("renderer_create: begin");
+    if (!vk_create_instance(s)) {
+        CARDINAL_LOG_ERROR("vk_create_instance failed");
+        return false;
+    }
+    CARDINAL_LOG_INFO("renderer_create: instance");
+    if (!vk_create_surface(s, window)) {
+        CARDINAL_LOG_ERROR("vk_create_surface failed");
+        return false;
+    }
+    CARDINAL_LOG_INFO("renderer_create: surface");
+    if (!vk_pick_physical_device(s)) {
+        CARDINAL_LOG_ERROR("vk_pick_physical_device failed");
+        return false;
+    }
+    CARDINAL_LOG_INFO("renderer_create: physical_device");
+    if (!vk_create_device(s)) {
+        CARDINAL_LOG_ERROR("vk_create_device failed");
+        return false;
+    }
+    CARDINAL_LOG_INFO("renderer_create: device");
+    return true;
+}
+
+/**
+ * @brief Initializes reference counting systems.
+ */
+static bool init_ref_counting(void) {
+    // Initialize reference counting system (if not already initialized)
+    if (!cardinal_ref_counting_init(256)) {
+        // This is expected if already initialized by the application
+        CARDINAL_LOG_DEBUG("Reference counting system already initialized or failed to initialize");
+    }
+    CARDINAL_LOG_INFO("renderer_create: ref_counting");
+
+    // Initialize material reference counting
+    if (!cardinal_material_ref_init()) {
+        CARDINAL_LOG_ERROR("cardinal_material_ref_counting_init failed");
+        cardinal_ref_counting_shutdown();
+        return false;
+    }
+    CARDINAL_LOG_INFO("renderer_create: material_ref_counting");
+    return true;
+}
+
+/**
+ * @brief Sets up Vulkan function pointers in the context.
+ */
+static void setup_function_pointers(VulkanState* s) {
+    if (!s->context.vkQueueSubmit2)
+        s->context.vkQueueSubmit2 = vkQueueSubmit2;
+    if (!s->context.vkCmdPipelineBarrier2)
+        s->context.vkCmdPipelineBarrier2 = vkCmdPipelineBarrier2;
+    if (!s->context.vkCmdBeginRendering)
+        s->context.vkCmdBeginRendering = vkCmdBeginRendering;
+    if (!s->context.vkCmdEndRendering)
+        s->context.vkCmdEndRendering = vkCmdEndRendering;
+}
+
+/**
+ * @brief Initializes the synchronization manager.
+ */
+static bool init_sync_manager(VulkanState* s) {
+    // Initialize centralized sync manager
+    s->sync_manager = malloc(sizeof(VulkanSyncManager));
+    if (!s->sync_manager) {
+        CARDINAL_LOG_ERROR("Failed to allocate memory for VulkanSyncManager");
+        return false;
+    }
+    if (!vulkan_sync_manager_init(s->sync_manager, s->context.device, s->context.graphics_queue,
+                                  s->sync.max_frames_in_flight)) {
+        CARDINAL_LOG_ERROR("vulkan_sync_manager_init failed");
+        free(s->sync_manager);
+        s->sync_manager = NULL;
+        return false;
+    }
+    CARDINAL_LOG_INFO("renderer_create: sync_manager");
+
+    // Ensure renderer and sync manager use the same timeline semaphore
+    if (s->sync_manager && s->sync_manager->timeline_semaphore != VK_NULL_HANDLE &&
+        s->sync.timeline_semaphore != s->sync_manager->timeline_semaphore) {
+        if (s->sync.timeline_semaphore != VK_NULL_HANDLE) {
+            vkDestroySemaphore(s->context.device, s->sync.timeline_semaphore, NULL);
+            CARDINAL_LOG_INFO("[INIT] Replacing renderer timeline with sync_manager timeline");
+        }
+        s->sync.timeline_semaphore = s->sync_manager->timeline_semaphore;
+    }
+    return true;
+}
+
+/**
+ * @brief Initializes the PBR pipeline.
+ */
+static void init_pbr_pipeline_helper(VulkanState* s) {
+    s->pipelines.use_pbr_pipeline = false;
+    if (vk_pbr_pipeline_create(&s->pipelines.pbr_pipeline, s->context.device,
+                               s->context.physical_device, s->swapchain.format,
+                               s->swapchain.depth_format, s->commands.pools[0],
+                               s->context.graphics_queue, &s->allocator, s)) {
+        s->pipelines.use_pbr_pipeline = true;
+        CARDINAL_LOG_INFO("renderer_create: PBR pipeline");
+    } else {
+        CARDINAL_LOG_ERROR("vk_pbr_pipeline_create failed");
+    }
+}
+
+/**
+ * @brief Initializes the Mesh Shader pipeline.
+ */
+static void init_mesh_shader_pipeline_helper(VulkanState* s) {
+    s->pipelines.use_mesh_shader_pipeline = false;
+    if (!s->context.supports_mesh_shader) {
+        CARDINAL_LOG_INFO("Mesh shaders not supported on this device");
+        return;
+    }
+
+    if (!vk_mesh_shader_init(s)) {
+        CARDINAL_LOG_ERROR("vk_mesh_shader_init failed");
+        return;
+    }
+
+    MeshShaderPipelineConfig config = {0};
+    const char* shaders_dir = getenv("CARDINAL_SHADERS_DIR");
+    if (!shaders_dir || !shaders_dir[0])
+        shaders_dir = "assets/shaders";
+    
+    char mesh_path[512], task_path[512], frag_path[512];
+    snprintf(mesh_path, sizeof(mesh_path), "%s/%s", shaders_dir, "mesh.mesh.spv");
+    snprintf(task_path, sizeof(task_path), "%s/%s", shaders_dir, "task.task.spv");
+    snprintf(frag_path, sizeof(frag_path), "%s/%s", shaders_dir, "mesh.frag.spv");
+    
+    config.mesh_shader_path = mesh_path;
+    config.task_shader_path = task_path;
+    config.fragment_shader_path = frag_path;
+    config.max_vertices_per_meshlet = 64;
+    config.max_primitives_per_meshlet = 126;
+    config.cull_mode = VK_CULL_MODE_BACK_BIT;
+    config.front_face = VK_FRONT_FACE_COUNTER_CLOCKWISE;
+    config.polygon_mode = VK_POLYGON_MODE_FILL;
+    config.blend_enable = false;
+    config.depth_test_enable = true;
+    config.depth_write_enable = true;
+    config.depth_compare_op = VK_COMPARE_OP_LESS;
+
+    if (vk_mesh_shader_create_pipeline(s, &config, s->swapchain.format,
+                                       s->swapchain.depth_format,
+                                       &s->pipelines.mesh_shader_pipeline)) {
+        s->pipelines.use_mesh_shader_pipeline = true;
+        CARDINAL_LOG_INFO("renderer_create: Mesh shader pipeline");
+    } else {
+        CARDINAL_LOG_ERROR("vk_mesh_shader_create_pipeline failed");
+    }
+}
+
+/**
+ * @brief Initializes the Compute pipeline.
+ */
+static void init_compute_pipeline_helper(VulkanState* s) {
+    s->pipelines.compute_shader_initialized = false;
+    s->pipelines.compute_descriptor_pool = VK_NULL_HANDLE;
+    s->pipelines.compute_command_pool = VK_NULL_HANDLE;
+    s->pipelines.compute_command_buffer = VK_NULL_HANDLE;
+
+    if (vk_compute_init(s)) {
+        s->pipelines.compute_shader_initialized = true;
+        CARDINAL_LOG_INFO("renderer_create: Compute shader support");
+    } else {
+        CARDINAL_LOG_ERROR("vk_compute_init failed");
+    }
+}
+
+/**
+ * @brief Initializes Simple pipelines (UV, Wireframe).
+ */
+static void init_simple_pipelines_helper(VulkanState* s) {
+    s->pipelines.uv_pipeline = VK_NULL_HANDLE;
+    s->pipelines.uv_pipeline_layout = VK_NULL_HANDLE;
+    s->pipelines.wireframe_pipeline = VK_NULL_HANDLE;
+    s->pipelines.wireframe_pipeline_layout = VK_NULL_HANDLE;
+    s->pipelines.simple_descriptor_layout = VK_NULL_HANDLE;
+    s->pipelines.simple_descriptor_pool = VK_NULL_HANDLE;
+    s->pipelines.simple_descriptor_set = VK_NULL_HANDLE;
+    s->pipelines.simple_uniform_buffer = VK_NULL_HANDLE;
+    s->pipelines.simple_uniform_buffer_memory = VK_NULL_HANDLE;
+    s->pipelines.simple_uniform_buffer_mapped = NULL;
+
+    if (!vk_create_simple_pipelines(s)) {
+        CARDINAL_LOG_ERROR("vk_create_simple_pipelines failed");
+    } else {
+        CARDINAL_LOG_INFO("renderer_create: simple pipelines");
+    }
+}
+
+/**
+ * @brief Initializes PBR, Mesh Shader, Compute, and Simple pipelines.
+ */
+static bool init_pipelines(VulkanState* s) {
+    init_pbr_pipeline_helper(s);
+    init_mesh_shader_pipeline_helper(s);
+    init_compute_pipeline_helper(s);
+    
+    // Initialize rendering mode
+    s->current_rendering_mode = CARDINAL_RENDERING_MODE_NORMAL;
+    
+    init_simple_pipelines_helper(s);
+
+    return true;
+}
 
 /**
  * @brief Creates and initializes the Cardinal Renderer.
@@ -79,437 +303,128 @@ bool cardinal_renderer_create(CardinalRenderer* out_renderer, CardinalWindow* wi
     out_renderer->_opaque = s;
 
     // Initialize device loss recovery state
-    s->device_lost = false;
-    s->recovery_in_progress = false;
-    s->recovery_attempt_count = 0;
-    s->max_recovery_attempts = 3;  // Allow up to 3 recovery attempts
-    s->window = window;  // Store window reference for recovery
-    s->device_loss_callback = NULL;
-    s->recovery_complete_callback = NULL;
-    s->recovery_callback_user_data = NULL;
+    s->recovery.device_lost = false;
+    s->recovery.recovery_in_progress = false;
+    s->recovery.attempt_count = 0;
+    s->recovery.max_attempts = 3; // Allow up to 3 recovery attempts
+    s->recovery.window = window;  // Store window reference for recovery
+    s->recovery.device_loss_callback = NULL;
+    s->recovery.recovery_complete_callback = NULL;
+    s->recovery.callback_user_data = NULL;
+    // Register window resize callback
+    window->resize_callback = vk_handle_window_resize;
+    window->resize_user_data = s;
 
-    LOG_INFO("renderer_create: begin");
-    if (!vk_create_instance(s)) {
-        LOG_ERROR("vk_create_instance failed");
-        return false;
-    }
-    LOG_INFO("renderer_create: instance");
-    if (!vk_create_surface(s, window)) {
-        LOG_ERROR("vk_create_surface failed");
-        return false;
-    }
-    LOG_INFO("renderer_create: surface");
-    if (!vk_pick_physical_device(s)) {
-        LOG_ERROR("vk_pick_physical_device failed");
-        return false;
-    }
-    LOG_INFO("renderer_create: physical_device");
-    if (!vk_create_device(s)) {
-        LOG_ERROR("vk_create_device failed");
-        return false;
-    }
-    LOG_INFO("renderer_create: device");
-
-    // Initialize reference counting system
-    if (!cardinal_ref_counting_init(256)) {
-        LOG_ERROR("cardinal_ref_counting_init failed");
-        return false;
-    }
-    LOG_INFO("renderer_create: ref_counting");
-
-    // Initialize material reference counting
-    if (!cardinal_material_ref_init()) {
-        LOG_ERROR("cardinal_material_ref_counting_init failed");
-        cardinal_ref_counting_shutdown();
-        return false;
-    }
-    LOG_INFO("renderer_create: material_ref_counting");
+    if (!init_vulkan_core(s, window)) return false;
+    if (!init_ref_counting()) return false;
 
     if (!vk_create_swapchain(s)) {
-        LOG_ERROR("vk_create_swapchain failed");
+        CARDINAL_LOG_ERROR("vk_create_swapchain failed");
         cardinal_material_ref_shutdown();
         cardinal_ref_counting_shutdown();
         return false;
     }
-    LOG_INFO("renderer_create: swapchain");
+    CARDINAL_LOG_WARN("renderer_create: swapchain created");
+
     if (!vk_create_pipeline(s)) {
-        LOG_ERROR("vk_create_pipeline failed");
+        CARDINAL_LOG_ERROR("vk_create_pipeline failed");
         return false;
     }
-    LOG_INFO("renderer_create: pipeline");
+    CARDINAL_LOG_WARN("renderer_create: pipeline created");
+
     if (!vk_create_commands_sync(s)) {
-        LOG_ERROR("vk_create_commands_sync failed");
+        CARDINAL_LOG_ERROR("vk_create_commands_sync failed");
         return false;
     }
-    LOG_INFO("renderer_create: commands");
+    CARDINAL_LOG_INFO("renderer_create: commands");
 
-    // Initialize PBR pipeline
-    s->use_pbr_pipeline = false;
-    if (vk_pbr_pipeline_create(&s->pbr_pipeline, s->device, s->physical_device, s->swapchain_format,
-                               s->depth_format, s->command_pools[0], s->graphics_queue,
-                               &s->allocator)) {
-        s->use_pbr_pipeline = true;
-        LOG_INFO("renderer_create: PBR pipeline");
-    } else {
-        LOG_ERROR("vk_pbr_pipeline_create failed");
-        s->use_pbr_pipeline = false;
-    }
+    setup_function_pointers(s);
 
-    // Initialize mesh shader pipeline
-    s->use_mesh_shader_pipeline = false;
-    if (s->supports_mesh_shader) {
-        // Initialize mesh shader system first
-        if (!vk_mesh_shader_init(s)) {
-            LOG_ERROR("vk_mesh_shader_init failed");
-            s->use_mesh_shader_pipeline = false;
-        } else {
-            // Create default mesh shader pipeline configuration
-        MeshShaderPipelineConfig config = {0};
-        // TODO: Remove username hardcoding.
-        config.mesh_shader_path = "C:\\Users\\admin\\Documents\\Cardinal\\assets\\shaders\\mesh.mesh.spv";
-        config.task_shader_path = "C:\\Users\\admin\\Documents\\Cardinal\\assets\\shaders\\task.task.spv";
-        config.fragment_shader_path = "C:\\Users\\admin\\Documents\\Cardinal\\assets\\shaders\\mesh.frag.spv";
-        config.max_vertices_per_meshlet = 64;
-        config.max_primitives_per_meshlet = 126;
-        config.cull_mode = VK_CULL_MODE_BACK_BIT;
-        config.front_face = VK_FRONT_FACE_COUNTER_CLOCKWISE;
-        config.polygon_mode = VK_POLYGON_MODE_FILL;
-        config.blend_enable = false;
-        config.depth_test_enable = true;
-        config.depth_write_enable = true;
-        config.depth_compare_op = VK_COMPARE_OP_LESS;
-        
-            if (vk_mesh_shader_create_pipeline(s, &config, s->swapchain_format, s->depth_format, &s->mesh_shader_pipeline)) {
-                s->use_mesh_shader_pipeline = true;
-                LOG_INFO("renderer_create: Mesh shader pipeline");
-            } else {
-                LOG_ERROR("vk_mesh_shader_create_pipeline failed");
-                s->use_mesh_shader_pipeline = false;
-            }
-        }
-    } else {
-        LOG_INFO("Mesh shaders not supported on this device");
-    }
-
-    // Initialize compute shader support
-    s->compute_shader_initialized = false;
-    s->compute_descriptor_pool = VK_NULL_HANDLE;
-    s->compute_command_pool = VK_NULL_HANDLE;
-    s->compute_command_buffer = VK_NULL_HANDLE;
-    
-    if (vk_compute_init(s)) {
-        s->compute_shader_initialized = true;
-        LOG_INFO("renderer_create: Compute shader support");
-    } else {
-        LOG_ERROR("vk_compute_init failed");
-        s->compute_shader_initialized = false;
-    }
-
-    // Initialize rendering mode
-    s->current_rendering_mode = CARDINAL_RENDERING_MODE_NORMAL;
-
-    // Initialize additional pipeline handles to null
-    s->uv_pipeline = VK_NULL_HANDLE;
-    s->uv_pipeline_layout = VK_NULL_HANDLE;
-    s->wireframe_pipeline = VK_NULL_HANDLE;
-    s->wireframe_pipeline_layout = VK_NULL_HANDLE;
-    s->simple_descriptor_layout = VK_NULL_HANDLE;
-    s->simple_descriptor_pool = VK_NULL_HANDLE;
-    s->simple_descriptor_set = VK_NULL_HANDLE;
-    s->simple_uniform_buffer = VK_NULL_HANDLE;
-    s->simple_uniform_buffer_memory = VK_NULL_HANDLE;
-    s->simple_uniform_buffer_mapped = NULL;
+    if (!init_sync_manager(s)) return false;
+    if (!init_pipelines(s)) return false;
 
     // Initialize barrier validation system
     if (!cardinal_barrier_validation_init(1000, false)) {
-        LOG_ERROR("cardinal_barrier_validation_init failed");
+        CARDINAL_LOG_ERROR("cardinal_barrier_validation_init failed");
         // Continue anyway, validation is optional
     } else {
-        LOG_INFO("renderer_create: barrier validation");
-    }
-
-    // Create simple pipelines (UV and wireframe)
-    if (!vk_create_simple_pipelines(s)) {
-        LOG_ERROR("vk_create_simple_pipelines failed");
-        // Continue anyway, only PBR will work
-    } else {
-        LOG_INFO("renderer_create: simple pipelines");
+        CARDINAL_LOG_INFO("renderer_create: barrier validation");
     }
 
     return true;
 }
 
-/**
- * @brief Draws a single frame using the renderer.
- *
- * Handles synchronization, command recording, submission, and presentation.
- * @param renderer Pointer to the initialized CardinalRenderer.
- *
- * @todo Optimize synchronization to reduce CPU-GPU stalls.
- * @todo Add error handling for swapchain recreation on window resize.
- */
-void cardinal_renderer_draw_frame(CardinalRenderer* renderer) {
+bool cardinal_renderer_create_headless(CardinalRenderer* out_renderer, uint32_t width,
+                                       uint32_t height) {
+    if (!out_renderer)
+        return false;
+    VulkanState* s = (VulkanState*)calloc(1, sizeof(VulkanState));
+    out_renderer->_opaque = s;
+    s->swapchain.headless_mode = true;
+    s->swapchain.skip_present = true;
+    s->recovery.window = NULL;
+    s->swapchain.handle = VK_NULL_HANDLE;
+    s->swapchain.extent = (VkExtent2D){width, height};
+    s->swapchain.image_count = 1;
+    s->recovery.device_lost = false;
+    s->recovery.recovery_in_progress = false;
+    s->recovery.attempt_count = 0;
+    s->recovery.max_attempts = 0;
+
+    CARDINAL_LOG_WARN("renderer_create_headless: begin");
+    if (!vk_create_instance(s)) {
+        CARDINAL_LOG_ERROR("vk_create_instance failed");
+        return false;
+    }
+    if (!vk_pick_physical_device(s)) {
+        CARDINAL_LOG_ERROR("vk_pick_physical_device failed");
+        return false;
+    }
+    if (!vk_create_device(s)) {
+        CARDINAL_LOG_ERROR("vk_create_device failed");
+        return false;
+    }
+
+    if (!vk_create_commands_sync(s)) {
+        CARDINAL_LOG_ERROR("vk_create_commands_sync failed");
+        return false;
+    }
+
+    s->sync_manager = malloc(sizeof(VulkanSyncManager));
+    if (!s->sync_manager) {
+        CARDINAL_LOG_ERROR("Failed to allocate VulkanSyncManager");
+        return false;
+    }
+    if (!vulkan_sync_manager_init(s->sync_manager, s->context.device, s->context.graphics_queue,
+                                  s->sync.max_frames_in_flight)) {
+        CARDINAL_LOG_ERROR("vulkan_sync_manager_init failed");
+        free(s->sync_manager);
+        s->sync_manager = NULL;
+        return false;
+    }
+
+    // Ensure function pointers fallback
+    if (!s->context.vkQueueSubmit2)
+        s->context.vkQueueSubmit2 = vkQueueSubmit2;
+    if (!s->context.vkCmdPipelineBarrier2)
+        s->context.vkCmdPipelineBarrier2 = vkCmdPipelineBarrier2;
+    if (!s->context.vkCmdBeginRendering)
+        s->context.vkCmdBeginRendering = vkCmdBeginRendering;
+    if (!s->context.vkCmdEndRendering)
+        s->context.vkCmdEndRendering = vkCmdEndRendering;
+
+    CARDINAL_LOG_INFO("renderer_create_headless: success");
+    return true;
+}
+
+void cardinal_renderer_set_skip_present(CardinalRenderer* renderer, bool skip) {
     VulkanState* s = (VulkanState*)renderer->_opaque;
+    s->swapchain.skip_present = skip;
+}
 
-    CARDINAL_LOG_INFO("[SYNC] Frame %u: Starting draw_frame", s->current_frame);
-
-    // Check for pending swapchain recreation and handle it proactively
-    if (s->swapchain_recreation_pending) {
-        CARDINAL_LOG_INFO("[SWAPCHAIN] Frame %u: Handling pending swapchain recreation", s->current_frame);
-        
-        if (vk_recreate_swapchain(s)) {
-            // Recreate per-image initialization tracking to match new swapchain image count
-            vk_recreate_images_in_flight(s);
-            s->swapchain_recreation_pending = false;
-            CARDINAL_LOG_INFO("[SWAPCHAIN] Frame %u: Proactive swapchain recreation successful", s->current_frame);
-        } else {
-            // Check if recreation was throttled (not a real failure)
-            if (s->consecutive_recreation_failures >= 6) {
-                // After many failures, clear the pending flag to stop spam
-                s->swapchain_recreation_pending = false;
-                CARDINAL_LOG_WARN("[SWAPCHAIN] Frame %u: Clearing pending recreation after %u consecutive failures", 
-                                 s->current_frame, s->consecutive_recreation_failures);
-            }
-            
-            // If swapchain recreation fails, it might indicate device issues
-            if (s->device_lost) {
-                CARDINAL_LOG_WARN("[SWAPCHAIN] Device loss detected during proactive recreation");
-                if (s->recovery_attempt_count < s->max_recovery_attempts) {
-                    vk_recover_from_device_loss(s);
-                }
-            }
-            return; // Skip this frame
-        }
-    }
-
-    // Conditional synchronization: check if GPU is ahead of CPU to skip unnecessary waits
-    VkFence current_fence = s->in_flight_fences[s->current_frame];
-    
-    // Check fence status first - if already signaled, GPU is ahead and no wait needed
-    VkResult fence_status = vkGetFenceStatus(s->device, current_fence);
-    if (fence_status == VK_SUCCESS) {
-        // GPU is ahead - no wait needed, just reset fence
-        CARDINAL_LOG_DEBUG("[SYNC] Frame %u: GPU ahead of CPU, skipping wait", s->current_frame);
-    } else if (fence_status == VK_NOT_READY) {
-        // GPU is behind - need to wait
-        CARDINAL_LOG_DEBUG("[SYNC] Frame %u: GPU behind CPU, waiting for fence", s->current_frame);
-        VkResult fence_wait = vkWaitForFences(s->device, 1, &current_fence, VK_TRUE, UINT64_MAX);
-        if (fence_wait == VK_ERROR_DEVICE_LOST) {
-            CARDINAL_LOG_ERROR("[SYNC] Frame %u: DEVICE LOST during fence wait! GPU crashed",
-                               s->current_frame);
-            s->device_lost = true;
-            if (s->recovery_attempt_count < s->max_recovery_attempts) {
-                vk_recover_from_device_loss(s);
-            }
-            return;
-        } else if (fence_wait != VK_SUCCESS) {
-            CARDINAL_LOG_ERROR("[SYNC] Frame %u: Fence wait failed: %d", s->current_frame, fence_wait);
-            return;
-        }
-    } else {
-        CARDINAL_LOG_ERROR("[SYNC] Frame %u: Fence status check failed: %d", s->current_frame, fence_status);
-        return;
-    }
-    
-    // Reset fence for this frame
-    vkResetFences(s->device, 1, &current_fence);
-    CARDINAL_LOG_INFO("[SYNC] Frame %u: Conditional fence synchronization completed", s->current_frame);
-    
-    // Prepare mesh shader rendering after fence synchronization to ensure descriptor sets
-    // are updated when no command buffers are using them (prevents validation errors)
-    if (s->current_rendering_mode == CARDINAL_RENDERING_MODE_MESH_SHADER) {
-        vk_prepare_mesh_shader_rendering(s);
-    }
-
-    // Calculate timeline values for legacy compatibility
-    uint64_t frame_base = s->current_frame_value;
-    uint64_t signal_after_render = frame_base + 1;
-
-    // Check if swapchain is valid before attempting to acquire image
-    if (s->swapchain == VK_NULL_HANDLE) {
-        CARDINAL_LOG_WARN("[SWAPCHAIN] Frame %u: Swapchain is null, attempting recreation", s->current_frame);
-        if (vk_recreate_swapchain(s)) {
-            vk_recreate_images_in_flight(s);
-            CARDINAL_LOG_INFO("[SWAPCHAIN] Frame %u: Swapchain recreation successful after null check", s->current_frame);
-        } else {
-            CARDINAL_LOG_ERROR("[SWAPCHAIN] Frame %u: Failed to recreate null swapchain", s->current_frame);
-            return;
-        }
-    }
-
-    uint32_t image_index;
-    CARDINAL_LOG_INFO("[SYNC] Frame %u: Acquiring image", s->current_frame);
-    VkSemaphore acquire_semaphore = s->image_acquired_semaphores[s->current_frame];
-    VkResult ai = vkAcquireNextImageKHR(s->device, s->swapchain, UINT64_MAX, acquire_semaphore,
-                                        VK_NULL_HANDLE, &image_index);
-    CARDINAL_LOG_INFO("[SYNC] Frame %u: Acquire result: %d, image_index: %u", s->current_frame, ai,
-                      image_index);
-
-    if (ai == VK_ERROR_OUT_OF_DATE_KHR || ai == VK_SUBOPTIMAL_KHR) {
-        // Swapchain is out of date (e.g., window resized), recreate it
-        CARDINAL_LOG_INFO("[SWAPCHAIN] Frame %u: Recreating swapchain due to %s", 
-                         s->current_frame, 
-                         ai == VK_ERROR_OUT_OF_DATE_KHR ? "OUT_OF_DATE" : "SUBOPTIMAL");
-        
-        if (vk_recreate_swapchain(s)) {
-            // Recreate per-image initialization tracking to match new swapchain image count
-            vk_recreate_images_in_flight(s);
-            CARDINAL_LOG_INFO("[SWAPCHAIN] Frame %u: Swapchain recreation successful", s->current_frame);
-        } else {
-            CARDINAL_LOG_ERROR("[SWAPCHAIN] Frame %u: Swapchain recreation failed", s->current_frame);
-            // If swapchain recreation fails, it might indicate device issues
-            if (s->device_lost) {
-                CARDINAL_LOG_WARN("[SWAPCHAIN] Device loss detected during swapchain recreation");
-                if (s->recovery_attempt_count < s->max_recovery_attempts) {
-                    vk_recover_from_device_loss(s);
-                }
-            }
-        }
-        return; // Skip this frame
-    } else if (ai == VK_ERROR_DEVICE_LOST) {
-        CARDINAL_LOG_ERROR(
-            "[SYNC] Frame %u: DEVICE LOST during swapchain image acquisition! GPU crashed",
-            s->current_frame);
-        s->device_lost = true;
-        if (s->recovery_attempt_count < s->max_recovery_attempts) {
-            vk_recover_from_device_loss(s);
-        }
-        return;
-    } else if (ai != VK_SUCCESS) {
-        CARDINAL_LOG_ERROR("[SYNC] Frame %u: Failed to acquire swapchain image: %d",
-                           s->current_frame, ai);
-        return;
-    }
-
-    // Record command buffer using double buffering
-    vk_record_cmd(s, image_index);
-
-    // Get the current command buffer from double buffering system
-    VkCommandBuffer cmd_buf;
-    if (s->current_command_buffer_index == 0) {
-        cmd_buf = s->command_buffers[s->current_frame];
-    } else {
-        cmd_buf = s->secondary_command_buffers[s->current_frame];
-    }
-    CARDINAL_LOG_INFO("[SUBMIT] Frame %u: Submitting cmd %p (buffer %u)", s->current_frame, (void*)cmd_buf, s->current_command_buffer_index);
-
-    // Wait on the binary acquire semaphore before executing rendering commands
-    VkSemaphoreSubmitInfo wait_acquire = {.sType = VK_STRUCTURE_TYPE_SEMAPHORE_SUBMIT_INFO,
-                                          .semaphore = acquire_semaphore,
-                                          .value = 0, // ignored for binary semaphores
-                                          .stageMask =
-                                              VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT,
-                                          .deviceIndex = 0};
-
-    // Signal both render finished semaphore (for present) and timeline semaphore (legacy)
-    VkSemaphoreSubmitInfo signal_semaphores[2] = {
-        {.sType = VK_STRUCTURE_TYPE_SEMAPHORE_SUBMIT_INFO,
-         .semaphore = s->render_finished_semaphores[s->current_frame],
-         .value = 0, // binary semaphore
-         .stageMask = VK_PIPELINE_STAGE_2_ALL_GRAPHICS_BIT,
-         .deviceIndex = 0},
-        {.sType = VK_STRUCTURE_TYPE_SEMAPHORE_SUBMIT_INFO,
-         .semaphore = s->timeline_semaphore,
-         .value = signal_after_render,
-         .stageMask = VK_PIPELINE_STAGE_2_ALL_GRAPHICS_BIT,
-         .deviceIndex = 0}
-    };
-
-    VkCommandBufferSubmitInfo cmd_buffer_info = {.sType =
-                                                     VK_STRUCTURE_TYPE_COMMAND_BUFFER_SUBMIT_INFO,
-                                                 .commandBuffer = cmd_buf,
-                                                 .deviceMask = 0};
-
-    VkSubmitInfo2 submit_info2 = {.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO_2,
-                                  .waitSemaphoreInfoCount = 1,
-                                  .pWaitSemaphoreInfos = &wait_acquire,
-                                  .commandBufferInfoCount = 1,
-                                  .pCommandBufferInfos = &cmd_buffer_info,
-                                  .signalSemaphoreInfoCount = 2,
-                                  .pSignalSemaphoreInfos = signal_semaphores};
-
-    VkResult submit_res = s->vkQueueSubmit2(s->graphics_queue, 1, &submit_info2, current_fence);
-    CARDINAL_LOG_INFO("[SUBMIT] Frame %u: Submit result: %d", s->current_frame, submit_res);
-    if (submit_res == VK_ERROR_DEVICE_LOST) {
-        CARDINAL_LOG_ERROR("[SUBMIT] Frame %u: DEVICE LOST during submit!", s->current_frame);
-        s->device_lost = true;
-        if (s->recovery_attempt_count < s->max_recovery_attempts) {
-            vk_recover_from_device_loss(s);
-        }
-        return;
-    } else if (submit_res != VK_SUCCESS) {
-        CARDINAL_LOG_ERROR("[SUBMIT] Frame %u: Queue submit failed: %d", s->current_frame,
-                           submit_res);
-        return;
-    }
-
-    // Wait for device to be idle before processing cleanup to ensure command buffers complete
-    VkResult idle_result = vkDeviceWaitIdle(s->device);
-    if (idle_result != VK_SUCCESS) {
-        CARDINAL_LOG_ERROR("[SYNC] Frame %u: Failed to wait for device idle before cleanup: %d", s->current_frame, idle_result);
-        return;
-    }
-    
-    // Process pending mesh shader draw data cleanup after ensuring GPU completion
-    vk_mesh_shader_process_pending_cleanup(s);
-
-    // Use GPU-side synchronization for present - no CPU wait needed!
-    VkSemaphore render_finished = s->render_finished_semaphores[s->current_frame];
-    
-    VkPresentInfoKHR present_info = {.sType = VK_STRUCTURE_TYPE_PRESENT_INFO_KHR};
-    present_info.waitSemaphoreCount = 1;
-    present_info.pWaitSemaphores = &render_finished; // GPU waits for render completion
-    present_info.swapchainCount = 1;
-    present_info.pSwapchains = &s->swapchain;
-    present_info.pImageIndices = &image_index;
-
-    CARDINAL_LOG_INFO("[PRESENT] Frame %u: Presenting image %u", s->current_frame, image_index);
-    VkResult present_res = vkQueuePresentKHR(s->present_queue, &present_info);
-    CARDINAL_LOG_INFO("[PRESENT] Frame %u: Present result: %d", s->current_frame, present_res);
-
-    if (present_res == VK_ERROR_OUT_OF_DATE_KHR || present_res == VK_SUBOPTIMAL_KHR) {
-        // Swapchain is out of date, will be recreated on next frame
-        CARDINAL_LOG_WARN("[PRESENT] Frame %u: Swapchain %s, marking for recreation",
-                          s->current_frame,
-                          present_res == VK_ERROR_OUT_OF_DATE_KHR ? "out of date" : "suboptimal");
-        // Mark for recreation on next frame
-        s->swapchain_recreation_pending = true;
-    } else if (present_res == VK_ERROR_DEVICE_LOST) {
-        CARDINAL_LOG_ERROR("[PRESENT] Frame %u: DEVICE LOST during present!", s->current_frame);
-        s->device_lost = true;
-        if (s->recovery_attempt_count < s->max_recovery_attempts) {
-            vk_recover_from_device_loss(s);
-        }
-        return;
-    } else if (present_res == VK_ERROR_SURFACE_LOST_KHR) {
-        CARDINAL_LOG_ERROR("[PRESENT] Frame %u: Surface lost during present!", s->current_frame);
-        s->device_lost = true;
-        if (s->recovery_attempt_count < s->max_recovery_attempts) {
-            vk_recover_from_device_loss(s);
-        }
-        return;
-    } else if (present_res != VK_SUCCESS) {
-        CARDINAL_LOG_ERROR("[PRESENT] Frame %u: Present failed: %d", s->current_frame, present_res);
-        // Check if this might be a device-related error
-        if (present_res == VK_ERROR_DEVICE_LOST || present_res == VK_ERROR_OUT_OF_HOST_MEMORY || 
-            present_res == VK_ERROR_OUT_OF_DEVICE_MEMORY) {
-            CARDINAL_LOG_WARN("[PRESENT] Frame %u: Critical error detected, checking device state", s->current_frame);
-            s->device_lost = true;
-            if (s->recovery_attempt_count < s->max_recovery_attempts) {
-                vk_recover_from_device_loss(s);
-            }
-            return;
-        }
-    }
-
-    // Update timeline values for next frame
-    s->current_frame_value = signal_after_render;
-    s->current_frame = (s->current_frame + 1) % s->max_frames_in_flight;
-    
-    // Toggle command buffer index for double buffering
-    // This enables CPU recording to overlap with GPU execution
-    s->current_command_buffer_index = 1 - s->current_command_buffer_index;
-    CARDINAL_LOG_DEBUG("[DOUBLE_BUFFER] Switched to command buffer index %u", s->current_command_buffer_index);
+void cardinal_renderer_set_headless_mode(CardinalRenderer* renderer, bool enable) {
+    VulkanState* s = (VulkanState*)renderer->_opaque;
+    s->swapchain.headless_mode = enable;
 }
 
 /**
@@ -518,7 +433,7 @@ void cardinal_renderer_draw_frame(CardinalRenderer* renderer) {
  */
 void cardinal_renderer_wait_idle(CardinalRenderer* renderer) {
     VulkanState* s = (VulkanState*)renderer->_opaque;
-    vkDeviceWaitIdle(s->device);
+    vkDeviceWaitIdle(s->context.device);
 }
 
 /**
@@ -527,9 +442,57 @@ void cardinal_renderer_wait_idle(CardinalRenderer* renderer) {
  *
  * @todo Add reference counting for shared buffers.
  */
-static void destroy_scene_buffers(VulkanState* s) {
-    if (!s || !s->scene_meshes)
+void destroy_scene_buffers(VulkanState* s) {
+    if (!s)
         return;
+
+    CARDINAL_LOG_DEBUG("[RENDERER] destroy_scene_buffers: start");
+
+    // Ensure GPU has finished using previous scene buffers before destroying them
+    // Skip wait if device is already lost, as semaphores might be invalid or device unresponsive
+    if (s->sync_manager && s->sync_manager->timeline_semaphore != VK_NULL_HANDLE &&
+        !s->recovery.device_lost) {
+        uint64_t sem_value = 0;
+        VkResult get_res = vulkan_sync_manager_get_timeline_value(s->sync_manager, &sem_value);
+        CARDINAL_LOG_INFO("[RENDERER] destroy_scene_buffers: waiting timeline to reach "
+                          "current_frame_value=%llu (semaphore current=%llu, get_res=%d)",
+                          (unsigned long long)s->sync.current_frame_value,
+                          (unsigned long long)sem_value, get_res);
+
+        // If the semaphore isn't advancing (e.g., different timeline was used), avoid indefinite
+        // wait
+        if (get_res != VK_SUCCESS || sem_value < s->sync.current_frame_value) {
+            CARDINAL_LOG_WARN("[RENDERER] Timeline behind or unavailable; using vkDeviceWaitIdle");
+            if (s->context.device) {
+                VkResult idle_res = vkDeviceWaitIdle(s->context.device);
+                CARDINAL_LOG_DEBUG("[RENDERER] destroy_scene_buffers: vkDeviceWaitIdle result=%d",
+                                   idle_res);
+            }
+        } else {
+            VkResult wait_res = vulkan_sync_manager_wait_timeline(
+                s->sync_manager, s->sync.current_frame_value, UINT64_MAX);
+            if (wait_res == VK_SUCCESS) {
+                CARDINAL_LOG_DEBUG("[RENDERER] destroy_scene_buffers: timeline wait succeeded");
+            } else {
+                CARDINAL_LOG_WARN("[RENDERER] Timeline wait failed in destroy_scene_buffers: %d; "
+                                  "falling back to device wait idle",
+                                  wait_res);
+                if (s->context.device) {
+                    VkResult idle_res = vkDeviceWaitIdle(s->context.device);
+                    CARDINAL_LOG_DEBUG(
+                        "[RENDERER] destroy_scene_buffers: vkDeviceWaitIdle result=%d", idle_res);
+                }
+            }
+        }
+    } else if (s->context.device && !s->recovery.device_lost) {
+        CARDINAL_LOG_DEBUG(
+            "[RENDERER] destroy_scene_buffers: no timeline; calling vkDeviceWaitIdle");
+        vkDeviceWaitIdle(s->context.device);
+    }
+
+    if (!s->scene_meshes)
+        return;
+
     for (uint32_t i = 0; i < s->scene_mesh_count; i++) {
         GpuMesh* m = &s->scene_meshes[i];
         if (m->vbuf != VK_NULL_HANDLE || m->vmem != VK_NULL_HANDLE) {
@@ -546,6 +509,7 @@ static void destroy_scene_buffers(VulkanState* s) {
     free(s->scene_meshes);
     s->scene_meshes = NULL;
     s->scene_mesh_count = 0;
+    CARDINAL_LOG_DEBUG("[RENDERER] destroy_scene_buffers: completed");
 }
 
 /**
@@ -559,14 +523,25 @@ void cardinal_renderer_destroy(CardinalRenderer* renderer) {
         return;
     VulkanState* s = (VulkanState*)renderer->_opaque;
 
+    CARDINAL_LOG_INFO("[DESTROY] Starting renderer destruction");
+
     // destroy in reverse order
-    vk_destroy_commands_sync(s);
     destroy_scene_buffers(s);
-    
+
+    vk_destroy_commands_sync(s);
+
+    // Cleanup VulkanSyncManager
+    if (s->sync_manager) {
+        CARDINAL_LOG_DEBUG("[DESTROY] Cleaning up sync manager");
+        vulkan_sync_manager_destroy(s->sync_manager);
+        free(s->sync_manager);
+        s->sync_manager = NULL;
+    }
+
     // Cleanup compute shader support
-    if (s->compute_shader_initialized) {
+    if (s->pipelines.compute_shader_initialized) {
         vk_compute_cleanup(s);
-        s->compute_shader_initialized = false;
+        s->pipelines.compute_shader_initialized = false;
     }
 
     // Shutdown reference counting systems
@@ -577,38 +552,51 @@ void cardinal_renderer_destroy(CardinalRenderer* renderer) {
     cardinal_barrier_validation_shutdown();
 
     // Destroy simple pipelines
+    CARDINAL_LOG_DEBUG("[DESTROY] Destroying simple pipelines");
     vk_destroy_simple_pipelines(s);
 
     // Wait for all GPU operations to complete before destroying PBR pipeline
     // This ensures descriptor sets are not in use when destroyed
-    vkDeviceWaitIdle(s->device);
-    
+    if (s->context.device) {
+        vkDeviceWaitIdle(s->context.device);
+    }
+
     // Destroy PBR pipeline
-    if (s->use_pbr_pipeline) {
-        vk_pbr_pipeline_destroy(&s->pbr_pipeline, s->device, &s->allocator);
+    if (s->pipelines.use_pbr_pipeline) {
+        CARDINAL_LOG_DEBUG("[DESTROY] Destroying PBR pipeline");
+        vk_pbr_pipeline_destroy(&s->pipelines.pbr_pipeline, s->context.device, &s->allocator);
+        s->pipelines.use_pbr_pipeline = false;
     }
 
     // Process any remaining pending mesh shader cleanup BEFORE destroying allocator
     vk_mesh_shader_process_pending_cleanup(s);
-    
+
     // Free pending cleanup list
     if (s->pending_cleanup_draw_data) {
+        CARDINAL_LOG_DEBUG("[DESTROY] Freeing pending cleanup list");
         free(s->pending_cleanup_draw_data);
         s->pending_cleanup_draw_data = NULL;
         s->pending_cleanup_count = 0;
         s->pending_cleanup_capacity = 0;
     }
-    
+
     // Destroy mesh shader pipeline BEFORE destroying allocator
-    if (s->use_mesh_shader_pipeline) {
-        vk_mesh_shader_destroy_pipeline(s, &s->mesh_shader_pipeline);
+    if (s->pipelines.use_mesh_shader_pipeline) {
+        CARDINAL_LOG_DEBUG("[DESTROY] Destroying mesh shader pipeline");
+        vk_mesh_shader_destroy_pipeline(s, &s->pipelines.mesh_shader_pipeline);
+        // vk_mesh_shader_cleanup is redundant here as we already handled pending list, 
+        // but let's call it for completeness if it does other things in future.
+        // We must ensure it handles NULL pointers gracefully.
         vk_mesh_shader_cleanup(s);
+        s->pipelines.use_mesh_shader_pipeline = false;
     }
 
+    CARDINAL_LOG_DEBUG("[DESTROY] Destroying base pipeline resources");
     vk_destroy_pipeline(s);
     vk_destroy_swapchain(s);
     vk_destroy_device_objects(s);
 
+    CARDINAL_LOG_INFO("[DESTROY] Freeing renderer state");
     free(s);
     renderer->_opaque = NULL;
 }
@@ -617,22 +605,22 @@ VkCommandBuffer cardinal_renderer_internal_current_cmd(CardinalRenderer* rendere
                                                        uint32_t image_index) {
     VulkanState* s = (VulkanState*)renderer->_opaque;
     (void)image_index; // unused now
-    return s->command_buffers[s->current_frame];
+    return s->commands.buffers[s->sync.current_frame];
 }
 
 VkDevice cardinal_renderer_internal_device(CardinalRenderer* renderer) {
     VulkanState* s = (VulkanState*)renderer->_opaque;
-    return s->device;
+    return s->context.device;
 }
 
 VkPhysicalDevice cardinal_renderer_internal_physical_device(CardinalRenderer* renderer) {
     VulkanState* s = (VulkanState*)renderer->_opaque;
-    return s->physical_device;
+    return s->context.physical_device;
 }
 
 VkQueue cardinal_renderer_internal_graphics_queue(CardinalRenderer* renderer) {
     VulkanState* s = (VulkanState*)renderer->_opaque;
-    return s->graphics_queue;
+    return s->context.graphics_queue;
 }
 
 // Helper function to create perspective projection matrix
@@ -657,195 +645,6 @@ static void create_perspective_matrix(float fov, float aspect, float near_plane,
     matrix[10] = -(far_plane + near_plane) / (far_plane - near_plane);        // [2][2]
     matrix[11] = -1.0f;                                                       // [2][3]
     matrix[14] = -(2.0f * far_plane * near_plane) / (far_plane - near_plane); // [3][2]
-}
-
-/**
- * @brief Attempts to recover from device loss by recreating all Vulkan resources.
- * @param s Pointer to the VulkanState structure.
- * @param window Pointer to the CardinalWindow for surface recreation.
- * @return true if recovery succeeds, false otherwise.
- */
-static bool vk_recover_from_device_loss(VulkanState* s) {
-    if (!s || s->recovery_in_progress) {
-        return false;
-    }
-
-    // Check if we've exceeded maximum recovery attempts
-    if (s->recovery_attempt_count >= s->max_recovery_attempts) {
-        CARDINAL_LOG_ERROR("[RECOVERY] Maximum device loss recovery attempts (%u) exceeded", s->max_recovery_attempts);
-        s->recovery_in_progress = false;
-        if (s->recovery_complete_callback) {
-            s->recovery_complete_callback(s->recovery_callback_user_data, false);
-        }
-        return false;
-    }
-
-    s->recovery_in_progress = true;
-    s->recovery_attempt_count++;
-
-    CARDINAL_LOG_WARN("[RECOVERY] Attempting device loss recovery (attempt %u/%u)", 
-                      s->recovery_attempt_count, s->max_recovery_attempts);
-
-    // Notify application of device loss
-    if (s->device_loss_callback) {
-        s->device_loss_callback(s->recovery_callback_user_data);
-    }
-
-    // Validate device state before attempting recovery
-    VkResult device_status = VK_SUCCESS;
-    if (s->device) {
-        device_status = vkDeviceWaitIdle(s->device);
-        if (device_status == VK_ERROR_DEVICE_LOST) {
-            CARDINAL_LOG_WARN("[RECOVERY] Device confirmed lost, proceeding with recovery");
-        } else if (device_status != VK_SUCCESS) {
-            CARDINAL_LOG_ERROR("[RECOVERY] Unexpected device error during recovery validation: %d", device_status);
-            s->recovery_in_progress = false;
-            return false;
-        }
-    }
-
-    // Store original state for potential rollback
-    bool had_valid_swapchain = (s->swapchain != VK_NULL_HANDLE);
-    const CardinalScene* stored_scene = s->current_scene;
-
-    // Step 1: Destroy all device-dependent resources in reverse order
-    // Destroy command buffers and synchronization objects
-    vk_destroy_commands_sync(s);
-    
-    // Destroy scene buffers
-    destroy_scene_buffers(s);
-    
-    // Destroy pipelines
-    if (s->use_pbr_pipeline) {
-        vk_pbr_pipeline_destroy(&s->pbr_pipeline, s->device, &s->allocator);
-        s->use_pbr_pipeline = false;
-    }
-    if (s->use_mesh_shader_pipeline) {
-        // Wait for all GPU operations to complete before destroying mesh shader pipeline
-        vkDeviceWaitIdle(s->device);
-        vk_mesh_shader_destroy_pipeline(s, &s->mesh_shader_pipeline);
-        s->use_mesh_shader_pipeline = false;
-    }
-    vk_destroy_simple_pipelines(s);
-    vk_destroy_pipeline(s);
-    
-    // Destroy swapchain
-    vk_destroy_swapchain(s);
-    
-    // Step 2: Recreate all resources with validation at each step
-    bool success = true;
-    const char* failure_point = NULL;
-    
-    // Recreate device (this also recreates the logical device)
-    if (!vk_create_device(s)) {
-        failure_point = "device";
-        success = false;
-    }
-    
-    // Recreate swapchain
-    if (success && !vk_create_swapchain(s)) {
-        failure_point = "swapchain";
-        success = false;
-    }
-    
-    // Recreate pipeline
-    if (success && !vk_create_pipeline(s)) {
-        failure_point = "pipeline";
-        success = false;
-    }
-    
-    // Recreate simple pipelines
-    if (success && !vk_create_simple_pipelines(s)) {
-        failure_point = "simple pipelines";
-        success = false;
-    }
-    
-    // Recreate PBR pipeline if it was enabled
-    if (success && stored_scene) {
-        if (!vk_pbr_pipeline_create(&s->pbr_pipeline, s->device, s->physical_device,
-                                   s->swapchain_format, s->depth_format,
-                                   s->command_pools[0], s->graphics_queue, &s->allocator)) {
-            failure_point = "PBR pipeline";
-            success = false;
-        } else {
-            s->use_pbr_pipeline = true;
-            
-            // Reload scene into PBR pipeline
-            if (!vk_pbr_load_scene(&s->pbr_pipeline, s->device, s->physical_device,
-                                  s->command_pools[0], s->graphics_queue, 
-                                  stored_scene, &s->allocator)) {
-                failure_point = "PBR scene reload";
-                success = false;
-            }
-        }
-    }
-
-    // Recreate mesh shader pipeline if it was enabled and supported
-    if (success && s->supports_mesh_shader) {
-        // Create default mesh shader pipeline configuration
-        MeshShaderPipelineConfig config = {0};
-        config.mesh_shader_path = "C:\\Users\\admin\\Documents\\Cardinal\\assets\\shaders\\mesh.mesh.spv";
-        config.task_shader_path = "C:\\Users\\admin\\Documents\\Cardinal\\assets\\shaders\\task.task.spv";
-        config.fragment_shader_path = "C:\\Users\\admin\\Documents\\Cardinal\\assets\\shaders\\mesh.frag.spv";
-        config.max_vertices_per_meshlet = 64;
-        config.max_primitives_per_meshlet = 126;
-        config.cull_mode = VK_CULL_MODE_BACK_BIT;
-        config.front_face = VK_FRONT_FACE_COUNTER_CLOCKWISE;
-        config.polygon_mode = VK_POLYGON_MODE_FILL;
-        config.blend_enable = false;
-        config.depth_test_enable = true;
-        config.depth_write_enable = true;
-        config.depth_compare_op = VK_COMPARE_OP_LESS;
-        
-        if (!vk_mesh_shader_create_pipeline(s, &config, s->swapchain_format, s->depth_format, &s->mesh_shader_pipeline)) {
-            failure_point = "mesh shader pipeline";
-            success = false;
-        } else {
-            s->use_mesh_shader_pipeline = true;
-        }
-    }
-    
-    // Recreate command buffers and synchronization
-    if (success && !vk_create_commands_sync(s)) {
-        failure_point = "commands and synchronization";
-        success = false;
-    }
-    
-    // Recreate scene buffers if scene exists
-    if (success && stored_scene) {
-        // Note: create_scene_buffers function doesn't exist in the original code
-        // This would need to be implemented or replaced with appropriate scene buffer recreation
-        s->current_scene = stored_scene;
-    }
-    
-    if (success) {
-        CARDINAL_LOG_INFO("[RECOVERY] Device loss recovery completed successfully");
-        s->device_lost = false;
-        s->recovery_attempt_count = 0; // Reset on successful recovery
-    } else {
-        CARDINAL_LOG_ERROR("[RECOVERY] Device loss recovery failed at: %s", failure_point ? failure_point : "unknown");
-        
-        // Implement fallback: try to at least maintain a minimal valid state
-        if (!had_valid_swapchain) {
-            CARDINAL_LOG_WARN("[RECOVERY] Attempting minimal fallback recovery");
-            // Try to recreate just the essential components for a graceful shutdown
-            // At minimum, ensure we have basic Vulkan state to prevent crashes
-            if (s->device && vk_create_swapchain(s)) {
-                vk_create_pipeline(s);
-                vk_create_commands_sync(s);
-                CARDINAL_LOG_INFO("[RECOVERY] Minimal fallback recovery succeeded");
-            }
-        }
-    }
-    
-    s->recovery_in_progress = false;
-    
-    // Notify application of recovery completion
-    if (s->recovery_complete_callback) {
-        s->recovery_complete_callback(s->recovery_callback_user_data, success);
-    }
-    
-    return success;
 }
 
 // Helper function to create view matrix (look-at)
@@ -897,7 +696,6 @@ static void create_view_matrix(const float* eye, const float* center, const floa
  * @param matrix Output 4x4 matrix (16 floats).
  */
 
-
 /**
  * @brief Sets the camera parameters for rendering.
  * @param renderer Pointer to the CardinalRenderer.
@@ -910,7 +708,7 @@ void cardinal_renderer_set_camera(CardinalRenderer* renderer, const CardinalCame
         return;
     VulkanState* s = (VulkanState*)renderer->_opaque;
 
-    if (!s->use_pbr_pipeline)
+    if (!s->pipelines.use_pbr_pipeline)
         return;
 
     PBRUniformBufferObject ubo = {0};
@@ -931,12 +729,12 @@ void cardinal_renderer_set_camera(CardinalRenderer* renderer, const CardinalCame
     ubo.viewPos[2] = camera->position[2];
 
     // Update the uniform buffer
-    memcpy(s->pbr_pipeline.uniformBufferMapped, &ubo, sizeof(PBRUniformBufferObject));
+    memcpy(s->pipelines.pbr_pipeline.uniformBufferMapped, &ubo, sizeof(PBRUniformBufferObject));
 
     // Also invoke the centralized PBR uniform updater to keep both UBO and lighting in sync
     PBRLightingData lighting;
-    memcpy(&lighting, s->pbr_pipeline.lightingBufferMapped, sizeof(PBRLightingData));
-    vk_pbr_update_uniforms(&s->pbr_pipeline, &ubo, &lighting);
+    memcpy(&lighting, s->pipelines.pbr_pipeline.lightingBufferMapped, sizeof(PBRLightingData));
+    vk_pbr_update_uniforms(&s->pipelines.pbr_pipeline, &ubo, &lighting);
 }
 
 /**
@@ -951,7 +749,7 @@ void cardinal_renderer_set_lighting(CardinalRenderer* renderer, const CardinalLi
         return;
     VulkanState* s = (VulkanState*)renderer->_opaque;
 
-    if (!s->use_pbr_pipeline)
+    if (!s->pipelines.use_pbr_pipeline)
         return;
 
     PBRLightingData lighting = {0};
@@ -973,12 +771,12 @@ void cardinal_renderer_set_lighting(CardinalRenderer* renderer, const CardinalLi
     lighting.ambientColor[2] = light->ambient[2];
 
     // Update the lighting buffer
-    memcpy(s->pbr_pipeline.lightingBufferMapped, &lighting, sizeof(PBRLightingData));
+    memcpy(s->pipelines.pbr_pipeline.lightingBufferMapped, &lighting, sizeof(PBRLightingData));
 
     // Also invoke the centralized PBR uniform updater to keep both UBO and lighting in sync
     PBRUniformBufferObject ubo;
-    memcpy(&ubo, s->pbr_pipeline.uniformBufferMapped, sizeof(PBRUniformBufferObject));
-    vk_pbr_update_uniforms(&s->pbr_pipeline, &ubo, &lighting);
+    memcpy(&ubo, s->pipelines.pbr_pipeline.uniformBufferMapped, sizeof(PBRUniformBufferObject));
+    vk_pbr_update_uniforms(&s->pipelines.pbr_pipeline, &ubo, &lighting);
 }
 
 /**
@@ -993,39 +791,34 @@ void cardinal_renderer_enable_pbr(CardinalRenderer* renderer, bool enable) {
         return;
     VulkanState* s = (VulkanState*)renderer->_opaque;
 
-    if (enable && !s->use_pbr_pipeline) {
-        // Wait for all GPU operations to complete before creating new resources
-        vkDeviceWaitIdle(s->device);
-
+    if (enable && !s->pipelines.use_pbr_pipeline) {
         // Destroy existing PBR pipeline if it exists (in case of re-enabling)
-        if (s->pbr_pipeline.initialized) {
-            vk_pbr_pipeline_destroy(&s->pbr_pipeline, s->device, &s->allocator);
+        if (s->pipelines.pbr_pipeline.initialized) {
+            vk_pbr_pipeline_destroy(&s->pipelines.pbr_pipeline, s->context.device, &s->allocator);
         }
 
         // Try to create PBR pipeline
-        if (vk_pbr_pipeline_create(&s->pbr_pipeline, s->device, s->physical_device,
-                                   s->swapchain_format, s->depth_format, s->command_pools[0],
-                                   s->graphics_queue, &s->allocator)) {
-            s->use_pbr_pipeline = true;
+        if (vk_pbr_pipeline_create(&s->pipelines.pbr_pipeline, s->context.device,
+                                   s->context.physical_device, s->swapchain.format,
+                                   s->swapchain.depth_format, s->commands.pools[0],
+                                   s->context.graphics_queue, &s->allocator, s)) {
+            s->pipelines.use_pbr_pipeline = true;
 
             // Load current scene if one exists
             if (s->current_scene) {
-                vk_pbr_load_scene(&s->pbr_pipeline, s->device, s->physical_device,
-                                  s->command_pools[0], s->graphics_queue, s->current_scene,
-                                  &s->allocator);
+                vk_pbr_load_scene(&s->pipelines.pbr_pipeline, s->context.device,
+                                  s->context.physical_device, s->commands.pools[0],
+                                  s->context.graphics_queue, s->current_scene, &s->allocator, s);
             }
 
             CARDINAL_LOG_INFO("PBR pipeline enabled");
         } else {
             CARDINAL_LOG_ERROR("Failed to enable PBR pipeline");
         }
-    } else if (!enable && s->use_pbr_pipeline) {
-        // Wait for all GPU operations to complete before destroying resources
-        vkDeviceWaitIdle(s->device);
-
+    } else if (!enable && s->pipelines.use_pbr_pipeline) {
         // Destroy PBR pipeline
-        vk_pbr_pipeline_destroy(&s->pbr_pipeline, s->device, &s->allocator);
-        s->use_pbr_pipeline = false;
+        vk_pbr_pipeline_destroy(&s->pipelines.pbr_pipeline, s->context.device, &s->allocator);
+        s->pipelines.use_pbr_pipeline = false;
         CARDINAL_LOG_INFO("PBR pipeline disabled");
     }
 }
@@ -1034,7 +827,7 @@ bool cardinal_renderer_is_pbr_enabled(CardinalRenderer* renderer) {
     if (!renderer)
         return false;
     VulkanState* s = (VulkanState*)renderer->_opaque;
-    return s->use_pbr_pipeline;
+    return s->pipelines.use_pbr_pipeline;
 }
 
 /**
@@ -1047,15 +840,19 @@ void cardinal_renderer_enable_mesh_shader(CardinalRenderer* renderer, bool enabl
         return;
     VulkanState* s = (VulkanState*)renderer->_opaque;
 
-    if (enable && !s->use_mesh_shader_pipeline && s->supports_mesh_shader) {
-        // Wait for all GPU operations to complete before creating new resources
-        vkDeviceWaitIdle(s->device);
-
+    if (enable && !s->pipelines.use_mesh_shader_pipeline && s->context.supports_mesh_shader) {
         // Create default mesh shader pipeline configuration
         MeshShaderPipelineConfig config = {0};
-        config.mesh_shader_path = "C:\\Users\\admin\\Documents\\Cardinal\\assets\\shaders\\mesh.mesh.spv";
-        config.task_shader_path = "C:\\Users\\admin\\Documents\\Cardinal\\assets\\shaders\\task.task.spv";
-        config.fragment_shader_path = "C:\\Users\\admin\\Documents\\Cardinal\\assets\\shaders\\mesh.frag.spv";
+        const char* shaders_dir = getenv("CARDINAL_SHADERS_DIR");
+        if (!shaders_dir || !shaders_dir[0])
+            shaders_dir = "assets/shaders";
+        char mesh_path[512], task_path[512], frag_path[512];
+        snprintf(mesh_path, sizeof(mesh_path), "%s/%s", shaders_dir, "mesh.mesh.spv");
+        snprintf(task_path, sizeof(task_path), "%s/%s", shaders_dir, "task.task.spv");
+        snprintf(frag_path, sizeof(frag_path), "%s/%s", shaders_dir, "mesh.frag.spv");
+        config.mesh_shader_path = mesh_path;
+        config.task_shader_path = task_path;
+        config.fragment_shader_path = frag_path;
         config.max_vertices_per_meshlet = 64;
         config.max_primitives_per_meshlet = 126;
         config.cull_mode = VK_CULL_MODE_BACK_BIT;
@@ -1065,23 +862,22 @@ void cardinal_renderer_enable_mesh_shader(CardinalRenderer* renderer, bool enabl
         config.depth_test_enable = true;
         config.depth_write_enable = true;
         config.depth_compare_op = VK_COMPARE_OP_LESS;
-        
+
         // Try to create mesh shader pipeline
-        if (vk_mesh_shader_create_pipeline(s, &config, s->swapchain_format, s->depth_format, &s->mesh_shader_pipeline)) {
-            s->use_mesh_shader_pipeline = true;
+        if (vk_mesh_shader_create_pipeline(s, &config, s->swapchain.format,
+                                           s->swapchain.depth_format,
+                                           &s->pipelines.mesh_shader_pipeline)) {
+            s->pipelines.use_mesh_shader_pipeline = true;
             CARDINAL_LOG_INFO("Mesh shader pipeline enabled");
         } else {
             CARDINAL_LOG_ERROR("Failed to enable mesh shader pipeline");
         }
-    } else if (!enable && s->use_mesh_shader_pipeline) {
-        // Wait for all GPU operations to complete before destroying resources
-        vkDeviceWaitIdle(s->device);
-
+    } else if (!enable && s->pipelines.use_mesh_shader_pipeline) {
         // Destroy mesh shader pipeline
-        vk_mesh_shader_destroy_pipeline(s, &s->mesh_shader_pipeline);
-        s->use_mesh_shader_pipeline = false;
+        vk_mesh_shader_destroy_pipeline(s, &s->pipelines.mesh_shader_pipeline);
+        s->pipelines.use_mesh_shader_pipeline = false;
         CARDINAL_LOG_INFO("Mesh shader pipeline disabled");
-    } else if (enable && !s->supports_mesh_shader) {
+    } else if (enable && !s->context.supports_mesh_shader) {
         CARDINAL_LOG_WARN("Mesh shaders not supported on this device");
     }
 }
@@ -1090,50 +886,109 @@ bool cardinal_renderer_is_mesh_shader_enabled(CardinalRenderer* renderer) {
     if (!renderer)
         return false;
     VulkanState* s = (VulkanState*)renderer->_opaque;
-    return s->use_mesh_shader_pipeline;
+    return s->pipelines.use_mesh_shader_pipeline;
 }
 
 bool cardinal_renderer_supports_mesh_shader(CardinalRenderer* renderer) {
     if (!renderer)
         return false;
     VulkanState* s = (VulkanState*)renderer->_opaque;
-    return s->supports_mesh_shader;
+    return s->context.supports_mesh_shader;
 }
 
 uint32_t cardinal_renderer_internal_graphics_queue_family(CardinalRenderer* renderer) {
     VulkanState* s = (VulkanState*)renderer->_opaque;
-    return s->graphics_queue_family;
+    return s->context.graphics_queue_family;
 }
 
 VkInstance cardinal_renderer_internal_instance(CardinalRenderer* renderer) {
     VulkanState* s = (VulkanState*)renderer->_opaque;
-    return s->instance;
+    return s->context.instance;
 }
 
 uint32_t cardinal_renderer_internal_swapchain_image_count(CardinalRenderer* renderer) {
     VulkanState* s = (VulkanState*)renderer->_opaque;
-    return s->swapchain_image_count;
+    return s->swapchain.image_count;
 }
 
 VkFormat cardinal_renderer_internal_swapchain_format(CardinalRenderer* renderer) {
     VulkanState* s = (VulkanState*)renderer->_opaque;
-    return s->swapchain_format;
+    return s->swapchain.format;
 }
 
 VkFormat cardinal_renderer_internal_depth_format(CardinalRenderer* renderer) {
     VulkanState* s = (VulkanState*)renderer->_opaque;
-    return s->depth_format;
+    return s->swapchain.depth_format;
 }
 
 VkExtent2D cardinal_renderer_internal_swapchain_extent(CardinalRenderer* renderer) {
     VulkanState* s = (VulkanState*)renderer->_opaque;
-    return s->swapchain_extent;
+    return s->swapchain.extent;
 }
 
 void cardinal_renderer_set_ui_callback(CardinalRenderer* renderer,
                                        void (*callback)(VkCommandBuffer cmd)) {
     VulkanState* s = (VulkanState*)renderer->_opaque;
     s->ui_record_callback = callback;
+}
+
+/**
+ * @brief Submits a command buffer and waits for completion.
+ */
+static void submit_and_wait(VulkanState* s, VkCommandBuffer cmd) {
+    VkCommandBufferSubmitInfo cmd_info = {
+        .sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_SUBMIT_INFO,
+        .commandBuffer = cmd,
+        .deviceMask = 0
+    };
+    VkSubmitInfo2 submit2 = {
+        .sType = VK_STRUCTURE_TYPE_SUBMIT_INFO_2,
+        .commandBufferInfoCount = 1,
+        .pCommandBufferInfos = &cmd_info
+    };
+
+    if (s->sync_manager) {
+        uint64_t timeline_value = vulkan_sync_manager_get_next_timeline_value(s->sync_manager);
+
+        VkSemaphoreSubmitInfo signal_semaphore_info = {
+            .sType = VK_STRUCTURE_TYPE_SEMAPHORE_SUBMIT_INFO,
+            .semaphore = s->sync_manager->timeline_semaphore,
+            .value = timeline_value,
+            .stageMask = VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT};
+
+        submit2.signalSemaphoreInfoCount = 1;
+        submit2.pSignalSemaphoreInfos = &signal_semaphore_info;
+
+        VkResult submit_result =
+            s->context.vkQueueSubmit2(s->context.graphics_queue, 1, &submit2, VK_NULL_HANDLE);
+        if (submit_result == VK_SUCCESS) {
+            // Wait for completion using timeline semaphore
+            VkResult wait_result =
+                vulkan_sync_manager_wait_timeline(s->sync_manager, timeline_value, UINT64_MAX);
+            if (wait_result == VK_SUCCESS) {
+                vkFreeCommandBuffers(s->context.device, s->commands.pools[s->sync.current_frame], 1,
+                                     &cmd);
+            } else {
+                CARDINAL_LOG_WARN("[SYNC] Timeline wait failed for immediate submit: %d",
+                                  wait_result);
+            }
+        } else {
+            CARDINAL_LOG_ERROR("[SYNC] Failed to submit immediate command buffer: %d",
+                               submit_result);
+        }
+    } else {
+        // Fallback to old method if sync manager not available
+        s->context.vkQueueSubmit2(s->context.graphics_queue, 1, &submit2, VK_NULL_HANDLE);
+        VkResult wait_result = vkQueueWaitIdle(s->context.graphics_queue);
+
+        if (wait_result == VK_SUCCESS) {
+            vkFreeCommandBuffers(s->context.device, s->commands.pools[s->sync.current_frame], 1,
+                                 &cmd);
+        } else {
+            CARDINAL_LOG_WARN("[SYNC] Skipping command buffer free due to queue wait failure: %d",
+                              wait_result);
+        }
+    }
 }
 
 /**
@@ -1148,12 +1003,12 @@ void cardinal_renderer_immediate_submit(CardinalRenderer* renderer,
     VulkanState* s = (VulkanState*)renderer->_opaque;
 
     VkCommandBufferAllocateInfo ai = {.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO};
-    ai.commandPool = s->command_pools[s->current_frame];
+    ai.commandPool = s->commands.pools[s->sync.current_frame];
     ai.level = VK_COMMAND_BUFFER_LEVEL_PRIMARY;
     ai.commandBufferCount = 1;
 
     VkCommandBuffer cmd;
-    vkAllocateCommandBuffers(s->device, &ai, &cmd);
+    vkAllocateCommandBuffers(s->context.device, &ai, &cmd);
 
     VkCommandBufferBeginInfo bi = {.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO};
     bi.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
@@ -1164,16 +1019,71 @@ void cardinal_renderer_immediate_submit(CardinalRenderer* renderer,
 
     vkEndCommandBuffer(cmd);
 
-    VkCommandBufferSubmitInfo cmd_info = {.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_SUBMIT_INFO,
-                                          .commandBuffer = cmd,
-                                          .deviceMask = 0};
-    VkSubmitInfo2 submit2 = {.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO_2,
-                             .commandBufferInfoCount = 1,
-                             .pCommandBufferInfos = &cmd_info};
-    s->vkQueueSubmit2(s->graphics_queue, 1, &submit2, VK_NULL_HANDLE);
-    vkQueueWaitIdle(s->graphics_queue);
+    submit_and_wait(s, cmd);
+}
 
-    vkFreeCommandBuffers(s->device, s->command_pools[s->current_frame], 1, &cmd);
+/**
+ * @brief Tries to submit using a secondary command buffer.
+ */
+static bool try_submit_secondary(VulkanState* s, void (*record)(VkCommandBuffer cmd)) {
+    CardinalMTCommandManager* mt_manager = vk_get_mt_command_manager();
+    if (!mt_manager || !mt_manager->thread_pools[0].is_active) {
+        return false;
+    }
+
+    VkCommandBufferAllocateInfo ai = {.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO};
+    ai.commandPool = s->commands.pools[s->sync.current_frame];
+    ai.level = VK_COMMAND_BUFFER_LEVEL_PRIMARY;
+    ai.commandBufferCount = 1;
+
+    VkCommandBuffer primary_cmd;
+    vkAllocateCommandBuffers(s->context.device, &ai, &primary_cmd);
+
+    VkCommandBufferBeginInfo bi = {.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO};
+    bi.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
+    vkBeginCommandBuffer(primary_cmd, &bi);
+
+    CardinalSecondaryCommandContext secondary_context;
+    if (!cardinal_mt_allocate_secondary_command_buffer(&mt_manager->thread_pools[0], &secondary_context)) {
+        vkEndCommandBuffer(primary_cmd);
+        return false;
+    }
+
+    VkCommandBufferInheritanceRenderingInfo inheritance_rendering = {0};
+    inheritance_rendering.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_INHERITANCE_RENDERING_INFO;
+    inheritance_rendering.colorAttachmentCount = 1;
+    VkFormat color_format = s->swapchain.format;
+    inheritance_rendering.pColorAttachmentFormats = &color_format;
+    inheritance_rendering.depthAttachmentFormat = s->swapchain.depth_format;
+    inheritance_rendering.rasterizationSamples = VK_SAMPLE_COUNT_1_BIT;
+    
+    VkCommandBufferInheritanceInfo inheritance_info = {0};
+    inheritance_info.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_INHERITANCE_INFO;
+    inheritance_info.pNext = &inheritance_rendering;
+    inheritance_info.renderPass = VK_NULL_HANDLE;
+    inheritance_info.subpass = 0;
+    inheritance_info.framebuffer = VK_NULL_HANDLE;
+    inheritance_info.occlusionQueryEnable = VK_FALSE;
+
+    if (!cardinal_mt_begin_secondary_command_buffer(&secondary_context, &inheritance_info)) {
+        vkEndCommandBuffer(primary_cmd);
+        return false;
+    }
+
+    if (record) {
+        record(secondary_context.command_buffer);
+    }
+
+    if (!cardinal_mt_end_secondary_command_buffer(&secondary_context)) {
+        vkEndCommandBuffer(primary_cmd);
+        return false;
+    }
+
+    cardinal_mt_execute_secondary_command_buffers(primary_cmd, &secondary_context, 1);
+    vkEndCommandBuffer(primary_cmd);
+
+    submit_and_wait(s, primary_cmd);
+    return true;
 }
 
 /**
@@ -1186,76 +1096,69 @@ void cardinal_renderer_immediate_submit_with_secondary(CardinalRenderer* rendere
                                                        void (*record)(VkCommandBuffer cmd),
                                                        bool use_secondary) {
     VulkanState* s = (VulkanState*)renderer->_opaque;
-    
+
     // Check if secondary command buffers are requested and available
     if (use_secondary) {
-        CardinalMTCommandManager* mt_manager = vk_get_mt_command_manager();
-        if (mt_manager && mt_manager->thread_pools[0].is_active) {
-            // Use secondary command buffer approach
-            VkCommandBufferAllocateInfo ai = {.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO};
-            ai.commandPool = s->command_pools[s->current_frame];
-            ai.level = VK_COMMAND_BUFFER_LEVEL_PRIMARY;
-            ai.commandBufferCount = 1;
-            
-            VkCommandBuffer primary_cmd;
-            vkAllocateCommandBuffers(s->device, &ai, &primary_cmd);
-            
-            VkCommandBufferBeginInfo bi = {.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO};
-            bi.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
-            vkBeginCommandBuffer(primary_cmd, &bi);
-            
-            // Allocate secondary command buffer
-            CardinalSecondaryCommandContext secondary_context;
-            if (cardinal_mt_allocate_secondary_command_buffer(&mt_manager->thread_pools[0], &secondary_context)) {
-                // Set up inheritance info
-                VkCommandBufferInheritanceInfo inheritance_info = {0};
-                inheritance_info.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_INHERITANCE_INFO;
-                inheritance_info.renderPass = VK_NULL_HANDLE;
-                inheritance_info.subpass = 0;
-                inheritance_info.framebuffer = VK_NULL_HANDLE;
-                inheritance_info.occlusionQueryEnable = VK_FALSE;
-                
-                // Begin secondary command buffer
-                if (cardinal_mt_begin_secondary_command_buffer(&secondary_context, &inheritance_info)) {
-                    // Record into secondary buffer
-                    if (record) {
-                        record(secondary_context.command_buffer);
-                    }
-                    
-                    // End secondary buffer
-                    if (cardinal_mt_end_secondary_command_buffer(&secondary_context)) {
-                        // Execute secondary in primary
-                        cardinal_mt_execute_secondary_command_buffers(primary_cmd, &secondary_context, 1);
-                        
-                        vkEndCommandBuffer(primary_cmd);
-                        
-                        VkCommandBufferSubmitInfo cmd_info = {
-                            .sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_SUBMIT_INFO,
-                            .commandBuffer = primary_cmd,
-                            .deviceMask = 0
-                        };
-                        VkSubmitInfo2 submit2 = {
-                            .sType = VK_STRUCTURE_TYPE_SUBMIT_INFO_2,
-                            .commandBufferInfoCount = 1,
-                            .pCommandBufferInfos = &cmd_info
-                        };
-                        s->vkQueueSubmit2(s->graphics_queue, 1, &submit2, VK_NULL_HANDLE);
-                        vkQueueWaitIdle(s->graphics_queue);
-                        
-                        vkFreeCommandBuffers(s->device, s->command_pools[s->current_frame], 1, &primary_cmd);
-                        return;
-                    }
-                }
-            }
-            
-            // Fallback to primary if secondary failed
-            vkEndCommandBuffer(primary_cmd);
-            vkFreeCommandBuffers(s->device, s->command_pools[s->current_frame], 1, &primary_cmd);
+        if (try_submit_secondary(s, record)) {
+            return;
         }
+        // Fallback to primary if secondary failed
+        CARDINAL_LOG_WARN("[SYNC] Secondary command buffer failed, falling back to primary");
     }
-    
+
     // Fallback to regular immediate submit
     cardinal_renderer_immediate_submit(renderer, record);
+}
+
+/**
+ * @brief Uploads a single mesh to GPU.
+ */
+static bool upload_single_mesh(VulkanState* s, const CardinalMesh* src, GpuMesh* dst, uint32_t mesh_index) {
+    dst->vbuf = VK_NULL_HANDLE;
+    dst->vmem = VK_NULL_HANDLE;
+    dst->ibuf = VK_NULL_HANDLE;
+    dst->imem = VK_NULL_HANDLE;
+    dst->vtx_count = 0;
+    dst->idx_count = 0;
+
+    dst->vtx_stride = sizeof(CardinalVertex);
+    VkDeviceSize vsize = (VkDeviceSize)src->vertex_count * dst->vtx_stride;
+    VkDeviceSize isize = (VkDeviceSize)src->index_count * sizeof(uint32_t);
+
+    CARDINAL_LOG_DEBUG("[UPLOAD] Mesh %u: vsize=%llu, isize=%llu, vertices=%u, indices=%u", mesh_index,
+                       (unsigned long long)vsize, (unsigned long long)isize, src->vertex_count,
+                       src->index_count);
+
+    if (!src->vertices || src->vertex_count == 0) {
+        CARDINAL_LOG_ERROR("Mesh %u has no vertices", mesh_index);
+        return false;
+    }
+
+    CARDINAL_LOG_DEBUG("[UPLOAD] Mesh %u: staging vertex buffer", mesh_index);
+    if (!vk_buffer_create_with_staging(&s->allocator, s->context.device, s->commands.pools[0],
+                                       s->context.graphics_queue, src->vertices, vsize,
+                                       VK_BUFFER_USAGE_VERTEX_BUFFER_BIT, &dst->vbuf,
+                                       &dst->vmem, s)) {
+        CARDINAL_LOG_ERROR("Failed to create vertex buffer for mesh %u", mesh_index);
+        return false;
+    }
+
+    if (src->index_count > 0 && src->indices) {
+        CARDINAL_LOG_DEBUG("[UPLOAD] Mesh %u: staging index buffer", mesh_index);
+        if (vk_buffer_create_with_staging(&s->allocator, s->context.device,
+                                          s->commands.pools[0], s->context.graphics_queue,
+                                          src->indices, isize, VK_BUFFER_USAGE_INDEX_BUFFER_BIT,
+                                          &dst->ibuf, &dst->imem, s)) {
+            dst->idx_count = src->index_count;
+        } else {
+            CARDINAL_LOG_ERROR("Failed to create index buffer for mesh %u", mesh_index);
+        }
+    }
+    dst->vtx_count = src->vertex_count;
+
+    CARDINAL_LOG_DEBUG("Successfully uploaded mesh %u: %u vertices, %u indices", mesh_index,
+                       src->vertex_count, src->index_count);
+    return true;
 }
 
 /**
@@ -1269,12 +1172,33 @@ void cardinal_renderer_immediate_submit_with_secondary(CardinalRenderer* rendere
 void cardinal_renderer_upload_scene(CardinalRenderer* renderer, const CardinalScene* scene) {
     VulkanState* s = (VulkanState*)renderer->_opaque;
 
-    // Wait for all GPU operations to complete before modifying scene buffers
-    vkDeviceWaitIdle(s->device);
+    CARDINAL_LOG_INFO("[UPLOAD] Starting scene upload; meshes=%u", scene ? scene->mesh_count : 0);
 
-    destroy_scene_buffers(s);
-    if (!scene || scene->mesh_count == 0)
+    if (s->swapchain.recreation_pending || s->swapchain.window_resize_pending ||
+        s->recovery.recovery_in_progress || s->recovery.device_lost) {
+        s->pending_scene_upload = scene;
+        s->scene_upload_pending = true;
+        CARDINAL_LOG_WARN("[UPLOAD] Deferring scene upload due to swapchain/recovery state");
         return;
+    }
+
+    if (s->context.vkGetSemaphoreCounterValue && s->sync.timeline_semaphore) {
+        uint64_t sem_val = 0;
+        VkResult sem_res = s->context.vkGetSemaphoreCounterValue(
+            s->context.device, s->sync.timeline_semaphore, &sem_val);
+        CARDINAL_LOG_DEBUG("[UPLOAD][SYNC] Timeline before cleanup: value=%llu, "
+                           "current_frame_value=%llu, result=%d",
+                           (unsigned long long)sem_val,
+                           (unsigned long long)s->sync.current_frame_value, sem_res);
+    }
+
+    CARDINAL_LOG_DEBUG("[UPLOAD] Destroying previous scene buffers");
+    destroy_scene_buffers(s);
+
+    if (!scene || scene->mesh_count == 0) {
+        CARDINAL_LOG_WARN("[UPLOAD] No scene or zero meshes; aborting upload");
+        return;
+    }
 
     s->scene_mesh_count = scene->mesh_count;
     s->scene_meshes = (GpuMesh*)calloc(s->scene_mesh_count, sizeof(GpuMesh));
@@ -1283,69 +1207,37 @@ void cardinal_renderer_upload_scene(CardinalRenderer* renderer, const CardinalSc
         return;
     }
 
-    CARDINAL_LOG_INFO("Uploading scene with %u meshes using optimized staging buffers",
+    CARDINAL_LOG_INFO("Uploading scene with %u meshes using batched staging operations",
                       scene->mesh_count);
 
     for (uint32_t i = 0; i < scene->mesh_count; i++) {
         const CardinalMesh* src = &scene->meshes[i];
         GpuMesh* dst = &s->scene_meshes[i];
-
-        // Initialize to null handles
-        dst->vbuf = VK_NULL_HANDLE;
-        dst->vmem = VK_NULL_HANDLE;
-        dst->ibuf = VK_NULL_HANDLE;
-        dst->imem = VK_NULL_HANDLE;
-        dst->vtx_count = 0;
-        dst->idx_count = 0;
-
-        dst->vtx_stride = sizeof(CardinalVertex);
-        VkDeviceSize vsize = (VkDeviceSize)src->vertex_count * dst->vtx_stride;
-        VkDeviceSize isize = (VkDeviceSize)src->index_count * sizeof(uint32_t);
-
-        if (!src->vertices || src->vertex_count == 0) {
-            CARDINAL_LOG_ERROR("Mesh %u has no vertices", i);
+        
+        if (!upload_single_mesh(s, src, dst, i)) {
             continue;
         }
-
-        // Create vertex buffer using staging buffer for optimal GPU performance
-        if (!vk_buffer_create_with_staging(
-                &s->allocator, s->device, s->command_pools[0], s->graphics_queue, src->vertices,
-                vsize, VK_BUFFER_USAGE_VERTEX_BUFFER_BIT, &dst->vbuf, &dst->vmem)) {
-            CARDINAL_LOG_ERROR("Failed to create vertex buffer for mesh %u", i);
-            continue;
-        }
-
-        if (src->index_count > 0 && src->indices) {
-            // Create index buffer using staging buffer for optimal GPU performance
-            if (!vk_buffer_create_with_staging(
-                    &s->allocator, s->device, s->command_pools[0], s->graphics_queue, src->indices,
-                    isize, VK_BUFFER_USAGE_INDEX_BUFFER_BIT, &dst->ibuf, &dst->imem)) {
-                CARDINAL_LOG_ERROR("Failed to create index buffer for mesh %u", i);
-            } else {
-                dst->idx_count = src->index_count;
-            }
-        }
-        dst->vtx_count = src->vertex_count;
-
-        CARDINAL_LOG_INFO("Successfully uploaded mesh %u: %u vertices, %u indices", i,
-                          src->vertex_count, src->index_count);
     }
 
-    // Load scene into PBR pipeline if enabled
-    if (s->use_pbr_pipeline) {
-        vk_pbr_load_scene(&s->pbr_pipeline, s->device, s->physical_device, s->command_pools[0],
-                          s->graphics_queue, scene, &s->allocator);
+    if (s->pipelines.use_pbr_pipeline) {
+        CARDINAL_LOG_INFO("[UPLOAD][PBR] Loading scene into PBR pipeline");
+        vk_pbr_load_scene(&s->pipelines.pbr_pipeline, s->context.device, s->context.physical_device,
+                          s->commands.pools[0], s->context.graphics_queue, scene, &s->allocator, s);
     }
 
-    // Remember pointer for PBR drawing path
+    // Keep a reference to the uploaded scene, but be careful about ownership.
+    // The renderer does NOT own the scene data, it only reads from it during upload/record.
+    // However, s->current_scene is used in draw_frame to determine if we should render.
     s->current_scene = scene;
+
+    CARDINAL_LOG_INFO("Scene upload completed successfully with %u meshes", scene->mesh_count);
 }
 
 void cardinal_renderer_clear_scene(CardinalRenderer* renderer) {
     VulkanState* s = (VulkanState*)renderer->_opaque;
 
     // Wait for all GPU operations to complete before destroying scene buffers
-    vkDeviceWaitIdle(s->device);
+    vkDeviceWaitIdle(s->context.device);
 
     destroy_scene_buffers(s);
 }
@@ -1360,16 +1252,18 @@ void cardinal_renderer_set_rendering_mode(CardinalRenderer* renderer, CardinalRe
     // Store previous mode to detect changes
     CardinalRenderingMode previous_mode = s->current_rendering_mode;
     s->current_rendering_mode = mode;
-    
+
     // Handle mesh shader pipeline enable/disable based on mode
-    if (mode == CARDINAL_RENDERING_MODE_MESH_SHADER && previous_mode != CARDINAL_RENDERING_MODE_MESH_SHADER) {
+    if (mode == CARDINAL_RENDERING_MODE_MESH_SHADER &&
+        previous_mode != CARDINAL_RENDERING_MODE_MESH_SHADER) {
         // Switching to mesh shader mode - enable mesh shader pipeline
         cardinal_renderer_enable_mesh_shader(renderer, true);
-    } else if (mode != CARDINAL_RENDERING_MODE_MESH_SHADER && previous_mode == CARDINAL_RENDERING_MODE_MESH_SHADER) {
+    } else if (mode != CARDINAL_RENDERING_MODE_MESH_SHADER &&
+               previous_mode == CARDINAL_RENDERING_MODE_MESH_SHADER) {
         // Switching away from mesh shader mode - disable mesh shader pipeline
         cardinal_renderer_enable_mesh_shader(renderer, false);
     }
-    
+
     CARDINAL_LOG_INFO("Rendering mode changed to: %d", mode);
 }
 
@@ -1384,25 +1278,23 @@ CardinalRenderingMode cardinal_renderer_get_rendering_mode(CardinalRenderer* ren
 }
 
 void cardinal_renderer_set_device_loss_callbacks(
-    CardinalRenderer* renderer,
-    void (*device_loss_callback)(void* user_data),
-    void (*recovery_complete_callback)(void* user_data, bool success),
-    void* user_data) {
+    CardinalRenderer* renderer, void (*device_loss_callback)(void* user_data),
+    void (*recovery_complete_callback)(void* user_data, bool success), void* user_data) {
     if (!renderer) {
         CARDINAL_LOG_ERROR("Invalid renderer");
         return;
     }
-    
+
     VulkanState* s = (VulkanState*)renderer->_opaque;
     if (!s) {
         CARDINAL_LOG_ERROR("Invalid renderer state");
         return;
     }
-    
-    s->device_loss_callback = device_loss_callback;
-    s->recovery_complete_callback = recovery_complete_callback;
-    s->recovery_callback_user_data = user_data;
-    
+
+    s->recovery.device_loss_callback = device_loss_callback;
+    s->recovery.recovery_complete_callback = recovery_complete_callback;
+    s->recovery.callback_user_data = user_data;
+
     CARDINAL_LOG_INFO("Device loss recovery callbacks set");
 }
 
@@ -1410,29 +1302,28 @@ bool cardinal_renderer_is_device_lost(CardinalRenderer* renderer) {
     if (!renderer) {
         return false;
     }
-    
+
     VulkanState* s = (VulkanState*)renderer->_opaque;
     if (!s) {
         return false;
     }
-    
-    return s->device_lost;
+
+    return s->recovery.device_lost;
 }
 
-bool cardinal_renderer_get_recovery_stats(CardinalRenderer* renderer,
-                                          uint32_t* out_attempt_count,
+bool cardinal_renderer_get_recovery_stats(CardinalRenderer* renderer, uint32_t* out_attempt_count,
                                           uint32_t* out_max_attempts) {
     if (!renderer || !out_attempt_count || !out_max_attempts) {
         return false;
     }
-    
+
     VulkanState* s = (VulkanState*)renderer->_opaque;
     if (!s) {
         return false;
     }
-    
-    *out_attempt_count = s->recovery_attempt_count;
-    *out_max_attempts = s->max_recovery_attempts;
-    
+
+    *out_attempt_count = s->recovery.attempt_count;
+    *out_max_attempts = s->recovery.max_attempts;
+
     return true;
 }

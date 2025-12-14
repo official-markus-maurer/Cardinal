@@ -211,30 +211,6 @@ CardinalLogLevel cardinal_log_parse_level(const char *level_str);
 #pragma clang diagnostic pop
 #endif
 
-/**
- * @brief Convenience macros with shorter names
- *
- * These macros provide shorter aliases for the main logging macros,
- * making code more concise while maintaining the same functionality.
- *
- * @{
- */
-#define LOG_TRACE                                                              \
-  CARDINAL_LOG_TRACE /**< Short alias for CARDINAL_LOG_TRACE                   \
-                      */
-#define LOG_DEBUG                                                              \
-  CARDINAL_LOG_DEBUG               /**< Short alias for CARDINAL_LOG_DEBUG     \
-                                    */
-#define LOG_INFO CARDINAL_LOG_INFO /**< Short alias for CARDINAL_LOG_INFO */
-#define LOG_WARN CARDINAL_LOG_WARN /**< Short alias for CARDINAL_LOG_WARN */
-#define LOG_ERROR                                                              \
-  CARDINAL_LOG_ERROR /**< Short alias for CARDINAL_LOG_ERROR                   \
-                      */
-#define LOG_FATAL                                                              \
-  CARDINAL_LOG_FATAL /**< Short alias for CARDINAL_LOG_FATAL                   \
-                      */
-/** @} */
-
 /** @} */ // End of LoggingMacros group
 
 /**
@@ -248,26 +224,26 @@ CardinalLogLevel cardinal_log_parse_level(const char *level_str);
  * @brief Add a sink to the logger at runtime
  * @param sink_ptr Pointer to spdlog sink (void* for C compatibility)
  */
-void cardinal_log_add_sink(void* sink_ptr);
+void cardinal_log_add_sink(void *sink_ptr);
 
 /**
  * @brief Remove a sink from the logger at runtime
  * @param sink_ptr Pointer to spdlog sink to remove
  */
-void cardinal_log_remove_sink(void* sink_ptr);
+void cardinal_log_remove_sink(void *sink_ptr);
 
 /**
  * @brief Set the log pattern at runtime
  * @param pattern spdlog pattern string
  */
-void cardinal_log_set_pattern(const char* pattern);
+void cardinal_log_set_pattern(const char *pattern);
 
 /**
  * @brief Create a basic file sink
  * @param filename Path to log file
  * @return Pointer to sink (void* for C compatibility) or NULL on failure
  */
-void* cardinal_log_create_file_sink(const char* filename);
+void *cardinal_log_create_file_sink(const char *filename);
 
 /**
  * @brief Create a rotating file sink
@@ -276,13 +252,14 @@ void* cardinal_log_create_file_sink(const char* filename);
  * @param max_files Maximum number of backup files
  * @return Pointer to sink (void* for C compatibility) or NULL on failure
  */
-void* cardinal_log_create_rotating_sink(const char* filename, size_t max_size, size_t max_files);
+void *cardinal_log_create_rotating_sink(const char *filename, size_t max_size,
+                                        size_t max_files);
 
 /**
  * @brief Destroy a sink created by cardinal_log_create_*_sink functions
  * @param sink_ptr Pointer to sink to destroy
  */
-void cardinal_log_destroy_sink(void* sink_ptr);
+void cardinal_log_destroy_sink(void *sink_ptr);
 
 #ifdef __cplusplus
 }

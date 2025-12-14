@@ -6,9 +6,8 @@ Write-Host "Compiling shaders..."
 # Set working directory to assets/shaders
 Set-Location "assets\shaders"
 
-# Get username for output path
-$username = $env:USERNAME
-$outputDir = "C:\Users\$username\Documents\Cardinal\assets\shaders"
+# Use project-relative output directory
+$outputDir = (Get-Location).Path
 
 # Ensure output directory exists
 if (!(Test-Path $outputDir)) {

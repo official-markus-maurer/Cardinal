@@ -305,8 +305,7 @@ cardinal_async_get_material_result(CardinalAsyncTask *task,
  * @return Reference counted resource, or NULL on failure
  */
 CardinalRefCountedResource *
-cardinal_async_get_mesh_result(CardinalAsyncTask *task,
-                               CardinalMesh *out_mesh);
+cardinal_async_get_mesh_result(CardinalAsyncTask *task, CardinalMesh *out_mesh);
 
 /**
  * @brief Get error message from failed task

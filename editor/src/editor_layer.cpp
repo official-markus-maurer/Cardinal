@@ -12,8 +12,8 @@
 
 #include "editor_layer.h"
 #include <cardinal/assets/loader.h>
-#include <cardinal/assets/scene.h>
 #include <cardinal/assets/model_manager.h>
+#include <cardinal/assets/scene.h>
 #include <cardinal/cardinal.h>
 #include <cardinal/core/async_loader.h>
 #include <cardinal/core/log.h>
@@ -34,7 +34,8 @@ static VkDescriptorPool g_descriptor_pool = VK_NULL_HANDLE;
 static bool g_scene_loaded = false;
 static CardinalAsyncTask *g_loading_task = nullptr;
 static bool g_is_loading = false;
-static CardinalModelManager g_model_manager; // Model manager for multiple models
+static CardinalModelManager
+    g_model_manager;                   // Model manager for multiple models
 static CardinalScene g_combined_scene; // Combined scene from model manager
 static char g_scene_path[512] = "";
 static char g_status_msg[256] = "";
@@ -88,9 +89,10 @@ static bool g_tab_pressed_last_frame = false;
 static GLFWwindow *g_window_handle = nullptr;
 
 // Asset browser state
-static char g_assets_dir[512] = "assets";
-static char g_current_dir[512] = "assets"; // Current browsing directory
-static char g_search_filter[256] = ""; // Search filter text
+static char g_assets_dir[512] = "C:/Users/admin/Documents/Cardinal/assets";
+static char g_current_dir[512] =
+    "C:/Users/admin/Documents/Cardinal/assets"; // Current browsing directory
+static char g_search_filter[256] = "";          // Search filter text
 static bool g_show_folders_only = false;
 static bool g_show_gltf_only = false;
 static bool g_show_textures_only = false;
@@ -112,8 +114,8 @@ enum AssetType {
 };
 
 struct AssetEntry {
-  std::string display;     // label shown in UI (filename or folder name)
-  std::string fullPath;    // full path used for loading/navigation
+  std::string display;      // label shown in UI (filename or folder name)
+  std::string fullPath;     // full path used for loading/navigation
   std::string relativePath; // relative path from assets root
   AssetType type;
   bool is_directory;
@@ -132,39 +134,42 @@ static void scene_load_callback(CardinalAsyncTask *task, void *user_data) {
     CardinalScene loaded_scene;
     if (cardinal_async_get_scene_result(task, &loaded_scene)) {
       // Extract filename for model name
-      const char* filename = strrchr(path, '/');
-      if (!filename) filename = strrchr(path, '\\');
-      if (!filename) filename = path;
-      else filename++; // Skip the separator
-      
-      // Add the already-loaded scene to the model manager (avoids double-loading)
-      uint32_t model_id = cardinal_model_manager_add_scene(&g_model_manager, &loaded_scene, path, filename);
+      const char *filename = strrchr(path, '/');
+      if (!filename)
+        filename = strrchr(path, '\\');
+      if (!filename)
+        filename = path;
+      else
+        filename++; // Skip the separator
+
+      // Add the already-loaded scene to the model manager (avoids
+      // double-loading)
+      uint32_t model_id = cardinal_model_manager_add_scene(
+          &g_model_manager, &loaded_scene, path, filename);
       if (model_id != 0) {
         g_selected_model_id = model_id;
-        
+
         // Get the combined scene and upload to GPU
-        const CardinalScene* combined = cardinal_model_manager_get_combined_scene(&g_model_manager);
+        const CardinalScene *combined =
+            cardinal_model_manager_get_combined_scene(&g_model_manager);
         if (combined) {
           g_combined_scene = *combined; // Copy the scene
           g_scene_loaded = true;
-          
-          // Upload to GPU for drawing
+
+          // Defer upload to avoid racing with in-flight command buffers
           if (g_renderer) {
-            cardinal_renderer_upload_scene(g_renderer, &g_combined_scene);
-            
-            // Update camera and lighting after scene upload to ensure proper rendering
-            if (g_pbr_enabled) {
-              cardinal_renderer_set_camera(g_renderer, &g_camera);
-              cardinal_renderer_set_lighting(g_renderer, &g_light);
-            }
+            g_pending_scene = *combined;
+            g_scene_upload_pending = true;
+            CARDINAL_LOG_INFO("[EDITOR] Deferred scene upload scheduled");
           }
-          
+
           snprintf(g_status_msg, sizeof(g_status_msg),
                    "Loaded model: %u mesh(es) from %s (ID: %u)",
                    (unsigned)loaded_scene.mesh_count, filename, model_id);
         } else {
           snprintf(g_status_msg, sizeof(g_status_msg),
-                   "Model loaded but failed to get combined scene: %s", filename);
+                   "Model loaded but failed to get combined scene: %s",
+                   filename);
         }
       } else {
         snprintf(g_status_msg, sizeof(g_status_msg),
@@ -207,42 +212,49 @@ static void load_scene_from_path(const char *path, bool use_async = true) {
   if (!path || !path[0]) {
     return;
   }
-  
+
   // Check if file exists and get its size
   try {
     if (!fs::exists(path)) {
-      snprintf(g_status_msg, sizeof(g_status_msg), "File does not exist: %s", path);
+      snprintf(g_status_msg, sizeof(g_status_msg), "File does not exist: %s",
+               path);
       return;
     }
-    
+
     std::error_code ec;
     auto file_size = fs::file_size(path, ec);
     if (ec) {
-      snprintf(g_status_msg, sizeof(g_status_msg), "Cannot access file: %s", path);
+      snprintf(g_status_msg, sizeof(g_status_msg), "Cannot access file: %s",
+               path);
       return;
     }
-    
+
     // Warn about very large files (over 500MB)
     if (file_size > 524288000) {
-      snprintf(g_status_msg, sizeof(g_status_msg), "Warning: Large file (%.1f MB), loading may take time: %s", 
+      snprintf(g_status_msg, sizeof(g_status_msg),
+               "Warning: Large file (%.1f MB), loading may take time: %s",
                file_size / 1048576.0, path);
     }
-    
+
     // Refuse to load files over 1GB
     if (file_size > 1073741824) {
-      snprintf(g_status_msg, sizeof(g_status_msg), "File too large (%.1f GB), refusing to load: %s", 
+      snprintf(g_status_msg, sizeof(g_status_msg),
+               "File too large (%.1f GB), refusing to load: %s",
                file_size / 1073741824.0, path);
       return;
     }
   } catch (...) {
-    snprintf(g_status_msg, sizeof(g_status_msg), "Error checking file: %s", path);
+    snprintf(g_status_msg, sizeof(g_status_msg), "Error checking file: %s",
+             path);
     return;
   }
 
   // Prevent multiple simultaneous loads to avoid race conditions
-  // TODO: Obviously want multiple models to be loadable simultaneously but not the same one at the same time.
+  // TODO: Obviously want multiple models to be loadable simultaneously but not
+  // the same one at the same time.
   if (g_is_loading) {
-    snprintf(g_status_msg, sizeof(g_status_msg), "Already loading a scene, please wait...");
+    snprintf(g_status_msg, sizeof(g_status_msg),
+             "Already loading a scene, please wait...");
     return;
   }
 
@@ -284,7 +296,8 @@ static void load_scene_from_path(const char *path, bool use_async = true) {
     }
   } else {
     // Synchronous loading not supported with model manager
-    snprintf(g_status_msg, sizeof(g_status_msg), "Async loading failed for: %s", path);
+    snprintf(g_status_msg, sizeof(g_status_msg), "Async loading failed for: %s",
+             path);
   }
 }
 /**
@@ -300,22 +313,21 @@ static void setup_imgui_style() { ImGui::StyleColorsDark(); }
 /**
  * @brief Determines the asset type based on file extension.
  */
-static AssetType get_asset_type(const std::string& path) {
+static AssetType get_asset_type(const std::string &path) {
   std::string lower = path;
   std::transform(lower.begin(), lower.end(), lower.begin(),
                  [](unsigned char c) { return (char)std::tolower(c); });
-  
+
   if (lower.size() >= 5 && lower.compare(lower.size() - 5, 5, ".gltf") == 0) {
     return ASSET_TYPE_GLTF;
   }
   if (lower.size() >= 4 && lower.compare(lower.size() - 4, 4, ".glb") == 0) {
     return ASSET_TYPE_GLB;
   }
-  if (lower.size() >= 4 && (
-      lower.compare(lower.size() - 4, 4, ".png") == 0 ||
-      lower.compare(lower.size() - 4, 4, ".jpg") == 0 ||
-      lower.compare(lower.size() - 4, 4, ".tga") == 0 ||
-      lower.compare(lower.size() - 4, 4, ".bmp") == 0)) {
+  if (lower.size() >= 4 && (lower.compare(lower.size() - 4, 4, ".png") == 0 ||
+                            lower.compare(lower.size() - 4, 4, ".jpg") == 0 ||
+                            lower.compare(lower.size() - 4, 4, ".tga") == 0 ||
+                            lower.compare(lower.size() - 4, 4, ".bmp") == 0)) {
     return ASSET_TYPE_TEXTURE;
   }
   if (lower.size() >= 5 && lower.compare(lower.size() - 5, 5, ".jpeg") == 0) {
@@ -327,67 +339,80 @@ static AssetType get_asset_type(const std::string& path) {
 /**
  * @brief Gets the appropriate icon for an asset type.
  */
-static const char* get_asset_icon(AssetType type) {
+static const char *get_asset_icon(AssetType type) {
   switch (type) {
-    case ASSET_TYPE_FOLDER: return "📁";
-    case ASSET_TYPE_GLTF:
-    case ASSET_TYPE_GLB: return "🧊";
-    case ASSET_TYPE_TEXTURE: return "🖼️";
-    default: return "📄";
+  case ASSET_TYPE_FOLDER:
+    return "📁";
+  case ASSET_TYPE_GLTF:
+  case ASSET_TYPE_GLB:
+    return "🧊";
+  case ASSET_TYPE_TEXTURE:
+    return "🖼️";
+  default:
+    return "📄";
   }
 }
 
 /**
  * @brief Checks if an entry matches the current search filter.
  */
-static bool matches_filter(const AssetEntry& entry) {
+static bool matches_filter(const AssetEntry &entry) {
   // Text search filter
   if (strlen(g_search_filter) > 0) {
     std::string lower_display = entry.display;
     std::string lower_filter = g_search_filter;
-    std::transform(lower_display.begin(), lower_display.end(), lower_display.begin(),
+    std::transform(lower_display.begin(), lower_display.end(),
+                   lower_display.begin(),
                    [](unsigned char c) { return (char)std::tolower(c); });
-    std::transform(lower_filter.begin(), lower_filter.end(), lower_filter.begin(),
+    std::transform(lower_filter.begin(), lower_filter.end(),
+                   lower_filter.begin(),
                    [](unsigned char c) { return (char)std::tolower(c); });
     if (lower_display.find(lower_filter) == std::string::npos) {
       return false;
     }
   }
-  
+
   // Type filters
-  if (g_show_folders_only && entry.type != ASSET_TYPE_FOLDER) return false;
-  if (g_show_gltf_only && entry.type != ASSET_TYPE_GLTF && entry.type != ASSET_TYPE_GLB) return false;
-  if (g_show_textures_only && entry.type != ASSET_TYPE_TEXTURE) return false;
-  
+  if (g_show_folders_only && entry.type != ASSET_TYPE_FOLDER)
+    return false;
+  if (g_show_gltf_only && entry.type != ASSET_TYPE_GLTF &&
+      entry.type != ASSET_TYPE_GLB)
+    return false;
+  if (g_show_textures_only && entry.type != ASSET_TYPE_TEXTURE)
+    return false;
+
   return true;
 }
 
 /**
  * @brief Scans the current directory and populates the asset entries list.
  *
- * Scans only the current directory (non-recursive) and categorizes files and folders.
- * Supports subdirectory navigation, file type icons, and filtering.
+ * Scans only the current directory (non-recursive) and categorizes files and
+ * folders. Supports subdirectory navigation, file type icons, and filtering.
  */
 static void scan_assets_dir() {
   CARDINAL_LOG_INFO("Starting asset directory scan for: %s", g_current_dir);
   g_asset_entries.clear();
   g_filtered_entries.clear();
-  
+
   try {
     fs::path current_path = fs::path(g_current_dir);
     fs::path assets_root = fs::path(g_assets_dir);
-    
-    CARDINAL_LOG_DEBUG("Current path: %s, Assets root: %s", current_path.string().c_str(), assets_root.string().c_str());
-    
-    if (!current_path.empty() && fs::exists(current_path) && fs::is_directory(current_path)) {
+
+    CARDINAL_LOG_DEBUG("Current path: %s, Assets root: %s",
+                       current_path.string().c_str(),
+                       assets_root.string().c_str());
+
+    if (!current_path.empty() && fs::exists(current_path) &&
+        fs::is_directory(current_path)) {
       CARDINAL_LOG_DEBUG("Path exists and is directory, proceeding with scan");
-      
+
       // Add ".." entry for parent directory navigation (if not at root)
       if (current_path != assets_root && current_path.has_parent_path()) {
         fs::path parent = current_path.parent_path();
         std::string parent_str = parent.string();
         std::replace(parent_str.begin(), parent_str.end(), '\\', '/');
-        
+
         AssetEntry parent_entry;
         parent_entry.display = "..";
         parent_entry.fullPath = parent_str;
@@ -395,9 +420,10 @@ static void scan_assets_dir() {
         parent_entry.type = ASSET_TYPE_FOLDER;
         parent_entry.is_directory = true;
         g_asset_entries.push_back(parent_entry);
-        CARDINAL_LOG_DEBUG("Added parent directory entry: %s", parent_str.c_str());
+        CARDINAL_LOG_DEBUG("Added parent directory entry: %s",
+                           parent_str.c_str());
       }
-      
+
       // Scan current directory (non-recursive)
       CARDINAL_LOG_DEBUG("Starting directory iteration");
       size_t entry_count = 0;
@@ -408,76 +434,93 @@ static void scan_assets_dir() {
           entry.fullPath = it.path().string();
           std::replace(entry.fullPath.begin(), entry.fullPath.end(), '\\', '/');
           entry.display = it.path().filename().string();
-          
-          CARDINAL_LOG_DEBUG("Processing entry #%zu: %s (full: %s)", entry_count, entry.display.c_str(), entry.fullPath.c_str());
-          
+
+          CARDINAL_LOG_DEBUG("Processing entry #%zu: %s (full: %s)",
+                             entry_count, entry.display.c_str(),
+                             entry.fullPath.c_str());
+
           // Calculate relative path from assets root
           try {
             fs::path rel = fs::relative(it.path(), assets_root);
             entry.relativePath = rel.generic_string();
             CARDINAL_LOG_DEBUG("Relative path: %s", entry.relativePath.c_str());
-          } catch (const std::exception& e) {
-            CARDINAL_LOG_WARN("Failed to calculate relative path for %s: %s", entry.display.c_str(), e.what());
+          } catch (const std::exception &e) {
+            CARDINAL_LOG_WARN("Failed to calculate relative path for %s: %s",
+                              entry.display.c_str(), e.what());
             entry.relativePath = entry.display;
           } catch (...) {
-            CARDINAL_LOG_WARN("Unknown error calculating relative path for %s", entry.display.c_str());
+            CARDINAL_LOG_WARN("Unknown error calculating relative path for %s",
+                              entry.display.c_str());
             entry.relativePath = entry.display;
           }
-          
+
           if (it.is_directory()) {
             entry.type = ASSET_TYPE_FOLDER;
             entry.is_directory = true;
             CARDINAL_LOG_DEBUG("Entry is directory: %s", entry.display.c_str());
           } else if (it.is_regular_file()) {
-             entry.type = get_asset_type(entry.fullPath);
-             entry.is_directory = false;
-             CARDINAL_LOG_DEBUG("Entry is file: %s (type: %d)", entry.display.c_str(), entry.type);
-           } else {
-            CARDINAL_LOG_DEBUG("Skipping special file: %s", entry.display.c_str());
+            entry.type = get_asset_type(entry.fullPath);
+            entry.is_directory = false;
+            CARDINAL_LOG_DEBUG("Entry is file: %s (type: %d)",
+                               entry.display.c_str(), entry.type);
+          } else {
+            CARDINAL_LOG_DEBUG("Skipping special file: %s",
+                               entry.display.c_str());
             continue; // Skip special files
           }
-          
+
           g_asset_entries.push_back(entry);
-          CARDINAL_LOG_DEBUG("Successfully added entry: %s", entry.display.c_str());
-        } catch (const std::exception& e) {
-          CARDINAL_LOG_ERROR("Exception processing entry #%zu (%s): %s", entry_count, it.path().filename().string().c_str(), e.what());
+          CARDINAL_LOG_DEBUG("Successfully added entry: %s",
+                             entry.display.c_str());
+        } catch (const std::exception &e) {
+          CARDINAL_LOG_ERROR("Exception processing entry #%zu (%s): %s",
+                             entry_count, it.path().filename().string().c_str(),
+                             e.what());
           continue;
         } catch (...) {
-          CARDINAL_LOG_ERROR("Unknown exception processing entry #%zu (%s)", entry_count, it.path().filename().string().c_str());
+          CARDINAL_LOG_ERROR("Unknown exception processing entry #%zu (%s)",
+                             entry_count,
+                             it.path().filename().string().c_str());
           continue;
         }
       }
-      
-      CARDINAL_LOG_INFO("Found %zu entries before sorting and filtering", g_asset_entries.size());
-      
-      // Sort entries: directories first, then files, alphabetically within each group
+
+      CARDINAL_LOG_INFO("Found %zu entries before sorting and filtering",
+                        g_asset_entries.size());
+
+      // Sort entries: directories first, then files, alphabetically within each
+      // group
       std::sort(g_asset_entries.begin(), g_asset_entries.end(),
                 [](const AssetEntry &a, const AssetEntry &b) {
-                  if (a.display == "..") return true;
-                  if (b.display == "..") return false;
+                  if (a.display == "..")
+                    return true;
+                  if (b.display == "..")
+                    return false;
                   if (a.is_directory != b.is_directory) {
                     return a.is_directory > b.is_directory;
                   }
                   return a.display < b.display;
                 });
-      
+
       CARDINAL_LOG_DEBUG("Entries sorted, applying filters");
-      
+
       // Apply filters
-      for (const auto& entry : g_asset_entries) {
+      for (const auto &entry : g_asset_entries) {
         if (matches_filter(entry)) {
           g_filtered_entries.push_back(entry);
         }
       }
-      
-      CARDINAL_LOG_INFO("Asset scan completed: %zu total entries, %zu after filtering", g_asset_entries.size(), g_filtered_entries.size());
+
+      CARDINAL_LOG_INFO(
+          "Asset scan completed: %zu total entries, %zu after filtering",
+          g_asset_entries.size(), g_filtered_entries.size());
     } else {
-      CARDINAL_LOG_ERROR("Current path is invalid: empty=%d, exists=%d, is_directory=%d", 
-                        current_path.empty(), 
-                        fs::exists(current_path), 
-                        fs::is_directory(current_path));
+      CARDINAL_LOG_ERROR(
+          "Current path is invalid: empty=%d, exists=%d, is_directory=%d",
+          current_path.empty(), fs::exists(current_path),
+          fs::is_directory(current_path));
     }
-  } catch (const std::exception& e) {
+  } catch (const std::exception &e) {
     CARDINAL_LOG_ERROR("Exception during asset directory scan: %s", e.what());
   } catch (...) {
     CARDINAL_LOG_ERROR("Unknown exception during asset directory scan");
@@ -549,20 +592,24 @@ static void set_mouse_capture(bool capture) {
  */
 void editor_layer_process_pending_uploads() {
   if (g_scene_upload_pending && g_renderer) {
+    CARDINAL_LOG_INFO(
+        "[EDITOR] Pending upload detected; waiting for device idle");
     // Wait for any pending GPU work to complete before uploading scene
     cardinal_renderer_wait_idle(g_renderer);
-    
+    CARDINAL_LOG_DEBUG("[EDITOR] Device idle; uploading pending scene");
+
     // Now it's safe to upload the scene
     cardinal_renderer_upload_scene(g_renderer, &g_pending_scene);
     g_combined_scene = g_pending_scene; // Update our local copy
-    
+
     // Update camera and lighting after scene upload
     if (g_pbr_enabled) {
       cardinal_renderer_set_camera(g_renderer, &g_camera);
       cardinal_renderer_set_lighting(g_renderer, &g_light);
     }
-    
+
     g_scene_upload_pending = false;
+    CARDINAL_LOG_INFO("[EDITOR] Deferred scene upload completed");
   }
 }
 
@@ -704,7 +751,7 @@ bool editor_layer_init(CardinalWindow *window, CardinalRenderer *renderer) {
   g_renderer = renderer;
   g_scene_loaded = false;
   memset(&g_combined_scene, 0, sizeof(g_combined_scene));
-  
+
   // Initialize model manager
   cardinal_model_manager_init(&g_model_manager);
 
@@ -771,24 +818,30 @@ bool editor_layer_init(CardinalWindow *window, CardinalRenderer *renderer) {
       cardinal_renderer_internal_swapchain_image_count(renderer);
   init_info.ImageCount =
       cardinal_renderer_internal_swapchain_image_count(renderer);
-  init_info.MSAASamples = VK_SAMPLE_COUNT_1_BIT;
+  // Set API version for ImGui Vulkan backend
+  init_info.ApiVersion = VK_API_VERSION_1_3;
+  // Configure pipeline info for main viewport
+  init_info.PipelineInfoMain.MSAASamples = VK_SAMPLE_COUNT_1_BIT;
 
   // Dynamic rendering is required; configure ImGui accordingly
   init_info.UseDynamicRendering = true;
-  init_info.PipelineRenderingCreateInfo.sType =
+  init_info.PipelineInfoMain.PipelineRenderingCreateInfo.sType =
       VK_STRUCTURE_TYPE_PIPELINE_RENDERING_CREATE_INFO_KHR;
-  init_info.PipelineRenderingCreateInfo.pNext = NULL;
+  init_info.PipelineInfoMain.PipelineRenderingCreateInfo.pNext = NULL;
 
   // Get swapchain format for color attachment
   VkFormat colorFormat = cardinal_renderer_internal_swapchain_format(renderer);
-  init_info.PipelineRenderingCreateInfo.colorAttachmentCount = 1;
-  init_info.PipelineRenderingCreateInfo.pColorAttachmentFormats = &colorFormat;
-  init_info.PipelineRenderingCreateInfo.depthAttachmentFormat =
+  init_info.PipelineInfoMain.PipelineRenderingCreateInfo.colorAttachmentCount =
+      1;
+  init_info.PipelineInfoMain.PipelineRenderingCreateInfo
+      .pColorAttachmentFormats = &colorFormat;
+  init_info.PipelineInfoMain.PipelineRenderingCreateInfo.depthAttachmentFormat =
       cardinal_renderer_internal_depth_format(renderer);
-  init_info.PipelineRenderingCreateInfo.stencilAttachmentFormat =
-      VK_FORMAT_UNDEFINED;
+  init_info.PipelineInfoMain.PipelineRenderingCreateInfo
+      .stencilAttachmentFormat = VK_FORMAT_UNDEFINED;
 
-  init_info.RenderPass = VK_NULL_HANDLE;
+  // No render pass when using dynamic rendering
+  init_info.PipelineInfoMain.RenderPass = VK_NULL_HANDLE;
 
   if (!ImGui_ImplVulkan_Init(&init_info)) {
     fprintf(stderr, "ImGui Vulkan init failed\n");
@@ -808,100 +861,113 @@ bool editor_layer_init(CardinalWindow *window, CardinalRenderer *renderer) {
 }
 
 /**
- * @brief Draws the animation controls panel with timeline and playback controls.
- * 
+ * @brief Draws the animation controls panel with timeline and playback
+ * controls.
+ *
  * Displays available animations, playback controls, timeline scrubbing,
  * and animation properties for the currently loaded scene.
  */
 static void draw_animation_panel() {
   if (ImGui::Begin("Animation")) {
-    if (!g_scene_loaded || !g_combined_scene.animation_system || g_combined_scene.animation_system->animation_count == 0) {
+    if (!g_scene_loaded || !g_combined_scene.animation_system ||
+        g_combined_scene.animation_system->animation_count == 0) {
       ImGui::TextDisabled("No animations available");
-      ImGui::TextWrapped("Load a scene with animations to see animation controls.");
+      ImGui::TextWrapped(
+          "Load a scene with animations to see animation controls.");
       ImGui::End();
       return;
     }
 
-    CardinalAnimationSystem* anim_sys = g_combined_scene.animation_system;
-    
+    CardinalAnimationSystem *anim_sys = g_combined_scene.animation_system;
+
     // Animation selection
     ImGui::Text("Animations (%u)", anim_sys->animation_count);
     ImGui::Separator();
-    
+
     // Animation list
     if (ImGui::BeginChild("##animation_list", ImVec2(0, 120), true)) {
       for (uint32_t i = 0; i < anim_sys->animation_count; ++i) {
-        CardinalAnimation* anim = &anim_sys->animations[i];
-        const char* name = anim->name ? anim->name : "Unnamed Animation";
-        
+        CardinalAnimation *anim = &anim_sys->animations[i];
+        const char *name = anim->name ? anim->name : "Unnamed Animation";
+
         bool is_selected = (g_selected_animation == (int)i);
         if (ImGui::Selectable(name, is_selected)) {
           g_selected_animation = (int)i;
           g_animation_time = 0.0f; // Reset time when switching animations
         }
-        
+
         // Show animation info
         ImGui::SameLine();
-        ImGui::TextDisabled("(%.2fs, %u channels)", anim->duration, anim->channel_count);
+        ImGui::TextDisabled("(%.2fs, %u channels)", anim->duration,
+                            anim->channel_count);
       }
     }
     ImGui::EndChild();
-    
+
     ImGui::Separator();
-    
+
     // Playback controls
-    if (g_selected_animation >= 0 && g_selected_animation < (int)anim_sys->animation_count) {
-      CardinalAnimation* current_anim = &anim_sys->animations[g_selected_animation];
-      
+    if (g_selected_animation >= 0 &&
+        g_selected_animation < (int)anim_sys->animation_count) {
+      CardinalAnimation *current_anim =
+          &anim_sys->animations[g_selected_animation];
+
       ImGui::Text("Playback Controls");
-      
+
       // Play/Pause button
-       if (g_animation_playing) {
-         if (ImGui::Button("Pause")) {
-           g_animation_playing = false;
-           cardinal_animation_pause(anim_sys, g_selected_animation);
-         }
-       } else {
-         if (ImGui::Button("Play")) {
-           g_animation_playing = true;
-           cardinal_animation_play(anim_sys, g_selected_animation, g_animation_looping, 1.0f);
-         }
-       }
-       
-       ImGui::SameLine();
-       if (ImGui::Button("Stop")) {
-         g_animation_playing = false;
-         g_animation_time = 0.0f;
-         cardinal_animation_stop(anim_sys, g_selected_animation);
-       }
-       
-       ImGui::SameLine();
-       if (ImGui::Checkbox("Loop", &g_animation_looping)) {
-         // Update looping state if animation is playing
-         if (g_animation_playing) {
-           cardinal_animation_play(anim_sys, g_selected_animation, g_animation_looping, 1.0f);
-         }
-       }
-       
-       // Speed control
-       ImGui::SetNextItemWidth(100);
-       if (ImGui::SliderFloat("Speed", &g_animation_speed, 0.1f, 3.0f, "%.1fx")) {
-         cardinal_animation_set_speed(anim_sys, g_selected_animation, g_animation_speed);
-       }
-      
+      if (g_animation_playing) {
+        if (ImGui::Button("Pause")) {
+          g_animation_playing = false;
+          cardinal_animation_pause(anim_sys, g_selected_animation);
+        }
+      } else {
+        if (ImGui::Button("Play")) {
+          g_animation_playing = true;
+          cardinal_animation_play(anim_sys, g_selected_animation,
+                                  g_animation_looping, 1.0f);
+        }
+      }
+
+      ImGui::SameLine();
+      if (ImGui::Button("Stop")) {
+        g_animation_playing = false;
+        g_animation_time = 0.0f;
+        cardinal_animation_stop(anim_sys, g_selected_animation);
+      }
+
+      ImGui::SameLine();
+      if (ImGui::Checkbox("Loop", &g_animation_looping)) {
+        // Update looping state if animation is playing
+        if (g_animation_playing) {
+          cardinal_animation_play(anim_sys, g_selected_animation,
+                                  g_animation_looping, 1.0f);
+        }
+      }
+
+      // Speed control
+      ImGui::SetNextItemWidth(100);
+      if (ImGui::SliderFloat("Speed", &g_animation_speed, 0.1f, 3.0f,
+                             "%.1fx")) {
+        cardinal_animation_set_speed(anim_sys, g_selected_animation,
+                                     g_animation_speed);
+      }
+
       // Timeline
       ImGui::Separator();
       ImGui::Text("Timeline");
-      
+
       // Time display
-      ImGui::Text("Time: %.2f / %.2f seconds", g_animation_time, current_anim->duration);
-      
+      ImGui::Text("Time: %.2f / %.2f seconds", g_animation_time,
+                  current_anim->duration);
+
       // Timeline scrubber
       float timeline_width = ImGui::GetContentRegionAvail().x - 20;
       ImGui::SetNextItemWidth(timeline_width);
-      if (ImGui::SliderFloat("##timeline", &g_animation_time, 0.0f, current_anim->duration, "%.2fs")) {
+      if (ImGui::SliderFloat("##timeline", &g_animation_time, 0.0f,
+                             current_anim->duration, "%.2fs")) {
         // User is scrubbing the timeline
-        if (g_animation_time < 0.0f) g_animation_time = 0.0f;
+        if (g_animation_time < 0.0f)
+          g_animation_time = 0.0f;
         if (g_animation_time > current_anim->duration) {
           if (g_animation_looping) {
             g_animation_time = fmodf(g_animation_time, current_anim->duration);
@@ -911,12 +977,12 @@ static void draw_animation_panel() {
           }
         }
       }
-      
+
       // Update animation time during playback
       if (g_animation_playing) {
-        ImGuiIO& io = ImGui::GetIO();
+        ImGuiIO &io = ImGui::GetIO();
         g_animation_time += io.DeltaTime * g_animation_speed;
-        
+
         if (g_animation_time >= current_anim->duration) {
           if (g_animation_looping) {
             g_animation_time = fmodf(g_animation_time, current_anim->duration);
@@ -926,21 +992,22 @@ static void draw_animation_panel() {
           }
         }
       }
-      
+
       // Animation info
       ImGui::Separator();
       ImGui::Text("Animation Info");
-      ImGui::Text("Name: %s", current_anim->name ? current_anim->name : "Unnamed");
+      ImGui::Text("Name: %s",
+                  current_anim->name ? current_anim->name : "Unnamed");
       ImGui::Text("Duration: %.2f seconds", current_anim->duration);
       ImGui::Text("Channels: %u", current_anim->channel_count);
       ImGui::Text("Samplers: %u", current_anim->sampler_count);
-      
+
       // Channel details (collapsible)
       if (ImGui::CollapsingHeader("Channels")) {
         for (uint32_t i = 0; i < current_anim->channel_count; ++i) {
-          CardinalAnimationChannel* channel = &current_anim->channels[i];
-          ImGui::Text("Channel %u: Node %u, Target %d", 
-                     i, channel->target.node_index, (int)channel->target.path);
+          CardinalAnimationChannel *channel = &current_anim->channels[i];
+          ImGui::Text("Channel %u: Node %u, Target %d", i,
+                      channel->target.node_index, (int)channel->target.path);
         }
       }
     } else {
@@ -960,59 +1027,65 @@ static void draw_animation_panel() {
  * @todo Support scene hierarchy editing.
  */
 // Helper function to recursively draw scene nodes
-static void draw_scene_node(CardinalSceneNode* node, int depth = 0) {
-  if (!node) return;
-  
+static void draw_scene_node(CardinalSceneNode *node, int depth = 0) {
+  if (!node)
+    return;
+
   // Create a unique ID for ImGui tree node
   char node_id[256];
-  snprintf(node_id, sizeof(node_id), "%s##%p", node->name ? node->name : "Unnamed Node", (void*)node);
-  
+  snprintf(node_id, sizeof(node_id), "%s##%p",
+           node->name ? node->name : "Unnamed Node", (void *)node);
+
   bool node_open = ImGui::TreeNode(node_id);
-  
+
   // Show node info on the same line
   ImGui::SameLine();
-  ImGui::TextDisabled("(meshes: %u, children: %u)", node->mesh_count, node->child_count);
-  
+  ImGui::TextDisabled("(meshes: %u, children: %u)", node->mesh_count,
+                      node->child_count);
+
   if (node_open) {
     // Show transform information
     if (ImGui::TreeNode("Transform")) {
       ImGui::Text("Local Transform:");
-      ImGui::Text("  Translation: (%.2f, %.2f, %.2f)", 
-                  node->local_transform[12], node->local_transform[13], node->local_transform[14]);
-      
+      ImGui::Text("  Translation: (%.2f, %.2f, %.2f)",
+                  node->local_transform[12], node->local_transform[13],
+                  node->local_transform[14]);
+
       ImGui::Text("World Transform:");
-      ImGui::Text("  Translation: (%.2f, %.2f, %.2f)", 
-                  node->world_transform[12], node->world_transform[13], node->world_transform[14]);
+      ImGui::Text("  Translation: (%.2f, %.2f, %.2f)",
+                  node->world_transform[12], node->world_transform[13],
+                  node->world_transform[14]);
       ImGui::TreePop();
     }
-    
+
     // Show attached meshes
     if (node->mesh_count > 0 && ImGui::TreeNode("Meshes")) {
       for (uint32_t i = 0; i < node->mesh_count; ++i) {
         uint32_t mesh_idx = node->mesh_indices[i];
         if (mesh_idx < g_combined_scene.mesh_count) {
-      CardinalMesh &m = g_combined_scene.meshes[mesh_idx];
-          
+          CardinalMesh &m = g_combined_scene.meshes[mesh_idx];
+
           // Create unique ID for the checkbox
           char checkbox_id[64];
-          snprintf(checkbox_id, sizeof(checkbox_id), "Visible##mesh_%u", mesh_idx);
-          
+          snprintf(checkbox_id, sizeof(checkbox_id), "Visible##mesh_%u",
+                   mesh_idx);
+
           // Visibility checkbox
           ImGui::Checkbox(checkbox_id, &m.visible);
           ImGui::SameLine();
-          
+
           ImGui::BulletText("Mesh %u: %u vertices, %u indices", mesh_idx,
                             (unsigned)m.vertex_count, (unsigned)m.index_count);
         }
       }
       ImGui::TreePop();
     }
-    
+
     // Recursively draw child nodes
     for (uint32_t i = 0; i < node->child_count; ++i) {
       draw_scene_node(node->children[i], depth + 1);
     }
-    
+
     ImGui::TreePop();
   }
 }
@@ -1022,54 +1095,58 @@ static void draw_scene_graph_panel() {
     if (ImGui::TreeNode("Scene")) {
       ImGui::BulletText("Camera");
       ImGui::BulletText("Directional Light");
-      
+
       if (g_scene_loaded) {
         if (ImGui::TreeNode("Loaded Scene")) {
-          ImGui::Text("Total Meshes: %u", (unsigned)g_combined_scene.mesh_count);
-    ImGui::Text("Root Nodes: %u", (unsigned)g_combined_scene.root_node_count);
-          
+          ImGui::Text("Total Meshes: %u",
+                      (unsigned)g_combined_scene.mesh_count);
+          ImGui::Text("Root Nodes: %u",
+                      (unsigned)g_combined_scene.root_node_count);
+
           // Bulk visibility controls
           ImGui::Separator();
           ImGui::Text("Bulk Visibility Controls:");
-          
+
           if (ImGui::Button("Show All Meshes")) {
             for (uint32_t i = 0; i < g_combined_scene.mesh_count; ++i) {
-        g_combined_scene.meshes[i].visible = true;
-      }
+              g_combined_scene.meshes[i].visible = true;
+            }
           }
           ImGui::SameLine();
           if (ImGui::Button("Hide All Meshes")) {
             for (uint32_t i = 0; i < g_combined_scene.mesh_count; ++i) {
-        g_combined_scene.meshes[i].visible = false;
-      }
+              g_combined_scene.meshes[i].visible = false;
+            }
           }
-          
+
           // Material-based visibility controls
           if (ImGui::Button("Show Only Material 0")) {
             for (uint32_t i = 0; i < g_combined_scene.mesh_count; ++i) {
-        g_combined_scene.meshes[i].visible = (g_combined_scene.meshes[i].material_index == 0);
-      }
+              g_combined_scene.meshes[i].visible =
+                  (g_combined_scene.meshes[i].material_index == 0);
+            }
           }
           ImGui::SameLine();
           if (ImGui::Button("Show Only Material 1")) {
             for (uint32_t i = 0; i < g_combined_scene.mesh_count; ++i) {
-        g_combined_scene.meshes[i].visible = (g_combined_scene.meshes[i].material_index == 1);
-      }
+              g_combined_scene.meshes[i].visible =
+                  (g_combined_scene.meshes[i].material_index == 1);
+            }
           }
-          
+
           // Toggle between materials
           if (ImGui::Button("Toggle Materials 0/1")) {
             static bool show_material_0 = true;
             for (uint32_t i = 0; i < g_combined_scene.mesh_count; ++i) {
-        if (g_combined_scene.meshes[i].material_index == 0) {
-          g_combined_scene.meshes[i].visible = show_material_0;
-        } else if (g_combined_scene.meshes[i].material_index == 1) {
-          g_combined_scene.meshes[i].visible = !show_material_0;
-        }
-      }
+              if (g_combined_scene.meshes[i].material_index == 0) {
+                g_combined_scene.meshes[i].visible = show_material_0;
+              } else if (g_combined_scene.meshes[i].material_index == 1) {
+                g_combined_scene.meshes[i].visible = !show_material_0;
+              }
+            }
             show_material_0 = !show_material_0;
           }
-          
+
           // Display hierarchical scene nodes
           if (g_combined_scene.root_node_count > 0) {
             ImGui::Separator();
@@ -1081,24 +1158,26 @@ static void draw_scene_graph_panel() {
             ImGui::Text("No scene hierarchy - showing flat mesh list:");
             for (uint32_t i = 0; i < g_combined_scene.mesh_count; ++i) {
               CardinalMesh &m = g_combined_scene.meshes[i];
-              
+
               // Create unique ID for the checkbox
               char checkbox_id[64];
-              snprintf(checkbox_id, sizeof(checkbox_id), "Visible##flat_mesh_%u", i);
-              
+              snprintf(checkbox_id, sizeof(checkbox_id),
+                       "Visible##flat_mesh_%u", i);
+
               // Visibility checkbox
               ImGui::Checkbox(checkbox_id, &m.visible);
               ImGui::SameLine();
-              
+
               ImGui::BulletText("Mesh %u: %u vertices, %u indices", (unsigned)i,
-                                (unsigned)m.vertex_count, (unsigned)m.index_count);
+                                (unsigned)m.vertex_count,
+                                (unsigned)m.index_count);
             }
           }
-          
+
           ImGui::TreePop();
         }
       }
-      
+
       ImGui::TreePop();
     }
   }
@@ -1108,8 +1187,8 @@ static void draw_scene_graph_panel() {
 /**
  * @brief Draws the asset browser panel.
  *
- * Displays assets list with subdirectory navigation, search, filtering, and file icons.
- * Supports loading scenes and browsing through directory structure.
+ * Displays assets list with subdirectory navigation, search, filtering, and
+ * file icons. Supports loading scenes and browsing through directory structure.
  */
 static void draw_asset_browser_panel() {
   if (ImGui::Begin("Assets")) {
@@ -1130,12 +1209,12 @@ static void draw_asset_browser_panel() {
     if (ImGui::Button("Refresh")) {
       scan_assets_dir();
     }
-    
+
     // Current directory display
     ImGui::Text("Current: %s", g_current_dir);
-    
+
     ImGui::Separator();
-    
+
     // Search and filter controls
     ImGui::Text("Search & Filter:");
     ImGui::SetNextItemWidth(-FLT_MIN);
@@ -1143,19 +1222,22 @@ static void draw_asset_browser_panel() {
                                  g_search_filter, sizeof(g_search_filter))) {
       scan_assets_dir(); // Re-apply filters
     }
-    
+
     // Filter checkboxes
     bool filter_changed = false;
-    if (ImGui::Checkbox("Folders Only", &g_show_folders_only)) filter_changed = true;
+    if (ImGui::Checkbox("Folders Only", &g_show_folders_only))
+      filter_changed = true;
     ImGui::SameLine();
-    if (ImGui::Checkbox("glTF/GLB", &g_show_gltf_only)) filter_changed = true;
+    if (ImGui::Checkbox("glTF/GLB", &g_show_gltf_only))
+      filter_changed = true;
     ImGui::SameLine();
-    if (ImGui::Checkbox("Textures", &g_show_textures_only)) filter_changed = true;
-    
+    if (ImGui::Checkbox("Textures", &g_show_textures_only))
+      filter_changed = true;
+
     if (filter_changed) {
       scan_assets_dir(); // Re-apply filters
     }
-    
+
     if (ImGui::Button("Clear Filters")) {
       g_search_filter[0] = '\0';
       g_show_folders_only = false;
@@ -1194,74 +1276,94 @@ static void draw_asset_browser_panel() {
 
     // Dynamic assets list with icons and navigation
     CARDINAL_LOG_DEBUG("Starting asset browser UI rendering");
-    const auto& entries_to_show = g_filtered_entries.empty() ? g_asset_entries : g_filtered_entries;
-    CARDINAL_LOG_DEBUG("Using %s entries, count: %zu", g_filtered_entries.empty() ? "asset" : "filtered", entries_to_show.size());
-    
+    const auto &entries_to_show =
+        g_filtered_entries.empty() ? g_asset_entries : g_filtered_entries;
+    CARDINAL_LOG_DEBUG("Using %s entries, count: %zu",
+                       g_filtered_entries.empty() ? "asset" : "filtered",
+                       entries_to_show.size());
+
     if (entries_to_show.empty()) {
       CARDINAL_LOG_DEBUG("No entries to show, displaying empty message");
       ImGui::TextDisabled("No assets found in '%s'", g_current_dir);
     } else {
       CARDINAL_LOG_DEBUG("Beginning asset list child window");
       if (ImGui::BeginChild("##assets_list", ImVec2(0, 0), true)) {
-        CARDINAL_LOG_DEBUG("Asset list child window created, iterating %zu entries", entries_to_show.size());
+        CARDINAL_LOG_DEBUG(
+            "Asset list child window created, iterating %zu entries",
+            entries_to_show.size());
         for (size_t i = 0; i < entries_to_show.size(); ++i) {
           const auto &e = entries_to_show[i];
           CARDINAL_LOG_TRACE("Rendering entry %zu: %s", i, e.display.c_str());
-          
+
           // Display icon and name
           CARDINAL_LOG_TRACE("About to render icon for entry %zu", i);
           ImGui::Text("%s", get_asset_icon(e.type));
           CARDINAL_LOG_TRACE("Icon rendered, adding SameLine");
           ImGui::SameLine();
-          
-          CARDINAL_LOG_TRACE("About to render Selectable for: %s", e.display.c_str());
+
+          CARDINAL_LOG_TRACE("About to render Selectable for: %s",
+                             e.display.c_str());
           bool selected = ImGui::Selectable(e.display.c_str());
           CARDINAL_LOG_TRACE("Selectable rendered, selected: %d", selected);
-          
+
           if (selected) {
-            CARDINAL_LOG_INFO("Asset browser item clicked: %s (is_directory: %d, type: %d)", e.display.c_str(), e.is_directory, e.type);
-            
+            CARDINAL_LOG_INFO(
+                "Asset browser item clicked: %s (is_directory: %d, type: %d)",
+                e.display.c_str(), e.is_directory, e.type);
+
             if (e.is_directory) {
               // Navigate to directory
-              CARDINAL_LOG_INFO("Navigating to directory: %s -> %s", g_current_dir, e.fullPath.c_str());
-              
+              CARDINAL_LOG_INFO("Navigating to directory: %s -> %s",
+                                g_current_dir, e.fullPath.c_str());
+
               if (e.display == "..") {
                 // Go to parent directory
-                CARDINAL_LOG_DEBUG("Going to parent directory: %s", e.fullPath.c_str());
-                strncpy(g_current_dir, e.fullPath.c_str(), sizeof(g_current_dir) - 1);
+                CARDINAL_LOG_DEBUG("Going to parent directory: %s",
+                                   e.fullPath.c_str());
+                strncpy(g_current_dir, e.fullPath.c_str(),
+                        sizeof(g_current_dir) - 1);
                 g_current_dir[sizeof(g_current_dir) - 1] = '\0';
               } else {
                 // Enter subdirectory
-                CARDINAL_LOG_DEBUG("Entering subdirectory: %s", e.fullPath.c_str());
-                strncpy(g_current_dir, e.fullPath.c_str(), sizeof(g_current_dir) - 1);
+                CARDINAL_LOG_DEBUG("Entering subdirectory: %s",
+                                   e.fullPath.c_str());
+                strncpy(g_current_dir, e.fullPath.c_str(),
+                        sizeof(g_current_dir) - 1);
                 g_current_dir[sizeof(g_current_dir) - 1] = '\0';
               }
-              
-              CARDINAL_LOG_DEBUG("Current directory updated to: %s", g_current_dir);
-              CARDINAL_LOG_DEBUG("Calling scan_assets_dir() after directory navigation");
-              
+
+              CARDINAL_LOG_DEBUG("Current directory updated to: %s",
+                                 g_current_dir);
+              CARDINAL_LOG_DEBUG(
+                  "Calling scan_assets_dir() after directory navigation");
+
               try {
                 scan_assets_dir();
                 CARDINAL_LOG_DEBUG("scan_assets_dir() completed successfully");
-              } catch (const std::exception& e) {
-                CARDINAL_LOG_ERROR("Exception in scan_assets_dir(): %s", e.what());
+              } catch (const std::exception &e) {
+                CARDINAL_LOG_ERROR("Exception in scan_assets_dir(): %s",
+                                   e.what());
               } catch (...) {
                 CARDINAL_LOG_ERROR("Unknown exception in scan_assets_dir()");
               }
             } else {
               // Select file for loading
-              CARDINAL_LOG_INFO("File selected: %s (type: %d)", e.fullPath.c_str(), e.type);
-              snprintf(g_scene_path, sizeof(g_scene_path), "%s", e.fullPath.c_str());
+              CARDINAL_LOG_INFO("File selected: %s (type: %d)",
+                                e.fullPath.c_str(), e.type);
+              snprintf(g_scene_path, sizeof(g_scene_path), "%s",
+                       e.fullPath.c_str());
               // Auto-load glTF/GLB files
               if (e.type == ASSET_TYPE_GLTF || e.type == ASSET_TYPE_GLB) {
-                CARDINAL_LOG_INFO("Auto-loading glTF/GLB file: %s", e.fullPath.c_str());
+                CARDINAL_LOG_INFO("Auto-loading glTF/GLB file: %s",
+                                  e.fullPath.c_str());
                 load_scene_from_path(e.fullPath.c_str());
               }
             }
           }
-          
+
           // Double-click support for files
-          if (!e.is_directory && ImGui::IsItemHovered() && ImGui::IsMouseDoubleClicked(0)) {
+          if (!e.is_directory && ImGui::IsItemHovered() &&
+              ImGui::IsMouseDoubleClicked(0)) {
             if (e.type == ASSET_TYPE_GLTF || e.type == ASSET_TYPE_GLB) {
               load_scene_from_path(e.fullPath.c_str());
             }
@@ -1284,10 +1386,10 @@ static void draw_model_manager_panel() {
   if (ImGui::Begin("Model Manager")) {
     ImGui::Text("Loaded Models:");
     ImGui::Separator();
-    
+
     // Get model count
     uint32_t model_count = g_model_manager.model_count;
-    
+
     if (model_count == 0) {
       ImGui::Text("No models loaded");
       ImGui::TextWrapped("Load models from the Assets panel to see them here.");
@@ -1295,32 +1397,36 @@ static void draw_model_manager_panel() {
       // Model list with operations
       if (ImGui::BeginChild("##model_list", ImVec2(0, 300), true)) {
         for (uint32_t i = 0; i < model_count; i++) {
-          CardinalModelInstance *model = cardinal_model_manager_get_model_by_index(&g_model_manager, i);
-          if (!model) continue;
-          
+          CardinalModelInstance *model =
+              cardinal_model_manager_get_model_by_index(&g_model_manager, i);
+          if (!model)
+            continue;
+
           ImGui::PushID((int)model->id);
-          
+
           // Model header with selection
           bool is_selected = (g_selected_model_id == model->id);
-          if (ImGui::Selectable(model->name ? model->name : "Unnamed Model", is_selected)) {
+          if (ImGui::Selectable(model->name ? model->name : "Unnamed Model",
+                                is_selected)) {
             g_selected_model_id = model->id;
             cardinal_model_manager_set_selected(&g_model_manager, model->id);
           }
-          
+
           // Model controls on same line
           ImGui::SameLine();
-          
+
           // Visibility toggle
           bool visible = model->visible;
           if (ImGui::Checkbox("##visible", &visible)) {
-            cardinal_model_manager_set_visible(&g_model_manager, model->id, visible);
+            cardinal_model_manager_set_visible(&g_model_manager, model->id,
+                                               visible);
           }
           if (ImGui::IsItemHovered()) {
             ImGui::SetTooltip("Toggle visibility");
           }
-          
+
           ImGui::SameLine();
-          
+
           // Remove button
           if (ImGui::Button("Remove")) {
             cardinal_model_manager_remove_model(&g_model_manager, model->id);
@@ -1330,7 +1436,7 @@ static void draw_model_manager_panel() {
             ImGui::PopID();
             break; // Exit loop since we modified the array
           }
-          
+
           // Show model info when selected
           if (is_selected) {
             ImGui::Indent();
@@ -1340,26 +1446,29 @@ static void draw_model_manager_panel() {
             if (model->file_path) {
               ImGui::Text("Path: %s", model->file_path);
             }
-            
+
             // Transform controls
             ImGui::Separator();
             ImGui::Text("Transform:");
-            
+
             // Position (extract from transform matrix)
-            float pos[3] = {model->transform[12], model->transform[13], model->transform[14]};
+            float pos[3] = {model->transform[12], model->transform[13],
+                            model->transform[14]};
             if (ImGui::DragFloat3("Position", pos, 0.1f)) {
               float new_transform[16];
               memcpy(new_transform, model->transform, sizeof(new_transform));
               new_transform[12] = pos[0];
               new_transform[13] = pos[1];
               new_transform[14] = pos[2];
-              cardinal_model_manager_set_transform(&g_model_manager, model->id, new_transform);
+              cardinal_model_manager_set_transform(&g_model_manager, model->id,
+                                                   new_transform);
             }
-            
+
             // Scale (extract from transform matrix - assume uniform scale)
-            float current_scale = sqrtf(model->transform[0] * model->transform[0] + 
-                                       model->transform[1] * model->transform[1] + 
-                                       model->transform[2] * model->transform[2]);
+            float current_scale =
+                sqrtf(model->transform[0] * model->transform[0] +
+                      model->transform[1] * model->transform[1] +
+                      model->transform[2] * model->transform[2]);
             float scale = current_scale;
             if (ImGui::DragFloat("Scale", &scale, 0.01f, 0.01f, 10.0f)) {
               float scale_matrix[16];
@@ -1368,42 +1477,48 @@ static void draw_model_manager_panel() {
               scale_matrix[12] = pos[0];
               scale_matrix[13] = pos[1];
               scale_matrix[14] = pos[2];
-              cardinal_model_manager_set_transform(&g_model_manager, model->id, scale_matrix);
+              cardinal_model_manager_set_transform(&g_model_manager, model->id,
+                                                   scale_matrix);
             }
-            
+
             // Reset transform button
             if (ImGui::Button("Reset Transform")) {
               float identity[16];
               cardinal_matrix_identity(identity);
-              cardinal_model_manager_set_transform(&g_model_manager, model->id, identity);
+              cardinal_model_manager_set_transform(&g_model_manager, model->id,
+                                                   identity);
             }
-            
+
             ImGui::Unindent();
           }
-          
+
           ImGui::PopID();
         }
       }
       ImGui::EndChild();
-      
+
       ImGui::Separator();
-      
+
       // Bulk operations
       ImGui::Text("Bulk Operations:");
       if (ImGui::Button("Show All")) {
         for (uint32_t i = 0; i < model_count; i++) {
-          CardinalModelInstance *model = cardinal_model_manager_get_model_by_index(&g_model_manager, i);
+          CardinalModelInstance *model =
+              cardinal_model_manager_get_model_by_index(&g_model_manager, i);
           if (model) {
-            cardinal_model_manager_set_visible(&g_model_manager, model->id, true);
+            cardinal_model_manager_set_visible(&g_model_manager, model->id,
+                                               true);
           }
         }
       }
       ImGui::SameLine();
       if (ImGui::Button("Hide All")) {
         for (uint32_t i = 0; i < model_count; i++) {
-          CardinalModelInstance *model = cardinal_model_manager_get_model_by_index(&g_model_manager, i);
+          CardinalModelInstance *model =
+              cardinal_model_manager_get_model_by_index(&g_model_manager, i);
           if (model) {
-            cardinal_model_manager_set_visible(&g_model_manager, model->id, false);
+            cardinal_model_manager_set_visible(&g_model_manager, model->id,
+                                               false);
           }
         }
       }
@@ -1411,7 +1526,9 @@ static void draw_model_manager_panel() {
       if (ImGui::Button("Remove All")) {
         // Remove all models (iterate backwards to avoid index issues)
         for (int i = (int)model_count - 1; i >= 0; i--) {
-          CardinalModelInstance *model = cardinal_model_manager_get_model_by_index(&g_model_manager, (uint32_t)i);
+          CardinalModelInstance *model =
+              cardinal_model_manager_get_model_by_index(&g_model_manager,
+                                                        (uint32_t)i);
           if (model) {
             cardinal_model_manager_remove_model(&g_model_manager, model->id);
           }
@@ -1419,10 +1536,11 @@ static void draw_model_manager_panel() {
         g_selected_model_id = 0;
       }
     }
-    
+
     ImGui::Separator();
     ImGui::Text("Total Models: %u", model_count);
-    ImGui::Text("Total Meshes: %u", cardinal_model_manager_get_total_mesh_count(&g_model_manager));
+    ImGui::Text("Total Meshes: %u",
+                cardinal_model_manager_get_total_mesh_count(&g_model_manager));
   }
   ImGui::End();
 }
@@ -1576,7 +1694,8 @@ static void draw_pbr_settings_panel() {
       if (g_renderer) {
         CardinalRenderingMode current_mode =
             cardinal_renderer_get_rendering_mode(g_renderer);
-        const char *mode_names[] = {"Normal", "UV Visualization", "Wireframe", "Mesh Shader"};
+        const char *mode_names[] = {"Normal", "UV Visualization", "Wireframe",
+                                    "Mesh Shader"};
         int current_item = (int)current_mode;
 
         if (ImGui::Combo("Mode", &current_item, mode_names, 4)) {
@@ -1598,7 +1717,8 @@ static void draw_pbr_settings_panel() {
           ImGui::TextWrapped("Wireframe rendering showing mesh topology.");
           break;
         case CARDINAL_RENDERING_MODE_MESH_SHADER:
-          ImGui::TextWrapped("GPU-driven mesh shader rendering with task/mesh shaders.");
+          ImGui::TextWrapped(
+              "GPU-driven mesh shader rendering with task/mesh shaders.");
           break;
         }
       } else {
@@ -1628,37 +1748,40 @@ static void imgui_record(VkCommandBuffer cmd) {
 void editor_layer_update(void) {
   // Process completed async tasks to execute callbacks
   cardinal_async_process_completed_tasks(0);
-  
-  // Update model manager (processes async loading and marks scene dirty when needed)
+
+  // Update model manager (processes async loading and marks scene dirty when
+  // needed)
   cardinal_model_manager_update(&g_model_manager);
-  
+
   // Check if combined scene needs to be re-uploaded to renderer
-  const CardinalScene* combined = cardinal_model_manager_get_combined_scene(&g_model_manager);
+  const CardinalScene *combined =
+      cardinal_model_manager_get_combined_scene(&g_model_manager);
   if (combined && g_renderer) {
     // Always re-upload when we get a combined scene since the model manager
-    // rebuilds the scene in-place when dirty, so pointer comparison isn't reliable
+    // rebuilds the scene in-place when dirty, so pointer comparison isn't
+    // reliable
     static uint32_t last_mesh_count = 0;
     static uint32_t last_material_count = 0;
     static uint32_t last_texture_count = 0;
-    
+
     // Check if scene content has changed by comparing counts
     bool scene_changed = (combined->mesh_count != last_mesh_count ||
-                         combined->material_count != last_material_count ||
-                         combined->texture_count != last_texture_count);
-    
+                          combined->material_count != last_material_count ||
+                          combined->texture_count != last_texture_count);
+
     if (scene_changed) {
-      // Instead of uploading immediately, defer the upload to avoid race conditions
-      // with command buffer recording
+      // Instead of uploading immediately, defer the upload to avoid race
+      // conditions with command buffer recording
       g_pending_scene = *combined;
       g_scene_upload_pending = true;
-      
+
       // Update tracking variables
       last_mesh_count = combined->mesh_count;
       last_material_count = combined->material_count;
       last_texture_count = combined->texture_count;
     }
   }
-  
+
   // Process async loading tasks
   if (g_loading_task && g_is_loading) {
     CardinalAsyncStatus status = cardinal_async_get_task_status(g_loading_task);
@@ -1670,18 +1793,24 @@ void editor_layer_update(void) {
       g_is_loading = false;
     }
   }
-  
+
   // Update animation system if scene is loaded
   if (g_scene_loaded && g_combined_scene.animation_system) {
     ImGuiIO &io = ImGui::GetIO();
     float dt = io.DeltaTime > 0.0f ? io.DeltaTime : 1.0f / 60.0f;
-    cardinal_animation_system_update(g_combined_scene.animation_system, dt);
-    
+    cardinal_animation_system_update(g_combined_scene.animation_system,
+                                     g_combined_scene.all_nodes,
+                                     g_combined_scene.all_node_count, dt);
+
     // Sync editor animation time with animation system state
-    if (g_selected_animation >= 0 && g_selected_animation < (int)g_combined_scene.animation_system->animation_count) {
+    if (g_selected_animation >= 0 &&
+        g_selected_animation <
+            (int)g_combined_scene.animation_system->animation_count) {
       // Find the animation state for the selected animation
-      for (uint32_t i = 0; i < g_combined_scene.animation_system->state_count; ++i) {
-        CardinalAnimationState* state = &g_combined_scene.animation_system->states[i];
+      for (uint32_t i = 0; i < g_combined_scene.animation_system->state_count;
+           ++i) {
+        CardinalAnimationState *state =
+            &g_combined_scene.animation_system->states[i];
         if (state->animation_index == (uint32_t)g_selected_animation) {
           g_animation_time = state->current_time;
           g_animation_playing = state->is_playing;
@@ -1771,19 +1900,19 @@ void editor_layer_render(void) {
   CARDINAL_LOG_DEBUG("Drawing scene graph panel");
   draw_scene_graph_panel();
   CARDINAL_LOG_DEBUG("Scene graph panel completed");
-  
+
   CARDINAL_LOG_DEBUG("Drawing asset browser panel");
   draw_asset_browser_panel();
   CARDINAL_LOG_DEBUG("Asset browser panel completed");
-  
+
   CARDINAL_LOG_DEBUG("Drawing model manager panel");
   draw_model_manager_panel();
   CARDINAL_LOG_DEBUG("Model manager panel completed");
-  
+
   CARDINAL_LOG_DEBUG("Drawing PBR settings panel");
   draw_pbr_settings_panel();
   CARDINAL_LOG_DEBUG("PBR settings panel completed");
-  
+
   CARDINAL_LOG_DEBUG("Drawing animation panel");
   draw_animation_panel();
   CARDINAL_LOG_DEBUG("Animation panel completed");
@@ -1806,7 +1935,7 @@ void editor_layer_render(void) {
     ImGui::UpdatePlatformWindows();
     ImGui::RenderPlatformWindowsDefault();
   }
-  
+
   // Scene uploads are now processed in main loop after frame rendering
 }
 
@@ -1816,25 +1945,27 @@ void editor_layer_shutdown(void) {
     // Wait for device idle before cleanup to avoid destroying resources in use
     cardinal_renderer_wait_idle(g_renderer);
   }
-  
+
   if (g_scene_loaded) {
     cardinal_scene_destroy(&g_combined_scene);
     memset(&g_combined_scene, 0, sizeof(g_combined_scene));
     g_scene_loaded = false;
   }
-  
+
   // Clean up model manager
   cardinal_model_manager_destroy(&g_model_manager);
-  
+
   // Shutdown ImGui and destroy descriptor pool BEFORE renderer destruction
-  // This ensures the Vulkan device is still valid when we clean up ImGui resources
+  // This ensures the Vulkan device is still valid when we clean up ImGui
+  // resources
   ImGui_ImplVulkan_Shutdown();
   ImGui_ImplGlfw_Shutdown();
-  
-  // NOTE: ImGui_ImplVulkan_Shutdown() handles descriptor pool cleanup internally
-  // Manual descriptor pool destruction removed to prevent double-free heap corruption
-  // The descriptor pool will be cleaned up by ImGui's internal shutdown process
+
+  // NOTE: ImGui_ImplVulkan_Shutdown() handles descriptor pool cleanup
+  // internally Manual descriptor pool destruction removed to prevent
+  // double-free heap corruption The descriptor pool will be cleaned up by
+  // ImGui's internal shutdown process
   g_descriptor_pool = VK_NULL_HANDLE;
-  
+
   ImGui::DestroyContext();
 }

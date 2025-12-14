@@ -29,6 +29,7 @@
 
 // Forward declarations
 typedef struct VulkanAllocator VulkanAllocator;
+typedef struct VulkanState VulkanState;
 
 /**
  * @brief Finds a suitable memory type index.
@@ -40,34 +41,6 @@ typedef struct VulkanAllocator VulkanAllocator;
 uint32_t vk_buffer_find_memory_type(VkPhysicalDevice physicalDevice,
                                     uint32_t typeFilter,
                                     VkMemoryPropertyFlags properties);
-
-/**
- * @brief Creates a Vulkan buffer and allocates memory using VulkanAllocator.
- * @param allocator VulkanAllocator instance.
- * @param size Buffer size.
- * @param usage Buffer usage flags.
- * @param properties Memory properties.
- * @param buffer Output buffer handle.
- * @param bufferMemory Output memory handle.
- * @return true on success, false on failure.
- */
-bool vk_buffer_create(VulkanAllocator *allocator, VkDeviceSize size,
-                      VkBufferUsageFlags usage,
-                      VkMemoryPropertyFlags properties, VkBuffer *buffer,
-                      VkDeviceMemory *bufferMemory);
-
-/**
- * @brief Copies data from one buffer to another.
- * @param device Logical device.
- * @param commandPool Command pool.
- * @param graphicsQueue Graphics queue.
- * @param srcBuffer Source buffer.
- * @param dstBuffer Destination buffer.
- * @param size Size to copy.
- */
-void vk_buffer_copy(VkDevice device, VkCommandPool commandPool,
-                    VkQueue graphicsQueue, VkBuffer srcBuffer,
-                    VkBuffer dstBuffer, VkDeviceSize size);
 
 /**
  * @brief Creates a buffer with optimal GPU memory using staging buffer
@@ -88,6 +61,7 @@ bool vk_buffer_create_with_staging(VulkanAllocator *allocator, VkDevice device,
                                    VkQueue graphicsQueue, const void *data,
                                    VkDeviceSize size, VkBufferUsageFlags usage,
                                    VkBuffer *buffer,
-                                   VkDeviceMemory *bufferMemory);
+                                   VkDeviceMemory *bufferMemory,
+                                   struct VulkanState *vulkan_state);
 
 #endif // VULKAN_BUFFER_UTILS_H

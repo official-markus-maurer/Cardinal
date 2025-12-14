@@ -30,8 +30,11 @@
 #include <stdbool.h>
 #include <vulkan/vulkan.h>
 
-// Forward declaration of VulkanAllocator
+// Forward declarations
 typedef struct VulkanAllocator VulkanAllocator;
+typedef struct VulkanDescriptorManager VulkanDescriptorManager;
+typedef struct VulkanTextureManager VulkanTextureManager;
+typedef struct VulkanState VulkanState;
 
 #ifdef __cplusplus
 extern "C" {
@@ -69,8 +72,8 @@ typedef struct PBRPushConstants {
   uint32_t aoTextureIndex;
   uint32_t emissiveTextureIndex;
   uint32_t supportsDescriptorIndexing;
-  uint32_t hasSkeleton;    // 1 if mesh has skeletal animation, 0 otherwise
-  uint32_t _padding0;      // Alignment padding
+  uint32_t hasSkeleton; // 1 if mesh has skeletal animation, 0 otherwise
+  uint32_t _padding0;   // Alignment padding
   // Texture transforms matching shader Material structure layout
   PBRTextureTransform albedoTransform;
   float _padding1;
@@ -116,8 +119,12 @@ typedef struct PBRLightingData {
 typedef struct VulkanPBRPipeline {
   VkPipeline pipeline;
   VkPipelineLayout pipelineLayout;
-  VkDescriptorSetLayout descriptorSetLayout;
-  VkDescriptorPool descriptorPool;
+
+  // Descriptor management
+  VulkanDescriptorManager *descriptorManager;
+
+  // Texture management
+  VulkanTextureManager *textureManager;
 
   // Uniform buffers
   VkBuffer uniformBuffer;
@@ -138,17 +145,6 @@ typedef struct VulkanPBRPipeline {
   void *boneMatricesBufferMapped;
   uint32_t maxBones; // Maximum number of bones supported (default 256)
 
-  // Descriptor sets (one per material)
-  VkDescriptorSet *descriptorSets;
-  uint32_t descriptorSetCount;
-
-  // Texture resources
-  VkImage *textureImages;
-  VkDeviceMemory *textureImageMemories;
-  VkImageView *textureImageViews;
-  VkSampler textureSampler;
-  uint32_t textureCount;
-
   // Vertex buffer for scene
   VkBuffer vertexBuffer;
   VkDeviceMemory vertexBufferMemory;
@@ -167,7 +163,8 @@ bool vk_pbr_pipeline_create(VulkanPBRPipeline *pipeline, VkDevice device,
                             VkPhysicalDevice physicalDevice,
                             VkFormat swapchainFormat, VkFormat depthFormat,
                             VkCommandPool commandPool, VkQueue graphicsQueue,
-                            VulkanAllocator *allocator);
+                            VulkanAllocator *allocator,
+                            struct VulkanState *vulkan_state);
 
 void vk_pbr_pipeline_destroy(VulkanPBRPipeline *pipeline, VkDevice device,
                              VulkanAllocator *allocator);
@@ -175,7 +172,8 @@ void vk_pbr_pipeline_destroy(VulkanPBRPipeline *pipeline, VkDevice device,
 bool vk_pbr_load_scene(VulkanPBRPipeline *pipeline, VkDevice device,
                        VkPhysicalDevice physicalDevice,
                        VkCommandPool commandPool, VkQueue graphicsQueue,
-                       const CardinalScene *scene, VulkanAllocator *allocator);
+                       const CardinalScene *scene, VulkanAllocator *allocator,
+                       struct VulkanState *vulkan_state);
 
 void vk_pbr_update_uniforms(VulkanPBRPipeline *pipeline,
                             const PBRUniformBufferObject *ubo,

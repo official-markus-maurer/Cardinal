@@ -1,5 +1,6 @@
 #version 450
 #extension GL_EXT_mesh_shader : require
+#extension GL_KHR_shader_subgroup_ballot : require
 
 // Task shader for GPU-driven culling and meshlet dispatch
 // Optimized for VK_KHR_shader_maximal_reconvergence:

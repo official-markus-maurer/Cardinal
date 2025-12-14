@@ -5,9 +5,9 @@
 
 #include "cardinal/core/async_loader.h"
 #include "cardinal/assets/loader.h"
-#include "cardinal/assets/texture_loader.h"
 #include "cardinal/assets/material_loader.h"
 #include "cardinal/assets/mesh_loader.h"
+#include "cardinal/assets/texture_loader.h"
 #include "cardinal/core/log.h"
 #include "cardinal/core/memory.h"
 #include "cardinal/core/ref_counting.h"
@@ -329,11 +329,12 @@ static bool execute_texture_load_task(CardinalAsyncTask* task) {
     }
 
     CARDINAL_LOG_DEBUG("Loading texture: %s", task->file_path);
-    
+
     // Use the thread-safe texture loader with state tracking
     TextureData texture_data;
-    CardinalRefCountedResource* ref_resource = texture_load_with_ref_counting(task->file_path, &texture_data);
-    
+    CardinalRefCountedResource* ref_resource =
+        texture_load_with_ref_counting(task->file_path, &texture_data);
+
     if (!ref_resource) {
         CardinalAllocator* allocator =
             cardinal_get_allocator_for_category(CARDINAL_MEMORY_CATEGORY_ENGINE);
@@ -403,12 +404,14 @@ static bool execute_material_load_task(CardinalAsyncTask* task) {
     CARDINAL_LOG_DEBUG("Loading material with reference counting");
 
     const CardinalMaterial* source_material = (const CardinalMaterial*)task->custom_data;
-    
+
     // Allocate memory for the material copy
-    CardinalAllocator* allocator = cardinal_get_allocator_for_category(CARDINAL_MEMORY_CATEGORY_ASSETS);
+    CardinalAllocator* allocator =
+        cardinal_get_allocator_for_category(CARDINAL_MEMORY_CATEGORY_ASSETS);
     CardinalMaterial* material = cardinal_alloc(allocator, sizeof(CardinalMaterial));
     if (!material) {
-        CardinalAllocator* engine_allocator = cardinal_get_allocator_for_category(CARDINAL_MEMORY_CATEGORY_ENGINE);
+        CardinalAllocator* engine_allocator =
+            cardinal_get_allocator_for_category(CARDINAL_MEMORY_CATEGORY_ENGINE);
         task->error_message = cardinal_alloc(engine_allocator, 256);
         if (task->error_message) {
             snprintf(task->error_message, 256, "Failed to allocate memory for material");
@@ -421,11 +424,13 @@ static bool execute_material_load_task(CardinalAsyncTask* task) {
 
     // Load or acquire reference counted material
     CardinalMaterial out_material;
-    CardinalRefCountedResource* ref_resource = material_load_with_ref_counting(material, &out_material);
-    
+    CardinalRefCountedResource* ref_resource =
+        material_load_with_ref_counting(material, &out_material);
+
     if (!ref_resource) {
         cardinal_free(allocator, material);
-        CardinalAllocator* engine_allocator = cardinal_get_allocator_for_category(CARDINAL_MEMORY_CATEGORY_ENGINE);
+        CardinalAllocator* engine_allocator =
+            cardinal_get_allocator_for_category(CARDINAL_MEMORY_CATEGORY_ENGINE);
         task->error_message = cardinal_alloc(engine_allocator, 256);
         if (task->error_message) {
             snprintf(task->error_message, 256, "Failed to create reference counted material");
@@ -447,7 +452,8 @@ static bool execute_material_load_task(CardinalAsyncTask* task) {
 static void mesh_destructor_wrapper(void* data) {
     CardinalMesh* mesh = (CardinalMesh*)data;
     if (mesh) {
-        CardinalAllocator* allocator = cardinal_get_allocator_for_category(CARDINAL_MEMORY_CATEGORY_ASSETS);
+        CardinalAllocator* allocator =
+            cardinal_get_allocator_for_category(CARDINAL_MEMORY_CATEGORY_ASSETS);
         if (mesh->vertices) {
             cardinal_free(allocator, mesh->vertices);
         }
@@ -466,12 +472,14 @@ static bool execute_mesh_load_task(CardinalAsyncTask* task) {
     CARDINAL_LOG_DEBUG("Loading mesh with reference counting");
 
     const CardinalMesh* source_mesh = (const CardinalMesh*)task->custom_data;
-    
+
     // Allocate memory for the mesh copy
-    CardinalAllocator* allocator = cardinal_get_allocator_for_category(CARDINAL_MEMORY_CATEGORY_ASSETS);
+    CardinalAllocator* allocator =
+        cardinal_get_allocator_for_category(CARDINAL_MEMORY_CATEGORY_ASSETS);
     CardinalMesh* mesh = cardinal_alloc(allocator, sizeof(CardinalMesh));
     if (!mesh) {
-        CardinalAllocator* engine_allocator = cardinal_get_allocator_for_category(CARDINAL_MEMORY_CATEGORY_ENGINE);
+        CardinalAllocator* engine_allocator =
+            cardinal_get_allocator_for_category(CARDINAL_MEMORY_CATEGORY_ENGINE);
         task->error_message = cardinal_alloc(engine_allocator, 256);
         if (task->error_message) {
             snprintf(task->error_message, 256, "Failed to allocate memory for mesh");
@@ -488,7 +496,8 @@ static bool execute_mesh_load_task(CardinalAsyncTask* task) {
         mesh->vertices = cardinal_alloc(allocator, vertex_size);
         if (!mesh->vertices) {
             cardinal_free(allocator, mesh);
-            CardinalAllocator* engine_allocator = cardinal_get_allocator_for_category(CARDINAL_MEMORY_CATEGORY_ENGINE);
+            CardinalAllocator* engine_allocator =
+                cardinal_get_allocator_for_category(CARDINAL_MEMORY_CATEGORY_ENGINE);
             task->error_message = cardinal_alloc(engine_allocator, 256);
             if (task->error_message) {
                 snprintf(task->error_message, 256, "Failed to allocate memory for mesh vertices");
@@ -507,7 +516,8 @@ static bool execute_mesh_load_task(CardinalAsyncTask* task) {
                 cardinal_free(allocator, mesh->vertices);
             }
             cardinal_free(allocator, mesh);
-            CardinalAllocator* engine_allocator = cardinal_get_allocator_for_category(CARDINAL_MEMORY_CATEGORY_ENGINE);
+            CardinalAllocator* engine_allocator =
+                cardinal_get_allocator_for_category(CARDINAL_MEMORY_CATEGORY_ENGINE);
             task->error_message = cardinal_alloc(engine_allocator, 256);
             if (task->error_message) {
                 snprintf(task->error_message, 256, "Failed to allocate memory for mesh indices");
@@ -519,15 +529,17 @@ static bool execute_mesh_load_task(CardinalAsyncTask* task) {
 
     // Generate a unique identifier for the mesh based on its content
     char mesh_id[128];
-    snprintf(mesh_id, sizeof(mesh_id), "mesh_%u_%u_%p", mesh->vertex_count, mesh->index_count, (void*)mesh);
+    snprintf(mesh_id, sizeof(mesh_id), "mesh_%u_%u_%p", mesh->vertex_count, mesh->index_count,
+             (void*)mesh);
 
     // Create reference counted resource
-    CardinalRefCountedResource* ref_resource = cardinal_ref_create(
-        mesh_id, mesh, sizeof(CardinalMesh), mesh_destructor_wrapper);
+    CardinalRefCountedResource* ref_resource =
+        cardinal_ref_create(mesh_id, mesh, sizeof(CardinalMesh), mesh_destructor_wrapper);
 
     if (!ref_resource) {
         mesh_destructor_wrapper(mesh);
-        CardinalAllocator* engine_allocator = cardinal_get_allocator_for_category(CARDINAL_MEMORY_CATEGORY_ENGINE);
+        CardinalAllocator* engine_allocator =
+            cardinal_get_allocator_for_category(CARDINAL_MEMORY_CATEGORY_ENGINE);
         task->error_message = cardinal_alloc(engine_allocator, 256);
         if (task->error_message) {
             snprintf(task->error_message, 256, "Failed to create reference counted mesh");
@@ -885,7 +897,8 @@ CardinalAsyncTask* cardinal_async_load_material(const void* material_data,
     }
 
     // Copy material data
-    CardinalAllocator* allocator = cardinal_get_allocator_for_category(CARDINAL_MEMORY_CATEGORY_ENGINE);
+    CardinalAllocator* allocator =
+        cardinal_get_allocator_for_category(CARDINAL_MEMORY_CATEGORY_ENGINE);
     CardinalMaterial* material_copy = cardinal_alloc(allocator, sizeof(CardinalMaterial));
     if (!material_copy) {
         cardinal_free(allocator, task);
@@ -907,8 +920,7 @@ CardinalAsyncTask* cardinal_async_load_material(const void* material_data,
     return task;
 }
 
-CardinalAsyncTask* cardinal_async_load_mesh(const void* mesh_data,
-                                            CardinalAsyncPriority priority,
+CardinalAsyncTask* cardinal_async_load_mesh(const void* mesh_data, CardinalAsyncPriority priority,
                                             CardinalAsyncCallback callback, void* user_data) {
     const CardinalMesh* mesh = (const CardinalMesh*)mesh_data;
     if (!g_async_loader.initialized || !mesh) {
@@ -921,7 +933,8 @@ CardinalAsyncTask* cardinal_async_load_mesh(const void* mesh_data,
     }
 
     // Copy mesh data
-    CardinalAllocator* allocator = cardinal_get_allocator_for_category(CARDINAL_MEMORY_CATEGORY_ENGINE);
+    CardinalAllocator* allocator =
+        cardinal_get_allocator_for_category(CARDINAL_MEMORY_CATEGORY_ENGINE);
     CardinalMesh* mesh_copy = cardinal_alloc(allocator, sizeof(CardinalMesh));
     if (!mesh_copy) {
         cardinal_free(allocator, task);

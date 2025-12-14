@@ -15,9 +15,10 @@
 #include <string.h>
 
 #include "cardinal/core/log.h"
+#include "vulkan_buffer_manager.h"
 #include "vulkan_state.h"
-#include <cardinal/renderer/util/vulkan_buffer_utils.h>
 #include <cardinal/renderer/util/vulkan_descriptor_utils.h>
+#include <cardinal/renderer/util/vulkan_material_utils.h>
 #include <cardinal/renderer/util/vulkan_shader_utils.h>
 #include <cardinal/renderer/vulkan_pbr.h>
 
@@ -48,8 +49,8 @@ static bool create_simple_descriptor_layout(VulkanState* s) {
     layoutInfo.bindingCount = 1;
     layoutInfo.pBindings = &uboLayoutBinding;
 
-    if (vkCreateDescriptorSetLayout(s->device, &layoutInfo, NULL, &s->simple_descriptor_layout) !=
-        VK_SUCCESS) {
+    if (vkCreateDescriptorSetLayout(s->context.device, &layoutInfo, NULL,
+                                    &s->pipelines.simple_descriptor_layout) != VK_SUCCESS) {
         CARDINAL_LOG_ERROR("Failed to create simple descriptor set layout!");
         return false;
     }
@@ -65,17 +66,24 @@ static bool create_simple_descriptor_layout(VulkanState* s) {
 static bool create_simple_uniform_buffer(VulkanState* s) {
     VkDeviceSize bufferSize = sizeof(SimpleUniformBufferObject);
 
-    if (!vk_buffer_create(&s->allocator, bufferSize, VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT,
-                          VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT |
-                              VK_MEMORY_PROPERTY_HOST_COHERENT_BIT,
-                          &s->simple_uniform_buffer, &s->simple_uniform_buffer_memory)) {
+    VulkanBuffer simpleBuffer = {0};
+    VulkanBufferCreateInfo createInfo = {.size = bufferSize,
+                                         .usage = VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT,
+                                         .properties = VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT |
+                                                       VK_MEMORY_PROPERTY_HOST_COHERENT_BIT,
+                                         .persistentlyMapped = true};
+
+    if (!vk_buffer_create(&simpleBuffer, s->context.device, &s->allocator, &createInfo)) {
         CARDINAL_LOG_ERROR("Failed to create simple uniform buffer!");
         return false;
     }
 
-    // Map the buffer memory
-    if (vkMapMemory(s->device, s->simple_uniform_buffer_memory, 0, bufferSize, 0,
-                    &s->simple_uniform_buffer_mapped) != VK_SUCCESS) {
+    // Store buffer handles for compatibility with existing code
+    s->pipelines.simple_uniform_buffer = simpleBuffer.handle;
+    s->pipelines.simple_uniform_buffer_memory = simpleBuffer.memory;
+    s->pipelines.simple_uniform_buffer_mapped = simpleBuffer.mapped;
+
+    if (!s->pipelines.simple_uniform_buffer_mapped) {
         CARDINAL_LOG_ERROR("Failed to map simple uniform buffer memory!");
         return false;
     }
@@ -99,38 +107,39 @@ static bool create_simple_descriptor_pool(VulkanState* s) {
     poolInfo.pPoolSizes = &poolSize;
     poolInfo.maxSets = 1;
 
-    if (vkCreateDescriptorPool(s->device, &poolInfo, NULL, &s->simple_descriptor_pool) !=
-        VK_SUCCESS) {
+    if (vkCreateDescriptorPool(s->context.device, &poolInfo, NULL,
+                               &s->pipelines.simple_descriptor_pool) != VK_SUCCESS) {
         CARDINAL_LOG_ERROR("Failed to create simple descriptor pool!");
         return false;
     }
 
     VkDescriptorSetAllocateInfo allocInfo = {0};
     allocInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO;
-    allocInfo.descriptorPool = s->simple_descriptor_pool;
+    allocInfo.descriptorPool = s->pipelines.simple_descriptor_pool;
     allocInfo.descriptorSetCount = 1;
-    allocInfo.pSetLayouts = &s->simple_descriptor_layout;
+    allocInfo.pSetLayouts = &s->pipelines.simple_descriptor_layout;
 
-    if (vkAllocateDescriptorSets(s->device, &allocInfo, &s->simple_descriptor_set) != VK_SUCCESS) {
+    if (vkAllocateDescriptorSets(s->context.device, &allocInfo,
+                                 &s->pipelines.simple_descriptor_set) != VK_SUCCESS) {
         CARDINAL_LOG_ERROR("Failed to allocate simple descriptor set!");
         return false;
     }
 
     VkDescriptorBufferInfo bufferInfo = {0};
-    bufferInfo.buffer = s->simple_uniform_buffer;
+    bufferInfo.buffer = s->pipelines.simple_uniform_buffer;
     bufferInfo.offset = 0;
     bufferInfo.range = sizeof(SimpleUniformBufferObject);
 
     VkWriteDescriptorSet descriptorWrite = {0};
     descriptorWrite.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
-    descriptorWrite.dstSet = s->simple_descriptor_set;
+    descriptorWrite.dstSet = s->pipelines.simple_descriptor_set;
     descriptorWrite.dstBinding = 0;
     descriptorWrite.dstArrayElement = 0;
     descriptorWrite.descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
     descriptorWrite.descriptorCount = 1;
     descriptorWrite.pBufferInfo = &bufferInfo;
 
-    vkUpdateDescriptorSets(s->device, 1, &descriptorWrite, 0, NULL);
+    vkUpdateDescriptorSets(s->context.device, 1, &descriptorWrite, 0, NULL);
 
     return true;
 }
@@ -152,13 +161,13 @@ static bool create_simple_pipeline(VulkanState* s, const char* vertShaderPath,
     VkShaderModule vertShaderModule = VK_NULL_HANDLE;
     VkShaderModule fragShaderModule = VK_NULL_HANDLE;
 
-    if (!vk_shader_create_module(s->device, vertShaderPath, &vertShaderModule) ||
-        !vk_shader_create_module(s->device, fragShaderPath, &fragShaderModule)) {
+    if (!vk_shader_create_module(s->context.device, vertShaderPath, &vertShaderModule) ||
+        !vk_shader_create_module(s->context.device, fragShaderPath, &fragShaderModule)) {
         CARDINAL_LOG_ERROR("Failed to load simple pipeline shaders");
         if (vertShaderModule != VK_NULL_HANDLE)
-            vkDestroyShaderModule(s->device, vertShaderModule, NULL);
+            vkDestroyShaderModule(s->context.device, vertShaderModule, NULL);
         if (fragShaderModule != VK_NULL_HANDLE)
-            vkDestroyShaderModule(s->device, fragShaderModule, NULL);
+            vkDestroyShaderModule(s->context.device, fragShaderModule, NULL);
         return false;
     }
 
@@ -266,15 +275,15 @@ static bool create_simple_pipeline(VulkanState* s, const char* vertShaderPath,
     VkPipelineLayoutCreateInfo pipelineLayoutInfo = {0};
     pipelineLayoutInfo.sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO;
     pipelineLayoutInfo.setLayoutCount = 1;
-    pipelineLayoutInfo.pSetLayouts = &s->simple_descriptor_layout;
+    pipelineLayoutInfo.pSetLayouts = &s->pipelines.simple_descriptor_layout;
     pipelineLayoutInfo.pushConstantRangeCount = 1;
     pipelineLayoutInfo.pPushConstantRanges = &pushConstantRange;
 
-    if (vkCreatePipelineLayout(s->device, &pipelineLayoutInfo, NULL, pipelineLayout) !=
+    if (vkCreatePipelineLayout(s->context.device, &pipelineLayoutInfo, NULL, pipelineLayout) !=
         VK_SUCCESS) {
         CARDINAL_LOG_ERROR("Failed to create simple pipeline layout!");
-        vkDestroyShaderModule(s->device, vertShaderModule, NULL);
-        vkDestroyShaderModule(s->device, fragShaderModule, NULL);
+        vkDestroyShaderModule(s->context.device, vertShaderModule, NULL);
+        vkDestroyShaderModule(s->context.device, fragShaderModule, NULL);
         return false;
     }
 
@@ -296,25 +305,25 @@ static bool create_simple_pipeline(VulkanState* s, const char* vertShaderPath,
     VkPipelineRenderingCreateInfo pipelineRenderingInfo = {0};
     pipelineRenderingInfo.sType = VK_STRUCTURE_TYPE_PIPELINE_RENDERING_CREATE_INFO;
     pipelineRenderingInfo.colorAttachmentCount = 1;
-    VkFormat colorFormat = s->swapchain_format;
+    VkFormat colorFormat = s->swapchain.format;
     pipelineRenderingInfo.pColorAttachmentFormats = &colorFormat;
-    pipelineRenderingInfo.depthAttachmentFormat = s->depth_format;
+    pipelineRenderingInfo.depthAttachmentFormat = s->swapchain.depth_format;
     pipelineRenderingInfo.stencilAttachmentFormat = VK_FORMAT_UNDEFINED;
     pipelineInfo.pNext = &pipelineRenderingInfo;
     pipelineInfo.renderPass = VK_NULL_HANDLE;
     pipelineInfo.subpass = 0;
 
-    if (vkCreateGraphicsPipelines(s->device, VK_NULL_HANDLE, 1, &pipelineInfo, NULL, pipeline) !=
-        VK_SUCCESS) {
+    if (vkCreateGraphicsPipelines(s->context.device, VK_NULL_HANDLE, 1, &pipelineInfo, NULL,
+                                  pipeline) != VK_SUCCESS) {
         CARDINAL_LOG_ERROR("Failed to create simple graphics pipeline!");
-        vkDestroyPipelineLayout(s->device, *pipelineLayout, NULL);
-        vkDestroyShaderModule(s->device, vertShaderModule, NULL);
-        vkDestroyShaderModule(s->device, fragShaderModule, NULL);
+        vkDestroyPipelineLayout(s->context.device, *pipelineLayout, NULL);
+        vkDestroyShaderModule(s->context.device, vertShaderModule, NULL);
+        vkDestroyShaderModule(s->context.device, fragShaderModule, NULL);
         return false;
     }
 
-    vkDestroyShaderModule(s->device, vertShaderModule, NULL);
-    vkDestroyShaderModule(s->device, fragShaderModule, NULL);
+    vkDestroyShaderModule(s->context.device, vertShaderModule, NULL);
+    vkDestroyShaderModule(s->context.device, fragShaderModule, NULL);
 
     return true;
 }
@@ -341,27 +350,31 @@ bool vk_create_simple_pipelines(VulkanState* s) {
     }
 
     // Create UV pipeline
-    // Build UV shader paths dynamically using username
+    // Build UV shader paths from env or project-relative directory
     char uv_vert_path[512], uv_frag_path[512];
-    const char* username = getenv("USERNAME");
-    if (!username) username = "admin"; // fallback
-    snprintf(uv_vert_path, sizeof(uv_vert_path), "C:/Users/%s/Documents/Cardinal/assets/shaders/uv.vert.spv", username);
-    snprintf(uv_frag_path, sizeof(uv_frag_path), "C:/Users/%s/Documents/Cardinal/assets/shaders/uv.frag.spv", username);
-    
-    if (!create_simple_pipeline(s, uv_vert_path, uv_frag_path,
-                                &s->uv_pipeline, &s->uv_pipeline_layout, false)) {
+    const char* shaders_dir = getenv("CARDINAL_SHADERS_DIR");
+    if (!shaders_dir || !shaders_dir[0])
+        shaders_dir = "assets/shaders";
+    snprintf(uv_vert_path, sizeof(uv_vert_path), "%s/uv.vert.spv", shaders_dir);
+    snprintf(uv_frag_path, sizeof(uv_frag_path), "%s/uv.frag.spv", shaders_dir);
+
+    if (!create_simple_pipeline(s, uv_vert_path, uv_frag_path, &s->pipelines.uv_pipeline,
+                                &s->pipelines.uv_pipeline_layout, false)) {
         CARDINAL_LOG_ERROR("Failed to create UV pipeline");
         return false;
     }
 
     // Create wireframe pipeline
-    // Build wireframe shader paths dynamically using username
+    // Build wireframe shader paths from env or project-relative directory
     char wireframe_vert_path[512], wireframe_frag_path[512];
-    snprintf(wireframe_vert_path, sizeof(wireframe_vert_path), "C:/Users/%s/Documents/Cardinal/assets/shaders/wireframe.vert.spv", username);
-    snprintf(wireframe_frag_path, sizeof(wireframe_frag_path), "C:/Users/%s/Documents/Cardinal/assets/shaders/wireframe.frag.spv", username);
-    
-    if (!create_simple_pipeline(s, wireframe_vert_path, wireframe_frag_path, &s->wireframe_pipeline,
-                                &s->wireframe_pipeline_layout, true)) {
+    snprintf(wireframe_vert_path, sizeof(wireframe_vert_path), "%s/wireframe.vert.spv",
+             shaders_dir);
+    snprintf(wireframe_frag_path, sizeof(wireframe_frag_path), "%s/wireframe.frag.spv",
+             shaders_dir);
+
+    if (!create_simple_pipeline(s, wireframe_vert_path, wireframe_frag_path,
+                                &s->pipelines.wireframe_pipeline,
+                                &s->pipelines.wireframe_pipeline_layout, true)) {
         CARDINAL_LOG_ERROR("Failed to create wireframe pipeline");
         return false;
     }
@@ -375,56 +388,58 @@ bool vk_create_simple_pipelines(VulkanState* s) {
  * @param s Vulkan state
  */
 void vk_destroy_simple_pipelines(VulkanState* s) {
-    if (s->simple_uniform_buffer_mapped) {
-        vkUnmapMemory(s->device, s->simple_uniform_buffer_memory);
-        s->simple_uniform_buffer_mapped = NULL;
+    if (s->pipelines.simple_uniform_buffer_mapped) {
+        vkUnmapMemory(s->context.device, s->pipelines.simple_uniform_buffer_memory);
+        s->pipelines.simple_uniform_buffer_mapped = NULL;
     }
 
     // Use allocator to properly free buffer and track memory
-    if (s->simple_uniform_buffer != VK_NULL_HANDLE ||
-        s->simple_uniform_buffer_memory != VK_NULL_HANDLE) {
-        vk_allocator_free_buffer(&s->allocator, s->simple_uniform_buffer,
-                                 s->simple_uniform_buffer_memory);
-        s->simple_uniform_buffer = VK_NULL_HANDLE;
-        s->simple_uniform_buffer_memory = VK_NULL_HANDLE;
+    if (s->pipelines.simple_uniform_buffer != VK_NULL_HANDLE ||
+        s->pipelines.simple_uniform_buffer_memory != VK_NULL_HANDLE) {
+        vk_allocator_free_buffer(&s->allocator, s->pipelines.simple_uniform_buffer,
+                                 s->pipelines.simple_uniform_buffer_memory);
+        s->pipelines.simple_uniform_buffer = VK_NULL_HANDLE;
+        s->pipelines.simple_uniform_buffer_memory = VK_NULL_HANDLE;
     }
 
-    if (s->simple_descriptor_pool != VK_NULL_HANDLE) {
+    if (s->pipelines.simple_descriptor_pool != VK_NULL_HANDLE) {
         // Wait for device to be idle before resetting descriptor pool to prevent validation errors
-        VkResult waitResult = vkDeviceWaitIdle(s->device);
+        VkResult waitResult = vkDeviceWaitIdle(s->context.device);
         if (waitResult != VK_SUCCESS) {
-            CARDINAL_LOG_WARN("vkDeviceWaitIdle failed before resetting simple descriptor pool: %d", waitResult);
+            CARDINAL_LOG_WARN("vkDeviceWaitIdle failed before resetting simple descriptor pool: %d",
+                              waitResult);
         }
-        
+
         // Reset the descriptor pool to free all allocated descriptor sets
-        vkResetDescriptorPool(s->device, s->simple_descriptor_pool, 0);
-        vkDestroyDescriptorPool(s->device, s->simple_descriptor_pool, NULL);
-        s->simple_descriptor_pool = VK_NULL_HANDLE;
+        vkResetDescriptorPool(s->context.device, s->pipelines.simple_descriptor_pool, 0);
+        vkDestroyDescriptorPool(s->context.device, s->pipelines.simple_descriptor_pool, NULL);
+        s->pipelines.simple_descriptor_pool = VK_NULL_HANDLE;
     }
 
-    if (s->simple_descriptor_layout != VK_NULL_HANDLE) {
-        vkDestroyDescriptorSetLayout(s->device, s->simple_descriptor_layout, NULL);
-        s->simple_descriptor_layout = VK_NULL_HANDLE;
+    if (s->pipelines.simple_descriptor_layout != VK_NULL_HANDLE) {
+        vkDestroyDescriptorSetLayout(s->context.device, s->pipelines.simple_descriptor_layout,
+                                     NULL);
+        s->pipelines.simple_descriptor_layout = VK_NULL_HANDLE;
     }
 
-    if (s->uv_pipeline != VK_NULL_HANDLE) {
-        vkDestroyPipeline(s->device, s->uv_pipeline, NULL);
-        s->uv_pipeline = VK_NULL_HANDLE;
+    if (s->pipelines.uv_pipeline != VK_NULL_HANDLE) {
+        vkDestroyPipeline(s->context.device, s->pipelines.uv_pipeline, NULL);
+        s->pipelines.uv_pipeline = VK_NULL_HANDLE;
     }
 
-    if (s->uv_pipeline_layout != VK_NULL_HANDLE) {
-        vkDestroyPipelineLayout(s->device, s->uv_pipeline_layout, NULL);
-        s->uv_pipeline_layout = VK_NULL_HANDLE;
+    if (s->pipelines.uv_pipeline_layout != VK_NULL_HANDLE) {
+        vkDestroyPipelineLayout(s->context.device, s->pipelines.uv_pipeline_layout, NULL);
+        s->pipelines.uv_pipeline_layout = VK_NULL_HANDLE;
     }
 
-    if (s->wireframe_pipeline != VK_NULL_HANDLE) {
-        vkDestroyPipeline(s->device, s->wireframe_pipeline, NULL);
-        s->wireframe_pipeline = VK_NULL_HANDLE;
+    if (s->pipelines.wireframe_pipeline != VK_NULL_HANDLE) {
+        vkDestroyPipeline(s->context.device, s->pipelines.wireframe_pipeline, NULL);
+        s->pipelines.wireframe_pipeline = VK_NULL_HANDLE;
     }
 
-    if (s->wireframe_pipeline_layout != VK_NULL_HANDLE) {
-        vkDestroyPipelineLayout(s->device, s->wireframe_pipeline_layout, NULL);
-        s->wireframe_pipeline_layout = VK_NULL_HANDLE;
+    if (s->pipelines.wireframe_pipeline_layout != VK_NULL_HANDLE) {
+        vkDestroyPipelineLayout(s->context.device, s->pipelines.wireframe_pipeline_layout, NULL);
+        s->pipelines.wireframe_pipeline_layout = VK_NULL_HANDLE;
     }
 }
 
@@ -437,7 +452,7 @@ void vk_destroy_simple_pipelines(VulkanState* s) {
  */
 void vk_update_simple_uniforms(VulkanState* s, const float* model, const float* view,
                                const float* proj) {
-    if (!s->simple_uniform_buffer_mapped)
+    if (!s->pipelines.simple_uniform_buffer_mapped)
         return;
 
     SimpleUniformBufferObject ubo;
@@ -445,7 +460,7 @@ void vk_update_simple_uniforms(VulkanState* s, const float* model, const float* 
     memcpy(ubo.view, view, sizeof(float) * 16);
     memcpy(ubo.proj, proj, sizeof(float) * 16);
 
-    memcpy(s->simple_uniform_buffer_mapped, &ubo, sizeof(ubo));
+    memcpy(s->pipelines.simple_uniform_buffer_mapped, &ubo, sizeof(ubo));
 }
 
 /**
@@ -462,7 +477,7 @@ void vk_render_simple(VulkanState* s, VkCommandBuffer commandBuffer, VkPipeline 
 
     vkCmdBindPipeline(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline);
     vkCmdBindDescriptorSets(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, pipelineLayout, 0, 1,
-                            &s->simple_descriptor_set, 0, NULL);
+                            &s->pipelines.simple_descriptor_set, 0, NULL);
 
     // Render each mesh
     for (uint32_t i = 0; i < s->scene_mesh_count; i++) {
@@ -473,98 +488,13 @@ void vk_render_simple(VulkanState* s, VkCommandBuffer commandBuffer, VkPipeline 
         // Prepare push constants with model matrix and material properties (same as PBR pipeline)
         if (i < s->current_scene->mesh_count) {
             const CardinalMesh* sceneMesh = &s->current_scene->meshes[i];
-            
+
             // Skip invisible meshes
             if (!sceneMesh->visible)
                 continue;
             PBRPushConstants pushConstants = {0};
-
-            // Copy model matrix
-            memcpy(pushConstants.modelMatrix, sceneMesh->transform, 16 * sizeof(float));
-
-            // Set material properties for this mesh
-            if (sceneMesh->material_index < s->current_scene->material_count) {
-                const CardinalMaterial* material =
-                    &s->current_scene->materials[sceneMesh->material_index];
-
-                memcpy(pushConstants.albedoFactor, material->albedo_factor, sizeof(float) * 3);
-                pushConstants.metallicFactor = material->metallic_factor;
-                memcpy(pushConstants.emissiveFactor, material->emissive_factor, sizeof(float) * 3);
-                pushConstants.roughnessFactor = material->roughness_factor;
-                pushConstants.normalScale = material->normal_scale;
-                pushConstants.aoStrength = material->ao_strength;
-
-                // Set texture transforms (only albedo transform is used in UV shader)
-                memcpy(pushConstants.albedoTransform.offset, material->albedo_transform.offset,
-                       sizeof(float) * 2);
-                memcpy(pushConstants.albedoTransform.scale, material->albedo_transform.scale,
-                       sizeof(float) * 2);
-                pushConstants.albedoTransform.rotation = material->albedo_transform.rotation;
-
-                // Set other transforms for completeness
-                memcpy(pushConstants.normalTransform.offset, material->normal_transform.offset,
-                       sizeof(float) * 2);
-                memcpy(pushConstants.normalTransform.scale, material->normal_transform.scale,
-                       sizeof(float) * 2);
-                pushConstants.normalTransform.rotation = material->normal_transform.rotation;
-
-                memcpy(pushConstants.metallicRoughnessTransform.offset,
-                       material->metallic_roughness_transform.offset, sizeof(float) * 2);
-                memcpy(pushConstants.metallicRoughnessTransform.scale,
-                       material->metallic_roughness_transform.scale, sizeof(float) * 2);
-                pushConstants.metallicRoughnessTransform.rotation =
-                    material->metallic_roughness_transform.rotation;
-
-                memcpy(pushConstants.aoTransform.offset, material->ao_transform.offset,
-                       sizeof(float) * 2);
-                memcpy(pushConstants.aoTransform.scale, material->ao_transform.scale,
-                       sizeof(float) * 2);
-                pushConstants.aoTransform.rotation = material->ao_transform.rotation;
-
-                memcpy(pushConstants.emissiveTransform.offset, material->emissive_transform.offset,
-                       sizeof(float) * 2);
-                memcpy(pushConstants.emissiveTransform.scale, material->emissive_transform.scale,
-                       sizeof(float) * 2);
-                pushConstants.emissiveTransform.rotation = material->emissive_transform.rotation;
-            } else {
-                // Use default material properties if no material is assigned
-                pushConstants.albedoFactor[0] = pushConstants.albedoFactor[1] =
-                    pushConstants.albedoFactor[2] = 1.0f;
-                pushConstants.metallicFactor = 0.0f;
-                pushConstants.emissiveFactor[0] = pushConstants.emissiveFactor[1] =
-                    pushConstants.emissiveFactor[2] = 0.0f;
-                pushConstants.roughnessFactor = 0.5f;
-                pushConstants.normalScale = 1.0f;
-                pushConstants.aoStrength = 1.0f;
-
-                // Default texture transforms (identity)
-                pushConstants.albedoTransform.scale[0] = pushConstants.albedoTransform.scale[1] =
-                    1.0f;
-                pushConstants.normalTransform.scale[0] = pushConstants.normalTransform.scale[1] =
-                    1.0f;
-                pushConstants.metallicRoughnessTransform.scale[0] =
-                    pushConstants.metallicRoughnessTransform.scale[1] = 1.0f;
-                pushConstants.aoTransform.scale[0] = pushConstants.aoTransform.scale[1] = 1.0f;
-                pushConstants.emissiveTransform.scale[0] =
-                    pushConstants.emissiveTransform.scale[1] = 1.0f;
-
-                // Set default offsets and rotations to zero
-                pushConstants.albedoTransform.offset[0] = pushConstants.albedoTransform.offset[1] =
-                    0.0f;
-                pushConstants.normalTransform.offset[0] = pushConstants.normalTransform.offset[1] =
-                    0.0f;
-                pushConstants.metallicRoughnessTransform.offset[0] =
-                    pushConstants.metallicRoughnessTransform.offset[1] = 0.0f;
-                pushConstants.aoTransform.offset[0] = pushConstants.aoTransform.offset[1] = 0.0f;
-                pushConstants.emissiveTransform.offset[0] =
-                    pushConstants.emissiveTransform.offset[1] = 0.0f;
-
-                pushConstants.albedoTransform.rotation = 0.0f;
-                pushConstants.normalTransform.rotation = 0.0f;
-                pushConstants.metallicRoughnessTransform.rotation = 0.0f;
-                pushConstants.aoTransform.rotation = 0.0f;
-                pushConstants.emissiveTransform.rotation = 0.0f;
-            }
+            vk_material_setup_push_constants(&pushConstants, sceneMesh, s->current_scene,
+                                             s->pipelines.pbr_pipeline.textureManager);
 
             // Push constants to GPU
             vkCmdPushConstants(commandBuffer, pipelineLayout,

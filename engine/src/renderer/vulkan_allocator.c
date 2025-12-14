@@ -1,6 +1,6 @@
 #include "cardinal/core/log.h"
+#include "cardinal/renderer/vulkan_mt.h"
 #include "vulkan_state.h"
-#include "vulkan_mt.h"
 #include <string.h>
 
 /**
@@ -39,16 +39,16 @@ bool vk_allocator_init(VulkanAllocator* alloc, VkPhysicalDevice phys, VkDevice d
     alloc->supports_maintenance8 = supports_maintenance8;
     alloc->total_device_mem_allocated = 0;
     alloc->total_device_mem_freed = 0;
-    
+
     // Initialize mutex for thread safety
     if (!cardinal_mt_mutex_init(&alloc->allocation_mutex)) {
         CARDINAL_LOG_ERROR("[VkAllocator] Failed to initialize allocation mutex");
         return false;
     }
 
-    CARDINAL_LOG_INFO(
-        "[VkAllocator] Initialized - maintenance4: required, maintenance8: %s, buffer device address: enabled",
-        supports_maintenance8 ? "enabled" : "not available");
+    CARDINAL_LOG_INFO("[VkAllocator] Initialized - maintenance4: required, maintenance8: %s, "
+                      "buffer device address: enabled",
+                      supports_maintenance8 ? "enabled" : "not available");
     return true;
 }
 
@@ -70,7 +70,7 @@ void vk_allocator_shutdown(VulkanAllocator* alloc) {
         CARDINAL_LOG_WARN("[VkAllocator] Memory leak detected: %llu bytes not freed",
                           (unsigned long long)net);
     }
-    
+
     // Destroy mutex
     cardinal_mt_mutex_destroy(&alloc->allocation_mutex);
 
@@ -102,6 +102,54 @@ static bool find_memory_type(VulkanAllocator* alloc, uint32_t type_filter,
 }
 
 /**
+ * @brief Checks if there's sufficient memory available for allocation.
+ * @param alloc The allocator context.
+ * @param requested_size Size of memory to allocate.
+ * @param memory_type_index Memory type index to check.
+ * @return true if allocation should proceed, false if memory pressure detected.
+ */
+static bool check_memory_budget(VulkanAllocator* alloc, VkDeviceSize requested_size,
+                                uint32_t memory_type_index) {
+    VkPhysicalDeviceMemoryProperties mem_props;
+    vkGetPhysicalDeviceMemoryProperties(alloc->physical_device, &mem_props);
+
+    if (memory_type_index >= mem_props.memoryTypeCount) {
+        CARDINAL_LOG_ERROR("[VkAllocator] Invalid memory type index: %u", memory_type_index);
+        return false;
+    }
+
+    uint32_t heap_index = mem_props.memoryTypes[memory_type_index].heapIndex;
+    VkDeviceSize heap_size = mem_props.memoryHeaps[heap_index].size;
+
+    // Calculate current usage for this heap type
+    uint64_t current_allocated = alloc->total_device_mem_allocated;
+
+    // Safety threshold: reject allocation if it would use more than 85% of heap
+    VkDeviceSize safe_limit = (heap_size * 85) / 100;
+    VkDeviceSize projected_usage = current_allocated + requested_size;
+
+    if (projected_usage > safe_limit) {
+        CARDINAL_LOG_ERROR("[VkAllocator] MEMORY PRESSURE DETECTED! Requested: %llu bytes, "
+                           "Current: %llu bytes, Heap size: %llu bytes, Safe limit: %llu bytes",
+                           (unsigned long long)requested_size,
+                           (unsigned long long)current_allocated, (unsigned long long)heap_size,
+                           (unsigned long long)safe_limit);
+        return false;
+    }
+
+    // Warn if approaching 75% usage
+    VkDeviceSize warning_limit = (heap_size * 75) / 100;
+    if (projected_usage > warning_limit) {
+        CARDINAL_LOG_WARN(
+            "[VkAllocator] Memory usage approaching limit: %llu/%llu bytes (%.1f%% of heap)",
+            (unsigned long long)projected_usage, (unsigned long long)heap_size,
+            (double)projected_usage / heap_size * 100.0);
+    }
+
+    return true;
+}
+
+/**
  * @brief Allocates memory for an image using maintenance4 (Vulkan 1.3 required).
  * TODO: Upgrade to maintenance8 extension for additional features.
  * @param alloc The allocator instance.
@@ -121,7 +169,7 @@ bool vk_allocator_allocate_image(VulkanAllocator* alloc, const VkImageCreateInfo
     CARDINAL_LOG_INFO("[VkAllocator] allocate_image: extent=%ux%u fmt=%u usage=0x%x props=0x%x",
                       image_ci->extent.width, image_ci->extent.height, image_ci->format,
                       image_ci->usage, (unsigned)required_props);
-    
+
     // Lock mutex for thread safety
     cardinal_mt_mutex_lock(&alloc->allocation_mutex);
 
@@ -143,9 +191,10 @@ bool vk_allocator_allocate_image(VulkanAllocator* alloc, const VkImageCreateInfo
     VkMemoryRequirements2 mem_req2 = {0};
     mem_req2.sType = VK_STRUCTURE_TYPE_MEMORY_REQUIREMENTS_2;
     mem_req2.pNext = NULL;
-    
+
     if (alloc->fpGetDeviceImageMemReqKHR) {
-        CARDINAL_LOG_DEBUG("[ALLOCATOR] Using vkGetDeviceImageMemoryRequirements for image allocation");
+        CARDINAL_LOG_DEBUG(
+            "[ALLOCATOR] Using vkGetDeviceImageMemoryRequirements for image allocation");
         alloc->fpGetDeviceImageMemReqKHR(alloc->device, &device_req, &mem_req2);
     } else {
         alloc->fpGetDeviceImageMemReq(alloc->device, &device_req, &mem_req2);
@@ -179,6 +228,17 @@ bool vk_allocator_allocate_image(VulkanAllocator* alloc, const VkImageCreateInfo
     }
     CARDINAL_LOG_INFO("[VkAllocator] Image memory type index: %u", memory_type_index);
 
+    // Check memory budget before allocation
+    if (!check_memory_budget(alloc, mem_requirements.size, memory_type_index)) {
+        CARDINAL_LOG_ERROR(
+            "[VkAllocator] Memory budget check failed for image allocation (%llu bytes)",
+            (unsigned long long)mem_requirements.size);
+        vkDestroyImage(alloc->device, *out_image, NULL);
+        *out_image = VK_NULL_HANDLE;
+        cardinal_mt_mutex_unlock(&alloc->allocation_mutex);
+        return false;
+    }
+
     // Allocate memory
     VkMemoryAllocateInfo alloc_info = {0};
     alloc_info.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO;
@@ -189,7 +249,18 @@ bool vk_allocator_allocate_image(VulkanAllocator* alloc, const VkImageCreateInfo
     CARDINAL_LOG_INFO("[VkAllocator] vkAllocateMemory(Image) => %d, mem=%p size=%llu", result,
                       (void*)(*out_memory), (unsigned long long)alloc_info.allocationSize);
     if (result != VK_SUCCESS) {
-        CARDINAL_LOG_ERROR("[VkAllocator] Failed to allocate image memory: %d", result);
+        if (result == VK_ERROR_OUT_OF_DEVICE_MEMORY) {
+            CARDINAL_LOG_ERROR("[VkAllocator] OUT OF DEVICE MEMORY! Failed to allocate %llu bytes "
+                               "for image. Total allocated: %llu bytes",
+                               (unsigned long long)alloc_info.allocationSize,
+                               (unsigned long long)alloc->total_device_mem_allocated);
+        } else if (result == VK_ERROR_OUT_OF_HOST_MEMORY) {
+            CARDINAL_LOG_ERROR(
+                "[VkAllocator] OUT OF HOST MEMORY! Failed to allocate %llu bytes for image",
+                (unsigned long long)alloc_info.allocationSize);
+        } else {
+            CARDINAL_LOG_ERROR("[VkAllocator] Failed to allocate image memory: %d", result);
+        }
         vkDestroyImage(alloc->device, *out_image, NULL);
         *out_image = VK_NULL_HANDLE;
         cardinal_mt_mutex_unlock(&alloc->allocation_mutex);
@@ -215,9 +286,11 @@ bool vk_allocator_allocate_image(VulkanAllocator* alloc, const VkImageCreateInfo
     // NOTE: Do not touch Cardinal memory subsystem here; Vulkan device memory is managed by Vulkan
     // and the memory system may not be initialized at this point. We only track local stats.
 
-    CARDINAL_LOG_DEBUG("[VkAllocator] Allocated image memory: %llu bytes (type: %u)",
-                       (unsigned long long)mem_requirements.size, memory_type_index);
-    
+    CARDINAL_LOG_INFO(
+        "[VkAllocator] Allocated image memory: %llu bytes (type: %u). Total GPU memory: %llu bytes",
+        (unsigned long long)mem_requirements.size, memory_type_index,
+        (unsigned long long)alloc->total_device_mem_allocated);
+
     // Unlock mutex
     cardinal_mt_mutex_unlock(&alloc->allocation_mutex);
     return true;
@@ -244,7 +317,7 @@ bool vk_allocator_allocate_buffer(VulkanAllocator* alloc, const VkBufferCreateIn
         "[VkAllocator] allocate_buffer: size=%llu usage=0x%x sharingMode=%u props=0x%x",
         (unsigned long long)buffer_ci->size, buffer_ci->usage, buffer_ci->sharingMode,
         (unsigned)required_props);
-    
+
     // Lock mutex for thread safety
     cardinal_mt_mutex_lock(&alloc->allocation_mutex);
 
@@ -267,9 +340,10 @@ bool vk_allocator_allocate_buffer(VulkanAllocator* alloc, const VkBufferCreateIn
     VkMemoryRequirements2 mem_req2 = {0};
     mem_req2.sType = VK_STRUCTURE_TYPE_MEMORY_REQUIREMENTS_2;
     mem_req2.pNext = NULL;
-    
+
     if (alloc->fpGetDeviceBufferMemReqKHR) {
-        CARDINAL_LOG_DEBUG("[ALLOCATOR] Using vkGetDeviceBufferMemoryRequirements for buffer allocation");
+        CARDINAL_LOG_DEBUG(
+            "[ALLOCATOR] Using vkGetDeviceBufferMemoryRequirements for buffer allocation");
         alloc->fpGetDeviceBufferMemReqKHR(alloc->device, &device_req, &mem_req2);
     } else {
         alloc->fpGetDeviceBufferMemReq(alloc->device, &device_req, &mem_req2);
@@ -304,6 +378,17 @@ bool vk_allocator_allocate_buffer(VulkanAllocator* alloc, const VkBufferCreateIn
     }
     CARDINAL_LOG_INFO("[VkAllocator] Buffer memory type index: %u", memory_type_index);
 
+    // Check memory budget before allocation
+    if (!check_memory_budget(alloc, mem_requirements.size, memory_type_index)) {
+        CARDINAL_LOG_ERROR(
+            "[VkAllocator] Memory budget check failed for buffer allocation (%llu bytes)",
+            (unsigned long long)mem_requirements.size);
+        vkDestroyBuffer(alloc->device, *out_buffer, NULL);
+        *out_buffer = VK_NULL_HANDLE;
+        cardinal_mt_mutex_unlock(&alloc->allocation_mutex);
+        return false;
+    }
+
     // Allocate memory
     VkMemoryAllocateInfo alloc_info = {0};
     alloc_info.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO;
@@ -324,7 +409,17 @@ bool vk_allocator_allocate_buffer(VulkanAllocator* alloc, const VkBufferCreateIn
     CARDINAL_LOG_INFO("[VkAllocator] vkAllocateMemory(Buffer) => %d, mem=%p size=%llu", result,
                       (void*)(*out_memory), (unsigned long long)alloc_info.allocationSize);
     if (result != VK_SUCCESS) {
-        CARDINAL_LOG_ERROR("[VkAllocator] Failed to allocate buffer memory: %d", result);
+        if (result == VK_ERROR_OUT_OF_DEVICE_MEMORY) {
+            CARDINAL_LOG_ERROR("[VkAllocator] OUT OF DEVICE MEMORY! Failed to allocate %llu bytes. "
+                               "Total allocated: %llu bytes",
+                               (unsigned long long)alloc_info.allocationSize,
+                               (unsigned long long)alloc->total_device_mem_allocated);
+        } else if (result == VK_ERROR_OUT_OF_HOST_MEMORY) {
+            CARDINAL_LOG_ERROR("[VkAllocator] OUT OF HOST MEMORY! Failed to allocate %llu bytes",
+                               (unsigned long long)alloc_info.allocationSize);
+        } else {
+            CARDINAL_LOG_ERROR("[VkAllocator] Failed to allocate buffer memory: %d", result);
+        }
         vkDestroyBuffer(alloc->device, *out_buffer, NULL);
         *out_buffer = VK_NULL_HANDLE;
         cardinal_mt_mutex_unlock(&alloc->allocation_mutex);
@@ -347,9 +442,11 @@ bool vk_allocator_allocate_buffer(VulkanAllocator* alloc, const VkBufferCreateIn
     // Update statistics and Cardinal memory tracking
     alloc->total_device_mem_allocated += mem_requirements.size;
 
-    CARDINAL_LOG_DEBUG("[VkAllocator] Allocated buffer memory: %llu bytes (type: %u)",
-                       (unsigned long long)mem_requirements.size, memory_type_index);
-    
+    CARDINAL_LOG_INFO("[VkAllocator] Allocated buffer memory: %llu bytes (type: %u). Total GPU "
+                      "memory: %llu bytes",
+                      (unsigned long long)mem_requirements.size, memory_type_index,
+                      (unsigned long long)alloc->total_device_mem_allocated);
+
     // Unlock mutex
     cardinal_mt_mutex_unlock(&alloc->allocation_mutex);
     return true;
@@ -365,7 +462,7 @@ void vk_allocator_free_image(VulkanAllocator* alloc, VkImage image, VkDeviceMemo
     if (!alloc)
         return;
     CARDINAL_LOG_INFO("[VkAllocator] free_image: image=%p mem=%p", (void*)image, (void*)memory);
-    
+
     // Lock mutex for thread safety
     cardinal_mt_mutex_lock(&alloc->allocation_mutex);
 
@@ -393,7 +490,7 @@ void vk_allocator_free_image(VulkanAllocator* alloc, VkImage image, VkDeviceMemo
     if (image != VK_NULL_HANDLE) {
         vkDestroyImage(alloc->device, image, NULL);
     }
-    
+
     // Unlock mutex
     cardinal_mt_mutex_unlock(&alloc->allocation_mutex);
 }
@@ -407,8 +504,11 @@ void vk_allocator_free_image(VulkanAllocator* alloc, VkImage image, VkDeviceMemo
 void vk_allocator_free_buffer(VulkanAllocator* alloc, VkBuffer buffer, VkDeviceMemory memory) {
     if (!alloc)
         return;
-    CARDINAL_LOG_INFO("[VkAllocator] free_buffer: buffer=%p mem=%p", (void*)buffer, (void*)memory);
-    
+
+    // Enhanced logging for buffer destruction tracking
+    CARDINAL_LOG_INFO("[VkAllocator] BUFFER_DESTROY_START: buffer=%p mem=%p device=%p",
+                      (void*)buffer, (void*)memory, (void*)alloc->device);
+
     // Lock mutex for thread safety
     cardinal_mt_mutex_lock(&alloc->allocation_mutex);
 
@@ -427,19 +527,27 @@ void vk_allocator_free_buffer(VulkanAllocator* alloc, VkBuffer buffer, VkDeviceM
             size = mem_req2.memoryRequirements.size;
         }
 
+        CARDINAL_LOG_INFO("[VkAllocator] MEMORY_FREE: buffer=%p memory=%p size=%llu bytes",
+                          (void*)buffer, (void*)memory, (unsigned long long)size);
         vkFreeMemory(alloc->device, memory, NULL);
         alloc->total_device_mem_freed += size;
-
-        CARDINAL_LOG_INFO("[VkAllocator] Freed buffer memory: %llu bytes",
-                          (unsigned long long)size);
+        CARDINAL_LOG_INFO("[VkAllocator] MEMORY_FREED: buffer=%p memory=%p", (void*)buffer,
+                          (void*)memory);
     }
 
     if (buffer != VK_NULL_HANDLE) {
+        CARDINAL_LOG_INFO(
+            "[VkAllocator] BUFFER_DESTROY: About to call vkDestroyBuffer on buffer=%p",
+            (void*)buffer);
         vkDestroyBuffer(alloc->device, buffer, NULL);
+        CARDINAL_LOG_INFO("[VkAllocator] BUFFER_DESTROYED: Successfully destroyed buffer=%p",
+                          (void*)buffer);
     }
-    
+
     // Unlock mutex
     cardinal_mt_mutex_unlock(&alloc->allocation_mutex);
+    CARDINAL_LOG_INFO("[VkAllocator] BUFFER_DESTROY_COMPLETE: buffer=%p mem=%p", (void*)buffer,
+                      (void*)memory);
 }
 
 /**

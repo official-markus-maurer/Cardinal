@@ -61,9 +61,9 @@ void cardinal_renderer_immediate_submit(CardinalRenderer *renderer,
                                         void (*record)(VkCommandBuffer cmd));
 
 // Execute a one-time command buffer with secondary command buffer support
-void cardinal_renderer_immediate_submit_with_secondary(CardinalRenderer *renderer,
-                                                       void (*record)(VkCommandBuffer cmd),
-                                                       bool use_secondary);
+void cardinal_renderer_immediate_submit_with_secondary(
+    CardinalRenderer *renderer, void (*record)(VkCommandBuffer cmd),
+    bool use_secondary);
 
 // Upload a loaded CPU scene to GPU buffers for basic drawing
 void cardinal_renderer_upload_scene(CardinalRenderer *renderer,

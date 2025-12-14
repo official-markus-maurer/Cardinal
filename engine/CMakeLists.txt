@@ -36,7 +36,7 @@ FetchContent_MakeAvailable(stb)
 FetchContent_Declare(
     glfw
     GIT_REPOSITORY https://github.com/glfw/glfw.git
-    GIT_TAG 3.3.8
+    GIT_TAG 3.4
 )
 set(GLFW_BUILD_DOCS OFF CACHE BOOL "" FORCE)
 set(GLFW_BUILD_TESTS OFF CACHE BOOL "" FORCE)
@@ -48,7 +48,7 @@ if(CARDINAL_USE_SPDLOG)
     FetchContent_Declare(
         spdlog
         GIT_REPOSITORY https://github.com/gabime/spdlog.git
-        GIT_TAG v1.15.3
+        GIT_TAG v1.16.0
     )
     FetchContent_MakeAvailable(spdlog)
     # Suppress specific Clang warning from spdlog internals on Windows
@@ -76,6 +76,7 @@ target_sources(cardinal_engine PRIVATE
     src/core/transform.c
     src/core/animation.c
     src/renderer/vulkan_renderer.c
+    src/renderer/vulkan_renderer_frame.c
     src/renderer/vulkan_instance.c
     src/renderer/vulkan_swapchain.c
     src/renderer/vulkan_pipeline.c
@@ -88,6 +89,17 @@ target_sources(cardinal_engine PRIVATE
     src/renderer/vulkan_compute.c
     src/renderer/vulkan_descriptor_indexing.c
     src/renderer/vulkan_allocator.c
+    src/renderer/vulkan_buffer_manager.c
+    src/renderer/vulkan_descriptor_manager.c
+    src/renderer/vulkan_swapchain_manager.c
+    src/renderer/vulkan_pipeline_manager.c
+    src/renderer/vulkan_resource_manager.c
+    src/renderer/vulkan_sync_manager.c
+    src/renderer/vulkan_timeline_debug.c
+    src/renderer/vulkan_timeline_pool.c
+    src/renderer/vulkan_texture_manager.c
+    src/renderer/vulkan_utils.c
+    src/renderer/vulkan_maintenance8_sync.c
     src/renderer/util/vulkan_buffer_utils.c
     src/renderer/util/vulkan_descriptor_utils.c
     src/renderer/util/vulkan_descriptor_buffer_utils.c
@@ -117,6 +129,7 @@ target_sources(cardinal_engine PUBLIC
     include/cardinal/core/transform.h
     include/cardinal/core/animation.h
     include/cardinal/renderer/renderer.h
+    include/cardinal/renderer/vulkan_utils.h
     include/cardinal/cardinal.h
     include/cardinal/assets/scene.h
     include/cardinal/assets/gltf_loader.h
@@ -180,7 +193,9 @@ endif()
 
 # Compiler-specific options
 if(MSVC)
-    target_compile_options(cardinal_engine PRIVATE /W4)
+    target_compile_options(cardinal_engine PRIVATE /W4 /experimental:c11atomics)
 else()
     target_compile_options(cardinal_engine PRIVATE -Wall -Wextra -Wpedantic)
 endif()
+
+

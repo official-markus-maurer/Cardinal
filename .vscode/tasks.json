@@ -3,14 +3,11 @@
     "tasks": [
         {
             "label": "Compile Shaders",
-            "dependsOrder": "sequence",
-            "dependsOn": [
-                "Compile PBR Vertex Shader",
-                "Compile PBR Fragment Shader",
-                "Compile UV Vertex Shader",
-                "Compile UV Fragment Shader",
-                "Compile Wireframe Vertex Shader",
-                "Compile Wireframe Fragment Shader"
+            "type": "shell",
+            "command": "powershell",
+            "args": [
+                "-ExecutionPolicy", "Bypass",
+                "-File", "${workspaceFolder}/compile-shaders.ps1"
             ],
             "group": "build",
             "presentation": {
@@ -21,143 +18,74 @@
                 "showReuseMessage": true,
                 "clear": false
             },
-            "problemMatcher": []
-        },
-        {
-            "label": "Compile PBR Vertex Shader",
-            "type": "shell",
-            "command": "glslc",
-            "args": [
-                "pbr.vert",
-                "-o",
-                "C:/Users/${env:USERNAME}/Documents/Cardinal/assets/shaders/pbr.vert.spv"
-            ],
-            "group": "build",
-            "presentation": {
-                "echo": true,
-                "reveal": "silent",
-                "focus": false,
-                "panel": "shared"
-            },
             "options": {
-                "cwd": "${workspaceFolder}/assets/shaders"
+                "cwd": "${workspaceFolder}"
             },
             "problemMatcher": []
         },
         {
-            "label": "Compile PBR Fragment Shader",
-            "type": "shell",
-            "command": "glslc",
-            "args": [
-                "pbr.frag",
-                "-o",
-                "C:/Users/${env:USERNAME}/Documents/Cardinal/assets/shaders/pbr.frag.spv"
-            ],
-            "group": "build",
-            "presentation": {
-                "echo": true,
-                "reveal": "silent",
-                "focus": false,
-                "panel": "shared"
-            },
-            "options": {
-                "cwd": "${workspaceFolder}/assets/shaders"
-            },
-            "problemMatcher": []
-        },
-        {
-            "label": "Compile UV Vertex Shader",
-            "type": "shell",
-            "command": "glslc",
-            "args": [
-                "uv.vert",
-                "-o",
-                "C:/Users/${env:USERNAME}/Documents/Cardinal/assets/shaders/uv.vert.spv"
-            ],
-            "group": "build",
-            "presentation": {
-                "echo": true,
-                "reveal": "silent",
-                "focus": false,
-                "panel": "shared"
-            },
-            "options": {
-                "cwd": "${workspaceFolder}/assets/shaders"
-            },
-            "problemMatcher": []
-        },
-        {
-            "label": "Compile UV Fragment Shader",
-            "type": "shell",
-            "command": "glslc",
-            "args": [
-                "uv.frag",
-                "-o",
-                "C:/Users/${env:USERNAME}/Documents/Cardinal/assets/shaders/uv.frag.spv"
-            ],
-            "group": "build",
-            "presentation": {
-                "echo": true,
-                "reveal": "silent",
-                "focus": false,
-                "panel": "shared"
-            },
-            "options": {
-                "cwd": "${workspaceFolder}/assets/shaders"
-            },
-            "problemMatcher": []
-        },
-        {
-            "label": "Compile Wireframe Vertex Shader",
-            "type": "shell",
-            "command": "glslc",
-            "args": [
-                "wireframe.vert",
-                "-o",
-                "C:/Users/${env:USERNAME}/Documents/Cardinal/assets/shaders/wireframe.vert.spv"
-            ],
-            "group": "build",
-            "presentation": {
-                "echo": true,
-                "reveal": "silent",
-                "focus": false,
-                "panel": "shared"
-            },
-            "options": {
-                "cwd": "${workspaceFolder}/assets/shaders"
-            },
-            "problemMatcher": []
-        },
-        {
-            "label": "Compile Wireframe Fragment Shader",
-            "type": "shell",
-            "command": "glslc",
-            "args": [
-                "wireframe.frag",
-                "-o",
-                "C:/Users/${env:USERNAME}/Documents/Cardinal/assets/shaders/wireframe.frag.spv"
-            ],
-            "group": "build",
-            "presentation": {
-                "echo": true,
-                "reveal": "silent",
-                "focus": false,
-                "panel": "shared"
-            },
-            "options": {
-                "cwd": "${workspaceFolder}/assets/shaders"
-            },
-            "problemMatcher": []
-        },
-        {
-            "label": "Configure CMake",
+            "label": "Configure CMake (Debug)",
             "type": "shell",
             "command": "cmake",
             "args": [
-                "-S",
-                ".",
-                "-B",
-                "build",
+                "-S", ".",
+                "-B", "build",
+                "-DCMAKE_BUILD_TYPE=Debug"
+            ],
+            "group": "build",
+            "presentation": {
+                "echo": true,
+                "reveal": "always",
+                "focus": false,
+                "panel": "shared",
+                "showReuseMessage": true,
+                "clear": false
+            },
+            "options": {
+                "cwd": "${workspaceFolder}"
+            },
+            "problemMatcher": ["$gcc"]
+        },
+        {
+            "label": "Build Project (Debug)",
+            "type": "shell",
+            "command": "cmake",
+            "args": [
+                "--build", "build",
+                "--config", "Debug"
+            ],
+            "group": "build",
+            "presentation": {
+                "echo": true,
+                "reveal": "always",
+                "focus": false,
+                "panel": "shared",
+                "showReuseMessage": true,
+                "clear": false
+            },
+            "options": {
+                "cwd": "${workspaceFolder}"
+            },
+            "problemMatcher": ["$gcc"]
+        },
+        {
+            "label": "Full Build (Debug)",
+            "dependsOrder": "sequence",
+            "dependsOn": [
+                "Configure CMake (Debug)",
+                "Compile Shaders",
+                "Build Project (Debug)"
+            ],
+            "group": "build",
+            "problemMatcher": []
+        },
+        {
+            "label": "Configure CMake (Release)",
+            "type": "shell",
+            "command": "cmake",
+            "args": [
+                "-S", ".",
+                "-B", "build",
                 "-DCMAKE_BUILD_TYPE=Release"
             ],
             "group": "build",
@@ -175,19 +103,14 @@
             "problemMatcher": ["$gcc"]
         },
         {
-            "label": "Build Project",
+            "label": "Build Project (Release)",
             "type": "shell",
             "command": "cmake",
             "args": [
-                "--build",
-                "build",
-                "--config",
-                "Release"
+                "--build", "build",
+                "--config", "Release"
             ],
-            "group": {
-                "kind": "build",
-                "isDefault": true
-            },
+            "group": "build",
             "presentation": {
                 "echo": true,
                 "reveal": "always",
@@ -199,25 +122,17 @@
             "options": {
                 "cwd": "${workspaceFolder}"
             },
-            "dependsOn": "Configure CMake",
             "problemMatcher": ["$gcc"]
         },
         {
-            "label": "Full Build",
+            "label": "Full Build (Release)",
             "dependsOrder": "sequence",
             "dependsOn": [
+                "Configure CMake (Release)",
                 "Compile Shaders",
-                "Build Project"
+                "Build Project (Release)"
             ],
             "group": "build",
-            "presentation": {
-                "echo": true,
-                "reveal": "always",
-                "focus": false,
-                "panel": "shared",
-                "showReuseMessage": true,
-                "clear": true
-            },
             "problemMatcher": []
         },
         {
@@ -235,9 +150,12 @@
                 "clear": true
             },
             "options": {
-                "cwd": "${workspaceFolder}/build/client"
+                "cwd": "${workspaceFolder}/build/client/Release",
+                "env": {
+                    "CARDINAL_SHADERS_DIR": "${workspaceFolder}/assets/shaders"
+                }
             },
-            "dependsOn": "Full Build",
+            "dependsOn": "Full Build (Release)",
             "problemMatcher": []
         },
         {
@@ -255,9 +173,12 @@
                 "clear": true
             },
             "options": {
-                "cwd": "${workspaceFolder}/build/editor"
+                "cwd": "${workspaceFolder}/build/editor/Release",
+                "env": {
+                    "CARDINAL_SHADERS_DIR": "${workspaceFolder}/assets/shaders"
+                }
             },
-            "dependsOn": "Full Build",
+            "dependsOn": "Full Build (Release)",
             "problemMatcher": []
         },
         {
@@ -278,9 +199,12 @@
                 "clear": true
             },
             "options": {
-                "cwd": "${workspaceFolder}/build/client"
+                "cwd": "${workspaceFolder}/build/client/Debug",
+                "env": {
+                    "CARDINAL_SHADERS_DIR": "${workspaceFolder}/assets/shaders"
+                }
             },
-            "dependsOn": "Full Build",
+            "dependsOn": "Full Build (Debug)",
             "problemMatcher": {
                 "owner": "cardinal-log",
                 "fileLocation": ["relative", "${workspaceFolder}"],
@@ -316,9 +240,12 @@
                 "clear": true
             },
             "options": {
-                "cwd": "${workspaceFolder}/build/editor"
+                "cwd": "${workspaceFolder}/build/editor/Debug",
+                "env": {
+                    "CARDINAL_SHADERS_DIR": "${workspaceFolder}/assets/shaders"
+                }
             },
-            "dependsOn": "Full Build",
+            "dependsOn": "Full Build (Debug)",
             "problemMatcher": {
                 "owner": "cardinal-log",
                 "fileLocation": ["relative", "${workspaceFolder}"],
@@ -359,21 +286,23 @@
             "problemMatcher": []
         },
         {
-            "label": "Rebuild All",
+            "label": "Rebuild All (Debug)",
             "dependsOrder": "sequence",
             "dependsOn": [
                 "Clean Build",
-                "Full Build"
+                "Full Build (Debug)"
             ],
             "group": "build",
-            "presentation": {
-                "echo": true,
-                "reveal": "always",
-                "focus": false,
-                "panel": "shared",
-                "showReuseMessage": true,
-                "clear": true
-            },
+            "problemMatcher": []
+        },
+        {
+            "label": "Rebuild All (Release)",
+            "dependsOrder": "sequence",
+            "dependsOn": [
+                "Clean Build",
+                "Full Build (Release)"
+            ],
+            "group": "build",
             "problemMatcher": []
         },
         {
@@ -430,22 +359,7 @@
             "options": {
                 "cwd": "${workspaceFolder}"
             },
-            "problemMatcher": {
-                "owner": "cardinal-log",
-                "fileLocation": ["relative", "${workspaceFolder}"],
-                "pattern": {
-                    "regexp": "^([^(]+)\\((\\d+)\\):\\s*\\[(ERROR|WARN|FATAL)\\]\\s*(.*)$",
-                    "file": 1,
-                    "line": 2,
-                    "severity": 3,
-                    "message": 4
-                },
-                "severity": {
-                    "ERROR": "error",
-                    "WARN": "warning",
-                    "FATAL": "error"
-                }
-            }
+            "problemMatcher": []
         },
         {
             "label": "Format Code",

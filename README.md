@@ -60,8 +60,12 @@ cmake -B build -S .
 # Build
 cmake --build build --config Debug
 
+# Run Editor
+.\build\editor\Debug\CardinalEditor.exe
+
 # Or for Release
 cmake --build build --config Release
+.\build\editor\Release\CardinalEditor.exe
 ```
 
 ### VS Code Development
@@ -100,74 +104,6 @@ Both debug configurations automatically trigger a full build before launching.
 - `build/engine/libcardinal_engine.a` - Core engine library
 - `build/client/CardinalClient.exe` - Runtime application
 - `build/editor/CardinalEditor.exe` - Editor application
-
-## Usage
-
-### Client Application
-
-The client demonstrates basic engine usage:
-
-```c
-#include <cardinal/cardinal.h>
-#include <cardinal/assets/loader.h>
-
-int main(void) {
-    // Create window
-    CardinalWindowConfig config = {
-        .title = "My Game",
-        .width = 1024,
-        .height = 768,
-        .resizable = true
-    };
-    CardinalWindow* window = cardinal_window_create(&config);
-    
-    // Create renderer
-    CardinalRenderer* renderer = cardinal_renderer_create(window);
-    
-    // Load and upload scene (optional)
-    CardinalScene scene;
-    if (cardinal_scene_load("assets/models/scene.gltf", &scene)) {
-        cardinal_renderer_upload_scene(renderer, &scene);
-        
-        // Enable PBR rendering
-        cardinal_renderer_enable_pbr(renderer, true);
-        
-        // Set up camera and lighting
-        CardinalCamera camera = {
-            .position = {0.0f, 0.0f, 5.0f},
-            .target = {0.0f, 0.0f, 0.0f},
-            .up = {0.0f, 1.0f, 0.0f},
-            .fov = 45.0f,
-            .aspect = 1024.0f / 768.0f,
-            .near_plane = 0.1f,
-            .far_plane = 100.0f
-        };
-        cardinal_renderer_set_camera(renderer, &camera);
-        
-        CardinalLight light = {
-            .direction = {-0.5f, -1.0f, -0.3f},
-            .color = {1.0f, 1.0f, 1.0f},
-            .intensity = 3.0f,
-            .ambient = {0.1f, 0.1f, 0.1f}
-        };
-        cardinal_renderer_set_lighting(renderer, &light);
-    }
-    
-    // Main loop
-    while (!cardinal_window_should_close(window)) {
-        cardinal_window_poll(window);
-        cardinal_renderer_draw_frame(renderer);
-    }
-    
-    // Cleanup
-    if (scene.mesh_count > 0) {
-        cardinal_scene_destroy(&scene);
-    }
-    cardinal_renderer_destroy(renderer);
-    cardinal_window_destroy(window);
-    return 0;
-}
-```
 
 ### Editor Application
 

@@ -45,8 +45,9 @@ extern "C" {
  * @note The caller should call cardinal_ref_release() when done with the mesh
  * @note The mesh data is deep-copied to ensure thread safety
  */
-CardinalRefCountedResource* mesh_load_with_ref_counting(const CardinalMesh* mesh_data,
-                                                        CardinalMesh* out_mesh);
+CardinalRefCountedResource *
+mesh_load_with_ref_counting(const CardinalMesh *mesh_data,
+                            CardinalMesh *out_mesh);
 
 /**
  * @brief Release a reference-counted mesh
@@ -56,7 +57,7 @@ CardinalRefCountedResource* mesh_load_with_ref_counting(const CardinalMesh* mesh
  *
  * @param ref_resource Reference-counted resource to release
  */
-void mesh_release_ref_counted(CardinalRefCountedResource* ref_resource);
+void mesh_release_ref_counted(CardinalRefCountedResource *ref_resource);
 
 /**
  * @brief Free mesh data
@@ -66,7 +67,7 @@ void mesh_release_ref_counted(CardinalRefCountedResource* ref_resource);
  *
  * @param mesh Pointer to mesh data to free
  */
-void mesh_data_free(CardinalMesh* mesh);
+void mesh_data_free(CardinalMesh *mesh);
 
 /**
  * @brief Load mesh asynchronously with reference counting
@@ -85,15 +86,16 @@ void mesh_data_free(CardinalMesh* mesh);
  * @note Use cardinal_async_get_mesh_result() to retrieve the loaded mesh
  * @note Call cardinal_async_free_task() when done with the task handle
  */
-CardinalAsyncTask* mesh_load_async(const CardinalMesh* mesh_data,
+CardinalAsyncTask *mesh_load_async(const CardinalMesh *mesh_data,
                                    CardinalAsyncPriority priority,
                                    CardinalAsyncCallback callback,
-                                   void* user_data);
+                                   void *user_data);
 
 /**
  * @brief Initialize the thread-safe mesh cache with specified maximum entries
  *
- * This is automatically called by mesh_load_with_ref_counting if not already initialized
+ * This is automatically called by mesh_load_with_ref_counting if not already
+ * initialized
  *
  * @param max_entries Maximum number of entries in the cache
  * @return true if initialization succeeded, false otherwise
@@ -109,10 +111,10 @@ void mesh_cache_shutdown_system(void);
  * @brief Mesh cache statistics for monitoring
  */
 typedef struct MeshCacheStats {
-    uint32_t entry_count;   /**< Current number of cached entries */
-    uint32_t max_entries;   /**< Maximum number of cache entries */
-    uint32_t cache_hits;    /**< Number of cache hits */
-    uint32_t cache_misses;  /**< Number of cache misses */
+  uint32_t entry_count;  /**< Current number of cached entries */
+  uint32_t max_entries;  /**< Maximum number of cache entries */
+  uint32_t cache_hits;   /**< Number of cache hits */
+  uint32_t cache_misses; /**< Number of cache misses */
 } MeshCacheStats;
 
 /**

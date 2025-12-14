@@ -3,9 +3,10 @@
  * @brief Thread-safe material loading with caching and reference counting
  *
  * This module provides enhanced material loading functionality with thread-safe
- * caching and reference counting for efficient material sharing in multi-threaded
- * environments. It builds upon the existing material_ref_counting system to add
- * performance optimizations through caching.
+ * caching and reference counting for efficient material sharing in
+ * multi-threaded environments. It builds upon the existing
+ * material_ref_counting system to add performance optimizations through
+ * caching.
  *
  * Key features:
  * - Thread-safe material cache for fast lookups
@@ -22,8 +23,8 @@
 #define CARDINAL_ASSETS_MATERIAL_LOADER_H
 
 #include "cardinal/assets/scene.h"
-#include "cardinal/core/ref_counting.h"
 #include "cardinal/core/async_loader.h"
+#include "cardinal/core/ref_counting.h"
 #include <stdbool.h>
 #include <stdint.h>
 
@@ -37,10 +38,10 @@ extern "C" {
  * Provides information about cache performance and usage.
  */
 typedef struct MaterialCacheStats {
-    uint32_t entry_count;   /**< Current number of cached materials */
-    uint32_t max_entries;   /**< Maximum cache capacity */
-    uint32_t cache_hits;    /**< Number of successful cache lookups */
-    uint32_t cache_misses;  /**< Number of cache misses */
+  uint32_t entry_count;  /**< Current number of cached materials */
+  uint32_t max_entries;  /**< Maximum cache capacity */
+  uint32_t cache_hits;   /**< Number of successful cache lookups */
+  uint32_t cache_misses; /**< Number of cache misses */
 } MaterialCacheStats;
 
 /**
@@ -54,17 +55,19 @@ typedef struct MaterialCacheStats {
  * @param out_material Pointer to store the loaded material data
  * @return Pointer to reference counted resource, or NULL on failure
  */
-CardinalRefCountedResource* material_load_with_ref_counting(const CardinalMaterial* material_data,
-                                                            CardinalMaterial* out_material);
+CardinalRefCountedResource *
+material_load_with_ref_counting(const CardinalMaterial *material_data,
+                                CardinalMaterial *out_material);
 
 /**
  * @brief Release a reference counted material
  *
- * Decrements the reference count and frees the material if no more references exist.
+ * Decrements the reference count and frees the material if no more references
+ * exist.
  *
  * @param ref_resource Reference counted material resource to release
  */
-void material_release_ref_counted(CardinalRefCountedResource* ref_resource);
+void material_release_ref_counted(CardinalRefCountedResource *ref_resource);
 
 /**
  * @brief Free material data
@@ -74,7 +77,7 @@ void material_release_ref_counted(CardinalRefCountedResource* ref_resource);
  *
  * @param material Pointer to the material to free
  */
-void material_data_free(CardinalMaterial* material);
+void material_data_free(CardinalMaterial *material);
 
 /**
  * @brief Load material asynchronously
@@ -88,16 +91,17 @@ void material_data_free(CardinalMaterial* material);
  * @param user_data User data to pass to the callback
  * @return Pointer to async task, or NULL on failure
  */
-CardinalAsyncTask* material_load_async(const CardinalMaterial* material_data,
+CardinalAsyncTask *material_load_async(const CardinalMaterial *material_data,
                                        CardinalAsyncPriority priority,
                                        CardinalAsyncCallback callback,
-                                       void* user_data);
+                                       void *user_data);
 
 /**
  * @brief Initialize the material cache system
  *
  * Initializes the thread-safe material cache with the specified maximum
- * number of entries. This function should be called during engine initialization.
+ * number of entries. This function should be called during engine
+ * initialization.
  *
  * @param max_entries Maximum number of materials to cache
  * @return true on success, false on failure

@@ -68,7 +68,7 @@ void vk_prepare_mesh_shader_rendering(VulkanState *s);
  * @brief Get the multi-threaded command manager for the current Vulkan state.
  * @return Pointer to the command manager, or NULL if not initialized.
  */
-struct CardinalMTCommandManager* vk_get_mt_command_manager(void);
+struct CardinalMTCommandManager *vk_get_mt_command_manager(void);
 
 /**
  * @brief Submit a command recording task to the multi-threading subsystem
@@ -77,11 +77,11 @@ struct CardinalMTCommandManager* vk_get_mt_command_manager(void);
  * @param callback Optional callback when task completes
  * @return true on success, false on failure
  */
-bool vk_submit_mt_command_task(void (*record_func)(void* data),
-                               void* user_data,
-                               void (*callback)(void* data, bool success));
+bool vk_submit_mt_command_task(void (*record_func)(void *data), void *user_data,
+                               void (*callback)(void *data, bool success));
 
 // === Secondary Command Buffer Functions ===
-// Note: Secondary command buffer functions are implemented internally in vulkan_commands.c
+// Note: Secondary command buffer functions are implemented internally in
+// vulkan_commands.c
 
 #endif // VULKAN_COMMANDS_H

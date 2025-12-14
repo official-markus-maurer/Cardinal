@@ -54,6 +54,15 @@ typedef struct CardinalWindow {
 #else
   pthread_mutex_t mutex; /**< Mutex for thread-safe operations */
 #endif
+  // Resize/minimize state
+  bool resize_pending;
+  uint32_t new_width;
+  uint32_t new_height;
+  bool is_minimized;
+  bool was_minimized;
+  // User-level resize callback
+  void (*resize_callback)(uint32_t width, uint32_t height, void *user_data);
+  void *resize_user_data;
 } CardinalWindow;
 
 #ifdef __cplusplus
@@ -117,6 +126,8 @@ bool cardinal_window_should_close(const CardinalWindow *window);
  * @note The returned handle should not be freed by the caller
  */
 void *cardinal_window_get_native_handle(const CardinalWindow *window);
+// Minimize state query
+bool cardinal_window_is_minimized(const CardinalWindow *window);
 
 #ifdef __cplusplus
 }

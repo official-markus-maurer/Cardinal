@@ -38,7 +38,7 @@
     #include <malloc.h>
     // MSVC compatibility for C11 features
     #ifndef max_align_t
-        typedef double max_align_t;
+typedef double max_align_t;
     #endif
     #ifndef alignof
         #define alignof(type) __alignof(type)

@@ -34,11 +34,11 @@ extern "C" {
  * @brief Resource loading states
  */
 typedef enum {
-    CARDINAL_RESOURCE_STATE_UNLOADED = 0,  /**< Resource not loaded */
-    CARDINAL_RESOURCE_STATE_LOADING,       /**< Resource currently loading */
-    CARDINAL_RESOURCE_STATE_LOADED,        /**< Resource fully loaded and ready */
-    CARDINAL_RESOURCE_STATE_ERROR,         /**< Resource failed to load */
-    CARDINAL_RESOURCE_STATE_UNLOADING      /**< Resource being unloaded */
+  CARDINAL_RESOURCE_STATE_UNLOADED = 0, /**< Resource not loaded */
+  CARDINAL_RESOURCE_STATE_LOADING,      /**< Resource currently loading */
+  CARDINAL_RESOURCE_STATE_LOADED,       /**< Resource fully loaded and ready */
+  CARDINAL_RESOURCE_STATE_ERROR,        /**< Resource failed to load */
+  CARDINAL_RESOURCE_STATE_UNLOADING     /**< Resource being unloaded */
 } CardinalResourceState;
 
 /**
@@ -47,14 +47,17 @@ typedef enum {
  * Extends reference counted resources with state tracking and synchronization.
  */
 typedef struct CardinalResourceStateTracker {
-    CardinalRefCountedResource* ref_resource;  /**< Associated reference counted resource */
-    volatile CardinalResourceState state;      /**< Current resource state */
-    cardinal_mutex_t state_mutex;                 /**< Mutex for state changes */
-    cardinal_cond_t state_changed;   /**< Condition variable for state notifications */
-    uint32_t loading_thread_id;               /**< ID of thread currently loading the resource */
-    uint64_t state_change_timestamp;          /**< Timestamp of last state change */
-    char* identifier;                         /**< Resource identifier (copy) */
-    struct CardinalResourceStateTracker* next; /**< Next in hash table chain */
+  CardinalRefCountedResource
+      *ref_resource; /**< Associated reference counted resource */
+  volatile CardinalResourceState state; /**< Current resource state */
+  cardinal_mutex_t state_mutex;         /**< Mutex for state changes */
+  cardinal_cond_t
+      state_changed; /**< Condition variable for state notifications */
+  uint32_t
+      loading_thread_id; /**< ID of thread currently loading the resource */
+  uint64_t state_change_timestamp; /**< Timestamp of last state change */
+  char *identifier;                /**< Resource identifier (copy) */
+  struct CardinalResourceStateTracker *next; /**< Next in hash table chain */
 } CardinalResourceStateTracker;
 
 /**
@@ -63,11 +66,12 @@ typedef struct CardinalResourceStateTracker {
  * Global registry for tracking resource states across the engine.
  */
 typedef struct {
-    CardinalResourceStateTracker** buckets;   /**< Hash table buckets */
-    size_t bucket_count;                      /**< Number of hash table buckets */
-    cardinal_mutex_t registry_mutex;             /**< Mutex for registry operations */
-    volatile uint32_t total_tracked_resources; /**< Total number of tracked resources */
-    bool initialized;                         /**< Whether the registry is initialized */
+  CardinalResourceStateTracker **buckets; /**< Hash table buckets */
+  size_t bucket_count;                    /**< Number of hash table buckets */
+  cardinal_mutex_t registry_mutex;        /**< Mutex for registry operations */
+  volatile uint32_t
+      total_tracked_resources; /**< Total number of tracked resources */
+  bool initialized;            /**< Whether the registry is initialized */
 } CardinalResourceStateRegistry;
 
 /**
@@ -98,7 +102,8 @@ void cardinal_resource_state_shutdown(void);
  * @param ref_resource Reference counted resource to track
  * @return Pointer to the state tracker, or NULL on failure
  */
-CardinalResourceStateTracker* cardinal_resource_state_register(CardinalRefCountedResource* ref_resource);
+CardinalResourceStateTracker *
+cardinal_resource_state_register(CardinalRefCountedResource *ref_resource);
 
 /**
  * @brief Unregister a resource from state tracking
@@ -107,7 +112,7 @@ CardinalResourceStateTracker* cardinal_resource_state_register(CardinalRefCounte
  *
  * @param identifier Resource identifier
  */
-void cardinal_resource_state_unregister(const char* identifier);
+void cardinal_resource_state_unregister(const char *identifier);
 
 /**
  * @brief Get the current state of a resource
@@ -115,9 +120,10 @@ void cardinal_resource_state_unregister(const char* identifier);
  * Returns the current loading state of the specified resource.
  *
  * @param identifier Resource identifier
- * @return Current resource state, or CARDINAL_RESOURCE_STATE_UNLOADED if not found
+ * @return Current resource state, or CARDINAL_RESOURCE_STATE_UNLOADED if not
+ * found
  */
-CardinalResourceState cardinal_resource_state_get(const char* identifier);
+CardinalResourceState cardinal_resource_state_get(const char *identifier);
 
 /**
  * @brief Set the state of a resource
@@ -130,7 +136,9 @@ CardinalResourceState cardinal_resource_state_get(const char* identifier);
  * @param loading_thread_id ID of the thread performing the operation
  * @return true on success, false on failure
  */
-bool cardinal_resource_state_set(const char* identifier, CardinalResourceState new_state, uint32_t loading_thread_id);
+bool cardinal_resource_state_set(const char *identifier,
+                                 CardinalResourceState new_state,
+                                 uint32_t loading_thread_id);
 
 /**
  * @brief Wait for a resource to reach a specific state
@@ -143,7 +151,9 @@ bool cardinal_resource_state_set(const char* identifier, CardinalResourceState n
  * @param timeout_ms Timeout in milliseconds (0 = no timeout)
  * @return true if target state reached, false on timeout or error
  */
-bool cardinal_resource_state_wait_for(const char* identifier, CardinalResourceState target_state, uint32_t timeout_ms);
+bool cardinal_resource_state_wait_for(const char *identifier,
+                                      CardinalResourceState target_state,
+                                      uint32_t timeout_ms);
 
 /**
  * @brief Try to acquire exclusive loading access to a resource
@@ -155,17 +165,19 @@ bool cardinal_resource_state_wait_for(const char* identifier, CardinalResourceSt
  * @param loading_thread_id ID of the thread requesting loading access
  * @return true if loading access acquired, false if already loading or loaded
  */
-bool cardinal_resource_state_try_acquire_loading(const char* identifier, uint32_t loading_thread_id);
+bool cardinal_resource_state_try_acquire_loading(const char *identifier,
+                                                 uint32_t loading_thread_id);
 
 /**
  * @brief Check if a resource is safe to access
  *
- * Returns true if the resource is in LOADED state and safe for concurrent access.
+ * Returns true if the resource is in LOADED state and safe for concurrent
+ * access.
  *
  * @param identifier Resource identifier
  * @return true if safe to access, false otherwise
  */
-bool cardinal_resource_state_is_safe_to_access(const char* identifier);
+bool cardinal_resource_state_is_safe_to_access(const char *identifier);
 
 /**
  * @brief Get resource state statistics
@@ -177,8 +189,10 @@ bool cardinal_resource_state_is_safe_to_access(const char* identifier);
  * @param out_loaded_count Output for resources fully loaded
  * @param out_error_count Output for resources in error state
  */
-void cardinal_resource_state_get_stats(uint32_t* out_total_tracked, uint32_t* out_loading_count, 
-                                      uint32_t* out_loaded_count, uint32_t* out_error_count);
+void cardinal_resource_state_get_stats(uint32_t *out_total_tracked,
+                                       uint32_t *out_loading_count,
+                                       uint32_t *out_loaded_count,
+                                       uint32_t *out_error_count);
 
 #ifdef __cplusplus
 }

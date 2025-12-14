@@ -26,6 +26,7 @@
 #define VULKAN_TEXTURE_UTILS_H
 
 #include <cardinal/assets/scene.h>
+#include <cardinal/renderer/vulkan_sync_manager.h>
 #include <stdbool.h>
 #include <stdint.h>
 #include <vulkan/vulkan.h>
@@ -39,19 +40,22 @@ typedef struct VulkanAllocator VulkanAllocator;
  * @param device Logical device.
  * @param commandPool Command pool.
  * @param graphicsQueue Graphics queue.
+ * @param sync_manager VulkanSyncManager for proper synchronization (can be NULL
+ * for fallback).
  * @param texture Input texture data.
  * @param textureImage Output image handle.
  * @param textureImageMemory Output memory handle.
  * @param textureImageView Output image view handle.
+ * @param outTimelineValue Optional pointer to receive the timeline semaphore
+ * value for this upload.
  * @return true on success, false on failure.
  */
-bool vk_texture_create_from_data(VulkanAllocator *allocator, VkDevice device,
-                                 VkCommandPool commandPool,
-                                 VkQueue graphicsQueue,
-                                 const CardinalTexture *texture,
-                                 VkImage *textureImage,
-                                 VkDeviceMemory *textureImageMemory,
-                                 VkImageView *textureImageView);
+bool vk_texture_create_from_data(
+    VulkanAllocator *allocator, VkDevice device, VkCommandPool commandPool,
+    VkQueue graphicsQueue, VulkanSyncManager *sync_manager,
+    const CardinalTexture *texture, VkImage *textureImage,
+    VkDeviceMemory *textureImageMemory, VkImageView *textureImageView,
+    uint64_t *outTimelineValue);
 
 /**
  * @brief Creates a 1x1 white placeholder texture.

@@ -32,6 +32,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <time.h>
 
 // cgltf is header-only; include path supplied by CMake
 #define CGLTF_IMPLEMENTATION
@@ -73,7 +74,7 @@ static void init_texture_cache(void) {
     if (!g_cache_initialized) {
         memset(g_texture_path_cache, 0, sizeof(g_texture_path_cache));
         g_cache_initialized = true;
-        LOG_DEBUG("Texture path cache initialized");
+        CARDINAL_LOG_DEBUG("Texture path cache initialized");
     }
 }
 
@@ -81,12 +82,14 @@ static void init_texture_cache(void) {
  * @brief Look up cached texture path.
  */
 static const char* lookup_cached_path(const char* original_uri) {
-    if (!g_cache_initialized) return NULL;
-    
+    if (!g_cache_initialized)
+        return NULL;
+
     size_t index = texture_cache_hash(original_uri);
-    if (g_texture_path_cache[index].valid && 
+    if (g_texture_path_cache[index].valid &&
         strcmp(g_texture_path_cache[index].original_uri, original_uri) == 0) {
-        LOG_DEBUG("Cache hit for texture: %s -> %s", original_uri, g_texture_path_cache[index].resolved_path);
+        CARDINAL_LOG_DEBUG("Cache hit for texture: %s -> %s", original_uri,
+                           g_texture_path_cache[index].resolved_path);
         return g_texture_path_cache[index].resolved_path;
     }
     return NULL;
@@ -96,30 +99,36 @@ static const char* lookup_cached_path(const char* original_uri) {
  * @brief Cache a successful texture path.
  */
 static void cache_texture_path(const char* original_uri, const char* resolved_path) {
-    if (!g_cache_initialized) init_texture_cache();
-    
+    if (!g_cache_initialized)
+        init_texture_cache();
+
     size_t index = texture_cache_hash(original_uri);
-    strncpy(g_texture_path_cache[index].original_uri, original_uri, sizeof(g_texture_path_cache[index].original_uri) - 1);
-    strncpy(g_texture_path_cache[index].resolved_path, resolved_path, sizeof(g_texture_path_cache[index].resolved_path) - 1);
-    g_texture_path_cache[index].original_uri[sizeof(g_texture_path_cache[index].original_uri) - 1] = '\0';
-    g_texture_path_cache[index].resolved_path[sizeof(g_texture_path_cache[index].resolved_path) - 1] = '\0';
+    strncpy(g_texture_path_cache[index].original_uri, original_uri,
+            sizeof(g_texture_path_cache[index].original_uri) - 1);
+    strncpy(g_texture_path_cache[index].resolved_path, resolved_path,
+            sizeof(g_texture_path_cache[index].resolved_path) - 1);
+    g_texture_path_cache[index].original_uri[sizeof(g_texture_path_cache[index].original_uri) - 1] =
+        '\0';
+    g_texture_path_cache[index]
+        .resolved_path[sizeof(g_texture_path_cache[index].resolved_path) - 1] = '\0';
     g_texture_path_cache[index].valid = true;
-    LOG_DEBUG("Cached texture path: %s -> %s", original_uri, resolved_path);
+    CARDINAL_LOG_DEBUG("Cached texture path: %s -> %s", original_uri, resolved_path);
 }
 
 /**
  * @brief Try loading texture from a specific path.
  */
 static CardinalRefCountedResource* try_texture_path(const char* path, TextureData* tex_data) {
-    LOG_DEBUG("Trying texture path: %s", path);
+    CARDINAL_LOG_DEBUG("Trying texture path: %s", path);
     return texture_load_with_ref_counting(path, tex_data);
 }
 
 /**
  * @brief Efficiently build path with format string and single buffer.
  */
-static CardinalRefCountedResource* try_formatted_path(char* buffer, size_t buffer_size, 
-                                                     TextureData* tex_data, const char* format, ...) {
+static CardinalRefCountedResource* try_formatted_path(char* buffer, size_t buffer_size,
+                                                      TextureData* tex_data, const char* format,
+                                                      ...) {
     va_list args;
     va_start(args, format);
     vsnprintf(buffer, buffer_size, format, args);
@@ -131,81 +140,92 @@ static CardinalRefCountedResource* try_formatted_path(char* buffer, size_t buffe
  * @brief Check if texture URI follows common patterns that suggest specific locations.
  */
 static bool has_common_texture_pattern(const char* uri) {
-    if (!uri) return false;
-    
+    if (!uri)
+        return false;
+
     // Check for absolute paths or URLs - skip fallbacks
     if (uri[0] == '/' || strstr(uri, "://") || (strlen(uri) > 2 && uri[1] == ':')) {
         return true;
     }
-    
+
     // Check for common texture type patterns
-    const char* patterns[] = {
-        "diffuse", "albedo", "basecolor", "color",
-        "normal", "bump", "height",
-        "roughness", "metallic", "metalness", "specular",
-        "ao", "ambient", "occlusion",
-        "emission", "emissive"
-    };
-    
+    const char* patterns[] = {"diffuse", "albedo",    "basecolor", "color",     "normal",   "bump",
+                              "height",  "roughness", "metallic",  "metalness", "specular", "ao",
+                              "ambient", "occlusion", "emission",  "emissive"};
+
     char lower_uri[256];
     strncpy(lower_uri, uri, sizeof(lower_uri) - 1);
     lower_uri[sizeof(lower_uri) - 1] = '\0';
-    
+
     // Convert to lowercase for pattern matching
     for (char* p = lower_uri; *p; p++) {
         *p = (*p >= 'A' && *p <= 'Z') ? *p + 32 : *p;
     }
-    
+
     for (size_t i = 0; i < sizeof(patterns) / sizeof(patterns[0]); i++) {
         if (strstr(lower_uri, patterns[i])) {
             return true;
         }
     }
-    
+
     return false;
 }
 
 /**
  * @brief Generate optimized fallback paths in order of likelihood.
  */
-static bool try_optimized_fallback_paths(const char* original_uri, const char* base_path, 
-                                        char* texture_path, size_t path_size,
-                                        TextureData* tex_data, CardinalRefCountedResource** ref_resource) {
+static bool try_optimized_fallback_paths(const char* original_uri, const char* base_path,
+                                         char* texture_path, size_t path_size,
+                                         TextureData* tex_data,
+                                         CardinalRefCountedResource** ref_resource) {
     // Extract filename and directory components once
     const char* last_slash = strrchr(base_path, '/');
-    if (!last_slash) last_slash = strrchr(base_path, '\\');
-    
+    if (!last_slash)
+        last_slash = strrchr(base_path, '\\');
+
     const char* filename_only = strrchr(original_uri, '/');
-    if (!filename_only) filename_only = strrchr(original_uri, '\\');
-    if (!filename_only) filename_only = original_uri;
-    else filename_only++;
-    
+    if (!filename_only)
+        filename_only = strrchr(original_uri, '\\');
+    if (!filename_only)
+        filename_only = original_uri;
+    else
+        filename_only++;
+
     // 1. Most common: relative to glTF file
     if (last_slash) {
         size_t dir_len = (size_t)(last_slash - base_path + 1);
-        *ref_resource = try_formatted_path(texture_path, path_size, tex_data, "%.*s%s", (int)dir_len, base_path, original_uri);
-        if (*ref_resource) return true;
+        *ref_resource = try_formatted_path(texture_path, path_size, tex_data, "%.*s%s",
+                                           (int)dir_len, base_path, original_uri);
+        if (*ref_resource)
+            return true;
     } else {
         strncpy(texture_path, original_uri, path_size - 1);
         texture_path[path_size - 1] = '\0';
         *ref_resource = try_texture_path(texture_path, tex_data);
-        if (*ref_resource) return true;
+        if (*ref_resource)
+            return true;
     }
-    
+
     // 2. Common asset directories (most likely to succeed)
-    *ref_resource = try_formatted_path(texture_path, path_size, tex_data, "assets/textures/%s", filename_only);
-    if (*ref_resource) return true;
-    
-    *ref_resource = try_formatted_path(texture_path, path_size, tex_data, "assets/models/textures/%s", filename_only);
-    if (*ref_resource) return true;
-    
+    *ref_resource =
+        try_formatted_path(texture_path, path_size, tex_data, "assets/textures/%s", filename_only);
+    if (*ref_resource)
+        return true;
+
+    *ref_resource = try_formatted_path(texture_path, path_size, tex_data,
+                                       "assets/models/textures/%s", filename_only);
+    if (*ref_resource)
+        return true;
+
     // 3. Parallel textures directory
     if (last_slash) {
         size_t dir_len = (size_t)(last_slash - base_path + 1);
-        *ref_resource = try_formatted_path(texture_path, path_size, tex_data, "%.*s../textures/%s", (int)dir_len, base_path, filename_only);
-        if (*ref_resource) return true;
+        *ref_resource = try_formatted_path(texture_path, path_size, tex_data, "%.*s../textures/%s",
+                                           (int)dir_len, base_path, filename_only);
+        if (*ref_resource)
+            return true;
     }
-    
+
     return false;
 }
 
@@ -300,13 +320,13 @@ static bool load_texture_with_fallback(const char* original_uri, const char* bas
                                        CardinalTexture* out_texture) {
     // Error checking for degenerate cases
     if (!original_uri || !base_path || !out_texture) {
-        LOG_ERROR("Invalid parameters: original_uri=%p, base_path=%p, out_texture=%p",
-                  (void*)original_uri, (void*)base_path, (void*)out_texture);
+        CARDINAL_LOG_ERROR("Invalid parameters: original_uri=%p, base_path=%p, out_texture=%p",
+                           (void*)original_uri, (void*)base_path, (void*)out_texture);
         return false;
     }
 
     if (strlen(original_uri) == 0) {
-        LOG_WARN("Empty texture URI provided, using fallback");
+        CARDINAL_LOG_WARN("Empty texture URI provided, using fallback");
         return create_fallback_texture(out_texture);
     }
 
@@ -314,7 +334,8 @@ static bool load_texture_with_fallback(const char* original_uri, const char* bas
     const char* cached_path = lookup_cached_path(original_uri);
     if (cached_path) {
         TextureData tex_data = {0};
-        CardinalRefCountedResource* ref_resource = texture_load_with_ref_counting(cached_path, &tex_data);
+        CardinalRefCountedResource* ref_resource =
+            texture_load_with_ref_counting(cached_path, &tex_data);
         if (ref_resource) {
             out_texture->data = tex_data.data;
             out_texture->width = tex_data.width;
@@ -325,7 +346,7 @@ static bool load_texture_with_fallback(const char* original_uri, const char* bas
                 strcpy(out_texture->path, cached_path);
             }
             out_texture->ref_resource = ref_resource;
-            LOG_DEBUG("Loaded texture from cache: %s", cached_path);
+            CARDINAL_LOG_DEBUG("Loaded texture from cache: %s", cached_path);
             return true;
         }
     }
@@ -333,9 +354,9 @@ static bool load_texture_with_fallback(const char* original_uri, const char* bas
     char texture_path[512] = {0};
     TextureData tex_data = {0};
     CardinalRefCountedResource* ref_resource = NULL;
-    
+
     // Early exit for absolute paths or URLs - try direct load only
-    if (original_uri[0] == '/' || strstr(original_uri, "://") || 
+    if (original_uri[0] == '/' || strstr(original_uri, "://") ||
         (strlen(original_uri) > 2 && original_uri[1] == ':')) {
         ref_resource = try_texture_path(original_uri, &tex_data);
         if (ref_resource) {
@@ -347,20 +368,25 @@ static bool load_texture_with_fallback(const char* original_uri, const char* bas
     }
 
     // Try optimized fallback paths first (covers 90% of cases)
-    if (try_optimized_fallback_paths(original_uri, base_path, texture_path, sizeof(texture_path), &tex_data, &ref_resource)) {
+    if (try_optimized_fallback_paths(original_uri, base_path, texture_path, sizeof(texture_path),
+                                     &tex_data, &ref_resource)) {
         goto success;
     }
 
     // Advanced fallback: decomposed texture name analysis
     // Extract filename for pattern matching
     const char* filename_only = strrchr(original_uri, '/');
-    if (!filename_only) filename_only = strrchr(original_uri, '\\');
-    if (!filename_only) filename_only = original_uri;
-    else filename_only++;
-    
+    if (!filename_only)
+        filename_only = strrchr(original_uri, '\\');
+    if (!filename_only)
+        filename_only = original_uri;
+    else
+        filename_only++;
+
     // Find last slash in base_path for directory operations
     const char* last_slash = strrchr(base_path, '/');
-    if (!last_slash) last_slash = strrchr(base_path, '\\');
+    if (!last_slash)
+        last_slash = strrchr(base_path, '\\');
 
     // Check for composite texture names (e.g., "MaterialRoughnessMetalness.png")
     const char* rough_pos = strstr(filename_only, "Roughness");
@@ -383,15 +409,19 @@ static bool load_texture_with_fallback(const char* original_uri, const char* bas
     }
 
     // Log the detected tokens for debugging
-    LOG_DEBUG("Analyzing filename: %s", filename_only);
+    CARDINAL_LOG_DEBUG("Analyzing filename: %s", filename_only);
     if (rough_pos)
-        LOG_DEBUG("  - Found 'Roughness' at position %ld", (long)(rough_pos - filename_only));
+        CARDINAL_LOG_DEBUG("  - Found 'Roughness' at position %ld",
+                           (long)(rough_pos - filename_only));
     if (metal_pos)
-        LOG_DEBUG("  - Found 'Metalness' at position %ld", (long)(metal_pos - filename_only));
+        CARDINAL_LOG_DEBUG("  - Found 'Metalness' at position %ld",
+                           (long)(metal_pos - filename_only));
     if (base_pos)
-        LOG_DEBUG("  - Found 'BaseColor' at position %ld", (long)(base_pos - filename_only));
+        CARDINAL_LOG_DEBUG("  - Found 'BaseColor' at position %ld",
+                           (long)(base_pos - filename_only));
     if (normal_pos)
-        LOG_DEBUG("  - Found 'Normal' at position %ld", (long)(normal_pos - filename_only));
+        CARDINAL_LOG_DEBUG("  - Found 'Normal' at position %ld",
+                           (long)(normal_pos - filename_only));
 
     if (first_token) {
         size_t base_len = (size_t)(first_token - filename_only);
@@ -400,7 +430,7 @@ static bool load_texture_with_fallback(const char* original_uri, const char* bas
             strncpy(base_name, filename_only, base_len);
             base_name[base_len] = '\0';
 
-            LOG_DEBUG("Extracted base name: '%s'", base_name);
+            CARDINAL_LOG_DEBUG("Extracted base name: '%s'", base_name);
 
             // Prepare base_dir prefix like <gltf_dir>/textures/
             char base_dir_prefix[512] = {0};
@@ -419,7 +449,7 @@ static bool load_texture_with_fallback(const char* original_uri, const char* bas
                 if (base_dir_prefix[0] != '\0') {
                     snprintf(texture_path, sizeof(texture_path), "%s%s%s", base_dir_prefix,
                              base_name, suffixes[i]);
-                    LOG_DEBUG("Trying decomposed candidate: %s", texture_path);
+                    CARDINAL_LOG_DEBUG("Trying decomposed candidate: %s", texture_path);
                     ref_resource = texture_load_with_ref_counting(texture_path, &tex_data);
                     if (ref_resource) {
                         goto success;
@@ -443,7 +473,7 @@ static bool load_texture_with_fallback(const char* original_uri, const char* bas
     }
 
     // Additional fallback: deeper directory traversal and path transformations
-    
+
     if (last_slash) {
         size_t dir_len = (size_t)(last_slash - base_path + 1);
         char base_dir[512];
@@ -451,7 +481,8 @@ static bool load_texture_with_fallback(const char* original_uri, const char* bas
         base_dir[dir_len] = '\0';
 
         // ../../textures/filename (deeper traversal)
-        snprintf(texture_path, sizeof(texture_path), "%s../../textures/%s", base_dir, filename_only);
+        snprintf(texture_path, sizeof(texture_path), "%s../../textures/%s", base_dir,
+                 filename_only);
         ref_resource = try_texture_path(texture_path, &tex_data);
         if (ref_resource) {
             goto success;
@@ -462,15 +493,16 @@ static bool load_texture_with_fallback(const char* original_uri, const char* bas
         strncpy(models_to_textures, base_dir, sizeof(models_to_textures) - 1);
         models_to_textures[sizeof(models_to_textures) - 1] = '\0';
         char* models_seg = strstr(models_to_textures, "/models/");
-        if (!models_seg) models_seg = strstr(models_to_textures, "\\models\\");
+        if (!models_seg)
+            models_seg = strstr(models_to_textures, "\\models\\");
         if (models_seg) {
             size_t prefix_len = (size_t)(models_seg - models_to_textures);
             char prefix[512];
             strncpy(prefix, models_to_textures, prefix_len);
             prefix[prefix_len] = '\0';
             char sep = (models_seg[0] == '/') ? '/' : '\\';
-            ref_resource = try_formatted_path(texture_path, sizeof(texture_path), &tex_data, 
-                                             "%s%ctextures%c%s", prefix, sep, sep, filename_only);
+            ref_resource = try_formatted_path(texture_path, sizeof(texture_path), &tex_data,
+                                              "%s%ctextures%c%s", prefix, sep, sep, filename_only);
             if (ref_resource) {
                 goto success;
             }
@@ -479,7 +511,7 @@ static bool load_texture_with_fallback(const char* original_uri, const char* bas
 
 create_fallback:
     // Fourth attempt: create fallback texture
-    LOG_WARN("Failed to load texture '%s' from all paths, using fallback", original_uri);
+    CARDINAL_LOG_WARN("Failed to load texture '%s' from all paths, using fallback", original_uri);
     return create_fallback_texture(out_texture);
 
 success:
@@ -497,9 +529,9 @@ success:
     // Cache the successful path for future use
     cache_texture_path(original_uri, texture_path);
 
-    LOG_INFO("Loaded texture %s: %ux%u, %u channels (ref_count=%u)", texture_path, tex_data.width,
-             tex_data.height, tex_data.channels,
-             ref_resource ? cardinal_ref_get_count(ref_resource) : 0);
+    CARDINAL_LOG_INFO("Loaded texture %s: %ux%u, %u channels (ref_count=%u)", texture_path,
+                      tex_data.width, tex_data.height, tex_data.channels,
+                      ref_resource ? cardinal_ref_get_count(ref_resource) : 0);
     return true;
 }
 
@@ -536,9 +568,10 @@ static void extract_texture_transform(const cgltf_texture_view* texture_view,
         out_transform->scale[0] = transform->scale[0];
         out_transform->scale[1] = transform->scale[1];
         out_transform->rotation = transform->rotation;
-        LOG_DEBUG("Texture transform: offset=(%.3f,%.3f), scale=(%.3f,%.3f), rotation=%.3f",
-                  out_transform->offset[0], out_transform->offset[1], out_transform->scale[0],
-                  out_transform->scale[1], out_transform->rotation);
+        CARDINAL_LOG_DEBUG(
+            "Texture transform: offset=(%.3f,%.3f), scale=(%.3f,%.3f), rotation=%.3f",
+            out_transform->offset[0], out_transform->offset[1], out_transform->scale[0],
+            out_transform->scale[1], out_transform->rotation);
     }
 }
 
@@ -557,8 +590,8 @@ static void extract_texture_transform(const cgltf_texture_view* texture_view,
 static bool load_texture_from_gltf(const cgltf_data* data, cgltf_size img_idx,
                                    const char* base_path, CardinalTexture* out_texture) {
     if (img_idx >= data->images_count || !data->images) {
-        LOG_ERROR("Invalid image index %zu, only %zu images available", (size_t)img_idx,
-                  (size_t)data->images_count);
+        CARDINAL_LOG_ERROR("Invalid image index %zu, only %zu images available", (size_t)img_idx,
+                           (size_t)data->images_count);
         return false;
     }
 
@@ -568,13 +601,12 @@ static bool load_texture_from_gltf(const cgltf_data* data, cgltf_size img_idx,
         // External image file - use fallback helper
         return load_texture_with_fallback(img->uri, base_path, out_texture);
     } else {
-        LOG_WARN("Embedded textures not supported yet, using fallback");
+        CARDINAL_LOG_WARN("Embedded textures not supported yet, using fallback");
         return create_fallback_texture(out_texture);
     }
 }
 
 // Helper function to multiply 4x4 matrices (column-major)
-
 
 // Helper function to traverse nodes and compute world transforms
 static void process_node(const cgltf_data* data, const cgltf_node* node,
@@ -617,8 +649,8 @@ static void process_node(const cgltf_data* data, const cgltf_node* node,
             if (cardinal_mesh_index + pi < total_mesh_count) {
                 memcpy(meshes[cardinal_mesh_index + pi].transform, world_transform,
                        16 * sizeof(float));
-                LOG_TRACE("Applied transform to mesh %zu (glTF mesh %zu, primitive %zu)",
-                          cardinal_mesh_index + pi, mesh_index, pi);
+                CARDINAL_LOG_TRACE("Applied transform to mesh %zu (glTF mesh %zu, primitive %zu)",
+                                   cardinal_mesh_index + pi, mesh_index, pi);
             }
         }
     }
@@ -631,7 +663,8 @@ static void process_node(const cgltf_data* data, const cgltf_node* node,
 
 // New function to build scene hierarchy
 static CardinalSceneNode* build_scene_node(const cgltf_data* data, const cgltf_node* gltf_node,
-                                           CardinalMesh* meshes, size_t total_mesh_count) {
+                                           CardinalMesh* meshes, size_t total_mesh_count,
+                                           CardinalSceneNode** all_nodes) {
     if (!gltf_node)
         return NULL;
 
@@ -639,8 +672,16 @@ static CardinalSceneNode* build_scene_node(const cgltf_data* data, const cgltf_n
     const char* node_name = gltf_node->name ? gltf_node->name : "Unnamed Node";
     CardinalSceneNode* scene_node = cardinal_scene_node_create(node_name);
     if (!scene_node) {
-        LOG_ERROR("Failed to create scene node for '%s'", node_name);
+        CARDINAL_LOG_ERROR("Failed to create scene node for '%s'", node_name);
         return NULL;
+    }
+
+    // Store in flat array
+    if (all_nodes && data->nodes) {
+        size_t index = gltf_node - data->nodes;
+        if (index < data->nodes_count) {
+            all_nodes[index] = scene_node;
+        }
     }
 
     // Set local transform
@@ -689,7 +730,8 @@ static CardinalSceneNode* build_scene_node(const cgltf_data* data, const cgltf_n
             // Allocate mesh indices array
             scene_node->mesh_indices = (uint32_t*)malloc(primitive_count * sizeof(uint32_t));
             if (!scene_node->mesh_indices) {
-                LOG_ERROR("Failed to allocate mesh indices for node '%s'", scene_node->name ? scene_node->name : "Unnamed");
+                CARDINAL_LOG_ERROR("Failed to allocate mesh indices for node '%s'",
+                                   scene_node->name ? scene_node->name : "Unnamed");
                 return scene_node;
             }
         }
@@ -711,7 +753,8 @@ static CardinalSceneNode* build_scene_node(const cgltf_data* data, const cgltf_n
 
     // Recursively build child nodes
     for (cgltf_size ci = 0; ci < gltf_node->children_count; ++ci) {
-        CardinalSceneNode* child = build_scene_node(data, gltf_node->children[ci], meshes, total_mesh_count);
+        CardinalSceneNode* child =
+            build_scene_node(data, gltf_node->children[ci], meshes, total_mesh_count, all_nodes);
         if (child) {
             cardinal_scene_node_add_child(scene_node, child);
         }
@@ -723,42 +766,50 @@ static CardinalSceneNode* build_scene_node(const cgltf_data* data, const cgltf_n
 /**
  * @brief Load skins from GLTF data
  */
-static bool load_skins_from_gltf(const cgltf_data* data, CardinalSkin** out_skins, uint32_t* out_skin_count) {
+static bool load_skins_from_gltf(const cgltf_data* data, CardinalSkin** out_skins,
+                                 uint32_t* out_skin_count) {
     if (!data || !out_skins || !out_skin_count) {
         return false;
     }
-    
+
     *out_skins = NULL;
     *out_skin_count = 0;
-    
+
     if (data->skins_count == 0) {
         return true; // No skins to load
     }
-    
+
     CardinalSkin* skins = (CardinalSkin*)calloc(data->skins_count, sizeof(CardinalSkin));
     if (!skins) {
-        LOG_ERROR("Failed to allocate memory for skins");
+        CARDINAL_LOG_ERROR("Failed to allocate memory for skins");
         return false;
     }
-    
+
     for (cgltf_size i = 0; i < data->skins_count; ++i) {
         const cgltf_skin* gltf_skin = &data->skins[i];
         CardinalSkin* skin = &skins[i];
-        
+
         // Set skin name
         if (gltf_skin->name) {
-            strncpy(skin->name, gltf_skin->name, sizeof(skin->name) - 1);
-            skin->name[sizeof(skin->name) - 1] = '\0';
+            size_t name_len = strlen(gltf_skin->name) + 1;
+            skin->name = (char*)malloc(name_len);
+            if (skin->name) {
+                strcpy(skin->name, gltf_skin->name);
+            }
         } else {
-            snprintf(skin->name, sizeof(skin->name), "Skin_%zu", (size_t)i);
+            size_t name_len = snprintf(NULL, 0, "Skin_%zu", (size_t)i) + 1;
+            skin->name = (char*)malloc(name_len);
+            if (skin->name) {
+                snprintf(skin->name, name_len, "Skin_%zu", (size_t)i);
+            }
         }
-        
+
         // Load joints as bones
         skin->bone_count = (uint32_t)gltf_skin->joints_count;
         if (skin->bone_count > 0) {
             skin->bones = (CardinalBone*)calloc(skin->bone_count, sizeof(CardinalBone));
             if (!skin->bones) {
-                LOG_ERROR("Failed to allocate memory for skin bones");
+                CARDINAL_LOG_ERROR("Failed to allocate memory for skin bones");
                 // Cleanup and return false
                 for (uint32_t j = 0; j < i; ++j) {
                     cardinal_skin_destroy(&skins[j]);
@@ -766,7 +817,7 @@ static bool load_skins_from_gltf(const cgltf_data* data, CardinalSkin** out_skin
                 free(skins);
                 return false;
             }
-            
+
             for (cgltf_size j = 0; j < gltf_skin->joints_count; ++j) {
                 skin->bones[j].node_index = (uint32_t)(gltf_skin->joints[j] - data->nodes);
                 skin->bones[j].parent_index = UINT32_MAX; // Will be set later if needed
@@ -774,11 +825,12 @@ static bool load_skins_from_gltf(const cgltf_data* data, CardinalSkin** out_skin
                 cardinal_matrix_identity(skin->bones[j].current_matrix);
             }
         }
-        
+
         // Load inverse bind matrices if available
         if (gltf_skin->inverse_bind_matrices) {
             const cgltf_accessor* accessor = gltf_skin->inverse_bind_matrices;
-            if (accessor->type == cgltf_type_mat4 && accessor->component_type == cgltf_component_type_r_32f) {
+            if (accessor->type == cgltf_type_mat4 &&
+                accessor->component_type == cgltf_component_type_r_32f) {
                 // Read inverse bind matrices into individual bones
                 for (uint32_t j = 0; j < skin->bone_count; ++j) {
                     cgltf_accessor_read_float(accessor, j, skin->bones[j].inverse_bind_matrix, 16);
@@ -786,29 +838,30 @@ static bool load_skins_from_gltf(const cgltf_data* data, CardinalSkin** out_skin
             }
         }
     }
-    
+
     *out_skins = skins;
     *out_skin_count = (uint32_t)data->skins_count;
-    
-    LOG_INFO("Loaded %u skins from GLTF", *out_skin_count);
+
+    CARDINAL_LOG_INFO("Loaded %u skins from GLTF", *out_skin_count);
     return true;
 }
 
 /**
  * @brief Load animations from GLTF data
  */
-static bool load_animations_from_gltf(const cgltf_data* data, CardinalAnimationSystem* anim_system) {
+static bool load_animations_from_gltf(const cgltf_data* data,
+                                      CardinalAnimationSystem* anim_system) {
     if (!data || !anim_system) {
         return false;
     }
-    
+
     if (data->animations_count == 0) {
         return true; // No animations to load
     }
-    
+
     for (cgltf_size i = 0; i < data->animations_count; ++i) {
         const cgltf_animation* gltf_anim = &data->animations[i];
-        
+
         // Create animation
         CardinalAnimation animation = {0};
         if (gltf_anim->name) {
@@ -817,20 +870,21 @@ static bool load_animations_from_gltf(const cgltf_data* data, CardinalAnimationS
         } else {
             snprintf(animation.name, sizeof(animation.name), "Animation_%zu", (size_t)i);
         }
-        
+
         // Load samplers
         animation.sampler_count = (uint32_t)gltf_anim->samplers_count;
         if (animation.sampler_count > 0) {
-            animation.samplers = (CardinalAnimationSampler*)calloc(animation.sampler_count, sizeof(CardinalAnimationSampler));
+            animation.samplers = (CardinalAnimationSampler*)calloc(
+                animation.sampler_count, sizeof(CardinalAnimationSampler));
             if (!animation.samplers) {
-                LOG_ERROR("Failed to allocate memory for animation samplers");
+                CARDINAL_LOG_ERROR("Failed to allocate memory for animation samplers");
                 continue;
             }
-            
+
             for (cgltf_size s = 0; s < gltf_anim->samplers_count; ++s) {
                 const cgltf_animation_sampler* gltf_sampler = &gltf_anim->samplers[s];
                 CardinalAnimationSampler* sampler = &animation.samplers[s];
-                
+
                 // Set interpolation type
                 switch (gltf_sampler->interpolation) {
                     case cgltf_interpolation_type_linear:
@@ -846,43 +900,57 @@ static bool load_animations_from_gltf(const cgltf_data* data, CardinalAnimationS
                         sampler->interpolation = CARDINAL_ANIMATION_INTERPOLATION_LINEAR;
                         break;
                 }
-                
+
                 // Load input (time) data
                 const cgltf_accessor* input_accessor = gltf_sampler->input;
-                if (input_accessor && input_accessor->component_type == cgltf_component_type_r_32f) {
+                if (input_accessor &&
+                    input_accessor->component_type == cgltf_component_type_r_32f) {
                     sampler->input_count = (uint32_t)input_accessor->count;
                     sampler->input = (float*)malloc(sampler->input_count * sizeof(float));
                     if (sampler->input) {
-                        cgltf_accessor_read_float(input_accessor, 0, sampler->input, sampler->input_count);
+                        cgltf_accessor_read_float(input_accessor, 0, sampler->input,
+                                                  sampler->input_count);
                     }
                 }
-                
+
                 // Load output data
                 const cgltf_accessor* output_accessor = gltf_sampler->output;
-                if (output_accessor && output_accessor->component_type == cgltf_component_type_r_32f) {
+                if (output_accessor &&
+                    output_accessor->component_type == cgltf_component_type_r_32f) {
                     sampler->output_count = (uint32_t)output_accessor->count;
                     size_t component_count = 0;
                     switch (output_accessor->type) {
-                        case cgltf_type_scalar: component_count = 1; break;
-                        case cgltf_type_vec3: component_count = 3; break;
-                        case cgltf_type_vec4: component_count = 4; break;
-                        default: component_count = 1; break;
+                        case cgltf_type_scalar:
+                            component_count = 1;
+                            break;
+                        case cgltf_type_vec3:
+                            component_count = 3;
+                            break;
+                        case cgltf_type_vec4:
+                            component_count = 4;
+                            break;
+                        default:
+                            component_count = 1;
+                            break;
                     }
-                    
-                    sampler->output = (float*)malloc(sampler->output_count * component_count * sizeof(float));
+
+                    sampler->output =
+                        (float*)malloc(sampler->output_count * component_count * sizeof(float));
                     if (sampler->output) {
-                        cgltf_accessor_read_float(output_accessor, 0, sampler->output, sampler->output_count * component_count);
+                        cgltf_accessor_read_float(output_accessor, 0, sampler->output,
+                                                  sampler->output_count * component_count);
                     }
                 }
             }
         }
-        
+
         // Load channels
         animation.channel_count = (uint32_t)gltf_anim->channels_count;
         if (animation.channel_count > 0) {
-            animation.channels = (CardinalAnimationChannel*)calloc(animation.channel_count, sizeof(CardinalAnimationChannel));
+            animation.channels = (CardinalAnimationChannel*)calloc(
+                animation.channel_count, sizeof(CardinalAnimationChannel));
             if (!animation.channels) {
-                LOG_ERROR("Failed to allocate memory for animation channels");
+                CARDINAL_LOG_ERROR("Failed to allocate memory for animation channels");
                 // Cleanup samplers
                 for (uint32_t s = 0; s < animation.sampler_count; ++s) {
                     free(animation.samplers[s].input);
@@ -891,28 +959,37 @@ static bool load_animations_from_gltf(const cgltf_data* data, CardinalAnimationS
                 free(animation.samplers);
                 continue;
             }
-            
+
             for (cgltf_size c = 0; c < gltf_anim->channels_count; ++c) {
                 const cgltf_animation_channel* gltf_channel = &gltf_anim->channels[c];
                 CardinalAnimationChannel* channel = &animation.channels[c];
-                
+
                 channel->sampler_index = (uint32_t)(gltf_channel->sampler - gltf_anim->samplers);
                 channel->target.node_index = (uint32_t)(gltf_channel->target_node - data->nodes);
-                
-                // Set target path
-                const char* path_str = "translation"; // Default, would need proper GLTF parsing
-                if (strcmp(path_str, "translation") == 0) {
-                    channel->target.path = CARDINAL_ANIMATION_TARGET_TRANSLATION;
-                } else if (strcmp(path_str, "rotation") == 0) {
-                    channel->target.path = CARDINAL_ANIMATION_TARGET_ROTATION;
-                } else if (strcmp(path_str, "scale") == 0) {
-                    channel->target.path = CARDINAL_ANIMATION_TARGET_SCALE;
-                } else {
-                    channel->target.path = CARDINAL_ANIMATION_TARGET_TRANSLATION; // Default
+
+                // Set target path based on glTF channel target path
+                switch (gltf_channel->target_path) {
+                    case cgltf_animation_path_type_translation:
+                        channel->target.path = CARDINAL_ANIMATION_TARGET_TRANSLATION;
+                        break;
+                    case cgltf_animation_path_type_rotation:
+                        channel->target.path = CARDINAL_ANIMATION_TARGET_ROTATION;
+                        break;
+                    case cgltf_animation_path_type_scale:
+                        channel->target.path = CARDINAL_ANIMATION_TARGET_SCALE;
+                        break;
+                    case cgltf_animation_path_type_weights:
+                        channel->target.path = CARDINAL_ANIMATION_TARGET_WEIGHTS;
+                        break;
+                    default:
+                        CARDINAL_LOG_WARN("Unsupported animation target path: %d",
+                                          gltf_channel->target_path);
+                        channel->target.path = CARDINAL_ANIMATION_TARGET_TRANSLATION; // Fallback
+                        break;
                 }
             }
         }
-        
+
         // Calculate animation duration
         animation.duration = 0.0f;
         for (uint32_t s = 0; s < animation.sampler_count; ++s) {
@@ -923,12 +1000,12 @@ static bool load_animations_from_gltf(const cgltf_data* data, CardinalAnimationS
                 }
             }
         }
-        
+
         // Add animation to system
         cardinal_animation_system_add_animation(anim_system, &animation);
     }
-    
-    LOG_INFO("Loaded %zu animations from GLTF", (size_t)data->animations_count);
+
+    CARDINAL_LOG_INFO("Loaded %zu animations from GLTF", (size_t)data->animations_count);
     return true;
 }
 
@@ -948,66 +1025,99 @@ static bool load_animations_from_gltf(const cgltf_data* data, CardinalAnimationS
  */
 bool cardinal_gltf_load_scene(const char* path, CardinalScene* out_scene) {
     if (!path || !out_scene) {
-        LOG_ERROR("Invalid parameters: path=%p, out_scene=%p", (void*)path, (void*)out_scene);
+        CARDINAL_LOG_ERROR("Invalid parameters: path=%p, out_scene=%p", (void*)path,
+                           (void*)out_scene);
         return false;
     }
 
-    LOG_INFO("Starting GLTF scene loading: %s", path);
+    CARDINAL_LOG_INFO("Starting GLTF scene loading: %s", path);
+    CARDINAL_LOG_DEBUG("[MEMORY] Initial scene structure size: %zu bytes", sizeof(*out_scene));
     memset(out_scene, 0, sizeof(*out_scene));
+    CARDINAL_LOG_DEBUG("[MEMORY] Scene structure zeroed at %p", (void*)out_scene);
+
+    // Start performance timing
+    clock_t start_time = clock();
+    clock_t parse_start = start_time;
+    CARDINAL_LOG_DEBUG("[PERF] Starting GLTF loading pipeline at %ld", start_time);
 
     cgltf_options options = {0};
     cgltf_data* data = NULL;
 
-    LOG_DEBUG("Parsing GLTF file...");
+    CARDINAL_LOG_DEBUG("Parsing GLTF file...");
     cgltf_result result = cgltf_parse_file(&options, path, &data);
+
+    clock_t parse_end = clock();
+    double parse_time = ((double)(parse_end - parse_start)) / CLOCKS_PER_SEC;
+    CARDINAL_LOG_DEBUG("[PERF] GLTF parsing completed in %.3f seconds", parse_time);
     if (result != cgltf_result_success) {
-        LOG_ERROR("cgltf_parse_file failed: %d for %s", (int)result, path);
+        CARDINAL_LOG_ERROR("cgltf_parse_file failed: %d for %s", (int)result, path);
         return false;
     }
-    LOG_DEBUG("GLTF file parsed successfully");
+    CARDINAL_LOG_DEBUG("GLTF file parsed successfully");
 
-    LOG_DEBUG("Loading GLTF buffers...");
+    CARDINAL_LOG_DEBUG("Loading GLTF buffers...");
     result = cgltf_load_buffers(&options, data, path);
     if (result != cgltf_result_success) {
-        LOG_ERROR("cgltf_load_buffers failed: %d for %s", (int)result, path);
+        CARDINAL_LOG_ERROR("cgltf_load_buffers failed: %d for %s", (int)result, path);
         cgltf_free(data);
         return false;
     }
-    LOG_DEBUG("GLTF buffers loaded successfully");
+    CARDINAL_LOG_DEBUG("GLTF buffers loaded successfully");
 
-    // Load textures first
-    LOG_DEBUG("Loading %zu textures...", (size_t)data->images_count);
+    // Load textures first with performance timing
+    clock_t texture_start = clock();
+    CARDINAL_LOG_DEBUG("[PERF] Starting texture loading phase");
+    CARDINAL_LOG_DEBUG("Loading %zu textures...", (size_t)data->images_count);
     CardinalTexture* textures = NULL;
     uint32_t texture_count = 0;
 
     if (data->images_count > 0) {
+        size_t textures_size = data->images_count * sizeof(CardinalTexture);
+        CARDINAL_LOG_DEBUG("[MEMORY] Allocating %zu bytes for %zu textures", textures_size,
+                           (size_t)data->images_count);
         textures = (CardinalTexture*)calloc(data->images_count, sizeof(CardinalTexture));
         if (!textures) {
-            LOG_ERROR("Failed to allocate memory for textures");
+            CARDINAL_LOG_ERROR("[MEMORY] Failed to allocate %zu bytes for textures (count: %zu)",
+                               textures_size, (size_t)data->images_count);
             cgltf_free(data);
             return false;
         }
+        CARDINAL_LOG_DEBUG("[MEMORY] Successfully allocated textures array at %p", (void*)textures);
 
         for (cgltf_size i = 0; i < data->images_count; i++) {
             if (load_texture_from_gltf(data, i, path, &textures[texture_count])) {
                 texture_count++;
             } else {
-                LOG_WARN("Failed to load texture %zu, skipping", (size_t)i);
+                CARDINAL_LOG_WARN("Failed to load texture %zu, skipping", (size_t)i);
             }
         }
-        LOG_INFO("Successfully loaded %u out of %zu textures", texture_count,
-                 (size_t)data->images_count);
+        CARDINAL_LOG_INFO("Successfully loaded %u out of %zu textures", texture_count,
+                          (size_t)data->images_count);
     }
 
-    // Load materials
-    LOG_DEBUG("Loading %zu materials...", (size_t)data->materials_count);
+    clock_t texture_end = clock();
+    double texture_time = ((double)(texture_end - texture_start)) / CLOCKS_PER_SEC;
+    CARDINAL_LOG_DEBUG("[PERF] Texture loading completed in %.3f seconds (%u textures)",
+                       texture_time, texture_count);
+
+    // Load materials with performance timing
+    clock_t material_start = clock();
+    CARDINAL_LOG_DEBUG("[PERF] Starting material loading phase");
+    CARDINAL_LOG_DEBUG("Loading %zu materials...", (size_t)data->materials_count);
     CardinalMaterial* materials = NULL;
     uint32_t material_count = 0;
 
     if (data->materials_count > 0) {
+        size_t materials_size = data->materials_count * sizeof(CardinalMaterial);
+        CARDINAL_LOG_DEBUG("[MEMORY] Allocating %zu bytes for %zu materials", materials_size,
+                           (size_t)data->materials_count);
         materials = (CardinalMaterial*)calloc(data->materials_count, sizeof(CardinalMaterial));
         if (!materials) {
-            LOG_ERROR("Failed to allocate memory for materials");
+            CARDINAL_LOG_ERROR("[MEMORY] Failed to allocate %zu bytes for materials (count: %zu)",
+                               materials_size, (size_t)data->materials_count);
+            CARDINAL_LOG_DEBUG(
+                "[MEMORY] Cleaning up %u textures due to material allocation failure",
+                texture_count);
             // Clean up textures
             for (uint32_t i = 0; i < texture_count; i++) {
                 free(textures[i].data);
@@ -1133,55 +1243,68 @@ bool cardinal_gltf_load_scene(const char* path, CardinalScene* out_scene) {
                 *card_mat = temp_material;
                 card_mat->ref_resource = material_ref; // Store the reference resource
                 material_count++;
-                LOG_DEBUG("Material %u loaded with ref counting: albedo_tex=%u, normal_tex=%u, "
-                          "mr_tex=%u (ref_count=%u)",
-                          material_count - 1, card_mat->albedo_texture, card_mat->normal_texture,
-                          card_mat->metallic_roughness_texture,
-                          cardinal_ref_get_count(material_ref));
-                LOG_DEBUG(
+                CARDINAL_LOG_DEBUG(
+                    "Material %u loaded with ref counting: albedo_tex=%u, normal_tex=%u, "
+                    "mr_tex=%u (ref_count=%u)",
+                    material_count - 1, card_mat->albedo_texture, card_mat->normal_texture,
+                    card_mat->metallic_roughness_texture, cardinal_ref_get_count(material_ref));
+                CARDINAL_LOG_DEBUG(
                     "Material %u factors: albedo=(%.3f,%.3f,%.3f), metallic=%.3f, roughness=%.3f",
                     material_count - 1, card_mat->albedo_factor[0], card_mat->albedo_factor[1],
                     card_mat->albedo_factor[2], card_mat->metallic_factor,
                     card_mat->roughness_factor);
             } else {
-                LOG_WARN("Failed to register material %zu with reference counting, using direct "
-                         "material",
-                         i);
+                CARDINAL_LOG_WARN(
+                    "Failed to register material %zu with reference counting, using direct "
+                    "material",
+                    i);
                 card_mat->ref_resource = NULL; // No reference resource for direct materials
                 material_count++;
-                LOG_DEBUG("Material %u loaded: albedo_tex=%u, normal_tex=%u, mr_tex=%u",
-                          material_count - 1, card_mat->albedo_texture, card_mat->normal_texture,
-                          card_mat->metallic_roughness_texture);
-                LOG_DEBUG(
+                CARDINAL_LOG_DEBUG("Material %u loaded: albedo_tex=%u, normal_tex=%u, mr_tex=%u",
+                                   material_count - 1, card_mat->albedo_texture,
+                                   card_mat->normal_texture, card_mat->metallic_roughness_texture);
+                CARDINAL_LOG_DEBUG(
                     "Material %u factors: albedo=(%.3f,%.3f,%.3f), metallic=%.3f, roughness=%.3f",
                     material_count - 1, card_mat->albedo_factor[0], card_mat->albedo_factor[1],
                     card_mat->albedo_factor[2], card_mat->metallic_factor,
                     card_mat->roughness_factor);
             }
         }
-        LOG_INFO("Successfully loaded %u materials", material_count);
+        CARDINAL_LOG_INFO("Successfully loaded %u materials", material_count);
     }
 
-    // Count total primitives as meshes for now
-    LOG_DEBUG("Analyzing scene structure: %zu meshes found", (size_t)data->meshes_count);
+    clock_t material_end = clock();
+    double material_time = ((double)(material_end - material_start)) / CLOCKS_PER_SEC;
+    CARDINAL_LOG_DEBUG("[PERF] Material loading completed in %.3f seconds (%u materials)",
+                       material_time, material_count);
+
+    // Count total primitives as meshes for now with performance timing
+    clock_t mesh_start = clock();
+    CARDINAL_LOG_DEBUG("[PERF] Starting mesh loading phase");
+    CARDINAL_LOG_DEBUG("Analyzing scene structure: %zu meshes found", (size_t)data->meshes_count);
     size_t mesh_count = 0;
     for (cgltf_size mi = 0; mi < data->meshes_count; ++mi) {
         const cgltf_mesh* m = &data->meshes[mi];
         mesh_count += (size_t)m->primitives_count;
-        LOG_TRACE("Mesh %zu: %zu primitives", (size_t)mi, (size_t)m->primitives_count);
+        CARDINAL_LOG_TRACE("Mesh %zu: %zu primitives", (size_t)mi, (size_t)m->primitives_count);
     }
-    LOG_INFO("Total primitives to load: %zu", mesh_count);
+    CARDINAL_LOG_INFO("Total primitives to load: %zu", mesh_count);
 
     if (mesh_count == 0) {
-        LOG_WARN("Scene contains no meshes, returning empty scene");
+        CARDINAL_LOG_WARN("Scene contains no meshes, returning empty scene");
         cgltf_free(data);
         return true; // empty scene
     }
 
-    LOG_DEBUG("Allocating memory for %zu meshes", mesh_count);
+    size_t meshes_size = mesh_count * sizeof(CardinalMesh);
+    CARDINAL_LOG_DEBUG("[MEMORY] Allocating %zu bytes for %zu meshes", meshes_size, mesh_count);
     CardinalMesh* meshes = (CardinalMesh*)calloc(mesh_count, sizeof(CardinalMesh));
     if (!meshes) {
-        LOG_ERROR("Failed to allocate memory for %zu meshes", mesh_count);
+        CARDINAL_LOG_ERROR("[MEMORY] Failed to allocate %zu bytes for meshes (count: %zu)",
+                           meshes_size, mesh_count);
+        CARDINAL_LOG_DEBUG(
+            "[MEMORY] Cleaning up %u textures and %u materials due to mesh allocation failure",
+            texture_count, material_count);
         // Clean up materials and textures
         for (uint32_t i = 0; i < texture_count; i++) {
             free(textures[i].data);
@@ -1193,21 +1316,25 @@ bool cardinal_gltf_load_scene(const char* path, CardinalScene* out_scene) {
         return false;
     }
 
-    LOG_DEBUG("Processing mesh data...");
+    CARDINAL_LOG_DEBUG("[PERF] Starting mesh data processing");
+    CARDINAL_LOG_DEBUG("Processing mesh data...");
     size_t mesh_write = 0;
     for (cgltf_size mi = 0; mi < data->meshes_count; ++mi) {
         const cgltf_mesh* m = &data->meshes[mi];
-        LOG_DEBUG("Processing mesh %zu/%zu with %zu primitives", (size_t)mi + 1,
-                  (size_t)data->meshes_count, (size_t)m->primitives_count);
+        CARDINAL_LOG_DEBUG("Processing mesh %zu/%zu with %zu primitives", (size_t)mi + 1,
+                           (size_t)data->meshes_count, (size_t)m->primitives_count);
 
         for (cgltf_size pi = 0; pi < m->primitives_count; ++pi) {
             const cgltf_primitive* p = &m->primitives[pi];
-            LOG_TRACE("Processing primitive %zu/%zu", (size_t)pi + 1, (size_t)m->primitives_count);
+            CARDINAL_LOG_TRACE("Processing primitive %zu/%zu", (size_t)pi + 1,
+                               (size_t)m->primitives_count);
 
             // Determine vertex count from POSITION accessor
             const cgltf_accessor* pos_acc = NULL;
             const cgltf_accessor* nrm_acc = NULL;
             const cgltf_accessor* uv_acc = NULL;
+            const cgltf_accessor* joints_acc = NULL;
+            const cgltf_accessor* weights_acc = NULL;
             for (cgltf_size ai = 0; ai < p->attributes_count; ++ai) {
                 const cgltf_attribute* a = &p->attributes[ai];
                 if (a->type == cgltf_attribute_type_position)
@@ -1216,26 +1343,38 @@ bool cardinal_gltf_load_scene(const char* path, CardinalScene* out_scene) {
                     nrm_acc = a->data;
                 if (a->type == cgltf_attribute_type_texcoord)
                     uv_acc = a->data;
+                if (a->type == cgltf_attribute_type_joints)
+                    joints_acc = a->data;
+                if (a->type == cgltf_attribute_type_weights)
+                    weights_acc = a->data;
             }
 
             if (!pos_acc) {
-                LOG_WARN("Skipping primitive %zu/%zu: no position data", (size_t)pi + 1,
-                         (size_t)m->primitives_count);
+                CARDINAL_LOG_WARN("Skipping primitive %zu/%zu: no position data", (size_t)pi + 1,
+                                  (size_t)m->primitives_count);
                 continue;
             }
             cgltf_size vcount = pos_acc->count;
-            LOG_TRACE("Primitive has %zu vertices, normals=%s, UVs=%s", (size_t)vcount,
-                      nrm_acc ? "yes" : "no", uv_acc ? "yes" : "no");
+            CARDINAL_LOG_TRACE(
+                "Primitive has %zu vertices, normals=%s, UVs=%s, joints=%s, weights=%s",
+                (size_t)vcount, nrm_acc ? "yes" : "no", uv_acc ? "yes" : "no",
+                joints_acc ? "yes" : "no", weights_acc ? "yes" : "no");
 
+            size_t vertex_buffer_size = vcount * sizeof(CardinalVertex);
+            CARDINAL_LOG_DEBUG("[MEMORY] Allocating %zu bytes for %zu vertices in primitive %zu",
+                               vertex_buffer_size, (size_t)vcount, (size_t)pi);
             CardinalVertex* vertices = (CardinalVertex*)calloc(vcount, sizeof(CardinalVertex));
             if (!vertices) {
-                LOG_ERROR("Failed to allocate memory for %zu vertices", (size_t)vcount);
+                CARDINAL_LOG_ERROR(
+                    "[MEMORY] Failed to allocate %zu bytes for %zu vertices in primitive %zu",
+                    vertex_buffer_size, (size_t)vcount, (size_t)pi);
                 continue;
             }
-            LOG_TRACE("Allocated vertex buffer for %zu vertices", (size_t)vcount);
+            CARDINAL_LOG_DEBUG("[MEMORY] Vertex buffer allocated at %p for %zu vertices",
+                               (void*)vertices, (size_t)vcount);
 
             // Read positions
-            LOG_TRACE("Reading position data...");
+            CARDINAL_LOG_TRACE("Reading position data...");
             for (cgltf_size vi = 0; vi < vcount; ++vi) {
                 cgltf_float v[3] = {0};
                 cgltf_accessor_read_float(pos_acc, vi, v, 3);
@@ -1245,17 +1384,17 @@ bool cardinal_gltf_load_scene(const char* path, CardinalScene* out_scene) {
             }
             // Debug log first few vertices
             if (vcount > 0) {
-                LOG_DEBUG("First vertex: pos=(%f, %f, %f)", vertices[0].px, vertices[0].py,
-                          vertices[0].pz);
+                CARDINAL_LOG_DEBUG("First vertex: pos=(%f, %f, %f)", vertices[0].px, vertices[0].py,
+                                   vertices[0].pz);
                 if (vcount > 1) {
-                    LOG_DEBUG("Second vertex: pos=(%f, %f, %f)", vertices[1].px, vertices[1].py,
-                              vertices[1].pz);
+                    CARDINAL_LOG_DEBUG("Second vertex: pos=(%f, %f, %f)", vertices[1].px,
+                                       vertices[1].py, vertices[1].pz);
                 }
             }
 
             // Read normals
             if (nrm_acc) {
-                LOG_TRACE("Reading normal data...");
+                CARDINAL_LOG_TRACE("Reading normal data...");
                 for (cgltf_size vi = 0; vi < vcount; ++vi) {
                     cgltf_float v[3] = {0};
                     cgltf_accessor_read_float(nrm_acc, vi, v, 3);
@@ -1264,7 +1403,7 @@ bool cardinal_gltf_load_scene(const char* path, CardinalScene* out_scene) {
                     vertices[vi].nz = (float)v[2];
                 }
             } else {
-                LOG_TRACE("Generating default normals...");
+                CARDINAL_LOG_TRACE("Generating default normals...");
                 float nx, ny, nz;
                 compute_default_normal(&nx, &ny, &nz);
                 for (cgltf_size vi = 0; vi < vcount; ++vi) {
@@ -1276,7 +1415,7 @@ bool cardinal_gltf_load_scene(const char* path, CardinalScene* out_scene) {
 
             // Read UVs
             if (uv_acc) {
-                LOG_TRACE("Reading UV coordinate data...");
+                CARDINAL_LOG_TRACE("Reading UV coordinate data...");
                 for (cgltf_size vi = 0; vi < vcount; ++vi) {
                     cgltf_float v[2] = {0};
                     cgltf_accessor_read_float(uv_acc, vi, v, 2);
@@ -1284,10 +1423,36 @@ bool cardinal_gltf_load_scene(const char* path, CardinalScene* out_scene) {
                     vertices[vi].v = (float)v[1];
                 }
             } else {
-                LOG_TRACE("Setting default UV coordinates...");
+                CARDINAL_LOG_TRACE("Setting default UV coordinates...");
                 for (cgltf_size vi = 0; vi < vcount; ++vi) {
                     vertices[vi].u = 0.0f;
                     vertices[vi].v = 0.0f;
+                }
+            }
+
+            // Read joints
+            if (joints_acc) {
+                CARDINAL_LOG_TRACE("Reading joint data...");
+                for (cgltf_size vi = 0; vi < vcount; ++vi) {
+                    cgltf_uint v[4] = {0};
+                    cgltf_accessor_read_uint(joints_acc, vi, v, 4);
+                    vertices[vi].bone_indices[0] = (uint32_t)v[0];
+                    vertices[vi].bone_indices[1] = (uint32_t)v[1];
+                    vertices[vi].bone_indices[2] = (uint32_t)v[2];
+                    vertices[vi].bone_indices[3] = (uint32_t)v[3];
+                }
+            }
+
+            // Read weights
+            if (weights_acc) {
+                CARDINAL_LOG_TRACE("Reading weight data...");
+                for (cgltf_size vi = 0; vi < vcount; ++vi) {
+                    cgltf_float v[4] = {0};
+                    cgltf_accessor_read_float(weights_acc, vi, v, 4);
+                    vertices[vi].bone_weights[0] = (float)v[0];
+                    vertices[vi].bone_weights[1] = (float)v[1];
+                    vertices[vi].bone_weights[2] = (float)v[2];
+                    vertices[vi].bone_weights[3] = (float)v[3];
                 }
             }
 
@@ -1296,37 +1461,54 @@ bool cardinal_gltf_load_scene(const char* path, CardinalScene* out_scene) {
             uint32_t index_count = 0;
             if (p->indices) {
                 index_count = (uint32_t)p->indices->count;
-                LOG_TRACE("Reading %u indices...", index_count);
-                indices = (uint32_t*)malloc(sizeof(uint32_t) * index_count);
+                CARDINAL_LOG_TRACE("Reading %u indices...", index_count);
+                size_t index_buffer_size = sizeof(uint32_t) * index_count;
+                CARDINAL_LOG_DEBUG("[MEMORY] Allocating %zu bytes for %u indices in primitive %zu",
+                                   index_buffer_size, index_count, (size_t)pi);
+                indices = (uint32_t*)malloc(index_buffer_size);
                 if (indices) {
+                    CARDINAL_LOG_DEBUG("[MEMORY] Index buffer allocated at %p for %u indices",
+                                       (void*)indices, index_count);
                     for (cgltf_size ii = 0; ii < p->indices->count; ++ii) {
                         cgltf_uint idx = 0;
                         cgltf_accessor_read_uint(p->indices, ii, &idx, 1);
                         indices[ii] = (uint32_t)idx;
                     }
-                    LOG_TRACE("Successfully read %u indices", index_count);
+                    CARDINAL_LOG_TRACE("Successfully read %u indices", index_count);
                 } else {
-                    LOG_ERROR("Failed to allocate memory for %u indices", index_count);
+                    CARDINAL_LOG_ERROR(
+                        "[MEMORY] Failed to allocate %zu bytes for %u indices in primitive %zu",
+                        index_buffer_size, index_count, (size_t)pi);
                     index_count = 0;
                 }
             } else {
                 // Generate a linear index buffer if the primitive is triangles and no indices given
                 if (p->type == cgltf_primitive_type_triangles) {
                     index_count = (uint32_t)vcount;
-                    LOG_TRACE("Generating linear index buffer with %u indices", index_count);
-                    indices = (uint32_t*)malloc(sizeof(uint32_t) * index_count);
+                    CARDINAL_LOG_TRACE("Generating linear index buffer with %u indices",
+                                       index_count);
+                    size_t index_buffer_size = sizeof(uint32_t) * index_count;
+                    CARDINAL_LOG_DEBUG(
+                        "[MEMORY] Allocating %zu bytes for %u generated indices in primitive %zu",
+                        index_buffer_size, index_count, (size_t)pi);
+                    indices = (uint32_t*)malloc(index_buffer_size);
                     if (indices) {
+                        CARDINAL_LOG_DEBUG(
+                            "[MEMORY] Generated index buffer allocated at %p for %u indices",
+                            (void*)indices, index_count);
                         for (uint32_t ii = 0; ii < index_count; ++ii)
                             indices[ii] = ii;
-                        LOG_TRACE("Generated linear index buffer successfully");
+                        CARDINAL_LOG_TRACE("Generated linear index buffer successfully");
                     } else {
-                        LOG_ERROR("Failed to allocate memory for generated %u indices",
-                                  index_count);
+                        CARDINAL_LOG_ERROR("[MEMORY] Failed to allocate %zu bytes for generated %u "
+                                           "indices in primitive %zu",
+                                           index_buffer_size, index_count, (size_t)pi);
                         index_count = 0;
                     }
                 } else {
-                    LOG_TRACE("No indices provided and primitive type is not triangles, using "
-                              "unindexed rendering");
+                    CARDINAL_LOG_TRACE(
+                        "No indices provided and primitive type is not triangles, using "
+                        "unindexed rendering");
                 }
             }
             // Debug log first few indices
@@ -1335,7 +1517,7 @@ bool cardinal_gltf_load_scene(const char* path, CardinalScene* out_scene) {
                 uint32_t i0 = indices[0];
                 uint32_t i1 = (index_count > 1) ? indices[1] : 0;
                 uint32_t i2 = (index_count > 2) ? indices[2] : 0;
-                LOG_DEBUG("First indices: %u, %u, %u (of %u)", i0, i1, i2, index_count);
+                CARDINAL_LOG_DEBUG("First indices: %u, %u, %u (of %u)", i0, i1, i2, index_count);
 #endif
             }
 
@@ -1364,114 +1546,307 @@ bool cardinal_gltf_load_scene(const char* path, CardinalScene* out_scene) {
             // Initialize visibility to true by default
             dst->visible = true;
 
-            LOG_TRACE("Mesh %zu complete: %u vertices, %u indices, material=%u", mesh_write,
-                      dst->vertex_count, dst->index_count, dst->material_index);
+            CARDINAL_LOG_TRACE("Mesh %zu complete: %u vertices, %u indices, material=%u",
+                               mesh_write, dst->vertex_count, dst->index_count,
+                               dst->material_index);
         }
     }
 
     // Build scene hierarchy
-    LOG_DEBUG("Building scene hierarchy...");
-    
+    CARDINAL_LOG_DEBUG("Building scene hierarchy...");
+
     CardinalSceneNode** root_nodes = NULL;
     uint32_t root_node_count = 0;
-    
+
+    // Allocate flat node array for animation system
+    if (data->nodes_count > 0) {
+        out_scene->all_node_count = (uint32_t)data->nodes_count;
+        out_scene->all_nodes =
+            (CardinalSceneNode**)calloc(out_scene->all_node_count, sizeof(CardinalSceneNode*));
+        if (!out_scene->all_nodes) {
+            CARDINAL_LOG_ERROR("Failed to allocate all_nodes array");
+            out_scene->all_node_count = 0;
+        }
+    }
+
     // Build the scene hierarchy
     if (data->scene && data->scene->nodes_count > 0) {
-        LOG_DEBUG("Building hierarchy from default scene with %zu root nodes", (size_t)data->scene->nodes_count);
+        CARDINAL_LOG_DEBUG("Building hierarchy from default scene with %zu root nodes",
+                           (size_t)data->scene->nodes_count);
         root_node_count = (uint32_t)data->scene->nodes_count;
         root_nodes = (CardinalSceneNode**)calloc(root_node_count, sizeof(CardinalSceneNode*));
         if (root_nodes) {
             for (cgltf_size ni = 0; ni < data->scene->nodes_count; ++ni) {
-                root_nodes[ni] = build_scene_node(data, data->scene->nodes[ni], meshes, mesh_count);
+                root_nodes[ni] = build_scene_node(data, data->scene->nodes[ni], meshes, mesh_count,
+                                                  out_scene->all_nodes);
                 if (!root_nodes[ni]) {
-                    LOG_WARN("Failed to build scene node %zu", (size_t)ni);
+                    CARDINAL_LOG_WARN("Failed to build scene node %zu", (size_t)ni);
                 }
             }
         } else {
-            LOG_ERROR("Failed to allocate memory for root nodes");
+            CARDINAL_LOG_ERROR("Failed to allocate memory for root nodes");
             root_node_count = 0;
         }
     } else if (data->nodes_count > 0) {
         // Fallback: process all nodes as root nodes if no scene is defined
-        LOG_DEBUG("No default scene found, building hierarchy from %zu nodes as root nodes",
-                  (size_t)data->nodes_count);
+        CARDINAL_LOG_DEBUG(
+            "No default scene found, building hierarchy from %zu nodes as root nodes",
+            (size_t)data->nodes_count);
         root_node_count = (uint32_t)data->nodes_count;
         root_nodes = (CardinalSceneNode**)calloc(root_node_count, sizeof(CardinalSceneNode*));
         if (root_nodes) {
             for (cgltf_size ni = 0; ni < data->nodes_count; ++ni) {
-                root_nodes[ni] = build_scene_node(data, &data->nodes[ni], meshes, mesh_count);
+                root_nodes[ni] = build_scene_node(data, &data->nodes[ni], meshes, mesh_count,
+                                                  out_scene->all_nodes);
                 if (!root_nodes[ni]) {
-                    LOG_WARN("Failed to build scene node %zu", (size_t)ni);
+                    CARDINAL_LOG_WARN("Failed to build scene node %zu", (size_t)ni);
                 }
             }
         } else {
-            LOG_ERROR("Failed to allocate memory for root nodes");
+            CARDINAL_LOG_ERROR("Failed to allocate memory for root nodes");
             root_node_count = 0;
         }
     }
-    
-    // Update transforms for all nodes in the hierarchy
+
+    // Update transforms for all nodes in the hierarchy with crash-safe validation
+    CARDINAL_LOG_DEBUG("[CRITICAL] Starting transform update phase for %u root nodes",
+                       root_node_count);
     if (root_nodes) {
         for (uint32_t i = 0; i < root_node_count; ++i) {
+            if (i >= root_node_count) {
+                CARDINAL_LOG_ERROR("[CRITICAL] Root node index %u exceeds count %u - breaking loop",
+                                   i, root_node_count);
+                break;
+            }
+
             if (root_nodes[i]) {
+                CARDINAL_LOG_DEBUG("[CRITICAL] Updating transforms for root node %u at %p", i,
+                                   (void*)root_nodes[i]);
                 cardinal_scene_node_update_transforms(root_nodes[i], NULL); // NULL for root nodes
+                CARDINAL_LOG_DEBUG("[CRITICAL] Transform update completed for root node %u", i);
+            } else {
+                CARDINAL_LOG_WARN("[CRITICAL] Root node %u is NULL - skipping transform update", i);
             }
         }
+        CARDINAL_LOG_DEBUG("[CRITICAL] Transform update phase completed");
+    } else {
+        CARDINAL_LOG_WARN("[CRITICAL] No root nodes available for transform updates");
     }
-    
+
     // Also process the old way for backward compatibility with mesh transforms
-    LOG_DEBUG("Processing scene graph for mesh transforms (backward compatibility)...");
+    CARDINAL_LOG_DEBUG(
+        "[CRITICAL] Processing scene graph for mesh transforms (backward compatibility)...");
     if (data->scene && data->scene->nodes_count > 0) {
+        CARDINAL_LOG_DEBUG("[CRITICAL] Processing %zu scene nodes for mesh transforms",
+                           (size_t)data->scene->nodes_count);
         for (cgltf_size ni = 0; ni < data->scene->nodes_count; ++ni) {
-            process_node(data, data->scene->nodes[ni], NULL, meshes, mesh_count);
+            if (ni >= data->scene->nodes_count) {
+                CARDINAL_LOG_ERROR(
+                    "[CRITICAL] Scene node index %zu exceeds count %zu - breaking loop", (size_t)ni,
+                    (size_t)data->scene->nodes_count);
+                break;
+            }
+
+            if (data->scene->nodes[ni]) {
+                CARDINAL_LOG_DEBUG("[CRITICAL] Processing scene node %zu for mesh transforms",
+                                   (size_t)ni);
+                process_node(data, data->scene->nodes[ni], NULL, meshes, mesh_count);
+            } else {
+                CARDINAL_LOG_WARN(
+                    "[CRITICAL] Scene node %zu is NULL - skipping mesh transform processing",
+                    (size_t)ni);
+            }
         }
     } else if (data->nodes_count > 0) {
+        CARDINAL_LOG_DEBUG("[CRITICAL] Processing %zu data nodes for mesh transforms (fallback)",
+                           (size_t)data->nodes_count);
         for (cgltf_size ni = 0; ni < data->nodes_count; ++ni) {
+            if (ni >= data->nodes_count) {
+                CARDINAL_LOG_ERROR(
+                    "[CRITICAL] Data node index %zu exceeds count %zu - breaking loop", (size_t)ni,
+                    (size_t)data->nodes_count);
+                break;
+            }
+
+            CARDINAL_LOG_DEBUG("[CRITICAL] Processing data node %zu for mesh transforms",
+                               (size_t)ni);
             process_node(data, &data->nodes[ni], NULL, meshes, mesh_count);
+        }
+    } else {
+        CARDINAL_LOG_DEBUG("[CRITICAL] No nodes available for mesh transform processing");
+    }
+    CARDINAL_LOG_DEBUG("[CRITICAL] Scene graph processing completed");
+
+    CARDINAL_LOG_INFO("Built scene hierarchy with %u root nodes", root_node_count);
+
+
+
+    // Initialize animation system with crash-safe validation
+    CARDINAL_LOG_DEBUG("[CRITICAL] Starting animation system initialization");
+    uint32_t max_animations = data->animations_count > 0 ? (uint32_t)data->animations_count : 10;
+    uint32_t max_skins = data->skins_count > 0 ? (uint32_t)data->skins_count : 10;
+    CARDINAL_LOG_DEBUG("[CRITICAL] Creating animation system with %u max animations, %u max skins",
+                       max_animations, max_skins);
+
+    out_scene->animation_system = cardinal_animation_system_create(max_animations, max_skins);
+    if (!out_scene->animation_system) {
+        CARDINAL_LOG_ERROR(
+            "[CRITICAL] Failed to create animation system - continuing without animations");
+    } else {
+        CARDINAL_LOG_DEBUG("[CRITICAL] Animation system created successfully at %p",
+                           (void*)out_scene->animation_system);
+    }
+
+    // Load skins with crash-safe validation
+    CARDINAL_LOG_DEBUG("[CRITICAL] Starting skin loading phase");
+    if (!load_skins_from_gltf(data, &out_scene->skins, &out_scene->skin_count)) {
+        CARDINAL_LOG_ERROR("[CRITICAL] Failed to load skins from GLTF - continuing without skins");
+        out_scene->skins = NULL;
+        out_scene->skin_count = 0;
+    } else {
+        CARDINAL_LOG_DEBUG("[CRITICAL] Loaded %u skins successfully", out_scene->skin_count);
+    }
+
+    // Populate skin mesh indices by traversing the scene nodes
+    // This is required because load_skins_from_gltf doesn't know about mesh-skin relationships
+    // which are defined in the nodes
+    if (data->skins_count > 0 && root_nodes) {
+        CARDINAL_LOG_DEBUG("Mapping meshes to skins...");
+
+        // Helper function to process node for skin mapping
+        // (We implement this iteratively to avoid deep recursion issues)
+        // For simplicity in this context, we'll iterate the data->nodes directly as we have access
+        // to them and they map 1:1 to the hierarchy structure we built (conceptually) BUT we need
+        // the CardinalSceneNode to get the mesh indices.
+
+        // A better approach: We already have the list of all CardinalSceneNodes if we traversed
+        // properly. But we don't have a flat list of all scene nodes in the scene struct. However,
+        // we can iterate over data->nodes again. We need to match data->nodes[i] to the
+        // CardinalSceneNode we created. The current implementation of build_scene_node doesn't
+        // store a map.
+
+        // Let's traverse the hierarchy we built.
+        // We'll use a simple stack-based traversal.
+
+        CardinalSceneNode** stack =
+            (CardinalSceneNode**)malloc(sizeof(CardinalSceneNode*) * 1024); // Limit depth
+        if (stack) {
+            uint32_t stack_top = 0;
+
+            // Push root nodes
+            for (uint32_t i = 0; i < root_node_count; ++i) {
+                if (root_nodes[i] && stack_top < 1024) {
+                    stack[stack_top++] = root_nodes[i];
+                }
+            }
+
+            while (stack_top > 0) {
+                CardinalSceneNode* node = stack[--stack_top];
+
+                // If node has meshes and a skin, add meshes to the skin
+                if (node->skin_index != UINT32_MAX && node->mesh_count > 0 &&
+                    node->skin_index < out_scene->skin_count) {
+                    CardinalSkin* skin = &out_scene->skins[node->skin_index];
+
+                    // Reallocate skin mesh indices
+                    uint32_t new_count = skin->mesh_count + node->mesh_count;
+                    uint32_t* new_indices =
+                        (uint32_t*)realloc(skin->mesh_indices, new_count * sizeof(uint32_t));
+
+                    if (new_indices) {
+                        skin->mesh_indices = new_indices;
+                        for (uint32_t m = 0; m < node->mesh_count; ++m) {
+                            skin->mesh_indices[skin->mesh_count + m] = node->mesh_indices[m];
+                        }
+                        skin->mesh_count = new_count;
+                        CARDINAL_LOG_TRACE("Added %u meshes to skin %u (total: %u)",
+                                           node->mesh_count, node->skin_index, skin->mesh_count);
+                    } else {
+                        CARDINAL_LOG_ERROR("Failed to reallocate mesh indices for skin %u",
+                                           node->skin_index);
+                    }
+                }
+
+                // Push children
+                for (uint32_t c = 0; c < node->child_count; ++c) {
+                    if (node->children[c] && stack_top < 1024) {
+                        stack[stack_top++] = node->children[c];
+                    }
+                }
+            }
+
+            free(stack);
         }
     }
 
-    LOG_INFO("Built scene hierarchy with %u root nodes", root_node_count);
+    // Load animations with crash-safe logging
+    CARDINAL_LOG_DEBUG("[CRITICAL] Starting animation loading phase");
+    if (out_scene->animation_system) {
+        CARDINAL_LOG_DEBUG("[CRITICAL] Animation system available at %p, loading animations",
+                           (void*)out_scene->animation_system);
+        if (!load_animations_from_gltf(data, out_scene->animation_system)) {
+            CARDINAL_LOG_ERROR(
+                "[CRITICAL] Failed to load animations from GLTF - continuing with scene loading");
+        } else {
+            CARDINAL_LOG_DEBUG("[CRITICAL] Animations loaded successfully");
+        }
+    } else {
+        CARDINAL_LOG_DEBUG("[CRITICAL] No animation system available, skipping animation loading");
+    }
 
-    // Initialize animation system
-    uint32_t max_animations = data->animations_count > 0 ? (uint32_t)data->animations_count : 10;
-    uint32_t max_skins = data->skins_count > 0 ? (uint32_t)data->skins_count : 10;
-    out_scene->animation_system = cardinal_animation_system_create(max_animations, max_skins);
-    if (!out_scene->animation_system) {
-        LOG_WARN("Failed to create animation system");
-    }
-    
-    // Load skins
-    if (!load_skins_from_gltf(data, &out_scene->skins, &out_scene->skin_count)) {
-        LOG_WARN("Failed to load skins from GLTF");
-        out_scene->skins = NULL;
-        out_scene->skin_count = 0;
-    }
-    
-    // Load animations
-    if (out_scene->animation_system && !load_animations_from_gltf(data, out_scene->animation_system)) {
-        LOG_WARN("Failed to load animations from GLTF");
-    }
-    
-    // Mark bone nodes after hierarchy is built
+    // Mark bone nodes after hierarchy is built with crash-safe validation
+    CARDINAL_LOG_DEBUG("[CRITICAL] Starting bone node marking phase for %u skins",
+                       out_scene->skin_count);
     for (uint32_t s = 0; s < out_scene->skin_count; ++s) {
+        if (s >= out_scene->skin_count) {
+            CARDINAL_LOG_ERROR("[CRITICAL] Skin index %u exceeds skin count %u - breaking loop", s,
+                               out_scene->skin_count);
+            break;
+        }
+
         CardinalSkin* skin = &out_scene->skins[s];
+        if (!skin) {
+            CARDINAL_LOG_ERROR("[CRITICAL] Skin %u is NULL - skipping", s);
+            continue;
+        }
+
+        CARDINAL_LOG_DEBUG("[CRITICAL] Processing skin %u with %u bones", s, skin->bone_count);
         for (uint32_t j = 0; j < skin->bone_count; ++j) {
+            if (j >= skin->bone_count) {
+                CARDINAL_LOG_ERROR(
+                    "[CRITICAL] Bone index %u exceeds bone count %u for skin %u - breaking loop", j,
+                    skin->bone_count, s);
+                break;
+            }
+
             // Note: CardinalSkin doesn't have joint_nodes, using bone index instead
             uint32_t joint_node_index = j; // Using bone index as placeholder
             // Find the corresponding scene node and mark it as a bone
             // This is a simplified approach - in a full implementation you'd need
             // to properly map GLTF node indices to scene node indices
             if (joint_node_index < data->nodes_count) {
-                // For now, we'll log this information
-                LOG_DEBUG("Node %u is a bone (joint %u of skin %u)", joint_node_index, j, s);
+                CARDINAL_LOG_DEBUG("[CRITICAL] Node %u is a bone (joint %u of skin %u)",
+                                   joint_node_index, j, s);
+            } else {
+                CARDINAL_LOG_WARN(
+                    "[CRITICAL] Joint node index %u exceeds node count %zu for skin %u bone %u",
+                    joint_node_index, (size_t)data->nodes_count, s, j);
             }
         }
     }
+    CARDINAL_LOG_DEBUG("[CRITICAL] Bone node marking phase completed");
 
-    cgltf_free(data);
-    LOG_DEBUG("GLTF data structures freed");
+    // Free GLTF data with validation
+    CARDINAL_LOG_DEBUG("[CLEANUP] Freeing GLTF data structure at %p", (void*)data);
+    if (data) {
+        cgltf_free(data);
+        CARDINAL_LOG_DEBUG("[CLEANUP] GLTF data freed successfully");
+    } else {
+        CARDINAL_LOG_WARN("[CLEANUP] Attempted to free NULL GLTF data pointer");
+    }
 
+    // Set up scene with validation
+    CARDINAL_LOG_DEBUG("[CLEANUP] Setting up scene structure with loaded resources");
     out_scene->meshes = meshes;
     out_scene->mesh_count = (uint32_t)mesh_write; // Use actual written count
     out_scene->materials = materials;
@@ -1481,12 +1856,36 @@ bool cardinal_gltf_load_scene(const char* path, CardinalScene* out_scene) {
     out_scene->root_nodes = root_nodes;
     out_scene->root_node_count = root_node_count;
 
-    LOG_INFO("GLTF scene loading completed successfully: %u meshes, %u materials, %u textures, "
-             "%u skins loaded from %s",
-             out_scene->mesh_count, out_scene->material_count, out_scene->texture_count, 
-             out_scene->skin_count, path);
+    // Log final resource state for leak detection
+    CARDINAL_LOG_DEBUG("[CLEANUP] Final resource assignment completed:");
+    CARDINAL_LOG_DEBUG("[CLEANUP]   Meshes: %u at %p (written: %u)", out_scene->mesh_count,
+                       (void*)meshes, (uint32_t)mesh_write);
+    CARDINAL_LOG_DEBUG("[CLEANUP]   Materials: %u at %p", material_count, (void*)materials);
+    CARDINAL_LOG_DEBUG("[CLEANUP]   Textures: %u at %p", texture_count, (void*)textures);
+    CARDINAL_LOG_DEBUG("[CLEANUP]   Root nodes: %u at %p", root_node_count, (void*)root_nodes);
+    CARDINAL_LOG_DEBUG("[CLEANUP]   Skins: %u at %p", out_scene->skin_count,
+                       (void*)out_scene->skins);
+
+    // Complete performance timing
+    clock_t mesh_end = clock();
+    double mesh_time = ((double)(mesh_end - mesh_start)) / CLOCKS_PER_SEC;
+    CARDINAL_LOG_DEBUG("[PERF] Mesh loading completed in %.3f seconds (%u meshes)", mesh_time,
+                       out_scene->mesh_count);
+
+    clock_t total_end = clock();
+    double total_time = ((double)(total_end - start_time)) / CLOCKS_PER_SEC;
+    CARDINAL_LOG_INFO("[PERF] Total GLTF loading completed in %.3f seconds", total_time);
+    CARDINAL_LOG_DEBUG(
+        "[PERF] Performance breakdown: parse=%.3fs, textures=%.3fs, materials=%.3fs, meshes=%.3fs",
+        parse_time, texture_time, material_time, mesh_time);
+
+    CARDINAL_LOG_INFO(
+        "GLTF scene loading completed successfully: %u meshes, %u materials, %u textures, "
+        "%u skins loaded from %s",
+        out_scene->mesh_count, out_scene->material_count, out_scene->texture_count,
+        out_scene->skin_count, path);
     if (out_scene->animation_system) {
-        LOG_INFO("  Animations: %u", out_scene->animation_system->animation_count);
+        CARDINAL_LOG_INFO("  Animations: %u", out_scene->animation_system->animation_count);
     }
     return true;
 }

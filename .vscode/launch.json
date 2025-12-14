@@ -2,10 +2,10 @@
     "version": "0.2.0",
     "configurations": [
         {
-            "name": "Debug Cardinal Client",
+            "name": "Cardinal Client (Debug Build)",
             "type": "cppdbg",
             "request": "launch",
-            "program": "${workspaceFolder}/build/client/CardinalClient.exe",
+            "program": "${workspaceFolder}/build/client/Debug/CardinalClient.exe",
             "args": ["--log-level", "TRACE"],
             "stopAtEntry": false,
             "cwd": "${workspaceFolder}/build/client",
@@ -21,13 +21,35 @@
                     "ignoreFailures": true
                 }
             ],
-            "preLaunchTask": "Full Build"
+            "preLaunchTask": "Full Build (Debug)"
         },
         {
-            "name": "Debug Cardinal Editor",
+            "name": "Cardinal Client (Release Build)",
             "type": "cppdbg",
             "request": "launch",
-            "program": "${workspaceFolder}/build/editor/CardinalEditor.exe",
+            "program": "${workspaceFolder}/build/client/Release/CardinalClient.exe",
+            "args": ["--log-level", "TRACE"],
+            "stopAtEntry": false,
+            "cwd": "${workspaceFolder}/build/client",
+            "environment": [],
+            "externalConsole": false,
+            "console": "integratedTerminal",
+            "MIMode": "gdb",
+            "miDebuggerPath": "gdb",
+            "setupCommands": [
+                {
+                    "description": "Enable pretty-printing for gdb",
+                    "text": "-enable-pretty-printing",
+                    "ignoreFailures": true
+                }
+            ],
+            "preLaunchTask": "Full Build (Release)"
+        },
+        {
+            "name": "Cardinal Editor (Debug Build)",
+            "type": "cppdbg",
+            "request": "launch",
+            "program": "${workspaceFolder}/build/editor/Debug/CardinalEditor.exe",
             "args": ["--log-level", "TRACE"],
             "stopAtEntry": false,
             "cwd": "${workspaceFolder}/build/editor",
@@ -43,7 +65,29 @@
                     "ignoreFailures": true
                 }
             ],
-            "preLaunchTask": "Full Build"
+            "preLaunchTask": "Full Build (Debug)"
+        },
+        {
+            "name": "Cardinal Editor (Release Build)",
+            "type": "cppdbg",
+            "request": "launch",
+            "program": "${workspaceFolder}/build/editor/Release/CardinalEditor.exe",
+            "args": ["--log-level", "TRACE"],
+            "stopAtEntry": false,
+            "cwd": "${workspaceFolder}/build/editor",
+            "environment": [],
+            "externalConsole": false,
+            "console": "integratedTerminal",
+            "MIMode": "gdb",
+            "miDebuggerPath": "gdb",
+            "setupCommands": [
+                {
+                    "description": "Enable pretty-printing for gdb",
+                    "text": "-enable-pretty-printing",
+                    "ignoreFailures": true
+                }
+            ],
+            "preLaunchTask": "Full Build (Release)"
         }
     ]
 }

@@ -193,50 +193,65 @@ void main() {
     
     // Enhanced material property sampling with quad control
     vec3 albedo = vec3(material.albedoFactor);
-    if (canUseArray(material.albedoTextureIndex)) {
-        // Use enhanced derivatives for transformed UV coordinates
-        vec2 dx = dFdxFine(albedoUV);
-        vec2 dy = dFdyFine(albedoUV);
-        albedo *= textureGrad(textures[nonuniformEXT(material.albedoTextureIndex)], albedoUV, dx, dy).rgb;
-    } else {
-        vec2 dx = dFdxFine(albedoUV);
-        vec2 dy = dFdyFine(albedoUV);
-        albedo *= textureGrad(albedoMap, albedoUV, dx, dy).rgb;
+    if (!isNoTex(material.albedoTextureIndex)) {
+        if (canUseArray(material.albedoTextureIndex)) {
+            // Use enhanced derivatives for transformed UV coordinates
+            vec2 dx = dFdxFine(albedoUV);
+            vec2 dy = dFdyFine(albedoUV);
+            albedo *= textureGrad(textures[nonuniformEXT(material.albedoTextureIndex)], albedoUV, dx, dy).rgb;
+        } else {
+            vec2 dx = dFdxFine(albedoUV);
+            vec2 dy = dFdyFine(albedoUV);
+            albedo *= textureGrad(albedoMap, albedoUV, dx, dy).rgb;
+        }
     }
     
     vec3 metallicRoughness;
-    if (canUseArray(material.metallicRoughnessTextureIndex)) {
-        vec2 dx = dFdxFine(metallicRoughnessUV);
-        vec2 dy = dFdyFine(metallicRoughnessUV);
-        metallicRoughness = textureGrad(textures[nonuniformEXT(material.metallicRoughnessTextureIndex)], metallicRoughnessUV, dx, dy).rgb;
+    float metallic;
+    float roughness;
+    if (!isNoTex(material.metallicRoughnessTextureIndex)) {
+        if (canUseArray(material.metallicRoughnessTextureIndex)) {
+            vec2 dx = dFdxFine(metallicRoughnessUV);
+            vec2 dy = dFdyFine(metallicRoughnessUV);
+            metallicRoughness = textureGrad(textures[nonuniformEXT(material.metallicRoughnessTextureIndex)], metallicRoughnessUV, dx, dy).rgb;
+        } else {
+            vec2 dx = dFdxFine(metallicRoughnessUV);
+            vec2 dy = dFdyFine(metallicRoughnessUV);
+            metallicRoughness = textureGrad(metallicRoughnessMap, metallicRoughnessUV, dx, dy).rgb;
+        }
+        metallic = metallicRoughness.b * material.metallicFactor;
+        roughness = metallicRoughness.g * material.roughnessFactor;
     } else {
-        vec2 dx = dFdxFine(metallicRoughnessUV);
-        vec2 dy = dFdyFine(metallicRoughnessUV);
-        metallicRoughness = textureGrad(metallicRoughnessMap, metallicRoughnessUV, dx, dy).rgb;
+        metallic = material.metallicFactor;
+        roughness = material.roughnessFactor;
     }
-    float metallic = metallicRoughness.b * material.metallicFactor;
-    float roughness = metallicRoughness.g * material.roughnessFactor;
     
-    float ao;
-    if (canUseArray(material.aoTextureIndex)) {
-        vec2 dx = dFdxFine(aoUV);
-        vec2 dy = dFdyFine(aoUV);
-        ao = textureGrad(textures[nonuniformEXT(material.aoTextureIndex)], aoUV, dx, dy).r * material.aoStrength;
-    } else {
-        vec2 dx = dFdxFine(aoUV);
-        vec2 dy = dFdyFine(aoUV);
-        ao = textureGrad(aoMap, aoUV, dx, dy).r * material.aoStrength;
+    float ao = 1.0; // Default AO value according to GLTF 2.0 spec
+    if (!isNoTex(material.aoTextureIndex)) {
+        if (canUseArray(material.aoTextureIndex)) {
+            vec2 dx = dFdxFine(aoUV);
+            vec2 dy = dFdyFine(aoUV);
+            ao = textureGrad(textures[nonuniformEXT(material.aoTextureIndex)], aoUV, dx, dy).r;
+        } else {
+            vec2 dx = dFdxFine(aoUV);
+            vec2 dy = dFdyFine(aoUV);
+            ao = textureGrad(aoMap, aoUV, dx, dy).r;
+        }
     }
+    // Apply AO strength factor
+    ao = mix(1.0, ao, material.aoStrength);
     
     vec3 emissive = vec3(material.emissiveFactor);
-    if (canUseArray(material.emissiveTextureIndex)) {
-        vec2 dx = dFdxFine(emissiveUV);
-        vec2 dy = dFdyFine(emissiveUV);
-        emissive *= textureGrad(textures[nonuniformEXT(material.emissiveTextureIndex)], emissiveUV, dx, dy).rgb;
-    } else {
-        vec2 dx = dFdxFine(emissiveUV);
-        vec2 dy = dFdyFine(emissiveUV);
-        emissive *= textureGrad(emissiveMap, emissiveUV, dx, dy).rgb;
+    if (!isNoTex(material.emissiveTextureIndex)) {
+        if (canUseArray(material.emissiveTextureIndex)) {
+            vec2 dx = dFdxFine(emissiveUV);
+            vec2 dy = dFdyFine(emissiveUV);
+            emissive *= textureGrad(textures[nonuniformEXT(material.emissiveTextureIndex)], emissiveUV, dx, dy).rgb;
+        } else {
+            vec2 dx = dFdxFine(emissiveUV);
+            vec2 dy = dFdyFine(emissiveUV);
+            emissive *= textureGrad(emissiveMap, emissiveUV, dx, dy).rgb;
+        }
     }
     
     // Get normal from normal map
@@ -274,10 +289,18 @@ void main() {
     // Ambient lighting
     vec3 ambient = lighting.ambientColor * albedo * ao;
     
-    vec3 color = ambient + Lo + emissive;
+    // Combine lighting components
+    vec3 color = ambient + Lo;
     
-    // HDR tonemapping (Reinhard)
+    // Add emissive contribution AFTER tone mapping to preserve bright emissive materials
+    // Apply improved tone mapping (ACES approximation)
     color = color / (color + vec3(1.0));
+    
+    // Add emissive after tone mapping to ensure it remains bright
+    color += emissive * 0.5; // Scale emissive to prevent over-saturation
+    
+    // Apply gamma correction
+    color = pow(color, vec3(1.0/2.2));
     
     outColor = vec4(color, 1.0);
 }

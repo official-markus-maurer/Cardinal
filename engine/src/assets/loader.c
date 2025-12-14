@@ -48,32 +48,33 @@ static void tolower_str(char* s) {
  */
 bool cardinal_scene_load(const char* path, CardinalScene* out_scene) {
     if (!path || !out_scene) {
-        LOG_ERROR("Invalid parameters: path=%p, out_scene=%p", (void*)path, (void*)out_scene);
+        CARDINAL_LOG_ERROR("Invalid parameters: path=%p, out_scene=%p", (void*)path,
+                           (void*)out_scene);
         return false;
     }
 
-    LOG_INFO("Scene loading requested: %s", path);
+    CARDINAL_LOG_INFO("Scene loading requested: %s", path);
 
     const char* ext = find_ext(path);
     if (!ext) {
-        LOG_ERROR("No file extension found in path: %s", path);
+        CARDINAL_LOG_ERROR("No file extension found in path: %s", path);
         return false;
     }
 
-    LOG_DEBUG("Detected file extension: %s", ext);
+    CARDINAL_LOG_DEBUG("Detected file extension: %s", ext);
 
     char ext_buf[16] = {0};
     strncpy_s(ext_buf, sizeof(ext_buf), ext, sizeof(ext_buf) - 1);
     tolower_str(ext_buf);
 
-    LOG_DEBUG("Normalized extension: %s", ext_buf);
+    CARDINAL_LOG_DEBUG("Normalized extension: %s", ext_buf);
 
     if (strcmp(ext_buf, "gltf") == 0 || strcmp(ext_buf, "glb") == 0) {
-        LOG_DEBUG("Routing to GLTF loader");
+        CARDINAL_LOG_DEBUG("Routing to GLTF loader");
         return cardinal_gltf_load_scene(path, out_scene);
     }
 
-    LOG_ERROR("Unsupported file format: %s (extension: %s)", path, ext_buf);
+    CARDINAL_LOG_ERROR("Unsupported file format: %s (extension: %s)", path, ext_buf);
     return false;
 }
 
@@ -92,21 +93,21 @@ bool cardinal_scene_load(const char* path, CardinalScene* out_scene) {
 CardinalAsyncTask* cardinal_scene_load_async(const char* path, CardinalAsyncPriority priority,
                                              CardinalAsyncCallback callback, void* user_data) {
     if (!path) {
-        LOG_ERROR("Invalid path parameter");
+        CARDINAL_LOG_ERROR("Invalid path parameter");
         return NULL;
     }
 
     if (!cardinal_async_loader_is_initialized()) {
-        LOG_ERROR("Async loader not initialized");
+        CARDINAL_LOG_ERROR("Async loader not initialized");
         return NULL;
     }
 
-    LOG_INFO("Async scene loading requested: %s", path);
+    CARDINAL_LOG_INFO("Async scene loading requested: %s", path);
 
     // Validate file extension before submitting task
     const char* ext = find_ext(path);
     if (!ext) {
-        LOG_ERROR("No file extension found in path: %s", path);
+        CARDINAL_LOG_ERROR("No file extension found in path: %s", path);
         return NULL;
     }
 
@@ -115,7 +116,8 @@ CardinalAsyncTask* cardinal_scene_load_async(const char* path, CardinalAsyncPrio
     tolower_str(ext_buf);
 
     if (strcmp(ext_buf, "gltf") != 0 && strcmp(ext_buf, "glb") != 0) {
-        LOG_ERROR("Unsupported file format for async loading: %s (extension: %s)", path, ext_buf);
+        CARDINAL_LOG_ERROR("Unsupported file format for async loading: %s (extension: %s)", path,
+                           ext_buf);
         return NULL;
     }
 

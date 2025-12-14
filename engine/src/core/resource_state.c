@@ -14,7 +14,7 @@
 #include "cardinal/core/resource_state.h"
 #include "cardinal/core/log.h"
 #include "cardinal/core/memory.h"
-#include "../renderer/vulkan_mt.h"
+#include "cardinal/renderer/vulkan_mt.h"
 #include <stdlib.h>
 #include <string.h>
 #include <time.h>
@@ -24,8 +24,8 @@
     #define GET_THREAD_ID() GetCurrentThreadId()
 #else
     #include <pthread.h>
-    #include <unistd.h>
     #include <sys/syscall.h>
+    #include <unistd.h>
     #define GET_THREAD_ID() (uint32_t)syscall(SYS_gettid)
 #endif
 
@@ -94,8 +94,9 @@ bool cardinal_resource_state_init(size_t bucket_count) {
         bucket_count = 1009; // Default prime number
     }
 
-    CardinalAllocator* allocator = cardinal_get_allocator_for_category(CARDINAL_MEMORY_CATEGORY_ENGINE);
-    
+    CardinalAllocator* allocator =
+        cardinal_get_allocator_for_category(CARDINAL_MEMORY_CATEGORY_ENGINE);
+
     g_state_registry.buckets = (CardinalResourceStateTracker**)CARDINAL_ALLOCATE(
         CARDINAL_MEMORY_CATEGORY_ENGINE, bucket_count * sizeof(CardinalResourceStateTracker*));
     if (g_state_registry.buckets) {
@@ -129,8 +130,9 @@ void cardinal_resource_state_shutdown(void) {
 
     cardinal_mt_mutex_lock(&g_state_registry.registry_mutex);
 
-    CardinalAllocator* allocator = cardinal_get_allocator_for_category(CARDINAL_MEMORY_CATEGORY_ENGINE);
-    
+    CardinalAllocator* allocator =
+        cardinal_get_allocator_for_category(CARDINAL_MEMORY_CATEGORY_ENGINE);
+
     // Clean up all state trackers
     for (size_t i = 0; i < g_state_registry.bucket_count; i++) {
         CardinalResourceStateTracker* current = g_state_registry.buckets[i];
@@ -142,11 +144,11 @@ void cardinal_resource_state_shutdown(void) {
             // Destroy synchronization primitives
             cardinal_mt_mutex_destroy(&current->state_mutex);
             cardinal_mt_cond_destroy(&current->state_changed);
-            
+
             // Free identifier and tracker
             cardinal_free(allocator, current->identifier);
             cardinal_free(allocator, current);
-            
+
             current = next;
         }
     }
@@ -158,13 +160,14 @@ void cardinal_resource_state_shutdown(void) {
 
     cardinal_mt_mutex_unlock(&g_state_registry.registry_mutex);
     cardinal_mt_mutex_destroy(&g_state_registry.registry_mutex);
-    
+
     g_state_registry.initialized = false;
-    
+
     CARDINAL_LOG_INFO("Resource state tracking system shutdown complete");
 }
 
-CardinalResourceStateTracker* cardinal_resource_state_register(CardinalRefCountedResource* ref_resource) {
+CardinalResourceStateTracker* cardinal_resource_state_register(
+    CardinalRefCountedResource* ref_resource) {
     if (!g_state_registry.initialized) {
         CARDINAL_LOG_ERROR("Resource state registry not initialized");
         return NULL;
@@ -187,8 +190,9 @@ CardinalResourceStateTracker* cardinal_resource_state_register(CardinalRefCounte
         return existing;
     }
 
-    CardinalAllocator* allocator = cardinal_get_allocator_for_category(CARDINAL_MEMORY_CATEGORY_ENGINE);
-    
+    CardinalAllocator* allocator =
+        cardinal_get_allocator_for_category(CARDINAL_MEMORY_CATEGORY_ENGINE);
+
     // Create new state tracker
     CardinalResourceStateTracker* tracker = (CardinalResourceStateTracker*)CARDINAL_ALLOCATE(
         CARDINAL_MEMORY_CATEGORY_ENGINE, sizeof(CardinalResourceStateTracker));
@@ -206,7 +210,7 @@ CardinalResourceStateTracker* cardinal_resource_state_register(CardinalRefCounte
     tracker->state = CARDINAL_RESOURCE_STATE_UNLOADED;
     tracker->loading_thread_id = 0;
     tracker->state_change_timestamp = get_timestamp_ms();
-    
+
     // Copy identifier
     size_t id_len = strlen(ref_resource->identifier) + 1;
     tracker->identifier = (char*)CARDINAL_ALLOCATE(CARDINAL_MEMORY_CATEGORY_ENGINE, id_len);
@@ -265,18 +269,19 @@ void cardinal_resource_state_unregister(const char* identifier) {
             CardinalResourceStateTracker* to_remove = *current;
             *current = to_remove->next;
 
-            CardinalAllocator* allocator = cardinal_get_allocator_for_category(CARDINAL_MEMORY_CATEGORY_ENGINE);
-            
+            CardinalAllocator* allocator =
+                cardinal_get_allocator_for_category(CARDINAL_MEMORY_CATEGORY_ENGINE);
+
             // Destroy synchronization primitives
             cardinal_mt_mutex_destroy(&to_remove->state_mutex);
             cardinal_mt_cond_destroy(&to_remove->state_changed);
-            
+
             // Free memory
             cardinal_free(allocator, to_remove->identifier);
             cardinal_free(allocator, to_remove);
-            
+
             g_state_registry.total_tracked_resources--;
-            
+
             CARDINAL_LOG_DEBUG("Unregistered resource state tracker for '%s'", identifier);
             break;
         }
@@ -306,7 +311,8 @@ CardinalResourceState cardinal_resource_state_get(const char* identifier) {
     return state;
 }
 
-bool cardinal_resource_state_set(const char* identifier, CardinalResourceState new_state, uint32_t loading_thread_id) {
+bool cardinal_resource_state_set(const char* identifier, CardinalResourceState new_state,
+                                 uint32_t loading_thread_id) {
     if (!g_state_registry.initialized || !identifier) {
         return false;
     }
@@ -333,16 +339,16 @@ bool cardinal_resource_state_set(const char* identifier, CardinalResourceState n
         case CARDINAL_RESOURCE_STATE_LOADING:
             // Only the loading thread can change from LOADING state
             if (tracker->loading_thread_id == loading_thread_id) {
-                valid_transition = (new_state == CARDINAL_RESOURCE_STATE_LOADED || 
-                                  new_state == CARDINAL_RESOURCE_STATE_ERROR);
+                valid_transition = (new_state == CARDINAL_RESOURCE_STATE_LOADED ||
+                                    new_state == CARDINAL_RESOURCE_STATE_ERROR);
             }
             break;
         case CARDINAL_RESOURCE_STATE_LOADED:
             valid_transition = (new_state == CARDINAL_RESOURCE_STATE_UNLOADING);
             break;
         case CARDINAL_RESOURCE_STATE_ERROR:
-            valid_transition = (new_state == CARDINAL_RESOURCE_STATE_LOADING || 
-                              new_state == CARDINAL_RESOURCE_STATE_UNLOADED);
+            valid_transition = (new_state == CARDINAL_RESOURCE_STATE_LOADING ||
+                                new_state == CARDINAL_RESOURCE_STATE_UNLOADED);
             break;
         case CARDINAL_RESOURCE_STATE_UNLOADING:
             valid_transition = (new_state == CARDINAL_RESOURCE_STATE_UNLOADED);
@@ -350,8 +356,8 @@ bool cardinal_resource_state_set(const char* identifier, CardinalResourceState n
     }
 
     if (!valid_transition) {
-        CARDINAL_LOG_ERROR("Invalid state transition for resource '%s': %d -> %d", 
-                          identifier, old_state, new_state);
+        CARDINAL_LOG_ERROR("Invalid state transition for resource '%s': %d -> %d", identifier,
+                           old_state, new_state);
         cardinal_mt_mutex_unlock(&tracker->state_mutex);
         return false;
     }
@@ -359,10 +365,10 @@ bool cardinal_resource_state_set(const char* identifier, CardinalResourceState n
     // Update state
     tracker->state = new_state;
     tracker->state_change_timestamp = get_timestamp_ms();
-    
+
     if (new_state == CARDINAL_RESOURCE_STATE_LOADING) {
         tracker->loading_thread_id = loading_thread_id;
-    } else if (new_state == CARDINAL_RESOURCE_STATE_LOADED || 
+    } else if (new_state == CARDINAL_RESOURCE_STATE_LOADED ||
                new_state == CARDINAL_RESOURCE_STATE_ERROR ||
                new_state == CARDINAL_RESOURCE_STATE_UNLOADED) {
         tracker->loading_thread_id = 0;
@@ -370,15 +376,16 @@ bool cardinal_resource_state_set(const char* identifier, CardinalResourceState n
 
     // Notify waiting threads
     cardinal_mt_cond_broadcast(&tracker->state_changed);
-    
+
     cardinal_mt_mutex_unlock(&tracker->state_mutex);
 
-    CARDINAL_LOG_DEBUG("Resource '%s' state changed: %d -> %d (thread %u)", 
-                      identifier, old_state, new_state, loading_thread_id);
+    CARDINAL_LOG_DEBUG("Resource '%s' state changed: %d -> %d (thread %u)", identifier, old_state,
+                       new_state, loading_thread_id);
     return true;
 }
 
-bool cardinal_resource_state_wait_for(const char* identifier, CardinalResourceState target_state, uint32_t timeout_ms) {
+bool cardinal_resource_state_wait_for(const char* identifier, CardinalResourceState target_state,
+                                      uint32_t timeout_ms) {
     if (!g_state_registry.initialized || !identifier) {
         return false;
     }
@@ -394,19 +401,20 @@ bool cardinal_resource_state_wait_for(const char* identifier, CardinalResourceSt
     cardinal_mt_mutex_lock(&tracker->state_mutex);
 
     uint64_t start_time = get_timestamp_ms();
-    
+
     while (tracker->state != target_state) {
         if (timeout_ms > 0) {
             uint64_t elapsed = get_timestamp_ms() - start_time;
             if (elapsed >= timeout_ms) {
                 cardinal_mt_mutex_unlock(&tracker->state_mutex);
-                CARDINAL_LOG_WARN("Timeout waiting for resource '%s' to reach state %d", 
-                                 identifier, target_state);
+                CARDINAL_LOG_WARN("Timeout waiting for resource '%s' to reach state %d", identifier,
+                                  target_state);
                 return false;
             }
-            
+
             uint32_t remaining_ms = timeout_ms - (uint32_t)elapsed;
-            if (!cardinal_mt_cond_wait_timeout(&tracker->state_changed, &tracker->state_mutex, remaining_ms)) {
+            if (!cardinal_mt_cond_wait_timeout(&tracker->state_changed, &tracker->state_mutex,
+                                               remaining_ms)) {
                 cardinal_mt_mutex_unlock(&tracker->state_mutex);
                 return false;
             }
@@ -419,7 +427,8 @@ bool cardinal_resource_state_wait_for(const char* identifier, CardinalResourceSt
     return true;
 }
 
-bool cardinal_resource_state_try_acquire_loading(const char* identifier, uint32_t loading_thread_id) {
+bool cardinal_resource_state_try_acquire_loading(const char* identifier,
+                                                 uint32_t loading_thread_id) {
     if (!g_state_registry.initialized || !identifier) {
         return false;
     }
@@ -433,9 +442,9 @@ bool cardinal_resource_state_try_acquire_loading(const char* identifier, uint32_
     }
 
     cardinal_mt_mutex_lock(&tracker->state_mutex);
-    
+
     bool acquired = false;
-    if (tracker->state == CARDINAL_RESOURCE_STATE_UNLOADED || 
+    if (tracker->state == CARDINAL_RESOURCE_STATE_UNLOADED ||
         tracker->state == CARDINAL_RESOURCE_STATE_ERROR) {
         tracker->state = CARDINAL_RESOURCE_STATE_LOADING;
         tracker->loading_thread_id = loading_thread_id;
@@ -443,14 +452,14 @@ bool cardinal_resource_state_try_acquire_loading(const char* identifier, uint32_
         cardinal_mt_cond_broadcast(&tracker->state_changed);
         acquired = true;
     }
-    
+
     cardinal_mt_mutex_unlock(&tracker->state_mutex);
-    
+
     if (acquired) {
-        CARDINAL_LOG_DEBUG("Thread %u acquired loading access for resource '%s'", 
-                          loading_thread_id, identifier);
+        CARDINAL_LOG_DEBUG("Thread %u acquired loading access for resource '%s'", loading_thread_id,
+                           identifier);
     }
-    
+
     return acquired;
 }
 
@@ -458,25 +467,29 @@ bool cardinal_resource_state_is_safe_to_access(const char* identifier) {
     return cardinal_resource_state_get(identifier) == CARDINAL_RESOURCE_STATE_LOADED;
 }
 
-void cardinal_resource_state_get_stats(uint32_t* out_total_tracked, uint32_t* out_loading_count, 
-                                      uint32_t* out_loaded_count, uint32_t* out_error_count) {
+void cardinal_resource_state_get_stats(uint32_t* out_total_tracked, uint32_t* out_loading_count,
+                                       uint32_t* out_loaded_count, uint32_t* out_error_count) {
     if (!g_state_registry.initialized) {
-        if (out_total_tracked) *out_total_tracked = 0;
-        if (out_loading_count) *out_loading_count = 0;
-        if (out_loaded_count) *out_loaded_count = 0;
-        if (out_error_count) *out_error_count = 0;
+        if (out_total_tracked)
+            *out_total_tracked = 0;
+        if (out_loading_count)
+            *out_loading_count = 0;
+        if (out_loaded_count)
+            *out_loaded_count = 0;
+        if (out_error_count)
+            *out_error_count = 0;
         return;
     }
 
     uint32_t total = 0, loading = 0, loaded = 0, error = 0;
 
     cardinal_mt_mutex_lock(&g_state_registry.registry_mutex);
-    
+
     for (size_t i = 0; i < g_state_registry.bucket_count; i++) {
         CardinalResourceStateTracker* current = g_state_registry.buckets[i];
         while (current) {
             total++;
-            
+
             cardinal_mt_mutex_lock(&current->state_mutex);
             switch (current->state) {
                 case CARDINAL_RESOURCE_STATE_LOADING:
@@ -492,15 +505,19 @@ void cardinal_resource_state_get_stats(uint32_t* out_total_tracked, uint32_t* ou
                     break;
             }
             cardinal_mt_mutex_unlock(&current->state_mutex);
-            
+
             current = current->next;
         }
     }
-    
+
     cardinal_mt_mutex_unlock(&g_state_registry.registry_mutex);
 
-    if (out_total_tracked) *out_total_tracked = total;
-    if (out_loading_count) *out_loading_count = loading;
-    if (out_loaded_count) *out_loaded_count = loaded;
-    if (out_error_count) *out_error_count = error;
+    if (out_total_tracked)
+        *out_total_tracked = total;
+    if (out_loading_count)
+        *out_loading_count = loading;
+    if (out_loaded_count)
+        *out_loaded_count = loaded;
+    if (out_error_count)
+        *out_error_count = error;
 }

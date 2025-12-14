@@ -33,19 +33,38 @@ layout(set = 1, binding = 1) uniform LightingData {
 // Bindless texture array for descriptor indexing
 layout(set = 1, binding = 3) uniform sampler2D bindlessTextures[];
 
+// Texture transform structure
+struct TextureTransform {
+    vec2 offset;
+    vec2 scale;
+    float rotation;
+};
+
 // Material data structure
 struct Material {
     vec3 albedoFactor;
     float metallicFactor;
+    vec3 emissiveFactor;
     float roughnessFactor;
     float normalScale;
-    vec3 emissiveFactor;
+    float aoStrength;
     uint albedoTextureIndex;
     uint normalTextureIndex;
     uint metallicRoughnessTextureIndex;
     uint aoTextureIndex;
     uint emissiveTextureIndex;
     uint supportsDescriptorIndexing;
+    uint hasSkeleton;
+    uint _padding0;
+    TextureTransform albedoTransform;
+    float _padding1;
+    TextureTransform normalTransform;
+    float _padding2;
+    TextureTransform metallicRoughnessTransform;
+    float _padding3;
+    TextureTransform aoTransform;
+    float _padding4;
+    TextureTransform emissiveTransform;
 };
 
 // Material buffer
@@ -61,9 +80,44 @@ bool isNoTex(uint idx) {
     return idx == 0xFFFFFFFFu; // UINT32_MAX means no texture provided
 }
 
+// Function to apply texture transform
+vec2 applyTextureTransform(vec2 uv, TextureTransform transform) {
+    // Apply transformations in correct order: translate to origin, scale, rotate, translate back, apply offset
+    vec2 transformedUV = uv;
+    
+    // First, translate to origin (0.5, 0.5) for rotation
+    vec2 center = vec2(0.5);
+    transformedUV -= center;
+    
+    // Apply scale
+    transformedUV *= transform.scale;
+    
+    // Apply rotation
+    if (transform.rotation != 0.0) {
+        float cosR = cos(transform.rotation);
+        float sinR = sin(transform.rotation);
+        mat2 rotMatrix = mat2(cosR, -sinR, sinR, cosR);
+        transformedUV = rotMatrix * transformedUV;
+    }
+    
+    // Translate back from origin
+    transformedUV += center;
+    
+    // Apply offset
+    transformedUV += transform.offset;
+    
+    return transformedUV;
+}
+
 // Utility: sample from descriptor array with non-uniform index
 vec4 sampleArray(uint idx, vec2 uv) {
     return texture(bindlessTextures[nonuniformEXT(idx)], uv);
+}
+
+// Utility: sample from descriptor array with texture transform
+vec4 sampleArrayWithTransform(uint idx, vec2 uv, TextureTransform transform) {
+    vec2 transformedUV = applyTextureTransform(uv, transform);
+    return texture(bindlessTextures[nonuniformEXT(idx)], transformedUV);
 }
 
 // Helper to decide if we should use descriptor array
@@ -74,7 +128,7 @@ bool canUseArray(uint idx, uint supportsDescriptorIndexing) {
 // PBR functions
 vec3 getNormalFromMap(vec2 uv, Material material) {
     vec3 nrm = canUseArray(material.normalTextureIndex, material.supportsDescriptorIndexing) ? 
-        sampleArray(material.normalTextureIndex, uv).xyz : 
+        sampleArrayWithTransform(material.normalTextureIndex, uv, material.normalTransform).xyz : 
         vec3(0.5, 0.5, 1.0); // Default normal
     
     vec3 tangentNormal = nrm * 2.0 - 1.0;
@@ -139,25 +193,28 @@ void main() {
     
     vec3 albedo = mat.albedoFactor;
     if (canUseArray(mat.albedoTextureIndex, mat.supportsDescriptorIndexing)) {
-        albedo *= textureGrad(bindlessTextures[nonuniformEXT(mat.albedoTextureIndex)], fragTexCoord, dx, dy).rgb;
+        vec2 albedoUV = applyTextureTransform(fragTexCoord, mat.albedoTransform);
+        albedo *= textureGrad(bindlessTextures[nonuniformEXT(mat.albedoTextureIndex)], albedoUV, dFdx(albedoUV), dFdy(albedoUV)).rgb;
     }
     
     float metallic = mat.metallicFactor;
     float roughness = mat.roughnessFactor;
     if (canUseArray(mat.metallicRoughnessTextureIndex, mat.supportsDescriptorIndexing)) {
-        vec3 metallicRoughness = textureGrad(bindlessTextures[nonuniformEXT(mat.metallicRoughnessTextureIndex)], fragTexCoord, dx, dy).rgb;
+        vec2 mrUV = applyTextureTransform(fragTexCoord, mat.metallicRoughnessTransform);
+        vec3 metallicRoughness = textureGrad(bindlessTextures[nonuniformEXT(mat.metallicRoughnessTextureIndex)], mrUV, dFdx(mrUV), dFdy(mrUV)).rgb;
         metallic *= metallicRoughness.b;
         roughness *= metallicRoughness.g;
     }
     
     float ao = 1.0;
     if (canUseArray(mat.aoTextureIndex, mat.supportsDescriptorIndexing)) {
-        ao = textureGrad(bindlessTextures[nonuniformEXT(mat.aoTextureIndex)], fragTexCoord, dx, dy).r;
+        vec2 aoUV = applyTextureTransform(fragTexCoord, mat.aoTransform);
+        ao = textureGrad(bindlessTextures[nonuniformEXT(mat.aoTextureIndex)], aoUV, dFdx(aoUV), dFdy(aoUV)).r * mat.aoStrength;
     }
     
     vec3 emissive = mat.emissiveFactor;
     if (canUseArray(mat.emissiveTextureIndex, mat.supportsDescriptorIndexing)) {
-        emissive *= sampleArray(mat.emissiveTextureIndex, fragTexCoord).rgb;
+        emissive *= sampleArrayWithTransform(mat.emissiveTextureIndex, fragTexCoord, mat.emissiveTransform).rgb;
     }
     
     // Calculate normal

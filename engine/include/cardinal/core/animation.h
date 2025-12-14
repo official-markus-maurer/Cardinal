@@ -2,9 +2,9 @@
  * @file animation.h
  * @brief Animation system for Cardinal Engine
  *
- * This module provides comprehensive animation support including skeletal animation,
- * keyframe interpolation, and skin deformation. It supports glTF animation
- * specifications with channels, samplers, and animation clips.
+ * This module provides comprehensive animation support including skeletal
+ * animation, keyframe interpolation, and skin deformation. It supports glTF
+ * animation specifications with channels, samplers, and animation clips.
  *
  * Key features:
  * - Skeletal animation with bone hierarchies
@@ -37,9 +37,12 @@ extern "C" {
  * These correspond to glTF animation sampler interpolation modes.
  */
 typedef enum CardinalAnimationInterpolation {
-    CARDINAL_ANIMATION_INTERPOLATION_LINEAR,      /**< Linear interpolation between keyframes */
-    CARDINAL_ANIMATION_INTERPOLATION_STEP,        /**< Step interpolation (no interpolation) */
-    CARDINAL_ANIMATION_INTERPOLATION_CUBICSPLINE  /**< Cubic spline interpolation */
+  CARDINAL_ANIMATION_INTERPOLATION_LINEAR,     /**< Linear interpolation between
+                                                  keyframes */
+  CARDINAL_ANIMATION_INTERPOLATION_STEP,       /**< Step interpolation (no
+                                                  interpolation) */
+  CARDINAL_ANIMATION_INTERPOLATION_CUBICSPLINE /**< Cubic spline interpolation
+                                                */
 } CardinalAnimationInterpolation;
 
 /**
@@ -49,24 +52,25 @@ typedef enum CardinalAnimationInterpolation {
  * These correspond to glTF animation channel target paths.
  */
 typedef enum CardinalAnimationTargetPath {
-    CARDINAL_ANIMATION_TARGET_TRANSLATION,  /**< Node translation (position) */
-    CARDINAL_ANIMATION_TARGET_ROTATION,     /**< Node rotation (quaternion) */
-    CARDINAL_ANIMATION_TARGET_SCALE,        /**< Node scale */
-    CARDINAL_ANIMATION_TARGET_WEIGHTS       /**< Morph target weights */
+  CARDINAL_ANIMATION_TARGET_TRANSLATION, /**< Node translation (position) */
+  CARDINAL_ANIMATION_TARGET_ROTATION,    /**< Node rotation (quaternion) */
+  CARDINAL_ANIMATION_TARGET_SCALE,       /**< Node scale */
+  CARDINAL_ANIMATION_TARGET_WEIGHTS      /**< Morph target weights */
 } CardinalAnimationTargetPath;
 
 /**
  * @brief Animation sampler data
  *
  * Contains keyframe timing and value data for animation interpolation.
- * Each sampler defines how to interpolate between keyframes for a specific property.
+ * Each sampler defines how to interpolate between keyframes for a specific
+ * property.
  */
 typedef struct CardinalAnimationSampler {
-    float *input;                              /**< Array of keyframe times */
-    float *output;                             /**< Array of keyframe values */
-    uint32_t input_count;                      /**< Number of input keyframes */
-    uint32_t output_count;                     /**< Number of output values */
-    CardinalAnimationInterpolation interpolation; /**< Interpolation method */
+  float *input;          /**< Array of keyframe times */
+  float *output;         /**< Array of keyframe values */
+  uint32_t input_count;  /**< Number of input keyframes */
+  uint32_t output_count; /**< Number of output values */
+  CardinalAnimationInterpolation interpolation; /**< Interpolation method */
 } CardinalAnimationSampler;
 
 /**
@@ -75,8 +79,8 @@ typedef struct CardinalAnimationSampler {
  * Defines which scene node and property is being animated by a channel.
  */
 typedef struct CardinalAnimationTarget {
-    uint32_t node_index;                    /**< Index of target scene node */
-    CardinalAnimationTargetPath path;       /**< Property being animated */
+  uint32_t node_index;              /**< Index of target scene node */
+  CardinalAnimationTargetPath path; /**< Property being animated */
 } CardinalAnimationTarget;
 
 /**
@@ -86,8 +90,8 @@ typedef struct CardinalAnimationTarget {
  * Each channel animates one property of one node.
  */
 typedef struct CardinalAnimationChannel {
-    uint32_t sampler_index;                 /**< Index into animation's samplers array */
-    CardinalAnimationTarget target;         /**< Target node and property */
+  uint32_t sampler_index;         /**< Index into animation's samplers array */
+  CardinalAnimationTarget target; /**< Target node and property */
 } CardinalAnimationChannel;
 
 /**
@@ -97,12 +101,12 @@ typedef struct CardinalAnimationChannel {
  * Represents a single animation that can be played, paused, or looped.
  */
 typedef struct CardinalAnimation {
-    char *name;                             /**< Animation name (optional) */
-    CardinalAnimationSampler *samplers;     /**< Array of animation samplers */
-    uint32_t sampler_count;                 /**< Number of samplers */
-    CardinalAnimationChannel *channels;     /**< Array of animation channels */
-    uint32_t channel_count;                 /**< Number of channels */
-    float duration;                         /**< Total animation duration in seconds */
+  char *name;                         /**< Animation name (optional) */
+  CardinalAnimationSampler *samplers; /**< Array of animation samplers */
+  uint32_t sampler_count;             /**< Number of samplers */
+  CardinalAnimationChannel *channels; /**< Array of animation channels */
+  uint32_t channel_count;             /**< Number of channels */
+  float duration; /**< Total animation duration in seconds */
 } CardinalAnimation;
 
 /**
@@ -112,11 +116,11 @@ typedef struct CardinalAnimation {
  * and current transformation matrices.
  */
 typedef struct CardinalBone {
-    char *name;                             /**< Bone name (optional) */
-    uint32_t node_index;                    /**< Index of associated scene node */
-    float inverse_bind_matrix[16];          /**< Inverse bind pose matrix */
-    float current_matrix[16];               /**< Current transformation matrix */
-    uint32_t parent_index;                  /**< Index of parent bone (UINT32_MAX for root) */
+  char *name;                    /**< Bone name (optional) */
+  uint32_t node_index;           /**< Index of associated scene node */
+  float inverse_bind_matrix[16]; /**< Inverse bind pose matrix */
+  float current_matrix[16];      /**< Current transformation matrix */
+  uint32_t parent_index; /**< Index of parent bone (UINT32_MAX for root) */
 } CardinalBone;
 
 /**
@@ -126,12 +130,12 @@ typedef struct CardinalBone {
  * to deform a mesh based on skeletal animation.
  */
 typedef struct CardinalSkin {
-    char *name;                             /**< Skin name (optional) */
-    CardinalBone *bones;                    /**< Array of bones in the skeleton */
-    uint32_t bone_count;                    /**< Number of bones */
-    uint32_t *mesh_indices;                 /**< Array of mesh indices using this skin */
-    uint32_t mesh_count;                    /**< Number of meshes using this skin */
-    uint32_t root_bone_index;               /**< Index of root bone */
+  char *name;               /**< Skin name (optional) */
+  CardinalBone *bones;      /**< Array of bones in the skeleton */
+  uint32_t bone_count;      /**< Number of bones */
+  uint32_t *mesh_indices;   /**< Array of mesh indices using this skin */
+  uint32_t mesh_count;      /**< Number of meshes using this skin */
+  uint32_t root_bone_index; /**< Index of root bone */
 } CardinalSkin;
 
 /**
@@ -141,12 +145,12 @@ typedef struct CardinalSkin {
  * including timing, looping, and blending information.
  */
 typedef struct CardinalAnimationState {
-    uint32_t animation_index;               /**< Index of animation being played */
-    float current_time;                     /**< Current playback time */
-    float playback_speed;                   /**< Playback speed multiplier */
-    bool is_playing;                        /**< Whether animation is currently playing */
-    bool is_looping;                        /**< Whether animation should loop */
-    float blend_weight;                     /**< Blending weight for animation mixing */
+  uint32_t animation_index; /**< Index of animation being played */
+  float current_time;       /**< Current playback time */
+  float playback_speed;     /**< Playback speed multiplier */
+  bool is_playing;          /**< Whether animation is currently playing */
+  bool is_looping;          /**< Whether animation should loop */
+  float blend_weight;       /**< Blending weight for animation mixing */
 } CardinalAnimationState;
 
 /**
@@ -156,14 +160,14 @@ typedef struct CardinalAnimationState {
  * animations, skins, and playback states.
  */
 typedef struct CardinalAnimationSystem {
-    CardinalAnimation *animations;          /**< Array of animation clips */
-    uint32_t animation_count;               /**< Number of animations */
-    CardinalSkin *skins;                    /**< Array of skins */
-    uint32_t skin_count;                    /**< Number of skins */
-    CardinalAnimationState *states;         /**< Array of animation playback states */
-    uint32_t state_count;                   /**< Number of active animation states */
-    float *bone_matrices;                   /**< Flattened array of bone matrices for GPU */
-    uint32_t bone_matrix_count;             /**< Number of bone matrices */
+  CardinalAnimation *animations;  /**< Array of animation clips */
+  uint32_t animation_count;       /**< Number of animations */
+  CardinalSkin *skins;            /**< Array of skins */
+  uint32_t skin_count;            /**< Number of skins */
+  CardinalAnimationState *states; /**< Array of animation playback states */
+  uint32_t state_count;           /**< Number of active animation states */
+  float *bone_matrices;       /**< Flattened array of bone matrices for GPU */
+  uint32_t bone_matrix_count; /**< Number of bone matrices */
 } CardinalAnimationSystem;
 
 // Animation system management
@@ -178,7 +182,8 @@ typedef struct CardinalAnimationSystem {
  * @param max_skins Maximum number of skins to support
  * @return Pointer to new animation system, or NULL on failure
  */
-CardinalAnimationSystem *cardinal_animation_system_create(uint32_t max_animations, uint32_t max_skins);
+CardinalAnimationSystem *
+cardinal_animation_system_create(uint32_t max_animations, uint32_t max_skins);
 
 /**
  * @brief Destroy an animation system
@@ -197,9 +202,14 @@ void cardinal_animation_system_destroy(CardinalAnimationSystem *system);
  * interpolating keyframes and updating bone matrices.
  *
  * @param system Animation system to update
+ * @param all_nodes Array of all scene nodes (indexed by glTF node index)
+ * @param all_node_count Number of nodes in the array
  * @param delta_time Time elapsed since last update (in seconds)
  */
-void cardinal_animation_system_update(CardinalAnimationSystem *system, float delta_time);
+void cardinal_animation_system_update(CardinalAnimationSystem *system,
+                                      CardinalSceneNode **all_nodes,
+                                      uint32_t all_node_count,
+                                      float delta_time);
 
 // Animation management
 
@@ -212,7 +222,9 @@ void cardinal_animation_system_update(CardinalAnimationSystem *system, float del
  * @param animation Animation to add
  * @return Index of added animation, or UINT32_MAX on failure
  */
-uint32_t cardinal_animation_system_add_animation(CardinalAnimationSystem *system, const CardinalAnimation *animation);
+uint32_t
+cardinal_animation_system_add_animation(CardinalAnimationSystem *system,
+                                        const CardinalAnimation *animation);
 
 /**
  * @brief Add a skin to the system
@@ -223,7 +235,8 @@ uint32_t cardinal_animation_system_add_animation(CardinalAnimationSystem *system
  * @param skin Skin to add
  * @return Index of added skin, or UINT32_MAX on failure
  */
-uint32_t cardinal_animation_system_add_skin(CardinalAnimationSystem *system, const CardinalSkin *skin);
+uint32_t cardinal_animation_system_add_skin(CardinalAnimationSystem *system,
+                                            const CardinalSkin *skin);
 
 // Animation playback control
 
@@ -238,7 +251,9 @@ uint32_t cardinal_animation_system_add_skin(CardinalAnimationSystem *system, con
  * @param blend_weight Blending weight for animation mixing
  * @return true on success, false on failure
  */
-bool cardinal_animation_play(CardinalAnimationSystem *system, uint32_t animation_index, bool loop, float blend_weight);
+bool cardinal_animation_play(CardinalAnimationSystem *system,
+                             uint32_t animation_index, bool loop,
+                             float blend_weight);
 
 /**
  * @brief Pause an animation
@@ -249,7 +264,8 @@ bool cardinal_animation_play(CardinalAnimationSystem *system, uint32_t animation
  * @param animation_index Index of animation to pause
  * @return true on success, false on failure
  */
-bool cardinal_animation_pause(CardinalAnimationSystem *system, uint32_t animation_index);
+bool cardinal_animation_pause(CardinalAnimationSystem *system,
+                              uint32_t animation_index);
 
 /**
  * @brief Stop an animation
@@ -260,7 +276,8 @@ bool cardinal_animation_pause(CardinalAnimationSystem *system, uint32_t animatio
  * @param animation_index Index of animation to stop
  * @return true on success, false on failure
  */
-bool cardinal_animation_stop(CardinalAnimationSystem *system, uint32_t animation_index);
+bool cardinal_animation_stop(CardinalAnimationSystem *system,
+                             uint32_t animation_index);
 
 /**
  * @brief Set animation playback speed
@@ -272,7 +289,8 @@ bool cardinal_animation_stop(CardinalAnimationSystem *system, uint32_t animation
  * @param speed Playback speed multiplier (1.0 = normal speed)
  * @return true on success, false on failure
  */
-bool cardinal_animation_set_speed(CardinalAnimationSystem *system, uint32_t animation_index, float speed);
+bool cardinal_animation_set_speed(CardinalAnimationSystem *system,
+                                  uint32_t animation_index, float speed);
 
 // Utility functions
 
@@ -286,14 +304,15 @@ bool cardinal_animation_set_speed(CardinalAnimationSystem *system, uint32_t anim
  * @param input Array of keyframe times
  * @param output Array of keyframe values
  * @param input_count Number of keyframes
- * @param component_count Number of components per value (e.g., 3 for translation, 4 for rotation)
+ * @param component_count Number of components per value (e.g., 3 for
+ * translation, 4 for rotation)
  * @param result Output interpolated value
  * @return true on success, false on failure
  */
-bool cardinal_animation_interpolate(CardinalAnimationInterpolation interpolation, float time,
-                                   const float *input, const float *output,
-                                   uint32_t input_count, uint32_t component_count,
-                                   float *result);
+bool cardinal_animation_interpolate(
+    CardinalAnimationInterpolation interpolation, float time,
+    const float *input, const float *output, uint32_t input_count,
+    uint32_t component_count, float *result);
 
 /**
  * @brief Update bone matrices for a skin
@@ -306,7 +325,9 @@ bool cardinal_animation_interpolate(CardinalAnimationInterpolation interpolation
  * @param bone_matrices Output array for bone matrices
  * @return true on success, false on failure
  */
-bool cardinal_skin_update_bone_matrices(const CardinalSkin *skin, const CardinalSceneNode **scene_nodes, float *bone_matrices);
+bool cardinal_skin_update_bone_matrices(const CardinalSkin *skin,
+                                        const CardinalSceneNode **scene_nodes,
+                                        float *bone_matrices);
 
 /**
  * @brief Destroy a skin and free its resources

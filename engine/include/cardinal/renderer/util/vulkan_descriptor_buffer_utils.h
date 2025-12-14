@@ -43,45 +43,45 @@ extern "C" {
  * @brief Descriptor buffer allocation info
  */
 typedef struct {
-    VkBuffer buffer;                    /**< Vulkan buffer handle */
-    VkDeviceMemory memory;              /**< Device memory handle */
-    void* mapped_data;                  /**< Mapped memory pointer */
-    VkDeviceSize size;                  /**< Buffer size in bytes */
-    VkDeviceSize alignment;             /**< Required alignment */
-    VkBufferUsageFlags usage;           /**< Buffer usage flags */
+  VkBuffer buffer;          /**< Vulkan buffer handle */
+  VkDeviceMemory memory;    /**< Device memory handle */
+  void *mapped_data;        /**< Mapped memory pointer */
+  VkDeviceSize size;        /**< Buffer size in bytes */
+  VkDeviceSize alignment;   /**< Required alignment */
+  VkBufferUsageFlags usage; /**< Buffer usage flags */
 } DescriptorBufferAllocation;
 
 /**
  * @brief Descriptor buffer manager for a specific layout
  */
 typedef struct {
-    VkDevice device;                    /**< Vulkan logical device */
-    VulkanAllocator* allocator;         /**< Memory allocator */
-    VkDescriptorSetLayout layout;       /**< Descriptor set layout */
-    
-    // Buffer allocation
-    DescriptorBufferAllocation buffer_alloc; /**< Descriptor buffer allocation */
-    
-    // Layout properties
-    VkDeviceSize layout_size;           /**< Size of descriptor set layout */
-    VkDeviceSize buffer_alignment;      /**< Required buffer alignment */
-    
-    // Binding offsets within the buffer
-    VkDeviceSize* binding_offsets;      /**< Offset for each binding */
-    uint32_t binding_count;             /**< Number of bindings */
-    
-    // Update tracking
-    bool needs_update;                  /**< Whether buffer needs updating */
+  VkDevice device;              /**< Vulkan logical device */
+  VulkanAllocator *allocator;   /**< Memory allocator */
+  VkDescriptorSetLayout layout; /**< Descriptor set layout */
+
+  // Buffer allocation
+  DescriptorBufferAllocation buffer_alloc; /**< Descriptor buffer allocation */
+
+  // Layout properties
+  VkDeviceSize layout_size;      /**< Size of descriptor set layout */
+  VkDeviceSize buffer_alignment; /**< Required buffer alignment */
+
+  // Binding offsets within the buffer
+  VkDeviceSize *binding_offsets; /**< Offset for each binding */
+  uint32_t binding_count;        /**< Number of bindings */
+
+  // Update tracking
+  bool needs_update; /**< Whether buffer needs updating */
 } DescriptorBufferManager;
 
 /**
  * @brief Parameters for creating a descriptor buffer manager
  */
 typedef struct {
-    VkDevice device;                    /**< Vulkan logical device */
-    VulkanAllocator* allocator;         /**< Memory allocator */
-    VkDescriptorSetLayout layout;       /**< Descriptor set layout */
-    uint32_t max_sets;                  /**< Maximum number of descriptor sets */
+  VkDevice device;              /**< Vulkan logical device */
+  VulkanAllocator *allocator;   /**< Memory allocator */
+  VkDescriptorSetLayout layout; /**< Descriptor set layout */
+  uint32_t max_sets;            /**< Maximum number of descriptor sets */
 } DescriptorBufferCreateInfo;
 
 /**
@@ -90,15 +90,15 @@ typedef struct {
  * @param manager Output descriptor buffer manager
  * @return true on success, false on failure
  */
-bool vk_descriptor_buffer_create_manager(const DescriptorBufferCreateInfo* create_info,
-                                          DescriptorBufferManager* manager,
-                                          VulkanState* vulkan_state);
+bool vk_descriptor_buffer_create_manager(
+    const DescriptorBufferCreateInfo *create_info,
+    DescriptorBufferManager *manager, VulkanState *vulkan_state);
 
 /**
  * @brief Destroys a descriptor buffer manager
  * @param manager Descriptor buffer manager to destroy
  */
-void vk_descriptor_buffer_destroy_manager(DescriptorBufferManager* manager);
+void vk_descriptor_buffer_destroy_manager(DescriptorBufferManager *manager);
 
 /**
  * @brief Gets the buffer device address for binding
@@ -106,9 +106,9 @@ void vk_descriptor_buffer_destroy_manager(DescriptorBufferManager* manager);
  * @param set_index Index of the descriptor set
  * @return Buffer device address
  */
-VkDeviceAddress vk_descriptor_buffer_get_address(const DescriptorBufferManager* manager,
-                                                  uint32_t set_index,
-                                                  VulkanState* vulkan_state);
+VkDeviceAddress
+vk_descriptor_buffer_get_address(const DescriptorBufferManager *manager,
+                                 uint32_t set_index, VulkanState *vulkan_state);
 
 /**
  * @brief Updates a uniform buffer descriptor in the buffer
@@ -120,13 +120,10 @@ VkDeviceAddress vk_descriptor_buffer_get_address(const DescriptorBufferManager* 
  * @param range Buffer range
  * @return true on success, false on failure
  */
-bool vk_descriptor_buffer_update_uniform_buffer(DescriptorBufferManager* manager,
-                                                 uint32_t set_index,
-                                                 uint32_t binding,
-                                                 VkBuffer buffer,
-                                                 VkDeviceSize offset,
-                                                 VkDeviceSize range,
-                                                 VulkanState* vulkan_state);
+bool vk_descriptor_buffer_update_uniform_buffer(
+    DescriptorBufferManager *manager, uint32_t set_index, uint32_t binding,
+    VkBuffer buffer, VkDeviceSize offset, VkDeviceSize range,
+    VulkanState *vulkan_state);
 
 // Temporarily removed problematic function declaration
 // TODO: Fix Vulkan type recognition issue
@@ -152,12 +149,10 @@ bool vk_descriptor_buffer_update_image_sampler(DescriptorBufferManager* manager,
  */
 void vk_descriptor_buffer_bind(VkCommandBuffer cmd_buffer,
                                VkPipelineBindPoint pipeline_bind_point,
-                               VkPipelineLayout layout,
-                               uint32_t first_set,
-                               uint32_t set_count,
-                               const VkBuffer* buffers,
-                               const VkDeviceSize* offsets,
-                               VulkanState* vulkan_state);
+                               VkPipelineLayout layout, uint32_t first_set,
+                               uint32_t set_count, const VkBuffer *buffers,
+                               const VkDeviceSize *offsets,
+                               VulkanState *vulkan_state);
 
 /**
  * @brief Sets descriptor buffer offsets for binding
@@ -172,83 +167,10 @@ void vk_descriptor_buffer_bind(VkCommandBuffer cmd_buffer,
 void vk_descriptor_buffer_set_offsets(VkCommandBuffer cmd_buffer,
                                       VkPipelineBindPoint pipeline_bind_point,
                                       VkPipelineLayout layout,
-                                      uint32_t first_set,
-                                      uint32_t set_count,
-                                      const uint32_t* buffer_indices,
-                                      const VkDeviceSize* offsets,
-                                      VulkanState* vulkan_state);
-
-
-
-/**
- * @brief Write uniform buffer descriptor to descriptor buffer
- * @param vulkan_state Vulkan state
- * @param descriptor_buffer Target descriptor buffer
- * @param offset Offset in descriptor buffer
- * @param uniform_buffer Uniform buffer
- * @param buffer_offset Offset in uniform buffer
- * @param buffer_range Range of uniform buffer
- * @return true on success, false on failure
- */
-bool vk_descriptor_buffer_write_uniform_buffer(VulkanState* vulkan_state,
-                                               VkBuffer descriptor_buffer,
-                                               VkDeviceSize offset,
-                                               VkBuffer uniform_buffer,
-                                               VkDeviceSize buffer_offset,
-                                               VkDeviceSize buffer_range);
-
-/**
- * @brief Write storage buffer descriptor to descriptor buffer
- * @param vulkan_state Vulkan state
- * @param descriptor_buffer Target descriptor buffer
- * @param offset Offset in descriptor buffer
- * @param storage_buffer Storage buffer
- * @param buffer_offset Offset in storage buffer
- * @param buffer_range Range of storage buffer
- * @return true on success, false on failure
- */
-bool vk_descriptor_buffer_write_storage_buffer(VulkanState* vulkan_state,
-                                                VkBuffer descriptor_buffer,
-                                                VkDeviceSize offset,
-                                                VkBuffer storage_buffer,
-                                                VkDeviceSize buffer_offset,
-                                                VkDeviceSize buffer_range);
-
-/**
- * @brief Write combined image sampler descriptor to descriptor buffer
- * @param vulkan_state Vulkan state
- * @param descriptor_buffer Target descriptor buffer
- * @param offset Offset in descriptor buffer
- * @param image_view Image view
- * @param sampler Sampler
- * @param image_layout Image layout
- * @return true on success, false on failure
- */
-bool vk_descriptor_buffer_write_combined_image_sampler(VulkanState* vulkan_state,
-                                                       VkBuffer descriptor_buffer,
-                                                       VkDeviceSize offset,
-                                                       VkImageView image_view,
-                                                       VkSampler vk_sampler,
-                                                       VkImageLayout image_layout);
-
-/**
- * @brief Bind descriptor buffers to command buffer
- * @param cmd_buffer Command buffer
- * @param bind_point Pipeline bind point
- * @param pipeline_layout Pipeline layout
- * @param first_set First descriptor set
- * @param set_count Number of descriptor sets
- * @param buffers Array of descriptor buffers
- * @param offsets Array of buffer offsets
- * @return true on success, false on failure
- */
-bool vk_descriptor_buffer_bind_buffers(VkCommandBuffer cmd_buffer,
-                                       VkPipelineBindPoint bind_point,
-                                       VkPipelineLayout pipeline_layout,
-                                       uint32_t first_set,
-                                       uint32_t set_count,
-                                       const VkBuffer* buffers,
-                                       const VkDeviceSize* offsets);
+                                      uint32_t first_set, uint32_t set_count,
+                                      const uint32_t *buffer_indices,
+                                      const VkDeviceSize *offsets,
+                                      VulkanState *vulkan_state);
 
 #ifdef __cplusplus
 }
