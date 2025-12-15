@@ -105,6 +105,7 @@ target_sources(cardinal_engine PRIVATE
     src/renderer/util/vulkan_descriptor_buffer_utils.c
     src/renderer/util/vulkan_shader_utils.c
     src/renderer/util/vulkan_texture_utils.c
+    src/renderer/util/vulkan_material_utils.c
     src/assets/scene.c
     src/assets/gltf_loader.c
     src/assets/loader.c

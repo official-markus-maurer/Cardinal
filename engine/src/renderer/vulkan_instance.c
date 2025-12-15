@@ -231,11 +231,14 @@ static void setup_app_info(VkApplicationInfo* ai) {
  * @brief Prepares the list of instance extensions.
  * @param out_extensions Pointer to store the array of extensions.
  * @param out_count Pointer to store the extension count.
+ * @param out_allocated Pointer to store whether the extensions array was allocated.
  * @return true if successful, false otherwise.
  */
-static bool get_instance_extensions(const char*** out_extensions, uint32_t* out_count) {
+static bool get_instance_extensions(const char*** out_extensions, uint32_t* out_count, bool* out_allocated) {
     uint32_t glfw_count = 0;
     const char** glfw_exts = glfwGetRequiredInstanceExtensions(&glfw_count);
+
+    *out_allocated = false;
 
     if (!glfw_exts) {
         CARDINAL_LOG_INFO("[INSTANCE] GLFW instance extensions unavailable (headless or no GLFW)");
@@ -298,6 +301,7 @@ static bool get_instance_extensions(const char*** out_extensions, uint32_t* out_
 
     *out_extensions = exts;
     *out_count = glfw_count + extra_count;
+    *out_allocated = true;
     return true;
 }
 
@@ -358,7 +362,8 @@ bool vk_create_instance(VulkanState* s) {
 
     const char** extensions = NULL;
     uint32_t extension_count = 0;
-    if (!get_instance_extensions(&extensions, &extension_count)) {
+    bool extensions_allocated = false;
+    if (!get_instance_extensions(&extensions, &extension_count, &extensions_allocated)) {
         return false;
     }
 
@@ -384,25 +389,7 @@ bool vk_create_instance(VulkanState* s) {
     CARDINAL_LOG_INFO("[INSTANCE] Creating Vulkan instance...");
     VkResult result = vkCreateInstance(&ci, NULL, &s->context.instance);
 
-    // Check if we allocated a custom extension array (different from GLFW's static one)
-    // get_instance_extensions returns a malloc'd array if it added extra extensions
-    // To check this robustly, we see if validation is enabled and extras were needed.
-    // Simpler: if validation enabled, we likely malloc'd.
-    // BUT `get_instance_extensions` returns `glfw_exts` (static from GLFW) if no extras added.
-    // Let's just not free for now or add a flag.
-    // Actually, `glfwGetRequiredInstanceExtensions` returns pointer to static array.
-    // If we malloc'd, we should free.
-    // Let's improve `get_instance_extensions` to return a flag or just handle it here.
-    // Since I can't easily change the signature in the middle of this thought, I'll rely on the
-    // logic: If validation enabled AND (debug utils OR layer settings added), then we malloc'd. A
-    // cleaner way is to verify if extensions != glfwGetRequiredInstanceExtensions result. But I
-    // don't want to call it again. I'll make a small fix: let's assume we leak the tiny array for
-    // now OR fix it properly in a subsequent step if critical. Actually, I can check against the
-    // pointer returned by glfw. Re-calling glfwGetRequiredInstanceExtensions is cheap (just returns
-    // pointer).
-    uint32_t dummy;
-    const char** static_glfw_exts = glfwGetRequiredInstanceExtensions(&dummy);
-    if (extensions && extensions != static_glfw_exts) {
+    if (extensions_allocated) {
         free((void*)extensions);
     }
 
