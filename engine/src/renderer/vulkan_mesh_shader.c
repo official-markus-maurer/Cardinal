@@ -462,7 +462,7 @@ bool vk_mesh_shader_update_descriptor_buffers(VulkanState* vulkan_state,
                                               MeshShaderPipeline* pipeline,
                                               const MeshShaderDrawData* draw_data,
                                               VkBuffer material_buffer, VkBuffer lighting_buffer,
-                                              VkImageView* texture_views, VkSampler sampler,
+                                              VkImageView* texture_views, VkSampler* samplers,
                                               uint32_t texture_count) {
     if (!vulkan_state || !pipeline || !draw_data)
         return false;
@@ -498,11 +498,11 @@ bool vk_mesh_shader_update_descriptor_buffers(VulkanState* vulkan_state,
             .buffer = lighting_buffer, .offset = 0, .range = VK_WHOLE_SIZE};
 
         VkDescriptorImageInfo* imageInfos = NULL;
-        if (texture_count > 0 && texture_views) {
+        if (texture_count > 0 && texture_views && samplers) {
             imageInfos = malloc(texture_count * sizeof(VkDescriptorImageInfo));
             if (imageInfos) {
                 for (uint32_t i = 0; i < texture_count; i++) {
-                    imageInfos[i].sampler = sampler;
+                    imageInfos[i].sampler = samplers[i];
                     imageInfos[i].imageView = texture_views[i];
                     imageInfos[i].imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
                 }
@@ -956,6 +956,7 @@ void vk_mesh_shader_record_frame(VulkanState* vulkan_state, VkCommandBuffer cmd)
                             ? vulkan_state->pipelines.pbr_pipeline.lightingBuffer
                             : VK_NULL_HANDLE;
                     VkImageView* texture_views = NULL;
+                    VkSampler* samplers = NULL;
                     uint32_t texture_count = 0;
 
                     if (vulkan_state->pipelines.use_pbr_pipeline &&
@@ -967,33 +968,29 @@ void vk_mesh_shader_record_frame(VulkanState* vulkan_state, VkCommandBuffer cmd)
                         if (texture_count > 0) {
                             texture_views =
                                 (VkImageView*)malloc(texture_count * sizeof(VkImageView));
-                            if (texture_views) {
-                                // Extract views correctly using the helper or manual loop
-                                // Since vk_texture_manager_get_image_views is in another module,
-                                // we can manually extract if we have access to struct,
-                                // but we should use the helper if available.
-                                // We saw vk_texture_manager_get_image_views in
-                                // vulkan_texture_manager.c Let's try to assume it's available or
-                                // replicate logic safely. Actually, VulkanManagedTexture struct
-                                // definition is in header, so we can iterate.
+                            samplers = (VkSampler*)malloc(texture_count * sizeof(VkSampler));
+                            
+                            if (texture_views && samplers) {
                                 for (uint32_t t = 0; t < texture_count; t++) {
                                     texture_views[t] = tm->textures[t].view;
+                                    // Use specific sampler if available, otherwise default
+                                    samplers[t] = tm->textures[t].sampler != VK_NULL_HANDLE 
+                                        ? tm->textures[t].sampler 
+                                        : tm->defaultSampler;
                                 }
                             } else {
+                                if (texture_views) free(texture_views);
+                                if (samplers) free(samplers);
+                                texture_views = NULL;
+                                samplers = NULL;
                                 texture_count = 0;
                             }
                         }
                     }
 
-                    VkSampler sampler =
-                        vulkan_state->pipelines.use_pbr_pipeline &&
-                                vulkan_state->pipelines.pbr_pipeline.textureManager
-                            ? vulkan_state->pipelines.pbr_pipeline.textureManager->defaultSampler
-                            : VK_NULL_HANDLE;
-
                     if (vk_mesh_shader_update_descriptor_buffers(
                             vulkan_state, &vulkan_state->pipelines.mesh_shader_pipeline, &draw_data,
-                            material_buffer, lighting_buffer, texture_views, sampler,
+                            material_buffer, lighting_buffer, texture_views, samplers,
                             texture_count)) {
                         // Draw
                         vk_mesh_shader_draw(cmd, vulkan_state,
@@ -1001,9 +998,8 @@ void vk_mesh_shader_record_frame(VulkanState* vulkan_state, VkCommandBuffer cmd)
                                             &draw_data);
                     }
 
-                    if (texture_views) {
-                        free(texture_views);
-                    }
+                    if (texture_views) free(texture_views);
+                    if (samplers) free(samplers);
                 }
 
                 // Cleanup temporary meshlets

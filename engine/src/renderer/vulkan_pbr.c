@@ -1073,9 +1073,13 @@ static bool update_pbr_descriptor_sets(VulkanPBRPipeline* pipeline) {
         VkImageView placeholderView = (pipeline->textureManager->textureCount > 0)
                                           ? pipeline->textureManager->textures[0].view
                                           : VK_NULL_HANDLE;
+        VkSampler placeholderSampler = (pipeline->textureManager->textureCount > 0)
+                                           ? pipeline->textureManager->textures[0].sampler
+                                           : pipeline->textureManager->defaultSampler;
+
         if (!vk_descriptor_manager_update_image(pipeline->descriptorManager, setIndex, b,
                                                 placeholderView,
-                                                pipeline->textureManager->defaultSampler,
+                                                placeholderSampler,
                                                 VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL)) {
             CARDINAL_LOG_ERROR("Failed to update image descriptor for binding %u", b);
             return false;
@@ -1086,22 +1090,31 @@ static bool update_pbr_descriptor_sets(VulkanPBRPipeline* pipeline) {
     uint32_t texCount = pipeline->textureManager->textureCount;
     if (texCount > 0) {
         VkImageView* views = (VkImageView*)malloc(sizeof(VkImageView) * texCount);
-        if (!views) {
-            CARDINAL_LOG_ERROR("Failed to allocate image view array for descriptor update");
+        VkSampler* samplers = (VkSampler*)malloc(sizeof(VkSampler) * texCount);
+
+        if (!views || !samplers) {
+            CARDINAL_LOG_ERROR("Failed to allocate arrays for descriptor update");
+            if (views) free(views);
+            if (samplers) free(samplers);
             return false;
         }
+
         for (uint32_t i = 0; i < texCount; ++i) {
             views[i] = pipeline->textureManager->textures[i].view;
+            samplers[i] = pipeline->textureManager->textures[i].sampler;
         }
-        if (!vk_descriptor_manager_update_textures(pipeline->descriptorManager, setIndex, 9, views,
-                                                   pipeline->textureManager->defaultSampler,
+
+        if (!vk_descriptor_manager_update_textures_with_samplers(pipeline->descriptorManager, setIndex, 9, views,
+                                                   samplers,
                                                    VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
                                                    texCount)) {
             CARDINAL_LOG_ERROR("Failed to update variable texture array (binding 9)");
             free(views);
+            free(samplers);
             return false;
         }
         free(views);
+        free(samplers);
     }
 
     // Note: Material data is passed via Push Constants, so no binding 7 update needed.

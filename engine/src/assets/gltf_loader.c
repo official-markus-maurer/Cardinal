@@ -587,6 +587,45 @@ static void extract_texture_transform(const cgltf_texture_view* texture_view,
  * @todo Support embedded (data URI) textures.
  * @todo Handle glTF texture extensions like KHR_texture_basisu.
  */
+static void convert_sampler(const cgltf_sampler* gltf_sampler, CardinalSampler* out_sampler) {
+    if (!gltf_sampler) {
+        // Default values
+        out_sampler->wrap_s = CARDINAL_SAMPLER_WRAP_REPEAT;
+        out_sampler->wrap_t = CARDINAL_SAMPLER_WRAP_REPEAT;
+        out_sampler->min_filter = CARDINAL_SAMPLER_FILTER_LINEAR;
+        out_sampler->mag_filter = CARDINAL_SAMPLER_FILTER_LINEAR;
+        return;
+    }
+
+    // Wrap S
+    // Note: Forced REPEAT for CLAMP_TO_EDGE (33071) to fix common asset export issues
+    // where wrapping is expected but clamp is specified.
+    if (gltf_sampler->wrap_s == 33071) out_sampler->wrap_s = CARDINAL_SAMPLER_WRAP_REPEAT;
+    else if (gltf_sampler->wrap_s == 33648) out_sampler->wrap_s = CARDINAL_SAMPLER_WRAP_MIRRORED_REPEAT;
+    else out_sampler->wrap_s = CARDINAL_SAMPLER_WRAP_REPEAT;
+
+    // Wrap T
+    if (gltf_sampler->wrap_t == 33071) out_sampler->wrap_t = CARDINAL_SAMPLER_WRAP_REPEAT;
+    else if (gltf_sampler->wrap_t == 33648) out_sampler->wrap_t = CARDINAL_SAMPLER_WRAP_MIRRORED_REPEAT;
+    else out_sampler->wrap_t = CARDINAL_SAMPLER_WRAP_REPEAT;
+
+    // Filters (simplified mapping)
+    // 9728=NEAREST, 9984=NEAREST_MIPMAP_NEAREST, 9986=NEAREST_MIPMAP_LINEAR
+    if (gltf_sampler->min_filter == 9728 || gltf_sampler->min_filter == 9984 || gltf_sampler->min_filter == 9986)
+        out_sampler->min_filter = CARDINAL_SAMPLER_FILTER_NEAREST;
+    else
+        out_sampler->min_filter = CARDINAL_SAMPLER_FILTER_LINEAR;
+
+    if (gltf_sampler->mag_filter == 9728)
+        out_sampler->mag_filter = CARDINAL_SAMPLER_FILTER_NEAREST;
+    else
+        out_sampler->mag_filter = CARDINAL_SAMPLER_FILTER_LINEAR;
+
+    CARDINAL_LOG_DEBUG("Parsed sampler: wrapS=%d, wrapT=%d, min=%d, mag=%d",
+                       out_sampler->wrap_s, out_sampler->wrap_t,
+                       out_sampler->min_filter, out_sampler->mag_filter);
+}
+
 static bool load_texture_from_gltf(const cgltf_data* data, cgltf_size img_idx,
                                    const char* base_path, CardinalTexture* out_texture) {
     if (img_idx >= data->images_count || !data->images) {
@@ -1067,32 +1106,64 @@ bool cardinal_gltf_load_scene(const char* path, CardinalScene* out_scene) {
     // Load textures first with performance timing
     clock_t texture_start = clock();
     CARDINAL_LOG_DEBUG("[PERF] Starting texture loading phase");
-    CARDINAL_LOG_DEBUG("Loading %zu textures...", (size_t)data->images_count);
+    
+    // Determine total textures to load (prefer textures array, fallback to images)
+    size_t num_textures_to_load = data->textures_count > 0 ? data->textures_count : data->images_count;
+    CARDINAL_LOG_DEBUG("Loading %zu textures...", num_textures_to_load);
+    
     CardinalTexture* textures = NULL;
     uint32_t texture_count = 0;
 
-    if (data->images_count > 0) {
-        size_t textures_size = data->images_count * sizeof(CardinalTexture);
+    if (num_textures_to_load > 0) {
+        size_t textures_size = num_textures_to_load * sizeof(CardinalTexture);
         CARDINAL_LOG_DEBUG("[MEMORY] Allocating %zu bytes for %zu textures", textures_size,
-                           (size_t)data->images_count);
-        textures = (CardinalTexture*)calloc(data->images_count, sizeof(CardinalTexture));
+                           num_textures_to_load);
+        textures = (CardinalTexture*)calloc(num_textures_to_load, sizeof(CardinalTexture));
         if (!textures) {
             CARDINAL_LOG_ERROR("[MEMORY] Failed to allocate %zu bytes for textures (count: %zu)",
-                               textures_size, (size_t)data->images_count);
+                               textures_size, num_textures_to_load);
             cgltf_free(data);
             return false;
         }
         CARDINAL_LOG_DEBUG("[MEMORY] Successfully allocated textures array at %p", (void*)textures);
 
-        for (cgltf_size i = 0; i < data->images_count; i++) {
-            if (load_texture_from_gltf(data, i, path, &textures[texture_count])) {
-                texture_count++;
-            } else {
-                CARDINAL_LOG_WARN("Failed to load texture %zu, skipping", (size_t)i);
+        if (data->textures_count > 0) {
+            // Load from textures array (includes sampler info)
+            for (cgltf_size i = 0; i < data->textures_count; i++) {
+                const cgltf_texture* tex = &data->textures[i];
+                bool success = false;
+                
+                if (tex->image) {
+                    cgltf_size img_idx = tex->image - data->images;
+                    if (load_texture_from_gltf(data, img_idx, path, &textures[texture_count])) {
+                        success = true;
+                    }
+                } else {
+                    // Fallback for missing image
+                    success = create_fallback_texture(&textures[texture_count]);
+                }
+                
+                if (success) {
+                    convert_sampler(tex->sampler, &textures[texture_count].sampler);
+                    texture_count++;
+                } else {
+                    CARDINAL_LOG_WARN("Failed to load texture %zu", (size_t)i);
+                }
+            }
+        } else {
+            // Fallback: Load from images array (default sampler)
+            for (cgltf_size i = 0; i < data->images_count; i++) {
+                if (load_texture_from_gltf(data, i, path, &textures[texture_count])) {
+                    convert_sampler(NULL, &textures[texture_count].sampler);
+                    texture_count++;
+                } else {
+                    CARDINAL_LOG_WARN("Failed to load image %zu", (size_t)i);
+                }
             }
         }
+        
         CARDINAL_LOG_INFO("Successfully loaded %u out of %zu textures", texture_count,
-                          (size_t)data->images_count);
+                          num_textures_to_load);
     }
 
     clock_t texture_end = clock();
@@ -1190,9 +1261,14 @@ bool cardinal_gltf_load_scene(const char* path, CardinalScene* out_scene) {
 
                 // Base color texture
                 if (pbr->base_color_texture.texture) {
-                    cgltf_size img_idx = pbr->base_color_texture.texture->image - data->images;
-                    if (img_idx < texture_count) {
-                        card_mat->albedo_texture = (uint32_t)img_idx;
+                    uint32_t tex_idx;
+                    if (data->textures_count > 0) {
+                        tex_idx = (uint32_t)(pbr->base_color_texture.texture - data->textures);
+                    } else {
+                        tex_idx = (uint32_t)(pbr->base_color_texture.texture->image - data->images);
+                    }
+                    if (tex_idx < texture_count) {
+                        card_mat->albedo_texture = tex_idx;
                     }
                     extract_texture_transform(&pbr->base_color_texture,
                                               &card_mat->albedo_transform);
@@ -1200,10 +1276,14 @@ bool cardinal_gltf_load_scene(const char* path, CardinalScene* out_scene) {
 
                 // Metallic roughness texture
                 if (pbr->metallic_roughness_texture.texture) {
-                    cgltf_size img_idx =
-                        pbr->metallic_roughness_texture.texture->image - data->images;
-                    if (img_idx < texture_count) {
-                        card_mat->metallic_roughness_texture = (uint32_t)img_idx;
+                    uint32_t tex_idx;
+                    if (data->textures_count > 0) {
+                        tex_idx = (uint32_t)(pbr->metallic_roughness_texture.texture - data->textures);
+                    } else {
+                        tex_idx = (uint32_t)(pbr->metallic_roughness_texture.texture->image - data->images);
+                    }
+                    if (tex_idx < texture_count) {
+                        card_mat->metallic_roughness_texture = tex_idx;
                     }
                     extract_texture_transform(&pbr->metallic_roughness_texture,
                                               &card_mat->metallic_roughness_transform);
@@ -1212,9 +1292,14 @@ bool cardinal_gltf_load_scene(const char* path, CardinalScene* out_scene) {
 
             // Normal texture
             if (mat->normal_texture.texture) {
-                cgltf_size img_idx = mat->normal_texture.texture->image - data->images;
-                if (img_idx < texture_count) {
-                    card_mat->normal_texture = (uint32_t)img_idx;
+                uint32_t tex_idx;
+                if (data->textures_count > 0) {
+                    tex_idx = (uint32_t)(mat->normal_texture.texture - data->textures);
+                } else {
+                    tex_idx = (uint32_t)(mat->normal_texture.texture->image - data->images);
+                }
+                if (tex_idx < texture_count) {
+                    card_mat->normal_texture = tex_idx;
                 }
                 card_mat->normal_scale = mat->normal_texture.scale;
                 extract_texture_transform(&mat->normal_texture, &card_mat->normal_transform);
@@ -1222,9 +1307,14 @@ bool cardinal_gltf_load_scene(const char* path, CardinalScene* out_scene) {
 
             // Occlusion texture
             if (mat->occlusion_texture.texture) {
-                cgltf_size img_idx = mat->occlusion_texture.texture->image - data->images;
-                if (img_idx < texture_count) {
-                    card_mat->ao_texture = (uint32_t)img_idx;
+                uint32_t tex_idx;
+                if (data->textures_count > 0) {
+                    tex_idx = (uint32_t)(mat->occlusion_texture.texture - data->textures);
+                } else {
+                    tex_idx = (uint32_t)(mat->occlusion_texture.texture->image - data->images);
+                }
+                if (tex_idx < texture_count) {
+                    card_mat->ao_texture = tex_idx;
                 }
                 card_mat->ao_strength = mat->occlusion_texture.scale;
                 extract_texture_transform(&mat->occlusion_texture, &card_mat->ao_transform);
@@ -1232,9 +1322,14 @@ bool cardinal_gltf_load_scene(const char* path, CardinalScene* out_scene) {
 
             // Emissive texture and factor
             if (mat->emissive_texture.texture) {
-                cgltf_size img_idx = mat->emissive_texture.texture->image - data->images;
-                if (img_idx < texture_count) {
-                    card_mat->emissive_texture = (uint32_t)img_idx;
+                uint32_t tex_idx;
+                if (data->textures_count > 0) {
+                    tex_idx = (uint32_t)(mat->emissive_texture.texture - data->textures);
+                } else {
+                    tex_idx = (uint32_t)(mat->emissive_texture.texture->image - data->images);
+                }
+                if (tex_idx < texture_count) {
+                    card_mat->emissive_texture = tex_idx;
                 }
                 extract_texture_transform(&mat->emissive_texture, &card_mat->emissive_transform);
             }

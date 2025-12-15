@@ -630,7 +630,8 @@ bool vk_descriptor_manager_update_image(VulkanDescriptorManager* manager, uint32
  */
 static bool update_textures_descriptor_buffer(VulkanDescriptorManager* manager, uint32_t setIndex,
                                               uint32_t binding, VkImageView* imageViews,
-                                              VkSampler sampler, VkImageLayout imageLayout,
+                                              VkSampler* samplers, VkSampler singleSampler,
+                                              VkImageLayout imageLayout,
                                               uint32_t count) {
     if (!manager->vulkan_state || !manager->vulkan_state->context.vkGetDescriptorEXT) {
         CARDINAL_LOG_ERROR("Descriptor buffer extension not available for updates");
@@ -652,7 +653,7 @@ static bool update_textures_descriptor_buffer(VulkanDescriptorManager* manager, 
         VkDescriptorImageInfo imageInfo = {0};
         imageInfo.imageLayout = imageLayout;
         imageInfo.imageView = imageViews[i];
-        imageInfo.sampler = sampler;
+        imageInfo.sampler = samplers ? samplers[i] : singleSampler;
 
         VkDescriptorGetInfoEXT getInfo = {0};
         getInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_GET_INFO_EXT;
@@ -677,7 +678,8 @@ static bool update_textures_descriptor_buffer(VulkanDescriptorManager* manager, 
  */
 static bool update_textures_descriptor_set(VulkanDescriptorManager* manager, uint32_t setIndex,
                                            uint32_t binding, VkImageView* imageViews,
-                                           VkSampler sampler, VkImageLayout imageLayout,
+                                           VkSampler* samplers, VkSampler singleSampler,
+                                           VkImageLayout imageLayout,
                                            uint32_t count, VkDescriptorType dtype) {
     if (setIndex >= manager->descriptorSetCount) {
         CARDINAL_LOG_ERROR("Invalid descriptor set index: %u", setIndex);
@@ -693,7 +695,7 @@ static bool update_textures_descriptor_set(VulkanDescriptorManager* manager, uin
     for (uint32_t i = 0; i < count; i++) {
         imageInfos[i].imageLayout = imageLayout;
         imageInfos[i].imageView = imageViews[i];
-        imageInfos[i].sampler = sampler;
+        imageInfos[i].sampler = samplers ? samplers[i] : singleSampler;
     }
 
     VkWriteDescriptorSet descriptorWrite = {0};
@@ -733,10 +735,38 @@ bool vk_descriptor_manager_update_textures(VulkanDescriptorManager* manager, uin
             CARDINAL_LOG_WARN("Texture array update only implemented for COMBINED_IMAGE_SAMPLER");
             return false;
         }
-        return update_textures_descriptor_buffer(manager, setIndex, binding, imageViews, sampler,
+        return update_textures_descriptor_buffer(manager, setIndex, binding, imageViews, NULL, sampler,
                                                  imageLayout, count);
     } else {
-        return update_textures_descriptor_set(manager, setIndex, binding, imageViews, sampler,
+        return update_textures_descriptor_set(manager, setIndex, binding, imageViews, NULL, sampler,
+                                              imageLayout, count, dtype);
+    }
+}
+
+bool vk_descriptor_manager_update_textures_with_samplers(VulkanDescriptorManager* manager, uint32_t setIndex,
+                                           uint32_t binding, VkImageView* imageViews,
+                                           VkSampler* samplers, VkImageLayout imageLayout,
+                                           uint32_t count) {
+    if (!manager || !manager->initialized || !imageViews || !samplers || count == 0) {
+        CARDINAL_LOG_ERROR("Invalid parameters for texture update with samplers");
+        return false;
+    }
+
+    VkDescriptorType dtype = get_binding_descriptor_type(manager, binding);
+    if (dtype == VK_DESCRIPTOR_TYPE_MAX_ENUM) {
+        CARDINAL_LOG_ERROR("Unknown descriptor type for binding %u", binding);
+        return false;
+    }
+
+    if (manager->useDescriptorBuffers) {
+        if (dtype != VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER) {
+            CARDINAL_LOG_WARN("Texture array update only implemented for COMBINED_IMAGE_SAMPLER");
+            return false;
+        }
+        return update_textures_descriptor_buffer(manager, setIndex, binding, imageViews, samplers, VK_NULL_HANDLE,
+                                                 imageLayout, count);
+    } else {
+        return update_textures_descriptor_set(manager, setIndex, binding, imageViews, samplers, VK_NULL_HANDLE,
                                               imageLayout, count, dtype);
     }
 }

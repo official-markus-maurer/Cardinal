@@ -852,30 +852,37 @@ void vk_prepare_mesh_shader_rendering(VulkanState* s) {
 
     // Allocate temporary array for texture views to extract from managed textures
     VkImageView* texture_views = NULL;
+    VkSampler* samplers = NULL;
     uint32_t texture_count = 0;
 
     if (s->pipelines.use_pbr_pipeline && s->pipelines.pbr_pipeline.textureManager &&
         s->pipelines.pbr_pipeline.textureManager->textureCount > 0) {
         texture_count = s->pipelines.pbr_pipeline.textureManager->textureCount;
         texture_views = (VkImageView*)malloc(sizeof(VkImageView) * texture_count);
-        if (texture_views) {
+        samplers = (VkSampler*)malloc(sizeof(VkSampler) * texture_count);
+        
+        if (texture_views && samplers) {
             for (uint32_t i = 0; i < texture_count; i++) {
                 texture_views[i] = s->pipelines.pbr_pipeline.textureManager->textures[i].view;
+                VkSampler texSampler = s->pipelines.pbr_pipeline.textureManager->textures[i].sampler;
+                samplers[i] = (texSampler != VK_NULL_HANDLE) 
+                    ? texSampler 
+                    : s->pipelines.pbr_pipeline.textureManager->defaultSampler;
             }
         } else {
+            if (texture_views) free(texture_views);
+            if (samplers) free(samplers);
+            texture_views = NULL;
+            samplers = NULL;
             texture_count = 0; // Allocation failed
         }
     }
-
-    VkSampler sampler = s->pipelines.use_pbr_pipeline && s->pipelines.pbr_pipeline.textureManager
-                            ? s->pipelines.pbr_pipeline.textureManager->defaultSampler
-                            : VK_NULL_HANDLE;
 
     // Call the mesh shader descriptor buffer update function
     // Note: Using NULL for draw_data since this is preparation phase
     if (!vk_mesh_shader_update_descriptor_buffers(s, &s->pipelines.mesh_shader_pipeline, NULL,
                                                   material_buffer, lighting_buffer, texture_views,
-                                                  sampler, texture_count)) {
+                                                  samplers, texture_count)) {
         CARDINAL_LOG_ERROR("[MESH_SHADER] Failed to update descriptor buffers during preparation");
     } else {
         CARDINAL_LOG_DEBUG(
@@ -883,9 +890,8 @@ void vk_prepare_mesh_shader_rendering(VulkanState* s) {
             texture_count);
     }
 
-    if (texture_views) {
-        free(texture_views);
-    }
+    if (texture_views) free(texture_views);
+    if (samplers) free(samplers);
 }
 
 // === Multi-Threading Support Functions ===

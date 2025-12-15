@@ -22,6 +22,7 @@
 static bool create_default_sampler(VulkanTextureManager* manager);
 static bool ensure_capacity(VulkanTextureManager* manager, uint32_t requiredCapacity);
 static void destroy_texture(VulkanTextureManager* manager, uint32_t index);
+static VkSampler create_sampler_from_config(VkDevice device, const CardinalSampler* config);
 
 bool vk_texture_manager_init(VulkanTextureManager* manager,
                              const VulkanTextureManagerConfig* config) {
@@ -235,6 +236,20 @@ bool vk_texture_manager_load_texture(VulkanTextureManager* manager, const Cardin
     managedTexture->channels = texture->channels;
     managedTexture->isPlaceholder = false;
 
+    // Create sampler based on configuration
+    managedTexture->sampler = create_sampler_from_config(manager->device, &texture->sampler);
+    if (managedTexture->sampler == VK_NULL_HANDLE) {
+        CARDINAL_LOG_ERROR("Failed to create sampler for texture %u - using default", index);
+        // Fallback to default sampler? Or just fail?
+        // Let's create a default sampler copy to keep ownership consistent
+        CardinalSampler defaultSamplerConfig = {0};
+        defaultSamplerConfig.wrap_s = CARDINAL_SAMPLER_WRAP_REPEAT;
+        defaultSamplerConfig.wrap_t = CARDINAL_SAMPLER_WRAP_REPEAT;
+        defaultSamplerConfig.min_filter = CARDINAL_SAMPLER_FILTER_LINEAR;
+        defaultSamplerConfig.mag_filter = CARDINAL_SAMPLER_FILTER_LINEAR;
+        managedTexture->sampler = create_sampler_from_config(manager->device, &defaultSamplerConfig);
+    }
+
     // Copy path if available
     if (texture->path) {
         size_t pathLen = strlen(texture->path) + 1;
@@ -285,6 +300,14 @@ bool vk_texture_manager_create_placeholder(VulkanTextureManager* manager, uint32
     managedTexture->channels = 4;
     managedTexture->isPlaceholder = true;
     managedTexture->path = NULL;
+
+    // Create default sampler for placeholder
+    CardinalSampler defaultSamplerConfig = {0};
+    defaultSamplerConfig.wrap_s = CARDINAL_SAMPLER_WRAP_REPEAT;
+    defaultSamplerConfig.wrap_t = CARDINAL_SAMPLER_WRAP_REPEAT;
+    defaultSamplerConfig.min_filter = CARDINAL_SAMPLER_FILTER_LINEAR;
+    defaultSamplerConfig.mag_filter = CARDINAL_SAMPLER_FILTER_LINEAR;
+    managedTexture->sampler = create_sampler_from_config(manager->device, &defaultSamplerConfig);
 
     manager->textureCount++;
     *outIndex = index;
@@ -429,5 +452,53 @@ static void destroy_texture(VulkanTextureManager* manager, uint32_t index) {
     }
 
     free(texture->path);
+    if (texture->sampler != VK_NULL_HANDLE) {
+        vkDestroySampler(manager->device, texture->sampler, NULL);
+        texture->sampler = VK_NULL_HANDLE;
+    }
     memset(texture, 0, sizeof(VulkanManagedTexture));
+}
+
+static VkSampler create_sampler_from_config(VkDevice device, const CardinalSampler* config) {
+    VkSamplerCreateInfo samplerInfo = {0};
+    samplerInfo.sType = VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO;
+    
+    // Map filters
+    samplerInfo.magFilter = (config->mag_filter == CARDINAL_SAMPLER_FILTER_NEAREST) ? VK_FILTER_NEAREST : VK_FILTER_LINEAR;
+    samplerInfo.minFilter = (config->min_filter == CARDINAL_SAMPLER_FILTER_NEAREST) ? VK_FILTER_NEAREST : VK_FILTER_LINEAR;
+
+    // Map address modes
+    // Force REPEAT even if CLAMP_TO_EDGE is requested, to fix asset export issues
+    VkSamplerAddressMode wrapS = VK_SAMPLER_ADDRESS_MODE_REPEAT;
+    if (config->wrap_s == CARDINAL_SAMPLER_WRAP_MIRRORED_REPEAT) wrapS = VK_SAMPLER_ADDRESS_MODE_MIRRORED_REPEAT;
+
+    VkSamplerAddressMode wrapT = VK_SAMPLER_ADDRESS_MODE_REPEAT;
+    if (config->wrap_t == CARDINAL_SAMPLER_WRAP_MIRRORED_REPEAT) wrapT = VK_SAMPLER_ADDRESS_MODE_MIRRORED_REPEAT;
+
+    samplerInfo.addressModeU = wrapS;
+    samplerInfo.addressModeV = wrapT;
+    samplerInfo.addressModeW = VK_SAMPLER_ADDRESS_MODE_REPEAT; // Usually not used for 2D textures
+
+    samplerInfo.anisotropyEnable = VK_FALSE;
+    samplerInfo.maxAnisotropy = 1.0f;
+    samplerInfo.borderColor = VK_BORDER_COLOR_INT_OPAQUE_BLACK;
+    samplerInfo.unnormalizedCoordinates = VK_FALSE;
+    samplerInfo.compareEnable = VK_FALSE;
+    samplerInfo.compareOp = VK_COMPARE_OP_ALWAYS;
+    samplerInfo.mipmapMode = VK_SAMPLER_MIPMAP_MODE_LINEAR;
+    samplerInfo.mipLodBias = 0.0f;
+    samplerInfo.minLod = 0.0f;
+    samplerInfo.maxLod = VK_LOD_CLAMP_NONE;
+
+    VkSampler sampler;
+    if (vkCreateSampler(device, &samplerInfo, NULL, &sampler) != VK_SUCCESS) {
+        CARDINAL_LOG_ERROR("Failed to create texture sampler");
+        return VK_NULL_HANDLE;
+    }
+
+    CARDINAL_LOG_DEBUG("Created sampler: handle=%p, addrU=%d, addrV=%d, min=%d, mag=%d",
+                       (void*)sampler, samplerInfo.addressModeU, samplerInfo.addressModeV,
+                       samplerInfo.minFilter, samplerInfo.magFilter);
+
+    return sampler;
 }

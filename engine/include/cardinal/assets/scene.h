@@ -56,6 +56,33 @@ typedef struct CardinalTextureTransform {
 } CardinalTextureTransform;
 
 /**
+ * @brief Texture sampler wrapping mode
+ */
+typedef enum CardinalSamplerWrap {
+    CARDINAL_SAMPLER_WRAP_REPEAT = 0,
+    CARDINAL_SAMPLER_WRAP_CLAMP_TO_EDGE = 1,
+    CARDINAL_SAMPLER_WRAP_MIRRORED_REPEAT = 2
+} CardinalSamplerWrap;
+
+/**
+ * @brief Texture sampler filter mode
+ */
+typedef enum CardinalSamplerFilter {
+    CARDINAL_SAMPLER_FILTER_NEAREST = 0,
+    CARDINAL_SAMPLER_FILTER_LINEAR = 1
+} CardinalSamplerFilter;
+
+/**
+ * @brief Texture sampler properties
+ */
+typedef struct CardinalSampler {
+    CardinalSamplerWrap wrap_s;
+    CardinalSamplerWrap wrap_t;
+    CardinalSamplerFilter min_filter;
+    CardinalSamplerFilter mag_filter;
+} CardinalSampler;
+
+/**
  * @brief Alpha rendering mode
  */
 typedef enum CardinalAlphaMode {
@@ -132,6 +159,7 @@ typedef struct CardinalTexture {
   uint32_t width;      /**< Texture width in pixels */
   uint32_t height;     /**< Texture height in pixels */
   uint32_t channels;   /**< Number of color channels (1-4) */
+  CardinalSampler sampler; /**< Sampler properties */
   char *path;          /**< Original file path (for debugging/identification) */
   CardinalRefCountedResource
       *ref_resource; /**< Reference counting resource pointer */

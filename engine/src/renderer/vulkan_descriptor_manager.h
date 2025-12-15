@@ -153,6 +153,25 @@ bool vk_descriptor_manager_update_textures(VulkanDescriptorManager *manager,
                                            uint32_t count);
 
 /**
+ * @brief Updates descriptor sets with multiple textures and unique samplers.
+ *
+ * @param manager Descriptor manager
+ * @param setIndex Index of the descriptor set to update
+ * @param binding Binding index to update
+ * @param imageViews Array of image view handles
+ * @param samplers Array of sampler handles
+ * @param imageLayout Image layout (shared)
+ * @param count Number of textures
+ * @return true on success, false on failure
+ */
+bool vk_descriptor_manager_update_textures_with_samplers(VulkanDescriptorManager *manager,
+                                           uint32_t setIndex, uint32_t binding,
+                                           VkImageView *imageViews,
+                                           VkSampler *samplers,
+                                           VkImageLayout imageLayout,
+                                           uint32_t count);
+
+/**
  * @brief Binds descriptor sets to a command buffer.
  *
  * @param manager Descriptor manager

@@ -217,14 +217,14 @@ void vk_mesh_shader_draw(VkCommandBuffer cmd_buffer, VulkanState *vulkan_state,
  * @param material_buffer Buffer containing material data
  * @param lighting_buffer Buffer containing lighting data
  * @param texture_views Array of texture image views
- * @param sampler Texture sampler
+ * @param samplers Array of texture samplers (must match texture_views)
  * @param texture_count Number of textures in the array
  * @return true if update succeeded, false otherwise
  */
 bool vk_mesh_shader_update_descriptor_buffers(
     VulkanState *vulkan_state, MeshShaderPipeline *pipeline,
     const MeshShaderDrawData *draw_data, VkBuffer material_buffer,
-    VkBuffer lighting_buffer, VkImageView *texture_views, VkSampler sampler,
+    VkBuffer lighting_buffer, VkImageView *texture_views, VkSampler *samplers,
     uint32_t texture_count);
 
 /**

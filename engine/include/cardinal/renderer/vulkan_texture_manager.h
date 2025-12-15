@@ -42,6 +42,7 @@ typedef struct VulkanManagedTexture {
   VkImage image;
   VkDeviceMemory memory;
   VkImageView view;
+  VkSampler sampler; // Specific sampler for this texture (if different from default)
   uint32_t width;
   uint32_t height;
   uint32_t channels;
