@@ -38,6 +38,7 @@ typedef struct VulkanDescriptorManager {
   VkDescriptorPool descriptorPool; ///< Descriptor pool for allocation
   VkDescriptorSet *descriptorSets; ///< Allocated descriptor sets
   uint32_t descriptorSetCount;     ///< Number of descriptor sets
+  uint32_t maxSets;                ///< Maximum number of descriptor sets (capacity)
 
   // Descriptor buffers (VK_EXT_descriptor_buffer)
   bool useDescriptorBuffers;             ///< Whether to use descriptor buffers

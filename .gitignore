@@ -1,12 +1,14 @@
-build
-.cache
-docs
-assets/models
-assets/audio
-assets/textures
+build/
+.cache/
+docs/
+assets/models/
+assets/audio/
+assets/textures/
 
 # Cardinal log files
 cardinal_log.txt
 cardinal_debug.log
-build/cardinal_debug.log
-build_no_spdlog
+
+# Zig build artifacts
+.zig-cache/
+zig-out/

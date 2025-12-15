@@ -24,6 +24,7 @@
 
 #include <stdarg.h>
 #include <stdio.h>
+#include <stddef.h>
 
 #ifdef __cplusplus
 extern "C" {
@@ -109,8 +110,32 @@ void cardinal_log_shutdown(void);
  * @see CARDINAL_LOG_TRACE, CARDINAL_LOG_DEBUG, CARDINAL_LOG_INFO
  * @see CARDINAL_LOG_WARN, CARDINAL_LOG_ERROR, CARDINAL_LOG_FATAL
  */
-void cardinal_log_output(CardinalLogLevel level, const char *file, int line,
-                         const char *fmt, ...);
+void cardinal_log_output_v(CardinalLogLevel level, const char *file, int line,
+                           const char *fmt, va_list args);
+
+/**
+ * @brief Core logging function for outputting messages
+ *
+ * This is the main logging function that handles message formatting and
+ * output. It includes file and line information for debugging purposes.
+ * Typically not called directly - use the logging macros instead.
+ *
+ * @param level Severity level of the message
+ * @param file Source file name where the log was called
+ * @param line Line number where the log was called
+ * @param fmt Printf-style format string
+ * @param ... Variable arguments for format string
+ *
+ * @see CARDINAL_LOG_TRACE, CARDINAL_LOG_DEBUG, CARDINAL_LOG_INFO
+ * @see CARDINAL_LOG_WARN, CARDINAL_LOG_ERROR, CARDINAL_LOG_FATAL
+ */
+static inline void cardinal_log_output(CardinalLogLevel level, const char *file, int line,
+                         const char *fmt, ...) {
+    va_list args;
+    va_start(args, fmt);
+    cardinal_log_output_v(level, file, line, fmt, args);
+    va_end(args);
+}
 
 /**
  * @brief Parse log level from string representation

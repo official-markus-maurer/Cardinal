@@ -2,14 +2,19 @@
     "version": "0.2.0",
     "configurations": [
         {
-            "name": "Cardinal Client (Debug Build)",
+            "name": "Cardinal Client (Debug)",
             "type": "cppdbg",
             "request": "launch",
-            "program": "${workspaceFolder}/build/client/Debug/CardinalClient.exe",
+            "program": "${workspaceFolder}/zig-out/bin/CardinalClient.exe",
             "args": ["--log-level", "TRACE"],
             "stopAtEntry": false,
-            "cwd": "${workspaceFolder}/build/client",
-            "environment": [],
+            "cwd": "${workspaceFolder}",
+            "environment": [
+                {
+                    "name": "CARDINAL_SHADERS_DIR",
+                    "value": "${workspaceFolder}/assets/shaders"
+                }
+            ],
             "externalConsole": false,
             "console": "integratedTerminal",
             "MIMode": "gdb",
@@ -21,17 +26,22 @@
                     "ignoreFailures": true
                 }
             ],
-            "preLaunchTask": "Full Build (Debug)"
+            "preLaunchTask": "Build Project (Debug)"
         },
         {
-            "name": "Cardinal Client (Release Build)",
+            "name": "Cardinal Client (Release)",
             "type": "cppdbg",
             "request": "launch",
-            "program": "${workspaceFolder}/build/client/Release/CardinalClient.exe",
+            "program": "${workspaceFolder}/zig-out/bin/CardinalClient.exe",
             "args": ["--log-level", "TRACE"],
             "stopAtEntry": false,
-            "cwd": "${workspaceFolder}/build/client",
-            "environment": [],
+            "cwd": "${workspaceFolder}",
+            "environment": [
+                {
+                    "name": "CARDINAL_SHADERS_DIR",
+                    "value": "${workspaceFolder}/assets/shaders"
+                }
+            ],
             "externalConsole": false,
             "console": "integratedTerminal",
             "MIMode": "gdb",
@@ -43,17 +53,22 @@
                     "ignoreFailures": true
                 }
             ],
-            "preLaunchTask": "Full Build (Release)"
+            "preLaunchTask": "Build Project (Release)"
         },
         {
-            "name": "Cardinal Editor (Debug Build)",
+            "name": "Cardinal Editor (Debug)",
             "type": "cppdbg",
             "request": "launch",
-            "program": "${workspaceFolder}/build/editor/Debug/CardinalEditor.exe",
+            "program": "${workspaceFolder}/zig-out/bin/CardinalEditor.exe",
             "args": ["--log-level", "TRACE"],
             "stopAtEntry": false,
-            "cwd": "${workspaceFolder}/build/editor",
-            "environment": [],
+            "cwd": "${workspaceFolder}",
+            "environment": [
+                {
+                    "name": "CARDINAL_SHADERS_DIR",
+                    "value": "${workspaceFolder}/assets/shaders"
+                }
+            ],
             "externalConsole": false,
             "console": "integratedTerminal",
             "MIMode": "gdb",
@@ -65,17 +80,22 @@
                     "ignoreFailures": true
                 }
             ],
-            "preLaunchTask": "Full Build (Debug)"
+            "preLaunchTask": "Build Project (Debug)"
         },
         {
-            "name": "Cardinal Editor (Release Build)",
+            "name": "Cardinal Editor (Release)",
             "type": "cppdbg",
             "request": "launch",
-            "program": "${workspaceFolder}/build/editor/Release/CardinalEditor.exe",
+            "program": "${workspaceFolder}/zig-out/bin/CardinalEditor.exe",
             "args": ["--log-level", "TRACE"],
             "stopAtEntry": false,
-            "cwd": "${workspaceFolder}/build/editor",
-            "environment": [],
+            "cwd": "${workspaceFolder}",
+            "environment": [
+                {
+                    "name": "CARDINAL_SHADERS_DIR",
+                    "value": "${workspaceFolder}/assets/shaders"
+                }
+            ],
             "externalConsole": false,
             "console": "integratedTerminal",
             "MIMode": "gdb",
@@ -87,7 +107,7 @@
                     "ignoreFailures": true
                 }
             ],
-            "preLaunchTask": "Full Build (Release)"
+            "preLaunchTask": "Build Project (Release)"
         }
     ]
 }

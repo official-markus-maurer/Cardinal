@@ -24,71 +24,15 @@
             "problemMatcher": []
         },
         {
-            "label": "Configure CMake (Debug)",
-            "type": "shell",
-            "command": "cmake",
-            "args": [
-                "-S", ".",
-                "-B", "build",
-                "-DCMAKE_BUILD_TYPE=Debug"
-            ],
-            "group": "build",
-            "presentation": {
-                "echo": true,
-                "reveal": "always",
-                "focus": false,
-                "panel": "shared",
-                "showReuseMessage": true,
-                "clear": false
-            },
-            "options": {
-                "cwd": "${workspaceFolder}"
-            },
-            "problemMatcher": ["$gcc"]
-        },
-        {
             "label": "Build Project (Debug)",
             "type": "shell",
-            "command": "cmake",
+            "command": "zig",
             "args": [
-                "--build", "build",
-                "--config", "Debug"
+                "build",
+                "-Doptimize=Debug"
             ],
             "group": "build",
-            "presentation": {
-                "echo": true,
-                "reveal": "always",
-                "focus": false,
-                "panel": "shared",
-                "showReuseMessage": true,
-                "clear": false
-            },
-            "options": {
-                "cwd": "${workspaceFolder}"
-            },
-            "problemMatcher": ["$gcc"]
-        },
-        {
-            "label": "Full Build (Debug)",
-            "dependsOrder": "sequence",
-            "dependsOn": [
-                "Configure CMake (Debug)",
-                "Compile Shaders",
-                "Build Project (Debug)"
-            ],
-            "group": "build",
-            "problemMatcher": []
-        },
-        {
-            "label": "Configure CMake (Release)",
-            "type": "shell",
-            "command": "cmake",
-            "args": [
-                "-S", ".",
-                "-B", "build",
-                "-DCMAKE_BUILD_TYPE=Release"
-            ],
-            "group": "build",
+            "dependsOn": ["Compile Shaders"],
             "presentation": {
                 "echo": true,
                 "reveal": "always",
@@ -105,12 +49,13 @@
         {
             "label": "Build Project (Release)",
             "type": "shell",
-            "command": "cmake",
+            "command": "zig",
             "args": [
-                "--build", "build",
-                "--config", "Release"
+                "build",
+                "-Doptimize=ReleaseFast"
             ],
             "group": "build",
+            "dependsOn": ["Compile Shaders"],
             "presentation": {
                 "echo": true,
                 "reveal": "always",
@@ -125,71 +70,16 @@
             "problemMatcher": ["$gcc"]
         },
         {
-            "label": "Full Build (Release)",
-            "dependsOrder": "sequence",
-            "dependsOn": [
-                "Configure CMake (Release)",
-                "Compile Shaders",
-                "Build Project (Release)"
-            ],
-            "group": "build",
-            "problemMatcher": []
-        },
-        {
-            "label": "Launch Client",
+            "label": "Run Client (Debug)",
             "type": "shell",
-            "command": "./CardinalClient.exe",
-            "args": [],
-            "group": "test",
-            "presentation": {
-                "echo": true,
-                "reveal": "always",
-                "focus": true,
-                "panel": "new",
-                "showReuseMessage": false,
-                "clear": true
-            },
-            "options": {
-                "cwd": "${workspaceFolder}/build/client/Release",
-                "env": {
-                    "CARDINAL_SHADERS_DIR": "${workspaceFolder}/assets/shaders"
-                }
-            },
-            "dependsOn": "Full Build (Release)",
-            "problemMatcher": []
-        },
-        {
-            "label": "Launch Editor",
-            "type": "shell",
-            "command": "./CardinalEditor.exe",
-            "args": [],
-            "group": "test",
-            "presentation": {
-                "echo": true,
-                "reveal": "always",
-                "focus": true,
-                "panel": "new",
-                "showReuseMessage": false,
-                "clear": true
-            },
-            "options": {
-                "cwd": "${workspaceFolder}/build/editor/Release",
-                "env": {
-                    "CARDINAL_SHADERS_DIR": "${workspaceFolder}/assets/shaders"
-                }
-            },
-            "dependsOn": "Full Build (Release)",
-            "problemMatcher": []
-        },
-        {
-            "label": "Launch Client (Debug)",
-            "type": "shell",
-            "command": "./CardinalClient.exe",
+            "command": "zig",
             "args": [
-                "--log-level",
-                "DEBUG"
+                "build",
+                "run-client",
+                "-Doptimize=Debug"
             ],
             "group": "test",
+            "dependsOn": ["Compile Shaders"],
             "presentation": {
                 "echo": true,
                 "reveal": "always",
@@ -199,38 +89,21 @@
                 "clear": true
             },
             "options": {
-                "cwd": "${workspaceFolder}/build/client/Debug",
-                "env": {
-                    "CARDINAL_SHADERS_DIR": "${workspaceFolder}/assets/shaders"
-                }
+                "cwd": "${workspaceFolder}"
             },
-            "dependsOn": "Full Build (Debug)",
-            "problemMatcher": {
-                "owner": "cardinal-log",
-                "fileLocation": ["relative", "${workspaceFolder}"],
-                "pattern": {
-                    "regexp": "^([^(]+)\\((\\d+)\\):\\s*\\[(ERROR|WARN|FATAL)\\]\\s*(.*)$",
-                    "file": 1,
-                    "line": 2,
-                    "severity": 3,
-                    "message": 4
-                },
-                "severity": {
-                    "ERROR": "error",
-                    "WARN": "warning",
-                    "FATAL": "error"
-                }
-            }
+            "problemMatcher": ["$gcc"]
         },
         {
-            "label": "Launch Editor (Debug)",
+            "label": "Run Client (Release)",
             "type": "shell",
-            "command": "./CardinalEditor.exe",
+            "command": "zig",
             "args": [
-                "--log-level",
-                "DEBUG"
+                "build",
+                "run-client",
+                "-Doptimize=ReleaseFast"
             ],
             "group": "test",
+            "dependsOn": ["Compile Shaders"],
             "presentation": {
                 "echo": true,
                 "reveal": "always",
@@ -240,28 +113,57 @@
                 "clear": true
             },
             "options": {
-                "cwd": "${workspaceFolder}/build/editor/Debug",
-                "env": {
-                    "CARDINAL_SHADERS_DIR": "${workspaceFolder}/assets/shaders"
-                }
+                "cwd": "${workspaceFolder}"
             },
-            "dependsOn": "Full Build (Debug)",
-            "problemMatcher": {
-                "owner": "cardinal-log",
-                "fileLocation": ["relative", "${workspaceFolder}"],
-                "pattern": {
-                    "regexp": "^([^(]+)\\((\\d+)\\):\\s*\\[(ERROR|WARN|FATAL)\\]\\s*(.*)$",
-                    "file": 1,
-                    "line": 2,
-                    "severity": 3,
-                    "message": 4
-                },
-                "severity": {
-                    "ERROR": "error",
-                    "WARN": "warning",
-                    "FATAL": "error"
-                }
-            }
+            "problemMatcher": ["$gcc"]
+        },
+        {
+            "label": "Run Editor (Debug)",
+            "type": "shell",
+            "command": "zig",
+            "args": [
+                "build",
+                "run-editor",
+                "-Doptimize=Debug"
+            ],
+            "group": "test",
+            "dependsOn": ["Compile Shaders"],
+            "presentation": {
+                "echo": true,
+                "reveal": "always",
+                "focus": true,
+                "panel": "new",
+                "showReuseMessage": false,
+                "clear": true
+            },
+            "options": {
+                "cwd": "${workspaceFolder}"
+            },
+            "problemMatcher": ["$gcc"]
+        },
+        {
+            "label": "Run Editor (Release)",
+            "type": "shell",
+            "command": "zig",
+            "args": [
+                "build",
+                "run-editor",
+                "-Doptimize=ReleaseFast"
+            ],
+            "group": "test",
+            "dependsOn": ["Compile Shaders"],
+            "presentation": {
+                "echo": true,
+                "reveal": "always",
+                "focus": true,
+                "panel": "new",
+                "showReuseMessage": false,
+                "clear": true
+            },
+            "options": {
+                "cwd": "${workspaceFolder}"
+            },
+            "problemMatcher": ["$gcc"]
         },
         {
             "label": "Clean Build",
@@ -269,7 +171,7 @@
             "command": "powershell",
             "args": [
                 "-Command",
-                "Remove-Item -Path 'build' -Recurse -Force -ErrorAction SilentlyContinue"
+                "Remove-Item -Path 'zig-out', 'zig-cache', 'build' -Recurse -Force -ErrorAction SilentlyContinue"
             ],
             "group": "build",
             "presentation": {
@@ -279,82 +181,6 @@
                 "panel": "shared",
                 "showReuseMessage": true,
                 "clear": false
-            },
-            "options": {
-                "cwd": "${workspaceFolder}"
-            },
-            "problemMatcher": []
-        },
-        {
-            "label": "Rebuild All (Debug)",
-            "dependsOrder": "sequence",
-            "dependsOn": [
-                "Clean Build",
-                "Full Build (Debug)"
-            ],
-            "group": "build",
-            "problemMatcher": []
-        },
-        {
-            "label": "Rebuild All (Release)",
-            "dependsOrder": "sequence",
-            "dependsOn": [
-                "Clean Build",
-                "Full Build (Release)"
-            ],
-            "group": "build",
-            "problemMatcher": []
-        },
-        {
-            "label": "Run Clang-Tidy",
-            "type": "shell",
-            "command": "powershell",
-            "args": [
-                "-ExecutionPolicy", "Bypass",
-                "-File", "run-clang-tidy.ps1"
-            ],
-            "group": "test",
-            "presentation": {
-                "echo": true,
-                "reveal": "always",
-                "focus": false,
-                "panel": "shared",
-                "showReuseMessage": true,
-                "clear": false
-            },
-            "options": {
-                "cwd": "${workspaceFolder}"
-            },
-            "problemMatcher": {
-                "owner": "clang-tidy",
-                "fileLocation": ["relative", "${workspaceFolder}"],
-                "pattern": {
-                    "regexp": "^(.*):(\\d+):(\\d+):\\s+(warning|error|note):\\s+(.*)\\s+\\[(.*)\\]$",
-                    "file": 1,
-                    "line": 2,
-                    "column": 3,
-                    "severity": 4,
-                    "message": 5,
-                    "code": 6
-                }
-            }
-        },
-        {
-            "label": "View Cardinal Logs",
-            "type": "shell",
-            "command": "powershell",
-            "args": [
-                "-Command",
-                "if (Test-Path 'build/cardinal_debug.log') { Get-Content 'build/cardinal_debug.log' -Wait -Tail 50 } elseif (Test-Path 'cardinal_debug.log') { Get-Content 'cardinal_debug.log' -Wait -Tail 50 } else { Write-Host 'No Cardinal log file found. Run a debug session first.' }"
-            ],
-            "group": "test",
-            "presentation": {
-                "echo": true,
-                "reveal": "always",
-                "focus": true,
-                "panel": "new",
-                "showReuseMessage": false,
-                "clear": true
             },
             "options": {
                 "cwd": "${workspaceFolder}"

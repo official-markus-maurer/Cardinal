@@ -23,6 +23,7 @@
 #include <stdbool.h>
 #include <stdint.h>
 #include <vulkan/vulkan.h>
+
 #ifdef __cplusplus
 #if __cplusplus >= 202302L
 #include <stdatomic.h>
@@ -30,6 +31,13 @@
 #include <atomic>
 typedef std::atomic<uint64_t> atomic_uint_fast64_t;
 typedef std::atomic<uint32_t> atomic_uint_fast32_t;
+#endif
+#elif defined(__zig__) || defined(__zig_translate_c__) || defined(CARDINAL_ZIG_BUILD)
+// Zig-friendly atomic definitions
+#ifndef CARDINAL_ZIG_ATOMICS_DEFINED
+#define CARDINAL_ZIG_ATOMICS_DEFINED
+#define atomic_uint_fast64_t uint64_t
+#define atomic_uint_fast32_t uint32_t
 #endif
 #else
 #include <stdatomic.h>

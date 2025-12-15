@@ -1,0 +1,991 @@
+const std = @import("std");
+const builtin = @import("builtin");
+const log = @import("../core/log.zig");
+
+const c = @cImport({
+    @cDefine("CARDINAL_ZIG_BUILD", "1");
+    @cInclude("stdlib.h");
+    @cInclude("string.h");
+    @cInclude("stdio.h");
+    @cInclude("vulkan/vulkan.h");
+    @cInclude("cardinal/renderer/vulkan_mesh_shader.h");
+    @cInclude("vulkan_state.h");
+    @cInclude("vulkan_buffer_manager.h");
+    @cInclude("cardinal/renderer/util/vulkan_shader_utils.h");
+    @cInclude("cardinal/renderer/vulkan_texture_manager.h");
+});
+
+// Helper Functions
+
+fn load_shader_module(device: c.VkDevice, path: [*c]const u8, out_module: *c.VkShaderModule) bool {
+    // Using vk_shader_create_module from vulkan_shader_utils.h (assumed available via cImport)
+    return c.vk_shader_create_module(device, path, out_module);
+}
+
+// Implementation
+
+pub export fn vk_mesh_shader_init(s: ?*c.VulkanState) callconv(.c) bool {
+    if (s == null) return false;
+    const vs = s.?;
+
+    vs.pending_cleanup_draw_data = null;
+    vs.pending_cleanup_count = 0;
+    vs.pending_cleanup_capacity = 0;
+
+    return true;
+}
+
+pub export fn vk_mesh_shader_cleanup(s: ?*c.VulkanState) callconv(.c) void {
+    if (s == null) return;
+    const vs = s.?;
+
+    vk_mesh_shader_destroy_pipeline(vs, &vs.pipelines.mesh_shader_pipeline);
+    vk_mesh_shader_process_pending_cleanup(vs);
+
+    if (vs.pending_cleanup_draw_data != null) {
+        c.free(vs.pending_cleanup_draw_data);
+        vs.pending_cleanup_draw_data = null;
+    }
+    vs.pending_cleanup_count = 0;
+    vs.pending_cleanup_capacity = 0;
+}
+
+pub export fn vk_mesh_shader_create_pipeline(
+    s: ?*c.VulkanState,
+    config: ?*const c.MeshShaderPipelineConfig,
+    swapchain_format: c.VkFormat,
+    depth_format: c.VkFormat,
+    pipeline: ?*c.MeshShaderPipeline
+) callconv(.c) bool {
+    if (s == null or config == null or pipeline == null) return false;
+    const vs = s.?;
+    const cfg = config.?;
+    const pipe = pipeline.?;
+
+    pipe.max_meshlets_per_workgroup = 32;
+    pipe.max_vertices_per_meshlet = cfg.max_vertices_per_meshlet;
+    // pipe.max_primitives_per_meshlet = cfg.max_primitives_per_meshlet; // Struct definition might differ, check if field exists
+
+    // Load Shaders
+    var meshShaderModule: c.VkShaderModule = null;
+    var fragShaderModule: c.VkShaderModule = null;
+    var taskShaderModule: c.VkShaderModule = null;
+
+    if (!load_shader_module(vs.context.device, cfg.mesh_shader_path, &meshShaderModule)) {
+        log.cardinal_log_error("Failed to load mesh shader: {s}", .{cfg.mesh_shader_path});
+        return false;
+    }
+
+    if (!load_shader_module(vs.context.device, cfg.fragment_shader_path, &fragShaderModule)) {
+        log.cardinal_log_error("Failed to load fragment shader: {s}", .{cfg.fragment_shader_path});
+        c.vkDestroyShaderModule(vs.context.device, meshShaderModule, null);
+        return false;
+    }
+
+    if (cfg.task_shader_path != null) {
+        if (!load_shader_module(vs.context.device, cfg.task_shader_path, &taskShaderModule)) {
+            log.cardinal_log_warn("Failed to load task shader: {s}", .{cfg.task_shader_path});
+        } else {
+            pipe.has_task_shader = true;
+        }
+    } else {
+        pipe.has_task_shader = false;
+    }
+
+    var shaderStages: [3]c.VkPipelineShaderStageCreateInfo = undefined;
+    var stageCount: u32 = 0;
+
+    // Task Shader
+    if (pipe.has_task_shader) {
+        shaderStages[stageCount] = std.mem.zeroes(c.VkPipelineShaderStageCreateInfo);
+        shaderStages[stageCount].sType = c.VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
+        shaderStages[stageCount].stage = c.VK_SHADER_STAGE_TASK_BIT_EXT;
+        shaderStages[stageCount].module = taskShaderModule;
+        shaderStages[stageCount].pName = "main";
+        stageCount += 1;
+    }
+
+    // Mesh Shader
+    shaderStages[stageCount] = std.mem.zeroes(c.VkPipelineShaderStageCreateInfo);
+    shaderStages[stageCount].sType = c.VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
+    shaderStages[stageCount].stage = c.VK_SHADER_STAGE_MESH_BIT_EXT;
+    shaderStages[stageCount].module = meshShaderModule;
+    shaderStages[stageCount].pName = "main";
+    stageCount += 1;
+
+    // Fragment Shader
+    shaderStages[stageCount] = std.mem.zeroes(c.VkPipelineShaderStageCreateInfo);
+    shaderStages[stageCount].sType = c.VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
+    shaderStages[stageCount].stage = c.VK_SHADER_STAGE_FRAGMENT_BIT;
+    shaderStages[stageCount].module = fragShaderModule;
+    shaderStages[stageCount].pName = "main";
+    stageCount += 1;
+
+    // Descriptor Set Layouts
+    const set0Bindings = [_]c.VkDescriptorSetLayoutBinding{
+        .{ .binding = 0, .descriptorType = c.VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, .descriptorCount = 1, .stageFlags = c.VK_SHADER_STAGE_TASK_BIT_EXT, .pImmutableSamplers = null },
+        .{ .binding = 1, .descriptorType = c.VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, .descriptorCount = 1, .stageFlags = c.VK_SHADER_STAGE_TASK_BIT_EXT | c.VK_SHADER_STAGE_MESH_BIT_EXT, .pImmutableSamplers = null },
+        .{ .binding = 2, .descriptorType = c.VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, .descriptorCount = 1, .stageFlags = c.VK_SHADER_STAGE_TASK_BIT_EXT, .pImmutableSamplers = null },
+        .{ .binding = 3, .descriptorType = c.VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, .descriptorCount = 1, .stageFlags = c.VK_SHADER_STAGE_MESH_BIT_EXT, .pImmutableSamplers = null },
+        .{ .binding = 4, .descriptorType = c.VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, .descriptorCount = 1, .stageFlags = c.VK_SHADER_STAGE_MESH_BIT_EXT, .pImmutableSamplers = null },
+        .{ .binding = 5, .descriptorType = c.VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, .descriptorCount = 1, .stageFlags = c.VK_SHADER_STAGE_MESH_BIT_EXT, .pImmutableSamplers = null },
+    };
+
+    const set1Bindings = [_]c.VkDescriptorSetLayoutBinding{
+        .{ .binding = 0, .descriptorType = c.VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, .descriptorCount = 1, .stageFlags = c.VK_SHADER_STAGE_FRAGMENT_BIT, .pImmutableSamplers = null },
+        .{ .binding = 1, .descriptorType = c.VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, .descriptorCount = 1, .stageFlags = c.VK_SHADER_STAGE_FRAGMENT_BIT, .pImmutableSamplers = null },
+        .{ .binding = 2, .descriptorType = c.VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, .descriptorCount = 1, .stageFlags = c.VK_SHADER_STAGE_FRAGMENT_BIT, .pImmutableSamplers = null },
+        .{ .binding = 3, .descriptorType = c.VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, .descriptorCount = 4096, .stageFlags = c.VK_SHADER_STAGE_FRAGMENT_BIT, .pImmutableSamplers = null },
+    };
+
+    const set1Flags = [_]c.VkDescriptorBindingFlags{ 0, 0, 0, c.VK_DESCRIPTOR_BINDING_PARTIALLY_BOUND_BIT | c.VK_DESCRIPTOR_BINDING_UPDATE_AFTER_BIND_BIT };
+    
+    var set1FlagsInfo = std.mem.zeroes(c.VkDescriptorSetLayoutBindingFlagsCreateInfo);
+    set1FlagsInfo.sType = c.VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_BINDING_FLAGS_CREATE_INFO;
+    set1FlagsInfo.bindingCount = 4;
+    set1FlagsInfo.pBindingFlags = &set1Flags;
+
+    var set0Info = std.mem.zeroes(c.VkDescriptorSetLayoutCreateInfo);
+    set0Info.sType = c.VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO;
+    set0Info.bindingCount = 6;
+    set0Info.pBindings = &set0Bindings;
+
+    var set1Info = std.mem.zeroes(c.VkDescriptorSetLayoutCreateInfo);
+    set1Info.sType = c.VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO;
+    set1Info.pNext = &set1FlagsInfo;
+    set1Info.flags = c.VK_DESCRIPTOR_SET_LAYOUT_CREATE_UPDATE_AFTER_BIND_POOL_BIT;
+    set1Info.bindingCount = 4;
+    set1Info.pBindings = &set1Bindings;
+
+    var setLayouts: [2]c.VkDescriptorSetLayout = undefined;
+    if (c.vkCreateDescriptorSetLayout(vs.context.device, &set0Info, null, &setLayouts[0]) != c.VK_SUCCESS or
+        c.vkCreateDescriptorSetLayout(vs.context.device, &set1Info, null, &setLayouts[1]) != c.VK_SUCCESS) {
+        log.cardinal_log_error("Failed to create descriptor set layouts", .{});
+        return false;
+    }
+
+    pipe.set0_layout = setLayouts[0];
+    pipe.set1_layout = setLayouts[1];
+    pipe.global_descriptor_set = null;
+
+    // Descriptor Pool
+    const poolSizes = [_]c.VkDescriptorPoolSize{
+        .{ .type = c.VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, .descriptorCount = 1000 * 4 },
+        .{ .type = c.VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, .descriptorCount = 1000 * 5 },
+        .{ .type = c.VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, .descriptorCount = 1000 * 4096 },
+    };
+
+    var poolInfo = std.mem.zeroes(c.VkDescriptorPoolCreateInfo);
+    poolInfo.sType = c.VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO;
+    poolInfo.poolSizeCount = 3;
+    poolInfo.pPoolSizes = &poolSizes;
+    poolInfo.maxSets = 1000;
+    poolInfo.flags = c.VK_DESCRIPTOR_POOL_CREATE_FREE_DESCRIPTOR_SET_BIT | c.VK_DESCRIPTOR_POOL_CREATE_UPDATE_AFTER_BIND_BIT;
+
+    if (c.vkCreateDescriptorPool(vs.context.device, &poolInfo, null, &pipe.descriptor_pool) != c.VK_SUCCESS) {
+        log.cardinal_log_error("Failed to create mesh shader descriptor pool", .{});
+        return false;
+    }
+
+    // Default Material Buffer
+    const DefaultMaterialData = extern struct {
+        albedo: [3]f32,
+        pad0: f32,
+        metallic: f32,
+        roughness: f32,
+        ao: f32,
+        pad1: f32,
+        emissive: [3]f32,
+        pad2: f32,
+        alpha: f32,
+        pad3: [3]f32,
+    };
+
+    const defaultMat = DefaultMaterialData{
+        .albedo = .{ 1.0, 1.0, 1.0 },
+        .pad0 = 0,
+        .metallic = 0.0,
+        .roughness = 0.5,
+        .ao = 1.0,
+        .pad1 = 0,
+        .emissive = .{ 0.0, 0.0, 0.0 },
+        .pad2 = 0,
+        .alpha = 1.0,
+        .pad3 = .{ 0, 0, 0 },
+    };
+
+    var defaultMatBuffer: c.VulkanBuffer = undefined;
+    if (c.vk_buffer_create_device_local(&defaultMatBuffer, vs.context.device, &vs.allocator, vs.commands.pools[0],
+                                      vs.context.graphics_queue, &defaultMat, @sizeOf(DefaultMaterialData),
+                                      c.VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT, vs)) {
+        pipe.default_material_buffer = defaultMatBuffer.handle;
+        pipe.default_material_memory = defaultMatBuffer.memory;
+    } else {
+        log.cardinal_log_error("Failed to create default material buffer", .{});
+    }
+
+    var pushConstantRange = std.mem.zeroes(c.VkPushConstantRange);
+    pushConstantRange.stageFlags = c.VK_SHADER_STAGE_MESH_BIT_EXT | c.VK_SHADER_STAGE_FRAGMENT_BIT;
+    if (pipe.has_task_shader) {
+        pushConstantRange.stageFlags |= c.VK_SHADER_STAGE_TASK_BIT_EXT;
+    }
+    pushConstantRange.offset = 0;
+    pushConstantRange.size = 256;
+
+    var pipelineLayoutInfo = std.mem.zeroes(c.VkPipelineLayoutCreateInfo);
+    pipelineLayoutInfo.sType = c.VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO;
+    pipelineLayoutInfo.setLayoutCount = 2;
+    pipelineLayoutInfo.pSetLayouts = &setLayouts;
+    pipelineLayoutInfo.pushConstantRangeCount = 1;
+    pipelineLayoutInfo.pPushConstantRanges = &pushConstantRange;
+
+    if (c.vkCreatePipelineLayout(vs.context.device, &pipelineLayoutInfo, null, &pipe.pipeline_layout) != c.VK_SUCCESS) {
+        log.cardinal_log_error("Failed to create mesh shader pipeline layout!", .{});
+        c.vkDestroyShaderModule(vs.context.device, meshShaderModule, null);
+        c.vkDestroyShaderModule(vs.context.device, fragShaderModule, null);
+        if (taskShaderModule != null) c.vkDestroyShaderModule(vs.context.device, taskShaderModule, null);
+        return false;
+    }
+
+    // Graphics Pipeline
+    var viewportState = std.mem.zeroes(c.VkPipelineViewportStateCreateInfo);
+    viewportState.sType = c.VK_STRUCTURE_TYPE_PIPELINE_VIEWPORT_STATE_CREATE_INFO;
+    viewportState.viewportCount = 1;
+    viewportState.scissorCount = 1;
+
+    var rasterizer = std.mem.zeroes(c.VkPipelineRasterizationStateCreateInfo);
+    rasterizer.sType = c.VK_STRUCTURE_TYPE_PIPELINE_RASTERIZATION_STATE_CREATE_INFO;
+    rasterizer.depthClampEnable = c.VK_FALSE;
+    rasterizer.rasterizerDiscardEnable = c.VK_FALSE;
+    rasterizer.polygonMode = cfg.polygon_mode;
+    rasterizer.lineWidth = 1.0;
+    rasterizer.cullMode = cfg.cull_mode;
+    rasterizer.frontFace = cfg.front_face;
+    rasterizer.depthBiasEnable = c.VK_FALSE;
+
+    var multisampling = std.mem.zeroes(c.VkPipelineMultisampleStateCreateInfo);
+    multisampling.sType = c.VK_STRUCTURE_TYPE_PIPELINE_MULTISAMPLE_STATE_CREATE_INFO;
+    multisampling.sampleShadingEnable = c.VK_FALSE;
+    multisampling.rasterizationSamples = c.VK_SAMPLE_COUNT_1_BIT;
+
+    var depthStencil = std.mem.zeroes(c.VkPipelineDepthStencilStateCreateInfo);
+    depthStencil.sType = c.VK_STRUCTURE_TYPE_PIPELINE_DEPTH_STENCIL_STATE_CREATE_INFO;
+    depthStencil.depthTestEnable = if (cfg.depth_test_enable) c.VK_TRUE else c.VK_FALSE;
+    depthStencil.depthWriteEnable = if (cfg.depth_write_enable) c.VK_TRUE else c.VK_FALSE;
+    depthStencil.depthCompareOp = cfg.depth_compare_op;
+    depthStencil.depthBoundsTestEnable = c.VK_FALSE;
+    depthStencil.stencilTestEnable = c.VK_FALSE;
+
+    var colorBlendAttachment = std.mem.zeroes(c.VkPipelineColorBlendAttachmentState);
+    colorBlendAttachment.colorWriteMask = c.VK_COLOR_COMPONENT_R_BIT | c.VK_COLOR_COMPONENT_G_BIT | c.VK_COLOR_COMPONENT_B_BIT | c.VK_COLOR_COMPONENT_A_BIT;
+    colorBlendAttachment.blendEnable = if (cfg.blend_enable) c.VK_TRUE else c.VK_FALSE;
+    if (cfg.blend_enable) {
+        colorBlendAttachment.srcColorBlendFactor = cfg.src_color_blend_factor;
+        colorBlendAttachment.dstColorBlendFactor = cfg.dst_color_blend_factor;
+        colorBlendAttachment.colorBlendOp = cfg.color_blend_op;
+        colorBlendAttachment.srcAlphaBlendFactor = c.VK_BLEND_FACTOR_ONE;
+        colorBlendAttachment.dstAlphaBlendFactor = c.VK_BLEND_FACTOR_ZERO;
+        colorBlendAttachment.alphaBlendOp = c.VK_BLEND_OP_ADD;
+    }
+
+    var colorBlending = std.mem.zeroes(c.VkPipelineColorBlendStateCreateInfo);
+    colorBlending.sType = c.VK_STRUCTURE_TYPE_PIPELINE_COLOR_BLEND_STATE_CREATE_INFO;
+    colorBlending.logicOpEnable = c.VK_FALSE;
+    colorBlending.attachmentCount = 1;
+    colorBlending.pAttachments = &colorBlendAttachment;
+
+    const dynamicStates = [_]c.VkDynamicState{ c.VK_DYNAMIC_STATE_VIEWPORT, c.VK_DYNAMIC_STATE_SCISSOR };
+    var dynamicState = std.mem.zeroes(c.VkPipelineDynamicStateCreateInfo);
+    dynamicState.sType = c.VK_STRUCTURE_TYPE_PIPELINE_DYNAMIC_STATE_CREATE_INFO;
+    dynamicState.dynamicStateCount = 2;
+    dynamicState.pDynamicStates = &dynamicStates;
+
+    var renderingInfo = std.mem.zeroes(c.VkPipelineRenderingCreateInfo);
+    renderingInfo.sType = c.VK_STRUCTURE_TYPE_PIPELINE_RENDERING_CREATE_INFO;
+    renderingInfo.colorAttachmentCount = 1;
+    renderingInfo.pColorAttachmentFormats = &swapchain_format;
+    renderingInfo.depthAttachmentFormat = depth_format;
+
+    var pipelineInfo = std.mem.zeroes(c.VkGraphicsPipelineCreateInfo);
+    pipelineInfo.sType = c.VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO;
+    pipelineInfo.pNext = &renderingInfo;
+    pipelineInfo.stageCount = stageCount;
+    pipelineInfo.pStages = &shaderStages;
+    pipelineInfo.pVertexInputState = null;
+    pipelineInfo.pInputAssemblyState = null;
+    pipelineInfo.pViewportState = &viewportState;
+    pipelineInfo.pRasterizationState = &rasterizer;
+    pipelineInfo.pMultisampleState = &multisampling;
+    pipelineInfo.pDepthStencilState = &depthStencil;
+    pipelineInfo.pColorBlendState = &colorBlending;
+    pipelineInfo.pDynamicState = &dynamicState;
+    pipelineInfo.layout = pipe.pipeline_layout;
+    pipelineInfo.renderPass = null;
+    pipelineInfo.subpass = 0;
+    pipelineInfo.basePipelineHandle = null;
+
+    if (c.vkCreateGraphicsPipelines(vs.context.device, null, 1, &pipelineInfo, null, &pipe.pipeline) != c.VK_SUCCESS) {
+        log.cardinal_log_error("Failed to create mesh shader graphics pipeline!", .{});
+        c.vkDestroyPipelineLayout(vs.context.device, pipe.pipeline_layout, null);
+        c.vkDestroyShaderModule(vs.context.device, meshShaderModule, null);
+        c.vkDestroyShaderModule(vs.context.device, fragShaderModule, null);
+        if (taskShaderModule != null) c.vkDestroyShaderModule(vs.context.device, taskShaderModule, null);
+        return false;
+    }
+
+    c.vkDestroyShaderModule(vs.context.device, meshShaderModule, null);
+    c.vkDestroyShaderModule(vs.context.device, fragShaderModule, null);
+    if (taskShaderModule != null) c.vkDestroyShaderModule(vs.context.device, taskShaderModule, null);
+
+    return true;
+}
+
+pub export fn vk_mesh_shader_destroy_pipeline(s: ?*c.VulkanState, pipeline: ?*c.MeshShaderPipeline) callconv(.c) void {
+    if (s == null or pipeline == null) return;
+    const vs = s.?;
+    const pipe = pipeline.?;
+
+    if (pipe.pipeline != null) {
+        c.vkDestroyPipeline(vs.context.device, pipe.pipeline, null);
+        pipe.pipeline = null;
+    }
+
+    if (pipe.pipeline_layout != null) {
+        c.vkDestroyPipelineLayout(vs.context.device, pipe.pipeline_layout, null);
+        pipe.pipeline_layout = null;
+    }
+
+    if (pipe.set0_layout != null) {
+        c.vkDestroyDescriptorSetLayout(vs.context.device, pipe.set0_layout, null);
+        pipe.set0_layout = null;
+    }
+
+    if (pipe.set1_layout != null) {
+        c.vkDestroyDescriptorSetLayout(vs.context.device, pipe.set1_layout, null);
+        pipe.set1_layout = null;
+    }
+
+    if (pipe.descriptor_pool != null) {
+        c.vkDestroyDescriptorPool(vs.context.device, pipe.descriptor_pool, null);
+        pipe.descriptor_pool = null;
+    }
+
+    if (pipe.default_material_buffer != null) {
+        c.vkDestroyBuffer(vs.context.device, pipe.default_material_buffer, null);
+        pipe.default_material_buffer = null;
+    }
+    if (pipe.default_material_memory != null) {
+        c.vkFreeMemory(vs.context.device, pipe.default_material_memory, null);
+        pipe.default_material_memory = null;
+    }
+}
+
+pub export fn vk_mesh_shader_draw(
+    cmd_buffer: c.VkCommandBuffer,
+    s: ?*c.VulkanState,
+    pipeline: ?*const c.MeshShaderPipeline,
+    draw_data: ?*const c.MeshShaderDrawData
+) callconv(.c) void {
+    if (cmd_buffer == null or s == null or pipeline == null or draw_data == null) return;
+    const vs = s.?;
+    const pipe = pipeline.?;
+    const data = draw_data.?;
+
+    c.vkCmdBindPipeline(cmd_buffer, c.VK_PIPELINE_BIND_POINT_GRAPHICS, pipe.pipeline);
+
+    if (data.descriptor_set != null) {
+        c.vkCmdBindDescriptorSets(cmd_buffer, c.VK_PIPELINE_BIND_POINT_GRAPHICS,
+                                pipe.pipeline_layout, 0, 1, &data.descriptor_set, 0, null);
+    }
+
+    if (pipe.global_descriptor_set != null) {
+        c.vkCmdBindDescriptorSets(cmd_buffer, c.VK_PIPELINE_BIND_POINT_GRAPHICS,
+                                pipe.pipeline_layout, 1, 1, &pipe.global_descriptor_set, 0, null);
+    }
+
+    // PFN_vkCmdDrawMeshTasksEXT loading and calling
+    const func_name = "vkCmdDrawMeshTasksEXT";
+    const pfn = c.vkGetDeviceProcAddr(vs.context.device, func_name);
+    if (pfn) |func| {
+        const cmdDrawMeshTasksEXT = @as(c.PFN_vkCmdDrawMeshTasksEXT, @ptrCast(func));
+        cmdDrawMeshTasksEXT.?(cmd_buffer, data.meshlet_count, 1, 0);
+    } else {
+        log.cardinal_log_error("vkCmdDrawMeshTasksEXT not found!", .{});
+    }
+}
+
+pub export fn vk_mesh_shader_destroy_draw_data(s: ?*c.VulkanState, draw_data: ?*c.MeshShaderDrawData) callconv(.c) void {
+    if (s == null or draw_data == null) return;
+    const vs = s.?;
+    const data = draw_data.?;
+
+    // Free descriptor set
+    if (data.descriptor_set != null and vs.pipelines.mesh_shader_pipeline.descriptor_pool != null) {
+        _ = c.vkFreeDescriptorSets(vs.context.device, vs.pipelines.mesh_shader_pipeline.descriptor_pool, 1, &data.descriptor_set);
+        data.descriptor_set = null;
+    }
+
+    if (data.vertex_buffer != null) {
+        c.vkDestroyBuffer(vs.context.device, data.vertex_buffer, null);
+        data.vertex_buffer = null;
+    }
+    if (data.vertex_memory != null) {
+        c.vkFreeMemory(vs.context.device, data.vertex_memory, null);
+        data.vertex_memory = null;
+    }
+
+    if (data.meshlet_buffer != null) {
+        c.vkDestroyBuffer(vs.context.device, data.meshlet_buffer, null);
+        data.meshlet_buffer = null;
+    }
+    if (data.meshlet_memory != null) {
+        c.vkFreeMemory(vs.context.device, data.meshlet_memory, null);
+        data.meshlet_memory = null;
+    }
+
+    if (data.primitive_buffer != null) {
+        c.vkDestroyBuffer(vs.context.device, data.primitive_buffer, null);
+        data.primitive_buffer = null;
+    }
+    if (data.primitive_memory != null) {
+        c.vkFreeMemory(vs.context.device, data.primitive_memory, null);
+        data.primitive_memory = null;
+    }
+
+    if (data.draw_command_buffer != null) {
+        c.vkDestroyBuffer(vs.context.device, data.draw_command_buffer, null);
+        data.draw_command_buffer = null;
+    }
+    if (data.draw_command_memory != null) {
+        c.vkFreeMemory(vs.context.device, data.draw_command_memory, null);
+        data.draw_command_memory = null;
+    }
+
+    if (data.uniform_buffer != null) {
+        c.vkDestroyBuffer(vs.context.device, data.uniform_buffer, null);
+        data.uniform_buffer = null;
+    }
+    if (data.uniform_memory != null) {
+        c.vkFreeMemory(vs.context.device, data.uniform_memory, null);
+        data.uniform_memory = null;
+    }
+    data.uniform_mapped = null;
+
+    // Zero out the struct
+    @memset(@as([*]u8, @ptrCast(data))[0..@sizeOf(c.MeshShaderDrawData)], 0);
+}
+
+pub export fn vk_mesh_shader_add_pending_cleanup_internal(s: ?*c.VulkanState, draw_data: ?*c.MeshShaderDrawData) callconv(.c) void {
+    if (s == null or draw_data == null) return;
+    const vs = s.?;
+    const data = draw_data.?;
+
+    if (vs.pending_cleanup_count >= vs.pending_cleanup_capacity) {
+        const new_capacity = if (vs.pending_cleanup_capacity == 0) 16 else vs.pending_cleanup_capacity * 2;
+        const new_ptr = c.realloc(vs.pending_cleanup_draw_data, new_capacity * @sizeOf(c.MeshShaderDrawData));
+        if (new_ptr == null) {
+            log.cardinal_log_error("Failed to expand pending cleanup list", .{});
+            vk_mesh_shader_destroy_draw_data(vs, data);
+            return;
+        }
+        vs.pending_cleanup_draw_data = @as([*]c.MeshShaderDrawData, @ptrCast(@alignCast(new_ptr)));
+        vs.pending_cleanup_capacity = new_capacity;
+    }
+
+    vs.pending_cleanup_draw_data[vs.pending_cleanup_count] = data.*;
+    vs.pending_cleanup_count += 1;
+}
+
+pub export fn vk_mesh_shader_process_pending_cleanup(s: ?*c.VulkanState) callconv(.c) void {
+    if (s == null or s.?.pending_cleanup_draw_data == null) return;
+    const vs = s.?;
+
+    var i: u32 = 0;
+    while (i < vs.pending_cleanup_count) : (i += 1) {
+        vk_mesh_shader_destroy_draw_data(vs, &vs.pending_cleanup_draw_data[i]);
+    }
+    vs.pending_cleanup_count = 0;
+}
+
+pub export fn vk_mesh_shader_generate_meshlets(
+    vertices: ?*const anyopaque,
+    vertex_count: u32,
+    indices: ?*const u32,
+    index_count: u32,
+    max_vertices_per_meshlet_in: u32,
+    max_primitives_per_meshlet_in: u32,
+    out_meshlets: ?*?[*]c.GpuMeshlet,
+    out_meshlet_count: ?*u32
+) callconv(.c) bool {
+    if (vertices == null or indices == null or out_meshlets == null or out_meshlet_count == null) return false;
+    
+    var max_vertices = max_vertices_per_meshlet_in;
+    if (max_vertices == 0) max_vertices = 64;
+    
+    var max_primitives = max_primitives_per_meshlet_in;
+    if (max_primitives == 0) max_primitives = 126;
+
+    const triangles_count = index_count / 3;
+    const meshlets_capacity = (triangles_count + max_primitives - 1) / max_primitives;
+    
+    const meshlets_ptr = c.malloc(meshlets_capacity * @sizeOf(c.GpuMeshlet));
+    if (meshlets_ptr == null) {
+        log.cardinal_log_error("Failed to allocate memory for meshlets", .{});
+        return false;
+    }
+    const meshlets = @as([*]c.GpuMeshlet, @ptrCast(@alignCast(meshlets_ptr)));
+
+    var current_meshlet: u32 = 0;
+    var current_index: u32 = 0;
+
+    while (current_index < index_count) {
+        const remaining_indices = index_count - current_index;
+        var indices_to_process = remaining_indices;
+        if (indices_to_process > max_primitives * 3) {
+            indices_to_process = max_primitives * 3;
+        }
+
+        var meshlet = &meshlets[current_meshlet];
+        meshlet.vertex_offset = 0;
+        meshlet.vertex_count = vertex_count;
+        meshlet.primitive_offset = current_index;
+        meshlet.primitive_count = indices_to_process / 3;
+
+        current_index += indices_to_process;
+        current_meshlet += 1;
+    }
+
+    out_meshlets.?.* = meshlets;
+    out_meshlet_count.?.* = current_meshlet;
+
+    return true;
+}
+
+pub export fn vk_mesh_shader_convert_scene_mesh(
+    mesh: ?*const c.CardinalMesh,
+    max_vertices_per_meshlet: u32,
+    max_primitives_per_meshlet: u32,
+    out_meshlets: ?*?[*]c.GpuMeshlet,
+    out_meshlet_count: ?*u32
+) callconv(.c) bool {
+    if (mesh == null) return false;
+    const m = mesh.?;
+    return vk_mesh_shader_generate_meshlets(
+        m.vertices, m.vertex_count, m.indices, m.index_count,
+        max_vertices_per_meshlet, max_primitives_per_meshlet, out_meshlets, out_meshlet_count
+    );
+}
+
+pub export fn vk_mesh_shader_create_draw_data(
+    s: ?*c.VulkanState,
+    meshlets: ?[*]const c.GpuMeshlet,
+    meshlet_count: u32,
+    vertices: ?*const anyopaque,
+    vertex_size: u32,
+    primitives: ?*const u32,
+    primitive_count: u32,
+    draw_data: ?*c.MeshShaderDrawData
+) callconv(.c) bool {
+    if (s == null or draw_data == null or meshlets == null or vertices == null or primitives == null) return false;
+    const vs = s.?;
+    const data = draw_data.?;
+
+    @memset(@as([*]u8, @ptrCast(data))[0..@sizeOf(c.MeshShaderDrawData)], 0);
+    data.meshlet_count = meshlet_count;
+
+    // 1. Meshlet Buffer
+    const meshletBufferSize = meshlet_count * @sizeOf(c.GpuMeshlet);
+    var meshletBuffer: c.VulkanBuffer = undefined;
+    if (c.vk_buffer_create_device_local(&meshletBuffer, vs.context.device, &vs.allocator, vs.commands.pools[0],
+                                      vs.context.graphics_queue, meshlets, meshletBufferSize,
+                                      c.VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | c.VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT, vs)) {
+        data.meshlet_buffer = meshletBuffer.handle;
+        data.meshlet_memory = meshletBuffer.memory;
+    } else {
+        log.cardinal_log_error("Failed to create meshlet buffer", .{});
+        return false;
+    }
+
+    // 2. Vertex Buffer
+    var vertexBuffer: c.VulkanBuffer = undefined;
+    if (c.vk_buffer_create_device_local(&vertexBuffer, vs.context.device, &vs.allocator, vs.commands.pools[0],
+                                      vs.context.graphics_queue, vertices, vertex_size,
+                                      c.VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | c.VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT, vs)) {
+        data.vertex_buffer = vertexBuffer.handle;
+        data.vertex_memory = vertexBuffer.memory;
+    } else {
+        log.cardinal_log_error("Failed to create vertex buffer for mesh shader", .{});
+        vk_mesh_shader_destroy_draw_data(vs, data);
+        return false;
+    }
+
+    // 3. Primitive Buffer
+    const primitiveBufferSize = primitive_count * @sizeOf(u32);
+    var primitiveBuffer: c.VulkanBuffer = undefined;
+    if (c.vk_buffer_create_device_local(&primitiveBuffer, vs.context.device, &vs.allocator, vs.commands.pools[0],
+                                      vs.context.graphics_queue, primitives, primitiveBufferSize,
+                                      c.VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | c.VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT, vs)) {
+        data.primitive_buffer = primitiveBuffer.handle;
+        data.primitive_memory = primitiveBuffer.memory;
+    } else {
+        log.cardinal_log_error("Failed to create primitive buffer", .{});
+        vk_mesh_shader_destroy_draw_data(vs, data);
+        return false;
+    }
+
+    // 4. Draw Command Buffer
+    const GpuDrawCommand = extern struct {
+        meshlet_offset: u32,
+        meshlet_count: u32,
+        instance_count: u32,
+        first_instance: u32,
+    };
+    const drawCmd = GpuDrawCommand{
+        .meshlet_offset = 0,
+        .meshlet_count = meshlet_count,
+        .instance_count = 1,
+        .first_instance = 0,
+    };
+    data.draw_command_count = 1;
+
+    var drawCmdBuffer: c.VulkanBuffer = undefined;
+    if (c.vk_buffer_create_device_local(&drawCmdBuffer, vs.context.device, &vs.allocator, vs.commands.pools[0],
+                                      vs.context.graphics_queue, &drawCmd, @sizeOf(GpuDrawCommand),
+                                      c.VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | c.VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT, vs)) {
+        data.draw_command_buffer = drawCmdBuffer.handle;
+        data.draw_command_memory = drawCmdBuffer.memory;
+    } else {
+        log.cardinal_log_error("Failed to create draw command buffer", .{});
+        vk_mesh_shader_destroy_draw_data(vs, data);
+        return false;
+    }
+
+    // 5. Uniform Buffer
+    const uboSize = @sizeOf(c.MeshShaderUniformBuffer);
+    var uboInfo = std.mem.zeroes(c.VulkanBufferCreateInfo);
+    uboInfo.size = uboSize;
+    uboInfo.usage = c.VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT;
+    uboInfo.properties = c.VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | c.VK_MEMORY_PROPERTY_HOST_COHERENT_BIT;
+    uboInfo.persistentlyMapped = true;
+
+    var ubo: c.VulkanBuffer = undefined;
+    if (c.vk_buffer_create(&ubo, vs.context.device, &vs.allocator, &uboInfo)) {
+        data.uniform_buffer = ubo.handle;
+        data.uniform_memory = ubo.memory;
+        data.uniform_mapped = ubo.mapped;
+        
+        // Initialize UBO with zeroes
+        if (ubo.mapped) |mapped| {
+            @memset(@as([*]u8, @ptrCast(mapped))[0..uboSize], 0);
+        }
+    } else {
+        log.cardinal_log_error("Failed to create mesh shader uniform buffer", .{});
+        vk_mesh_shader_destroy_draw_data(vs, data);
+        return false;
+    }
+
+    return true;
+}
+
+pub export fn vk_mesh_shader_update_descriptor_buffers(
+    s: ?*c.VulkanState,
+    pipeline: ?*c.MeshShaderPipeline,
+    draw_data: ?*const c.MeshShaderDrawData,
+    material_buffer: c.VkBuffer,
+    lighting_buffer: c.VkBuffer,
+    texture_views: ?[*]c.VkImageView,
+    samplers: ?[*]c.VkSampler,
+    texture_count: u32
+) callconv(.c) bool {
+    if (s == null or pipeline == null) return false;
+    const vs = s.?;
+    const pipe = pipeline.?;
+
+    // 1. Update Global Descriptor Set (Set 1) if needed
+    if (pipe.global_descriptor_set == null) {
+        if (pipe.descriptor_pool == null) {
+            log.cardinal_log_error("Mesh shader descriptor pool is null", .{});
+            return false;
+        }
+        var allocInfo = std.mem.zeroes(c.VkDescriptorSetAllocateInfo);
+        allocInfo.sType = c.VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO;
+        allocInfo.descriptorPool = pipe.descriptor_pool;
+        allocInfo.descriptorSetCount = 1;
+        allocInfo.pSetLayouts = &pipe.set1_layout;
+
+        if (c.vkAllocateDescriptorSets(vs.context.device, &allocInfo, &pipe.global_descriptor_set) != c.VK_SUCCESS) {
+            log.cardinal_log_error("Failed to allocate global descriptor set for mesh shader", .{});
+            return false;
+        }
+    }
+
+    // Update Set 1
+    {
+        var writes: [4]c.VkWriteDescriptorSet = undefined;
+        var w: u32 = 0;
+
+        var defaultMatInfo = c.VkDescriptorBufferInfo{
+            .buffer = pipe.default_material_buffer,
+            .offset = 0,
+            .range = c.VK_WHOLE_SIZE,
+        };
+        var matInfo = c.VkDescriptorBufferInfo{
+            .buffer = material_buffer,
+            .offset = 0,
+            .range = c.VK_WHOLE_SIZE,
+        };
+        var lightInfo = c.VkDescriptorBufferInfo{
+            .buffer = lighting_buffer,
+            .offset = 0,
+            .range = c.VK_WHOLE_SIZE,
+        };
+
+        var imageInfos: ?[*]c.VkDescriptorImageInfo = null;
+        if (texture_count > 0 and texture_views != null and samplers != null) {
+            const ptr = c.malloc(texture_count * @sizeOf(c.VkDescriptorImageInfo));
+            if (ptr) |p| {
+                imageInfos = @as([*]c.VkDescriptorImageInfo, @ptrCast(@alignCast(p)));
+                var i: u32 = 0;
+                while (i < texture_count) : (i += 1) {
+                    imageInfos.?[i].sampler = samplers.?[i];
+                    imageInfos.?[i].imageView = texture_views.?[i];
+                    imageInfos.?[i].imageLayout = c.VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+                }
+            }
+        }
+        defer if (imageInfos) |ptr| c.free(ptr);
+
+        if (pipe.default_material_buffer != null) {
+            writes[w] = std.mem.zeroes(c.VkWriteDescriptorSet);
+            writes[w].sType = c.VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+            writes[w].dstSet = pipe.global_descriptor_set;
+            writes[w].dstBinding = 0;
+            writes[w].descriptorType = c.VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
+            writes[w].descriptorCount = 1;
+            writes[w].pBufferInfo = &defaultMatInfo;
+            w += 1;
+        }
+
+        if (lighting_buffer != null) {
+            writes[w] = std.mem.zeroes(c.VkWriteDescriptorSet);
+            writes[w].sType = c.VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+            writes[w].dstSet = pipe.global_descriptor_set;
+            writes[w].dstBinding = 1;
+            writes[w].descriptorType = c.VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
+            writes[w].descriptorCount = 1;
+            writes[w].pBufferInfo = &lightInfo;
+            w += 1;
+        }
+
+        if (material_buffer != null) {
+            writes[w] = std.mem.zeroes(c.VkWriteDescriptorSet);
+            writes[w].sType = c.VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+            writes[w].dstSet = pipe.global_descriptor_set;
+            writes[w].dstBinding = 2;
+            writes[w].descriptorType = c.VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
+            writes[w].descriptorCount = 1;
+            writes[w].pBufferInfo = &matInfo;
+            w += 1;
+        }
+
+        if (texture_count > 0 and imageInfos != null) {
+            writes[w] = std.mem.zeroes(c.VkWriteDescriptorSet);
+            writes[w].sType = c.VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+            writes[w].dstSet = pipe.global_descriptor_set;
+            writes[w].dstBinding = 3;
+            writes[w].descriptorType = c.VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+            writes[w].descriptorCount = texture_count;
+            writes[w].pImageInfo = imageInfos;
+            w += 1;
+        }
+
+        if (w > 0) {
+            c.vkUpdateDescriptorSets(vs.context.device, w, &writes, 0, null);
+        }
+    }
+
+    // 2. Allocate and Update Set 0 (Mesh Data)
+    if (draw_data) |d| {
+        // Need mutable access to draw_data to set descriptor_set
+        // But the input is const. The C code casts away const: (MeshShaderDrawData*)draw_data
+        const mutable_draw_data = @as(*c.MeshShaderDrawData, @constCast(d));
+        
+        if (mutable_draw_data.descriptor_set == null) {
+            if (pipe.descriptor_pool == null) return false;
+            
+            var allocInfo = std.mem.zeroes(c.VkDescriptorSetAllocateInfo);
+            allocInfo.sType = c.VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO;
+            allocInfo.descriptorPool = pipe.descriptor_pool;
+            allocInfo.descriptorSetCount = 1;
+            allocInfo.pSetLayouts = &pipe.set0_layout;
+            
+            if (c.vkAllocateDescriptorSets(vs.context.device, &allocInfo, &mutable_draw_data.descriptor_set) != c.VK_SUCCESS) {
+                log.cardinal_log_error("Failed to allocate mesh draw descriptor set", .{});
+                return false;
+            }
+        }
+
+        var bufferInfos: [6]c.VkDescriptorBufferInfo = undefined;
+        var writes: [6]c.VkWriteDescriptorSet = undefined;
+        var w: u32 = 0;
+
+        // 0: DrawCmd
+        bufferInfos[0] = .{ .buffer = d.draw_command_buffer, .offset = 0, .range = c.VK_WHOLE_SIZE };
+        writes[w] = std.mem.zeroes(c.VkWriteDescriptorSet);
+        writes[w].sType = c.VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+        writes[w].dstSet = mutable_draw_data.descriptor_set;
+        writes[w].dstBinding = 0;
+        writes[w].descriptorType = c.VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+        writes[w].descriptorCount = 1;
+        writes[w].pBufferInfo = &bufferInfos[0];
+        w += 1;
+
+        // 1: Meshlet
+        bufferInfos[1] = .{ .buffer = d.meshlet_buffer, .offset = 0, .range = c.VK_WHOLE_SIZE };
+        writes[w] = std.mem.zeroes(c.VkWriteDescriptorSet);
+        writes[w].sType = c.VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+        writes[w].dstSet = mutable_draw_data.descriptor_set;
+        writes[w].dstBinding = 1;
+        writes[w].descriptorType = c.VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+        writes[w].descriptorCount = 1;
+        writes[w].pBufferInfo = &bufferInfos[1];
+        w += 1;
+
+        // 2: Culling (Use uniform buffer placeholder)
+        bufferInfos[2] = .{ .buffer = d.uniform_buffer, .offset = 0, .range = c.VK_WHOLE_SIZE };
+        writes[w] = std.mem.zeroes(c.VkWriteDescriptorSet);
+        writes[w].sType = c.VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+        writes[w].dstSet = mutable_draw_data.descriptor_set;
+        writes[w].dstBinding = 2;
+        writes[w].descriptorType = c.VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
+        writes[w].descriptorCount = 1;
+        writes[w].pBufferInfo = &bufferInfos[2];
+        w += 1;
+
+        // 3: Vertex
+        bufferInfos[3] = .{ .buffer = d.vertex_buffer, .offset = 0, .range = c.VK_WHOLE_SIZE };
+        writes[w] = std.mem.zeroes(c.VkWriteDescriptorSet);
+        writes[w].sType = c.VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+        writes[w].dstSet = mutable_draw_data.descriptor_set;
+        writes[w].dstBinding = 3;
+        writes[w].descriptorType = c.VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+        writes[w].descriptorCount = 1;
+        writes[w].pBufferInfo = &bufferInfos[3];
+        w += 1;
+
+        // 4: Primitive
+        bufferInfos[4] = .{ .buffer = d.primitive_buffer, .offset = 0, .range = c.VK_WHOLE_SIZE };
+        writes[w] = std.mem.zeroes(c.VkWriteDescriptorSet);
+        writes[w].sType = c.VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+        writes[w].dstSet = mutable_draw_data.descriptor_set;
+        writes[w].dstBinding = 4;
+        writes[w].descriptorType = c.VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+        writes[w].descriptorCount = 1;
+        writes[w].pBufferInfo = &bufferInfos[4];
+        w += 1;
+
+        // 5: Uniform
+        bufferInfos[5] = .{ .buffer = d.uniform_buffer, .offset = 0, .range = c.VK_WHOLE_SIZE };
+        writes[w] = std.mem.zeroes(c.VkWriteDescriptorSet);
+        writes[w].sType = c.VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+        writes[w].dstSet = mutable_draw_data.descriptor_set;
+        writes[w].dstBinding = 5;
+        writes[w].descriptorType = c.VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
+        writes[w].descriptorCount = 1;
+        writes[w].pBufferInfo = &bufferInfos[5];
+        w += 1;
+
+        c.vkUpdateDescriptorSets(vs.context.device, w, &writes, 0, null);
+    }
+
+    return true;
+}
+
+pub export fn vk_mesh_shader_record_frame(s: ?*c.VulkanState, cmd: c.VkCommandBuffer) callconv(.c) void {
+    if (s == null) return;
+    const vs = s.?;
+
+    if (vs.pipelines.use_mesh_shader_pipeline and vs.pipelines.mesh_shader_pipeline.pipeline != null and vs.current_scene != null) {
+        const scene = @as(*const c.CardinalScene, @ptrCast(vs.current_scene.?));
+        var i: u32 = 0;
+        while (i < scene.mesh_count) : (i += 1) {
+            const mesh = &scene.meshes[i];
+            if (!mesh.visible) continue;
+
+            var meshlets: ?[*]c.GpuMeshlet = null;
+            var meshlet_count: u32 = 0;
+
+            if (vk_mesh_shader_convert_scene_mesh(mesh, 64, 126, &meshlets, &meshlet_count)) {
+                defer if (meshlets) |ptr| c.free(ptr);
+
+                var draw_data = std.mem.zeroes(c.MeshShaderDrawData);
+                
+                // Safe cleanup via defer if something fails or after recording? 
+                // Wait, draw_data contains buffers that need to live during the frame execution.
+                // We must add it to pending_cleanup list.
+
+                if (vk_mesh_shader_create_draw_data(vs, meshlets, meshlet_count, 
+                                                  mesh.vertices, mesh.vertex_count * @sizeOf(c.CardinalVertex),
+                                                  mesh.indices, mesh.index_count, &draw_data)) {
+                    
+                    // Update Uniform Buffer
+                    if (vs.pipelines.use_pbr_pipeline and vs.pipelines.pbr_pipeline.uniformBufferMapped != null) {
+                        const pbrUbo = @as(*c.PBRUniformBufferObject, @ptrCast(@alignCast(vs.pipelines.pbr_pipeline.uniformBufferMapped)));
+                        var meshUbo = std.mem.zeroes(c.MeshShaderUniformBuffer);
+                        
+                        @memcpy(meshUbo.model[0..16], mesh.transform[0..16]);
+                        @memcpy(meshUbo.view[0..16], pbrUbo.view[0..16]);
+                        @memcpy(meshUbo.proj[0..16], pbrUbo.proj[0..16]);
+                        meshUbo.materialIndex = mesh.material_index;
+
+                        if (draw_data.uniform_mapped != null) {
+                            @memcpy(@as([*]u8, @ptrCast(draw_data.uniform_mapped))[0..@sizeOf(c.MeshShaderUniformBuffer)], 
+                                   @as([*]const u8, @ptrCast(&meshUbo))[0..@sizeOf(c.MeshShaderUniformBuffer)]);
+                        }
+                    }
+
+                    // Update descriptors
+                    const material_buffer = if (vs.pipelines.use_pbr_pipeline) vs.pipelines.pbr_pipeline.materialBuffer else null;
+                    const lighting_buffer = if (vs.pipelines.use_pbr_pipeline) vs.pipelines.pbr_pipeline.lightingBuffer else null;
+                    
+                    var texture_views: ?[*]c.VkImageView = null;
+                    var samplers: ?[*]c.VkSampler = null;
+                    var texture_count: u32 = 0;
+
+                    if (vs.pipelines.use_pbr_pipeline and vs.pipelines.pbr_pipeline.textureManager != null) {
+                        const tm = vs.pipelines.pbr_pipeline.textureManager;
+                        texture_count = tm.*.textureCount;
+                        if (texture_count > 0) {
+                            const views_ptr = c.malloc(texture_count * @sizeOf(c.VkImageView));
+                            const samplers_ptr = c.malloc(texture_count * @sizeOf(c.VkSampler));
+                            
+                            if (views_ptr != null and samplers_ptr != null) {
+                                texture_views = @as([*]c.VkImageView, @ptrCast(@alignCast(views_ptr)));
+                                samplers = @as([*]c.VkSampler, @ptrCast(@alignCast(samplers_ptr)));
+                                
+                                var t: u32 = 0;
+                                while (t < texture_count) : (t += 1) {
+                                    texture_views.?[t] = tm.*.textures[t].view;
+                                    samplers.?[t] = if (tm.*.textures[t].sampler != null) tm.*.textures[t].sampler else tm.*.defaultSampler;
+                                }
+                            }
+                        }
+                    }
+                    defer {
+                        if (texture_views) |ptr| c.free(@as(?*anyopaque, @ptrCast(ptr)));
+                        if (samplers) |ptr| c.free(@as(?*anyopaque, @ptrCast(ptr)));
+                    }
+
+                    if (vk_mesh_shader_update_descriptor_buffers(vs, &vs.pipelines.mesh_shader_pipeline, &draw_data,
+                                                               material_buffer, lighting_buffer, texture_views, samplers, texture_count)) {
+                        vk_mesh_shader_draw(cmd, vs, &vs.pipelines.mesh_shader_pipeline, &draw_data);
+                    }
+
+                    // Schedule cleanup
+                    vk_mesh_shader_add_pending_cleanup_internal(vs, &draw_data);
+                }
+            }
+        }
+    }
+}
+

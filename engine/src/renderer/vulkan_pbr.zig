@@ -1,0 +1,1005 @@
+const std = @import("std");
+const builtin = @import("builtin");
+const log = @import("../core/log.zig");
+
+const c = @cImport({
+    @cDefine("CARDINAL_ZIG_BUILD", "1");
+    @cInclude("stdlib.h");
+    @cInclude("string.h");
+    @cInclude("stdio.h");
+    @cInclude("vulkan/vulkan.h");
+    @cInclude("vulkan_state.h");
+    @cInclude("cardinal/renderer/vulkan_pbr.h");
+    @cInclude("vulkan_buffer_manager.h");
+    @cInclude("vulkan_descriptor_manager.h");
+    @cInclude("cardinal/renderer/vulkan_texture_manager.h");
+    @cInclude("cardinal/renderer/util/vulkan_buffer_utils.h");
+    @cInclude("cardinal/renderer/util/vulkan_descriptor_utils.h");
+    @cInclude("cardinal/renderer/util/vulkan_material_utils.h");
+    @cInclude("cardinal/renderer/util/vulkan_shader_utils.h");
+    @cInclude("cardinal/renderer/util/vulkan_texture_utils.h");
+    @cInclude("cardinal/renderer/vulkan_sync_manager.h");
+    @cInclude("cardinal/renderer/vulkan_utils.h");
+});
+
+// Helper functions
+
+fn create_pbr_descriptor_manager(pipeline: *c.VulkanPBRPipeline, device: c.VkDevice, allocator: *c.VulkanAllocator, vulkan_state: ?*c.VulkanState) bool {
+    const ptr = c.malloc(@sizeOf(c.VulkanDescriptorManager));
+    if (ptr == null) {
+        log.cardinal_log_error("Failed to allocate memory for descriptor manager", .{});
+        return false;
+    }
+    pipeline.descriptorManager = @as(*c.VulkanDescriptorManager, @ptrCast(@alignCast(ptr)));
+
+    var bindings = [_]c.VulkanDescriptorBinding{
+        .{ .binding = 0, .descriptorType = c.VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, .descriptorCount = 1, .stageFlags = c.VK_SHADER_STAGE_VERTEX_BIT | c.VK_SHADER_STAGE_FRAGMENT_BIT, .pImmutableSamplers = null },
+        .{ .binding = 1, .descriptorType = c.VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, .descriptorCount = 1, .stageFlags = c.VK_SHADER_STAGE_FRAGMENT_BIT, .pImmutableSamplers = null },
+        .{ .binding = 2, .descriptorType = c.VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, .descriptorCount = 1, .stageFlags = c.VK_SHADER_STAGE_FRAGMENT_BIT, .pImmutableSamplers = null },
+        .{ .binding = 3, .descriptorType = c.VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, .descriptorCount = 1, .stageFlags = c.VK_SHADER_STAGE_FRAGMENT_BIT, .pImmutableSamplers = null },
+        .{ .binding = 4, .descriptorType = c.VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, .descriptorCount = 1, .stageFlags = c.VK_SHADER_STAGE_FRAGMENT_BIT, .pImmutableSamplers = null },
+        .{ .binding = 5, .descriptorType = c.VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, .descriptorCount = 1, .stageFlags = c.VK_SHADER_STAGE_FRAGMENT_BIT, .pImmutableSamplers = null },
+        .{ .binding = 6, .descriptorType = c.VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, .descriptorCount = 1, .stageFlags = c.VK_SHADER_STAGE_VERTEX_BIT, .pImmutableSamplers = null },
+        // Binding 7 removed
+        .{ .binding = 8, .descriptorType = c.VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, .descriptorCount = 1, .stageFlags = c.VK_SHADER_STAGE_FRAGMENT_BIT, .pImmutableSamplers = null },
+        .{ .binding = 9, .descriptorType = c.VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, .descriptorCount = 5000, .stageFlags = c.VK_SHADER_STAGE_FRAGMENT_BIT, .pImmutableSamplers = null },
+    };
+
+    const prefer_descriptor_buffers = false;
+
+    var createInfo = std.mem.zeroes(c.VulkanDescriptorManagerCreateInfo);
+    createInfo.bindings = &bindings;
+    createInfo.bindingCount = 9;
+    createInfo.maxSets = 1000;
+    createInfo.preferDescriptorBuffers = prefer_descriptor_buffers;
+    createInfo.poolFlags = c.VK_DESCRIPTOR_POOL_CREATE_FREE_DESCRIPTOR_SET_BIT | c.VK_DESCRIPTOR_POOL_CREATE_UPDATE_AFTER_BIND_BIT;
+
+    log.cardinal_log_info("Creating PBR descriptor manager with {d} max sets (prefer buffers: {s})", .{createInfo.maxSets, if (prefer_descriptor_buffers) "true" else "false"});
+
+    if (!c.vk_descriptor_manager_create(pipeline.descriptorManager, device, allocator, &createInfo, vulkan_state)) {
+        log.cardinal_log_error("Failed to create descriptor manager!", .{});
+        c.free(pipeline.descriptorManager);
+        pipeline.descriptorManager = null;
+        return false;
+    }
+    return true;
+}
+
+fn create_pbr_texture_manager(pipeline: *c.VulkanPBRPipeline, device: c.VkDevice, allocator: *c.VulkanAllocator, commandPool: c.VkCommandPool, graphicsQueue: c.VkQueue) bool {
+    const ptr = c.malloc(@sizeOf(c.VulkanTextureManager));
+    if (ptr == null) {
+        log.cardinal_log_error("Failed to allocate texture manager for PBR pipeline", .{});
+        return false;
+    }
+    pipeline.textureManager = @as(*c.VulkanTextureManager, @ptrCast(@alignCast(ptr)));
+
+    var textureConfig = std.mem.zeroes(c.VulkanTextureManagerConfig);
+    textureConfig.device = device;
+    textureConfig.allocator = allocator;
+    textureConfig.commandPool = commandPool;
+    textureConfig.graphicsQueue = graphicsQueue;
+    textureConfig.syncManager = null; // Will be set when VulkanState is available
+    textureConfig.initialCapacity = 16;
+
+    if (!c.vk_texture_manager_init(pipeline.textureManager, &textureConfig)) {
+        log.cardinal_log_error("Failed to initialize texture manager for PBR pipeline", .{});
+        c.free(pipeline.textureManager);
+        pipeline.textureManager = null;
+        return false;
+    }
+    return true;
+}
+
+fn create_pbr_pipeline_layout(pipeline: *c.VulkanPBRPipeline, device: c.VkDevice) bool {
+    var pushConstantRange = c.VkPushConstantRange{
+        .stageFlags = c.VK_SHADER_STAGE_VERTEX_BIT | c.VK_SHADER_STAGE_FRAGMENT_BIT,
+        .offset = 0,
+        .size = @sizeOf(c.PBRPushConstants),
+    };
+
+    var descriptorLayout = c.vk_descriptor_manager_get_layout(pipeline.descriptorManager);
+    var pipelineLayoutInfo = std.mem.zeroes(c.VkPipelineLayoutCreateInfo);
+    pipelineLayoutInfo.sType = c.VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO;
+    pipelineLayoutInfo.setLayoutCount = 1;
+    pipelineLayoutInfo.pSetLayouts = &descriptorLayout;
+    pipelineLayoutInfo.pushConstantRangeCount = 1;
+    pipelineLayoutInfo.pPushConstantRanges = &pushConstantRange;
+
+    return c.vk_utils_create_pipeline_layout(device, &pipelineLayoutInfo, &pipeline.pipelineLayout, "PBR pipeline layout");
+}
+
+fn load_pbr_shaders(device: c.VkDevice, vertShaderModule: *c.VkShaderModule, fragShaderModule: *c.VkShaderModule) bool {
+    var vert_path: [512]u8 = undefined;
+    var frag_path: [512]u8 = undefined;
+    
+    var shaders_dir: [*c]const u8 = @ptrCast(c.getenv("CARDINAL_SHADERS_DIR"));
+    if (shaders_dir == null or shaders_dir[0] == 0) {
+        shaders_dir = "assets/shaders";
+    }
+
+    _ = c.snprintf(&vert_path, 512, "%s/pbr.vert.spv", shaders_dir);
+    _ = c.snprintf(&frag_path, 512, "%s/pbr.frag.spv", shaders_dir);
+
+    log.cardinal_log_debug("Using shader paths: vert={s}, frag={s}", .{&vert_path, &frag_path});
+
+    if (!c.vk_shader_create_module(device, &vert_path, vertShaderModule)) {
+        log.cardinal_log_error("Failed to create vertex shader module!", .{});
+        return false;
+    }
+    if (!c.vk_shader_create_module(device, &frag_path, fragShaderModule)) {
+        log.cardinal_log_error("Failed to create fragment shader module!", .{});
+        c.vkDestroyShaderModule(device, vertShaderModule.*, null);
+        return false;
+    }
+    return true;
+}
+
+fn configure_shader_stages(stages: []c.VkPipelineShaderStageCreateInfo, vertShader: c.VkShaderModule, fragShader: c.VkShaderModule) void {
+    stages[0].sType = c.VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
+    stages[0].stage = c.VK_SHADER_STAGE_VERTEX_BIT;
+    stages[0].module = vertShader;
+    stages[0].pName = "main";
+    stages[0].pNext = null;
+    stages[0].flags = 0;
+    stages[0].pSpecializationInfo = null;
+
+    stages[1].sType = c.VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
+    stages[1].stage = c.VK_SHADER_STAGE_FRAGMENT_BIT;
+    stages[1].module = fragShader;
+    stages[1].pName = "main";
+    stages[1].pNext = null;
+    stages[1].flags = 0;
+    stages[1].pSpecializationInfo = null;
+}
+
+fn configure_vertex_input(info: *c.VkPipelineVertexInputStateCreateInfo, binding: *c.VkVertexInputBindingDescription, attributes: []c.VkVertexInputAttributeDescription) void {
+    binding.* = .{
+        .binding = 0, .stride = @sizeOf(c.CardinalVertex), .inputRate = c.VK_VERTEX_INPUT_RATE_VERTEX
+    };
+
+    attributes[0] = .{ .binding = 0, .location = 0, .format = c.VK_FORMAT_R32G32B32_SFLOAT, .offset = 0 };
+    attributes[1] = .{ .binding = 0, .location = 1, .format = c.VK_FORMAT_R32G32B32_SFLOAT, .offset = @sizeOf(f32) * 3 };
+    attributes[2] = .{ .binding = 0, .location = 2, .format = c.VK_FORMAT_R32G32_SFLOAT, .offset = @sizeOf(f32) * 6 };
+    attributes[3] = .{ .binding = 0, .location = 3, .format = c.VK_FORMAT_R32G32B32A32_SFLOAT, .offset = @offsetOf(c.CardinalVertex, "bone_weights") };
+    attributes[4] = .{ .binding = 0, .location = 4, .format = c.VK_FORMAT_R32G32B32A32_UINT, .offset = @offsetOf(c.CardinalVertex, "bone_indices") };
+
+    info.sType = c.VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO;
+    info.vertexBindingDescriptionCount = 1;
+    info.pVertexBindingDescriptions = binding;
+    info.vertexAttributeDescriptionCount = 5;
+    info.pVertexAttributeDescriptions = attributes.ptr;
+    info.pNext = null;
+    info.flags = 0;
+}
+
+fn configure_input_assembly(info: *c.VkPipelineInputAssemblyStateCreateInfo) void {
+    info.sType = c.VK_STRUCTURE_TYPE_PIPELINE_INPUT_ASSEMBLY_STATE_CREATE_INFO;
+    info.topology = c.VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST;
+    info.primitiveRestartEnable = c.VK_FALSE;
+    info.pNext = null;
+    info.flags = 0;
+}
+
+fn configure_viewport_state(info: *c.VkPipelineViewportStateCreateInfo) void {
+    info.sType = c.VK_STRUCTURE_TYPE_PIPELINE_VIEWPORT_STATE_CREATE_INFO;
+    info.viewportCount = 1;
+    info.scissorCount = 1;
+    info.pNext = null;
+    info.flags = 0;
+}
+
+fn configure_rasterization(info: *c.VkPipelineRasterizationStateCreateInfo) void {
+    info.sType = c.VK_STRUCTURE_TYPE_PIPELINE_RASTERIZATION_STATE_CREATE_INFO;
+    info.depthClampEnable = c.VK_FALSE;
+    info.rasterizerDiscardEnable = c.VK_FALSE;
+    info.polygonMode = c.VK_POLYGON_MODE_FILL;
+    info.lineWidth = 1.0;
+    info.cullMode = c.VK_CULL_MODE_NONE; 
+    info.frontFace = c.VK_FRONT_FACE_CLOCKWISE;
+    info.depthBiasEnable = c.VK_FALSE;
+    info.pNext = null;
+    info.flags = 0;
+}
+
+fn configure_multisampling(info: *c.VkPipelineMultisampleStateCreateInfo) void {
+    info.sType = c.VK_STRUCTURE_TYPE_PIPELINE_MULTISAMPLE_STATE_CREATE_INFO;
+    info.sampleShadingEnable = c.VK_FALSE;
+    info.rasterizationSamples = c.VK_SAMPLE_COUNT_1_BIT;
+    info.minSampleShading = 1.0;
+    info.pSampleMask = null;
+    info.alphaToCoverageEnable = c.VK_FALSE;
+    info.alphaToOneEnable = c.VK_FALSE;
+    info.pNext = null;
+    info.flags = 0;
+}
+
+fn configure_depth_stencil(info: *c.VkPipelineDepthStencilStateCreateInfo, depthWriteEnable: bool) void {
+    info.sType = c.VK_STRUCTURE_TYPE_PIPELINE_DEPTH_STENCIL_STATE_CREATE_INFO;
+    info.depthTestEnable = c.VK_TRUE;
+    info.depthWriteEnable = if (depthWriteEnable) c.VK_TRUE else c.VK_FALSE;
+    info.depthCompareOp = c.VK_COMPARE_OP_LESS;
+    info.depthBoundsTestEnable = c.VK_FALSE;
+    info.stencilTestEnable = c.VK_FALSE;
+    info.pNext = null;
+    info.flags = 0;
+}
+
+fn configure_color_blending(info: *c.VkPipelineColorBlendStateCreateInfo, attachment: *c.VkPipelineColorBlendAttachmentState, blendEnable: bool) void {
+    attachment.colorWriteMask = c.VK_COLOR_COMPONENT_R_BIT | c.VK_COLOR_COMPONENT_G_BIT | c.VK_COLOR_COMPONENT_B_BIT | c.VK_COLOR_COMPONENT_A_BIT;
+    attachment.blendEnable = if (blendEnable) c.VK_TRUE else c.VK_FALSE;
+
+    if (blendEnable) {
+        attachment.srcColorBlendFactor = c.VK_BLEND_FACTOR_SRC_ALPHA;
+        attachment.dstColorBlendFactor = c.VK_BLEND_FACTOR_ONE_MINUS_SRC_ALPHA;
+        attachment.colorBlendOp = c.VK_BLEND_OP_ADD;
+        attachment.srcAlphaBlendFactor = c.VK_BLEND_FACTOR_ONE;
+        attachment.dstAlphaBlendFactor = c.VK_BLEND_FACTOR_ZERO;
+        attachment.alphaBlendOp = c.VK_BLEND_OP_ADD;
+    }
+
+    info.sType = c.VK_STRUCTURE_TYPE_PIPELINE_COLOR_BLEND_STATE_CREATE_INFO;
+    info.logicOpEnable = c.VK_FALSE;
+    info.logicOp = c.VK_LOGIC_OP_COPY;
+    info.attachmentCount = 1;
+    info.pAttachments = attachment;
+    info.blendConstants[0] = 0.0;
+    info.blendConstants[1] = 0.0;
+    info.blendConstants[2] = 0.0;
+    info.blendConstants[3] = 0.0;
+    info.pNext = null;
+    info.flags = 0;
+}
+
+fn configure_dynamic_state(info: *c.VkPipelineDynamicStateCreateInfo, states: []c.VkDynamicState) void {
+    states[0] = c.VK_DYNAMIC_STATE_VIEWPORT;
+    states[1] = c.VK_DYNAMIC_STATE_SCISSOR;
+    states[2] = c.VK_DYNAMIC_STATE_DEPTH_BIAS;
+
+    info.sType = c.VK_STRUCTURE_TYPE_PIPELINE_DYNAMIC_STATE_CREATE_INFO;
+    info.dynamicStateCount = 3;
+    info.pDynamicStates = states.ptr;
+    info.pNext = null;
+    info.flags = 0;
+}
+
+fn configure_rendering_info(info: *c.VkPipelineRenderingCreateInfo, colorFormat: *c.VkFormat, depthFormat: c.VkFormat) void {
+    info.sType = c.VK_STRUCTURE_TYPE_PIPELINE_RENDERING_CREATE_INFO;
+    info.viewMask = 0;
+    info.colorAttachmentCount = 1;
+    info.pColorAttachmentFormats = colorFormat;
+    info.depthAttachmentFormat = depthFormat;
+    info.stencilAttachmentFormat = c.VK_FORMAT_UNDEFINED;
+    info.pNext = null;
+}
+
+fn create_pbr_graphics_pipeline(pipeline: *c.VulkanPBRPipeline, device: c.VkDevice, vertShader: c.VkShaderModule, fragShader: c.VkShaderModule, swapchainFormat: c.VkFormat, depthFormat: c.VkFormat, enableBlending: bool, enableDepthWrite: bool, outPipeline: *c.VkPipeline) bool {
+    var shaderStages: [2]c.VkPipelineShaderStageCreateInfo = undefined;
+    configure_shader_stages(&shaderStages, vertShader, fragShader);
+
+    var bindingDescription: c.VkVertexInputBindingDescription = undefined;
+    var attributeDescriptions: [5]c.VkVertexInputAttributeDescription = undefined;
+    var vertexInputInfo: c.VkPipelineVertexInputStateCreateInfo = undefined;
+    configure_vertex_input(&vertexInputInfo, &bindingDescription, &attributeDescriptions);
+
+    var inputAssembly: c.VkPipelineInputAssemblyStateCreateInfo = undefined;
+    configure_input_assembly(&inputAssembly);
+
+    var viewportState: c.VkPipelineViewportStateCreateInfo = undefined;
+    configure_viewport_state(&viewportState);
+
+    var rasterizer: c.VkPipelineRasterizationStateCreateInfo = undefined;
+    configure_rasterization(&rasterizer);
+    rasterizer.depthBiasEnable = c.VK_TRUE;
+
+    var multisampling: c.VkPipelineMultisampleStateCreateInfo = undefined;
+    configure_multisampling(&multisampling);
+
+    var depthStencil: c.VkPipelineDepthStencilStateCreateInfo = undefined;
+    configure_depth_stencil(&depthStencil, enableDepthWrite);
+
+    var colorBlendAttachment: c.VkPipelineColorBlendAttachmentState = undefined;
+    var colorBlending: c.VkPipelineColorBlendStateCreateInfo = undefined;
+    configure_color_blending(&colorBlending, &colorBlendAttachment, enableBlending);
+
+    var dynamicStates: [3]c.VkDynamicState = undefined;
+    var dynamicState: c.VkPipelineDynamicStateCreateInfo = undefined;
+    configure_dynamic_state(&dynamicState, &dynamicStates);
+
+    var pipelineInfo = std.mem.zeroes(c.VkGraphicsPipelineCreateInfo);
+    pipelineInfo.sType = c.VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO;
+    pipelineInfo.stageCount = 2;
+    pipelineInfo.pStages = &shaderStages;
+    pipelineInfo.pVertexInputState = &vertexInputInfo;
+    pipelineInfo.pInputAssemblyState = &inputAssembly;
+    pipelineInfo.pViewportState = &viewportState;
+    pipelineInfo.pRasterizationState = &rasterizer;
+    pipelineInfo.pMultisampleState = &multisampling;
+    pipelineInfo.pDepthStencilState = &depthStencil;
+    pipelineInfo.pColorBlendState = &colorBlending;
+    pipelineInfo.pDynamicState = &dynamicState;
+    pipelineInfo.layout = pipeline.pipelineLayout;
+    pipelineInfo.renderPass = null;
+    pipelineInfo.subpass = 0;
+
+    var pipelineRenderingInfo: c.VkPipelineRenderingCreateInfo = undefined;
+    var colorFmt = swapchainFormat;
+    configure_rendering_info(&pipelineRenderingInfo, &colorFmt, depthFormat);
+    pipelineInfo.pNext = &pipelineRenderingInfo;
+
+    const result = c.vkCreateGraphicsPipelines(device, null, 1, &pipelineInfo, null, outPipeline);
+    if (result != c.VK_SUCCESS) {
+        log.cardinal_log_error("Failed to create PBR graphics pipeline: {d}", .{result});
+        return false;
+    }
+    return true;
+}
+
+fn create_pbr_uniform_buffers(pipeline: *c.VulkanPBRPipeline, device: c.VkDevice, allocator: *c.VulkanAllocator) bool {
+    // UBO
+    var uboInfo = std.mem.zeroes(c.VulkanBufferCreateInfo);
+    uboInfo.size = @sizeOf(c.PBRUniformBufferObject);
+    uboInfo.usage = c.VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT;
+    uboInfo.properties = c.VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | c.VK_MEMORY_PROPERTY_HOST_COHERENT_BIT;
+    uboInfo.persistentlyMapped = true;
+    
+    var uboBuffer: c.VulkanBuffer = undefined;
+    if (!c.vk_buffer_create(&uboBuffer, device, allocator, &uboInfo)) return false;
+    pipeline.uniformBuffer = uboBuffer.handle;
+    pipeline.uniformBufferMemory = uboBuffer.memory;
+    pipeline.uniformBufferMapped = uboBuffer.mapped;
+
+    // Material
+    var matInfo = std.mem.zeroes(c.VulkanBufferCreateInfo);
+    matInfo.size = @sizeOf(c.PBRMaterialProperties);
+    matInfo.usage = c.VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT;
+    matInfo.properties = c.VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | c.VK_MEMORY_PROPERTY_HOST_COHERENT_BIT;
+    matInfo.persistentlyMapped = true;
+
+    var matBuffer: c.VulkanBuffer = undefined;
+    if (!c.vk_buffer_create(&matBuffer, device, allocator, &matInfo)) return false;
+    pipeline.materialBuffer = matBuffer.handle;
+    pipeline.materialBufferMemory = matBuffer.memory;
+    pipeline.materialBufferMapped = matBuffer.mapped;
+
+    // Lighting
+    var lightInfo = std.mem.zeroes(c.VulkanBufferCreateInfo);
+    lightInfo.size = @sizeOf(c.PBRLightingData);
+    lightInfo.usage = c.VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT;
+    lightInfo.properties = c.VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | c.VK_MEMORY_PROPERTY_HOST_COHERENT_BIT;
+    lightInfo.persistentlyMapped = true;
+
+    var lightBuffer: c.VulkanBuffer = undefined;
+    if (!c.vk_buffer_create(&lightBuffer, device, allocator, &lightInfo)) return false;
+    pipeline.lightingBuffer = lightBuffer.handle;
+    pipeline.lightingBufferMemory = lightBuffer.memory;
+    pipeline.lightingBufferMapped = lightBuffer.mapped;
+
+    // Bone matrices
+    pipeline.maxBones = 256;
+    var boneInfo = std.mem.zeroes(c.VulkanBufferCreateInfo);
+    boneInfo.size = pipeline.maxBones * 16 * @sizeOf(f32);
+    boneInfo.usage = c.VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT;
+    boneInfo.properties = c.VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | c.VK_MEMORY_PROPERTY_HOST_COHERENT_BIT;
+    boneInfo.persistentlyMapped = true;
+
+    var boneBuffer: c.VulkanBuffer = undefined;
+    if (!c.vk_buffer_create(&boneBuffer, device, allocator, &boneInfo)) return false;
+    pipeline.boneMatricesBuffer = boneBuffer.handle;
+    pipeline.boneMatricesBufferMemory = boneBuffer.memory;
+    pipeline.boneMatricesBufferMapped = boneBuffer.mapped;
+
+    // Init bone matrices to identity
+    const boneMatrices = @as([*]f32, @ptrCast(@alignCast(pipeline.boneMatricesBufferMapped)));
+    var i: u32 = 0;
+    while (i < pipeline.maxBones) : (i += 1) {
+        @memset(boneMatrices[i * 16 .. (i + 1) * 16], 0);
+        boneMatrices[i * 16 + 0] = 1.0;
+        boneMatrices[i * 16 + 5] = 1.0;
+        boneMatrices[i * 16 + 10] = 1.0;
+        boneMatrices[i * 16 + 15] = 1.0;
+    }
+
+    return true;
+}
+
+fn initialize_pbr_defaults(pipeline: *c.VulkanPBRPipeline) void {
+    var defaultMaterial = std.mem.zeroes(c.PBRMaterialProperties);
+    defaultMaterial.albedoFactor[0] = 0.8;
+    defaultMaterial.albedoFactor[1] = 0.8;
+    defaultMaterial.albedoFactor[2] = 0.8;
+    defaultMaterial.metallicFactor = 0.0;
+    defaultMaterial.roughnessFactor = 0.5;
+    defaultMaterial.emissiveFactor[0] = 0.0;
+    defaultMaterial.emissiveFactor[1] = 0.0;
+    defaultMaterial.emissiveFactor[2] = 0.0;
+    defaultMaterial.normalScale = 1.0;
+    defaultMaterial.aoStrength = 1.0;
+    defaultMaterial.albedoTextureIndex = 0;
+    defaultMaterial.normalTextureIndex = 0;
+    defaultMaterial.metallicRoughnessTextureIndex = 0;
+    defaultMaterial.aoTextureIndex = 0;
+    defaultMaterial.emissiveTextureIndex = 0;
+    defaultMaterial.supportsDescriptorIndexing = 1;
+
+    @memcpy(@as([*]u8, @ptrCast(pipeline.materialBufferMapped))[0..@sizeOf(c.PBRMaterialProperties)], 
+            @as([*]const u8, @ptrCast(&defaultMaterial))[0..@sizeOf(c.PBRMaterialProperties)]);
+
+    var defaultLighting = std.mem.zeroes(c.PBRLightingData);
+    defaultLighting.lightDirection[0] = -0.5;
+    defaultLighting.lightDirection[1] = -1.0;
+    defaultLighting.lightDirection[2] = -0.3;
+    defaultLighting.lightColor[0] = 1.0;
+    defaultLighting.lightColor[1] = 1.0;
+    defaultLighting.lightColor[2] = 1.0;
+    defaultLighting.lightIntensity = 2.5;
+    defaultLighting.ambientColor[0] = 0.2;
+    defaultLighting.ambientColor[1] = 0.2;
+    defaultLighting.ambientColor[2] = 0.2;
+
+    @memcpy(@as([*]u8, @ptrCast(pipeline.lightingBufferMapped))[0..@sizeOf(c.PBRLightingData)], 
+            @as([*]const u8, @ptrCast(&defaultLighting))[0..@sizeOf(c.PBRLightingData)]);
+}
+
+fn create_pbr_mesh_buffers(pipeline: *c.VulkanPBRPipeline, device: c.VkDevice, allocator: *c.VulkanAllocator, commandPool: c.VkCommandPool, graphicsQueue: c.VkQueue, scene: *const c.CardinalScene, vulkan_state: ?*c.VulkanState) bool {
+    var totalVertices: u32 = 0;
+    var totalIndices: u32 = 0;
+    
+    var i: u32 = 0;
+    while (i < scene.mesh_count) : (i += 1) {
+        totalVertices += scene.meshes[i].vertex_count;
+        totalIndices += scene.meshes[i].index_count;
+    }
+
+    if (totalVertices == 0) {
+        log.cardinal_log_warn("Scene has no vertices", .{});
+        return true;
+    }
+
+    // Prepare vertex data for upload
+    const vertexBufferSize = totalVertices * @sizeOf(c.CardinalVertex);
+    const vertexData = c.malloc(vertexBufferSize);
+    if (vertexData == null) {
+        log.cardinal_log_error("Failed to allocate memory for vertex data", .{});
+        return false;
+    }
+    defer c.free(vertexData);
+    const vertices = @as([*]c.CardinalVertex, @ptrCast(@alignCast(vertexData)));
+
+    // Copy all vertex data into contiguous buffer
+    var vertexOffset: u32 = 0;
+    i = 0;
+    while (i < scene.mesh_count) : (i += 1) {
+        const mesh = &scene.meshes[i];
+        if (mesh.vertices != null) {
+            @memcpy(vertices[vertexOffset .. vertexOffset + mesh.vertex_count], mesh.vertices[0..mesh.vertex_count]);
+        }
+        vertexOffset += mesh.vertex_count;
+    }
+
+    // Create vertex buffer using staging buffer
+    if (!c.vk_buffer_create_with_staging(
+            allocator, device, commandPool, graphicsQueue, vertexData, vertexBufferSize,
+            c.VK_BUFFER_USAGE_VERTEX_BUFFER_BIT | c.VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT,
+            &pipeline.vertexBuffer, &pipeline.vertexBufferMemory, vulkan_state)) {
+        log.cardinal_log_error("Failed to create PBR vertex buffer with staging", .{});
+        return false;
+    }
+
+    log.cardinal_log_debug("Vertex buffer created with staging: {d} vertices", .{totalVertices});
+
+    // Create index buffer if we have indices
+    if (totalIndices > 0) {
+        const indexBufferSize = totalIndices * @sizeOf(u32);
+        const indexData = c.malloc(indexBufferSize);
+        if (indexData == null) {
+            log.cardinal_log_error("Failed to allocate memory for index data", .{});
+            return false;
+        }
+        defer c.free(indexData);
+        const indices = @as([*]u32, @ptrCast(@alignCast(indexData)));
+
+        // Copy all index data into contiguous buffer with vertex base offset adjustment
+        var indexOffset: u32 = 0;
+        var vertexBaseOffset: u32 = 0;
+        i = 0;
+        while (i < scene.mesh_count) : (i += 1) {
+            const mesh = &scene.meshes[i];
+            if (mesh.index_count > 0 and mesh.indices != null) {
+                var j: u32 = 0;
+                while (j < mesh.index_count) : (j += 1) {
+                    indices[indexOffset + j] = mesh.indices[j] + vertexBaseOffset;
+                }
+                indexOffset += mesh.index_count;
+            }
+            vertexBaseOffset += mesh.vertex_count;
+        }
+
+        // Create index buffer using staging buffer
+        if (!c.vk_buffer_create_with_staging(
+                allocator, device, commandPool, graphicsQueue, indexData, indexBufferSize,
+                c.VK_BUFFER_USAGE_INDEX_BUFFER_BIT | c.VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT,
+                &pipeline.indexBuffer, &pipeline.indexBufferMemory, vulkan_state)) {
+            log.cardinal_log_error("Failed to create PBR index buffer with staging", .{});
+            return false;
+        }
+
+        pipeline.totalIndexCount = totalIndices;
+        log.cardinal_log_debug("Index buffer created with staging: {d} indices", .{totalIndices});
+    }
+
+    return true;
+}
+
+fn update_pbr_descriptor_sets(pipeline: *c.VulkanPBRPipeline) bool {
+    const setIndex = if (pipeline.descriptorManager.*.descriptorSetCount > 0)
+                            pipeline.descriptorManager.*.descriptorSetCount - 1
+                            else 0;
+
+    // Update uniform buffer (binding 0)
+    if (!c.vk_descriptor_manager_update_buffer(pipeline.descriptorManager, setIndex, 0,
+                                             pipeline.uniformBuffer, 0,
+                                             @sizeOf(c.PBRUniformBufferObject))) {
+        log.cardinal_log_error("Failed to update uniform buffer descriptor", .{});
+        return false;
+    }
+
+    // Update bone matrices buffer (binding 6)
+    if (!c.vk_descriptor_manager_update_buffer(pipeline.descriptorManager, setIndex, 6,
+                                             pipeline.boneMatricesBuffer, 0,
+                                             @sizeOf(f32) * 16 * pipeline.maxBones)) {
+        log.cardinal_log_error("Failed to update bone matrices buffer descriptor", .{});
+        return false;
+    }
+
+    // Update placeholder textures for fixed bindings 1-5
+    var b: u32 = 1;
+    while (b <= 5) : (b += 1) {
+        const placeholderView = if (pipeline.textureManager.*.textureCount > 0)
+                                          pipeline.textureManager.*.textures[0].view
+                                          else null;
+        const placeholderSampler = if (pipeline.textureManager.*.textureCount > 0)
+                                           pipeline.textureManager.*.textures[0].sampler
+                                           else pipeline.textureManager.*.defaultSampler;
+
+        if (!c.vk_descriptor_manager_update_image(pipeline.descriptorManager, setIndex, b,
+                                                placeholderView,
+                                                placeholderSampler,
+                                                c.VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL)) {
+            log.cardinal_log_error("Failed to update image descriptor for binding {d}", .{b});
+            return false;
+        }
+    }
+
+    // Update variable descriptor array (binding 9)
+    const texCount = pipeline.textureManager.*.textureCount;
+    if (texCount > 0) {
+        const views = c.malloc(@sizeOf(c.VkImageView) * texCount);
+        const samplers = c.malloc(@sizeOf(c.VkSampler) * texCount);
+
+        if (views == null or samplers == null) {
+            log.cardinal_log_error("Failed to allocate arrays for descriptor update", .{});
+            if (views != null) c.free(views);
+            if (samplers != null) c.free(samplers);
+            return false;
+        }
+        defer c.free(views);
+        defer c.free(samplers);
+
+        const viewsPtr = @as([*]c.VkImageView, @ptrCast(@alignCast(views)));
+        const samplersPtr = @as([*]c.VkSampler, @ptrCast(@alignCast(samplers)));
+
+        var i: u32 = 0;
+        while (i < texCount) : (i += 1) {
+            viewsPtr[i] = pipeline.textureManager.*.textures[i].view;
+            samplersPtr[i] = pipeline.textureManager.*.textures[i].sampler;
+        }
+
+        if (!c.vk_descriptor_manager_update_textures_with_samplers(pipeline.descriptorManager, setIndex, 9, viewsPtr,
+                                                   samplersPtr,
+                                                   c.VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+                                                   texCount)) {
+            log.cardinal_log_error("Failed to update variable texture array (binding 9)", .{});
+            return false;
+        }
+    }
+
+    // Note: Material data is passed via Push Constants, so no binding 7 update needed.
+
+    // Update lighting buffer (binding 8)
+    if (!c.vk_descriptor_manager_update_buffer(pipeline.descriptorManager, setIndex, 8,
+                                             pipeline.lightingBuffer, 0,
+                                             @sizeOf(c.PBRLightingData))) {
+        log.cardinal_log_error("Failed to update lighting buffer descriptor", .{});
+        return false;
+    }
+
+    return true;
+}
+
+// Exported functions
+
+pub export fn vk_pbr_load_scene(pipeline: ?*c.VulkanPBRPipeline, device: c.VkDevice,
+                       physicalDevice: c.VkPhysicalDevice, commandPool: c.VkCommandPool,
+                       graphicsQueue: c.VkQueue, scene: ?*const c.CardinalScene,
+                       allocator: ?*c.VulkanAllocator, vulkan_state: ?*c.VulkanState) callconv(.c) bool {
+    _ = physicalDevice;
+
+    if (pipeline == null or !pipeline.?.initialized or scene == null or scene.?.mesh_count == 0) {
+        log.cardinal_log_warn("PBR pipeline not initialized or no scene data", .{});
+        return true;
+    }
+    const pipe = pipeline.?;
+    const scn = scene.?;
+    const alloc = allocator.?;
+
+    log.cardinal_log_info("Loading PBR scene: {d} meshes", .{scn.mesh_count});
+
+    // Clean up previous buffers if they exist (after ensuring GPU idle/timeline reached)
+    if (vulkan_state != null and vulkan_state.?.sync_manager != null and
+        vulkan_state.?.sync_manager.*.timeline_semaphore != null) {
+        const wait_res = c.vulkan_sync_manager_wait_timeline(
+            vulkan_state.?.sync_manager, vulkan_state.?.sync.current_frame_value, c.UINT64_MAX);
+        if (wait_res != c.VK_SUCCESS and vulkan_state.?.context.device != null) {
+            _ = c.vkDeviceWaitIdle(vulkan_state.?.context.device);
+        }
+    } else if (vulkan_state != null and vulkan_state.?.context.device != null) {
+        _ = c.vkDeviceWaitIdle(vulkan_state.?.context.device);
+    }
+
+    if (pipe.vertexBuffer != null or pipe.vertexBufferMemory != null) {
+        c.vk_allocator_free_buffer(alloc, pipe.vertexBuffer, pipe.vertexBufferMemory);
+        pipe.vertexBuffer = null;
+        pipe.vertexBufferMemory = null;
+    }
+
+    if (pipe.indexBuffer != null or pipe.indexBufferMemory != null) {
+        c.vk_allocator_free_buffer(alloc, pipe.indexBuffer, pipe.indexBufferMemory);
+        pipe.indexBuffer = null;
+        pipe.indexBufferMemory = null;
+    }
+
+    // Create vertex and index buffers
+    if (!create_pbr_mesh_buffers(pipe, device, alloc, commandPool, graphicsQueue, scn, vulkan_state)) {
+        return false;
+    }
+
+    // Texture manager handles its own synchronization during cleanup
+    pipe.textureManager.*.syncManager = vulkan_state.?.sync_manager;
+
+    // Load scene textures using texture manager
+    if (!c.vk_texture_manager_load_scene_textures(pipe.textureManager, scn)) {
+        log.cardinal_log_error("Failed to load scene textures using texture manager", .{});
+        return false;
+    }
+
+    log.cardinal_log_info("Loaded {d} textures using texture manager", .{pipe.textureManager.*.textureCount});
+
+    // Reset descriptor pool to reclaim sets from previous scene loads
+    if (pipe.descriptorManager != null and
+        pipe.descriptorManager.*.descriptorPool != null) {
+        _ = c.vkResetDescriptorPool(pipe.descriptorManager.*.device,
+                              pipe.descriptorManager.*.descriptorPool, 0);
+        pipe.descriptorManager.*.descriptorSetCount = 0;
+    }
+
+    // Allocate descriptor set using descriptor manager
+    var descriptorSet: c.VkDescriptorSet = null;
+    const variableDescriptorCount = pipe.textureManager.*.textureCount;
+
+    // Allocate with variable descriptor count to satisfy binding 9 array size
+    if (!c.vk_descriptor_allocate_sets(
+            pipe.descriptorManager.*.device, pipe.descriptorManager.*.descriptorPool,
+            pipe.descriptorManager.*.layout, 1, variableDescriptorCount, &descriptorSet)) {
+        log.cardinal_log_error(
+            "Failed to allocate descriptor set with variable count using descriptor manager", .{});
+        return false;
+    }
+
+    // Track the allocated set in the manager
+    if (pipe.descriptorManager.*.descriptorSetCount < pipe.descriptorManager.*.maxSets and
+        pipe.descriptorManager.*.descriptorSets != null) {
+        pipe.descriptorManager.*.descriptorSets[pipe.descriptorManager.*.descriptorSetCount] = descriptorSet;
+        pipe.descriptorManager.*.descriptorSetCount += 1;
+    }
+
+    // Wait for graphics queue to complete before updating descriptor sets
+    const result = c.vkQueueWaitIdle(graphicsQueue);
+    if (result != c.VK_SUCCESS) {
+        log.cardinal_log_warn("Graphics queue wait idle failed before descriptor update: {d}", .{result});
+    }
+
+    // Update descriptor sets
+    if (!update_pbr_descriptor_sets(pipe)) {
+        return false;
+    }
+
+    log.cardinal_log_info("PBR scene loaded successfully", .{});
+    return true;
+}
+
+pub export fn vk_pbr_pipeline_create(pipeline: ?*c.VulkanPBRPipeline, device: c.VkDevice,
+                            physicalDevice: c.VkPhysicalDevice, swapchainFormat: c.VkFormat,
+                            depthFormat: c.VkFormat, commandPool: c.VkCommandPool, graphicsQueue: c.VkQueue,
+                            allocator: ?*c.VulkanAllocator, vulkan_state: ?*c.VulkanState) callconv(.c) bool {
+    _ = physicalDevice;
+    if (pipeline == null or allocator == null) return false;
+    const pipe = pipeline.?;
+    const alloc = allocator.?;
+
+    log.cardinal_log_debug("Starting PBR pipeline creation", .{});
+
+    @memset(@as([*]u8, @ptrCast(pipe))[0..@sizeOf(c.VulkanPBRPipeline)], 0);
+
+    pipe.supportsDescriptorIndexing = true;
+    pipe.totalIndexCount = 0;
+
+    log.cardinal_log_info("[PBR] Descriptor indexing support: enabled", .{});
+
+    if (!create_pbr_descriptor_manager(pipe, device, alloc, vulkan_state)) {
+        return false;
+    }
+    log.cardinal_log_debug("Descriptor manager created successfully", .{});
+
+    if (!create_pbr_texture_manager(pipe, device, alloc, commandPool, graphicsQueue)) {
+        c.vk_descriptor_manager_destroy(pipe.descriptorManager);
+        c.free(pipe.descriptorManager);
+        return false;
+    }
+    log.cardinal_log_debug("Texture manager initialized successfully", .{});
+
+    if (!create_pbr_pipeline_layout(pipe, device)) {
+        c.vk_texture_manager_destroy(pipe.textureManager);
+        c.free(pipe.textureManager);
+        c.vk_descriptor_manager_destroy(pipe.descriptorManager);
+        c.free(pipe.descriptorManager);
+        return false;
+    }
+
+    var vertShader: c.VkShaderModule = null;
+    var fragShader: c.VkShaderModule = null;
+    if (!load_pbr_shaders(device, &vertShader, &fragShader)) {
+        return false;
+    }
+
+    if (!create_pbr_graphics_pipeline(pipe, device, vertShader, fragShader, swapchainFormat, depthFormat, false, true, &pipe.pipeline)) {
+        c.vkDestroyShaderModule(device, vertShader, null);
+        c.vkDestroyShaderModule(device, fragShader, null);
+        return false;
+    }
+
+    if (!create_pbr_graphics_pipeline(pipe, device, vertShader, fragShader, swapchainFormat, depthFormat, true, false, &pipe.pipelineBlend)) {
+        c.vkDestroyShaderModule(device, vertShader, null);
+        c.vkDestroyShaderModule(device, fragShader, null);
+        return false;
+    }
+
+    c.vkDestroyShaderModule(device, vertShader, null);
+    c.vkDestroyShaderModule(device, fragShader, null);
+
+    log.cardinal_log_debug("PBR graphics pipelines created", .{});
+
+    if (!create_pbr_uniform_buffers(pipe, device, alloc)) {
+        return false;
+    }
+
+    initialize_pbr_defaults(pipe);
+
+    pipe.initialized = true;
+    log.cardinal_log_info("PBR pipeline created successfully", .{});
+    return true;
+}
+
+pub export fn vk_pbr_pipeline_destroy(pipeline: ?*c.VulkanPBRPipeline, device: c.VkDevice, allocator: ?*c.VulkanAllocator) callconv(.c) void {
+    if (pipeline == null or !pipeline.?.initialized) return;
+    const pipe = pipeline.?;
+    const alloc = allocator.?;
+
+    if (pipe.textureManager != null) {
+        c.vk_texture_manager_destroy(pipe.textureManager);
+        c.free(pipe.textureManager);
+        pipe.textureManager = null;
+    }
+
+    if (pipe.vertexBuffer != null or pipe.vertexBufferMemory != null) {
+        c.vk_allocator_free_buffer(alloc, pipe.vertexBuffer, pipe.vertexBufferMemory);
+    }
+
+    if (pipe.indexBuffer != null or pipe.indexBufferMemory != null) {
+        c.vk_allocator_free_buffer(alloc, pipe.indexBuffer, pipe.indexBufferMemory);
+    }
+
+    if (pipe.uniformBuffer != null or pipe.uniformBufferMemory != null) {
+        c.vk_allocator_free_buffer(alloc, pipe.uniformBuffer, pipe.uniformBufferMemory);
+    }
+
+    if (pipe.materialBuffer != null or pipe.materialBufferMemory != null) {
+        c.vk_allocator_free_buffer(alloc, pipe.materialBuffer, pipe.materialBufferMemory);
+    }
+
+    if (pipe.lightingBuffer != null or pipe.lightingBufferMemory != null) {
+        c.vk_allocator_free_buffer(alloc, pipe.lightingBuffer, pipe.lightingBufferMemory);
+    }
+
+    if (pipe.descriptorManager != null) {
+        c.vk_descriptor_manager_destroy(pipe.descriptorManager);
+        c.free(pipe.descriptorManager);
+        pipe.descriptorManager = null;
+    }
+
+    if (pipe.pipeline != null) {
+        c.vkDestroyPipeline(device, pipe.pipeline, null);
+    }
+    if (pipe.pipelineBlend != null) {
+        c.vkDestroyPipeline(device, pipe.pipelineBlend, null);
+    }
+
+    if (pipe.pipelineLayout != null) {
+        c.vkDestroyPipelineLayout(device, pipe.pipelineLayout, null);
+    }
+
+    if (pipe.boneMatricesBuffer != null or pipe.boneMatricesBufferMemory != null) {
+        c.vk_allocator_free_buffer(alloc, pipe.boneMatricesBuffer, pipe.boneMatricesBufferMemory);
+    }
+
+    @memset(@as([*]u8, @ptrCast(pipe))[0..@sizeOf(c.VulkanPBRPipeline)], 0);
+    log.cardinal_log_info("PBR pipeline destroyed", .{});
+}
+
+pub export fn vk_pbr_update_uniforms(pipeline: ?*c.VulkanPBRPipeline, ubo: ?*const c.PBRUniformBufferObject, lighting: ?*const c.PBRLightingData) callconv(.c) void {
+    if (pipeline == null or !pipeline.?.initialized) return;
+    const pipe = pipeline.?;
+
+    if (ubo != null) {
+        @memcpy(@as([*]u8, @ptrCast(pipe.uniformBufferMapped))[0..@sizeOf(c.PBRUniformBufferObject)], 
+                @as([*]const u8, @ptrCast(ubo))[0..@sizeOf(c.PBRUniformBufferObject)]);
+    }
+
+    if (lighting != null) {
+        @memcpy(@as([*]u8, @ptrCast(pipe.lightingBufferMapped))[0..@sizeOf(c.PBRLightingData)], 
+                @as([*]const u8, @ptrCast(lighting))[0..@sizeOf(c.PBRLightingData)]);
+    }
+}
+
+pub export fn vk_pbr_render(pipeline: ?*c.VulkanPBRPipeline, commandBuffer: c.VkCommandBuffer, scene: ?*const c.CardinalScene) callconv(.c) void {
+    if (pipeline == null or !pipeline.?.initialized or scene == null) return;
+    const pipe = pipeline.?;
+    const scn = scene.?;
+
+    if (pipe.vertexBuffer == null or pipe.indexBuffer == null) return;
+
+    const vertexBuffers = [_]c.VkBuffer{ pipe.vertexBuffer };
+    const offsets = [_]c.VkDeviceSize{ 0 };
+    c.vkCmdBindVertexBuffers(commandBuffer, 0, 1, &vertexBuffers, &offsets);
+    c.vkCmdBindIndexBuffer(commandBuffer, pipe.indexBuffer, 0, c.VK_INDEX_TYPE_UINT32);
+
+    var descriptorSet: c.VkDescriptorSet = null;
+    if (pipe.descriptorManager != null and pipe.descriptorManager.*.descriptorSets != null and pipe.descriptorManager.*.descriptorSetCount > 0) {
+        const setIndex = pipe.descriptorManager.*.descriptorSetCount - 1;
+        descriptorSet = pipe.descriptorManager.*.descriptorSets[setIndex];
+    } else {
+        return;
+    }
+
+    // Pass 1: Opaque
+    c.vkCmdBindPipeline(commandBuffer, c.VK_PIPELINE_BIND_POINT_GRAPHICS, pipe.pipeline);
+    c.vkCmdBindDescriptorSets(commandBuffer, c.VK_PIPELINE_BIND_POINT_GRAPHICS, pipe.pipelineLayout, 0, 1, &descriptorSet, 0, null);
+    c.vkCmdSetDepthBias(commandBuffer, 0.0, 0.0, 0.0);
+
+    var indexOffset: u32 = 0;
+    var i: u32 = 0;
+    while (i < scn.mesh_count) : (i += 1) {
+        const mesh = &scn.meshes[i];
+        var is_blend = false;
+
+        if (mesh.material_index < scn.material_count) {
+            const mat = &scn.materials[mesh.material_index];
+            if (mat.alpha_mode == c.CARDINAL_ALPHA_MODE_BLEND) {
+                is_blend = true;
+            }
+        }
+
+        if (is_blend) {
+            indexOffset += mesh.index_count;
+            continue;
+        }
+
+        if (mesh.vertices == null or mesh.vertex_count == 0 or mesh.indices == null or mesh.index_count == 0 or mesh.index_count > 1000000000) {
+            continue;
+        }
+        if (!mesh.visible) {
+            indexOffset += mesh.index_count;
+            continue;
+        }
+
+        var pushConstants = std.mem.zeroes(c.PBRPushConstants);
+        c.vk_material_setup_push_constants(&pushConstants, mesh, scn, pipe.textureManager);
+
+        if (scn.animation_system != null and scn.skin_count > 0) {
+            var skin_idx: u32 = 0;
+            while (skin_idx < scn.skin_count) : (skin_idx += 1) {
+                const skin = &scn.skins[skin_idx];
+                var mesh_idx: u32 = 0;
+                while (mesh_idx < skin.mesh_count) : (mesh_idx += 1) {
+                    if (skin.mesh_indices[mesh_idx] == i) {
+                        pushConstants.flags |= 4;
+                        if (scn.animation_system.*.bone_matrices != null) {
+                            @memcpy(@as([*]u8, @ptrCast(pipe.boneMatricesBufferMapped))[0 .. scn.animation_system.*.bone_matrix_count * 16 * @sizeOf(f32)],
+                                   @as([*]const u8, @ptrCast(scn.animation_system.*.bone_matrices))[0 .. scn.animation_system.*.bone_matrix_count * 16 * @sizeOf(f32)]);
+                        }
+                        break;
+                    }
+                }
+                if ((pushConstants.flags & 4) != 0) break;
+            }
+        }
+
+        c.vkCmdPushConstants(commandBuffer, pipe.pipelineLayout, c.VK_SHADER_STAGE_VERTEX_BIT | c.VK_SHADER_STAGE_FRAGMENT_BIT, 0, @sizeOf(c.PBRPushConstants), &pushConstants);
+
+        if (indexOffset + mesh.index_count > pipe.totalIndexCount) break;
+
+        c.vkCmdDrawIndexed(commandBuffer, mesh.index_count, 1, indexOffset, 0, 0);
+        indexOffset += mesh.index_count;
+    }
+
+    // Pass 2: Blend
+    c.vkCmdBindPipeline(commandBuffer, c.VK_PIPELINE_BIND_POINT_GRAPHICS, pipe.pipelineBlend);
+    c.vkCmdBindDescriptorSets(commandBuffer, c.VK_PIPELINE_BIND_POINT_GRAPHICS, pipe.pipelineLayout, 0, 1, &descriptorSet, 0, null);
+    
+    indexOffset = 0;
+    i = 0;
+    while (i < scn.mesh_count) : (i += 1) {
+        const mesh = &scn.meshes[i];
+        var is_blend = false;
+
+        if (mesh.material_index < scn.material_count) {
+            const mat = &scn.materials[mesh.material_index];
+            if (mat.alpha_mode == c.CARDINAL_ALPHA_MODE_BLEND) {
+                is_blend = true;
+            }
+        }
+
+        if (!is_blend) {
+            indexOffset += mesh.index_count;
+            continue;
+        }
+
+        c.vkCmdSetDepthBias(commandBuffer, -2.0, 0.0, -2.0);
+
+        if (mesh.vertices == null or mesh.vertex_count == 0 or mesh.indices == null or mesh.index_count == 0 or mesh.index_count > 1000000000) {
+            continue;
+        }
+        if (!mesh.visible) {
+            indexOffset += mesh.index_count;
+            continue;
+        }
+
+        var pushConstants = std.mem.zeroes(c.PBRPushConstants);
+        c.vk_material_setup_push_constants(&pushConstants, mesh, scn, pipe.textureManager);
+
+        if (scn.animation_system != null and scn.skin_count > 0) {
+            var skin_idx: u32 = 0;
+            while (skin_idx < scn.skin_count) : (skin_idx += 1) {
+                const skin = &scn.skins[skin_idx];
+                var mesh_idx: u32 = 0;
+                while (mesh_idx < skin.mesh_count) : (mesh_idx += 1) {
+                    if (skin.mesh_indices[mesh_idx] == i) {
+                        pushConstants.flags |= 4;
+                        if (scn.animation_system.*.bone_matrices != null) {
+                            @memcpy(@as([*]u8, @ptrCast(pipe.boneMatricesBufferMapped))[0 .. scn.animation_system.*.bone_matrix_count * 16 * @sizeOf(f32)],
+                                   @as([*]const u8, @ptrCast(scn.animation_system.*.bone_matrices))[0 .. scn.animation_system.*.bone_matrix_count * 16 * @sizeOf(f32)]);
+                        }
+                        break;
+                    }
+                }
+                if ((pushConstants.flags & 4) != 0) break;
+            }
+        }
+
+        c.vkCmdPushConstants(commandBuffer, pipe.pipelineLayout, c.VK_SHADER_STAGE_VERTEX_BIT | c.VK_SHADER_STAGE_FRAGMENT_BIT, 0, @sizeOf(c.PBRPushConstants), &pushConstants);
+
+        if (indexOffset + mesh.index_count > pipe.totalIndexCount) break;
+
+        c.vkCmdDrawIndexed(commandBuffer, mesh.index_count, 1, indexOffset, 0, 0);
+        indexOffset += mesh.index_count;
+    }
+}
