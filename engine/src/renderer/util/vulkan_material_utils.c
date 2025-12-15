@@ -16,6 +16,8 @@ static void set_default_material_properties(PBRPushConstants* pushConstants, boo
     pushConstants->roughnessFactor = 0.5f;
     pushConstants->normalScale = 1.0f;
     pushConstants->aoStrength = 1.0f;
+    pushConstants->flags = 0; // OPAQUE (0) | No Skeleton (0) | No Indexing (0)
+    pushConstants->alphaCutoff = 0.5f;
 
     pushConstants->albedoTextureIndex = UINT32_MAX;
     pushConstants->normalTextureIndex = UINT32_MAX;
@@ -23,7 +25,9 @@ static void set_default_material_properties(PBRPushConstants* pushConstants, boo
     pushConstants->aoTextureIndex = UINT32_MAX;
     pushConstants->emissiveTextureIndex = UINT32_MAX;
 
-    pushConstants->supportsDescriptorIndexing = hasTextures ? 1u : 0u;
+    if (hasTextures) {
+        pushConstants->flags |= 8u; // Set supportsDescriptorIndexing bit (bit 3)
+    }
 
     // Default texture transforms (identity)
     pushConstants->albedoTransform.scale[0] = pushConstants->albedoTransform.scale[1] = 1.0f;
@@ -135,6 +139,14 @@ static void set_material_properties(PBRPushConstants* pushConstants,
     pushConstants->roughnessFactor = material->roughness_factor;
     pushConstants->normalScale = material->normal_scale;
     pushConstants->aoStrength = material->ao_strength;
+    
+    // Pack flags
+    pushConstants->flags = 0;
+    pushConstants->flags |= (material->alpha_mode & 3u); // Bits 0-1: Alpha Mode
+    // Skeleton bit (bit 2) will be set in vk_pbr_render
+    // Descriptor indexing bit (bit 3) is set below
+    
+    pushConstants->alphaCutoff = material->alpha_cutoff;
 }
 
 void vk_material_setup_push_constants(PBRPushConstants* pushConstants, const CardinalMesh* mesh,
@@ -160,8 +172,10 @@ void vk_material_setup_push_constants(PBRPushConstants* pushConstants, const Car
         set_texture_indices(pushConstants, material, hasTextures, textureCount, hasPlaceholder);
         set_texture_transforms(pushConstants, material);
 
-        // CRITICAL: Set descriptor indexing flag for shader
-        pushConstants->supportsDescriptorIndexing = hasTextures ? 1u : 0u;
+        // Set descriptor indexing flag
+        if (hasTextures) {
+            pushConstants->flags |= 8u; // Bit 3
+        }
     } else {
         set_default_material_properties(pushConstants, hasTextures);
     }

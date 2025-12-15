@@ -564,7 +564,7 @@ static void extract_texture_transform(const cgltf_texture_view* texture_view,
         const cgltf_texture_transform* transform = &texture_view->transform;
         out_transform->offset[0] = transform->offset[0];
         // Invert Y-offset to account for texture Y-flip during loading
-        out_transform->offset[1] = -transform->offset[1];
+        out_transform->offset[1] = 1.0f - transform->offset[1] - transform->scale[1];
         out_transform->scale[0] = transform->scale[0];
         out_transform->scale[1] = transform->scale[1];
         out_transform->rotation = transform->rotation;
@@ -1151,6 +1151,18 @@ bool cardinal_gltf_load_scene(const char* path, CardinalScene* out_scene) {
             card_mat->normal_scale = 1.0f;
             card_mat->ao_strength = 1.0f;
 
+            // Set alpha mode defaults
+            card_mat->alpha_mode = CARDINAL_ALPHA_MODE_OPAQUE;
+            card_mat->alpha_cutoff = 0.5f;
+            card_mat->double_sided = mat->double_sided;
+
+            if (mat->alpha_mode == cgltf_alpha_mode_mask) {
+                card_mat->alpha_mode = CARDINAL_ALPHA_MODE_MASK;
+                card_mat->alpha_cutoff = mat->alpha_cutoff;
+            } else if (mat->alpha_mode == cgltf_alpha_mode_blend) {
+                card_mat->alpha_mode = CARDINAL_ALPHA_MODE_BLEND;
+            }
+
             // Initialize texture transforms to identity
             CardinalTextureTransform identity_transform = {
                 {0.0f, 0.0f},
@@ -1420,7 +1432,9 @@ bool cardinal_gltf_load_scene(const char* path, CardinalScene* out_scene) {
                     cgltf_float v[2] = {0};
                     cgltf_accessor_read_float(uv_acc, vi, v, 2);
                     vertices[vi].u = (float)v[0];
-                    vertices[vi].v = (float)v[1];
+                    // Flip V coordinate for Vulkan coordinate system
+                    // GLTF uses bottom-left origin, Vulkan uses top-left origin
+                    vertices[vi].v = 1.0f - (float)v[1];
                 }
             } else {
                 CARDINAL_LOG_TRACE("Setting default UV coordinates...");

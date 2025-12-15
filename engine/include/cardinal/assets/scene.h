@@ -56,6 +56,15 @@ typedef struct CardinalTextureTransform {
 } CardinalTextureTransform;
 
 /**
+ * @brief Alpha rendering mode
+ */
+typedef enum CardinalAlphaMode {
+    CARDINAL_ALPHA_MODE_OPAQUE = 0, /**< Opaque, alpha ignored */
+    CARDINAL_ALPHA_MODE_MASK = 1,   /**< Masked, alpha cutoff used */
+    CARDINAL_ALPHA_MODE_BLEND = 2   /**< Blended, alpha used for compositing */
+} CardinalAlphaMode;
+
+/**
  * @brief PBR (Physically Based Rendering) material definition
  *
  * Contains all parameters needed to define a physically-based material,
@@ -84,6 +93,15 @@ typedef struct CardinalMaterial {
   float emissive_factor[3]; /**< Emissive factor (RGB) */
   float normal_scale;       /**< Normal map intensity scale */
   float ao_strength;        /**< Ambient occlusion strength [0.0, 1.0] */
+  /** @} */
+
+  /** @name Alpha Mode
+   * Parameters controlling alpha blending and masking behavior.
+   * @{
+   */
+  CardinalAlphaMode alpha_mode; /**< Alpha rendering mode */
+  float alpha_cutoff;           /**< Cutoff threshold for MASK mode */
+  bool double_sided;            /**< Whether to render back faces */
   /** @} */
 
   /** @name Texture Transforms

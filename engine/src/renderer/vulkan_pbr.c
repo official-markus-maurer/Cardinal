@@ -266,10 +266,11 @@ static void configure_multisampling(VkPipelineMultisampleStateCreateInfo* info) 
 /**
  * @brief Configures depth stencil state.
  */
-static void configure_depth_stencil(VkPipelineDepthStencilStateCreateInfo* info) {
+static void configure_depth_stencil(VkPipelineDepthStencilStateCreateInfo* info,
+                                    bool depthWriteEnable) {
     info->sType = VK_STRUCTURE_TYPE_PIPELINE_DEPTH_STENCIL_STATE_CREATE_INFO;
     info->depthTestEnable = VK_TRUE;
-    info->depthWriteEnable = VK_TRUE;
+    info->depthWriteEnable = depthWriteEnable ? VK_TRUE : VK_FALSE;
     info->depthCompareOp = VK_COMPARE_OP_LESS;
     info->depthBoundsTestEnable = VK_FALSE;
     info->stencilTestEnable = VK_FALSE;
@@ -281,10 +282,20 @@ static void configure_depth_stencil(VkPipelineDepthStencilStateCreateInfo* info)
  * @brief Configures color blending state.
  */
 static void configure_color_blending(VkPipelineColorBlendStateCreateInfo* info,
-                                     VkPipelineColorBlendAttachmentState* attachment) {
+                                     VkPipelineColorBlendAttachmentState* attachment,
+                                     bool blendEnable) {
     attachment->colorWriteMask = VK_COLOR_COMPONENT_R_BIT | VK_COLOR_COMPONENT_G_BIT |
                                  VK_COLOR_COMPONENT_B_BIT | VK_COLOR_COMPONENT_A_BIT;
-    attachment->blendEnable = VK_FALSE;
+    attachment->blendEnable = blendEnable ? VK_TRUE : VK_FALSE;
+
+    if (blendEnable) {
+        attachment->srcColorBlendFactor = VK_BLEND_FACTOR_SRC_ALPHA;
+        attachment->dstColorBlendFactor = VK_BLEND_FACTOR_ONE_MINUS_SRC_ALPHA;
+        attachment->colorBlendOp = VK_BLEND_OP_ADD;
+        attachment->srcAlphaBlendFactor = VK_BLEND_FACTOR_ONE;
+        attachment->dstAlphaBlendFactor = VK_BLEND_FACTOR_ZERO;
+        attachment->alphaBlendOp = VK_BLEND_OP_ADD;
+    }
 
     info->sType = VK_STRUCTURE_TYPE_PIPELINE_COLOR_BLEND_STATE_CREATE_INFO;
     info->logicOpEnable = VK_FALSE;
@@ -306,9 +317,10 @@ static void configure_dynamic_state(VkPipelineDynamicStateCreateInfo* info,
                                     VkDynamicState* states) {
     states[0] = VK_DYNAMIC_STATE_VIEWPORT;
     states[1] = VK_DYNAMIC_STATE_SCISSOR;
+    states[2] = VK_DYNAMIC_STATE_DEPTH_BIAS;
 
     info->sType = VK_STRUCTURE_TYPE_PIPELINE_DYNAMIC_STATE_CREATE_INFO;
-    info->dynamicStateCount = 2;
+    info->dynamicStateCount = 3;
     info->pDynamicStates = states;
     info->pNext = NULL;
     info->flags = 0;
@@ -333,7 +345,9 @@ static void configure_rendering_info(VkPipelineRenderingCreateInfo* info, VkForm
  */
 static bool create_pbr_graphics_pipeline(VulkanPBRPipeline* pipeline, VkDevice device,
                                          VkShaderModule vertShader, VkShaderModule fragShader,
-                                         VkFormat swapchainFormat, VkFormat depthFormat) {
+                                         VkFormat swapchainFormat, VkFormat depthFormat,
+                                         bool enableBlending, bool enableDepthWrite,
+                                         VkPipeline* outPipeline) {
     VkPipelineShaderStageCreateInfo shaderStages[2];
     configure_shader_stages(shaderStages, vertShader, fragShader);
 
@@ -350,18 +364,21 @@ static bool create_pbr_graphics_pipeline(VulkanPBRPipeline* pipeline, VkDevice d
 
     VkPipelineRasterizationStateCreateInfo rasterizer;
     configure_rasterization(&rasterizer);
+    // Enable depth bias in rasterizer state (it's dynamic but needs to be enabled here too mostly for
+    // structure, but dynamic state overrides values)
+    rasterizer.depthBiasEnable = VK_TRUE;
 
     VkPipelineMultisampleStateCreateInfo multisampling;
     configure_multisampling(&multisampling);
 
     VkPipelineDepthStencilStateCreateInfo depthStencil;
-    configure_depth_stencil(&depthStencil);
+    configure_depth_stencil(&depthStencil, enableDepthWrite);
 
     VkPipelineColorBlendAttachmentState colorBlendAttachment;
     VkPipelineColorBlendStateCreateInfo colorBlending;
-    configure_color_blending(&colorBlending, &colorBlendAttachment);
+    configure_color_blending(&colorBlending, &colorBlendAttachment, enableBlending);
 
-    VkDynamicState dynamicStates[2];
+    VkDynamicState dynamicStates[3];
     VkPipelineDynamicStateCreateInfo dynamicState;
     configure_dynamic_state(&dynamicState, dynamicStates);
 
@@ -385,8 +402,8 @@ static bool create_pbr_graphics_pipeline(VulkanPBRPipeline* pipeline, VkDevice d
     configure_rendering_info(&pipelineRenderingInfo, &swapchainFormat, depthFormat);
     pipelineInfo.pNext = &pipelineRenderingInfo;
 
-    VkResult result = vkCreateGraphicsPipelines(device, VK_NULL_HANDLE, 1, &pipelineInfo, NULL,
-                                                &pipeline->pipeline);
+    VkResult result =
+        vkCreateGraphicsPipelines(device, VK_NULL_HANDLE, 1, &pipelineInfo, NULL, outPipeline);
     return VK_CHECK_RESULT(result, "create PBR graphics pipeline");
 }
 
@@ -600,9 +617,21 @@ bool vk_pbr_pipeline_create(VulkanPBRPipeline* pipeline, VkDevice device,
         return false;
     }
 
-    // 5. Create Graphics Pipeline
+    // 5. Create Graphics Pipelines
+    
+    // Opaque pipeline: No blending, Depth Write ON
     if (!create_pbr_graphics_pipeline(pipeline, device, vertShaderModule, fragShaderModule,
-                                      swapchainFormat, depthFormat)) {
+                                      swapchainFormat, depthFormat, false, true,
+                                      &pipeline->pipeline)) {
+        vkDestroyShaderModule(device, vertShaderModule, NULL);
+        vkDestroyShaderModule(device, fragShaderModule, NULL);
+        return false;
+    }
+
+    // Blend pipeline: Blending ON, Depth Write OFF
+    if (!create_pbr_graphics_pipeline(pipeline, device, vertShaderModule, fragShaderModule,
+                                      swapchainFormat, depthFormat, true, false,
+                                      &pipeline->pipelineBlend)) {
         vkDestroyShaderModule(device, vertShaderModule, NULL);
         vkDestroyShaderModule(device, fragShaderModule, NULL);
         return false;
@@ -612,8 +641,9 @@ bool vk_pbr_pipeline_create(VulkanPBRPipeline* pipeline, VkDevice device,
     vkDestroyShaderModule(device, vertShaderModule, NULL);
     vkDestroyShaderModule(device, fragShaderModule, NULL);
 
-    CARDINAL_LOG_DEBUG("PBR graphics pipeline created: handle=%p",
-                       (void*)(uintptr_t)pipeline->pipeline);
+    CARDINAL_LOG_DEBUG("PBR graphics pipelines created: opaque=%p, blend=%p",
+                       (void*)(uintptr_t)pipeline->pipeline,
+                       (void*)(uintptr_t)pipeline->pipelineBlend);
 
     // 6. Create Uniform Buffers
     if (!create_pbr_uniform_buffers(pipeline, device, allocator)) {
@@ -688,6 +718,9 @@ void vk_pbr_pipeline_destroy(VulkanPBRPipeline* pipeline, VkDevice device,
     if (pipeline->pipeline != VK_NULL_HANDLE) {
         vkDestroyPipeline(device, pipeline->pipeline, NULL);
     }
+    if (pipeline->pipelineBlend != VK_NULL_HANDLE) {
+        vkDestroyPipeline(device, pipeline->pipelineBlend, NULL);
+    }
 
     if (pipeline->pipelineLayout != VK_NULL_HANDLE) {
         vkDestroyPipelineLayout(device, pipeline->pipelineLayout, NULL);
@@ -748,64 +781,78 @@ void vk_pbr_render(VulkanPBRPipeline* pipeline, VkCommandBuffer commandBuffer,
         return;
     }
 
-    vkCmdBindPipeline(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline->pipeline);
-
     VkBuffer vertexBuffers[] = {pipeline->vertexBuffer};
     VkDeviceSize offsets[] = {0};
     vkCmdBindVertexBuffers(commandBuffer, 0, 1, vertexBuffers, offsets);
     vkCmdBindIndexBuffer(commandBuffer, pipeline->indexBuffer, 0, VK_INDEX_TYPE_UINT32);
 
     // Bind descriptor set using descriptor manager
+    VkDescriptorSet descriptorSet = VK_NULL_HANDLE;
     if (pipeline->descriptorManager && pipeline->descriptorManager->descriptorSets &&
         pipeline->descriptorManager->descriptorSetCount > 0) {
         // Always use the latest allocated descriptor set (assuming one active set per scene)
         uint32_t setIndex = pipeline->descriptorManager->descriptorSetCount - 1;
-        VkDescriptorSet descriptorSet = pipeline->descriptorManager->descriptorSets[setIndex];
-
-        if (descriptorSet != VK_NULL_HANDLE) {
-            vkCmdBindDescriptorSets(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS,
-                                    pipeline->pipelineLayout, 0, 1, &descriptorSet, 0, NULL);
-        }
+        descriptorSet = pipeline->descriptorManager->descriptorSets[setIndex];
     } else {
         // No descriptor set available - might be an error or initialization state
         return;
     }
 
-    // Render each mesh
+    // --- Render Passes ---
+    // Pass 1: Opaque and Masked materials
+    // Pass 2: Blended materials (sorted back-to-front if we had a camera, but for now just render
+    // last)
+
+    // Bind Opaque Pipeline first
+    vkCmdBindPipeline(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline->pipeline);
+    vkCmdBindDescriptorSets(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS,
+                            pipeline->pipelineLayout, 0, 1, &descriptorSet, 0, NULL);
+
+    // Reset depth bias
+    vkCmdSetDepthBias(commandBuffer, 0.0f, 0.0f, 0.0f);
+
     uint32_t indexOffset = 0;
+    // Pass 1: Opaque/Mask
     for (uint32_t i = 0; i < scene->mesh_count; i++) {
         const CardinalMesh* mesh = &scene->meshes[i];
+        bool is_blend = false;
 
-        // Validate mesh data to prevent Vulkan validation errors
-        if (!mesh->vertices || mesh->vertex_count == 0 || !mesh->indices ||
-            mesh->index_count == 0 ||
-            mesh->index_count > 1000000000) { // Sanity check for corrupted data
-            // Skip corrupted mesh without incrementing indexOffset if it wasn't added to buffer
-            // Note: create_pbr_mesh_buffers logic matches this check (skips if index_count == 0)
-            continue;
+        // Check material alpha mode
+        if (mesh->material_index < scene->material_count) {
+            const CardinalMaterial* mat = &scene->materials[mesh->material_index];
+            if (mat->alpha_mode == CARDINAL_ALPHA_MODE_BLEND) {
+                is_blend = true;
+            }
         }
 
-        // Skip invisible meshes
+        if (is_blend) {
+            indexOffset += mesh->index_count;
+            continue; // Skip blend meshes in first pass
+        }
+
+        // Validate and Draw (same logic as before)
+        if (!mesh->vertices || mesh->vertex_count == 0 || !mesh->indices ||
+            mesh->index_count == 0 || mesh->index_count > 1000000000) {
+            continue;
+        }
         if (!mesh->visible) {
             indexOffset += mesh->index_count;
             continue;
         }
 
-        // Prepare push constants with model matrix and material properties
+        // Prepare push constants
         PBRPushConstants pushConstants = {0};
         vk_material_setup_push_constants(&pushConstants, mesh, scene, pipeline->textureManager);
 
-        // Check if this mesh uses skeletal animation
-        pushConstants.hasSkeleton = 0;
+        // Skeleton logic...
+        // Note: hasSkeleton flag (bit 2) is already cleared in setup (flags=0)
+        // We only set it if we find a skeleton
         if (scene->animation_system && scene->skin_count > 0) {
-            // Check if this mesh is associated with any skin
             for (uint32_t skin_idx = 0; skin_idx < scene->skin_count; ++skin_idx) {
                 const CardinalSkin* skin = &scene->skins[skin_idx];
                 for (uint32_t mesh_idx = 0; mesh_idx < skin->mesh_count; ++mesh_idx) {
                     if (skin->mesh_indices[mesh_idx] == i) {
-                        pushConstants.hasSkeleton = 1;
-
-                        // Update bone matrices for this skin
+                        pushConstants.flags |= 4u; // Set hasSkeleton bit (bit 2)
                         if (scene->animation_system->bone_matrices) {
                             memcpy(pipeline->boneMatricesBufferMapped,
                                    scene->animation_system->bone_matrices,
@@ -814,27 +861,94 @@ void vk_pbr_render(VulkanPBRPipeline* pipeline, VkCommandBuffer commandBuffer,
                         break;
                     }
                 }
-                if (pushConstants.hasSkeleton)
+                if (pushConstants.flags & 4u)
                     break;
             }
         }
 
-        // Push constants to GPU
         vkCmdPushConstants(commandBuffer, pipeline->pipelineLayout,
                            VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT, 0,
                            sizeof(PBRPushConstants), &pushConstants);
 
-        // Validate index buffer bounds before drawing
         if (indexOffset + mesh->index_count > pipeline->totalIndexCount) {
-            CARDINAL_LOG_ERROR(
-                "Index buffer overflow: indexOffset=%u + index_count=%u > totalIndexCount=%u",
-                indexOffset, mesh->index_count, pipeline->totalIndexCount);
-            break; // Stop rendering to prevent validation errors
+            break;
         }
 
-        // Draw the mesh
-        CARDINAL_LOG_DEBUG("PBR Draw: Mesh %u, indices=%u, offset=%u", i, mesh->index_count,
-                           indexOffset);
+        vkCmdDrawIndexed(commandBuffer, mesh->index_count, 1, indexOffset, 0, 0);
+        indexOffset += mesh->index_count;
+    }
+
+    // Pass 2: Blended materials
+    vkCmdBindPipeline(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline->pipelineBlend);
+    vkCmdBindDescriptorSets(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS,
+                            pipeline->pipelineLayout, 0, 1, &descriptorSet, 0, NULL);
+
+    // Reset index offset for second pass
+    indexOffset = 0;
+    for (uint32_t i = 0; i < scene->mesh_count; i++) {
+        const CardinalMesh* mesh = &scene->meshes[i];
+        bool is_blend = false;
+
+        if (mesh->material_index < scene->material_count) {
+            const CardinalMaterial* mat = &scene->materials[mesh->material_index];
+            if (mat->alpha_mode == CARDINAL_ALPHA_MODE_BLEND) {
+                is_blend = true;
+            }
+        }
+
+        if (!is_blend) {
+            indexOffset += mesh->index_count;
+            continue; // Skip opaque meshes in second pass
+        }
+
+        // Apply depth bias for blended materials (decals)
+        // Values: constantFactor, clamp, slopeFactor
+        // Negative bias moves geometry closer to camera in Vulkan
+        vkCmdSetDepthBias(commandBuffer, -2.0f, 0.0f, -2.0f);
+
+        // Validate and Draw
+        if (!mesh->vertices || mesh->vertex_count == 0 || !mesh->indices ||
+            mesh->index_count == 0 || mesh->index_count > 1000000000) {
+            continue;
+        }
+        if (!mesh->visible) {
+            indexOffset += mesh->index_count;
+            continue;
+        }
+
+        PBRPushConstants pushConstants = {0};
+        vk_material_setup_push_constants(&pushConstants, mesh, scene, pipeline->textureManager);
+
+        // Skeleton logic...
+        // Note: hasSkeleton flag (bit 2) is already cleared in setup (flags=0)
+        // We only set it if we find a skeleton
+        if (scene->animation_system && scene->skin_count > 0) {
+            for (uint32_t skin_idx = 0; skin_idx < scene->skin_count; ++skin_idx) {
+                const CardinalSkin* skin = &scene->skins[skin_idx];
+                for (uint32_t mesh_idx = 0; mesh_idx < skin->mesh_count; ++mesh_idx) {
+                    if (skin->mesh_indices[mesh_idx] == i) {
+                        pushConstants.flags |= 4u; // Set hasSkeleton bit (bit 2)
+                        if (scene->animation_system->bone_matrices) {
+                            memcpy(pipeline->boneMatricesBufferMapped,
+                                   scene->animation_system->bone_matrices,
+                                   scene->animation_system->bone_matrix_count * 16 * sizeof(float));
+                        }
+                        break;
+                    }
+                }
+                if (pushConstants.flags & 4u)
+                    break;
+            }
+        }
+
+        vkCmdPushConstants(commandBuffer, pipeline->pipelineLayout,
+                           VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT, 0,
+                           sizeof(PBRPushConstants), &pushConstants);
+
+        if (indexOffset + mesh->index_count > pipeline->totalIndexCount) {
+            break;
+        }
+
         vkCmdDrawIndexed(commandBuffer, mesh->index_count, 1, indexOffset, 0, 0);
         indexOffset += mesh->index_count;
     }

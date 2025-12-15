@@ -38,9 +38,9 @@ struct Material {
     uint metallicRoughnessTextureIndex;
     uint aoTextureIndex;
     uint emissiveTextureIndex;
-    uint supportsDescriptorIndexing;
-    uint hasSkeleton;
-    uint _pad3; // Explicit padding to match C struct and alignment rules
+    uint flags; // Packed flags: 0-1=alphaMode, 2=hasSkeleton, 3=supportsDescriptorIndexing
+    float alphaCutoff;
+    uint _pad3; // Padding to align TextureTransform
     TextureTransform albedoTransform;
     float _padding1;
     TextureTransform normalTransform;
@@ -106,9 +106,22 @@ vec4 sampleArray(uint idx, vec2 uv) {
     return texture(textures[nonuniformEXT(idx)], uv);
 }
 
+// Helper to unpack flags
+uint getAlphaMode() {
+    return material.flags & 3u;
+}
+
+bool hasSkeleton() {
+    return (material.flags & 4u) != 0u;
+}
+
+bool supportsDescriptorIndexing() {
+    return (material.flags & 8u) != 0u;
+}
+
 // Helper to decide if we should use descriptor array
 bool canUseArray(uint idx) {
-    return material.supportsDescriptorIndexing == 1u && !isNoTex(idx);
+    return supportsDescriptorIndexing() && !isNoTex(idx);
 }
 
 // Enhanced normal mapping function with quad control
@@ -192,19 +205,38 @@ void main() {
     vec2 emissiveUV = applyTextureTransform(fragTexCoord, material.emissiveTransform);
     
     // Enhanced material property sampling with quad control
+    vec4 albedoSample = vec4(1.0);
     vec3 albedo = vec3(material.albedoAndMetallic.xyz);
     if (!isNoTex(material.albedoTextureIndex)) {
         if (canUseArray(material.albedoTextureIndex)) {
             // Use enhanced derivatives for transformed UV coordinates
             vec2 dx = dFdxFine(albedoUV);
             vec2 dy = dFdyFine(albedoUV);
-            albedo *= textureGrad(textures[nonuniformEXT(material.albedoTextureIndex)], albedoUV, dx, dy).rgb;
+            albedoSample = textureGrad(textures[nonuniformEXT(material.albedoTextureIndex)], albedoUV, dx, dy);
         } else {
             vec2 dx = dFdxFine(albedoUV);
             vec2 dy = dFdyFine(albedoUV);
-            albedo *= textureGrad(albedoMap, albedoUV, dx, dy).rgb;
+            albedoSample = textureGrad(albedoMap, albedoUV, dx, dy);
         }
+        albedo *= albedoSample.rgb;
     }
+
+    // Alpha Handling
+    float alpha = albedoSample.a;
+    
+    // MASK mode (1): Discard if alpha is below cutoff
+    uint alphaMode = getAlphaMode();
+    if (alphaMode == 1) {
+        if (alpha < material.alphaCutoff) {
+            discard;
+        }
+        alpha = 1.0; // Treat as opaque after mask test
+    } 
+    // OPAQUE mode (0): Force alpha to 1.0
+    else if (alphaMode == 0) {
+        alpha = 1.0;
+    }
+    // BLEND mode (2): Use texture alpha (no change needed)
     
     vec3 metallicRoughness;
     float metallic;
@@ -302,7 +334,5 @@ void main() {
     // Apply gamma correction
     color = pow(color, vec3(1.0/2.2));
     
-    outColor = vec4(color, 1.0);
-    // DEBUG: Force red output to verify rasterization
-    // outColor = vec4(1.0, 0.0, 0.0, 1.0);
+    outColor = vec4(color, alpha);
 }

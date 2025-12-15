@@ -77,11 +77,15 @@ typedef struct PBRPushConstants {
   uint32_t metallicRoughnessTextureIndex; // 4 bytes
   uint32_t aoTextureIndex;                // 4 bytes
   uint32_t emissiveTextureIndex;          // 4 bytes
-  uint32_t supportsDescriptorIndexing;    // 4 bytes
+  
+  // Packed flags:
+  // Bit 0-1: alphaMode
+  // Bit 2: hasSkeleton
+  // Bit 3: supportsDescriptorIndexing
+  uint32_t flags; // 4 bytes
 
-  uint32_t hasSkeleton; // 4 bytes
-  uint32_t _pad3; // Explicit padding to align TextureTransform to 136 (8-byte
-                  // boundary)
+  float alphaCutoff;    // 4 bytes
+  uint32_t _pad3; // Padding to align TextureTransform to 136 (8-byte boundary)
 
   // Texture transforms (vec2 alignment = 8 bytes)
   PBRTextureTransform albedoTransform;
@@ -126,7 +130,8 @@ typedef struct PBRLightingData {
 
 // PBR pipeline state
 typedef struct VulkanPBRPipeline {
-  VkPipeline pipeline;
+  VkPipeline pipeline;      // Opaque rendering pipeline
+  VkPipeline pipelineBlend; // Blended rendering pipeline
   VkPipelineLayout pipelineLayout;
 
   // Descriptor management
