@@ -58,7 +58,18 @@ bool vk_texture_manager_init(VulkanTextureManager* manager,
         return false;
     }
 
-    CARDINAL_LOG_INFO("Texture manager initialized with capacity %u", initialCapacity);
+    // Always create a placeholder texture at index 0 to ensure valid descriptors
+    uint32_t placeholderIndex;
+    if (!vk_texture_manager_create_placeholder(manager, &placeholderIndex)) {
+        CARDINAL_LOG_ERROR("Failed to create default placeholder texture");
+        vkDestroySampler(manager->device, manager->defaultSampler, NULL);
+        free(manager->textures);
+        return false;
+    }
+    manager->hasPlaceholder = true;
+
+    CARDINAL_LOG_INFO("Texture manager initialized with capacity %u and default placeholder",
+                      initialCapacity);
     return true;
 }
 

@@ -29,10 +29,8 @@ struct TextureTransform {
 
 // Material structure
 struct Material {
-    vec3 albedoFactor;
-    float metallicFactor;
-    vec3 emissiveFactor;
-    float roughnessFactor;
+    vec4 albedoAndMetallic;
+    vec4 emissiveAndRoughness;
     float normalScale;
     float aoStrength;
     uint albedoTextureIndex;
@@ -41,6 +39,8 @@ struct Material {
     uint aoTextureIndex;
     uint emissiveTextureIndex;
     uint supportsDescriptorIndexing;
+    uint hasSkeleton;
+    uint _pad3; // Explicit padding to match C struct and alignment rules
     TextureTransform albedoTransform;
     float _padding1;
     TextureTransform normalTransform;
@@ -53,7 +53,7 @@ struct Material {
 };
 
 // Push constants for per-mesh material properties
-layout(push_constant) uniform PushConstants {
+layout(push_constant, std430) uniform PushConstants {
     layout(offset = 64) Material material;
 };
 
@@ -192,7 +192,7 @@ void main() {
     vec2 emissiveUV = applyTextureTransform(fragTexCoord, material.emissiveTransform);
     
     // Enhanced material property sampling with quad control
-    vec3 albedo = vec3(material.albedoFactor);
+    vec3 albedo = vec3(material.albedoAndMetallic.xyz);
     if (!isNoTex(material.albedoTextureIndex)) {
         if (canUseArray(material.albedoTextureIndex)) {
             // Use enhanced derivatives for transformed UV coordinates
@@ -219,11 +219,11 @@ void main() {
             vec2 dy = dFdyFine(metallicRoughnessUV);
             metallicRoughness = textureGrad(metallicRoughnessMap, metallicRoughnessUV, dx, dy).rgb;
         }
-        metallic = metallicRoughness.b * material.metallicFactor;
-        roughness = metallicRoughness.g * material.roughnessFactor;
+        metallic = metallicRoughness.b * material.albedoAndMetallic.w;
+        roughness = metallicRoughness.g * material.emissiveAndRoughness.w;
     } else {
-        metallic = material.metallicFactor;
-        roughness = material.roughnessFactor;
+        metallic = material.albedoAndMetallic.w;
+        roughness = material.emissiveAndRoughness.w;
     }
     
     float ao = 1.0; // Default AO value according to GLTF 2.0 spec
@@ -241,7 +241,7 @@ void main() {
     // Apply AO strength factor
     ao = mix(1.0, ao, material.aoStrength);
     
-    vec3 emissive = vec3(material.emissiveFactor);
+    vec3 emissive = vec3(material.emissiveAndRoughness.xyz);
     if (!isNoTex(material.emissiveTextureIndex)) {
         if (canUseArray(material.emissiveTextureIndex)) {
             vec2 dx = dFdxFine(emissiveUV);
@@ -303,4 +303,6 @@ void main() {
     color = pow(color, vec3(1.0/2.2));
     
     outColor = vec4(color, 1.0);
+    // DEBUG: Force red output to verify rasterization
+    // outColor = vec4(1.0, 0.0, 0.0, 1.0);
 }

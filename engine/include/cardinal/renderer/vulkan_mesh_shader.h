@@ -58,6 +58,16 @@ typedef struct MeshShaderPipeline {
   VkPipeline pipeline;              /**< Vulkan pipeline object */
   VkPipelineLayout pipeline_layout; /**< Pipeline layout */
 
+  VkDescriptorSetLayout set0_layout; /**< Layout for Set 0 (Mesh buffers) */
+  VkDescriptorSetLayout
+      set1_layout; /**< Layout for Set 1 (Materials/Textures) */
+  VkDescriptorSet global_descriptor_set; /**< Global descriptor set (Set 1) */
+  VkDescriptorPool descriptor_pool; /**< Descriptor pool for this pipeline */
+
+  // Default material buffer for Binding 0 (ensures alpha = 1.0)
+  VkBuffer default_material_buffer;
+  VkDeviceMemory default_material_memory;
+
   // Descriptor management
   VulkanDescriptorManager
       *descriptor_manager; /**< Descriptor manager for this pipeline */
@@ -96,9 +106,13 @@ typedef struct MeshShaderDrawData {
   VkDeviceMemory draw_command_memory; /**< Draw command buffer memory */
   VkBuffer uniform_buffer; /**< Buffer containing mesh shader uniform data */
   VkDeviceMemory uniform_memory; /**< Memory for mesh shader uniform buffer */
+  void *uniform_mapped;          /**< Mapped pointer for uniform buffer */
 
   uint32_t meshlet_count;      /**< Total number of meshlets */
   uint32_t draw_command_count; /**< Number of draw commands */
+
+  VkDescriptorSet
+      descriptor_set; /**< Descriptor set for this draw data (Set 0) */
 } MeshShaderDrawData;
 
 /**
@@ -139,11 +153,12 @@ typedef struct MeshShaderMaterialBuffer {
 
 /**
  * @brief Records mesh shader rendering commands for the current frame
- * 
+ *
  * @param vulkan_state The global Vulkan state
  * @param cmd The command buffer to record into
  */
-void vk_mesh_shader_record_frame(VulkanState* vulkan_state, VkCommandBuffer cmd);
+void vk_mesh_shader_record_frame(VulkanState *vulkan_state,
+                                 VkCommandBuffer cmd);
 
 /**
  * @brief Initialize mesh shader support

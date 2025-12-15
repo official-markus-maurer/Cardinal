@@ -28,10 +28,9 @@ extern "C" {
  * @param scene The scene containing the mesh and materials
  * @param textureManager The texture manager (optional, can be NULL)
  */
-void vk_material_setup_push_constants(PBRPushConstants* pushConstants,
-                                      const CardinalMesh* mesh,
-                                      const CardinalScene* scene,
-                                      const VulkanTextureManager* textureManager);
+void vk_material_setup_push_constants(
+    PBRPushConstants *pushConstants, const CardinalMesh *mesh,
+    const CardinalScene *scene, const VulkanTextureManager *textureManager);
 
 #ifdef __cplusplus
 }

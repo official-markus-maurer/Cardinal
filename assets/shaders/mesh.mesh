@@ -21,20 +21,24 @@ struct Vertex {
 };
 
 // Storage buffers
-layout(set = 0, binding = 0) readonly buffer MeshletBuffer {
+// Aligning bindings with Task shader
+// Binding 0: DrawCommandBuffer (Task) - Unused here
+layout(set = 0, binding = 1) readonly buffer MeshletBuffer {
     GpuMeshlet meshlets[];
 };
 
-layout(set = 0, binding = 1) readonly buffer VertexBuffer {
+// Binding 2: CullingData (Task) - Unused here
+
+layout(set = 0, binding = 3) readonly buffer VertexBuffer {
     Vertex vertices[];
 };
 
-layout(set = 0, binding = 3) readonly buffer PrimitiveBuffer {
+layout(set = 0, binding = 4) readonly buffer PrimitiveBuffer {
     uint primitive_indices[];
 };
 
 // Uniform buffer for transformation matrices
-layout(set = 0, binding = 4) uniform UniformBuffer {
+layout(set = 0, binding = 5) uniform UniformBuffer {
     mat4 model;
     mat4 view;
     mat4 proj;

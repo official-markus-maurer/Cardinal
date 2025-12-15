@@ -49,25 +49,45 @@ static void set_default_material_properties(PBRPushConstants* pushConstants, boo
 }
 
 static uint32_t resolve_texture_index(uint32_t textureIndex, bool hasTextures,
-                                      uint32_t textureCount) {
+                                      uint32_t textureCount, bool hasPlaceholder) {
     if (textureIndex == UINT32_MAX) {
         return UINT32_MAX;
     }
-    return (hasTextures && textureIndex < textureCount) ? textureIndex : UINT32_MAX;
+
+    // Map GLTF index to Manager index
+    // If we have a placeholder at index 0, real textures start at index 1
+    uint32_t mappedIndex = hasPlaceholder ? (textureIndex + 1) : textureIndex;
+
+    if (hasTextures && mappedIndex < textureCount) {
+        return mappedIndex;
+    }
+
+    // Fallback to placeholder if available and requested texture is missing/invalid
+    // FIX: Do NOT fallback to placeholder (index 0) if the texture is missing.
+    // Returning 0 (white texture) breaks normal maps (creates diagonal normals) and
+    // messes up other material properties. Returning UINT32_MAX tells the shader
+    // to use the material factors instead.
+    /*
+    if (hasPlaceholder) {
+        return 0;
+    }
+    */
+
+    return UINT32_MAX;
 }
 
 static void set_texture_indices(PBRPushConstants* pushConstants, const CardinalMaterial* material,
-                                bool hasTextures, uint32_t textureCount) {
+                                bool hasTextures, uint32_t textureCount, bool hasPlaceholder) {
     pushConstants->albedoTextureIndex =
-        resolve_texture_index(material->albedo_texture, hasTextures, textureCount);
+        resolve_texture_index(material->albedo_texture, hasTextures, textureCount, hasPlaceholder);
     pushConstants->normalTextureIndex =
-        resolve_texture_index(material->normal_texture, hasTextures, textureCount);
-    pushConstants->metallicRoughnessTextureIndex =
-        resolve_texture_index(material->metallic_roughness_texture, hasTextures, textureCount);
+        resolve_texture_index(material->normal_texture, hasTextures, textureCount, hasPlaceholder);
+    pushConstants->metallicRoughnessTextureIndex = resolve_texture_index(
+        material->metallic_roughness_texture, hasTextures, textureCount, hasPlaceholder);
     pushConstants->aoTextureIndex =
-        resolve_texture_index(material->ao_texture, hasTextures, textureCount);
-    pushConstants->emissiveTextureIndex =
-        resolve_texture_index(material->emissive_texture, hasTextures, textureCount);
+        resolve_texture_index(material->ao_texture, hasTextures, textureCount, hasPlaceholder);
+    pushConstants->emissiveTextureIndex = resolve_texture_index(
+        material->emissive_texture, hasTextures, textureCount, hasPlaceholder);
 }
 
 static void set_texture_transforms(PBRPushConstants* pushConstants,
@@ -130,13 +150,14 @@ void vk_material_setup_push_constants(PBRPushConstants* pushConstants, const Car
     // Determine if textures are available
     bool hasTextures = (textureManager && textureManager->textureCount > 0);
     uint32_t textureCount = hasTextures ? textureManager->textureCount : 0;
+    bool hasPlaceholder = (textureManager && textureManager->hasPlaceholder);
 
     // Set material properties for this mesh
     if (mesh->material_index < scene->material_count) {
         const CardinalMaterial* material = &scene->materials[mesh->material_index];
 
         set_material_properties(pushConstants, material);
-        set_texture_indices(pushConstants, material, hasTextures, textureCount);
+        set_texture_indices(pushConstants, material, hasTextures, textureCount, hasPlaceholder);
         set_texture_transforms(pushConstants, material);
 
         // CRITICAL: Set descriptor indexing flag for shader

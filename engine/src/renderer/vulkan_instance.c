@@ -218,6 +218,7 @@ typedef struct VkLayerSettingsCreateInfoEXT {
  */
 static void setup_app_info(VkApplicationInfo* ai) {
     ai->sType = VK_STRUCTURE_TYPE_APPLICATION_INFO;
+    ai->pNext = NULL;
     ai->pApplicationName = "Cardinal";
     ai->applicationVersion = VK_MAKE_VERSION(1, 0, 0);
     ai->pEngineName = "Cardinal";
@@ -235,7 +236,7 @@ static void setup_app_info(VkApplicationInfo* ai) {
 static bool get_instance_extensions(const char*** out_extensions, uint32_t* out_count) {
     uint32_t glfw_count = 0;
     const char** glfw_exts = glfwGetRequiredInstanceExtensions(&glfw_count);
-    
+
     if (!glfw_exts) {
         CARDINAL_LOG_INFO("[INSTANCE] GLFW instance extensions unavailable (headless or no GLFW)");
         // In headless, we might still need extensions, but for now we assume 0 if GLFW fails
@@ -267,8 +268,10 @@ static bool get_instance_extensions(const char*** out_extensions, uint32_t* out_
     bool need_layer_settings = true; // Always try to add for configuration
 
     uint32_t extra_count = 0;
-    if (need_debug_utils) extra_count++;
-    if (need_layer_settings) extra_count++;
+    if (need_debug_utils)
+        extra_count++;
+    if (need_layer_settings)
+        extra_count++;
 
     if (extra_count == 0) {
         *out_extensions = glfw_exts;
@@ -277,10 +280,12 @@ static bool get_instance_extensions(const char*** out_extensions, uint32_t* out_
     }
 
     const char** exts = (const char**)malloc(sizeof(char*) * (glfw_count + extra_count));
-    if (!exts) return false;
+    if (!exts)
+        return false;
 
-    for (uint32_t i = 0; i < glfw_count; ++i) exts[i] = glfw_exts[i];
-    
+    for (uint32_t i = 0; i < glfw_count; ++i)
+        exts[i] = glfw_exts[i];
+
     uint32_t current = glfw_count;
     if (need_debug_utils) {
         exts[current++] = VK_EXT_DEBUG_UTILS_EXTENSION_NAME;
@@ -299,7 +304,7 @@ static bool get_instance_extensions(const char*** out_extensions, uint32_t* out_
 /**
  * @brief Configures validation layers and debug messenger.
  */
-static void configure_validation(VkInstanceCreateInfo* ci, const char** layers, 
+static void configure_validation(VkInstanceCreateInfo* ci, const char** layers,
                                  VkDebugUtilsMessengerCreateInfoEXT* debug_ci,
                                  VkLayerSettingsCreateInfoEXT* layer_settings_ci,
                                  VkLayerSettingEXT* settings) {
@@ -336,7 +341,7 @@ static void configure_validation(VkInstanceCreateInfo* ci, const char** layers,
     layer_settings_ci->pSettings = settings;
 
     ci->pNext = layer_settings_ci;
-    
+
     CARDINAL_LOG_INFO("[INSTANCE] Debug messenger and legacy detection configured");
 }
 
@@ -347,7 +352,7 @@ static void configure_validation(VkInstanceCreateInfo* ci, const char** layers,
  */
 bool vk_create_instance(VulkanState* s) {
     CARDINAL_LOG_INFO("[INSTANCE] Starting Vulkan instance creation");
-    
+
     VkApplicationInfo ai;
     setup_app_info(&ai);
 
@@ -359,7 +364,8 @@ bool vk_create_instance(VulkanState* s) {
 
     CARDINAL_LOG_INFO("[INSTANCE] Final extension count: %u", extension_count);
     for (uint32_t i = 0; i < extension_count; i++) {
-        CARDINAL_LOG_INFO("[INSTANCE] Extension %u: %s", i, extensions[i] ? extensions[i] : "(null)");
+        CARDINAL_LOG_INFO("[INSTANCE] Extension %u: %s", i,
+                          extensions[i] ? extensions[i] : "(null)");
     }
 
     const char* layers[] = {"VK_LAYER_KHRONOS_validation"};
@@ -377,23 +383,23 @@ bool vk_create_instance(VulkanState* s) {
 
     CARDINAL_LOG_INFO("[INSTANCE] Creating Vulkan instance...");
     VkResult result = vkCreateInstance(&ci, NULL, &s->context.instance);
-    
+
     // Check if we allocated a custom extension array (different from GLFW's static one)
     // get_instance_extensions returns a malloc'd array if it added extra extensions
     // To check this robustly, we see if validation is enabled and extras were needed.
     // Simpler: if validation enabled, we likely malloc'd.
     // BUT `get_instance_extensions` returns `glfw_exts` (static from GLFW) if no extras added.
-    // Let's just not free for now or add a flag. 
+    // Let's just not free for now or add a flag.
     // Actually, `glfwGetRequiredInstanceExtensions` returns pointer to static array.
     // If we malloc'd, we should free.
     // Let's improve `get_instance_extensions` to return a flag or just handle it here.
-    // Since I can't easily change the signature in the middle of this thought, I'll rely on the logic:
-    // If validation enabled AND (debug utils OR layer settings added), then we malloc'd.
-    // A cleaner way is to verify if extensions != glfwGetRequiredInstanceExtensions result.
-    // But I don't want to call it again.
-    // I'll make a small fix: let's assume we leak the tiny array for now OR fix it properly in a subsequent step if critical.
-    // Actually, I can check against the pointer returned by glfw.
-    // Re-calling glfwGetRequiredInstanceExtensions is cheap (just returns pointer).
+    // Since I can't easily change the signature in the middle of this thought, I'll rely on the
+    // logic: If validation enabled AND (debug utils OR layer settings added), then we malloc'd. A
+    // cleaner way is to verify if extensions != glfwGetRequiredInstanceExtensions result. But I
+    // don't want to call it again. I'll make a small fix: let's assume we leak the tiny array for
+    // now OR fix it properly in a subsequent step if critical. Actually, I can check against the
+    // pointer returned by glfw. Re-calling glfwGetRequiredInstanceExtensions is cheap (just returns
+    // pointer).
     uint32_t dummy;
     const char** static_glfw_exts = glfwGetRequiredInstanceExtensions(&dummy);
     if (extensions && extensions != static_glfw_exts) {
@@ -408,7 +414,9 @@ bool vk_create_instance(VulkanState* s) {
 
     // Create persistent debug messenger if validation is enabled
     if (validation_enabled()) {
-        PFN_vkCreateDebugUtilsMessengerEXT dfunc = (PFN_vkCreateDebugUtilsMessengerEXT)vkGetInstanceProcAddr(s->context.instance, "vkCreateDebugUtilsMessengerEXT");
+        PFN_vkCreateDebugUtilsMessengerEXT dfunc =
+            (PFN_vkCreateDebugUtilsMessengerEXT)vkGetInstanceProcAddr(
+                s->context.instance, "vkCreateDebugUtilsMessengerEXT");
         if (dfunc) {
             dfunc(s->context.instance, &debug_ci, NULL, &s->context.debug_messenger);
         }
@@ -618,9 +626,14 @@ bool vk_create_device(VulkanState* s) {
     }
 
     if (descriptor_indexing_available) {
-        device_extensions[enabled_extension_count] = VK_EXT_DESCRIPTOR_INDEXING_EXTENSION_NAME;
-        enabled_extension_count++;
-        CARDINAL_LOG_INFO("[DEVICE] Enabling VK_EXT_descriptor_indexing extension");
+        // VK_EXT_descriptor_indexing is promoted to core in Vulkan 1.2
+        // We shouldn't enable the extension explicitly if we are using Vulkan 1.2+
+        // However, we still need to enable the features in VkPhysicalDeviceVulkan12Features
+
+        // device_extensions[enabled_extension_count] = VK_EXT_DESCRIPTOR_INDEXING_EXTENSION_NAME;
+        // enabled_extension_count++;
+        CARDINAL_LOG_INFO("[DEVICE] VK_EXT_descriptor_indexing available (promoted to Vulkan 1.2), "
+                          "enabling features only");
     }
 
     if (descriptor_buffer_available) {

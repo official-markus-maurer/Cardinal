@@ -23,7 +23,9 @@ layout(binding = 6) uniform BoneMatrices {
 // Push constants for per-mesh data
 layout(push_constant) uniform PushConstants {
     mat4 modelMatrix;
-    uint hasSkeleton; // 1 if mesh has skeletal animation, 0 otherwise
+    // Material data occupies 64 bytes (offsets 64-128) in fragment shader
+    // hasSkeleton is at offset 148 in C struct (due to std430 alignment padding)
+    layout(offset = 148) uint hasSkeleton; 
 } pushConstants;
 
 // Output to fragment shader

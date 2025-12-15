@@ -40,7 +40,8 @@ static uint32_t get_current_thread_id(void) {
  * @brief Creates per-frame command pools.
  */
 static bool create_command_pools(VulkanState* s) {
-    s->commands.pools = (VkCommandPool*)malloc(sizeof(VkCommandPool) * s->sync.max_frames_in_flight);
+    s->commands.pools =
+        (VkCommandPool*)malloc(sizeof(VkCommandPool) * s->sync.max_frames_in_flight);
     for (uint32_t i = 0; i < s->sync.max_frames_in_flight; ++i) {
         if (!vk_utils_create_command_pool(s->context.device, s->context.graphics_queue_family,
                                           VK_COMMAND_POOL_CREATE_RESET_COMMAND_BUFFER_BIT,
@@ -56,7 +57,8 @@ static bool create_command_pools(VulkanState* s) {
  */
 static bool allocate_command_buffers(VulkanState* s) {
     // Allocate primary command buffers
-    s->commands.buffers = (VkCommandBuffer*)malloc(sizeof(VkCommandBuffer) * s->sync.max_frames_in_flight);
+    s->commands.buffers =
+        (VkCommandBuffer*)malloc(sizeof(VkCommandBuffer) * s->sync.max_frames_in_flight);
     for (uint32_t i = 0; i < s->sync.max_frames_in_flight; ++i) {
         VkCommandBufferAllocateInfo ai = {.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO};
         ai.commandPool = s->commands.pools[i];
@@ -68,16 +70,19 @@ static bool allocate_command_buffers(VulkanState* s) {
     CARDINAL_LOG_WARN("[INIT] Allocated %u primary command buffers", s->sync.max_frames_in_flight);
 
     // Allocate secondary command buffers
-    s->commands.secondary_buffers = (VkCommandBuffer*)malloc(sizeof(VkCommandBuffer) * s->sync.max_frames_in_flight);
+    s->commands.secondary_buffers =
+        (VkCommandBuffer*)malloc(sizeof(VkCommandBuffer) * s->sync.max_frames_in_flight);
     for (uint32_t i = 0; i < s->sync.max_frames_in_flight; ++i) {
         VkCommandBufferAllocateInfo ai = {.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO};
         ai.commandPool = s->commands.pools[i];
         ai.level = VK_COMMAND_BUFFER_LEVEL_PRIMARY;
         ai.commandBufferCount = 1;
-        if (vkAllocateCommandBuffers(s->context.device, &ai, &s->commands.secondary_buffers[i]) != VK_SUCCESS)
+        if (vkAllocateCommandBuffers(s->context.device, &ai, &s->commands.secondary_buffers[i]) !=
+            VK_SUCCESS)
             return false;
     }
-    CARDINAL_LOG_WARN("[INIT] Allocated %u secondary command buffers", s->sync.max_frames_in_flight);
+    CARDINAL_LOG_WARN("[INIT] Allocated %u secondary command buffers",
+                      s->sync.max_frames_in_flight);
     return true;
 }
 
@@ -90,12 +95,15 @@ static bool create_sync_objects(VulkanState* s) {
         free(s->sync.image_acquired_semaphores);
         s->sync.image_acquired_semaphores = NULL;
     }
-    s->sync.image_acquired_semaphores = (VkSemaphore*)calloc(s->sync.max_frames_in_flight, sizeof(VkSemaphore));
-    if (!s->sync.image_acquired_semaphores) return false;
+    s->sync.image_acquired_semaphores =
+        (VkSemaphore*)calloc(s->sync.max_frames_in_flight, sizeof(VkSemaphore));
+    if (!s->sync.image_acquired_semaphores)
+        return false;
 
     for (uint32_t i = 0; i < s->sync.max_frames_in_flight; ++i) {
         VkSemaphoreCreateInfo sci = {.sType = VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO};
-        if (vkCreateSemaphore(s->context.device, &sci, NULL, &s->sync.image_acquired_semaphores[i]) != VK_SUCCESS) {
+        if (vkCreateSemaphore(s->context.device, &sci, NULL,
+                              &s->sync.image_acquired_semaphores[i]) != VK_SUCCESS) {
             CARDINAL_LOG_ERROR("[INIT] Failed to create image acquired semaphore for frame %u", i);
             return false;
         }
@@ -107,12 +115,15 @@ static bool create_sync_objects(VulkanState* s) {
         free(s->sync.render_finished_semaphores);
         s->sync.render_finished_semaphores = NULL;
     }
-    s->sync.render_finished_semaphores = (VkSemaphore*)calloc(s->sync.max_frames_in_flight, sizeof(VkSemaphore));
-    if (!s->sync.render_finished_semaphores) return false;
+    s->sync.render_finished_semaphores =
+        (VkSemaphore*)calloc(s->sync.max_frames_in_flight, sizeof(VkSemaphore));
+    if (!s->sync.render_finished_semaphores)
+        return false;
 
     for (uint32_t i = 0; i < s->sync.max_frames_in_flight; ++i) {
         VkSemaphoreCreateInfo sci = {.sType = VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO};
-        if (vkCreateSemaphore(s->context.device, &sci, NULL, &s->sync.render_finished_semaphores[i]) != VK_SUCCESS) {
+        if (vkCreateSemaphore(s->context.device, &sci, NULL,
+                              &s->sync.render_finished_semaphores[i]) != VK_SUCCESS) {
             CARDINAL_LOG_ERROR("[INIT] Failed to create render finished semaphore for frame %u", i);
             return false;
         }
@@ -125,10 +136,12 @@ static bool create_sync_objects(VulkanState* s) {
         s->sync.in_flight_fences = NULL;
     }
     s->sync.in_flight_fences = (VkFence*)calloc(s->sync.max_frames_in_flight, sizeof(VkFence));
-    if (!s->sync.in_flight_fences) return false;
+    if (!s->sync.in_flight_fences)
+        return false;
 
     for (uint32_t i = 0; i < s->sync.max_frames_in_flight; ++i) {
-        if (!vk_utils_create_fence(s->context.device, &s->sync.in_flight_fences[i], true, "in-flight fence")) {
+        if (!vk_utils_create_fence(s->context.device, &s->sync.in_flight_fences[i], true,
+                                   "in-flight fence")) {
             CARDINAL_LOG_ERROR("[INIT] Failed to create in-flight fence for frame %u", i);
             return false;
         }
@@ -136,17 +149,15 @@ static bool create_sync_objects(VulkanState* s) {
     CARDINAL_LOG_WARN("[INIT] Created %u in-flight fences", s->sync.max_frames_in_flight);
 
     // Timeline semaphore
-    VkSemaphoreTypeCreateInfo timelineTypeInfo = {
-        .sType = VK_STRUCTURE_TYPE_SEMAPHORE_TYPE_CREATE_INFO,
-        .semaphoreType = VK_SEMAPHORE_TYPE_TIMELINE,
-        .initialValue = 0
-    };
-    VkSemaphoreCreateInfo semCI = {
-        .sType = VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO,
-        .pNext = &timelineTypeInfo
-    };
+    VkSemaphoreTypeCreateInfo timelineTypeInfo = {.sType =
+                                                      VK_STRUCTURE_TYPE_SEMAPHORE_TYPE_CREATE_INFO,
+                                                  .semaphoreType = VK_SEMAPHORE_TYPE_TIMELINE,
+                                                  .initialValue = 0};
+    VkSemaphoreCreateInfo semCI = {.sType = VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO,
+                                   .pNext = &timelineTypeInfo};
 
-    VkResult result = vkCreateSemaphore(s->context.device, &semCI, NULL, &s->sync.timeline_semaphore);
+    VkResult result =
+        vkCreateSemaphore(s->context.device, &semCI, NULL, &s->sync.timeline_semaphore);
     if (result != VK_SUCCESS) {
         CARDINAL_LOG_ERROR("[INIT] Failed to create timeline semaphore: %d", result);
         return false;
@@ -168,8 +179,10 @@ bool vk_create_commands_sync(VulkanState* s) {
     s->sync.max_frames_in_flight = 3;
     s->sync.current_frame = 0;
 
-    if (!create_command_pools(s)) return false;
-    if (!allocate_command_buffers(s)) return false;
+    if (!create_command_pools(s))
+        return false;
+    if (!allocate_command_buffers(s))
+        return false;
 
     // Initialize double buffering index
     s->commands.current_buffer_index = 0;
@@ -186,7 +199,8 @@ bool vk_create_commands_sync(VulkanState* s) {
     if (!s->swapchain.image_layout_initialized)
         return false;
 
-    if (!create_sync_objects(s)) return false;
+    if (!create_sync_objects(s))
+        return false;
 
     // Initialize timeline values for first frame
     s->sync.current_frame_value = 0;
@@ -315,13 +329,15 @@ void vk_destroy_commands_sync(VulkanState* s) {
 static VkCommandBuffer select_command_buffer(VulkanState* s) {
     if (s->commands.current_buffer_index == 0) {
         if (!s->commands.buffers) {
-            CARDINAL_LOG_ERROR("[CMD] Frame %u: command_buffers array is null", s->sync.current_frame);
+            CARDINAL_LOG_ERROR("[CMD] Frame %u: command_buffers array is null",
+                               s->sync.current_frame);
             return VK_NULL_HANDLE;
         }
         return s->commands.buffers[s->sync.current_frame];
     } else {
         if (!s->commands.secondary_buffers) {
-            CARDINAL_LOG_ERROR("[CMD] Frame %u: secondary_command_buffers array is null", s->sync.current_frame);
+            CARDINAL_LOG_ERROR("[CMD] Frame %u: secondary_command_buffers array is null",
+                               s->sync.current_frame);
             return VK_NULL_HANDLE;
         }
         return s->commands.secondary_buffers[s->sync.current_frame];
@@ -333,19 +349,23 @@ static VkCommandBuffer select_command_buffer(VulkanState* s) {
  */
 static bool validate_swapchain_image(VulkanState* s, uint32_t image_index) {
     if (s->swapchain.image_count == 0 || image_index >= s->swapchain.image_count) {
-        CARDINAL_LOG_ERROR("[CMD] Frame %u: Invalid image index %u (count %u)", s->sync.current_frame, image_index, s->swapchain.image_count);
+        CARDINAL_LOG_ERROR("[CMD] Frame %u: Invalid image index %u (count %u)",
+                           s->sync.current_frame, image_index, s->swapchain.image_count);
         return false;
     }
     if (!s->swapchain.images || !s->swapchain.image_views) {
-        CARDINAL_LOG_ERROR("[CMD] Frame %u: Swapchain image arrays are null", s->sync.current_frame);
+        CARDINAL_LOG_ERROR("[CMD] Frame %u: Swapchain image arrays are null",
+                           s->sync.current_frame);
         return false;
     }
     if (!s->swapchain.image_layout_initialized) {
-        CARDINAL_LOG_ERROR("[CMD] Frame %u: Image layout initialization array is null", s->sync.current_frame);
+        CARDINAL_LOG_ERROR("[CMD] Frame %u: Image layout initialization array is null",
+                           s->sync.current_frame);
         return false;
     }
     if (s->swapchain.extent.width == 0 || s->swapchain.extent.height == 0) {
-        CARDINAL_LOG_ERROR("[CMD] Frame %u: Invalid swapchain extent %ux%u", s->sync.current_frame, s->swapchain.extent.width, s->swapchain.extent.height);
+        CARDINAL_LOG_ERROR("[CMD] Frame %u: Invalid swapchain extent %ux%u", s->sync.current_frame,
+                           s->swapchain.extent.width, s->swapchain.extent.height);
         return false;
     }
     return true;
@@ -355,19 +375,23 @@ static bool validate_swapchain_image(VulkanState* s, uint32_t image_index) {
  * @brief Resets and begins the command buffer.
  */
 static bool begin_command_buffer(VulkanState* s, VkCommandBuffer cmd) {
-    CARDINAL_LOG_INFO("[CMD] Frame %u: Resetting command buffer %p", s->sync.current_frame, (void*)cmd);
+    CARDINAL_LOG_INFO("[CMD] Frame %u: Resetting command buffer %p", s->sync.current_frame,
+                      (void*)cmd);
     VkResult reset_result = vkResetCommandBuffer(cmd, 0);
     if (reset_result != VK_SUCCESS) {
-        CARDINAL_LOG_ERROR("[CMD] Frame %u: Failed to reset command buffer: %d", s->sync.current_frame, reset_result);
+        CARDINAL_LOG_ERROR("[CMD] Frame %u: Failed to reset command buffer: %d",
+                           s->sync.current_frame, reset_result);
         return false;
     }
 
     VkCommandBufferBeginInfo bi = {.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO};
     bi.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
-    CARDINAL_LOG_INFO("[CMD] Frame %u: Beginning command buffer %p with flags %u", s->sync.current_frame, (void*)cmd, bi.flags);
+    CARDINAL_LOG_INFO("[CMD] Frame %u: Beginning command buffer %p with flags %u",
+                      s->sync.current_frame, (void*)cmd, bi.flags);
     VkResult begin_result = vkBeginCommandBuffer(cmd, &bi);
     if (begin_result != VK_SUCCESS) {
-        CARDINAL_LOG_ERROR("[CMD] Frame %u: Failed to begin command buffer: %d", s->sync.current_frame, begin_result);
+        CARDINAL_LOG_ERROR("[CMD] Frame %u: Failed to begin command buffer: %d",
+                           s->sync.current_frame, begin_result);
         return false;
     }
     return true;
@@ -376,7 +400,8 @@ static bool begin_command_buffer(VulkanState* s, VkCommandBuffer cmd) {
 /**
  * @brief Transitions image layouts for rendering.
  */
-static void transition_images(VulkanState* s, VkCommandBuffer cmd, uint32_t image_index, bool use_depth) {
+static void transition_images(VulkanState* s, VkCommandBuffer cmd, uint32_t image_index,
+                              bool use_depth) {
     uint32_t thread_id = get_current_thread_id();
 
     // Depth transition
@@ -385,8 +410,10 @@ static void transition_images(VulkanState* s, VkCommandBuffer cmd, uint32_t imag
         barrier.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2;
         barrier.srcStageMask = VK_PIPELINE_STAGE_2_TOP_OF_PIPE_BIT;
         barrier.srcAccessMask = 0;
-        barrier.dstStageMask = VK_PIPELINE_STAGE_2_EARLY_FRAGMENT_TESTS_BIT | VK_PIPELINE_STAGE_2_LATE_FRAGMENT_TESTS_BIT;
-        barrier.dstAccessMask = VK_ACCESS_2_DEPTH_STENCIL_ATTACHMENT_READ_BIT | VK_ACCESS_2_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT;
+        barrier.dstStageMask = VK_PIPELINE_STAGE_2_EARLY_FRAGMENT_TESTS_BIT |
+                               VK_PIPELINE_STAGE_2_LATE_FRAGMENT_TESTS_BIT;
+        barrier.dstAccessMask = VK_ACCESS_2_DEPTH_STENCIL_ATTACHMENT_READ_BIT |
+                                VK_ACCESS_2_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT;
         barrier.oldLayout = VK_IMAGE_LAYOUT_UNDEFINED;
         barrier.newLayout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
         barrier.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
@@ -404,7 +431,8 @@ static void transition_images(VulkanState* s, VkCommandBuffer cmd, uint32_t imag
         dep.pImageMemoryBarriers = &barrier;
 
         if (!cardinal_barrier_validation_validate_pipeline_barrier(&dep, cmd, thread_id)) {
-            CARDINAL_LOG_WARN("[CMD] Pipeline barrier validation failed for depth image transition");
+            CARDINAL_LOG_WARN(
+                "[CMD] Pipeline barrier validation failed for depth image transition");
         }
 
         if (s->context.vkCmdPipelineBarrier2) {
@@ -437,7 +465,8 @@ static void transition_images(VulkanState* s, VkCommandBuffer cmd, uint32_t imag
     }
 
     barrier.dstStageMask = VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT;
-    barrier.dstAccessMask = VK_ACCESS_2_COLOR_ATTACHMENT_READ_BIT | VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT;
+    barrier.dstAccessMask =
+        VK_ACCESS_2_COLOR_ATTACHMENT_READ_BIT | VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT;
     barrier.newLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
 
     VkDependencyInfo dep = {0};
@@ -446,7 +475,8 @@ static void transition_images(VulkanState* s, VkCommandBuffer cmd, uint32_t imag
     dep.pImageMemoryBarriers = &barrier;
 
     if (!cardinal_barrier_validation_validate_pipeline_barrier(&dep, cmd, thread_id)) {
-        CARDINAL_LOG_WARN("[CMD] Pipeline barrier validation failed for swapchain image transition");
+        CARDINAL_LOG_WARN(
+            "[CMD] Pipeline barrier validation failed for swapchain image transition");
     }
 
     s->context.vkCmdPipelineBarrier2(cmd, &dep);
@@ -455,9 +485,12 @@ static void transition_images(VulkanState* s, VkCommandBuffer cmd, uint32_t imag
 /**
  * @brief Begins dynamic rendering.
  */
-static bool begin_dynamic_rendering(VulkanState* s, VkCommandBuffer cmd, uint32_t image_index, bool use_depth, VkClearValue* clears) {
-    if (!s->context.vkCmdBeginRendering || !s->context.vkCmdEndRendering || !s->context.vkCmdPipelineBarrier2) {
-        CARDINAL_LOG_ERROR("[CMD] Frame %u: Dynamic rendering functions not loaded", s->sync.current_frame);
+static bool begin_dynamic_rendering(VulkanState* s, VkCommandBuffer cmd, uint32_t image_index,
+                                    bool use_depth, VkClearValue* clears) {
+    if (!s->context.vkCmdBeginRendering || !s->context.vkCmdEndRendering ||
+        !s->context.vkCmdPipelineBarrier2) {
+        CARDINAL_LOG_ERROR("[CMD] Frame %u: Dynamic rendering functions not loaded",
+                           s->sync.current_frame);
         return false;
     }
 
@@ -481,7 +514,12 @@ static bool begin_dynamic_rendering(VulkanState* s, VkCommandBuffer cmd, uint32_
 
     VkRenderingInfo renderingInfo = {0};
     renderingInfo.sType = VK_STRUCTURE_TYPE_RENDERING_INFO;
-    renderingInfo.flags = VK_RENDERING_CONTENTS_SECONDARY_COMMAND_BUFFERS_BIT;
+    // We are using PRIMARY command buffers for rendering (even the ones named 'secondary_buffers'
+    // are allocated as PRIMARY). Therefore, we are recording inline commands directly into the
+    // command buffer passed to vkCmdBeginRendering. We should NOT set
+    // VK_RENDERING_CONTENTS_SECONDARY_COMMAND_BUFFERS_BIT unless we actually use
+    // vkCmdExecuteCommands with true secondary buffers.
+    renderingInfo.flags = 0;
     renderingInfo.renderArea.offset.x = 0;
     renderingInfo.renderArea.offset.y = 0;
     renderingInfo.renderArea.extent = s->swapchain.extent;
@@ -494,14 +532,17 @@ static bool begin_dynamic_rendering(VulkanState* s, VkCommandBuffer cmd, uint32_
 
     // Set dynamic viewport and scissor
     VkViewport vp = {0};
-    vp.x = 0; vp.y = 0;
+    vp.x = 0;
+    vp.y = 0;
     vp.width = (float)s->swapchain.extent.width;
     vp.height = (float)s->swapchain.extent.height;
-    vp.minDepth = 0.0f; vp.maxDepth = 1.0f;
+    vp.minDepth = 0.0f;
+    vp.maxDepth = 1.0f;
     vkCmdSetViewport(cmd, 0, 1, &vp);
 
     VkRect2D sc = {0};
-    sc.offset.x = 0; sc.offset.y = 0;
+    sc.offset.x = 0;
+    sc.offset.y = 0;
     sc.extent = s->swapchain.extent;
     vkCmdSetScissor(cmd, 0, 1, &sc);
 
@@ -539,17 +580,20 @@ static void end_recording(VulkanState* s, VkCommandBuffer cmd, uint32_t image_in
 
     uint32_t thread_id = get_current_thread_id();
     if (!cardinal_barrier_validation_validate_pipeline_barrier(&dep, cmd, thread_id)) {
-        CARDINAL_LOG_WARN("[CMD] Pipeline barrier validation failed for swapchain present transition");
+        CARDINAL_LOG_WARN(
+            "[CMD] Pipeline barrier validation failed for swapchain present transition");
     }
 
     s->context.vkCmdPipelineBarrier2(cmd, &dep);
 
-    CARDINAL_LOG_INFO("[CMD] Frame %u: Ending command buffer %p", s->sync.current_frame, (void*)cmd);
+    CARDINAL_LOG_INFO("[CMD] Frame %u: Ending command buffer %p", s->sync.current_frame,
+                      (void*)cmd);
     VkResult end_result = vkEndCommandBuffer(cmd);
     CARDINAL_LOG_INFO("[CMD] Frame %u: End result: %d", s->sync.current_frame, end_result);
 
     if (end_result != VK_SUCCESS) {
-        CARDINAL_LOG_ERROR("[CMD] Frame %u: Failed to end command buffer: %d", s->sync.current_frame, end_result);
+        CARDINAL_LOG_ERROR("[CMD] Frame %u: Failed to end command buffer: %d",
+                           s->sync.current_frame, end_result);
     }
 }
 
@@ -566,14 +610,17 @@ void vk_record_cmd(VulkanState* s, uint32_t image_index) {
     // before command buffer recording to prevent race conditions with swapchain recreation
 
     VkCommandBuffer cmd = select_command_buffer(s);
-    if (cmd == VK_NULL_HANDLE) return;
+    if (cmd == VK_NULL_HANDLE)
+        return;
 
     CARDINAL_LOG_INFO("[CMD] Frame %u: Recording command buffer %p (buffer %u) for image %u",
                       s->sync.current_frame, (void*)cmd, s->commands.current_buffer_index,
                       image_index);
 
-    if (!validate_swapchain_image(s, image_index)) return;
-    if (!begin_command_buffer(s, cmd)) return;
+    if (!validate_swapchain_image(s, image_index))
+        return;
+    if (!begin_command_buffer(s, cmd))
+        return;
 
     VkClearValue clears[2];
     clears[0].color.float32[0] = 0.05f;
@@ -802,17 +849,27 @@ void vk_prepare_mesh_shader_rendering(VulkanState* s) {
         s->pipelines.use_pbr_pipeline ? s->pipelines.pbr_pipeline.materialBuffer : VK_NULL_HANDLE;
     VkBuffer lighting_buffer =
         s->pipelines.use_pbr_pipeline ? s->pipelines.pbr_pipeline.lightingBuffer : VK_NULL_HANDLE;
-    VkImageView* texture_views =
-        s->pipelines.use_pbr_pipeline && s->pipelines.pbr_pipeline.textureManager
-            ? (VkImageView*)s->pipelines.pbr_pipeline.textureManager->textures
-            : NULL;
+
+    // Allocate temporary array for texture views to extract from managed textures
+    VkImageView* texture_views = NULL;
+    uint32_t texture_count = 0;
+
+    if (s->pipelines.use_pbr_pipeline && s->pipelines.pbr_pipeline.textureManager &&
+        s->pipelines.pbr_pipeline.textureManager->textureCount > 0) {
+        texture_count = s->pipelines.pbr_pipeline.textureManager->textureCount;
+        texture_views = (VkImageView*)malloc(sizeof(VkImageView) * texture_count);
+        if (texture_views) {
+            for (uint32_t i = 0; i < texture_count; i++) {
+                texture_views[i] = s->pipelines.pbr_pipeline.textureManager->textures[i].view;
+            }
+        } else {
+            texture_count = 0; // Allocation failed
+        }
+    }
+
     VkSampler sampler = s->pipelines.use_pbr_pipeline && s->pipelines.pbr_pipeline.textureManager
                             ? s->pipelines.pbr_pipeline.textureManager->defaultSampler
                             : VK_NULL_HANDLE;
-    uint32_t texture_count =
-        s->pipelines.use_pbr_pipeline && s->pipelines.pbr_pipeline.textureManager
-            ? s->pipelines.pbr_pipeline.textureManager->textureCount
-            : 0;
 
     // Call the mesh shader descriptor buffer update function
     // Note: Using NULL for draw_data since this is preparation phase
@@ -824,6 +881,10 @@ void vk_prepare_mesh_shader_rendering(VulkanState* s) {
         CARDINAL_LOG_DEBUG(
             "[MESH_SHADER] Updated descriptor buffers during preparation (bindless textures: %u)",
             texture_count);
+    }
+
+    if (texture_views) {
+        free(texture_views);
     }
 }
 

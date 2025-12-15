@@ -10,7 +10,7 @@ bool vk_descriptor_create_pbr_layout(VkDevice device, VkDescriptorSetLayout* des
 
     // Descriptor set layout bindings
     VkDescriptorSetLayoutBinding bindings[] = {
-        // UBO binding
+        // Binding 0: Camera UBO (Vertex + Fragment)
         {
          .binding = 0,
          .descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER,
@@ -18,15 +18,15 @@ bool vk_descriptor_create_pbr_layout(VkDevice device, VkDescriptorSetLayout* des
          .stageFlags = VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT,
          .pImmutableSamplers = NULL,
          },
-        // Lighting UBO binding
+        // Binding 1: Albedo Map (Fragment)
         {
          .binding = 1,
-         .descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER,
+         .descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
          .descriptorCount = 1,
          .stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT,
          .pImmutableSamplers = NULL,
          },
-        // Albedo texture binding
+        // Binding 2: Normal Map (Fragment)
         {
          .binding = 2,
          .descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
@@ -34,7 +34,7 @@ bool vk_descriptor_create_pbr_layout(VkDevice device, VkDescriptorSetLayout* des
          .stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT,
          .pImmutableSamplers = NULL,
          },
-        // Normal texture binding
+        // Binding 3: Metallic-Roughness Map (Fragment)
         {
          .binding = 3,
          .descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
@@ -42,7 +42,7 @@ bool vk_descriptor_create_pbr_layout(VkDevice device, VkDescriptorSetLayout* des
          .stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT,
          .pImmutableSamplers = NULL,
          },
-        // Metallic texture binding
+        // Binding 4: AO Map (Fragment)
         {
          .binding = 4,
          .descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
@@ -50,7 +50,7 @@ bool vk_descriptor_create_pbr_layout(VkDevice device, VkDescriptorSetLayout* des
          .stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT,
          .pImmutableSamplers = NULL,
          },
-        // Roughness texture binding
+        // Binding 5: Emissive Map (Fragment)
         {
          .binding = 5,
          .descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
@@ -58,34 +58,50 @@ bool vk_descriptor_create_pbr_layout(VkDevice device, VkDescriptorSetLayout* des
          .stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT,
          .pImmutableSamplers = NULL,
          },
-        // AO texture binding
+        // Binding 6: Bone Matrices (Vertex)
         {
          .binding = 6,
-         .descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
+         .descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER,
+         .descriptorCount = 1,
+         .stageFlags = VK_SHADER_STAGE_VERTEX_BIT,
+         .pImmutableSamplers = NULL,
+         },
+        // Binding 8: Lighting Data (Fragment)
+        {
+         .binding = 8,
+         .descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER,
          .descriptorCount = 1,
          .stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT,
          .pImmutableSamplers = NULL,
          },
-        // Variable descriptor count for texture array (descriptor indexing)
+        // Binding 9: Texture Array (Fragment)
         {
-         .binding = 7,
+         .binding = 9,
          .descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
-         .descriptorCount = 1000, // Max count, actual count specified at allocation
+         .descriptorCount = 5000, // Increased for bindless
  .stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT,
          .pImmutableSamplers = NULL,
          }
     };
 
-    // Enable descriptor indexing for the last binding
-    VkDescriptorBindingFlags bindingFlags[] = {0, // UBO
-                                               0, // Lighting UBO
-                                               0, // Albedo
-                                               0, // Normal
-                                               0, // Metallic
-                                               0, // Roughness
-                                               0, // AO
-                                               VK_DESCRIPTOR_BINDING_VARIABLE_DESCRIPTOR_COUNT_BIT |
-                                                   VK_DESCRIPTOR_BINDING_PARTIALLY_BOUND_BIT};
+    // Enable descriptor indexing for the last binding (Binding 9)
+    VkDescriptorBindingFlags bindingFlags[] = {
+        0, // 0: UBO
+        0, // 1: Albedo
+        0, // 2: Normal
+        0, // 3: MR
+        0, // 4: AO
+        0, // 5: Emissive
+        0, // 6: Bones
+        0, // 8: Lighting (Note: We skipped 7, so we need to be careful with array indexing if
+           // pBindings is compact)
+        VK_DESCRIPTOR_BINDING_VARIABLE_DESCRIPTOR_COUNT_BIT |
+            VK_DESCRIPTOR_BINDING_PARTIALLY_BOUND_BIT // 9: Array
+    };
+
+    // Note: pBindings array above has 9 elements, but bindings are sparse (missing 7).
+    // The bindingFlags array must correspond to pBindings array elements 1:1.
+    // So the above bindingFlags array is correct (9 elements).
 
     VkDescriptorSetLayoutBindingFlagsCreateInfo bindingFlagsInfo = {
         .sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_BINDING_FLAGS_CREATE_INFO,

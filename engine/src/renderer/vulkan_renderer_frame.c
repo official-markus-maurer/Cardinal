@@ -253,11 +253,13 @@ static bool vk_recover_from_device_loss(VulkanState* s) {
  */
 static bool check_render_feasibility(VulkanState* s) {
     if (s->recovery.window && cardinal_window_is_minimized(s->recovery.window)) {
-        CARDINAL_LOG_DEBUG("[SWAPCHAIN] Frame %u: Window minimized, skipping frame", s->sync.current_frame);
+        CARDINAL_LOG_DEBUG("[SWAPCHAIN] Frame %u: Window minimized, skipping frame",
+                           s->sync.current_frame);
         return false;
     }
     if (s->swapchain.extent.width == 0 || s->swapchain.extent.height == 0) {
-        CARDINAL_LOG_WARN("[SWAPCHAIN] Frame %u: Zero swapchain extent, skipping frame", s->sync.current_frame);
+        CARDINAL_LOG_WARN("[SWAPCHAIN] Frame %u: Zero swapchain extent, skipping frame",
+                          s->sync.current_frame);
         s->swapchain.recreation_pending = true;
         return false;
     }
@@ -273,18 +275,21 @@ static bool handle_pending_recreation(CardinalRenderer* renderer, VulkanState* s
         s->swapchain.recreation_pending = true;
     }
 
-    if (!s->swapchain.recreation_pending) return true;
+    if (!s->swapchain.recreation_pending)
+        return true;
 
-    CARDINAL_LOG_INFO("[SWAPCHAIN] Frame %u: Handling pending swapchain recreation", s->sync.current_frame);
+    CARDINAL_LOG_INFO("[SWAPCHAIN] Frame %u: Handling pending swapchain recreation",
+                      s->sync.current_frame);
     if (vk_recreate_swapchain(s)) {
         if (!vk_recreate_images_in_flight(s)) {
-            CARDINAL_LOG_ERROR("[SWAPCHAIN] Frame %u: Failed to recreate image tracking", s->sync.current_frame);
+            CARDINAL_LOG_ERROR("[SWAPCHAIN] Frame %u: Failed to recreate image tracking",
+                               s->sync.current_frame);
             return false;
         }
         s->swapchain.recreation_pending = false;
         s->swapchain.window_resize_pending = false;
         CARDINAL_LOG_INFO("[SWAPCHAIN] Frame %u: Recreation successful", s->sync.current_frame);
-        
+
         if (s->scene_upload_pending && s->pending_scene_upload) {
             CARDINAL_LOG_INFO("[UPLOAD] Performing deferred scene upload");
             cardinal_renderer_upload_scene(renderer, s->pending_scene_upload);
@@ -311,31 +316,35 @@ static bool handle_pending_recreation(CardinalRenderer* renderer, VulkanState* s
 static bool wait_for_fence(VulkanState* s) {
     VkFence current_fence = s->sync.in_flight_fences[s->sync.current_frame];
     VkResult fence_status = vkGetFenceStatus(s->context.device, current_fence);
-    
+
     if (fence_status == VK_SUCCESS) {
         CARDINAL_LOG_DEBUG("[SYNC] Frame %u: GPU ahead, skipping wait", s->sync.current_frame);
     } else if (fence_status == VK_NOT_READY) {
-        uint64_t t0 = cardinal_now_ms();
-        VkResult wait_res = vkWaitForFences(s->context.device, 1, &current_fence, VK_TRUE, UINT64_MAX);
+        VkResult wait_res =
+            vkWaitForFences(s->context.device, 1, &current_fence, VK_TRUE, UINT64_MAX);
         if (wait_res != VK_SUCCESS) {
             if (wait_res == VK_ERROR_DEVICE_LOST) {
                 s->recovery.device_lost = true;
-                if (s->recovery.attempt_count < s->recovery.max_attempts) vk_recover_from_device_loss(s);
+                if (s->recovery.attempt_count < s->recovery.max_attempts)
+                    vk_recover_from_device_loss(s);
             } else {
-                CARDINAL_LOG_ERROR("[SYNC] Frame %u: Fence wait failed: %d", s->sync.current_frame, wait_res);
+                CARDINAL_LOG_ERROR("[SYNC] Frame %u: Fence wait failed: %d", s->sync.current_frame,
+                                   wait_res);
             }
             return false;
         }
     } else {
         if (fence_status == VK_ERROR_DEVICE_LOST) {
-             s->recovery.device_lost = true;
-             if (s->recovery.attempt_count < s->recovery.max_attempts) vk_recover_from_device_loss(s);
+            s->recovery.device_lost = true;
+            if (s->recovery.attempt_count < s->recovery.max_attempts)
+                vk_recover_from_device_loss(s);
         } else {
-            CARDINAL_LOG_ERROR("[SYNC] Frame %u: Fence status check failed: %d", s->sync.current_frame, fence_status);
+            CARDINAL_LOG_ERROR("[SYNC] Frame %u: Fence status check failed: %d",
+                               s->sync.current_frame, fence_status);
         }
         return false;
     }
-    
+
     vkResetFences(s->context.device, 1, &current_fence);
     return true;
 }
@@ -344,31 +353,35 @@ static bool wait_for_fence(VulkanState* s) {
  * @brief Handles headless rendering path.
  */
 static void render_frame_headless(VulkanState* s, uint64_t signal_value) {
-    if (!s->commands.buffers) return;
+    if (!s->commands.buffers)
+        return;
     VkCommandBuffer cmd = s->commands.buffers[s->sync.current_frame];
-    
-    VkCommandBufferBeginInfo bi = {.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO, .flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT};
+
+    VkCommandBufferBeginInfo bi = {.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO,
+                                   .flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT};
     vkBeginCommandBuffer(cmd, &bi);
     vkEndCommandBuffer(cmd);
 
-    VkSemaphoreSubmitInfo signal_info = {
-        .sType = VK_STRUCTURE_TYPE_SEMAPHORE_SUBMIT_INFO,
-        .semaphore = s->sync_manager ? s->sync_manager->timeline_semaphore : s->sync.timeline_semaphore,
-        .value = signal_value,
-        .stageMask = VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT
-    };
-    
-    VkCommandBufferSubmitInfo cb_info = {.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_SUBMIT_INFO, .commandBuffer = cmd};
-    VkSubmitInfo2 si = {
-        .sType = VK_STRUCTURE_TYPE_SUBMIT_INFO_2,
-        .commandBufferInfoCount = 1, .pCommandBufferInfos = &cb_info,
-        .signalSemaphoreInfoCount = 1, .pSignalSemaphoreInfos = &signal_info
-    };
+    VkSemaphoreSubmitInfo signal_info = {.sType = VK_STRUCTURE_TYPE_SEMAPHORE_SUBMIT_INFO,
+                                         .semaphore = s->sync_manager
+                                                          ? s->sync_manager->timeline_semaphore
+                                                          : s->sync.timeline_semaphore,
+                                         .value = signal_value,
+                                         .stageMask = VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT};
+
+    VkCommandBufferSubmitInfo cb_info = {.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_SUBMIT_INFO,
+                                         .commandBuffer = cmd};
+    VkSubmitInfo2 si = {.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO_2,
+                        .commandBufferInfoCount = 1,
+                        .pCommandBufferInfos = &cb_info,
+                        .signalSemaphoreInfoCount = 1,
+                        .pSignalSemaphoreInfos = &signal_info};
 
     VkFence fence = s->sync.in_flight_fences[s->sync.current_frame];
-    VkResult res = s->context.vkQueueSubmit2 ? s->context.vkQueueSubmit2(s->context.graphics_queue, 1, &si, fence) 
-                                             : vkQueueSubmit2(s->context.graphics_queue, 1, &si, fence);
-    
+    VkResult res = s->context.vkQueueSubmit2
+                       ? s->context.vkQueueSubmit2(s->context.graphics_queue, 1, &si, fence)
+                       : vkQueueSubmit2(s->context.graphics_queue, 1, &si, fence);
+
     if (res == VK_SUCCESS) {
         vkWaitForFences(s->context.device, 1, &fence, VK_TRUE, UINT64_MAX);
         s->sync.current_frame_value = signal_value;
@@ -381,14 +394,16 @@ static void render_frame_headless(VulkanState* s, uint64_t signal_value) {
  * @brief Acquires the next swapchain image.
  */
 static bool acquire_next_image(VulkanState* s, uint32_t* out_image_index) {
-    if (s->swapchain.handle == VK_NULL_HANDLE || !s->swapchain.image_views || s->swapchain.image_count == 0) {
+    if (s->swapchain.handle == VK_NULL_HANDLE || !s->swapchain.image_views ||
+        s->swapchain.image_count == 0) {
         if (!vk_recreate_swapchain(s) || !vk_recreate_images_in_flight(s)) {
             return false;
         }
     }
 
     VkSemaphore sem = s->sync.image_acquired_semaphores[s->sync.current_frame];
-    VkResult res = vkAcquireNextImageKHR(s->context.device, s->swapchain.handle, UINT64_MAX, sem, VK_NULL_HANDLE, out_image_index);
+    VkResult res = vkAcquireNextImageKHR(s->context.device, s->swapchain.handle, UINT64_MAX, sem,
+                                         VK_NULL_HANDLE, out_image_index);
 
     if (res == VK_ERROR_OUT_OF_DATE_KHR || res == VK_SUBOPTIMAL_KHR) {
         vk_recreate_swapchain(s);
@@ -396,7 +411,8 @@ static bool acquire_next_image(VulkanState* s, uint32_t* out_image_index) {
         return false;
     } else if (res == VK_ERROR_DEVICE_LOST) {
         s->recovery.device_lost = true;
-        if (s->recovery.attempt_count < s->recovery.max_attempts) vk_recover_from_device_loss(s);
+        if (s->recovery.attempt_count < s->recovery.max_attempts)
+            vk_recover_from_device_loss(s);
         return false;
     } else if (res != VK_SUCCESS) {
         return false;
@@ -407,44 +423,41 @@ static bool acquire_next_image(VulkanState* s, uint32_t* out_image_index) {
 /**
  * @brief Submits the command buffer to the graphics queue.
  */
-static bool submit_command_buffer(VulkanState* s, VkCommandBuffer cmd, VkSemaphore acquire_sem, uint64_t signal_value) {
-    VkSemaphoreSubmitInfo wait_info = {
-        .sType = VK_STRUCTURE_TYPE_SEMAPHORE_SUBMIT_INFO,
-        .semaphore = acquire_sem,
-        .stageMask = VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT
-    };
+static bool submit_command_buffer(VulkanState* s, VkCommandBuffer cmd, VkSemaphore acquire_sem,
+                                  uint64_t signal_value) {
+    VkSemaphoreSubmitInfo wait_info = {.sType = VK_STRUCTURE_TYPE_SEMAPHORE_SUBMIT_INFO,
+                                       .semaphore = acquire_sem,
+                                       .stageMask =
+                                           VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT};
 
     VkSemaphoreSubmitInfo signal_infos[2] = {
-        {
-            .sType = VK_STRUCTURE_TYPE_SEMAPHORE_SUBMIT_INFO,
-            .semaphore = s->sync.render_finished_semaphores[s->sync.current_frame],
-            .stageMask = VK_PIPELINE_STAGE_2_ALL_GRAPHICS_BIT
-        },
-        {
-            .sType = VK_STRUCTURE_TYPE_SEMAPHORE_SUBMIT_INFO,
-            .semaphore = s->sync.timeline_semaphore,
-            .value = signal_value,
-            .stageMask = VK_PIPELINE_STAGE_2_ALL_GRAPHICS_BIT
-        }
+        {.sType = VK_STRUCTURE_TYPE_SEMAPHORE_SUBMIT_INFO,
+         .semaphore = s->sync.render_finished_semaphores[s->sync.current_frame],
+         .stageMask = VK_PIPELINE_STAGE_2_ALL_GRAPHICS_BIT},
+        {.sType = VK_STRUCTURE_TYPE_SEMAPHORE_SUBMIT_INFO,
+         .semaphore = s->sync.timeline_semaphore,
+         .value = signal_value,
+         .stageMask = VK_PIPELINE_STAGE_2_ALL_GRAPHICS_BIT}
     };
 
-    VkCommandBufferSubmitInfo cmd_info = {
-        .sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_SUBMIT_INFO,
-        .commandBuffer = cmd
-    };
+    VkCommandBufferSubmitInfo cmd_info = {.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_SUBMIT_INFO,
+                                          .commandBuffer = cmd};
 
-    VkSubmitInfo2 submit_info = {
-        .sType = VK_STRUCTURE_TYPE_SUBMIT_INFO_2,
-        .waitSemaphoreInfoCount = 1, .pWaitSemaphoreInfos = &wait_info,
-        .commandBufferInfoCount = 1, .pCommandBufferInfos = &cmd_info,
-        .signalSemaphoreInfoCount = 2, .pSignalSemaphoreInfos = signal_infos
-    };
+    VkSubmitInfo2 submit_info = {.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO_2,
+                                 .waitSemaphoreInfoCount = 1,
+                                 .pWaitSemaphoreInfos = &wait_info,
+                                 .commandBufferInfoCount = 1,
+                                 .pCommandBufferInfos = &cmd_info,
+                                 .signalSemaphoreInfoCount = 2,
+                                 .pSignalSemaphoreInfos = signal_infos};
 
-    VkResult res = s->context.vkQueueSubmit2(s->context.graphics_queue, 1, &submit_info, s->sync.in_flight_fences[s->sync.current_frame]);
-    
+    VkResult res = s->context.vkQueueSubmit2(s->context.graphics_queue, 1, &submit_info,
+                                             s->sync.in_flight_fences[s->sync.current_frame]);
+
     if (res == VK_ERROR_DEVICE_LOST) {
         s->recovery.device_lost = true;
-        if (s->recovery.attempt_count < s->recovery.max_attempts) vk_recover_from_device_loss(s);
+        if (s->recovery.attempt_count < s->recovery.max_attempts)
+            vk_recover_from_device_loss(s);
         return false;
     } else if (res != VK_SUCCESS) {
         CARDINAL_LOG_ERROR("Queue submit failed: %d", res);
@@ -467,27 +480,29 @@ static void present_swapchain_image(VulkanState* s, uint32_t image_index, uint64
     }
 
     VkSemaphore wait_sem = s->sync.render_finished_semaphores[s->sync.current_frame];
-    VkPresentInfoKHR present_info = {
-        .sType = VK_STRUCTURE_TYPE_PRESENT_INFO_KHR,
-        .waitSemaphoreCount = 1, .pWaitSemaphores = &wait_sem,
-        .swapchainCount = 1, .pSwapchains = &s->swapchain.handle,
-        .pImageIndices = &image_index
-    };
+    VkPresentInfoKHR present_info = {.sType = VK_STRUCTURE_TYPE_PRESENT_INFO_KHR,
+                                     .waitSemaphoreCount = 1,
+                                     .pWaitSemaphores = &wait_sem,
+                                     .swapchainCount = 1,
+                                     .pSwapchains = &s->swapchain.handle,
+                                     .pImageIndices = &image_index};
 
     VkResult res = vkQueuePresentKHR(s->context.present_queue, &present_info);
-    
+
     if (res == VK_ERROR_OUT_OF_DATE_KHR || res == VK_SUBOPTIMAL_KHR) {
         s->swapchain.recreation_pending = true;
     } else if (res == VK_ERROR_DEVICE_LOST || res == VK_ERROR_SURFACE_LOST_KHR) {
         s->recovery.device_lost = true;
-        if (s->recovery.attempt_count < s->recovery.max_attempts) vk_recover_from_device_loss(s);
+        if (s->recovery.attempt_count < s->recovery.max_attempts)
+            vk_recover_from_device_loss(s);
         return;
     } else if (res != VK_SUCCESS) {
-         if (res == VK_ERROR_OUT_OF_HOST_MEMORY || res == VK_ERROR_OUT_OF_DEVICE_MEMORY) {
-             s->recovery.device_lost = true;
-             if (s->recovery.attempt_count < s->recovery.max_attempts) vk_recover_from_device_loss(s);
-         }
-         return;
+        if (res == VK_ERROR_OUT_OF_HOST_MEMORY || res == VK_ERROR_OUT_OF_DEVICE_MEMORY) {
+            s->recovery.device_lost = true;
+            if (s->recovery.attempt_count < s->recovery.max_attempts)
+                vk_recover_from_device_loss(s);
+        }
+        return;
     }
 
     s->sync.current_frame_value = signal_value;
@@ -507,12 +522,15 @@ static void present_swapchain_image(VulkanState* s, uint32_t image_index, uint64
 void cardinal_renderer_draw_frame(CardinalRenderer* renderer) {
     VulkanState* s = (VulkanState*)renderer->_opaque;
 
-    if (!check_render_feasibility(s)) return;
-    if (!handle_pending_recreation(renderer, s)) return;
+    if (!check_render_feasibility(s))
+        return;
+    if (!handle_pending_recreation(renderer, s))
+        return;
 
     CARDINAL_LOG_INFO("[SYNC] Frame %u: Starting draw_frame", s->sync.current_frame);
 
-    if (!wait_for_fence(s)) return;
+    if (!wait_for_fence(s))
+        return;
 
     // Prepare mesh shader rendering
     if (s->current_rendering_mode == CARDINAL_RENDERING_MODE_MESH_SHADER) {
@@ -520,8 +538,9 @@ void cardinal_renderer_draw_frame(CardinalRenderer* renderer) {
     }
 
     uint64_t frame_base = s->sync.current_frame_value;
-    uint64_t signal_after_render = s->sync_manager ? vulkan_sync_manager_get_next_timeline_value(s->sync_manager)
-                                                   : (frame_base + 1);
+    uint64_t signal_after_render =
+        s->sync_manager ? vulkan_sync_manager_get_next_timeline_value(s->sync_manager)
+                        : (frame_base + 1);
 
     if (s->swapchain.headless_mode) {
         render_frame_headless(s, signal_after_render);
@@ -529,17 +548,21 @@ void cardinal_renderer_draw_frame(CardinalRenderer* renderer) {
     }
 
     uint32_t image_index;
-    if (!acquire_next_image(s, &image_index)) return;
+    if (!acquire_next_image(s, &image_index))
+        return;
 
     vk_record_cmd(s, image_index);
 
-    VkCommandBuffer cmd_buf = (s->commands.current_buffer_index == 0) ? 
-                              s->commands.buffers[s->sync.current_frame] : 
-                              s->commands.secondary_buffers[s->sync.current_frame];
-    
-    if (!cmd_buf) return;
+    VkCommandBuffer cmd_buf = (s->commands.current_buffer_index == 0)
+                                  ? s->commands.buffers[s->sync.current_frame]
+                                  : s->commands.secondary_buffers[s->sync.current_frame];
 
-    if (!submit_command_buffer(s, cmd_buf, s->sync.image_acquired_semaphores[s->sync.current_frame], signal_after_render)) return;
+    if (!cmd_buf)
+        return;
+
+    if (!submit_command_buffer(s, cmd_buf, s->sync.image_acquired_semaphores[s->sync.current_frame],
+                               signal_after_render))
+        return;
 
     vk_mesh_shader_process_pending_cleanup(s);
 

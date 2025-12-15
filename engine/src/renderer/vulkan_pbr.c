@@ -194,40 +194,45 @@ void vk_material_setup_push_constants(PBRPushConstants* pushConstants, const Car
 /**
  * @brief Creates the descriptor manager for the PBR pipeline.
  */
-static bool create_pbr_descriptor_manager(VulkanPBRPipeline* pipeline, VkDevice device, VulkanAllocator* allocator, VulkanState* vulkan_state) {
+static bool create_pbr_descriptor_manager(VulkanPBRPipeline* pipeline, VkDevice device,
+                                          VulkanAllocator* allocator, VulkanState* vulkan_state) {
     pipeline->descriptorManager = (VulkanDescriptorManager*)malloc(sizeof(VulkanDescriptorManager));
     if (!pipeline->descriptorManager) {
         CARDINAL_LOG_ERROR("Failed to allocate memory for descriptor manager");
         return false;
     }
 
-    VulkanDescriptorBinding bindings[10] = {
-        {0, VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, 1, VK_SHADER_STAGE_VERTEX_BIT, NULL},
-        {1, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1, VK_SHADER_STAGE_FRAGMENT_BIT, NULL},
-        {2, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1, VK_SHADER_STAGE_FRAGMENT_BIT, NULL},
-        {3, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1, VK_SHADER_STAGE_FRAGMENT_BIT, NULL},
-        {4, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1, VK_SHADER_STAGE_FRAGMENT_BIT, NULL},
-        {5, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1, VK_SHADER_STAGE_FRAGMENT_BIT, NULL},
-        {6, VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, 1, VK_SHADER_STAGE_VERTEX_BIT, NULL},
-        {7, VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, 1, VK_SHADER_STAGE_FRAGMENT_BIT, NULL},
-        {8, VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, 1, VK_SHADER_STAGE_FRAGMENT_BIT, NULL},
-        {9, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1024, VK_SHADER_STAGE_FRAGMENT_BIT, NULL}
+    VulkanDescriptorBinding bindings[9] = {
+        {0,         VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER,    1,
+         VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT, NULL                       },
+        {1, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,    1, VK_SHADER_STAGE_FRAGMENT_BIT, NULL},
+        {2, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,    1, VK_SHADER_STAGE_FRAGMENT_BIT, NULL},
+        {3, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,    1, VK_SHADER_STAGE_FRAGMENT_BIT, NULL},
+        {4, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,    1, VK_SHADER_STAGE_FRAGMENT_BIT, NULL},
+        {5, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,    1, VK_SHADER_STAGE_FRAGMENT_BIT, NULL},
+        {6,         VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER,    1,   VK_SHADER_STAGE_VERTEX_BIT, NULL},
+        // Binding 7 removed (Material passed via Push Constants)
+        {8,         VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER,    1, VK_SHADER_STAGE_FRAGMENT_BIT, NULL},
+        {9, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 5000, VK_SHADER_STAGE_FRAGMENT_BIT, NULL}
     };
 
-    bool prefer_descriptor_buffers = (vulkan_state && vulkan_state->context.descriptor_buffer_extension_available);
+    // Disable descriptor buffers for PBR pipeline for now as we use vkCmdBindDescriptorSets
+    bool prefer_descriptor_buffers = false;
+    // (vulkan_state && vulkan_state->context.descriptor_buffer_extension_available);
 
     VulkanDescriptorManagerCreateInfo createInfo = {
         .bindings = bindings,
-        .bindingCount = 10,
+        .bindingCount = 9,
         .maxSets = 1000,
         .preferDescriptorBuffers = prefer_descriptor_buffers,
-        .poolFlags = VK_DESCRIPTOR_POOL_CREATE_FREE_DESCRIPTOR_SET_BIT | VK_DESCRIPTOR_POOL_CREATE_UPDATE_AFTER_BIND_BIT
-    };
+        .poolFlags = VK_DESCRIPTOR_POOL_CREATE_FREE_DESCRIPTOR_SET_BIT |
+                     VK_DESCRIPTOR_POOL_CREATE_UPDATE_AFTER_BIND_BIT};
 
     CARDINAL_LOG_INFO("Creating PBR descriptor manager with %u max sets (prefer buffers: %s)",
                       createInfo.maxSets, prefer_descriptor_buffers ? "true" : "false");
 
-    if (!vk_descriptor_manager_create(pipeline->descriptorManager, device, allocator, &createInfo, vulkan_state)) {
+    if (!vk_descriptor_manager_create(pipeline->descriptorManager, device, allocator, &createInfo,
+                                      vulkan_state)) {
         CARDINAL_LOG_ERROR("Failed to create descriptor manager!");
         free(pipeline->descriptorManager);
         pipeline->descriptorManager = NULL;
@@ -239,7 +244,9 @@ static bool create_pbr_descriptor_manager(VulkanPBRPipeline* pipeline, VkDevice 
 /**
  * @brief Creates the texture manager for the PBR pipeline.
  */
-static bool create_pbr_texture_manager(VulkanPBRPipeline* pipeline, VkDevice device, VulkanAllocator* allocator, VkCommandPool commandPool, VkQueue graphicsQueue) {
+static bool create_pbr_texture_manager(VulkanPBRPipeline* pipeline, VkDevice device,
+                                       VulkanAllocator* allocator, VkCommandPool commandPool,
+                                       VkQueue graphicsQueue) {
     pipeline->textureManager = (VulkanTextureManager*)malloc(sizeof(VulkanTextureManager));
     if (!pipeline->textureManager) {
         CARDINAL_LOG_ERROR("Failed to allocate texture manager for PBR pipeline");
@@ -252,8 +259,7 @@ static bool create_pbr_texture_manager(VulkanPBRPipeline* pipeline, VkDevice dev
         .commandPool = commandPool,
         .graphicsQueue = graphicsQueue,
         .syncManager = NULL, // Will be set when VulkanState is available
-        .initialCapacity = 16
-    };
+        .initialCapacity = 16};
 
     if (!vk_texture_manager_init(pipeline->textureManager, &textureConfig)) {
         CARDINAL_LOG_ERROR("Failed to initialize texture manager for PBR pipeline");
@@ -268,28 +274,29 @@ static bool create_pbr_texture_manager(VulkanPBRPipeline* pipeline, VkDevice dev
  * @brief Creates the pipeline layout.
  */
 static bool create_pbr_pipeline_layout(VulkanPBRPipeline* pipeline, VkDevice device) {
-    VkPushConstantRange pushConstantRange = {
-        .stageFlags = VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT,
-        .offset = 0,
-        .size = sizeof(PBRPushConstants)
-    };
+    VkPushConstantRange pushConstantRange = {.stageFlags = VK_SHADER_STAGE_VERTEX_BIT |
+                                                           VK_SHADER_STAGE_FRAGMENT_BIT,
+                                             .offset = 0,
+                                             .size = sizeof(PBRPushConstants)};
 
-    VkDescriptorSetLayout descriptorLayout = vk_descriptor_manager_get_layout(pipeline->descriptorManager);
+    VkDescriptorSetLayout descriptorLayout =
+        vk_descriptor_manager_get_layout(pipeline->descriptorManager);
     VkPipelineLayoutCreateInfo pipelineLayoutInfo = {
         .sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO,
         .setLayoutCount = 1,
         .pSetLayouts = &descriptorLayout,
         .pushConstantRangeCount = 1,
-        .pPushConstantRanges = &pushConstantRange
-    };
+        .pPushConstantRanges = &pushConstantRange};
 
-    return vk_utils_create_pipeline_layout(device, &pipelineLayoutInfo, &pipeline->pipelineLayout, "PBR pipeline layout");
+    return vk_utils_create_pipeline_layout(device, &pipelineLayoutInfo, &pipeline->pipelineLayout,
+                                           "PBR pipeline layout");
 }
 
 /**
  * @brief Configures shader stages for the pipeline.
  */
-static void configure_shader_stages(VkPipelineShaderStageCreateInfo* stages, VkShaderModule vertShader, VkShaderModule fragShader) {
+static void configure_shader_stages(VkPipelineShaderStageCreateInfo* stages,
+                                    VkShaderModule vertShader, VkShaderModule fragShader) {
     stages[0].sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
     stages[0].stage = VK_SHADER_STAGE_VERTEX_BIT;
     stages[0].module = vertShader;
@@ -311,19 +318,31 @@ static void configure_shader_stages(VkPipelineShaderStageCreateInfo* stages, VkS
  * @brief Configures vertex input state.
  */
 static void configure_vertex_input(VkPipelineVertexInputStateCreateInfo* info,
-                                 VkVertexInputBindingDescription* binding,
-                                 VkVertexInputAttributeDescription* attributes) {
+                                   VkVertexInputBindingDescription* binding,
+                                   VkVertexInputAttributeDescription* attributes) {
     *binding = (VkVertexInputBindingDescription){
-        .binding = 0,
-        .stride = sizeof(CardinalVertex),
-        .inputRate = VK_VERTEX_INPUT_RATE_VERTEX
-    };
+        .binding = 0, .stride = sizeof(CardinalVertex), .inputRate = VK_VERTEX_INPUT_RATE_VERTEX};
 
-    attributes[0] = (VkVertexInputAttributeDescription){.binding = 0, .location = 0, .format = VK_FORMAT_R32G32B32_SFLOAT, .offset = 0};
-    attributes[1] = (VkVertexInputAttributeDescription){.binding = 0, .location = 1, .format = VK_FORMAT_R32G32B32_SFLOAT, .offset = sizeof(float) * 3};
-    attributes[2] = (VkVertexInputAttributeDescription){.binding = 0, .location = 2, .format = VK_FORMAT_R32G32_SFLOAT, .offset = sizeof(float) * 6};
-    attributes[3] = (VkVertexInputAttributeDescription){.binding = 0, .location = 3, .format = VK_FORMAT_R32G32B32A32_SFLOAT, .offset = offsetof(CardinalVertex, bone_weights)};
-    attributes[4] = (VkVertexInputAttributeDescription){.binding = 0, .location = 4, .format = VK_FORMAT_R32G32B32A32_UINT, .offset = offsetof(CardinalVertex, bone_indices)};
+    attributes[0] = (VkVertexInputAttributeDescription){
+        .binding = 0, .location = 0, .format = VK_FORMAT_R32G32B32_SFLOAT, .offset = 0};
+    attributes[1] = (VkVertexInputAttributeDescription){.binding = 0,
+                                                        .location = 1,
+                                                        .format = VK_FORMAT_R32G32B32_SFLOAT,
+                                                        .offset = sizeof(float) * 3};
+    attributes[2] = (VkVertexInputAttributeDescription){.binding = 0,
+                                                        .location = 2,
+                                                        .format = VK_FORMAT_R32G32_SFLOAT,
+                                                        .offset = sizeof(float) * 6};
+    attributes[3] =
+        (VkVertexInputAttributeDescription){.binding = 0,
+                                            .location = 3,
+                                            .format = VK_FORMAT_R32G32B32A32_SFLOAT,
+                                            .offset = offsetof(CardinalVertex, bone_weights)};
+    attributes[4] =
+        (VkVertexInputAttributeDescription){.binding = 0,
+                                            .location = 4,
+                                            .format = VK_FORMAT_R32G32B32A32_UINT,
+                                            .offset = offsetof(CardinalVertex, bone_indices)};
 
     info->sType = VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO;
     info->vertexBindingDescriptionCount = 1;
@@ -365,7 +384,7 @@ static void configure_rasterization(VkPipelineRasterizationStateCreateInfo* info
     info->rasterizerDiscardEnable = VK_FALSE;
     info->polygonMode = VK_POLYGON_MODE_FILL;
     info->lineWidth = 1.0f;
-    info->cullMode = VK_CULL_MODE_NONE;
+    info->cullMode = VK_CULL_MODE_NONE; // Disable culling for troubleshooting
     info->frontFace = VK_FRONT_FACE_CLOCKWISE;
     info->depthBiasEnable = VK_FALSE;
     info->pNext = NULL;
@@ -404,8 +423,10 @@ static void configure_depth_stencil(VkPipelineDepthStencilStateCreateInfo* info)
 /**
  * @brief Configures color blending state.
  */
-static void configure_color_blending(VkPipelineColorBlendStateCreateInfo* info, VkPipelineColorBlendAttachmentState* attachment) {
-    attachment->colorWriteMask = VK_COLOR_COMPONENT_R_BIT | VK_COLOR_COMPONENT_G_BIT | VK_COLOR_COMPONENT_B_BIT | VK_COLOR_COMPONENT_A_BIT;
+static void configure_color_blending(VkPipelineColorBlendStateCreateInfo* info,
+                                     VkPipelineColorBlendAttachmentState* attachment) {
+    attachment->colorWriteMask = VK_COLOR_COMPONENT_R_BIT | VK_COLOR_COMPONENT_G_BIT |
+                                 VK_COLOR_COMPONENT_B_BIT | VK_COLOR_COMPONENT_A_BIT;
     attachment->blendEnable = VK_FALSE;
 
     info->sType = VK_STRUCTURE_TYPE_PIPELINE_COLOR_BLEND_STATE_CREATE_INFO;
@@ -424,7 +445,8 @@ static void configure_color_blending(VkPipelineColorBlendStateCreateInfo* info, 
 /**
  * @brief Configures dynamic state.
  */
-static void configure_dynamic_state(VkPipelineDynamicStateCreateInfo* info, VkDynamicState* states) {
+static void configure_dynamic_state(VkPipelineDynamicStateCreateInfo* info,
+                                    VkDynamicState* states) {
     states[0] = VK_DYNAMIC_STATE_VIEWPORT;
     states[1] = VK_DYNAMIC_STATE_SCISSOR;
 
@@ -438,8 +460,10 @@ static void configure_dynamic_state(VkPipelineDynamicStateCreateInfo* info, VkDy
 /**
  * @brief Configures dynamic rendering info.
  */
-static void configure_rendering_info(VkPipelineRenderingCreateInfo* info, VkFormat* colorFormat, VkFormat depthFormat) {
+static void configure_rendering_info(VkPipelineRenderingCreateInfo* info, VkFormat* colorFormat,
+                                     VkFormat depthFormat) {
     info->sType = VK_STRUCTURE_TYPE_PIPELINE_RENDERING_CREATE_INFO;
+    info->viewMask = 0;
     info->colorAttachmentCount = 1;
     info->pColorAttachmentFormats = colorFormat;
     info->depthAttachmentFormat = depthFormat;
@@ -450,7 +474,9 @@ static void configure_rendering_info(VkPipelineRenderingCreateInfo* info, VkForm
 /**
  * @brief Creates the graphics pipeline.
  */
-static bool create_pbr_graphics_pipeline(VulkanPBRPipeline* pipeline, VkDevice device, VkShaderModule vertShader, VkShaderModule fragShader, VkFormat swapchainFormat, VkFormat depthFormat) {
+static bool create_pbr_graphics_pipeline(VulkanPBRPipeline* pipeline, VkDevice device,
+                                         VkShaderModule vertShader, VkShaderModule fragShader,
+                                         VkFormat swapchainFormat, VkFormat depthFormat) {
     VkPipelineShaderStageCreateInfo shaderStages[2];
     configure_shader_stages(shaderStages, vertShader, fragShader);
 
@@ -496,70 +522,71 @@ static bool create_pbr_graphics_pipeline(VulkanPBRPipeline* pipeline, VkDevice d
         .pDynamicState = &dynamicState,
         .layout = pipeline->pipelineLayout,
         .renderPass = VK_NULL_HANDLE,
-        .subpass = 0
-    };
+        .subpass = 0};
 
     VkPipelineRenderingCreateInfo pipelineRenderingInfo;
     configure_rendering_info(&pipelineRenderingInfo, &swapchainFormat, depthFormat);
     pipelineInfo.pNext = &pipelineRenderingInfo;
 
-    VkResult result = vkCreateGraphicsPipelines(device, VK_NULL_HANDLE, 1, &pipelineInfo, NULL, &pipeline->pipeline);
+    VkResult result = vkCreateGraphicsPipelines(device, VK_NULL_HANDLE, 1, &pipelineInfo, NULL,
+                                                &pipeline->pipeline);
     return VK_CHECK_RESULT(result, "create PBR graphics pipeline");
 }
 
 /**
  * @brief Creates uniform buffers for the PBR pipeline.
  */
-static bool create_pbr_uniform_buffers(VulkanPBRPipeline* pipeline, VkDevice device, VulkanAllocator* allocator) {
+static bool create_pbr_uniform_buffers(VulkanPBRPipeline* pipeline, VkDevice device,
+                                       VulkanAllocator* allocator) {
     // UBO
-    VulkanBufferCreateInfo uboInfo = {
-        .size = sizeof(PBRUniformBufferObject),
-        .usage = VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT,
-        .properties = VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT,
-        .persistentlyMapped = true
-    };
+    VulkanBufferCreateInfo uboInfo = {.size = sizeof(PBRUniformBufferObject),
+                                      .usage = VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT,
+                                      .properties = VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT |
+                                                    VK_MEMORY_PROPERTY_HOST_COHERENT_BIT,
+                                      .persistentlyMapped = true};
     VulkanBuffer uboBuffer;
-    if (!vk_buffer_create(&uboBuffer, device, allocator, &uboInfo)) return false;
+    if (!vk_buffer_create(&uboBuffer, device, allocator, &uboInfo))
+        return false;
     pipeline->uniformBuffer = uboBuffer.handle;
     pipeline->uniformBufferMemory = uboBuffer.memory;
     pipeline->uniformBufferMapped = uboBuffer.mapped;
 
     // Material
-    VulkanBufferCreateInfo matInfo = {
-        .size = sizeof(PBRMaterialProperties),
-        .usage = VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT,
-        .properties = VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT,
-        .persistentlyMapped = true
-    };
+    VulkanBufferCreateInfo matInfo = {.size = sizeof(PBRMaterialProperties),
+                                      .usage = VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT,
+                                      .properties = VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT |
+                                                    VK_MEMORY_PROPERTY_HOST_COHERENT_BIT,
+                                      .persistentlyMapped = true};
     VulkanBuffer matBuffer;
-    if (!vk_buffer_create(&matBuffer, device, allocator, &matInfo)) return false;
+    if (!vk_buffer_create(&matBuffer, device, allocator, &matInfo))
+        return false;
     pipeline->materialBuffer = matBuffer.handle;
     pipeline->materialBufferMemory = matBuffer.memory;
     pipeline->materialBufferMapped = matBuffer.mapped;
 
     // Lighting
-    VulkanBufferCreateInfo lightInfo = {
-        .size = sizeof(PBRLightingData),
-        .usage = VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT,
-        .properties = VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT,
-        .persistentlyMapped = true
-    };
+    VulkanBufferCreateInfo lightInfo = {.size = sizeof(PBRLightingData),
+                                        .usage = VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT,
+                                        .properties = VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT |
+                                                      VK_MEMORY_PROPERTY_HOST_COHERENT_BIT,
+                                        .persistentlyMapped = true};
     VulkanBuffer lightBuffer;
-    if (!vk_buffer_create(&lightBuffer, device, allocator, &lightInfo)) return false;
+    if (!vk_buffer_create(&lightBuffer, device, allocator, &lightInfo))
+        return false;
     pipeline->lightingBuffer = lightBuffer.handle;
     pipeline->lightingBufferMemory = lightBuffer.memory;
     pipeline->lightingBufferMapped = lightBuffer.mapped;
 
     // Bone matrices
     pipeline->maxBones = 256;
-    VulkanBufferCreateInfo boneInfo = {
-        .size = pipeline->maxBones * 16 * sizeof(float),
-        .usage = VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT,
-        .properties = VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT,
-        .persistentlyMapped = true
-    };
+    VulkanBufferCreateInfo boneInfo = {.size = pipeline->maxBones * 16 * sizeof(float),
+                                       .usage = VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT,
+                                       .properties = VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT |
+                                                     VK_MEMORY_PROPERTY_HOST_COHERENT_BIT,
+                                       .persistentlyMapped = true};
     VulkanBuffer boneBuffer;
-    if (!vk_buffer_create(&boneBuffer, device, allocator, &boneInfo)) return false;
+    if (!vk_buffer_create(&boneBuffer, device, allocator, &boneInfo))
+        return false;
     pipeline->boneMatricesBuffer = boneBuffer.handle;
     pipeline->boneMatricesBufferMemory = boneBuffer.memory;
     pipeline->boneMatricesBufferMapped = boneBuffer.mapped;
@@ -594,7 +621,8 @@ static bool create_pbr_uniform_buffers(VulkanPBRPipeline* pipeline, VkDevice dev
 /**
  * @brief Loads PBR shader modules.
  */
-static bool load_pbr_shaders(VkDevice device, VkShaderModule* vertShaderModule, VkShaderModule* fragShaderModule) {
+static bool load_pbr_shaders(VkDevice device, VkShaderModule* vertShaderModule,
+                             VkShaderModule* fragShaderModule) {
     char vert_path[512], frag_path[512];
     const char* shaders_dir = getenv("CARDINAL_SHADERS_DIR");
     if (!shaders_dir || !shaders_dir[0])
@@ -716,7 +744,8 @@ bool vk_pbr_pipeline_create(VulkanPBRPipeline* pipeline, VkDevice device,
     }
 
     // 5. Create Graphics Pipeline
-    if (!create_pbr_graphics_pipeline(pipeline, device, vertShaderModule, fragShaderModule, swapchainFormat, depthFormat)) {
+    if (!create_pbr_graphics_pipeline(pipeline, device, vertShaderModule, fragShaderModule,
+                                      swapchainFormat, depthFormat)) {
         vkDestroyShaderModule(device, vertShaderModule, NULL);
         vkDestroyShaderModule(device, fragShaderModule, NULL);
         return false;
@@ -726,7 +755,8 @@ bool vk_pbr_pipeline_create(VulkanPBRPipeline* pipeline, VkDevice device,
     vkDestroyShaderModule(device, vertShaderModule, NULL);
     vkDestroyShaderModule(device, fragShaderModule, NULL);
 
-    CARDINAL_LOG_DEBUG("PBR graphics pipeline created: handle=%p", (void*)(uintptr_t)pipeline->pipeline);
+    CARDINAL_LOG_DEBUG("PBR graphics pipeline created: handle=%p",
+                       (void*)(uintptr_t)pipeline->pipeline);
 
     // 6. Create Uniform Buffers
     if (!create_pbr_uniform_buffers(pipeline, device, allocator)) {
@@ -856,6 +886,11 @@ void vk_pbr_render(VulkanPBRPipeline* pipeline, VkCommandBuffer commandBuffer,
     if (!pipeline->initialized || !scene)
         return;
 
+    if (pipeline->vertexBuffer == VK_NULL_HANDLE || pipeline->indexBuffer == VK_NULL_HANDLE) {
+        // Buffers not ready or scene empty
+        return;
+    }
+
     vkCmdBindPipeline(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline->pipeline);
 
     VkBuffer vertexBuffers[] = {pipeline->vertexBuffer};
@@ -866,9 +901,17 @@ void vk_pbr_render(VulkanPBRPipeline* pipeline, VkCommandBuffer commandBuffer,
     // Bind descriptor set using descriptor manager
     if (pipeline->descriptorManager && pipeline->descriptorManager->descriptorSets &&
         pipeline->descriptorManager->descriptorSetCount > 0) {
-        VkDescriptorSet descriptorSet = pipeline->descriptorManager->descriptorSets[0];
-        vkCmdBindDescriptorSets(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS,
-                                pipeline->pipelineLayout, 0, 1, &descriptorSet, 0, NULL);
+        // Always use the latest allocated descriptor set (assuming one active set per scene)
+        uint32_t setIndex = pipeline->descriptorManager->descriptorSetCount - 1;
+        VkDescriptorSet descriptorSet = pipeline->descriptorManager->descriptorSets[setIndex];
+
+        if (descriptorSet != VK_NULL_HANDLE) {
+            vkCmdBindDescriptorSets(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS,
+                                    pipeline->pipelineLayout, 0, 1, &descriptorSet, 0, NULL);
+        }
+    } else {
+        // No descriptor set available - might be an error or initialization state
+        return;
     }
 
     // Render each mesh
@@ -880,11 +923,9 @@ void vk_pbr_render(VulkanPBRPipeline* pipeline, VkCommandBuffer commandBuffer,
         if (!mesh->vertices || mesh->vertex_count == 0 || !mesh->indices ||
             mesh->index_count == 0 ||
             mesh->index_count > 1000000000) { // Sanity check for corrupted data
-            CARDINAL_LOG_ERROR("Invalid mesh data at index %u: vertices=%p, vertex_count=%u, "
-                               "indices=%p, index_count=%u",
-                               i, (void*)mesh->vertices, mesh->vertex_count, (void*)mesh->indices,
-                               mesh->index_count);
-            continue; // Skip corrupted mesh without incrementing indexOffset
+            // Skip corrupted mesh without incrementing indexOffset if it wasn't added to buffer
+            // Note: create_pbr_mesh_buffers logic matches this check (skips if index_count == 0)
+            continue;
         }
 
         // Skip invisible meshes
@@ -911,8 +952,7 @@ void vk_pbr_render(VulkanPBRPipeline* pipeline, VkCommandBuffer commandBuffer,
                         if (scene->animation_system->bone_matrices) {
                             memcpy(pipeline->boneMatricesBufferMapped,
                                    scene->animation_system->bone_matrices,
-                                   scene->animation_system->bone_matrix_count * 16 *
-                                       sizeof(float));
+                                   scene->animation_system->bone_matrix_count * 16 * sizeof(float));
                         }
                         break;
                     }
@@ -936,8 +976,8 @@ void vk_pbr_render(VulkanPBRPipeline* pipeline, VkCommandBuffer commandBuffer,
         }
 
         // Draw the mesh
-        CARDINAL_LOG_DEBUG("Drawing mesh %u: indices=%u, offset=%u, material=%u", i,
-                           mesh->index_count, indexOffset, mesh->material_index);
+        CARDINAL_LOG_DEBUG("PBR Draw: Mesh %u, indices=%u, offset=%u", i, mesh->index_count,
+                           indexOffset);
         vkCmdDrawIndexed(commandBuffer, mesh->index_count, 1, indexOffset, 0, 0);
         indexOffset += mesh->index_count;
     }
@@ -947,9 +987,9 @@ void vk_pbr_render(VulkanPBRPipeline* pipeline, VkCommandBuffer commandBuffer,
  * @brief Creates vertex and index buffers for the PBR pipeline.
  */
 static bool create_pbr_mesh_buffers(VulkanPBRPipeline* pipeline, VkDevice device,
-                                   VulkanAllocator* allocator, VkCommandPool commandPool,
-                                   VkQueue graphicsQueue, const CardinalScene* scene,
-                                   VulkanState* vulkan_state) {
+                                    VulkanAllocator* allocator, VkCommandPool commandPool,
+                                    VkQueue graphicsQueue, const CardinalScene* scene,
+                                    VulkanState* vulkan_state) {
     uint32_t totalVertices = 0;
     uint32_t totalIndices = 0;
     for (uint32_t i = 0; i < scene->mesh_count; i++) {
@@ -1093,13 +1133,7 @@ static bool update_pbr_descriptor_sets(VulkanPBRPipeline* pipeline) {
         free(views);
     }
 
-    // Update material buffer (binding 7)
-    if (!vk_descriptor_manager_update_buffer(pipeline->descriptorManager, setIndex, 7,
-                                             pipeline->materialBuffer, 0,
-                                             sizeof(PBRMaterialProperties))) {
-        CARDINAL_LOG_ERROR("Failed to update material buffer descriptor");
-        return false;
-    }
+    // Note: Material data is passed via Push Constants, so no binding 7 update needed.
 
     // Update lighting buffer (binding 8)
     if (!vk_descriptor_manager_update_buffer(pipeline->descriptorManager, setIndex, 8,
@@ -1166,7 +1200,8 @@ bool vk_pbr_load_scene(VulkanPBRPipeline* pipeline, VkDevice device,
     }
 
     // Create vertex and index buffers
-    if (!create_pbr_mesh_buffers(pipeline, device, allocator, commandPool, graphicsQueue, scene, vulkan_state)) {
+    if (!create_pbr_mesh_buffers(pipeline, device, allocator, commandPool, graphicsQueue, scene,
+                                 vulkan_state)) {
         return false;
     }
 
@@ -1182,8 +1217,16 @@ bool vk_pbr_load_scene(VulkanPBRPipeline* pipeline, VkDevice device,
     CARDINAL_LOG_INFO("Loaded %u textures using texture manager",
                       pipeline->textureManager->textureCount);
 
+    // Reset descriptor pool to reclaim sets from previous scene loads
+    if (pipeline->descriptorManager &&
+        pipeline->descriptorManager->descriptorPool != VK_NULL_HANDLE) {
+        vkResetDescriptorPool(pipeline->descriptorManager->device,
+                              pipeline->descriptorManager->descriptorPool, 0);
+        pipeline->descriptorManager->descriptorSetCount = 0;
+    }
+
     // Allocate descriptor set using descriptor manager
-    VkDescriptorSet descriptorSet;
+    VkDescriptorSet descriptorSet = VK_NULL_HANDLE;
     uint32_t variableDescriptorCount = pipeline->textureManager->textureCount;
 
     // Allocate with variable descriptor count to satisfy binding 9 array size

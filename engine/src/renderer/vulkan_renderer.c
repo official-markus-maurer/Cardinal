@@ -201,12 +201,12 @@ static void init_mesh_shader_pipeline_helper(VulkanState* s) {
     const char* shaders_dir = getenv("CARDINAL_SHADERS_DIR");
     if (!shaders_dir || !shaders_dir[0])
         shaders_dir = "assets/shaders";
-    
+
     char mesh_path[512], task_path[512], frag_path[512];
     snprintf(mesh_path, sizeof(mesh_path), "%s/%s", shaders_dir, "mesh.mesh.spv");
     snprintf(task_path, sizeof(task_path), "%s/%s", shaders_dir, "task.task.spv");
     snprintf(frag_path, sizeof(frag_path), "%s/%s", shaders_dir, "mesh.frag.spv");
-    
+
     config.mesh_shader_path = mesh_path;
     config.task_shader_path = task_path;
     config.fragment_shader_path = frag_path;
@@ -220,8 +220,7 @@ static void init_mesh_shader_pipeline_helper(VulkanState* s) {
     config.depth_write_enable = true;
     config.depth_compare_op = VK_COMPARE_OP_LESS;
 
-    if (vk_mesh_shader_create_pipeline(s, &config, s->swapchain.format,
-                                       s->swapchain.depth_format,
+    if (vk_mesh_shader_create_pipeline(s, &config, s->swapchain.format, s->swapchain.depth_format,
                                        &s->pipelines.mesh_shader_pipeline)) {
         s->pipelines.use_mesh_shader_pipeline = true;
         CARDINAL_LOG_INFO("renderer_create: Mesh shader pipeline");
@@ -276,10 +275,10 @@ static bool init_pipelines(VulkanState* s) {
     init_pbr_pipeline_helper(s);
     init_mesh_shader_pipeline_helper(s);
     init_compute_pipeline_helper(s);
-    
+
     // Initialize rendering mode
     s->current_rendering_mode = CARDINAL_RENDERING_MODE_NORMAL;
-    
+
     init_simple_pipelines_helper(s);
 
     return true;
@@ -315,8 +314,10 @@ bool cardinal_renderer_create(CardinalRenderer* out_renderer, CardinalWindow* wi
     window->resize_callback = vk_handle_window_resize;
     window->resize_user_data = s;
 
-    if (!init_vulkan_core(s, window)) return false;
-    if (!init_ref_counting()) return false;
+    if (!init_vulkan_core(s, window))
+        return false;
+    if (!init_ref_counting())
+        return false;
 
     if (!vk_create_swapchain(s)) {
         CARDINAL_LOG_ERROR("vk_create_swapchain failed");
@@ -340,8 +341,10 @@ bool cardinal_renderer_create(CardinalRenderer* out_renderer, CardinalWindow* wi
 
     setup_function_pointers(s);
 
-    if (!init_sync_manager(s)) return false;
-    if (!init_pipelines(s)) return false;
+    if (!init_sync_manager(s))
+        return false;
+    if (!init_pipelines(s))
+        return false;
 
     // Initialize barrier validation system
     if (!cardinal_barrier_validation_init(1000, false)) {
@@ -584,7 +587,7 @@ void cardinal_renderer_destroy(CardinalRenderer* renderer) {
     if (s->pipelines.use_mesh_shader_pipeline) {
         CARDINAL_LOG_DEBUG("[DESTROY] Destroying mesh shader pipeline");
         vk_mesh_shader_destroy_pipeline(s, &s->pipelines.mesh_shader_pipeline);
-        // vk_mesh_shader_cleanup is redundant here as we already handled pending list, 
+        // vk_mesh_shader_cleanup is redundant here as we already handled pending list,
         // but let's call it for completeness if it does other things in future.
         // We must ensure it handles NULL pointers gracefully.
         vk_mesh_shader_cleanup(s);
@@ -640,11 +643,12 @@ static void create_perspective_matrix(float fov, float aspect, float near_plane,
 
     float tan_half_fov = tanf(fov * 0.5f * (float)M_PI / 180.0f);
 
-    matrix[0] = 1.0f / (aspect * tan_half_fov); // [0][0]
-    matrix[5] = -1.0f / tan_half_fov;           // [1][1] - Vulkan Y-flip (negative Y)
-    matrix[10] = -(far_plane + near_plane) / (far_plane - near_plane);        // [2][2]
-    matrix[11] = -1.0f;                                                       // [2][3]
-    matrix[14] = -(2.0f * far_plane * near_plane) / (far_plane - near_plane); // [3][2]
+    matrix[0] = 1.0f / (aspect * tan_half_fov);        // [0][0]
+    matrix[5] = -1.0f / tan_half_fov;                  // [1][1] - Vulkan Y-flip (negative Y)
+    matrix[10] = far_plane / (near_plane - far_plane); // [2][2] - Vulkan [0, 1] Z range
+    matrix[11] = -1.0f;                                // [2][3]
+    matrix[14] =
+        (near_plane * far_plane) / (near_plane - far_plane); // [3][2] - Vulkan [0, 1] Z range
 }
 
 // Helper function to create view matrix (look-at)
@@ -855,8 +859,8 @@ void cardinal_renderer_enable_mesh_shader(CardinalRenderer* renderer, bool enabl
         config.fragment_shader_path = frag_path;
         config.max_vertices_per_meshlet = 64;
         config.max_primitives_per_meshlet = 126;
-        config.cull_mode = VK_CULL_MODE_BACK_BIT;
-        config.front_face = VK_FRONT_FACE_COUNTER_CLOCKWISE;
+        config.cull_mode = VK_CULL_MODE_NONE;
+        config.front_face = VK_FRONT_FACE_CLOCKWISE;
         config.polygon_mode = VK_POLYGON_MODE_FILL;
         config.blend_enable = false;
         config.depth_test_enable = true;
@@ -936,16 +940,12 @@ void cardinal_renderer_set_ui_callback(CardinalRenderer* renderer,
  * @brief Submits a command buffer and waits for completion.
  */
 static void submit_and_wait(VulkanState* s, VkCommandBuffer cmd) {
-    VkCommandBufferSubmitInfo cmd_info = {
-        .sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_SUBMIT_INFO,
-        .commandBuffer = cmd,
-        .deviceMask = 0
-    };
-    VkSubmitInfo2 submit2 = {
-        .sType = VK_STRUCTURE_TYPE_SUBMIT_INFO_2,
-        .commandBufferInfoCount = 1,
-        .pCommandBufferInfos = &cmd_info
-    };
+    VkCommandBufferSubmitInfo cmd_info = {.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_SUBMIT_INFO,
+                                          .commandBuffer = cmd,
+                                          .deviceMask = 0};
+    VkSubmitInfo2 submit2 = {.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO_2,
+                             .commandBufferInfoCount = 1,
+                             .pCommandBufferInfos = &cmd_info};
 
     if (s->sync_manager) {
         uint64_t timeline_value = vulkan_sync_manager_get_next_timeline_value(s->sync_manager);
@@ -1044,7 +1044,8 @@ static bool try_submit_secondary(VulkanState* s, void (*record)(VkCommandBuffer 
     vkBeginCommandBuffer(primary_cmd, &bi);
 
     CardinalSecondaryCommandContext secondary_context;
-    if (!cardinal_mt_allocate_secondary_command_buffer(&mt_manager->thread_pools[0], &secondary_context)) {
+    if (!cardinal_mt_allocate_secondary_command_buffer(&mt_manager->thread_pools[0],
+                                                       &secondary_context)) {
         vkEndCommandBuffer(primary_cmd);
         return false;
     }
@@ -1056,7 +1057,7 @@ static bool try_submit_secondary(VulkanState* s, void (*record)(VkCommandBuffer 
     inheritance_rendering.pColorAttachmentFormats = &color_format;
     inheritance_rendering.depthAttachmentFormat = s->swapchain.depth_format;
     inheritance_rendering.rasterizationSamples = VK_SAMPLE_COUNT_1_BIT;
-    
+
     VkCommandBufferInheritanceInfo inheritance_info = {0};
     inheritance_info.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_INHERITANCE_INFO;
     inheritance_info.pNext = &inheritance_rendering;
@@ -1113,7 +1114,8 @@ void cardinal_renderer_immediate_submit_with_secondary(CardinalRenderer* rendere
 /**
  * @brief Uploads a single mesh to GPU.
  */
-static bool upload_single_mesh(VulkanState* s, const CardinalMesh* src, GpuMesh* dst, uint32_t mesh_index) {
+static bool upload_single_mesh(VulkanState* s, const CardinalMesh* src, GpuMesh* dst,
+                               uint32_t mesh_index) {
     dst->vbuf = VK_NULL_HANDLE;
     dst->vmem = VK_NULL_HANDLE;
     dst->ibuf = VK_NULL_HANDLE;
@@ -1125,9 +1127,9 @@ static bool upload_single_mesh(VulkanState* s, const CardinalMesh* src, GpuMesh*
     VkDeviceSize vsize = (VkDeviceSize)src->vertex_count * dst->vtx_stride;
     VkDeviceSize isize = (VkDeviceSize)src->index_count * sizeof(uint32_t);
 
-    CARDINAL_LOG_DEBUG("[UPLOAD] Mesh %u: vsize=%llu, isize=%llu, vertices=%u, indices=%u", mesh_index,
-                       (unsigned long long)vsize, (unsigned long long)isize, src->vertex_count,
-                       src->index_count);
+    CARDINAL_LOG_DEBUG("[UPLOAD] Mesh %u: vsize=%llu, isize=%llu, vertices=%u, indices=%u",
+                       mesh_index, (unsigned long long)vsize, (unsigned long long)isize,
+                       src->vertex_count, src->index_count);
 
     if (!src->vertices || src->vertex_count == 0) {
         CARDINAL_LOG_ERROR("Mesh %u has no vertices", mesh_index);
@@ -1135,20 +1137,18 @@ static bool upload_single_mesh(VulkanState* s, const CardinalMesh* src, GpuMesh*
     }
 
     CARDINAL_LOG_DEBUG("[UPLOAD] Mesh %u: staging vertex buffer", mesh_index);
-    if (!vk_buffer_create_with_staging(&s->allocator, s->context.device, s->commands.pools[0],
-                                       s->context.graphics_queue, src->vertices, vsize,
-                                       VK_BUFFER_USAGE_VERTEX_BUFFER_BIT, &dst->vbuf,
-                                       &dst->vmem, s)) {
+    if (!vk_buffer_create_with_staging(
+            &s->allocator, s->context.device, s->commands.pools[0], s->context.graphics_queue,
+            src->vertices, vsize, VK_BUFFER_USAGE_VERTEX_BUFFER_BIT, &dst->vbuf, &dst->vmem, s)) {
         CARDINAL_LOG_ERROR("Failed to create vertex buffer for mesh %u", mesh_index);
         return false;
     }
 
     if (src->index_count > 0 && src->indices) {
         CARDINAL_LOG_DEBUG("[UPLOAD] Mesh %u: staging index buffer", mesh_index);
-        if (vk_buffer_create_with_staging(&s->allocator, s->context.device,
-                                          s->commands.pools[0], s->context.graphics_queue,
-                                          src->indices, isize, VK_BUFFER_USAGE_INDEX_BUFFER_BIT,
-                                          &dst->ibuf, &dst->imem, s)) {
+        if (vk_buffer_create_with_staging(
+                &s->allocator, s->context.device, s->commands.pools[0], s->context.graphics_queue,
+                src->indices, isize, VK_BUFFER_USAGE_INDEX_BUFFER_BIT, &dst->ibuf, &dst->imem, s)) {
             dst->idx_count = src->index_count;
         } else {
             CARDINAL_LOG_ERROR("Failed to create index buffer for mesh %u", mesh_index);
@@ -1213,7 +1213,7 @@ void cardinal_renderer_upload_scene(CardinalRenderer* renderer, const CardinalSc
     for (uint32_t i = 0; i < scene->mesh_count; i++) {
         const CardinalMesh* src = &scene->meshes[i];
         GpuMesh* dst = &s->scene_meshes[i];
-        
+
         if (!upload_single_mesh(s, src, dst, i)) {
             continue;
         }

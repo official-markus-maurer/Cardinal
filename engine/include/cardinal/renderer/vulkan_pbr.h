@@ -58,23 +58,32 @@ typedef struct PBRTextureTransform {
 
 // Push constant structure for per-mesh data (model matrix + material
 // properties)
+// Aligned to std430 layout rules for GLSL
 typedef struct PBRPushConstants {
-  float modelMatrix[16];   // 4x4 model matrix (64 bytes)
-  float albedoFactor[3];   // Material albedo factor (12 bytes)
-  float metallicFactor;    // Material metallic factor (4 bytes)
-  float emissiveFactor[3]; // Material emissive factor (12 bytes)
-  float roughnessFactor;   // Material roughness factor (4 bytes)
-  float normalScale;       // Normal map scale (4 bytes)
-  float aoStrength;        // AO strength (4 bytes)
-  uint32_t albedoTextureIndex;
-  uint32_t normalTextureIndex;
-  uint32_t metallicRoughnessTextureIndex;
-  uint32_t aoTextureIndex;
-  uint32_t emissiveTextureIndex;
-  uint32_t supportsDescriptorIndexing;
-  uint32_t hasSkeleton; // 1 if mesh has skeletal animation, 0 otherwise
-  uint32_t _padding0;   // Alignment padding
-  // Texture transforms matching shader Material structure layout
+  float modelMatrix[16]; // 4x4 model matrix (64 bytes)
+
+  // Material data starts at offset 64
+  float albedoFactor[3]; // 12 bytes
+  float metallicFactor;  // 4 bytes (Packed)
+
+  float emissiveFactor[3]; // 12 bytes
+  float roughnessFactor;   // 4 bytes (Packed)
+
+  float normalScale; // 4 bytes
+  float aoStrength;  // 4 bytes
+
+  uint32_t albedoTextureIndex;            // 4 bytes
+  uint32_t normalTextureIndex;            // 4 bytes
+  uint32_t metallicRoughnessTextureIndex; // 4 bytes
+  uint32_t aoTextureIndex;                // 4 bytes
+  uint32_t emissiveTextureIndex;          // 4 bytes
+  uint32_t supportsDescriptorIndexing;    // 4 bytes
+
+  uint32_t hasSkeleton; // 4 bytes
+  uint32_t _pad3; // Explicit padding to align TextureTransform to 136 (8-byte
+                  // boundary)
+
+  // Texture transforms (vec2 alignment = 8 bytes)
   PBRTextureTransform albedoTransform;
   float _padding1;
   PBRTextureTransform normalTransform;

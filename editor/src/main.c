@@ -53,22 +53,26 @@ int main(int argc, char* argv[]) {
     }
 
     // Ensure working directory is the executable's directory so relative asset paths resolve
-#ifdef _WIN32
-    {
-        char exePath[MAX_PATH];
-        DWORD len = GetModuleFileNameA(NULL, exePath, MAX_PATH);
-        if (len > 0 && len < MAX_PATH) {
-            // Strip filename to get directory
-            for (int i = (int)len - 1; i >= 0; --i) {
-                if (exePath[i] == '\\' || exePath[i] == '/') {
-                    exePath[i] = '\0';
-                    break;
+    // DISABLED: This breaks development environment where assets are in project root.
+    // Use CWD provided by the shell/IDE.
+    /*
+    #ifdef _WIN32
+        {
+            char exePath[MAX_PATH];
+            DWORD len = GetModuleFileNameA(NULL, exePath, MAX_PATH);
+            if (len > 0 && len < MAX_PATH) {
+                // Strip filename to get directory
+                for (int i = (int)len - 1; i >= 0; --i) {
+                    if (exePath[i] == '\\' || exePath[i] == '/') {
+                        exePath[i] = '\0';
+                        break;
+                    }
                 }
+                SetCurrentDirectoryA(exePath);
             }
-            SetCurrentDirectoryA(exePath);
         }
-    }
-#endif
+    #endif
+    */
 
     cardinal_log_init_with_level(log_level);
 

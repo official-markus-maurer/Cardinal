@@ -420,11 +420,9 @@ void vk_buffer_unmap(VulkanBuffer* buffer, VkDevice device) {
 }
 
 bool vk_buffer_create_device_local(VulkanBuffer* buffer, VkDevice device,
-                                   VulkanAllocator* allocator,
-                                   VkCommandPool commandPool, VkQueue queue,
-                                   const void* data, VkDeviceSize size,
-                                   VkBufferUsageFlags usage,
-                                   VulkanState* vulkan_state) {
+                                   VulkanAllocator* allocator, VkCommandPool commandPool,
+                                   VkQueue queue, const void* data, VkDeviceSize size,
+                                   VkBufferUsageFlags usage, VulkanState* vulkan_state) {
     if (!data || size == 0) {
         return false;
     }

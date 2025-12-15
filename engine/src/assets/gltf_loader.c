@@ -1679,8 +1679,6 @@ bool cardinal_gltf_load_scene(const char* path, CardinalScene* out_scene) {
 
     CARDINAL_LOG_INFO("Built scene hierarchy with %u root nodes", root_node_count);
 
-
-
     // Initialize animation system with crash-safe validation
     CARDINAL_LOG_DEBUG("[CRITICAL] Starting animation system initialization");
     uint32_t max_animations = data->animations_count > 0 ? (uint32_t)data->animations_count : 10;

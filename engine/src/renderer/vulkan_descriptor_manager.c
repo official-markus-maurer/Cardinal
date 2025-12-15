@@ -439,7 +439,7 @@ static bool update_buffer_descriptor_buffer(VulkanDescriptorManager* manager, ui
         CARDINAL_LOG_ERROR("Descriptor buffer extension not available for updates");
         return false;
     }
-    
+
     // Get device address of the source buffer
     VkBufferDeviceAddressInfo addrInfo = {0};
     addrInfo.sType = VK_STRUCTURE_TYPE_BUFFER_DEVICE_ADDRESS_INFO;
@@ -470,9 +470,8 @@ static bool update_buffer_descriptor_buffer(VulkanDescriptorManager* manager, ui
         return false;
     }
 
-    manager->vulkan_state->context.vkGetDescriptorEXT(manager->device, &getInfo, descSize,
-                                                      (char*)manager->descriptorBufferMapped +
-                                                          dstOffset);
+    manager->vulkan_state->context.vkGetDescriptorEXT(
+        manager->device, &getInfo, descSize, (char*)manager->descriptorBufferMapped + dstOffset);
 
     return true;
 }
@@ -527,7 +526,8 @@ bool vk_descriptor_manager_update_buffer(VulkanDescriptorManager* manager, uint3
         }
         return update_buffer_descriptor_buffer(manager, setIndex, binding, buffer, offset, range);
     } else {
-        return update_buffer_descriptor_set(manager, setIndex, binding, buffer, offset, range, dtype);
+        return update_buffer_descriptor_set(manager, setIndex, binding, buffer, offset, range,
+                                            dtype);
     }
 }
 
@@ -535,8 +535,8 @@ bool vk_descriptor_manager_update_buffer(VulkanDescriptorManager* manager, uint3
  * @brief Updates an image descriptor using descriptor buffers.
  */
 static bool update_image_descriptor_buffer(VulkanDescriptorManager* manager, uint32_t setIndex,
-                                           uint32_t binding, VkImageView imageView, VkSampler sampler,
-                                           VkImageLayout imageLayout) {
+                                           uint32_t binding, VkImageView imageView,
+                                           VkSampler sampler, VkImageLayout imageLayout) {
     if (!manager->vulkan_state || !manager->vulkan_state->context.vkGetDescriptorEXT) {
         CARDINAL_LOG_ERROR("Descriptor buffer extension not available for updates");
         return false;
@@ -556,16 +556,15 @@ static bool update_image_descriptor_buffer(VulkanDescriptorManager* manager, uin
     VkDeviceSize bindingOffset =
         (binding < manager->bindingOffsetCount) ? manager->bindingOffsets[binding] : 0;
     VkDeviceSize dstOffset = setOffset + bindingOffset;
-    VkDeviceSize descSize = get_descriptor_size_for_type(
-        manager->vulkan_state, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER);
+    VkDeviceSize descSize = get_descriptor_size_for_type(manager->vulkan_state,
+                                                         VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER);
     if (descSize == 0) {
         CARDINAL_LOG_ERROR("Combined image sampler descriptor size not available");
         return false;
     }
 
-    manager->vulkan_state->context.vkGetDescriptorEXT(manager->device, &getInfo, descSize,
-                                                      (char*)manager->descriptorBufferMapped +
-                                                          dstOffset);
+    manager->vulkan_state->context.vkGetDescriptorEXT(
+        manager->device, &getInfo, descSize, (char*)manager->descriptorBufferMapped + dstOffset);
 
     return true;
 }
@@ -618,9 +617,11 @@ bool vk_descriptor_manager_update_image(VulkanDescriptorManager* manager, uint32
             CARDINAL_LOG_WARN("Descriptor buffer image update only for COMBINED_IMAGE_SAMPLER");
             return false;
         }
-        return update_image_descriptor_buffer(manager, setIndex, binding, imageView, sampler, imageLayout);
+        return update_image_descriptor_buffer(manager, setIndex, binding, imageView, sampler,
+                                              imageLayout);
     } else {
-        return update_image_descriptor_set(manager, setIndex, binding, imageView, sampler, imageLayout, dtype);
+        return update_image_descriptor_set(manager, setIndex, binding, imageView, sampler,
+                                           imageLayout, dtype);
     }
 }
 
@@ -639,9 +640,9 @@ static bool update_textures_descriptor_buffer(VulkanDescriptorManager* manager, 
     VkDeviceSize setOffset = manager->descriptorSetSize * setIndex;
     VkDeviceSize bindingOffset =
         (binding < manager->bindingOffsetCount) ? manager->bindingOffsets[binding] : 0;
-    VkDeviceSize descSize = get_descriptor_size_for_type(
-        manager->vulkan_state, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER);
-    
+    VkDeviceSize descSize = get_descriptor_size_for_type(manager->vulkan_state,
+                                                         VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER);
+
     if (descSize == 0) {
         CARDINAL_LOG_ERROR("Combined image sampler descriptor size not available");
         return false;
@@ -661,9 +662,9 @@ static bool update_textures_descriptor_buffer(VulkanDescriptorManager* manager, 
         VkDeviceSize elementOffset = i * descSize;
         VkDeviceSize dstOffset = setOffset + bindingOffset + elementOffset;
 
-        manager->vulkan_state->context.vkGetDescriptorEXT(
-            manager->device, &getInfo, descSize,
-            (char*)manager->descriptorBufferMapped + dstOffset);
+        manager->vulkan_state->context.vkGetDescriptorEXT(manager->device, &getInfo, descSize,
+                                                          (char*)manager->descriptorBufferMapped +
+                                                              dstOffset);
     }
 
     CARDINAL_LOG_DEBUG("Updated %u textures in descriptor buffer set %u, binding %u", count,
@@ -740,11 +741,10 @@ bool vk_descriptor_manager_update_textures(VulkanDescriptorManager* manager, uin
     }
 }
 
-static void bind_descriptor_buffers(VulkanDescriptorManager* manager,
-                                    VkCommandBuffer commandBuffer, VkPipelineLayout pipelineLayout,
-                                    uint32_t firstSet, uint32_t setCount) {
-    if (!manager->vulkan_state ||
-        !manager->vulkan_state->context.vkCmdBindDescriptorBuffersEXT ||
+static void bind_descriptor_buffers(VulkanDescriptorManager* manager, VkCommandBuffer commandBuffer,
+                                    VkPipelineLayout pipelineLayout, uint32_t firstSet,
+                                    uint32_t setCount) {
+    if (!manager->vulkan_state || !manager->vulkan_state->context.vkCmdBindDescriptorBuffersEXT ||
         !manager->vulkan_state->context.vkCmdSetDescriptorBufferOffsetsEXT) {
         CARDINAL_LOG_ERROR("Descriptor buffer binding functions not available");
         return;
@@ -762,8 +762,7 @@ static void bind_descriptor_buffers(VulkanDescriptorManager* manager,
     bindingInfo.address = baseAddress;
     bindingInfo.usage = VK_BUFFER_USAGE_RESOURCE_DESCRIPTOR_BUFFER_BIT_EXT;
 
-    manager->vulkan_state->context.vkCmdBindDescriptorBuffersEXT(commandBuffer, 1,
-                                                                 &bindingInfo);
+    manager->vulkan_state->context.vkCmdBindDescriptorBuffersEXT(commandBuffer, 1, &bindingInfo);
 
     // Set descriptor buffer offsets for the requested sets
     // All sets refer to the same buffer index 0

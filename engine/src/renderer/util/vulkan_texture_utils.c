@@ -94,9 +94,9 @@ static void process_staging_buffer_cleanups(VulkanSyncManager* sync_manager) {
 }
 
 static bool create_staging_buffer_with_data(VulkanAllocator* allocator, VkDevice device,
-                                              const CardinalTexture* texture,
-                                              VkBuffer* outStagingBuffer,
-                                              VkDeviceMemory* outStagingMemory) {
+                                            const CardinalTexture* texture,
+                                            VkBuffer* outStagingBuffer,
+                                            VkDeviceMemory* outStagingMemory) {
     VkDeviceSize imageSize = texture->width * texture->height * 4; // Always RGBA
 
     // Create staging buffer
@@ -137,9 +137,8 @@ static bool create_staging_buffer_with_data(VulkanAllocator* allocator, VkDevice
     return true;
 }
 
-static bool create_image_and_memory(VulkanAllocator* allocator, VkDevice device,
-                                    uint32_t width, uint32_t height,
-                                    VkImage* outImage, VkDeviceMemory* outMemory) {
+static bool create_image_and_memory(VulkanAllocator* allocator, VkDevice device, uint32_t width,
+                                    uint32_t height, VkImage* outImage, VkDeviceMemory* outMemory) {
     VkImageCreateInfo imageInfo = {
         .sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO,
         .imageType = VK_IMAGE_TYPE_2D,
@@ -167,9 +166,9 @@ static bool create_image_and_memory(VulkanAllocator* allocator, VkDevice device,
     VkMemoryAllocateInfo allocInfo = {
         .sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO,
         .allocationSize = memRequirements.size,
-        .memoryTypeIndex = vk_buffer_find_memory_type(allocator->physical_device,
-                                                      memRequirements.memoryTypeBits,
-                                                      VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT)};
+        .memoryTypeIndex =
+            vk_buffer_find_memory_type(allocator->physical_device, memRequirements.memoryTypeBits,
+                                       VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT)};
 
     if (vkAllocateMemory(device, &allocInfo, NULL, outMemory) != VK_SUCCESS) {
         CARDINAL_LOG_ERROR("Failed to allocate texture image memory");
@@ -268,14 +267,13 @@ static bool submit_texture_upload(VkDevice device, VkQueue graphicsQueue,
 
     if (sync_manager) {
         uint64_t timeline_value = vulkan_sync_manager_get_next_timeline_value(sync_manager);
-        if (outTimelineValue) *outTimelineValue = timeline_value;
+        if (outTimelineValue)
+            *outTimelineValue = timeline_value;
 
-        VkSemaphoreSubmitInfo signal_info = {
-            .sType = VK_STRUCTURE_TYPE_SEMAPHORE_SUBMIT_INFO,
-            .semaphore = sync_manager->timeline_semaphore,
-            .value = timeline_value,
-            .stageMask = VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT
-        };
+        VkSemaphoreSubmitInfo signal_info = {.sType = VK_STRUCTURE_TYPE_SEMAPHORE_SUBMIT_INFO,
+                                             .semaphore = sync_manager->timeline_semaphore,
+                                             .value = timeline_value,
+                                             .stageMask = VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT};
 
         submitInfo.signalSemaphoreInfoCount = 1;
         submitInfo.pSignalSemaphoreInfos = &signal_info;
@@ -296,12 +294,10 @@ static bool submit_texture_upload(VkDevice device, VkQueue graphicsQueue,
         }
         vkDestroyFence(device, uploadFence, NULL);
 
-        VkSemaphoreWaitInfo waitInfo = {
-            .sType = VK_STRUCTURE_TYPE_SEMAPHORE_WAIT_INFO,
-            .semaphoreCount = 1,
-            .pSemaphores = &sync_manager->timeline_semaphore,
-            .pValues = &timeline_value
-        };
+        VkSemaphoreWaitInfo waitInfo = {.sType = VK_STRUCTURE_TYPE_SEMAPHORE_WAIT_INFO,
+                                        .semaphoreCount = 1,
+                                        .pSemaphores = &sync_manager->timeline_semaphore,
+                                        .pValues = &timeline_value};
         vkWaitSemaphores(device, &waitInfo, UINT64_MAX);
     } else {
         if (vkQueueSubmit2(graphicsQueue, 1, &submitInfo, VK_NULL_HANDLE) != VK_SUCCESS) {

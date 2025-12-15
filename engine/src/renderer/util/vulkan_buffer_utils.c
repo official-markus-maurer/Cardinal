@@ -71,7 +71,7 @@ bool vk_buffer_create_with_staging(VulkanAllocator* allocator, VkDevice device,
     }
 
     VulkanBuffer destBufferObj = {0};
-    
+
     // Use the core manager function
     if (!vk_buffer_create_device_local(&destBufferObj, device, allocator, commandPool,
                                        graphicsQueue, data, size, usage, vulkan_state)) {

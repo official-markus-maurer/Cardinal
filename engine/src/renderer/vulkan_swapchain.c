@@ -158,11 +158,12 @@ static bool wait_device_idle_for_swapchain(VulkanState* s) {
     uint64_t t_idle0 = get_current_time_ms();
     VkResult res = vkDeviceWaitIdle(s->context.device);
     uint64_t dt = get_current_time_ms() - t_idle0;
-    
+
     if (dt > 200) {
-        CARDINAL_LOG_WARN("[WATCHDOG] Swapchain create: device wait idle duration %llu ms", (unsigned long long)dt);
+        CARDINAL_LOG_WARN("[WATCHDOG] Swapchain create: device wait idle duration %llu ms",
+                          (unsigned long long)dt);
     }
-    
+
     if (res == VK_ERROR_DEVICE_LOST) {
         CARDINAL_LOG_ERROR("[SWAPCHAIN] Device lost during swapchain creation");
         s->recovery.device_lost = true;
@@ -177,24 +178,30 @@ static bool wait_device_idle_for_swapchain(VulkanState* s) {
 /**
  * @brief Retrieves surface capabilities, formats, and present modes.
  */
-static bool get_surface_details(VulkanState* s, VkSurfaceCapabilitiesKHR* caps, VkSurfaceFormatKHR* out_fmt, VkPresentModeKHR* out_mode) {
-    if (vkGetPhysicalDeviceSurfaceCapabilitiesKHR(s->context.physical_device, s->context.surface, caps) != VK_SUCCESS) {
+static bool get_surface_details(VulkanState* s, VkSurfaceCapabilitiesKHR* caps,
+                                VkSurfaceFormatKHR* out_fmt, VkPresentModeKHR* out_mode) {
+    if (vkGetPhysicalDeviceSurfaceCapabilitiesKHR(s->context.physical_device, s->context.surface,
+                                                  caps) != VK_SUCCESS) {
         CARDINAL_LOG_ERROR("[SWAPCHAIN] Failed to get surface capabilities");
         return false;
     }
 
-    if (caps->minImageCount == 0 || caps->maxImageExtent.width == 0 || caps->maxImageExtent.height == 0) {
+    if (caps->minImageCount == 0 || caps->maxImageExtent.width == 0 ||
+        caps->maxImageExtent.height == 0) {
         CARDINAL_LOG_ERROR("[SWAPCHAIN] Invalid surface capabilities detected");
         return false;
     }
 
     uint32_t count = 0;
-    if (vkGetPhysicalDeviceSurfaceFormatsKHR(s->context.physical_device, s->context.surface, &count, NULL) != VK_SUCCESS || count == 0) {
+    if (vkGetPhysicalDeviceSurfaceFormatsKHR(s->context.physical_device, s->context.surface, &count,
+                                             NULL) != VK_SUCCESS ||
+        count == 0) {
         CARDINAL_LOG_ERROR("[SWAPCHAIN] Failed to get surface formats");
         return false;
     }
     VkSurfaceFormatKHR* fmts = malloc(sizeof(VkSurfaceFormatKHR) * count);
-    if (!fmts || vkGetPhysicalDeviceSurfaceFormatsKHR(s->context.physical_device, s->context.surface, &count, fmts) != VK_SUCCESS) {
+    if (!fmts || vkGetPhysicalDeviceSurfaceFormatsKHR(
+                     s->context.physical_device, s->context.surface, &count, fmts) != VK_SUCCESS) {
         CARDINAL_LOG_ERROR("[SWAPCHAIN] Failed to retrieve surface formats");
         free(fmts);
         return false;
@@ -202,12 +209,16 @@ static bool get_surface_details(VulkanState* s, VkSurfaceCapabilitiesKHR* caps, 
     *out_fmt = choose_surface_format(fmts, count);
     free(fmts);
 
-    if (vkGetPhysicalDeviceSurfacePresentModesKHR(s->context.physical_device, s->context.surface, &count, NULL) != VK_SUCCESS || count == 0) {
+    if (vkGetPhysicalDeviceSurfacePresentModesKHR(s->context.physical_device, s->context.surface,
+                                                  &count, NULL) != VK_SUCCESS ||
+        count == 0) {
         CARDINAL_LOG_ERROR("[SWAPCHAIN] Failed to get present modes");
         return false;
     }
     VkPresentModeKHR* modes = malloc(sizeof(VkPresentModeKHR) * count);
-    if (!modes || vkGetPhysicalDeviceSurfacePresentModesKHR(s->context.physical_device, s->context.surface, &count, modes) != VK_SUCCESS) {
+    if (!modes ||
+        vkGetPhysicalDeviceSurfacePresentModesKHR(s->context.physical_device, s->context.surface,
+                                                  &count, modes) != VK_SUCCESS) {
         CARDINAL_LOG_ERROR("[SWAPCHAIN] Failed to retrieve present modes");
         free(modes);
         return false;
@@ -237,10 +248,14 @@ static VkExtent2D select_swapchain_extent(VulkanState* s, const VkSurfaceCapabil
         extent.height = s->swapchain.pending_height;
     }
 
-    if (extent.width < caps->minImageExtent.width) extent.width = caps->minImageExtent.width;
-    if (extent.width > caps->maxImageExtent.width) extent.width = caps->maxImageExtent.width;
-    if (extent.height < caps->minImageExtent.height) extent.height = caps->minImageExtent.height;
-    if (extent.height > caps->maxImageExtent.height) extent.height = caps->maxImageExtent.height;
+    if (extent.width < caps->minImageExtent.width)
+        extent.width = caps->minImageExtent.width;
+    if (extent.width > caps->maxImageExtent.width)
+        extent.width = caps->maxImageExtent.width;
+    if (extent.height < caps->minImageExtent.height)
+        extent.height = caps->minImageExtent.height;
+    if (extent.height > caps->maxImageExtent.height)
+        extent.height = caps->maxImageExtent.height;
 
     return extent;
 }
@@ -248,26 +263,28 @@ static VkExtent2D select_swapchain_extent(VulkanState* s, const VkSurfaceCapabil
 /**
  * @brief Creates the Vulkan swapchain object.
  */
-static bool create_swapchain_object(VulkanState* s, const VkSurfaceCapabilitiesKHR* caps, VkSurfaceFormatKHR fmt, VkPresentModeKHR mode, VkExtent2D extent) {
+static bool create_swapchain_object(VulkanState* s, const VkSurfaceCapabilitiesKHR* caps,
+                                    VkSurfaceFormatKHR fmt, VkPresentModeKHR mode,
+                                    VkExtent2D extent) {
     uint32_t image_count = caps->minImageCount + 1;
-    if (caps->maxImageCount > 0 && image_count > caps->maxImageCount) image_count = caps->maxImageCount;
+    if (caps->maxImageCount > 0 && image_count > caps->maxImageCount)
+        image_count = caps->maxImageCount;
 
-    CARDINAL_LOG_INFO("[SWAPCHAIN] Creating swapchain: %ux%u, %u images, format %d", extent.width, extent.height, image_count, fmt.format);
+    CARDINAL_LOG_INFO("[SWAPCHAIN] Creating swapchain: %ux%u, %u images, format %d", extent.width,
+                      extent.height, image_count, fmt.format);
 
-    VkSwapchainCreateInfoKHR sci = {
-        .sType = VK_STRUCTURE_TYPE_SWAPCHAIN_CREATE_INFO_KHR,
-        .surface = s->context.surface,
-        .minImageCount = image_count,
-        .imageFormat = fmt.format,
-        .imageColorSpace = fmt.colorSpace,
-        .imageExtent = extent,
-        .imageArrayLayers = 1,
-        .imageUsage = VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT,
-        .preTransform = caps->currentTransform,
-        .compositeAlpha = VK_COMPOSITE_ALPHA_OPAQUE_BIT_KHR,
-        .presentMode = mode,
-        .clipped = VK_TRUE
-    };
+    VkSwapchainCreateInfoKHR sci = {.sType = VK_STRUCTURE_TYPE_SWAPCHAIN_CREATE_INFO_KHR,
+                                    .surface = s->context.surface,
+                                    .minImageCount = image_count,
+                                    .imageFormat = fmt.format,
+                                    .imageColorSpace = fmt.colorSpace,
+                                    .imageExtent = extent,
+                                    .imageArrayLayers = 1,
+                                    .imageUsage = VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT,
+                                    .preTransform = caps->currentTransform,
+                                    .compositeAlpha = VK_COMPOSITE_ALPHA_OPAQUE_BIT_KHR,
+                                    .presentMode = mode,
+                                    .clipped = VK_TRUE};
 
     if (s->context.graphics_queue_family != s->context.present_queue_family) {
         uint32_t indices[] = {s->context.graphics_queue_family, s->context.present_queue_family};
@@ -281,7 +298,8 @@ static bool create_swapchain_object(VulkanState* s, const VkSurfaceCapabilitiesK
     VkResult res = vkCreateSwapchainKHR(s->context.device, &sci, NULL, &s->swapchain.handle);
     if (res != VK_SUCCESS) {
         CARDINAL_LOG_ERROR("[SWAPCHAIN] Failed to create swapchain: %d", res);
-        if (res == VK_ERROR_DEVICE_LOST) s->recovery.device_lost = true;
+        if (res == VK_ERROR_DEVICE_LOST)
+            s->recovery.device_lost = true;
         return false;
     }
 
@@ -294,13 +312,17 @@ static bool create_swapchain_object(VulkanState* s, const VkSurfaceCapabilitiesK
  * @brief Retrieves the images from the created swapchain.
  */
 static bool retrieve_swapchain_images(VulkanState* s) {
-    if (vkGetSwapchainImagesKHR(s->context.device, s->swapchain.handle, &s->swapchain.image_count, NULL) != VK_SUCCESS || s->swapchain.image_count == 0) {
+    if (vkGetSwapchainImagesKHR(s->context.device, s->swapchain.handle, &s->swapchain.image_count,
+                                NULL) != VK_SUCCESS ||
+        s->swapchain.image_count == 0) {
         CARDINAL_LOG_ERROR("[SWAPCHAIN] Failed to get image count");
         return false;
     }
 
     s->swapchain.images = malloc(sizeof(VkImage) * s->swapchain.image_count);
-    if (!s->swapchain.images || vkGetSwapchainImagesKHR(s->context.device, s->swapchain.handle, &s->swapchain.image_count, s->swapchain.images) != VK_SUCCESS) {
+    if (!s->swapchain.images ||
+        vkGetSwapchainImagesKHR(s->context.device, s->swapchain.handle, &s->swapchain.image_count,
+                                s->swapchain.images) != VK_SUCCESS) {
         CARDINAL_LOG_ERROR("[SWAPCHAIN] Failed to get images");
         return false;
     }
@@ -312,9 +334,11 @@ static bool retrieve_swapchain_images(VulkanState* s) {
  */
 static bool create_swapchain_image_views(VulkanState* s) {
     s->swapchain.image_views = malloc(sizeof(VkImageView) * s->swapchain.image_count);
-    if (!s->swapchain.image_views) return false;
+    if (!s->swapchain.image_views)
+        return false;
 
-    for (uint32_t i = 0; i < s->swapchain.image_count; i++) s->swapchain.image_views[i] = VK_NULL_HANDLE;
+    for (uint32_t i = 0; i < s->swapchain.image_count; i++)
+        s->swapchain.image_views[i] = VK_NULL_HANDLE;
 
     for (uint32_t i = 0; i < s->swapchain.image_count; i++) {
         VkImageViewCreateInfo iv = {
@@ -322,13 +346,17 @@ static bool create_swapchain_image_views(VulkanState* s) {
             .image = s->swapchain.images[i],
             .viewType = VK_IMAGE_VIEW_TYPE_2D,
             .format = s->swapchain.format,
-            .subresourceRange = {.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT, .levelCount = 1, .layerCount = 1}
+            .subresourceRange = {
+                                 .aspectMask = VK_IMAGE_ASPECT_COLOR_BIT, .levelCount = 1, .layerCount = 1}
         };
 
-        if (vkCreateImageView(s->context.device, &iv, NULL, &s->swapchain.image_views[i]) != VK_SUCCESS) {
+        if (vkCreateImageView(s->context.device, &iv, NULL, &s->swapchain.image_views[i]) !=
+            VK_SUCCESS) {
             CARDINAL_LOG_ERROR("[SWAPCHAIN] Failed to create image view %u", i);
-            for (uint32_t j = 0; j < i; j++) vkDestroyImageView(s->context.device, s->swapchain.image_views[j], NULL);
-            free(s->swapchain.image_views); s->swapchain.image_views = NULL;
+            for (uint32_t j = 0; j < i; j++)
+                vkDestroyImageView(s->context.device, s->swapchain.image_views[j], NULL);
+            free(s->swapchain.image_views);
+            s->swapchain.image_views = NULL;
             return false;
         }
     }
@@ -349,20 +377,25 @@ bool vk_create_swapchain(VulkanState* s) {
         return false;
     }
 
-    if (!wait_device_idle_for_swapchain(s)) return false;
+    if (!wait_device_idle_for_swapchain(s))
+        return false;
 
     VkSurfaceCapabilitiesKHR caps;
     VkSurfaceFormatKHR fmt;
     VkPresentModeKHR mode;
-    if (!get_surface_details(s, &caps, &fmt, &mode)) return false;
+    if (!get_surface_details(s, &caps, &fmt, &mode))
+        return false;
 
     VkExtent2D extent = select_swapchain_extent(s, &caps);
     if (extent.width == 0 || extent.height == 0) {
-        CARDINAL_LOG_WARN("[SWAPCHAIN] Invalid swapchain extent: %ux%u (minimized?), skipping creation", extent.width, extent.height);
+        CARDINAL_LOG_WARN(
+            "[SWAPCHAIN] Invalid swapchain extent: %ux%u (minimized?), skipping creation",
+            extent.width, extent.height);
         return false;
     }
 
-    if (!create_swapchain_object(s, &caps, fmt, mode, extent)) return false;
+    if (!create_swapchain_object(s, &caps, fmt, mode, extent))
+        return false;
 
     if (!retrieve_swapchain_images(s)) {
         vkDestroySwapchainKHR(s->context.device, s->swapchain.handle, NULL);
@@ -371,7 +404,8 @@ bool vk_create_swapchain(VulkanState* s) {
     }
 
     if (!create_swapchain_image_views(s)) {
-        free(s->swapchain.images); s->swapchain.images = NULL;
+        free(s->swapchain.images);
+        s->swapchain.images = NULL;
         vkDestroySwapchainKHR(s->context.device, s->swapchain.handle, NULL);
         s->swapchain.handle = VK_NULL_HANDLE;
         return false;
@@ -483,7 +517,7 @@ static bool handle_recreation_failure(VulkanState* s, SwapchainBackupState* old_
     // Restore basic state
     s->swapchain.extent = old_state->extent;
     s->swapchain.format = old_state->format;
-    
+
     // Notify application of recreation failure
     if (s->recovery.device_loss_callback) {
         s->recovery.device_loss_callback(s->recovery.callback_user_data);
@@ -498,13 +532,17 @@ static bool handle_recreation_failure(VulkanState* s, SwapchainBackupState* old_
 static void destroy_backup_resources(VulkanState* s, SwapchainBackupState* backup) {
     if (backup->image_views) {
         for (uint32_t i = 0; i < backup->image_count; i++) {
-            if (backup->image_views[i] != VK_NULL_HANDLE) vkDestroyImageView(s->context.device, backup->image_views[i], NULL);
+            if (backup->image_views[i] != VK_NULL_HANDLE)
+                vkDestroyImageView(s->context.device, backup->image_views[i], NULL);
         }
         free(backup->image_views);
     }
-    if (backup->images) free(backup->images);
-    if (backup->handle != VK_NULL_HANDLE) vkDestroySwapchainKHR(s->context.device, backup->handle, NULL);
-    if (backup->layout_initialized) free(backup->layout_initialized);
+    if (backup->images)
+        free(backup->images);
+    if (backup->handle != VK_NULL_HANDLE)
+        vkDestroySwapchainKHR(s->context.device, backup->handle, NULL);
+    if (backup->layout_initialized)
+        free(backup->layout_initialized);
 }
 
 /**
@@ -512,23 +550,33 @@ static void destroy_backup_resources(VulkanState* s, SwapchainBackupState* backu
  */
 static bool recreate_mesh_shader_pipeline_logic(VulkanState* s) {
     const char* base = getenv("CARDINAL_SHADERS_DIR");
-    if (!base || base[0] == '\0') base = "assets/shaders";
-    
+    if (!base || base[0] == '\0')
+        base = "assets/shaders";
+
     char mesh_path[512], task_path[512], frag_path[512];
     snprintf(mesh_path, sizeof(mesh_path), "%s/mesh.mesh.spv", base);
     snprintf(task_path, sizeof(task_path), "%s/task.task.spv", base);
     snprintf(frag_path, sizeof(frag_path), "%s/mesh.frag.spv", base);
 
-    MeshShaderPipelineConfig config = {
-        .mesh_shader_path = mesh_path, .task_shader_path = task_path, .fragment_shader_path = frag_path,
-        .topology = VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST, .polygon_mode = VK_POLYGON_MODE_FILL,
-        .cull_mode = VK_CULL_MODE_BACK_BIT, .front_face = VK_FRONT_FACE_COUNTER_CLOCKWISE,
-        .depth_test_enable = true, .depth_write_enable = true, .depth_compare_op = VK_COMPARE_OP_LESS,
-        .blend_enable = false, .src_color_blend_factor = VK_BLEND_FACTOR_ONE, .dst_color_blend_factor = VK_BLEND_FACTOR_ZERO,
-        .color_blend_op = VK_BLEND_OP_ADD, .max_vertices_per_meshlet = 64, .max_primitives_per_meshlet = 126
-    };
+    MeshShaderPipelineConfig config = {.mesh_shader_path = mesh_path,
+                                       .task_shader_path = task_path,
+                                       .fragment_shader_path = frag_path,
+                                       .topology = VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST,
+                                       .polygon_mode = VK_POLYGON_MODE_FILL,
+                                       .cull_mode = VK_CULL_MODE_BACK_BIT,
+                                       .front_face = VK_FRONT_FACE_COUNTER_CLOCKWISE,
+                                       .depth_test_enable = true,
+                                       .depth_write_enable = true,
+                                       .depth_compare_op = VK_COMPARE_OP_LESS,
+                                       .blend_enable = false,
+                                       .src_color_blend_factor = VK_BLEND_FACTOR_ONE,
+                                       .dst_color_blend_factor = VK_BLEND_FACTOR_ZERO,
+                                       .color_blend_op = VK_BLEND_OP_ADD,
+                                       .max_vertices_per_meshlet = 64,
+                                       .max_primitives_per_meshlet = 126};
 
-    if (!vk_mesh_shader_create_pipeline(s, &config, s->swapchain.format, s->swapchain.depth_format, &s->pipelines.mesh_shader_pipeline)) {
+    if (!vk_mesh_shader_create_pipeline(s, &config, s->swapchain.format, s->swapchain.depth_format,
+                                        &s->pipelines.mesh_shader_pipeline)) {
         CARDINAL_LOG_ERROR("[SWAPCHAIN] Failed to recreate mesh shader pipeline");
         return false;
     }
@@ -600,22 +648,27 @@ bool vk_recreate_swapchain(VulkanState* s) {
     destroy_backup_resources(s, &backup);
 
     // Recreate swapchain
-    if (!vk_create_swapchain(s)) return handle_recreation_failure(s, &backup);
+    if (!vk_create_swapchain(s))
+        return handle_recreation_failure(s, &backup);
 
     // Recreate per-image initialization tracking for new swapchain image count
-    if (!vk_recreate_images_in_flight(s)) return handle_recreation_failure(s, &backup);
+    if (!vk_recreate_images_in_flight(s))
+        return handle_recreation_failure(s, &backup);
 
     // Recreate pipeline with new dimensions
-    if (!vk_create_pipeline(s)) return handle_recreation_failure(s, &backup);
-    
+    if (!vk_create_pipeline(s))
+        return handle_recreation_failure(s, &backup);
+
     s->swapchain.depth_layout_initialized = false;
 
     // Recreate simple pipelines (UV and wireframe)
-    if (!vk_create_simple_pipelines(s)) return handle_recreation_failure(s, &backup);
+    if (!vk_create_simple_pipelines(s))
+        return handle_recreation_failure(s, &backup);
 
     // Recreate mesh shader pipeline if it was previously enabled
     if (s->pipelines.use_mesh_shader_pipeline && s->context.supports_mesh_shader) {
-        if (!recreate_mesh_shader_pipeline_logic(s)) return handle_recreation_failure(s, &backup);
+        if (!recreate_mesh_shader_pipeline_logic(s))
+            return handle_recreation_failure(s, &backup);
     }
 
     // Reset failure counter on successful recreation
