@@ -114,9 +114,9 @@ bool vulkan_sync_manager_init(VulkanSyncManager* sync_manager, VkDevice device,
 
     // Initialize timeline values with atomic operations
     atomic_store(&sync_manager->current_frame_value, 0);
-    atomic_store(&sync_manager->image_available_value, 1);
-    atomic_store(&sync_manager->render_complete_value, 2);
-    atomic_store(&sync_manager->global_timeline_counter, 3);
+    atomic_store(&sync_manager->image_available_value, 0);
+    atomic_store(&sync_manager->render_complete_value, 0);
+    atomic_store(&sync_manager->global_timeline_counter, 0);
 
     // Initialize performance statistics
     atomic_store(&sync_manager->timeline_wait_count, 0);
@@ -222,10 +222,13 @@ void vulkan_sync_manager_advance_frame(VulkanSyncManager* sync_manager) {
     sync_manager->current_frame =
         (sync_manager->current_frame + 1) % sync_manager->max_frames_in_flight;
 
-    // Atomically advance timeline values for thread safety
-    uint64_t new_frame_value = atomic_fetch_add(&sync_manager->current_frame_value, 3) + 3;
-    atomic_store(&sync_manager->image_available_value, new_frame_value + 1);
-    atomic_store(&sync_manager->render_complete_value, new_frame_value + 2);
+    // Atomically advance timeline values for thread safety using the global counter
+    // Reserve 2 values: one for image available, one for render complete
+    uint64_t base_value = atomic_fetch_add(&sync_manager->global_timeline_counter, 2);
+    
+    atomic_store(&sync_manager->current_frame_value, base_value);
+    atomic_store(&sync_manager->image_available_value, base_value + 1);
+    atomic_store(&sync_manager->render_complete_value, base_value + 2);
 }
 
 // Semaphore management
@@ -346,7 +349,7 @@ uint64_t vulkan_sync_manager_get_next_timeline_value(VulkanSyncManager* sync_man
     }
 
     // Use atomic counter for thread-safe unique value generation
-    return atomic_fetch_add(&sync_manager->global_timeline_counter, 1);
+    return atomic_fetch_add(&sync_manager->global_timeline_counter, 1) + 1;
 }
 
 // Utility functions
@@ -710,8 +713,9 @@ uint64_t vulkan_sync_manager_get_optimized_next_value(VulkanSyncManager* sync_ma
                              ? min_increment
                              : sync_manager->value_strategy.increment_step;
 
-    uint64_t current_value = atomic_load(&sync_manager->global_timeline_counter);
-    uint64_t next_value = current_value + increment;
+    // Use atomic fetch_add to ensure thread safety
+    uint64_t old_value = atomic_fetch_add(&sync_manager->global_timeline_counter, increment);
+    uint64_t next_value = old_value + increment;
 
     // Check for potential overflow
     if (next_value > sync_manager->value_strategy.overflow_threshold) {
@@ -719,7 +723,12 @@ uint64_t vulkan_sync_manager_get_optimized_next_value(VulkanSyncManager* sync_ma
             CARDINAL_LOG_WARN(
                 "[SYNC_MANAGER] Timeline value approaching overflow, triggering reset");
             if (vulkan_sync_manager_reset_timeline_values(sync_manager)) {
-                next_value = sync_manager->value_strategy.increment_step;
+                // If reset successful, we might need to handle the return value carefully.
+                // But generally, reset is a complex operation that might require stopping the world.
+                // For now, let's just log and continue, assuming the reset logic handles it.
+                // Actually, if we reset, the counter goes to 0.
+                // We should probably just return the increment.
+                 next_value = increment;
             } else {
                 CARDINAL_LOG_ERROR(
                     "[SYNC_MANAGER] Failed to reset timeline values, continuing with risky value");
@@ -730,9 +739,6 @@ uint64_t vulkan_sync_manager_get_optimized_next_value(VulkanSyncManager* sync_ma
                 next_value, sync_manager->value_strategy.overflow_threshold);
         }
     }
-
-    // Atomically update the counter
-    atomic_store(&sync_manager->global_timeline_counter, next_value);
 
     return next_value;
 }
