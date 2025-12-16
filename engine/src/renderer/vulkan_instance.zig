@@ -827,7 +827,11 @@ pub export fn vk_create_surface(s: ?*c.VulkanState, window: ?*c.CardinalWindow) 
     sci.hinstance = c.GetModuleHandleA(null);
     const native_handle = c.cardinal_window_get_native_handle(window);
     if (native_handle == null) return false;
-    sci.hwnd = @ptrFromInt(@intFromPtr(native_handle));
+    
+    // Hack: HWND might be an odd value (not aligned), but Zig's pointer types expect alignment.
+    // We write the handle value directly into the struct memory to bypass alignment checks.
+    const hwnd_ptr = @as(*usize, @ptrCast(&sci.hwnd));
+    hwnd_ptr.* = @intFromPtr(native_handle);
 
     const result = c.vkCreateWin32SurfaceKHR(vs.context.instance, &sci, null, &vs.context.surface);
     log.cardinal_log_info("[SURFACE] Surface create result: {d}", .{result});

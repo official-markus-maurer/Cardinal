@@ -30,7 +30,9 @@ pub const vulkan_swapchain = @import("renderer/vulkan_swapchain.zig");
 pub const vulkan_mesh_shader = @import("renderer/vulkan_mesh_shader.zig");
 pub const vulkan_pbr = @import("renderer/vulkan_pbr.zig");
 pub const vulkan_descriptor_indexing = @import("renderer/vulkan_descriptor_indexing.zig");
+pub const vulkan_descriptor_buffer_utils = @import("renderer/util/vulkan_descriptor_buffer_utils.zig");
 pub const vulkan_descriptor_utils = @import("renderer/util/vulkan_descriptor_utils.zig");
+pub const vulkan_shader_utils = @import("renderer/util/vulkan_shader_utils.zig");
 pub const vulkan_instance = @import("renderer/vulkan_instance.zig");
 pub const vulkan_compute = @import("renderer/vulkan_compute.zig");
 pub const vulkan_pipeline = @import("renderer/vulkan_pipeline.zig");
@@ -40,6 +42,9 @@ pub const vulkan_maintenance8_sync = @import("renderer/vulkan_maintenance8_sync.
 pub const vulkan_buffer_utils = @import("renderer/util/vulkan_buffer_utils.zig");
 pub const vulkan_texture_utils = @import("renderer/util/vulkan_texture_utils.zig");
 pub const vulkan_material_utils = @import("renderer/util/vulkan_material_utils.zig");
+pub const vulkan_renderer = @import("renderer/vulkan_renderer.zig");
+pub const vulkan_renderer_frame = @import("renderer/vulkan_renderer_frame.zig");
+pub const vulkan_pipeline_manager = @import("renderer/vulkan_pipeline_manager.zig");
 
 comptime {
     _ = log;
@@ -74,7 +79,9 @@ comptime {
     _ = vulkan_mesh_shader;
     _ = vulkan_pbr;
     _ = vulkan_descriptor_indexing;
+    _ = vulkan_descriptor_buffer_utils;
     _ = vulkan_descriptor_utils;
+    _ = vulkan_shader_utils;
     _ = vulkan_instance;
     _ = vulkan_compute;
     _ = vulkan_pipeline;
@@ -84,6 +91,9 @@ comptime {
     _ = vulkan_buffer_utils;
     _ = vulkan_texture_utils;
     _ = vulkan_material_utils;
+    _ = vulkan_renderer;
+    _ = vulkan_renderer_frame;
+    _ = vulkan_pipeline_manager;
 }
 
 test {

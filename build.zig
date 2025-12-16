@@ -131,13 +131,9 @@ pub fn build(b: *std.Build) void {
     engine.root_module.addCMacro("_CRT_SECURE_NO_WARNINGS", "");
 
     const engine_sources = &[_][]const u8{
-        "engine/src/renderer/vulkan_renderer.c",
-        "engine/src/renderer/vulkan_renderer_frame.c",
-        "engine/src/renderer/vulkan_pipeline_manager.c",
-        "engine/src/renderer/util/vulkan_descriptor_buffer_utils.c",
-        "engine/src/renderer/util/vulkan_shader_utils.c",
         "engine/src/assets/stb_impl.c",
         "engine/src/assets/cgltf_impl.c",
+        "engine/src/core/log_adapter.c",
     };
 
     engine.addCSourceFiles(.{
@@ -161,12 +157,8 @@ pub fn build(b: *std.Build) void {
         .root_module = b.createModule(.{
             .target = target,
             .optimize = optimize,
+            .root_source_file = b.path("client/src/main.zig"),
         }),
-    });
-    
-    client.addCSourceFiles(.{
-        .files = &.{"client/src/main.c"},
-        .flags = &.{"-std=c17"},
     });
     
     client.addIncludePath(b.path("engine/include"));
@@ -189,12 +181,8 @@ pub fn build(b: *std.Build) void {
         .root_module = b.createModule(.{
             .target = target,
             .optimize = optimize,
+            .root_source_file = b.path("editor/src/main.zig"),
         }),
-    });
-    
-    editor.addCSourceFiles(.{
-        .files = &.{"editor/src/main.c"},
-        .flags = &.{"-std=c17"},
     });
     
     editor.addCSourceFiles(.{
