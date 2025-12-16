@@ -133,7 +133,6 @@ pub fn build(b: *std.Build) void {
     const engine_sources = &[_][]const u8{
         "engine/src/assets/stb_impl.c",
         "engine/src/assets/cgltf_impl.c",
-        "engine/src/core/log_adapter.c",
     };
 
     engine.addCSourceFiles(.{
@@ -162,14 +161,23 @@ pub fn build(b: *std.Build) void {
     });
     
     client.addIncludePath(b.path("engine/include"));
+    client.addIncludePath(b.path("libs/cgltf"));
+    client.addIncludePath(b.path("libs/stb"));
 
     client.linkLibCpp();
-    client.linkLibrary(engine);
+    // client.linkLibrary(engine); // Use module import instead to avoid duplicate symbols
     client.linkLibrary(glfw);
     if (vulkan_sdk) |sdk| {
         client.addLibraryPath(.{ .cwd_relative = b.fmt("{s}/Lib", .{sdk}) });
         client.addIncludePath(.{ .cwd_relative = b.fmt("{s}/Include", .{sdk}) });
     }
+    client.linkSystemLibrary("vulkan-1"); // Link Vulkan directly
+
+    client.root_module.addImport("cardinal_engine", engine.root_module);
+    // client.addCSourceFiles(.{
+    //     .files = engine_sources,
+    //     .flags = &.{"-std=c17"},
+    // });
     
     b.installArtifact(client);
 
@@ -185,6 +193,8 @@ pub fn build(b: *std.Build) void {
         }),
     });
     
+    editor.root_module.addImport("cardinal_engine", engine.root_module);
+    
     editor.addCSourceFiles(.{
         .files = &.{"editor/src/editor_layer.cpp"},
         .flags = &.{"-std=c++20"},
@@ -192,6 +202,8 @@ pub fn build(b: *std.Build) void {
 
     editor.addIncludePath(b.path("editor/include"));
     editor.addIncludePath(b.path("engine/include"));
+    editor.addIncludePath(b.path("libs/cgltf"));
+    editor.addIncludePath(b.path("libs/stb"));
     editor.addIncludePath(b.path("libs/imgui"));
     editor.addIncludePath(b.path("libs/imgui/backends"));
     editor.addIncludePath(b.path("libs/glfw/include"));
@@ -201,13 +213,19 @@ pub fn build(b: *std.Build) void {
     editor.root_module.addCMacro("IMGUI_ENABLE_DOCKING", "");
     
     editor.linkLibCpp();
-    editor.linkLibrary(engine);
+    // editor.linkLibrary(engine); // Use module import instead to avoid duplicate symbols
     editor.linkLibrary(imgui);
     editor.linkLibrary(glfw);
     if (vulkan_sdk) |sdk| {
         editor.addLibraryPath(.{ .cwd_relative = b.fmt("{s}/Lib", .{sdk}) });
         editor.addIncludePath(.{ .cwd_relative = b.fmt("{s}/Include", .{sdk}) });
     }
+    editor.linkSystemLibrary("vulkan-1"); // Link Vulkan directly
+
+    // editor.addCSourceFiles(.{
+    //     .files = engine_sources,
+    //     .flags = &.{"-std=c17"},
+    // });
     
     b.installArtifact(editor);
 

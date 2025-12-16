@@ -50,7 +50,7 @@ export fn cardinal_log_init() void {
     cardinal_log_init_with_level(min_log_level);
 }
 
-export fn cardinal_log_init_with_level(level: CardinalLogLevel) void {
+pub export fn cardinal_log_init_with_level(level: CardinalLogLevel) void {
     min_log_level = level;
 
     if (log_file == null) {
@@ -68,7 +68,7 @@ export fn cardinal_log_init_with_level(level: CardinalLogLevel) void {
     }
 }
 
-export fn cardinal_log_shutdown() void {
+pub export fn cardinal_log_shutdown() void {
     _ = printf("==== Cardinal Log End ====\n");
     if (log_file) |f| {
         _ = fprintf(f, "==== Cardinal Log End ====\n");
@@ -77,15 +77,15 @@ export fn cardinal_log_shutdown() void {
     }
 }
 
-export fn cardinal_log_set_level(level: CardinalLogLevel) void {
+pub export fn cardinal_log_set_level(level: CardinalLogLevel) void {
     min_log_level = level;
 }
 
-export fn cardinal_log_get_level() CardinalLogLevel {
+pub export fn cardinal_log_get_level() CardinalLogLevel {
     return min_log_level;
 }
 
-export fn cardinal_log_parse_level(level_str_input: ?[*:0]const u8) CardinalLogLevel {
+pub export fn cardinal_log_parse_level(level_str_input: ?[*:0]const u8) CardinalLogLevel {
     if (level_str_input == null) return .INFO;
     const s = std.mem.span(level_str_input.?);
 

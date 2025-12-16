@@ -1,4 +1,5 @@
 const std = @import("std");
+const log = @import("cardinal_engine").log;
 
 const c = @cImport({
     @cInclude("cardinal/assets/material_loader.h");
@@ -6,28 +7,12 @@ const c = @cImport({
     @cInclude("cardinal/assets/texture_loader.h");
     @cInclude("cardinal/cardinal.h");
     @cInclude("cardinal/core/async_loader.h");
-    @cInclude("cardinal/core/log.h");
+    // @cInclude("cardinal/core/log.h");
     @cInclude("cardinal/core/memory.h");
     @cInclude("cardinal/core/ref_counting.h");
     @cInclude("stdio.h");
     @cInclude("string.h");
 });
-
-extern fn cardinal_log_from_zig(level: c.CardinalLogLevel, file: [*]const u8, line: c_int, msg: [*]const u8) void;
-
-fn log_info(comptime fmt: []const u8, args: anytype) void {
-    log_output(c.CARDINAL_LOG_LEVEL_INFO, fmt, args);
-}
-
-fn log_error(comptime fmt: []const u8, args: anytype) void {
-    log_output(c.CARDINAL_LOG_LEVEL_ERROR, fmt, args);
-}
-
-fn log_output(level: c.CardinalLogLevel, comptime fmt: []const u8, args: anytype) void {
-    var buf: [4096]u8 = undefined;
-    const msg = std.fmt.bufPrintZ(&buf, fmt, args) catch return;
-    cardinal_log_from_zig(level, "main.zig", @as(c_int, @intCast(@src().line)), msg.ptr);
-}
 
 fn print_usage(program_name: []const u8) void {
     std.debug.print("Usage: {s} [options]\n", .{program_name});
@@ -41,7 +26,7 @@ pub fn main() !u8 {
     defer _ = gpa.deinit();
     const allocator = gpa.allocator();
 
-    var log_level: c.CardinalLogLevel = c.CARDINAL_LOG_LEVEL_WARN;
+    var log_level: log.CardinalLogLevel = .WARN;
 
     const args = try std.process.argsAlloc(allocator);
     defer std.process.argsFree(allocator, args);
@@ -50,7 +35,7 @@ pub fn main() !u8 {
     while (i < args.len) : (i += 1) {
         const arg = args[i];
         if (std.mem.eql(u8, arg, "--log-level") and i + 1 < args.len) {
-            log_level = c.cardinal_log_parse_level(args[i + 1].ptr);
+            log_level = log.cardinal_log_parse_level(args[i + 1].ptr);
             i += 1;
         } else if (std.mem.eql(u8, arg, "--help")) {
             print_usage(args[0]);
@@ -58,7 +43,7 @@ pub fn main() !u8 {
         }
     }
 
-    c.cardinal_log_init_with_level(log_level);
+    log.cardinal_log_init_with_level(log_level);
 
     // Initialize memory system
     c.cardinal_memory_init(1024 * 1024 * 64); // 64MB
@@ -71,9 +56,9 @@ pub fn main() !u8 {
     };
 
     if (!c.cardinal_async_loader_init(&async_config)) {
-        log_error("Failed to initialize async loader", .{});
+        log.cardinal_log_error("Failed to initialize async loader", .{});
         c.cardinal_memory_shutdown();
-        c.cardinal_log_shutdown();
+        log.cardinal_log_shutdown();
         return 255;
     }
 
@@ -82,7 +67,7 @@ pub fn main() !u8 {
     _ = c.mesh_cache_initialize(1000);
     _ = c.material_cache_initialize(1000);
 
-    log_info("Multi-threaded engine initialized successfully", .{});
+    log.cardinal_log_info("Multi-threaded engine initialized successfully", .{});
 
     var config = c.CardinalWindowConfig{
         .title = "Cardinal Client",
@@ -92,14 +77,14 @@ pub fn main() !u8 {
     };
     const window = c.cardinal_window_create(&config);
     if (window == null) {
-        c.cardinal_log_shutdown();
+        log.cardinal_log_shutdown();
         return 255;
     }
 
     var renderer: c.CardinalRenderer = undefined;
     if (!c.cardinal_renderer_create(&renderer, window)) {
         c.cardinal_window_destroy(window);
-        c.cardinal_log_shutdown();
+        log.cardinal_log_shutdown();
         return 255;
     }
 
@@ -112,7 +97,7 @@ pub fn main() !u8 {
     c.cardinal_renderer_destroy(&renderer);
     c.cardinal_window_destroy(window);
 
-    log_info("Shutting down multi-threaded engine systems", .{});
+    log.cardinal_log_info("Shutting down multi-threaded engine systems", .{});
 
     c.texture_cache_shutdown_system();
     c.mesh_cache_shutdown_system();
@@ -121,7 +106,7 @@ pub fn main() !u8 {
     c.cardinal_async_loader_shutdown();
     c.cardinal_ref_counting_shutdown();
     c.cardinal_memory_shutdown();
-    c.cardinal_log_shutdown();
+    log.cardinal_log_shutdown();
 
     return 0;
 }
