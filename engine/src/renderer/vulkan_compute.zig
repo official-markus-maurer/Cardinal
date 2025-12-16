@@ -1,17 +1,9 @@
 const std = @import("std");
 const log = @import("../core/log.zig");
+const types = @import("vulkan_types.zig");
+const c = @import("vulkan_c.zig").c;
 
-const c = @cImport({
-    @cDefine("CARDINAL_ZIG_BUILD", "1");
-    @cInclude("stdlib.h");
-    @cInclude("string.h");
-    @cInclude("vulkan/vulkan.h");
-    @cInclude("vulkan_state.h");
-    @cInclude("cardinal/renderer/vulkan_compute.h");
-    @cInclude("cardinal/renderer/util/vulkan_shader_utils.h");
-});
-
-pub export fn vk_compute_init(vulkan_state: ?*c.VulkanState) callconv(.c) bool {
+pub export fn vk_compute_init(vulkan_state: ?*types.VulkanState) callconv(.c) bool {
     if (vulkan_state == null) {
         log.cardinal_log_error("[COMPUTE] Invalid vulkan state for compute initialization", .{});
         return false;
@@ -21,7 +13,7 @@ pub export fn vk_compute_init(vulkan_state: ?*c.VulkanState) callconv(.c) bool {
     return true;
 }
 
-pub export fn vk_compute_cleanup(vulkan_state: ?*c.VulkanState) callconv(.c) void {
+pub export fn vk_compute_cleanup(vulkan_state: ?*types.VulkanState) callconv(.c) void {
     if (vulkan_state == null) {
         return;
     }
@@ -29,7 +21,7 @@ pub export fn vk_compute_cleanup(vulkan_state: ?*c.VulkanState) callconv(.c) voi
     log.cardinal_log_info("[COMPUTE] Compute shader support cleaned up", .{});
 }
 
-pub export fn vk_compute_validate_config(vulkan_state: ?*c.VulkanState, config: ?*const c.ComputePipelineConfig) callconv(.c) bool {
+pub export fn vk_compute_validate_config(vulkan_state: ?*types.VulkanState, config: ?*const c.ComputePipelineConfig) callconv(.c) bool {
     if (vulkan_state == null or config == null) {
         log.cardinal_log_error("[COMPUTE] Invalid parameters for config validation", .{});
         return false;
@@ -69,7 +61,7 @@ pub export fn vk_compute_validate_config(vulkan_state: ?*c.VulkanState, config: 
 }
 
 pub export fn vk_compute_create_descriptor_layout(
-    vulkan_state: ?*c.VulkanState,
+    vulkan_state: ?*types.VulkanState,
     bindings: ?*const c.VkDescriptorSetLayoutBinding,
     binding_count: u32,
     layout: ?*c.VkDescriptorSetLayout
@@ -95,7 +87,7 @@ pub export fn vk_compute_create_descriptor_layout(
 }
 
 pub export fn vk_compute_create_pipeline(
-    vulkan_state: ?*c.VulkanState,
+    vulkan_state: ?*types.VulkanState,
     config: ?*const c.ComputePipelineConfig,
     pipeline: ?*c.ComputePipeline
 ) callconv(.c) bool {
@@ -118,7 +110,7 @@ pub export fn vk_compute_create_pipeline(
     // Load compute shader
     var compute_shader: c.VkShaderModule = null;
     if (!c.vk_shader_create_module(vs.context.device, cfg.compute_shader_path, &compute_shader)) {
-        log.cardinal_log_error("[COMPUTE] Failed to load compute shader: {s}", .{cfg.compute_shader_path});
+        log.cardinal_log_error("[COMPUTE] Failed to load compute shader: {s}", .{if (cfg.compute_shader_path != null) std.mem.span(cfg.compute_shader_path) else "null"});
         return false;
     }
 
@@ -197,7 +189,7 @@ pub export fn vk_compute_create_pipeline(
     return true;
 }
 
-pub export fn vk_compute_destroy_pipeline(vulkan_state: ?*c.VulkanState, pipeline: ?*c.ComputePipeline) callconv(.c) void {
+pub export fn vk_compute_destroy_pipeline(vulkan_state: ?*types.VulkanState, pipeline: ?*c.ComputePipeline) callconv(.c) void {
     if (vulkan_state == null or pipeline == null or !pipeline.?.initialized) {
         return;
     }

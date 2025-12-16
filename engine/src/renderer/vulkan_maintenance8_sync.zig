@@ -1,22 +1,9 @@
 const std = @import("std");
 const builtin = @import("builtin");
 const log = @import("../core/log.zig");
+const types = @import("vulkan_types.zig");
 
-const c = @cImport({
-    @cDefine("CARDINAL_ZIG_BUILD", "1");
-    @cInclude("stdlib.h");
-    @cInclude("string.h");
-    @cInclude("vulkan/vulkan.h");
-    @cInclude("vulkan_state.h");
-    @cInclude("cardinal/renderer/vulkan_barrier_validation.h");
-    @cInclude("cardinal/renderer/vulkan_sync_manager.h");
-    if (builtin.os.tag == .windows) {
-        @cInclude("windows.h");
-    } else {
-        @cInclude("sys/syscall.h");
-        @cInclude("unistd.h");
-    }
-});
+const c = @import("vulkan_c.zig").c;
 
 fn get_current_thread_id() u32 {
     if (builtin.os.tag == .windows) {
@@ -27,7 +14,7 @@ fn get_current_thread_id() u32 {
 }
 
 pub export fn vk_create_enhanced_image_barrier(
-    transfer_info: ?*const c.VkQueueFamilyOwnershipTransferInfo,
+    transfer_info: ?*const types.VkQueueFamilyOwnershipTransferInfo,
     image: c.VkImage,
     old_layout: c.VkImageLayout,
     new_layout: c.VkImageLayout,
@@ -74,7 +61,7 @@ pub export fn vk_create_enhanced_image_barrier(
 }
 
 pub export fn vk_create_enhanced_buffer_barrier(
-    transfer_info: ?*const c.VkQueueFamilyOwnershipTransferInfo,
+    transfer_info: ?*const types.VkQueueFamilyOwnershipTransferInfo,
     buffer: c.VkBuffer,
     offset: c.VkDeviceSize,
     size: c.VkDeviceSize,
@@ -118,7 +105,7 @@ pub export fn vk_create_enhanced_buffer_barrier(
 
 pub export fn vk_record_enhanced_ownership_transfer(
     cmd: c.VkCommandBuffer,
-    transfer_info: ?*const c.VkQueueFamilyOwnershipTransferInfo,
+    transfer_info: ?*const types.VkQueueFamilyOwnershipTransferInfo,
     image_barrier_count: u32,
     image_barriers: ?[*]const c.VkImageMemoryBarrier2,
     buffer_barrier_count: u32,
@@ -185,14 +172,14 @@ pub export fn vk_create_queue_family_transfer_info(
     src_access_mask: c.VkAccessFlags2,
     dst_access_mask: c.VkAccessFlags2,
     supports_maintenance8: bool,
-    out_transfer_info: ?*c.VkQueueFamilyOwnershipTransferInfo
+    out_transfer_info: ?*types.VkQueueFamilyOwnershipTransferInfo
 ) callconv(.c) bool {
     if (out_transfer_info == null) {
         log.cardinal_log_error("[MAINTENANCE8_SYNC] Invalid output parameter for transfer info creation", .{});
         return false;
     }
 
-    out_transfer_info.?.* = std.mem.zeroes(c.VkQueueFamilyOwnershipTransferInfo);
+    out_transfer_info.?.* = std.mem.zeroes(types.VkQueueFamilyOwnershipTransferInfo);
     out_transfer_info.?.src_queue_family = src_queue_family;
     out_transfer_info.?.dst_queue_family = dst_queue_family;
     out_transfer_info.?.src_stage_mask = src_stage_mask;

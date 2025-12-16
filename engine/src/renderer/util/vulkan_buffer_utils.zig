@@ -1,14 +1,9 @@
 const std = @import("std");
 const log = @import("../../core/log.zig");
+const buffer_mgr = @import("../vulkan_buffer_manager.zig");
+const types = @import("../vulkan_types.zig");
 
-const c = @cImport({
-    @cDefine("CARDINAL_ZIG_BUILD", "1");
-    @cInclude("stdlib.h");
-    @cInclude("vulkan/vulkan.h");
-    @cInclude("vulkan_state.h");
-    @cInclude("vulkan_buffer_manager.h");
-    @cInclude("cardinal/renderer/util/vulkan_buffer_utils.h");
-});
+const c = @import("../vulkan_c.zig").c;
 
 pub export fn vk_buffer_find_memory_type(physicalDevice: c.VkPhysicalDevice, typeFilter: u32, properties: c.VkMemoryPropertyFlags) callconv(.c) u32 {
     var memProperties: c.VkPhysicalDeviceMemoryProperties = undefined;
@@ -44,21 +39,21 @@ pub export fn vk_buffer_find_memory_type(physicalDevice: c.VkPhysicalDevice, typ
     return c.UINT32_MAX;
 }
 
-pub export fn vk_buffer_create_with_staging(allocator: ?*c.VulkanAllocator, device: c.VkDevice,
+pub export fn vk_buffer_create_with_staging(allocator: ?*types.VulkanAllocator, device: c.VkDevice,
                                             commandPool: c.VkCommandPool, graphicsQueue: c.VkQueue,
                                             data: ?*const anyopaque, size: c.VkDeviceSize,
                                             usage: c.VkBufferUsageFlags, buffer: ?*c.VkBuffer,
-                                            bufferMemory: ?*c.VkDeviceMemory, vulkan_state: ?*c.VulkanState) callconv(.c) bool {
+                                            bufferMemory: ?*c.VkDeviceMemory, vulkan_state: ?*types.VulkanState) callconv(.c) bool {
     if (data == null or size == 0 or allocator == null or buffer == null or bufferMemory == null) {
         log.cardinal_log_error("Invalid parameters for staging buffer creation", .{});
         return false;
     }
 
-    var destBufferObj = std.mem.zeroes(c.VulkanBuffer);
+    var destBufferObj = std.mem.zeroes(buffer_mgr.VulkanBuffer);
 
     // Use the core manager function
-    if (!c.vk_buffer_create_device_local(&destBufferObj, device, allocator, commandPool,
-                                       graphicsQueue, data, size, usage, vulkan_state)) {
+    if (!buffer_mgr.vk_buffer_create_device_local(&destBufferObj, device, @ptrCast(allocator), commandPool,
+                                       graphicsQueue, data, size, usage, @ptrCast(vulkan_state))) {
         log.cardinal_log_error("Failed to create device local buffer with staging", .{});
         return false;
     }

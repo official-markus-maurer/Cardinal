@@ -1,21 +1,15 @@
 const std = @import("std");
 const log = @import("../../core/log.zig");
+const types = @import("../vulkan_types.zig");
+const vk_allocator = @import("../vulkan_allocator.zig");
 
-const c = @cImport({
-    @cDefine("CARDINAL_ZIG_BUILD", "1");
-    @cInclude("stdlib.h");
-    @cInclude("string.h");
-    @cInclude("stdio.h");
-    @cInclude("vulkan/vulkan.h");
-    @cInclude("vulkan_state.h");
-    @cInclude("cardinal/renderer/util/vulkan_descriptor_buffer_utils.h");
-});
+const c = @import("../vulkan_c.zig").c;
 
-fn get_state(s: *c.VulkanState) *c.VulkanState {
-    return @ptrCast(s);
+fn get_state(s: *types.VulkanState) *types.VulkanState {
+    return s;
 }
 
-export fn vk_descriptor_buffer_create_manager(create_info: ?*const c.DescriptorBufferCreateInfo, manager: ?*c.DescriptorBufferManager, vulkan_state: ?*c.VulkanState) callconv(.c) bool {
+export fn vk_descriptor_buffer_create_manager(create_info: ?*const c.DescriptorBufferCreateInfo, manager: ?*c.DescriptorBufferManager, vulkan_state: ?*types.VulkanState) callconv(.c) bool {
     if (create_info == null or manager == null or vulkan_state == null) {
         log.cardinal_log_error("Invalid parameters for descriptor buffer manager creation", .{});
         return false;
@@ -61,7 +55,7 @@ export fn vk_descriptor_buffer_create_manager(create_info: ?*const c.DescriptorB
     buffer_info.sharingMode = c.VK_SHARING_MODE_EXCLUSIVE;
     
     // Use project's VulkanAllocator instead of VMA
-    if (!c.vk_allocator_allocate_buffer(m.allocator, &buffer_info, &m.buffer_alloc.buffer, &m.buffer_alloc.memory, c.VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | c.VK_MEMORY_PROPERTY_HOST_COHERENT_BIT)) {
+    if (!vk_allocator.vk_allocator_allocate_buffer(@ptrCast(@alignCast(m.allocator)), &buffer_info, &m.buffer_alloc.buffer, &m.buffer_alloc.memory, c.VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | c.VK_MEMORY_PROPERTY_HOST_COHERENT_BIT)) {
         log.cardinal_log_error("Failed to create descriptor buffer", .{});
         return false;
     }
@@ -70,7 +64,7 @@ export fn vk_descriptor_buffer_create_manager(create_info: ?*const c.DescriptorB
     const result = c.vkMapMemory(m.device, m.buffer_alloc.memory, 0, total_size, 0, &m.buffer_alloc.mapped_data);
     if (result != c.VK_SUCCESS) {
         log.cardinal_log_error("Failed to map descriptor buffer memory: {d}", .{result});
-        c.vk_allocator_free_buffer(m.allocator, m.buffer_alloc.buffer, m.buffer_alloc.memory);
+        vk_allocator.vk_allocator_free_buffer(@ptrCast(@alignCast(m.allocator)), m.buffer_alloc.buffer, m.buffer_alloc.memory);
         return false;
     }
     
@@ -84,7 +78,7 @@ export fn vk_descriptor_buffer_create_manager(create_info: ?*const c.DescriptorB
     if (m.binding_offsets == null) {
         log.cardinal_log_error("Failed to allocate memory for binding offsets", .{});
         c.vkUnmapMemory(m.device, m.buffer_alloc.memory);
-        c.vk_allocator_free_buffer(m.allocator, m.buffer_alloc.buffer, m.buffer_alloc.memory);
+        vk_allocator.vk_allocator_free_buffer(@ptrCast(@alignCast(m.allocator)), m.buffer_alloc.buffer, m.buffer_alloc.memory);
         return false;
     }
     
@@ -108,14 +102,14 @@ export fn vk_descriptor_buffer_destroy_manager(manager: ?*c.DescriptorBufferMana
         if (m.buffer_alloc.mapped_data != null) {
             c.vkUnmapMemory(m.device, m.buffer_alloc.memory);
         }
-        c.vk_allocator_free_buffer(m.allocator, m.buffer_alloc.buffer, m.buffer_alloc.memory);
+        vk_allocator.vk_allocator_free_buffer(@ptrCast(@alignCast(m.allocator)), m.buffer_alloc.buffer, m.buffer_alloc.memory);
     }
     
     c.free(m.binding_offsets);
     _ = c.memset(m, 0, @sizeOf(c.DescriptorBufferManager));
 }
 
-export fn vk_descriptor_buffer_get_address(manager: ?*const c.DescriptorBufferManager, set_index: u32, vulkan_state: ?*c.VulkanState) callconv(.c) c.VkDeviceAddress {
+export fn vk_descriptor_buffer_get_address(manager: ?*const c.DescriptorBufferManager, set_index: u32, vulkan_state: ?*types.VulkanState) callconv(.c) c.VkDeviceAddress {
     if (manager == null or vulkan_state == null) {
         return 0;
     }
@@ -133,7 +127,7 @@ export fn vk_descriptor_buffer_get_address(manager: ?*const c.DescriptorBufferMa
     return base_address + (aligned_layout_size * set_index);
 }
 
-export fn vk_descriptor_buffer_update_uniform_buffer(manager: ?*c.DescriptorBufferManager, set_index: u32, binding: u32, buffer: c.VkBuffer, offset: c.VkDeviceSize, range: c.VkDeviceSize, vulkan_state: ?*c.VulkanState) callconv(.c) bool {
+export fn vk_descriptor_buffer_update_uniform_buffer(manager: ?*c.DescriptorBufferManager, set_index: u32, binding: u32, buffer: c.VkBuffer, offset: c.VkDeviceSize, range: c.VkDeviceSize, vulkan_state: ?*types.VulkanState) callconv(.c) bool {
     if (manager == null or vulkan_state == null or binding >= manager.?.binding_count) {
         log.cardinal_log_error("Invalid parameters for uniform buffer update", .{});
         return false;
@@ -169,7 +163,7 @@ export fn vk_descriptor_buffer_update_uniform_buffer(manager: ?*c.DescriptorBuff
     return true;
 }
 
-export fn vk_descriptor_buffer_update_image_sampler(manager: ?*c.DescriptorBufferManager, set_index: u32, binding: u32, array_element: u32, image_view: c.VkImageView, vk_sampler: c.VkSampler, image_layout: c.VkImageLayout, vulkan_state: ?*c.VulkanState) callconv(.c) bool {
+export fn vk_descriptor_buffer_update_image_sampler(manager: ?*c.DescriptorBufferManager, set_index: u32, binding: u32, array_element: u32, image_view: c.VkImageView, vk_sampler: c.VkSampler, image_layout: c.VkImageLayout, vulkan_state: ?*types.VulkanState) callconv(.c) bool {
     if (manager == null or vulkan_state == null or binding >= manager.?.binding_count) {
         log.cardinal_log_error("Invalid parameters for image sampler update", .{});
         return false;
@@ -201,7 +195,7 @@ export fn vk_descriptor_buffer_update_image_sampler(manager: ?*c.DescriptorBuffe
     return true;
 }
 
-export fn vk_descriptor_buffer_bind(cmd_buffer: c.VkCommandBuffer, pipeline_bind_point: c.VkPipelineBindPoint, layout: c.VkPipelineLayout, first_set: u32, set_count: u32, buffers: ?[*]const c.VkBuffer, offsets: ?[*]const c.VkDeviceSize, vulkan_state: ?*c.VulkanState) callconv(.c) void {
+export fn vk_descriptor_buffer_bind(cmd_buffer: c.VkCommandBuffer, pipeline_bind_point: c.VkPipelineBindPoint, layout: c.VkPipelineLayout, first_set: u32, set_count: u32, buffers: ?[*]const c.VkBuffer, offsets: ?[*]const c.VkDeviceSize, vulkan_state: ?*types.VulkanState) callconv(.c) void {
     _ = pipeline_bind_point;
     _ = layout;
     _ = first_set;
@@ -239,7 +233,7 @@ export fn vk_descriptor_buffer_bind(cmd_buffer: c.VkCommandBuffer, pipeline_bind
     s.context.vkCmdBindDescriptorBuffersEXT.?(cmd_buffer, set_count, infos);
 }
 
-export fn vk_descriptor_buffer_set_offsets(cmd_buffer: c.VkCommandBuffer, pipeline_bind_point: c.VkPipelineBindPoint, layout: c.VkPipelineLayout, first_set: u32, set_count: u32, buffer_indices: ?[*]const u32, offsets: ?[*]const c.VkDeviceSize, vulkan_state: ?*c.VulkanState) callconv(.c) void {
+export fn vk_descriptor_buffer_set_offsets(cmd_buffer: c.VkCommandBuffer, pipeline_bind_point: c.VkPipelineBindPoint, layout: c.VkPipelineLayout, first_set: u32, set_count: u32, buffer_indices: ?[*]const u32, offsets: ?[*]const c.VkDeviceSize, vulkan_state: ?*types.VulkanState) callconv(.c) void {
     if (cmd_buffer == null or vulkan_state == null or !vulkan_state.?.context.supports_descriptor_buffer) {
         log.cardinal_log_error("Invalid parameters or descriptor buffer not supported", .{});
         return;

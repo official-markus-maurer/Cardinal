@@ -1,15 +1,8 @@
 const std = @import("std");
 const builtin = @import("builtin");
 const log = @import("../core/log.zig");
-
-const c = @cImport({
-    @cDefine("CARDINAL_ZIG_BUILD", "1");
-    @cInclude("stdlib.h");
-    @cInclude("string.h");
-    @cInclude("vulkan/vulkan.h");
-    @cInclude("vulkan_state.h");
-    @cInclude("cardinal/renderer/vulkan_descriptor_indexing.h");
-});
+const types = @import("vulkan_types.zig");
+const c = @import("vulkan_c.zig").c;
 
 // Helper function to create default sampler
 fn create_default_sampler(device: c.VkDevice, out_sampler: *c.VkSampler) bool {
@@ -65,7 +58,7 @@ fn create_bindless_descriptor_pool(device: c.VkDevice, max_textures: u32, out_po
     return true;
 }
 
-pub export fn vk_bindless_texture_pool_init(pool: ?*c.BindlessTexturePool, vulkan_state: ?*c.VulkanState, max_textures: u32) callconv(.c) bool {
+pub export fn vk_bindless_texture_pool_init(pool: ?*c.BindlessTexturePool, vulkan_state: ?*types.VulkanState, max_textures: u32) callconv(.c) bool {
     if (pool == null or vulkan_state == null) {
         log.cardinal_log_error("Invalid parameters for bindless texture pool initialization", .{});
         return false;
@@ -82,7 +75,8 @@ pub export fn vk_bindless_texture_pool_init(pool: ?*c.BindlessTexturePool, vulka
 
     p.device = state.context.device;
     p.physical_device = state.context.physical_device;
-    p.allocator = &state.allocator;
+    // Cast types.VulkanAllocator to c.VulkanAllocator (which is opaque in C header)
+    p.allocator = @as(?*c.VulkanAllocator, @ptrCast(&state.allocator));
     p.max_textures = max_textures;
 
     // Allocate texture array
@@ -518,7 +512,7 @@ pub export fn vk_bindless_texture_get(pool: ?*const c.BindlessTexturePool,
     return &pool.?.textures[texture_index];
 }
 
-pub export fn vk_descriptor_indexing_supported(vulkan_state: ?*const c.VulkanState) callconv(.c) bool {
+pub export fn vk_descriptor_indexing_supported(vulkan_state: ?*const types.VulkanState) callconv(.c) bool {
     return vulkan_state != null and vulkan_state.?.context.supports_descriptor_indexing;
 }
 

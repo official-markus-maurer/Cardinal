@@ -249,8 +249,9 @@ pub export fn vulkan_timeline_debug_log_event(debug_ctx: *c.VulkanTimelineDebugC
 
     if (debug_ctx.verbose_logging) {
         const name_slice = if (name != null) std.mem.span(name) else "<unnamed>";
+        const type_str = std.mem.span(vulkan_timeline_debug_event_type_to_string(type_enum));
         log.cardinal_log_debug("[TIMELINE_DEBUG] {s}: value={d}, result={d}, thread={d}, name={s}", 
-            .{vulkan_timeline_debug_event_type_to_string(type_enum), timeline_value, result, event.thread_id, name_slice});
+            .{type_str, timeline_value, result, event.thread_id, name_slice});
     }
 }
 
@@ -506,7 +507,8 @@ pub export fn vulkan_timeline_debug_print_event_summary(debug_ctx: *c.VulkanTime
     var i: u32 = 0;
     while (i < 9) : (i += 1) {
         if (type_counts[i] > 0) {
-            log.cardinal_log_info("[TIMELINE_DEBUG] {s}: {d}", .{vulkan_timeline_debug_event_type_to_string(@as(c.VulkanTimelineEventType, i)), type_counts[i]});
+            const type_str = std.mem.span(vulkan_timeline_debug_event_type_to_string(@as(c.VulkanTimelineEventType, i)));
+            log.cardinal_log_info("[TIMELINE_DEBUG] {s}: {d}", .{type_str, type_counts[i]});
         }
     }
 
@@ -532,7 +534,12 @@ pub export fn vulkan_timeline_debug_print_state_report(debug_ctx: *c.VulkanTimel
 
 // Export functions (simplified)
 pub export fn vulkan_timeline_debug_export_events_csv(debug_ctx: *c.VulkanTimelineDebugContext, filename: [*c]const u8) callconv(.c) bool {
+    if (filename == null) {
+        log.cardinal_log_error("[TIMELINE_DEBUG] Invalid filename for CSV export", .{});
+        return false;
+    }
     const fname = std.mem.span(filename);
+    
     const file = std.fs.cwd().createFile(fname, .{}) catch |err| {
         log.cardinal_log_error("[TIMELINE_DEBUG] Failed to open file for CSV export: {s} (error: {any})", .{fname, err});
         return false;
@@ -577,7 +584,12 @@ pub export fn vulkan_timeline_debug_export_performance_json(debug_ctx: *c.Vulkan
     var metrics: c.VulkanTimelinePerformanceMetrics = undefined;
     if (!vulkan_timeline_debug_get_performance_metrics(debug_ctx, &metrics)) return false;
 
+    if (filename == null) {
+        log.cardinal_log_error("[TIMELINE_DEBUG] Invalid filename for JSON export", .{});
+        return false;
+    }
     const fname = std.mem.span(filename);
+    
     const file = std.fs.cwd().createFile(fname, .{}) catch |err| {
         log.cardinal_log_error("[TIMELINE_DEBUG] Failed to open file for JSON export: {s} (error: {any})", .{fname, err});
         return false;

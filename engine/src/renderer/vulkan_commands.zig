@@ -1,29 +1,13 @@
 const std = @import("std");
 const builtin = @import("builtin");
 const log = @import("../core/log.zig");
+const types = @import("vulkan_types.zig");
+const vk_pbr = @import("vulkan_pbr.zig");
+const vk_mesh_shader = @import("vulkan_mesh_shader.zig");
+const vk_simple_pipelines = @import("vulkan_simple_pipelines.zig");
+pub const vulkan_mt = @import("vulkan_mt.zig");
 
-const c = @cImport({
-    @cDefine("CARDINAL_ZIG_BUILD", "1");
-    @cInclude("stdlib.h");
-    @cInclude("string.h");
-    @cInclude("vulkan/vulkan.h");
-    @cInclude("vulkan_state.h");
-    @cInclude("cardinal/renderer/vulkan_commands.h");
-    @cInclude("cardinal/renderer/vulkan_utils.h");
-    @cInclude("cardinal/renderer/vulkan_barrier_validation.h");
-    @cInclude("cardinal/renderer/vulkan_mt.h");
-    @cInclude("cardinal/renderer/vulkan_pbr.h");
-    @cInclude("vulkan_simple_pipelines.h");
-    @cInclude("cardinal/renderer/vulkan_mesh_shader.h");
-    @cInclude("cardinal/renderer/vulkan_texture_manager.h");
-    
-    if (builtin.os.tag == .windows) {
-        @cInclude("windows.h");
-    } else {
-        @cInclude("sys/syscall.h");
-        @cInclude("unistd.h");
-    }
-});
+const c = @import("vulkan_c.zig").c;
 
 // Helper to get current thread ID
 fn get_current_thread_id() u32 {
@@ -36,7 +20,7 @@ fn get_current_thread_id() u32 {
 
 // Internal helpers
 
-fn create_command_pools(s: *c.VulkanState) bool {
+fn create_command_pools(s: *types.VulkanState) bool {
     const pools_ptr = c.malloc(s.sync.max_frames_in_flight * @sizeOf(c.VkCommandPool));
     if (pools_ptr == null) return false;
     
@@ -46,7 +30,7 @@ fn create_command_pools(s: *c.VulkanState) bool {
     while (i < s.sync.max_frames_in_flight) : (i += 1) {
         if (!c.vk_utils_create_command_pool(s.context.device, s.context.graphics_queue_family,
                                           c.VK_COMMAND_POOL_CREATE_RESET_COMMAND_BUFFER_BIT,
-                                          &s.commands.pools[i], "graphics command pool")) {
+                                          &s.commands.pools.?[i], "graphics command pool")) {
             return false;
         }
     }
@@ -54,7 +38,7 @@ fn create_command_pools(s: *c.VulkanState) bool {
     return true;
 }
 
-fn allocate_command_buffers(s: *c.VulkanState) bool {
+fn allocate_command_buffers(s: *types.VulkanState) bool {
     // Primary buffers
     const buffers_ptr = c.malloc(s.sync.max_frames_in_flight * @sizeOf(c.VkCommandBuffer));
     if (buffers_ptr == null) return false;
@@ -64,11 +48,11 @@ fn allocate_command_buffers(s: *c.VulkanState) bool {
     while (i < s.sync.max_frames_in_flight) : (i += 1) {
         var ai = std.mem.zeroes(c.VkCommandBufferAllocateInfo);
         ai.sType = c.VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO;
-        ai.commandPool = s.commands.pools[i];
+        ai.commandPool = s.commands.pools.?[i];
         ai.level = c.VK_COMMAND_BUFFER_LEVEL_PRIMARY;
         ai.commandBufferCount = 1;
         
-        if (c.vkAllocateCommandBuffers(s.context.device, &ai, &s.commands.buffers[i]) != c.VK_SUCCESS) {
+        if (c.vkAllocateCommandBuffers(s.context.device, &ai, &s.commands.buffers.?[i]) != c.VK_SUCCESS) {
             return false;
         }
     }
@@ -83,11 +67,11 @@ fn allocate_command_buffers(s: *c.VulkanState) bool {
     while (i < s.sync.max_frames_in_flight) : (i += 1) {
         var ai = std.mem.zeroes(c.VkCommandBufferAllocateInfo);
         ai.sType = c.VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO;
-        ai.commandPool = s.commands.pools[i];
+        ai.commandPool = s.commands.pools.?[i];
         ai.level = c.VK_COMMAND_BUFFER_LEVEL_PRIMARY; // Allocated as PRIMARY as per C code comments
         ai.commandBufferCount = 1;
 
-        if (c.vkAllocateCommandBuffers(s.context.device, &ai, &s.commands.secondary_buffers[i]) != c.VK_SUCCESS) {
+        if (c.vkAllocateCommandBuffers(s.context.device, &ai, &s.commands.secondary_buffers.?[i]) != c.VK_SUCCESS) {
             return false;
         }
     }
@@ -95,13 +79,13 @@ fn allocate_command_buffers(s: *c.VulkanState) bool {
     return true;
 }
 
-fn create_sync_objects(s: *c.VulkanState) bool {
+fn create_sync_objects(s: *types.VulkanState) bool {
     // Image acquired semaphores
     if (s.sync.image_acquired_semaphores != null) {
         var i: u32 = 0;
         while (i < s.sync.max_frames_in_flight) : (i += 1) {
-            if (s.sync.image_acquired_semaphores[i] != null) {
-                c.vkDestroySemaphore(s.context.device, s.sync.image_acquired_semaphores[i], null);
+            if (s.sync.image_acquired_semaphores.?[i] != null) {
+                c.vkDestroySemaphore(s.context.device, s.sync.image_acquired_semaphores.?[i], null);
             }
         }
         c.free(@as(?*anyopaque, @ptrCast(s.sync.image_acquired_semaphores)));
@@ -116,7 +100,7 @@ fn create_sync_objects(s: *c.VulkanState) bool {
     while (i < s.sync.max_frames_in_flight) : (i += 1) {
         var sci = std.mem.zeroes(c.VkSemaphoreCreateInfo);
         sci.sType = c.VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO;
-        if (c.vkCreateSemaphore(s.context.device, &sci, null, &s.sync.image_acquired_semaphores[i]) != c.VK_SUCCESS) {
+        if (c.vkCreateSemaphore(s.context.device, &sci, null, &s.sync.image_acquired_semaphores.?[i]) != c.VK_SUCCESS) {
             log.cardinal_log_error("[INIT] Failed to create image acquired semaphore for frame {d}", .{i});
             return false;
         }
@@ -127,8 +111,8 @@ fn create_sync_objects(s: *c.VulkanState) bool {
     if (s.sync.render_finished_semaphores != null) {
         i = 0;
         while (i < s.sync.max_frames_in_flight) : (i += 1) {
-            if (s.sync.render_finished_semaphores[i] != null) {
-                c.vkDestroySemaphore(s.context.device, s.sync.render_finished_semaphores[i], null);
+            if (s.sync.render_finished_semaphores.?[i] != null) {
+                c.vkDestroySemaphore(s.context.device, s.sync.render_finished_semaphores.?[i], null);
             }
         }
         c.free(@as(?*anyopaque, @ptrCast(s.sync.render_finished_semaphores)));
@@ -143,7 +127,7 @@ fn create_sync_objects(s: *c.VulkanState) bool {
     while (i < s.sync.max_frames_in_flight) : (i += 1) {
         var sci = std.mem.zeroes(c.VkSemaphoreCreateInfo);
         sci.sType = c.VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO;
-        if (c.vkCreateSemaphore(s.context.device, &sci, null, &s.sync.render_finished_semaphores[i]) != c.VK_SUCCESS) {
+        if (c.vkCreateSemaphore(s.context.device, &sci, null, &s.sync.render_finished_semaphores.?[i]) != c.VK_SUCCESS) {
             log.cardinal_log_error("[INIT] Failed to create render finished semaphore for frame {d}", .{i});
             return false;
         }
@@ -154,8 +138,8 @@ fn create_sync_objects(s: *c.VulkanState) bool {
     if (s.sync.in_flight_fences != null) {
         i = 0;
         while (i < s.sync.max_frames_in_flight) : (i += 1) {
-            if (s.sync.in_flight_fences[i] != null) {
-                c.vkDestroyFence(s.context.device, s.sync.in_flight_fences[i], null);
+            if (s.sync.in_flight_fences.?[i] != null) {
+                c.vkDestroyFence(s.context.device, s.sync.in_flight_fences.?[i], null);
             }
         }
         c.free(@as(?*anyopaque, @ptrCast(s.sync.in_flight_fences)));
@@ -168,7 +152,7 @@ fn create_sync_objects(s: *c.VulkanState) bool {
 
     i = 0;
     while (i < s.sync.max_frames_in_flight) : (i += 1) {
-        if (!c.vk_utils_create_fence(s.context.device, &s.sync.in_flight_fences[i], true, "in-flight fence")) {
+        if (!c.vk_utils_create_fence(s.context.device, &s.sync.in_flight_fences.?[i], true, "in-flight fence")) {
             log.cardinal_log_error("[INIT] Failed to create in-flight fence for frame {d}", .{i});
             return false;
         }
@@ -195,23 +179,23 @@ fn create_sync_objects(s: *c.VulkanState) bool {
     return true;
 }
 
-fn select_command_buffer(s: *c.VulkanState) c.VkCommandBuffer {
+fn select_command_buffer(s: *types.VulkanState) c.VkCommandBuffer {
     if (s.commands.current_buffer_index == 0) {
         if (s.commands.buffers == null) {
             log.cardinal_log_error("[CMD] Frame {d}: command_buffers array is null", .{s.sync.current_frame});
             return null;
         }
-        return s.commands.buffers[s.sync.current_frame];
+        return s.commands.buffers.?[s.sync.current_frame];
     } else {
         if (s.commands.secondary_buffers == null) {
             log.cardinal_log_error("[CMD] Frame {d}: secondary_command_buffers array is null", .{s.sync.current_frame});
             return null;
         }
-        return s.commands.secondary_buffers[s.sync.current_frame];
+        return s.commands.secondary_buffers.?[s.sync.current_frame];
     }
 }
 
-fn validate_swapchain_image(s: *c.VulkanState, image_index: u32) bool {
+fn validate_swapchain_image(s: *types.VulkanState, image_index: u32) bool {
     if (s.swapchain.image_count == 0 or image_index >= s.swapchain.image_count) {
         log.cardinal_log_error("[CMD] Frame {d}: Invalid image index {d} (count {d})", .{s.sync.current_frame, image_index, s.swapchain.image_count});
         return false;
@@ -231,7 +215,7 @@ fn validate_swapchain_image(s: *c.VulkanState, image_index: u32) bool {
     return true;
 }
 
-fn begin_command_buffer(s: *c.VulkanState, cmd: c.VkCommandBuffer) bool {
+fn begin_command_buffer(s: *types.VulkanState, cmd: c.VkCommandBuffer) bool {
     log.cardinal_log_info("[CMD] Frame {d}: Resetting command buffer {any}", .{s.sync.current_frame, cmd});
     const reset_result = c.vkResetCommandBuffer(cmd, 0);
     if (reset_result != c.VK_SUCCESS) {
@@ -252,7 +236,7 @@ fn begin_command_buffer(s: *c.VulkanState, cmd: c.VkCommandBuffer) bool {
     return true;
 }
 
-fn transition_images(s: *c.VulkanState, cmd: c.VkCommandBuffer, image_index: u32, use_depth: bool) void {
+fn transition_images(s: *types.VulkanState, cmd: c.VkCommandBuffer, image_index: u32, use_depth: bool) void {
     const thread_id = get_current_thread_id();
 
     // Depth transition
@@ -292,7 +276,7 @@ fn transition_images(s: *c.VulkanState, cmd: c.VkCommandBuffer, image_index: u32
     // Color attachment transition
     var barrier = std.mem.zeroes(c.VkImageMemoryBarrier2);
     barrier.sType = c.VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2;
-    barrier.image = s.swapchain.images[image_index];
+    barrier.image = s.swapchain.images.?[image_index];
     barrier.subresourceRange.aspectMask = c.VK_IMAGE_ASPECT_COLOR_BIT;
     barrier.subresourceRange.baseMipLevel = 0;
     barrier.subresourceRange.levelCount = 1;
@@ -301,11 +285,11 @@ fn transition_images(s: *c.VulkanState, cmd: c.VkCommandBuffer, image_index: u32
     barrier.srcQueueFamilyIndex = c.VK_QUEUE_FAMILY_IGNORED;
     barrier.dstQueueFamilyIndex = c.VK_QUEUE_FAMILY_IGNORED;
 
-    if (!s.swapchain.image_layout_initialized[image_index]) {
+    if (!s.swapchain.image_layout_initialized.?[image_index]) {
         barrier.srcStageMask = c.VK_PIPELINE_STAGE_2_TOP_OF_PIPE_BIT;
         barrier.srcAccessMask = 0;
         barrier.oldLayout = c.VK_IMAGE_LAYOUT_UNDEFINED;
-        s.swapchain.image_layout_initialized[image_index] = true;
+        s.swapchain.image_layout_initialized.?[image_index] = true;
     } else {
         barrier.srcStageMask = c.VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT;
         barrier.srcAccessMask = 0;
@@ -330,7 +314,7 @@ fn transition_images(s: *c.VulkanState, cmd: c.VkCommandBuffer, image_index: u32
     }
 }
 
-fn begin_dynamic_rendering(s: *c.VulkanState, cmd: c.VkCommandBuffer, image_index: u32, use_depth: bool, clears: [*]c.VkClearValue) bool {
+fn begin_dynamic_rendering(s: *types.VulkanState, cmd: c.VkCommandBuffer, image_index: u32, use_depth: bool, clears: [*]c.VkClearValue) bool {
     if (s.context.vkCmdBeginRendering == null or s.context.vkCmdEndRendering == null or s.context.vkCmdPipelineBarrier2 == null) {
         log.cardinal_log_error("[CMD] Frame {d}: Dynamic rendering functions not loaded", .{s.sync.current_frame});
         return false;
@@ -338,7 +322,7 @@ fn begin_dynamic_rendering(s: *c.VulkanState, cmd: c.VkCommandBuffer, image_inde
 
     var colorAttachment = std.mem.zeroes(c.VkRenderingAttachmentInfo);
     colorAttachment.sType = c.VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO;
-    colorAttachment.imageView = s.swapchain.image_views[image_index];
+    colorAttachment.imageView = s.swapchain.image_views.?[image_index];
     colorAttachment.imageLayout = c.VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
     colorAttachment.loadOp = c.VK_ATTACHMENT_LOAD_OP_CLEAR;
     colorAttachment.storeOp = c.VK_ATTACHMENT_STORE_OP_STORE;
@@ -385,7 +369,7 @@ fn begin_dynamic_rendering(s: *c.VulkanState, cmd: c.VkCommandBuffer, image_inde
     return true;
 }
 
-fn end_recording(s: *c.VulkanState, cmd: c.VkCommandBuffer, image_index: u32) void {
+fn end_recording(s: *types.VulkanState, cmd: c.VkCommandBuffer, image_index: u32) void {
     if (s.context.vkCmdEndRendering != null) {
         s.context.vkCmdEndRendering.?(cmd);
     }
@@ -400,7 +384,7 @@ fn end_recording(s: *c.VulkanState, cmd: c.VkCommandBuffer, image_index: u32) vo
     barrier.newLayout = c.VK_IMAGE_LAYOUT_PRESENT_SRC_KHR;
     barrier.srcQueueFamilyIndex = c.VK_QUEUE_FAMILY_IGNORED;
     barrier.dstQueueFamilyIndex = c.VK_QUEUE_FAMILY_IGNORED;
-    barrier.image = s.swapchain.images[image_index];
+    barrier.image = s.swapchain.images.?[image_index];
     barrier.subresourceRange.aspectMask = c.VK_IMAGE_ASPECT_COLOR_BIT;
     barrier.subresourceRange.baseMipLevel = 0;
     barrier.subresourceRange.levelCount = 1;
@@ -430,66 +414,47 @@ fn end_recording(s: *c.VulkanState, cmd: c.VkCommandBuffer, image_index: u32) vo
     }
 }
 
-fn vk_record_scene_commands(s: *c.VulkanState, cmd: c.VkCommandBuffer) void {
+fn vk_record_scene_commands(s: *types.VulkanState, cmd: c.VkCommandBuffer) void {
     switch (s.current_rendering_mode) {
-        c.CARDINAL_RENDERING_MODE_NORMAL => {
+        types.CardinalRenderingMode.NORMAL => {
              if (s.pipelines.use_pbr_pipeline and s.pipelines.pbr_pipeline.initialized) {
-                 var ubo: c.PBRUniformBufferObject = undefined;
-                 @memcpy(@as([*]u8, @ptrCast(&ubo))[0..@sizeOf(c.PBRUniformBufferObject)], 
-                        @as([*]u8, @ptrCast(s.pipelines.pbr_pipeline.uniformBufferMapped))[0..@sizeOf(c.PBRUniformBufferObject)]);
+                 var ubo: types.PBRUniformBufferObject = undefined;
+                 @memcpy(@as([*]u8, @ptrCast(&ubo))[0..@sizeOf(types.PBRUniformBufferObject)], 
+                        @as([*]u8, @ptrCast(s.pipelines.pbr_pipeline.uniformBufferMapped))[0..@sizeOf(types.PBRUniformBufferObject)]);
                  
-                 var lighting: c.PBRLightingData = undefined;
-                 @memcpy(@as([*]u8, @ptrCast(&lighting))[0..@sizeOf(c.PBRLightingData)],
-                        @as([*]u8, @ptrCast(s.pipelines.pbr_pipeline.lightingBufferMapped))[0..@sizeOf(c.PBRLightingData)]);
+                 var lighting: types.PBRLightingData = undefined;
+                 @memcpy(@as([*]u8, @ptrCast(&lighting))[0..@sizeOf(types.PBRLightingData)],
+                        @as([*]u8, @ptrCast(s.pipelines.pbr_pipeline.lightingBufferMapped))[0..@sizeOf(types.PBRLightingData)]);
                  
-                 c.vk_pbr_update_uniforms(&s.pipelines.pbr_pipeline, &ubo, &lighting);
-                 c.vk_pbr_render(&s.pipelines.pbr_pipeline, cmd, s.current_scene);
+                 vk_pbr.vk_pbr_update_uniforms(&s.pipelines.pbr_pipeline, &ubo, &lighting);
+                 vk_pbr.vk_pbr_render(&s.pipelines.pbr_pipeline, cmd, s.current_scene);
              }
         },
-        c.CARDINAL_RENDERING_MODE_UV => {
+        types.CardinalRenderingMode.UV => {
             if (s.pipelines.uv_pipeline != null and s.pipelines.use_pbr_pipeline and s.pipelines.pbr_pipeline.initialized) {
-                 const pbr_ubo: *c.PBRUniformBufferObject = @ptrCast(@alignCast(s.pipelines.pbr_pipeline.uniformBufferMapped));
-                 c.vk_update_simple_uniforms(s, &pbr_ubo.model, &pbr_ubo.view, &pbr_ubo.proj);
-                 c.vk_render_simple(s, cmd, s.pipelines.uv_pipeline, s.pipelines.uv_pipeline_layout);
+                 const pbr_ubo: *types.PBRUniformBufferObject = @ptrCast(@alignCast(s.pipelines.pbr_pipeline.uniformBufferMapped));
+                 vk_simple_pipelines.vk_update_simple_uniforms(s, @ptrCast(&pbr_ubo.model), @ptrCast(&pbr_ubo.view), @ptrCast(&pbr_ubo.proj));
+                 vk_simple_pipelines.vk_render_simple(s, cmd, s.pipelines.uv_pipeline, s.pipelines.uv_pipeline_layout);
             }
         },
-        c.CARDINAL_RENDERING_MODE_WIREFRAME => {
+        types.CardinalRenderingMode.WIREFRAME => {
             if (s.pipelines.wireframe_pipeline != null and s.pipelines.use_pbr_pipeline and s.pipelines.pbr_pipeline.initialized) {
-                 const pbr_ubo: *c.PBRUniformBufferObject = @ptrCast(@alignCast(s.pipelines.pbr_pipeline.uniformBufferMapped));
-                 c.vk_update_simple_uniforms(s, &pbr_ubo.model, &pbr_ubo.view, &pbr_ubo.proj);
-                 c.vk_render_simple(s, cmd, s.pipelines.wireframe_pipeline, s.pipelines.wireframe_pipeline_layout);
+                 const pbr_ubo: *types.PBRUniformBufferObject = @ptrCast(@alignCast(s.pipelines.pbr_pipeline.uniformBufferMapped));
+                 vk_simple_pipelines.vk_update_simple_uniforms(s, @ptrCast(&pbr_ubo.model), @ptrCast(&pbr_ubo.view), @ptrCast(&pbr_ubo.proj));
+                 vk_simple_pipelines.vk_render_simple(s, cmd, s.pipelines.wireframe_pipeline, s.pipelines.wireframe_pipeline_layout);
             }
         },
-        c.CARDINAL_RENDERING_MODE_MESH_SHADER => {
-             c.vk_mesh_shader_record_frame(s, cmd);
+        types.CardinalRenderingMode.MESH_SHADER => {
+             vk_mesh_shader.vk_mesh_shader_record_frame(s, cmd);
         },
-        else => {
-            log.cardinal_log_warn("Unknown rendering mode: {d}, falling back to PBR", .{s.current_rendering_mode});
-            if (s.pipelines.use_pbr_pipeline and s.pipelines.pbr_pipeline.initialized) {
-                var ubo = std.mem.zeroes(c.PBRUniformBufferObject);
-                var lighting = std.mem.zeroes(c.PBRLightingData);
-                
-                if (s.pipelines.pbr_pipeline.uniformBufferMapped != null) {
-                    @memcpy(@as([*]u8, @ptrCast(&ubo))[0..@sizeOf(c.PBRUniformBufferObject)], 
-                           @as([*]u8, @ptrCast(s.pipelines.pbr_pipeline.uniformBufferMapped))[0..@sizeOf(c.PBRUniformBufferObject)]);
-                }
-                if (s.pipelines.pbr_pipeline.lightingBufferMapped != null) {
-                    @memcpy(@as([*]u8, @ptrCast(&lighting))[0..@sizeOf(c.PBRLightingData)],
-                           @as([*]u8, @ptrCast(s.pipelines.pbr_pipeline.lightingBufferMapped))[0..@sizeOf(c.PBRLightingData)]);
-                }
-                
-                c.vk_pbr_update_uniforms(&s.pipelines.pbr_pipeline, &ubo, &lighting);
-                c.vk_pbr_render(&s.pipelines.pbr_pipeline, cmd, s.current_scene);
-            }
-        }
     }
 }
 
-fn vk_record_scene_direct(s: *c.VulkanState, cmd: c.VkCommandBuffer) void {
+fn vk_record_scene_direct(s: *types.VulkanState, cmd: c.VkCommandBuffer) void {
     vk_record_scene_commands(s, cmd);
 }
 
-fn vk_record_scene_with_secondary_buffers(s: *c.VulkanState, primary_cmd: c.VkCommandBuffer, image_index: u32) void {
+fn vk_record_scene_with_secondary_buffers(s: *types.VulkanState, primary_cmd: c.VkCommandBuffer, image_index: u32) void {
     _ = image_index;
     const mt_manager = vk_get_mt_command_manager();
     if (mt_manager == null or !mt_manager.?.thread_pools[0].is_active) {
@@ -499,7 +464,7 @@ fn vk_record_scene_with_secondary_buffers(s: *c.VulkanState, primary_cmd: c.VkCo
     }
 
     var secondary_context: c.CardinalSecondaryCommandContext = undefined;
-    if (!c.cardinal_mt_allocate_secondary_command_buffer(&mt_manager.?.thread_pools[0], &secondary_context)) {
+    if (!c.cardinal_mt_allocate_secondary_command_buffer(@ptrCast(&mt_manager.?.thread_pools[0]), &secondary_context)) {
         log.cardinal_log_warn("[MT] Failed to allocate secondary command buffer, falling back to direct rendering", .{});
         vk_record_scene_direct(s, primary_cmd);
         return;
@@ -560,7 +525,7 @@ fn vk_record_scene_with_secondary_buffers(s: *c.VulkanState, primary_cmd: c.VkCo
 
 // Exported functions
 
-pub export fn vk_create_commands_sync(s: ?*c.VulkanState) callconv(.c) bool {
+pub export fn vk_create_commands_sync(s: ?*types.VulkanState) callconv(.c) bool {
     if (s == null) return false;
     const vs = s.?;
 
@@ -593,7 +558,7 @@ pub export fn vk_create_commands_sync(s: ?*c.VulkanState) callconv(.c) bool {
         optimal_thread_count = 4;
     }
 
-    if (!c.cardinal_mt_subsystem_init(vs, optimal_thread_count)) {
+    if (!c.cardinal_mt_subsystem_init(@ptrCast(vs), optimal_thread_count)) {
         log.cardinal_log_warn("[INIT] Failed to initialize multi-threading subsystem, continuing without MT support", .{});
     } else {
         log.cardinal_log_info("[INIT] Multi-threading subsystem initialized with {d} threads", .{optimal_thread_count});
@@ -604,7 +569,7 @@ pub export fn vk_create_commands_sync(s: ?*c.VulkanState) callconv(.c) bool {
 
 pub export fn vk_recreate_images_in_flight(s: ?*c.VulkanState) callconv(.c) bool {
     if (s == null) return false;
-    const vs = s.?;
+    const vs = @as(*types.VulkanState, @ptrCast(@alignCast(s.?)));
 
     if (vs.swapchain.image_layout_initialized != null) {
         c.free(vs.swapchain.image_layout_initialized);
@@ -623,7 +588,7 @@ pub export fn vk_recreate_images_in_flight(s: ?*c.VulkanState) callconv(.c) bool
 
 pub export fn vk_destroy_commands_sync(s: ?*c.VulkanState) callconv(.c) void {
     if (s == null) return;
-    const vs = s.?;
+    const vs = @as(*types.VulkanState, @ptrCast(@alignCast(s.?)));
 
     c.cardinal_mt_subsystem_shutdown();
     log.cardinal_log_info("[CLEANUP] Multi-threading subsystem shutdown completed", .{});
@@ -640,8 +605,8 @@ pub export fn vk_destroy_commands_sync(s: ?*c.VulkanState) callconv(.c) void {
     if (vs.sync.image_acquired_semaphores != null) {
         var i: u32 = 0;
         while (i < vs.sync.max_frames_in_flight) : (i += 1) {
-            if (vs.sync.image_acquired_semaphores[i] != null) {
-                c.vkDestroySemaphore(vs.context.device, vs.sync.image_acquired_semaphores[i], null);
+            if (vs.sync.image_acquired_semaphores.?[i] != null) {
+                c.vkDestroySemaphore(vs.context.device, vs.sync.image_acquired_semaphores.?[i], null);
             }
         }
         c.free(@as(?*anyopaque, @ptrCast(vs.sync.image_acquired_semaphores)));
@@ -651,8 +616,8 @@ pub export fn vk_destroy_commands_sync(s: ?*c.VulkanState) callconv(.c) void {
     if (vs.sync.render_finished_semaphores != null) {
         var i: u32 = 0;
         while (i < vs.sync.max_frames_in_flight) : (i += 1) {
-            if (vs.sync.render_finished_semaphores[i] != null) {
-                c.vkDestroySemaphore(vs.context.device, vs.sync.render_finished_semaphores[i], null);
+            if (vs.sync.render_finished_semaphores.?[i] != null) {
+                c.vkDestroySemaphore(vs.context.device, vs.sync.render_finished_semaphores.?[i], null);
             }
         }
         c.free(@as(?*anyopaque, @ptrCast(vs.sync.render_finished_semaphores)));
@@ -662,8 +627,8 @@ pub export fn vk_destroy_commands_sync(s: ?*c.VulkanState) callconv(.c) void {
     if (vs.sync.in_flight_fences != null) {
         var i: u32 = 0;
         while (i < vs.sync.max_frames_in_flight) : (i += 1) {
-            if (vs.sync.in_flight_fences[i] != null) {
-                c.vkDestroyFence(vs.context.device, vs.sync.in_flight_fences[i], null);
+            if (vs.sync.in_flight_fences.?[i] != null) {
+                c.vkDestroyFence(vs.context.device, vs.sync.in_flight_fences.?[i], null);
             }
         }
         c.free(@as(?*anyopaque, @ptrCast(vs.sync.in_flight_fences)));
@@ -688,8 +653,8 @@ pub export fn vk_destroy_commands_sync(s: ?*c.VulkanState) callconv(.c) void {
     if (vs.commands.pools != null) {
         var i: u32 = 0;
         while (i < vs.sync.max_frames_in_flight) : (i += 1) {
-            if (vs.commands.pools[i] != null) {
-                c.vkDestroyCommandPool(vs.context.device, vs.commands.pools[i], null);
+            if (vs.commands.pools.?[i] != null) {
+                c.vkDestroyCommandPool(vs.context.device, vs.commands.pools.?[i], null);
             }
         }
         c.free(@as(?*anyopaque, @ptrCast(vs.commands.pools)));
@@ -699,7 +664,7 @@ pub export fn vk_destroy_commands_sync(s: ?*c.VulkanState) callconv(.c) void {
 
 pub export fn vk_record_cmd(s: ?*c.VulkanState, image_index: u32) callconv(.c) void {
     if (s == null) return;
-    const vs = s.?;
+    const vs = @as(*types.VulkanState, @ptrCast(@alignCast(s.?)));
 
     const cmd = select_command_buffer(vs);
     if (cmd == null) return;
@@ -745,7 +710,7 @@ pub export fn vk_record_cmd(s: ?*c.VulkanState, image_index: u32) callconv(.c) v
 
 pub export fn vk_prepare_mesh_shader_rendering(s: ?*c.VulkanState) callconv(.c) void {
     if (s == null) return;
-    const vs = s.?;
+    const vs = @as(*types.VulkanState, @ptrCast(@alignCast(s.?)));
 
     if (!vs.pipelines.use_mesh_shader_pipeline or 
         vs.pipelines.mesh_shader_pipeline.pipeline == null or 
@@ -761,9 +726,9 @@ pub export fn vk_prepare_mesh_shader_rendering(s: ?*c.VulkanState) callconv(.c) 
     var texture_count: u32 = 0;
 
     if (vs.pipelines.use_pbr_pipeline and vs.pipelines.pbr_pipeline.textureManager != null and
-        vs.pipelines.pbr_pipeline.textureManager.*.textureCount > 0) {
+        vs.pipelines.pbr_pipeline.textureManager.?.textureCount > 0) {
         
-        texture_count = vs.pipelines.pbr_pipeline.textureManager.*.textureCount;
+        texture_count = vs.pipelines.pbr_pipeline.textureManager.?.textureCount;
         
         const views_ptr = c.malloc(@sizeOf(c.VkImageView) * texture_count);
         const samplers_ptr = c.malloc(@sizeOf(c.VkSampler) * texture_count);
@@ -774,9 +739,9 @@ pub export fn vk_prepare_mesh_shader_rendering(s: ?*c.VulkanState) callconv(.c) 
         if (texture_views != null and samplers != null) {
             var i: u32 = 0;
             while (i < texture_count) : (i += 1) {
-                texture_views.?[i] = vs.pipelines.pbr_pipeline.textureManager.*.textures[i].view;
-                const texSampler = vs.pipelines.pbr_pipeline.textureManager.*.textures[i].sampler;
-                samplers.?[i] = if (texSampler != null) texSampler else vs.pipelines.pbr_pipeline.textureManager.*.defaultSampler;
+                texture_views.?[i] = vs.pipelines.pbr_pipeline.textureManager.?.textures.?[i].view;
+                const texSampler = vs.pipelines.pbr_pipeline.textureManager.?.textures.?[i].sampler;
+                samplers.?[i] = if (texSampler != null) texSampler else vs.pipelines.pbr_pipeline.textureManager.?.defaultSampler;
             }
         } else {
             if (texture_views) |p| c.free(@as(?*anyopaque, @ptrCast(p)));
@@ -787,7 +752,7 @@ pub export fn vk_prepare_mesh_shader_rendering(s: ?*c.VulkanState) callconv(.c) 
         }
     }
 
-    if (!c.vk_mesh_shader_update_descriptor_buffers(vs, &vs.pipelines.mesh_shader_pipeline, null,
+    if (!vk_mesh_shader.vk_mesh_shader_update_descriptor_buffers(@ptrCast(vs), &vs.pipelines.mesh_shader_pipeline, null,
                                                   material_buffer, lighting_buffer, texture_views,
                                                   samplers, texture_count)) {
         log.cardinal_log_error("[MESH_SHADER] Failed to update descriptor buffers during preparation", .{});
@@ -799,20 +764,14 @@ pub export fn vk_prepare_mesh_shader_rendering(s: ?*c.VulkanState) callconv(.c) 
     if (samplers) |p| c.free(@as(?*anyopaque, @ptrCast(p)));
 }
 
-pub export fn vk_get_mt_command_manager() callconv(.c) ?*c.CardinalMTCommandManager {
-    // Note: accessing global g_cardinal_mt_subsystem from C. 
-    // We should probably check if we can access it directly or if we need to export a getter from C side 
-    // or if we should define it here.
-    // The C code accesses g_cardinal_mt_subsystem which is defined in vulkan_mt.c (or .zig now).
-    // vulkan_mt.zig defines `g_cardinal_mt_subsystem`.
-    // Since we are in Zig, we can try to access it if it's public, or use the C import if it exposes it.
-    // vulkan_mt.h declares `extern CardinalMTSubsystem g_cardinal_mt_subsystem;`.
+pub export fn vk_get_mt_command_manager() callconv(.c) ?*types.CardinalMTCommandManager {
+    // Note: accessing global g_cardinal_mt_subsystem from vulkan_mt.zig
     
-    if (!c.g_cardinal_mt_subsystem.is_running) {
+    if (!vulkan_mt.g_cardinal_mt_subsystem.is_running) {
         log.cardinal_log_warn("[MT] Multi-threading subsystem not initialized", .{});
         return null;
     }
-    return &c.g_cardinal_mt_subsystem.command_manager;
+    return &vulkan_mt.g_cardinal_mt_subsystem.command_manager;
 }
 
 pub export fn vk_submit_mt_command_task(record_func: ?*const fn(?*anyopaque) callconv(.c) void, user_data: ?*anyopaque, callback: ?*const fn(?*anyopaque, bool) callconv(.c) void) callconv(.c) bool {
@@ -821,7 +780,7 @@ pub export fn vk_submit_mt_command_task(record_func: ?*const fn(?*anyopaque) cal
         return false;
     }
 
-    if (!c.g_cardinal_mt_subsystem.is_running) {
+    if (!vulkan_mt.g_cardinal_mt_subsystem.is_running) {
         log.cardinal_log_warn("[MT] Multi-threading subsystem not running, executing task synchronously", .{});
         record_func.?(user_data);
         if (callback) |cb| {
@@ -830,11 +789,11 @@ pub export fn vk_submit_mt_command_task(record_func: ?*const fn(?*anyopaque) cal
         return true;
     }
 
-    const task = c.cardinal_mt_create_command_record_task(record_func, user_data, callback);
+    const task = vulkan_mt.cardinal_mt_create_command_record_task(record_func, user_data, callback);
     if (task == null) {
         log.cardinal_log_error("[MT] Failed to create command record task", .{});
         return false;
     }
 
-    return c.cardinal_mt_submit_task(task);
+    return vulkan_mt.cardinal_mt_submit_task(task.?);
 }

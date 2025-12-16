@@ -1,28 +1,14 @@
 const std = @import("std");
 const builtin = @import("builtin");
 const log = @import("../core/log.zig");
+const vk_simple_pipelines = @import("vulkan_simple_pipelines.zig");
+const types = @import("vulkan_types.zig");
+const vk_commands = @import("vulkan_commands.zig");
+const vk_pipeline = @import("vulkan_pipeline.zig");
+const vk_mesh_shader = @import("vulkan_mesh_shader.zig");
 
-const c = @cImport({
-    @cDefine("CARDINAL_ZIG_BUILD", "1");
-    @cInclude("stdlib.h");
-    @cInclude("string.h");
-    @cInclude("stdio.h");
-    @cInclude("vulkan/vulkan.h");
-    @cInclude("GLFW/glfw3.h");
-    @cInclude("vulkan_state.h");
-    @cInclude("cardinal/core/window.h");
-    @cInclude("cardinal/renderer/vulkan_commands.h");
-    @cInclude("cardinal/renderer/vulkan_pipeline.h");
-    @cInclude("cardinal/renderer/vulkan_mesh_shader.h");
-    @cInclude("vulkan_simple_pipelines.h");
-    @cInclude("cardinal/renderer/vulkan_swapchain.h");
-    
-    if (builtin.os.tag == .windows) {
-        @cInclude("windows.h");
-    } else {
-        @cInclude("time.h");
-    }
-});
+const c = @import("vulkan_c.zig").c;
+
 
 // Helper functions
 
@@ -36,7 +22,7 @@ fn get_current_time_ms() u64 {
     }
 }
 
-fn should_throttle_recreation(s: *c.VulkanState) bool {
+fn should_throttle_recreation(s: *types.VulkanState) bool {
     if (!s.swapchain.frame_pacing_enabled) {
         return false;
     }
@@ -144,7 +130,7 @@ fn choose_present_mode(modes: [*]const c.VkPresentModeKHR, count: u32) c.VkPrese
     return c.VK_PRESENT_MODE_FIFO_KHR;
 }
 
-fn wait_device_idle_for_swapchain(s: *c.VulkanState) bool {
+fn wait_device_idle_for_swapchain(s: *types.VulkanState) bool {
     const t_idle0 = get_current_time_ms();
     const res = c.vkDeviceWaitIdle(s.context.device);
     const dt = get_current_time_ms() - t_idle0;
@@ -164,7 +150,7 @@ fn wait_device_idle_for_swapchain(s: *c.VulkanState) bool {
     return true;
 }
 
-fn get_surface_details(s: *c.VulkanState, caps: *c.VkSurfaceCapabilitiesKHR, out_fmt: *c.VkSurfaceFormatKHR, out_mode: *c.VkPresentModeKHR) bool {
+fn get_surface_details(s: *types.VulkanState, caps: *c.VkSurfaceCapabilitiesKHR, out_fmt: *c.VkSurfaceFormatKHR, out_mode: *c.VkPresentModeKHR) bool {
     if (c.vkGetPhysicalDeviceSurfaceCapabilitiesKHR(s.context.physical_device, s.context.surface, caps) != c.VK_SUCCESS) {
         log.cardinal_log_error("[SWAPCHAIN] Failed to get surface capabilities", .{});
         return false;
@@ -211,18 +197,21 @@ fn get_surface_details(s: *c.VulkanState, caps: *c.VkSurfaceCapabilitiesKHR, out
     return true;
 }
 
-fn select_swapchain_extent(s: *c.VulkanState, caps: *const c.VkSurfaceCapabilitiesKHR) c.VkExtent2D {
+fn select_swapchain_extent(s: *types.VulkanState, caps: *const c.VkSurfaceCapabilitiesKHR) c.VkExtent2D {
     if (caps.currentExtent.width != c.UINT32_MAX) {
         return caps.currentExtent;
     }
 
     var extent = c.VkExtent2D{ .width = 800, .height = 600 };
-    if (s.recovery.window != null and s.recovery.window.*.handle != null) {
-        var w: c_int = 0;
-        var h: c_int = 0;
-        c.glfwGetFramebufferSize(@ptrCast(s.recovery.window.*.handle), &w, &h);
-        extent.width = @intCast(w);
-        extent.height = @intCast(h);
+    if (s.recovery.window != null) {
+        const win = @as(*c.CardinalWindow, @ptrCast(@alignCast(s.recovery.window.?)));
+        if (win.handle != null) {
+            var w: c_int = 0;
+            var h: c_int = 0;
+            c.glfwGetFramebufferSize(win.handle, &w, &h);
+            extent.width = @intCast(w);
+            extent.height = @intCast(h);
+        }
     } else if (s.swapchain.window_resize_pending and s.swapchain.pending_width > 0) {
         extent.width = s.swapchain.pending_width;
         extent.height = s.swapchain.pending_height;
@@ -236,7 +225,7 @@ fn select_swapchain_extent(s: *c.VulkanState, caps: *const c.VkSurfaceCapabiliti
     return extent;
 }
 
-fn create_swapchain_object(s: *c.VulkanState, caps: *const c.VkSurfaceCapabilitiesKHR, fmt: c.VkSurfaceFormatKHR, mode: c.VkPresentModeKHR, extent: c.VkExtent2D) bool {
+fn create_swapchain_object(s: *types.VulkanState, caps: *const c.VkSurfaceCapabilitiesKHR, fmt: c.VkSurfaceFormatKHR, mode: c.VkPresentModeKHR, extent: c.VkExtent2D) bool {
     var image_count = caps.minImageCount + 1;
     if (caps.maxImageCount > 0 and image_count > caps.maxImageCount) {
         image_count = caps.maxImageCount;
@@ -281,7 +270,7 @@ fn create_swapchain_object(s: *c.VulkanState, caps: *const c.VkSurfaceCapabiliti
     return true;
 }
 
-fn retrieve_swapchain_images(s: *c.VulkanState) bool {
+fn retrieve_swapchain_images(s: *types.VulkanState) bool {
     if (c.vkGetSwapchainImagesKHR(s.context.device, s.swapchain.handle, &s.swapchain.image_count, null) != c.VK_SUCCESS or s.swapchain.image_count == 0) {
         log.cardinal_log_error("[SWAPCHAIN] Failed to get image count", .{});
         return false;
@@ -291,39 +280,39 @@ fn retrieve_swapchain_images(s: *c.VulkanState) bool {
     if (images_ptr == null) return false;
     s.swapchain.images = @as([*]c.VkImage, @ptrCast(@alignCast(images_ptr)));
 
-    if (c.vkGetSwapchainImagesKHR(s.context.device, s.swapchain.handle, &s.swapchain.image_count, s.swapchain.images) != c.VK_SUCCESS) {
+    if (c.vkGetSwapchainImagesKHR(s.context.device, s.swapchain.handle, &s.swapchain.image_count, s.swapchain.images.?) != c.VK_SUCCESS) {
         log.cardinal_log_error("[SWAPCHAIN] Failed to get images", .{});
         return false;
     }
     return true;
 }
 
-fn create_swapchain_image_views(s: *c.VulkanState) bool {
+fn create_swapchain_image_views(s: *types.VulkanState) bool {
     const views_ptr = c.malloc(@sizeOf(c.VkImageView) * s.swapchain.image_count);
     if (views_ptr == null) return false;
     s.swapchain.image_views = @as([*]c.VkImageView, @ptrCast(@alignCast(views_ptr)));
 
     var i: u32 = 0;
     while (i < s.swapchain.image_count) : (i += 1) {
-        s.swapchain.image_views[i] = null;
+        s.swapchain.image_views.?[i] = null;
     }
 
     i = 0;
     while (i < s.swapchain.image_count) : (i += 1) {
         var iv = std.mem.zeroes(c.VkImageViewCreateInfo);
         iv.sType = c.VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO;
-        iv.image = s.swapchain.images[i];
+        iv.image = s.swapchain.images.?[i];
         iv.viewType = c.VK_IMAGE_VIEW_TYPE_2D;
         iv.format = s.swapchain.format;
         iv.subresourceRange.aspectMask = c.VK_IMAGE_ASPECT_COLOR_BIT;
         iv.subresourceRange.levelCount = 1;
         iv.subresourceRange.layerCount = 1;
 
-        if (c.vkCreateImageView(s.context.device, &iv, null, &s.swapchain.image_views[i]) != c.VK_SUCCESS) {
+        if (c.vkCreateImageView(s.context.device, &iv, null, &s.swapchain.image_views.?[i]) != c.VK_SUCCESS) {
             log.cardinal_log_error("[SWAPCHAIN] Failed to create image view {d}", .{i});
             var j: u32 = 0;
             while (j < i) : (j += 1) {
-                c.vkDestroyImageView(s.context.device, s.swapchain.image_views[j], null);
+                c.vkDestroyImageView(s.context.device, s.swapchain.image_views.?[j], null);
             }
             c.free(@as(?*anyopaque, @ptrCast(s.swapchain.image_views)));
             s.swapchain.image_views = null;
@@ -344,7 +333,7 @@ const SwapchainBackupState = struct {
     layout_initialized: ?[*]bool,
 };
 
-fn backup_swapchain_state(s: *c.VulkanState, backup: *SwapchainBackupState) void {
+fn backup_swapchain_state(s: *types.VulkanState, backup: *SwapchainBackupState) void {
     backup.handle = s.swapchain.handle;
     backup.images = s.swapchain.images;
     backup.image_views = s.swapchain.image_views;
@@ -360,7 +349,7 @@ fn backup_swapchain_state(s: *c.VulkanState, backup: *SwapchainBackupState) void
     s.swapchain.image_layout_initialized = null;
 }
 
-fn restore_swapchain_state(s: *c.VulkanState, backup: *const SwapchainBackupState) void {
+fn restore_swapchain_state(s: *types.VulkanState, backup: *const SwapchainBackupState) void {
     s.swapchain.handle = backup.handle;
     s.swapchain.images = backup.images;
     s.swapchain.image_views = backup.image_views;
@@ -370,7 +359,7 @@ fn restore_swapchain_state(s: *c.VulkanState, backup: *const SwapchainBackupStat
     s.swapchain.image_layout_initialized = backup.layout_initialized;
 }
 
-fn handle_recreation_failure(s: *c.VulkanState, old_state: *const SwapchainBackupState) bool {
+fn handle_recreation_failure(s: *types.VulkanState, old_state: *const SwapchainBackupState) bool {
     log.cardinal_log_error("[SWAPCHAIN] Recreation failed", .{});
     s.swapchain.consecutive_recreation_failures += 1;
 
@@ -395,7 +384,7 @@ fn handle_recreation_failure(s: *c.VulkanState, old_state: *const SwapchainBacku
     return false;
 }
 
-fn destroy_backup_resources(s: *c.VulkanState, backup: *const SwapchainBackupState) void {
+fn destroy_backup_resources(s: *types.VulkanState, backup: *const SwapchainBackupState) void {
     if (backup.image_views) |views| {
         var i: u32 = 0;
         while (i < backup.image_count) : (i += 1) {
@@ -416,7 +405,7 @@ fn destroy_backup_resources(s: *c.VulkanState, backup: *const SwapchainBackupSta
     }
 }
 
-fn recreate_mesh_shader_pipeline_logic(s: *c.VulkanState) bool {
+fn recreate_mesh_shader_pipeline_logic(s: *types.VulkanState) bool {
     var base: [*c]const u8 = @ptrCast(c.getenv("CARDINAL_SHADERS_DIR"));
     if (base == null or base[0] == 0) {
         base = "assets/shaders";
@@ -430,10 +419,10 @@ fn recreate_mesh_shader_pipeline_logic(s: *c.VulkanState) bool {
     _ = c.snprintf(&task_path, 512, "%s/task.task.spv", base);
     _ = c.snprintf(&frag_path, 512, "%s/mesh.frag.spv", base);
 
-    var config = std.mem.zeroes(c.MeshShaderPipelineConfig);
-    config.mesh_shader_path = &mesh_path;
-    config.task_shader_path = &task_path;
-    config.fragment_shader_path = &frag_path;
+    var config = std.mem.zeroes(types.MeshShaderPipelineConfig);
+    config.mesh_shader_path = @as(?[*:0]const u8, @ptrCast(&mesh_path));
+    config.task_shader_path = @as(?[*:0]const u8, @ptrCast(&task_path));
+    config.fragment_shader_path = @as(?[*:0]const u8, @ptrCast(&frag_path));
     config.topology = c.VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST;
     config.polygon_mode = c.VK_POLYGON_MODE_FILL;
     config.cull_mode = c.VK_CULL_MODE_BACK_BIT;
@@ -448,7 +437,7 @@ fn recreate_mesh_shader_pipeline_logic(s: *c.VulkanState) bool {
     config.max_vertices_per_meshlet = 64;
     config.max_primitives_per_meshlet = 126;
 
-    if (!c.vk_mesh_shader_create_pipeline(s, &config, s.swapchain.format, s.swapchain.depth_format, &s.pipelines.mesh_shader_pipeline)) {
+    if (!vk_mesh_shader.vk_mesh_shader_create_pipeline(@ptrCast(s), &config, s.swapchain.format, s.swapchain.depth_format, @ptrCast(&s.pipelines.mesh_shader_pipeline))) {
         log.cardinal_log_error("[SWAPCHAIN] Failed to recreate mesh shader pipeline", .{});
         return false;
     }
@@ -458,7 +447,7 @@ fn recreate_mesh_shader_pipeline_logic(s: *c.VulkanState) bool {
 
 // Exported functions
 
-pub export fn vk_create_swapchain(s: ?*c.VulkanState) callconv(.c) bool {
+pub export fn vk_create_swapchain(s: ?*types.VulkanState) callconv(.c) bool {
     if (s == null or s.?.context.device == null or s.?.context.physical_device == null or s.?.context.surface == null) {
         log.cardinal_log_error("[SWAPCHAIN] Invalid VulkanState or missing required components", .{});
         return false;
@@ -505,15 +494,15 @@ pub export fn vk_create_swapchain(s: ?*c.VulkanState) callconv(.c) bool {
     return true;
 }
 
-pub export fn vk_destroy_swapchain(s: ?*c.VulkanState) callconv(.c) void {
+pub export fn vk_destroy_swapchain(s: ?*types.VulkanState) callconv(.c) void {
     if (s == null) return;
     const vs = s.?;
 
     if (vs.swapchain.image_views != null) {
         var i: u32 = 0;
         while (i < vs.swapchain.image_count) : (i += 1) {
-            if (vs.swapchain.image_views[i] != null) {
-                c.vkDestroyImageView(vs.context.device, vs.swapchain.image_views[i], null);
+            if (vs.swapchain.image_views.?[i] != null) {
+                c.vkDestroyImageView(vs.context.device, vs.swapchain.image_views.?[i], null);
             }
         }
         c.free(@as(?*anyopaque, @ptrCast(vs.swapchain.image_views)));
@@ -531,7 +520,7 @@ pub export fn vk_destroy_swapchain(s: ?*c.VulkanState) callconv(.c) void {
     }
 }
 
-pub export fn vk_recreate_swapchain(s: ?*c.VulkanState) callconv(.c) bool {
+pub export fn vk_recreate_swapchain(s: ?*types.VulkanState) callconv(.c) bool {
     if (s == null) {
         log.cardinal_log_error("[SWAPCHAIN] Invalid VulkanState for recreation", .{});
         return false;
@@ -570,10 +559,10 @@ pub export fn vk_recreate_swapchain(s: ?*c.VulkanState) callconv(.c) bool {
         return false;
     }
 
-    c.vk_destroy_pipeline(vs);
+    vk_pipeline.vk_destroy_pipeline(@ptrCast(vs));
 
     if (vs.pipelines.use_mesh_shader_pipeline) {
-        c.vk_mesh_shader_destroy_pipeline(vs, &vs.pipelines.mesh_shader_pipeline);
+        vk_mesh_shader.vk_mesh_shader_destroy_pipeline(@ptrCast(vs), @ptrCast(&vs.pipelines.mesh_shader_pipeline));
     }
 
     destroy_backup_resources(vs, &backup);
@@ -582,17 +571,17 @@ pub export fn vk_recreate_swapchain(s: ?*c.VulkanState) callconv(.c) bool {
         return handle_recreation_failure(vs, &backup);
     }
 
-    if (!c.vk_recreate_images_in_flight(vs)) {
+    if (!vk_commands.vk_recreate_images_in_flight(@ptrCast(vs))) {
         return handle_recreation_failure(vs, &backup);
     }
 
-    if (!c.vk_create_pipeline(vs)) {
+    if (!vk_pipeline.vk_create_pipeline(@ptrCast(vs))) {
         return handle_recreation_failure(vs, &backup);
     }
 
     vs.swapchain.depth_layout_initialized = false;
 
-    if (!c.vk_create_simple_pipelines(vs)) {
+    if (!vk_simple_pipelines.vk_create_simple_pipelines(vs)) {
         return handle_recreation_failure(vs, &backup);
     }
 

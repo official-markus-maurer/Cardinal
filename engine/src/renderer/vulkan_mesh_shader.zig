@@ -1,61 +1,81 @@
 const std = @import("std");
 const builtin = @import("builtin");
 const log = @import("../core/log.zig");
-
-const c = @cImport({
-    @cDefine("CARDINAL_ZIG_BUILD", "1");
-    @cInclude("stdlib.h");
-    @cInclude("string.h");
-    @cInclude("stdio.h");
-    @cInclude("vulkan/vulkan.h");
-    @cInclude("cardinal/renderer/vulkan_mesh_shader.h");
-    @cInclude("vulkan_state.h");
-    @cInclude("vulkan_buffer_manager.h");
-    @cInclude("cardinal/renderer/util/vulkan_shader_utils.h");
-    @cInclude("cardinal/renderer/vulkan_texture_manager.h");
-});
+const buffer_mgr = @import("vulkan_buffer_manager.zig");
+const types = @import("vulkan_types.zig");
+const c = @import("vulkan_c.zig").c;
+const shader_utils = @import("util/vulkan_shader_utils.zig");
+const vk_texture_utils = @import("util/vulkan_texture_utils.zig");
+const scene = @import("../assets/scene.zig");
 
 // Helper Functions
 
-fn load_shader_module(device: c.VkDevice, path: [*c]const u8, out_module: *c.VkShaderModule) bool {
-    // Using vk_shader_create_module from vulkan_shader_utils.h (assumed available via cImport)
-    return c.vk_shader_create_module(device, path, out_module);
+fn load_shader_module(device: c.VkDevice, path: [*:0]const u8, out_module: *c.VkShaderModule) bool {
+    // Using vk_shader_create_module from vulkan_shader_utils.zig
+    return shader_utils.vk_shader_create_module(device, path, out_module);
 }
 
 // Implementation
 
-pub export fn vk_mesh_shader_init(s: ?*c.VulkanState) callconv(.c) bool {
+pub export fn vk_mesh_shader_init(s: ?*types.VulkanState) callconv(.c) bool {
     if (s == null) return false;
     const vs = s.?;
 
-    vs.pending_cleanup_draw_data = null;
-    vs.pending_cleanup_count = 0;
-    vs.pending_cleanup_capacity = 0;
+    const frames = if (vs.sync.max_frames_in_flight > 0) vs.sync.max_frames_in_flight else 3;
+
+    // Allocate arrays for per-frame lists
+    const lists_ptr = c.calloc(frames, @sizeOf([*]types.MeshShaderDrawData));
+    const counts_ptr = c.calloc(frames, @sizeOf(u32));
+    const capacities_ptr = c.calloc(frames, @sizeOf(u32));
+
+    if (lists_ptr == null or counts_ptr == null or capacities_ptr == null) {
+        if (lists_ptr) |p| c.free(p);
+        if (counts_ptr) |p| c.free(p);
+        if (capacities_ptr) |p| c.free(p);
+        return false;
+    }
+
+    vs.pending_cleanup_lists = @as(?[*]?[*]types.MeshShaderDrawData, @ptrCast(@alignCast(lists_ptr)));
+    vs.pending_cleanup_counts = @as([*]u32, @ptrCast(@alignCast(counts_ptr)));
+    vs.pending_cleanup_capacities = @as([*]u32, @ptrCast(@alignCast(capacities_ptr)));
 
     return true;
 }
 
-pub export fn vk_mesh_shader_cleanup(s: ?*c.VulkanState) callconv(.c) void {
+pub export fn vk_mesh_shader_cleanup(s: ?*types.VulkanState) callconv(.c) void {
     if (s == null) return;
     const vs = s.?;
 
     vk_mesh_shader_destroy_pipeline(vs, &vs.pipelines.mesh_shader_pipeline);
-    vk_mesh_shader_process_pending_cleanup(vs);
-
-    if (vs.pending_cleanup_draw_data != null) {
-        c.free(vs.pending_cleanup_draw_data);
-        vs.pending_cleanup_draw_data = null;
+    
+    // Process all pending cleanups
+    if (vs.pending_cleanup_lists != null) {
+        var f: u32 = 0;
+        const frames = if (vs.sync.max_frames_in_flight > 0) vs.sync.max_frames_in_flight else 3;
+        while (f < frames) : (f += 1) {
+            if (vs.pending_cleanup_lists.?[f] != null) {
+                 var i: u32 = 0;
+                 while (i < vs.pending_cleanup_counts.?[f]) : (i += 1) {
+                    vk_mesh_shader_destroy_draw_data(vs, &(vs.pending_cleanup_lists.?[f].?)[i]);
+                }
+                 c.free(@as(?*anyopaque, @ptrCast(vs.pending_cleanup_lists.?[f])));
+            }
+        }
+        c.free(@as(?*anyopaque, @ptrCast(vs.pending_cleanup_lists)));
+        c.free(@as(?*anyopaque, @ptrCast(vs.pending_cleanup_counts)));
+        c.free(@as(?*anyopaque, @ptrCast(vs.pending_cleanup_capacities)));
+        vs.pending_cleanup_lists = null;
+        vs.pending_cleanup_counts = null;
+        vs.pending_cleanup_capacities = null;
     }
-    vs.pending_cleanup_count = 0;
-    vs.pending_cleanup_capacity = 0;
 }
 
 pub export fn vk_mesh_shader_create_pipeline(
-    s: ?*c.VulkanState,
-    config: ?*const c.MeshShaderPipelineConfig,
+    s: ?*types.VulkanState,
+    config: ?*const types.MeshShaderPipelineConfig,
     swapchain_format: c.VkFormat,
     depth_format: c.VkFormat,
-    pipeline: ?*c.MeshShaderPipeline
+    pipeline: ?*types.MeshShaderPipeline
 ) callconv(.c) bool {
     if (s == null or config == null or pipeline == null) return false;
     const vs = s.?;
@@ -71,20 +91,31 @@ pub export fn vk_mesh_shader_create_pipeline(
     var fragShaderModule: c.VkShaderModule = null;
     var taskShaderModule: c.VkShaderModule = null;
 
-    if (!load_shader_module(vs.context.device, cfg.mesh_shader_path, &meshShaderModule)) {
-        log.cardinal_log_error("Failed to load mesh shader: {s}", .{cfg.mesh_shader_path});
-        return false;
+    if (cfg.mesh_shader_path) |path| {
+        if (!load_shader_module(vs.context.device, path, &meshShaderModule)) {
+            log.cardinal_log_error("Failed to load mesh shader: {s}", .{std.mem.span(path)});
+            return false;
+        }
+    } else {
+         log.cardinal_log_error("Mesh shader path is null", .{});
+         return false;
     }
 
-    if (!load_shader_module(vs.context.device, cfg.fragment_shader_path, &fragShaderModule)) {
-        log.cardinal_log_error("Failed to load fragment shader: {s}", .{cfg.fragment_shader_path});
+    if (cfg.fragment_shader_path) |path| {
+        if (!load_shader_module(vs.context.device, path, &fragShaderModule)) {
+            log.cardinal_log_error("Failed to load fragment shader: {s}", .{std.mem.span(path)});
+            c.vkDestroyShaderModule(vs.context.device, meshShaderModule, null);
+            return false;
+        }
+    } else {
+        log.cardinal_log_error("Fragment shader path is null", .{});
         c.vkDestroyShaderModule(vs.context.device, meshShaderModule, null);
         return false;
     }
 
-    if (cfg.task_shader_path != null) {
-        if (!load_shader_module(vs.context.device, cfg.task_shader_path, &taskShaderModule)) {
-            log.cardinal_log_warn("Failed to load task shader: {s}", .{cfg.task_shader_path});
+    if (cfg.task_shader_path) |path| {
+        if (!load_shader_module(vs.context.device, path, &taskShaderModule)) {
+            log.cardinal_log_warn("Failed to load task shader: {s}", .{std.mem.span(path)});
         } else {
             pipe.has_task_shader = true;
         }
@@ -214,8 +245,8 @@ pub export fn vk_mesh_shader_create_pipeline(
         .pad3 = .{ 0, 0, 0 },
     };
 
-    var defaultMatBuffer: c.VulkanBuffer = undefined;
-    if (c.vk_buffer_create_device_local(&defaultMatBuffer, vs.context.device, &vs.allocator, vs.commands.pools[0],
+    var defaultMatBuffer: types.VulkanBuffer = undefined;
+    if (buffer_mgr.vk_buffer_create_device_local(@ptrCast(&defaultMatBuffer), vs.context.device, &vs.allocator, vs.commands.pools.?[0],
                                       vs.context.graphics_queue, &defaultMat, @sizeOf(DefaultMaterialData),
                                       c.VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT, vs)) {
         pipe.default_material_buffer = defaultMatBuffer.handle;
@@ -340,7 +371,7 @@ pub export fn vk_mesh_shader_create_pipeline(
     return true;
 }
 
-pub export fn vk_mesh_shader_destroy_pipeline(s: ?*c.VulkanState, pipeline: ?*c.MeshShaderPipeline) callconv(.c) void {
+pub export fn vk_mesh_shader_destroy_pipeline(s: ?*types.VulkanState, pipeline: ?*types.MeshShaderPipeline) callconv(.c) void {
     if (s == null or pipeline == null) return;
     const vs = s.?;
     const pipe = pipeline.?;
@@ -382,9 +413,9 @@ pub export fn vk_mesh_shader_destroy_pipeline(s: ?*c.VulkanState, pipeline: ?*c.
 
 pub export fn vk_mesh_shader_draw(
     cmd_buffer: c.VkCommandBuffer,
-    s: ?*c.VulkanState,
-    pipeline: ?*const c.MeshShaderPipeline,
-    draw_data: ?*const c.MeshShaderDrawData
+    s: ?*types.VulkanState,
+    pipeline: ?*const types.MeshShaderPipeline,
+    draw_data: ?*const types.MeshShaderDrawData
 ) callconv(.c) void {
     if (cmd_buffer == null or s == null or pipeline == null or draw_data == null) return;
     const vs = s.?;
@@ -414,7 +445,7 @@ pub export fn vk_mesh_shader_draw(
     }
 }
 
-pub export fn vk_mesh_shader_destroy_draw_data(s: ?*c.VulkanState, draw_data: ?*c.MeshShaderDrawData) callconv(.c) void {
+pub export fn vk_mesh_shader_destroy_draw_data(s: ?*types.VulkanState, draw_data: ?*types.MeshShaderDrawData) callconv(.c) void {
     if (s == null or draw_data == null) return;
     const vs = s.?;
     const data = draw_data.?;
@@ -472,39 +503,45 @@ pub export fn vk_mesh_shader_destroy_draw_data(s: ?*c.VulkanState, draw_data: ?*
     data.uniform_mapped = null;
 
     // Zero out the struct
-    @memset(@as([*]u8, @ptrCast(data))[0..@sizeOf(c.MeshShaderDrawData)], 0);
+    @memset(@as([*]u8, @ptrCast(data))[0..@sizeOf(types.MeshShaderDrawData)], 0);
 }
 
-pub export fn vk_mesh_shader_add_pending_cleanup_internal(s: ?*c.VulkanState, draw_data: ?*c.MeshShaderDrawData) callconv(.c) void {
+pub export fn vk_mesh_shader_add_pending_cleanup_internal(s: ?*types.VulkanState, draw_data: ?*types.MeshShaderDrawData) callconv(.c) void {
     if (s == null or draw_data == null) return;
     const vs = s.?;
     const data = draw_data.?;
+    const frame = vs.sync.current_frame;
 
-    if (vs.pending_cleanup_count >= vs.pending_cleanup_capacity) {
-        const new_capacity = if (vs.pending_cleanup_capacity == 0) 16 else vs.pending_cleanup_capacity * 2;
-        const new_ptr = c.realloc(vs.pending_cleanup_draw_data, new_capacity * @sizeOf(c.MeshShaderDrawData));
+    if (vs.pending_cleanup_lists == null) return;
+
+    if (vs.pending_cleanup_counts.?[frame] >= vs.pending_cleanup_capacities.?[frame]) {
+        const new_capacity = if (vs.pending_cleanup_capacities.?[frame] == 0) 16 else vs.pending_cleanup_capacities.?[frame] * 2;
+        const new_ptr = c.realloc(vs.pending_cleanup_lists.?[frame], new_capacity * @sizeOf(types.MeshShaderDrawData));
         if (new_ptr == null) {
-            log.cardinal_log_error("Failed to expand pending cleanup list", .{});
+            log.cardinal_log_error("Failed to expand pending cleanup list for frame {d}", .{frame});
             vk_mesh_shader_destroy_draw_data(vs, data);
             return;
         }
-        vs.pending_cleanup_draw_data = @as([*]c.MeshShaderDrawData, @ptrCast(@alignCast(new_ptr)));
-        vs.pending_cleanup_capacity = new_capacity;
+        vs.pending_cleanup_lists.?[frame] = @as(?[*]types.MeshShaderDrawData, @ptrCast(@alignCast(new_ptr)));
+        vs.pending_cleanup_capacities.?[frame] = new_capacity;
     }
 
-    vs.pending_cleanup_draw_data[vs.pending_cleanup_count] = data.*;
-    vs.pending_cleanup_count += 1;
+    (vs.pending_cleanup_lists.?[frame].?)[vs.pending_cleanup_counts.?[frame]] = data.*;
+    vs.pending_cleanup_counts.?[frame] += 1;
 }
 
-pub export fn vk_mesh_shader_process_pending_cleanup(s: ?*c.VulkanState) callconv(.c) void {
-    if (s == null or s.?.pending_cleanup_draw_data == null) return;
+pub export fn vk_mesh_shader_process_pending_cleanup(s: ?*types.VulkanState) callconv(.c) void {
+    if (s == null or s.?.pending_cleanup_lists == null) return;
     const vs = s.?;
+    const frame = vs.sync.current_frame;
+
+    if (vs.pending_cleanup_lists.?[frame] == null) return;
 
     var i: u32 = 0;
-    while (i < vs.pending_cleanup_count) : (i += 1) {
-        vk_mesh_shader_destroy_draw_data(vs, &vs.pending_cleanup_draw_data[i]);
+    while (i < vs.pending_cleanup_counts.?[frame]) : (i += 1) {
+        vk_mesh_shader_destroy_draw_data(vs, &vs.pending_cleanup_lists.?[frame].?[i]);
     }
-    vs.pending_cleanup_count = 0;
+    vs.pending_cleanup_counts.?[frame] = 0;
 }
 
 pub export fn vk_mesh_shader_generate_meshlets(
@@ -514,7 +551,7 @@ pub export fn vk_mesh_shader_generate_meshlets(
     index_count: u32,
     max_vertices_per_meshlet_in: u32,
     max_primitives_per_meshlet_in: u32,
-    out_meshlets: ?*?[*]c.GpuMeshlet,
+    out_meshlets: ?*?[*]types.GpuMeshlet,
     out_meshlet_count: ?*u32
 ) callconv(.c) bool {
     if (vertices == null or indices == null or out_meshlets == null or out_meshlet_count == null) return false;
@@ -528,12 +565,12 @@ pub export fn vk_mesh_shader_generate_meshlets(
     const triangles_count = index_count / 3;
     const meshlets_capacity = (triangles_count + max_primitives - 1) / max_primitives;
     
-    const meshlets_ptr = c.malloc(meshlets_capacity * @sizeOf(c.GpuMeshlet));
+    const meshlets_ptr = c.malloc(meshlets_capacity * @sizeOf(types.GpuMeshlet));
     if (meshlets_ptr == null) {
         log.cardinal_log_error("Failed to allocate memory for meshlets", .{});
         return false;
     }
-    const meshlets = @as([*]c.GpuMeshlet, @ptrCast(@alignCast(meshlets_ptr)));
+    const meshlets = @as([*]types.GpuMeshlet, @ptrCast(@alignCast(meshlets_ptr)));
 
     var current_meshlet: u32 = 0;
     var current_index: u32 = 0;
@@ -562,41 +599,41 @@ pub export fn vk_mesh_shader_generate_meshlets(
 }
 
 pub export fn vk_mesh_shader_convert_scene_mesh(
-    mesh: ?*const c.CardinalMesh,
+    mesh: ?*const types.CardinalMesh,
     max_vertices_per_meshlet: u32,
     max_primitives_per_meshlet: u32,
-    out_meshlets: ?*?[*]c.GpuMeshlet,
+    out_meshlets: ?*?[*]types.GpuMeshlet,
     out_meshlet_count: ?*u32
 ) callconv(.c) bool {
     if (mesh == null) return false;
     const m = mesh.?;
     return vk_mesh_shader_generate_meshlets(
-        m.vertices, m.vertex_count, m.indices, m.index_count,
+        m.vertices, m.vertex_count, @ptrCast(m.indices), m.index_count,
         max_vertices_per_meshlet, max_primitives_per_meshlet, out_meshlets, out_meshlet_count
     );
 }
 
 pub export fn vk_mesh_shader_create_draw_data(
-    s: ?*c.VulkanState,
-    meshlets: ?[*]const c.GpuMeshlet,
+    s: ?*types.VulkanState,
+    meshlets: ?[*]const types.GpuMeshlet,
     meshlet_count: u32,
     vertices: ?*const anyopaque,
     vertex_size: u32,
     primitives: ?*const u32,
     primitive_count: u32,
-    draw_data: ?*c.MeshShaderDrawData
+    draw_data: ?*types.MeshShaderDrawData
 ) callconv(.c) bool {
     if (s == null or draw_data == null or meshlets == null or vertices == null or primitives == null) return false;
     const vs = s.?;
     const data = draw_data.?;
 
-    @memset(@as([*]u8, @ptrCast(data))[0..@sizeOf(c.MeshShaderDrawData)], 0);
+    @memset(@as([*]u8, @ptrCast(data))[0..@sizeOf(types.MeshShaderDrawData)], 0);
     data.meshlet_count = meshlet_count;
 
     // 1. Meshlet Buffer
-    const meshletBufferSize = meshlet_count * @sizeOf(c.GpuMeshlet);
-    var meshletBuffer: c.VulkanBuffer = undefined;
-    if (c.vk_buffer_create_device_local(&meshletBuffer, vs.context.device, &vs.allocator, vs.commands.pools[0],
+    const meshletBufferSize = meshlet_count * @sizeOf(types.GpuMeshlet);
+    var meshletBuffer: buffer_mgr.VulkanBuffer = undefined;
+    if (buffer_mgr.vk_buffer_create_device_local(&meshletBuffer, vs.context.device, &vs.allocator, vs.commands.pools.?[0],
                                       vs.context.graphics_queue, meshlets, meshletBufferSize,
                                       c.VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | c.VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT, vs)) {
         data.meshlet_buffer = meshletBuffer.handle;
@@ -607,8 +644,8 @@ pub export fn vk_mesh_shader_create_draw_data(
     }
 
     // 2. Vertex Buffer
-    var vertexBuffer: c.VulkanBuffer = undefined;
-    if (c.vk_buffer_create_device_local(&vertexBuffer, vs.context.device, &vs.allocator, vs.commands.pools[0],
+    var vertexBuffer: buffer_mgr.VulkanBuffer = undefined;
+    if (buffer_mgr.vk_buffer_create_device_local(&vertexBuffer, vs.context.device, &vs.allocator, vs.commands.pools.?[0],
                                       vs.context.graphics_queue, vertices, vertex_size,
                                       c.VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | c.VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT, vs)) {
         data.vertex_buffer = vertexBuffer.handle;
@@ -621,8 +658,8 @@ pub export fn vk_mesh_shader_create_draw_data(
 
     // 3. Primitive Buffer
     const primitiveBufferSize = primitive_count * @sizeOf(u32);
-    var primitiveBuffer: c.VulkanBuffer = undefined;
-    if (c.vk_buffer_create_device_local(&primitiveBuffer, vs.context.device, &vs.allocator, vs.commands.pools[0],
+    var primitiveBuffer: buffer_mgr.VulkanBuffer = undefined;
+    if (buffer_mgr.vk_buffer_create_device_local(&primitiveBuffer, vs.context.device, &vs.allocator, vs.commands.pools.?[0],
                                       vs.context.graphics_queue, primitives, primitiveBufferSize,
                                       c.VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | c.VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT, vs)) {
         data.primitive_buffer = primitiveBuffer.handle;
@@ -648,8 +685,8 @@ pub export fn vk_mesh_shader_create_draw_data(
     };
     data.draw_command_count = 1;
 
-    var drawCmdBuffer: c.VulkanBuffer = undefined;
-    if (c.vk_buffer_create_device_local(&drawCmdBuffer, vs.context.device, &vs.allocator, vs.commands.pools[0],
+    var drawCmdBuffer: buffer_mgr.VulkanBuffer = undefined;
+    if (buffer_mgr.vk_buffer_create_device_local(&drawCmdBuffer, vs.context.device, &vs.allocator, vs.commands.pools.?[0],
                                       vs.context.graphics_queue, &drawCmd, @sizeOf(GpuDrawCommand),
                                       c.VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | c.VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT, vs)) {
         data.draw_command_buffer = drawCmdBuffer.handle;
@@ -661,15 +698,15 @@ pub export fn vk_mesh_shader_create_draw_data(
     }
 
     // 5. Uniform Buffer
-    const uboSize = @sizeOf(c.MeshShaderUniformBuffer);
-    var uboInfo = std.mem.zeroes(c.VulkanBufferCreateInfo);
+    const uboSize = @sizeOf(types.MeshShaderUniformBuffer);
+    var uboInfo = std.mem.zeroes(buffer_mgr.VulkanBufferCreateInfo);
     uboInfo.size = uboSize;
     uboInfo.usage = c.VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT;
     uboInfo.properties = c.VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | c.VK_MEMORY_PROPERTY_HOST_COHERENT_BIT;
     uboInfo.persistentlyMapped = true;
 
-    var ubo: c.VulkanBuffer = undefined;
-    if (c.vk_buffer_create(&ubo, vs.context.device, &vs.allocator, &uboInfo)) {
+    var ubo: buffer_mgr.VulkanBuffer = undefined;
+    if (buffer_mgr.vk_buffer_create(&ubo, vs.context.device, &vs.allocator, &uboInfo)) {
         data.uniform_buffer = ubo.handle;
         data.uniform_memory = ubo.memory;
         data.uniform_mapped = ubo.mapped;
@@ -688,9 +725,9 @@ pub export fn vk_mesh_shader_create_draw_data(
 }
 
 pub export fn vk_mesh_shader_update_descriptor_buffers(
-    s: ?*c.VulkanState,
-    pipeline: ?*c.MeshShaderPipeline,
-    draw_data: ?*const c.MeshShaderDrawData,
+    s: ?*types.VulkanState,
+    pipeline: ?*types.MeshShaderPipeline,
+    draw_data: ?*const types.MeshShaderDrawData,
     material_buffer: c.VkBuffer,
     lighting_buffer: c.VkBuffer,
     texture_views: ?[*]c.VkImageView,
@@ -808,7 +845,7 @@ pub export fn vk_mesh_shader_update_descriptor_buffers(
     if (draw_data) |d| {
         // Need mutable access to draw_data to set descriptor_set
         // But the input is const. The C code casts away const: (MeshShaderDrawData*)draw_data
-        const mutable_draw_data = @as(*c.MeshShaderDrawData, @constCast(d));
+        const mutable_draw_data = @as(*types.MeshShaderDrawData, @constCast(d));
         
         if (mutable_draw_data.descriptor_set == null) {
             if (pipe.descriptor_pool == null) return false;
@@ -901,37 +938,33 @@ pub export fn vk_mesh_shader_update_descriptor_buffers(
     return true;
 }
 
-pub export fn vk_mesh_shader_record_frame(s: ?*c.VulkanState, cmd: c.VkCommandBuffer) callconv(.c) void {
+pub export fn vk_mesh_shader_record_frame(s: ?*types.VulkanState, cmd: c.VkCommandBuffer) callconv(.c) void {
     if (s == null) return;
     const vs = s.?;
 
     if (vs.pipelines.use_mesh_shader_pipeline and vs.pipelines.mesh_shader_pipeline.pipeline != null and vs.current_scene != null) {
-        const scene = @as(*const c.CardinalScene, @ptrCast(vs.current_scene.?));
+        const current_scene = vs.current_scene.?;
         var i: u32 = 0;
-        while (i < scene.mesh_count) : (i += 1) {
-            const mesh = &scene.meshes[i];
+        while (i < current_scene.mesh_count) : (i += 1) {
+            const mesh = &current_scene.meshes.?[i];
             if (!mesh.visible) continue;
 
-            var meshlets: ?[*]c.GpuMeshlet = null;
+            var meshlets: ?[*]types.GpuMeshlet = null;
             var meshlet_count: u32 = 0;
 
             if (vk_mesh_shader_convert_scene_mesh(mesh, 64, 126, &meshlets, &meshlet_count)) {
                 defer if (meshlets) |ptr| c.free(ptr);
 
-                var draw_data = std.mem.zeroes(c.MeshShaderDrawData);
+                var draw_data = std.mem.zeroes(types.MeshShaderDrawData);
                 
-                // Safe cleanup via defer if something fails or after recording? 
-                // Wait, draw_data contains buffers that need to live during the frame execution.
-                // We must add it to pending_cleanup list.
-
                 if (vk_mesh_shader_create_draw_data(vs, meshlets, meshlet_count, 
-                                                  mesh.vertices, mesh.vertex_count * @sizeOf(c.CardinalVertex),
-                                                  mesh.indices, mesh.index_count, &draw_data)) {
+                                                  mesh.vertices, mesh.vertex_count * @sizeOf(scene.CardinalVertex),
+                                                  @ptrCast(mesh.indices), mesh.index_count, &draw_data)) {
                     
                     // Update Uniform Buffer
                     if (vs.pipelines.use_pbr_pipeline and vs.pipelines.pbr_pipeline.uniformBufferMapped != null) {
-                        const pbrUbo = @as(*c.PBRUniformBufferObject, @ptrCast(@alignCast(vs.pipelines.pbr_pipeline.uniformBufferMapped)));
-                        var meshUbo = std.mem.zeroes(c.MeshShaderUniformBuffer);
+                        const pbrUbo = @as(*types.PBRUniformBufferObject, @ptrCast(@alignCast(vs.pipelines.pbr_pipeline.uniformBufferMapped)));
+                        var meshUbo = std.mem.zeroes(types.MeshShaderUniformBuffer);
                         
                         @memcpy(meshUbo.model[0..16], mesh.transform[0..16]);
                         @memcpy(meshUbo.view[0..16], pbrUbo.view[0..16]);
@@ -939,8 +972,8 @@ pub export fn vk_mesh_shader_record_frame(s: ?*c.VulkanState, cmd: c.VkCommandBu
                         meshUbo.materialIndex = mesh.material_index;
 
                         if (draw_data.uniform_mapped != null) {
-                            @memcpy(@as([*]u8, @ptrCast(draw_data.uniform_mapped))[0..@sizeOf(c.MeshShaderUniformBuffer)], 
-                                   @as([*]const u8, @ptrCast(&meshUbo))[0..@sizeOf(c.MeshShaderUniformBuffer)]);
+                            @memcpy(@as([*]u8, @ptrCast(draw_data.uniform_mapped))[0..@sizeOf(types.MeshShaderUniformBuffer)], 
+                                   @as([*]const u8, @ptrCast(&meshUbo))[0..@sizeOf(types.MeshShaderUniformBuffer)]);
                         }
                     }
 
@@ -954,7 +987,7 @@ pub export fn vk_mesh_shader_record_frame(s: ?*c.VulkanState, cmd: c.VkCommandBu
 
                     if (vs.pipelines.use_pbr_pipeline and vs.pipelines.pbr_pipeline.textureManager != null) {
                         const tm = vs.pipelines.pbr_pipeline.textureManager;
-                        texture_count = tm.*.textureCount;
+                        texture_count = tm.?.textureCount;
                         if (texture_count > 0) {
                             const views_ptr = c.malloc(texture_count * @sizeOf(c.VkImageView));
                             const samplers_ptr = c.malloc(texture_count * @sizeOf(c.VkSampler));
@@ -965,8 +998,8 @@ pub export fn vk_mesh_shader_record_frame(s: ?*c.VulkanState, cmd: c.VkCommandBu
                                 
                                 var t: u32 = 0;
                                 while (t < texture_count) : (t += 1) {
-                                    texture_views.?[t] = tm.*.textures[t].view;
-                                    samplers.?[t] = if (tm.*.textures[t].sampler != null) tm.*.textures[t].sampler else tm.*.defaultSampler;
+                                    texture_views.?[t] = tm.?.textures.?[t].view;
+                                    samplers.?[t] = tm.?.textures.?[t].sampler orelse tm.?.defaultSampler;
                                 }
                             }
                         }
@@ -988,4 +1021,3 @@ pub export fn vk_mesh_shader_record_frame(s: ?*c.VulkanState, cmd: c.VkCommandBu
         }
     }
 }
-

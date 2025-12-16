@@ -1,32 +1,86 @@
 const std = @import("std");
 const builtin = @import("builtin");
 const log = @import("../core/log.zig");
-
-const c = @cImport({
-    @cDefine("CARDINAL_ZIG_BUILD", "1");
-    @cInclude("stdlib.h");
-    @cInclude("string.h");
-    @cInclude("stdio.h");
-    @cInclude("vulkan/vulkan.h");
-    @cInclude("vulkan_state.h");
-    @cInclude("vulkan_pipeline_manager.h");
-    @cInclude("cardinal/renderer/util/vulkan_shader_utils.h");
-    @cInclude("cardinal/renderer/vulkan_pbr.h");
-    @cInclude("cardinal/renderer/vulkan_mesh_shader.h");
-    @cInclude("vulkan_simple_pipelines.h");
-});
+const types = @import("vulkan_types.zig");
+const c = @import("vulkan_c.zig").c;
 
 const vk_pbr = @import("vulkan_pbr.zig");
 const vk_mesh_shader = @import("vulkan_mesh_shader.zig");
 const vk_simple_pipelines = @import("vulkan_simple_pipelines.zig");
+const shader_utils = @import("util/vulkan_shader_utils.zig");
+
+pub const VulkanPipelineType = enum(c_int) {
+    VULKAN_PIPELINE_TYPE_GRAPHICS = 0,
+    VULKAN_PIPELINE_TYPE_COMPUTE = 1,
+    VULKAN_PIPELINE_TYPE_PBR = 2,
+    VULKAN_PIPELINE_TYPE_MESH_SHADER = 3,
+    VULKAN_PIPELINE_TYPE_SIMPLE_UV = 4,
+    VULKAN_PIPELINE_TYPE_SIMPLE_WIREFRAME = 5,
+};
+
+pub const VulkanPipelineInfo = extern struct {
+    pipeline: c.VkPipeline,
+    layout: c.VkPipelineLayout,
+    type: VulkanPipelineType,
+    is_active: bool,
+    needs_recreation: bool,
+};
+
+pub const VulkanGraphicsPipelineCreateInfo = extern struct {
+    vertex_shader_path: ?[*:0]const u8,
+    fragment_shader_path: ?[*:0]const u8,
+    geometry_shader_path: ?[*:0]const u8,
+    color_format: c.VkFormat,
+    depth_format: c.VkFormat,
+    enable_wireframe: bool,
+    enable_depth_test: bool,
+    enable_depth_write: bool,
+    cull_mode: c.VkCullModeFlags,
+    front_face: c.VkFrontFace,
+    descriptor_set_layout_count: u32,
+    descriptor_set_layouts: ?[*]c.VkDescriptorSetLayout,
+    push_constant_range_count: u32,
+    push_constant_ranges: ?[*]c.VkPushConstantRange,
+};
+
+pub const VulkanComputePipelineCreateInfo = extern struct {
+    compute_shader_path: ?[*:0]const u8,
+    descriptor_set_layout_count: u32,
+    descriptor_set_layouts: ?[*]c.VkDescriptorSetLayout,
+    push_constant_range_count: u32,
+    push_constant_ranges: ?[*]c.VkPushConstantRange,
+};
+
+pub const VulkanPipelineManager = extern struct {
+    vulkan_state: ?*types.VulkanState,
+
+    // Pipeline tracking
+    pipelines: ?[*]VulkanPipelineInfo,
+    pipeline_count: u32,
+    pipeline_capacity: u32,
+
+    // Specialized pipeline states
+    pbr_pipeline_enabled: bool,
+    mesh_shader_pipeline_enabled: bool,
+    simple_pipelines_enabled: bool,
+
+    // Pipeline cache for faster recreation
+    pipeline_cache: c.VkPipelineCache,
+
+    // Shader module cache
+    shader_modules: ?[*]c.VkShaderModule,
+    shader_paths: ?[*][*c]u8, // char**
+    shader_module_count: u32,
+    shader_module_capacity: u32,
+};
 
 // Helper to cast VulkanState
-fn get_state(manager: *c.VulkanPipelineManager) *c.VulkanState {
-    return @ptrCast(manager.vulkan_state);
+fn get_state(manager: *VulkanPipelineManager) *types.VulkanState {
+    return manager.vulkan_state.?;
 }
 
 // Internal helper functions
-fn create_pipeline_cache(manager: *c.VulkanPipelineManager) bool {
+fn create_pipeline_cache(manager: *VulkanPipelineManager) bool {
     var cache_info = std.mem.zeroes(c.VkPipelineCacheCreateInfo);
     cache_info.sType = c.VK_STRUCTURE_TYPE_PIPELINE_CACHE_CREATE_INFO;
     
@@ -38,7 +92,7 @@ fn create_pipeline_cache(manager: *c.VulkanPipelineManager) bool {
     return true;
 }
 
-fn destroy_pipeline_cache(manager: *c.VulkanPipelineManager) void {
+fn destroy_pipeline_cache(manager: *VulkanPipelineManager) void {
     if (manager.pipeline_cache != null) {
         const s = get_state(manager);
         c.vkDestroyPipelineCache(s.context.device, manager.pipeline_cache, null);
@@ -46,10 +100,10 @@ fn destroy_pipeline_cache(manager: *c.VulkanPipelineManager) void {
     }
 }
 
-fn ensure_pipeline_capacity(manager: *c.VulkanPipelineManager) bool {
+fn ensure_pipeline_capacity(manager: *VulkanPipelineManager) bool {
     if (manager.pipeline_count >= manager.pipeline_capacity) {
         const new_capacity = manager.pipeline_capacity * 2;
-        const new_pipelines = c.realloc(@as(?*anyopaque, @ptrCast(manager.pipelines)), @sizeOf(c.VulkanPipelineInfo) * new_capacity);
+        const new_pipelines = c.realloc(@as(?*anyopaque, @ptrCast(manager.pipelines)), @sizeOf(VulkanPipelineInfo) * new_capacity);
         if (new_pipelines == null) {
             log.cardinal_log_error("[PIPELINE_MANAGER] Failed to expand pipeline array", .{});
             return false;
@@ -60,21 +114,21 @@ fn ensure_pipeline_capacity(manager: *c.VulkanPipelineManager) bool {
     return true;
 }
 
-fn add_pipeline_to_manager(manager: *c.VulkanPipelineManager, info: *const c.VulkanPipelineInfo) bool {
+fn add_pipeline_to_manager(manager: *VulkanPipelineManager, info: *const VulkanPipelineInfo) bool {
     if (!ensure_pipeline_capacity(manager)) {
         return false;
     }
-    manager.pipelines[manager.pipeline_count] = info.*;
+    manager.pipelines.?[manager.pipeline_count] = info.*;
     manager.pipeline_count += 1;
     return true;
 }
 
-fn remove_pipeline_from_manager(manager: *c.VulkanPipelineManager, type_val: c.VulkanPipelineType) void {
+fn remove_pipeline_from_manager(manager: *VulkanPipelineManager, type_val: VulkanPipelineType) void {
     var i: u32 = 0;
     while (i < manager.pipeline_count) : (i += 1) {
-        if (manager.pipelines[i].type == type_val) {
+        if (manager.pipelines.?[i].type == type_val) {
             if (i < manager.pipeline_count - 1) {
-                manager.pipelines[i] = manager.pipelines[manager.pipeline_count - 1];
+                manager.pipelines.?[i] = manager.pipelines.?[manager.pipeline_count - 1];
             }
             manager.pipeline_count -= 1;
             break;
@@ -82,7 +136,7 @@ fn remove_pipeline_from_manager(manager: *c.VulkanPipelineManager, type_val: c.V
     }
 }
 
-fn ensure_shader_capacity(manager: *c.VulkanPipelineManager) bool {
+fn ensure_shader_capacity(manager: *VulkanPipelineManager) bool {
     if (manager.shader_module_count >= manager.shader_module_capacity) {
         const new_capacity = manager.shader_module_capacity * 2;
         const new_modules = c.realloc(@as(?*anyopaque, @ptrCast(manager.shader_modules)), @sizeOf(c.VkShaderModule) * new_capacity);
@@ -99,10 +153,10 @@ fn ensure_shader_capacity(manager: *c.VulkanPipelineManager) bool {
     return true;
 }
 
-fn find_shader_index(manager: *c.VulkanPipelineManager, shader_path: [*c]const u8) i32 {
+fn find_shader_index(manager: *VulkanPipelineManager, shader_path: [*c]const u8) i32 {
     var i: u32 = 0;
     while (i < manager.shader_module_count) : (i += 1) {
-        if (manager.shader_paths[i] != null and c.strcmp(manager.shader_paths[i], shader_path) == 0) {
+        if (manager.shader_paths.?[i] != null and c.strcmp(manager.shader_paths.?[i], shader_path) == 0) {
             return @intCast(i);
         }
     }
@@ -111,7 +165,7 @@ fn find_shader_index(manager: *c.VulkanPipelineManager, shader_path: [*c]const u
 
 // Core pipeline manager functions
 
-export fn vulkan_pipeline_manager_init(manager: ?*c.VulkanPipelineManager, vulkan_state: ?*c.VulkanState) callconv(.c) bool {
+export fn vulkan_pipeline_manager_init(manager: ?*VulkanPipelineManager, vulkan_state: ?*types.VulkanState) callconv(.c) bool {
     if (manager == null or vulkan_state == null) {
         log.cardinal_log_error("[PIPELINE_MANAGER] Invalid parameters for initialization", .{});
         return false;
@@ -119,11 +173,11 @@ export fn vulkan_pipeline_manager_init(manager: ?*c.VulkanPipelineManager, vulka
     const m = manager.?;
     const s = vulkan_state.?;
     
-    _ = c.memset(m, 0, @sizeOf(c.VulkanPipelineManager));
+    @memset(@as([*]u8, @ptrCast(m))[0..@sizeOf(VulkanPipelineManager)], 0);
     m.vulkan_state = s;
     
     m.pipeline_capacity = 16;
-    m.pipelines = @ptrCast(@alignCast(c.malloc(@sizeOf(c.VulkanPipelineInfo) * m.pipeline_capacity)));
+    m.pipelines = @ptrCast(@alignCast(c.malloc(@sizeOf(VulkanPipelineInfo) * m.pipeline_capacity)));
     if (m.pipelines == null) {
         log.cardinal_log_error("[PIPELINE_MANAGER] Failed to allocate pipeline array", .{});
         return false;
@@ -153,7 +207,7 @@ export fn vulkan_pipeline_manager_init(manager: ?*c.VulkanPipelineManager, vulka
     return true;
 }
 
-export fn vulkan_pipeline_manager_destroy(manager: ?*c.VulkanPipelineManager) callconv(.c) void {
+export fn vulkan_pipeline_manager_destroy(manager: ?*VulkanPipelineManager) callconv(.c) void {
     if (manager == null or manager.?.vulkan_state == null) {
         return;
     }
@@ -164,7 +218,7 @@ export fn vulkan_pipeline_manager_destroy(manager: ?*c.VulkanPipelineManager) ca
     
     var i: u32 = 0;
     while (i < m.pipeline_count) : (i += 1) {
-        const info = &m.pipelines[i];
+        const info = &m.pipelines.?[i];
         if (info.pipeline != null) {
             c.vkDestroyPipeline(s.context.device, info.pipeline, null);
         }
@@ -180,11 +234,11 @@ export fn vulkan_pipeline_manager_destroy(manager: ?*c.VulkanPipelineManager) ca
     c.free(@as(?*anyopaque, @ptrCast(m.shader_modules)));
     c.free(@as(?*anyopaque, @ptrCast(m.shader_paths)));
     
-    _ = c.memset(m, 0, @sizeOf(c.VulkanPipelineManager));
+    @memset(@as([*]u8, @ptrCast(m))[0..@sizeOf(VulkanPipelineManager)], 0);
     log.cardinal_log_info("[PIPELINE_MANAGER] Destroyed successfully", .{});
 }
 
-export fn vulkan_pipeline_manager_recreate_all(manager: ?*c.VulkanPipelineManager, new_color_format: c.VkFormat, new_depth_format: c.VkFormat) callconv(.c) bool {
+export fn vulkan_pipeline_manager_recreate_all(manager: ?*VulkanPipelineManager, new_color_format: c.VkFormat, new_depth_format: c.VkFormat) callconv(.c) bool {
     if (manager == null or manager.?.vulkan_state == null) {
         log.cardinal_log_error("[PIPELINE_MANAGER] Invalid parameters for recreation", .{});
         return false;
@@ -196,7 +250,7 @@ export fn vulkan_pipeline_manager_recreate_all(manager: ?*c.VulkanPipelineManage
     
     var i: u32 = 0;
     while (i < m.pipeline_count) : (i += 1) {
-        m.pipelines[i].needs_recreation = true;
+        m.pipelines.?[i].needs_recreation = true;
     }
     
     var success = true;
@@ -210,7 +264,7 @@ export fn vulkan_pipeline_manager_recreate_all(manager: ?*c.VulkanPipelineManage
     }
     
     if (m.mesh_shader_pipeline_enabled and s.context.supports_mesh_shader) {
-        var config = std.mem.zeroes(c.MeshShaderPipelineConfig);
+        var config = std.mem.zeroes(types.MeshShaderPipelineConfig);
         config.task_shader_path = "shaders/mesh_task.spv";
         config.mesh_shader_path = "shaders/mesh.spv";
         config.fragment_shader_path = "shaders/mesh_frag.spv";
@@ -247,7 +301,7 @@ export fn vulkan_pipeline_manager_recreate_all(manager: ?*c.VulkanPipelineManage
     return success;
 }
 
-export fn vulkan_pipeline_manager_create_graphics(manager: ?*c.VulkanPipelineManager, create_info: ?*const c.VulkanGraphicsPipelineCreateInfo, pipeline_info: ?*c.VulkanPipelineInfo) callconv(.c) bool {
+export fn vulkan_pipeline_manager_create_graphics(manager: ?*VulkanPipelineManager, create_info: ?*const VulkanGraphicsPipelineCreateInfo, pipeline_info: ?*VulkanPipelineInfo) callconv(.c) bool {
     if (manager == null or create_info == null or pipeline_info == null or manager.?.vulkan_state == null) {
         log.cardinal_log_error("[PIPELINE_MANAGER] Invalid parameters for graphics pipeline creation", .{});
         return false;
@@ -263,18 +317,18 @@ export fn vulkan_pipeline_manager_create_graphics(manager: ?*c.VulkanPipelineMan
     var geom_shader: c.VkShaderModule = null;
     
     if (!vulkan_pipeline_manager_load_shader(m, ci.vertex_shader_path, &vert_shader)) {
-        log.cardinal_log_error("[PIPELINE_MANAGER] Failed to load vertex shader: {s}", .{ci.vertex_shader_path});
+        log.cardinal_log_error("[PIPELINE_MANAGER] Failed to load vertex shader: {s}", .{if (ci.vertex_shader_path) |p| std.mem.span(p) else "null"});
         return false;
     }
     
     if (!vulkan_pipeline_manager_load_shader(m, ci.fragment_shader_path, &frag_shader)) {
-        log.cardinal_log_error("[PIPELINE_MANAGER] Failed to load fragment shader: {s}", .{ci.fragment_shader_path});
+        log.cardinal_log_error("[PIPELINE_MANAGER] Failed to load fragment shader: {s}", .{if (ci.fragment_shader_path) |p| std.mem.span(p) else "null"});
         return false;
     }
     
     if (ci.geometry_shader_path != null) {
         if (!vulkan_pipeline_manager_load_shader(m, ci.geometry_shader_path, &geom_shader)) {
-            log.cardinal_log_error("[PIPELINE_MANAGER] Failed to load geometry shader: {s}", .{ci.geometry_shader_path});
+            log.cardinal_log_error("[PIPELINE_MANAGER] Failed to load geometry shader: {s}", .{if (ci.geometry_shader_path) |p| std.mem.span(p) else "null"});
             return false;
         }
     }
@@ -394,7 +448,7 @@ export fn vulkan_pipeline_manager_create_graphics(manager: ?*c.VulkanPipelineMan
     
     pi.pipeline = pipeline;
     pi.layout = pipeline_layout;
-    pi.type = c.VULKAN_PIPELINE_TYPE_GRAPHICS;
+    pi.type = .VULKAN_PIPELINE_TYPE_GRAPHICS;
     pi.is_active = true;
     pi.needs_recreation = false;
     
@@ -409,7 +463,7 @@ export fn vulkan_pipeline_manager_create_graphics(manager: ?*c.VulkanPipelineMan
     return true;
 }
 
-export fn vulkan_pipeline_manager_create_compute(manager: ?*c.VulkanPipelineManager, create_info: ?*const c.VulkanComputePipelineCreateInfo, pipeline_info: ?*c.VulkanPipelineInfo) callconv(.c) bool {
+export fn vulkan_pipeline_manager_create_compute(manager: ?*VulkanPipelineManager, create_info: ?*const VulkanComputePipelineCreateInfo, pipeline_info: ?*VulkanPipelineInfo) callconv(.c) bool {
     if (manager == null or create_info == null or pipeline_info == null or manager.?.vulkan_state == null) {
         log.cardinal_log_error("[PIPELINE_MANAGER] Invalid parameters for compute pipeline creation", .{});
         return false;
@@ -422,7 +476,7 @@ export fn vulkan_pipeline_manager_create_compute(manager: ?*c.VulkanPipelineMana
     
     var compute_shader: c.VkShaderModule = null;
     if (!vulkan_pipeline_manager_load_shader(m, ci.compute_shader_path, &compute_shader)) {
-        log.cardinal_log_error("[PIPELINE_MANAGER] Failed to load compute shader: {s}", .{ci.compute_shader_path});
+        log.cardinal_log_error("[PIPELINE_MANAGER] Failed to load compute shader: {s}", .{if (ci.compute_shader_path) |p| std.mem.span(p) else "null"});
         return false;
     }
     
@@ -458,7 +512,7 @@ export fn vulkan_pipeline_manager_create_compute(manager: ?*c.VulkanPipelineMana
     
     pi.pipeline = pipeline;
     pi.layout = pipeline_layout;
-    pi.type = c.VULKAN_PIPELINE_TYPE_COMPUTE;
+    pi.type = .VULKAN_PIPELINE_TYPE_COMPUTE;
     pi.is_active = true;
     pi.needs_recreation = false;
     
@@ -473,7 +527,7 @@ export fn vulkan_pipeline_manager_create_compute(manager: ?*c.VulkanPipelineMana
     return true;
 }
 
-export fn vulkan_pipeline_manager_enable_pbr(manager: ?*c.VulkanPipelineManager, color_format: c.VkFormat, depth_format: c.VkFormat) callconv(.c) bool {
+export fn vulkan_pipeline_manager_enable_pbr(manager: ?*VulkanPipelineManager, color_format: c.VkFormat, depth_format: c.VkFormat) callconv(.c) bool {
     if (manager == null or manager.?.vulkan_state == null) {
         log.cardinal_log_error("[PIPELINE_MANAGER] Invalid parameters for PBR pipeline", .{});
         return false;
@@ -486,7 +540,7 @@ export fn vulkan_pipeline_manager_enable_pbr(manager: ?*c.VulkanPipelineManager,
     
     const s = get_state(m);
     
-    if (!c.vk_pbr_pipeline_create(&s.pipelines.pbr_pipeline, s.context.device, s.context.physical_device, color_format, depth_format, @ptrCast(s.commands.pools[0]), s.context.graphics_queue, &s.allocator, s)) {
+    if (!vk_pbr.vk_pbr_pipeline_create(&s.pipelines.pbr_pipeline, s.context.device, s.context.physical_device, color_format, depth_format, s.commands.pools.?[0], s.context.graphics_queue, &s.allocator, s)) {
         log.cardinal_log_error("[PIPELINE_MANAGER] Failed to create PBR pipeline", .{});
         return false;
     }
@@ -498,7 +552,7 @@ export fn vulkan_pipeline_manager_enable_pbr(manager: ?*c.VulkanPipelineManager,
     return true;
 }
 
-export fn vulkan_pipeline_manager_disable_pbr(manager: ?*c.VulkanPipelineManager) callconv(.c) void {
+export fn vulkan_pipeline_manager_disable_pbr(manager: ?*VulkanPipelineManager) callconv(.c) void {
     if (manager == null or manager.?.vulkan_state == null or !manager.?.pbr_pipeline_enabled) {
         return;
     }
@@ -507,7 +561,7 @@ export fn vulkan_pipeline_manager_disable_pbr(manager: ?*c.VulkanPipelineManager
     
     _ = c.vkDeviceWaitIdle(s.context.device);
     
-    c.vk_pbr_pipeline_destroy(&s.pipelines.pbr_pipeline, s.context.device, &s.allocator);
+    vk_pbr.vk_pbr_pipeline_destroy(&s.pipelines.pbr_pipeline, s.context.device, &s.allocator);
     
     m.pbr_pipeline_enabled = false;
     s.pipelines.use_pbr_pipeline = false;
@@ -515,7 +569,7 @@ export fn vulkan_pipeline_manager_disable_pbr(manager: ?*c.VulkanPipelineManager
     log.cardinal_log_info("[PIPELINE_MANAGER] PBR pipeline disabled", .{});
 }
 
-export fn vulkan_pipeline_manager_enable_mesh_shader(manager: ?*c.VulkanPipelineManager, config: ?*const c.MeshShaderPipelineConfig, color_format: c.VkFormat, depth_format: c.VkFormat) callconv(.c) bool {
+export fn vulkan_pipeline_manager_enable_mesh_shader(manager: ?*VulkanPipelineManager, config: ?*const types.MeshShaderPipelineConfig, color_format: c.VkFormat, depth_format: c.VkFormat) callconv(.c) bool {
     if (manager == null or manager.?.vulkan_state == null or config == null) {
         log.cardinal_log_error("[PIPELINE_MANAGER] Invalid parameters for mesh shader pipeline", .{});
         return false;
@@ -533,7 +587,7 @@ export fn vulkan_pipeline_manager_enable_mesh_shader(manager: ?*c.VulkanPipeline
         return true;
     }
     
-    if (!c.vk_mesh_shader_create_pipeline(s, config, color_format, depth_format, @ptrCast(&s.pipelines.mesh_shader_pipeline))) {
+    if (!vk_mesh_shader.vk_mesh_shader_create_pipeline(s, config, color_format, depth_format, &s.pipelines.mesh_shader_pipeline)) {
         log.cardinal_log_error("[PIPELINE_MANAGER] Failed to create mesh shader pipeline", .{});
         return false;
     }
@@ -545,7 +599,7 @@ export fn vulkan_pipeline_manager_enable_mesh_shader(manager: ?*c.VulkanPipeline
     return true;
 }
 
-export fn vulkan_pipeline_manager_disable_mesh_shader(manager: ?*c.VulkanPipelineManager) callconv(.c) void {
+export fn vulkan_pipeline_manager_disable_mesh_shader(manager: ?*VulkanPipelineManager) callconv(.c) void {
     if (manager == null or manager.?.vulkan_state == null or !manager.?.mesh_shader_pipeline_enabled) {
         return;
     }
@@ -554,7 +608,7 @@ export fn vulkan_pipeline_manager_disable_mesh_shader(manager: ?*c.VulkanPipelin
     
     _ = c.vkDeviceWaitIdle(s.context.device);
     
-    c.vk_mesh_shader_destroy_pipeline(s, @ptrCast(&s.pipelines.mesh_shader_pipeline));
+    vk_mesh_shader.vk_mesh_shader_destroy_pipeline(s, &s.pipelines.mesh_shader_pipeline);
     
     m.mesh_shader_pipeline_enabled = false;
     s.pipelines.use_mesh_shader_pipeline = false;
@@ -562,7 +616,7 @@ export fn vulkan_pipeline_manager_disable_mesh_shader(manager: ?*c.VulkanPipelin
     log.cardinal_log_info("[PIPELINE_MANAGER] Mesh shader pipeline disabled", .{});
 }
 
-export fn vulkan_pipeline_manager_create_simple_pipelines(manager: ?*c.VulkanPipelineManager) callconv(.c) bool {
+export fn vulkan_pipeline_manager_create_simple_pipelines(manager: ?*VulkanPipelineManager) callconv(.c) bool {
     if (manager == null or manager.?.vulkan_state == null) {
         log.cardinal_log_error("[PIPELINE_MANAGER] Invalid parameters for simple pipelines", .{});
         return false;
@@ -575,7 +629,7 @@ export fn vulkan_pipeline_manager_create_simple_pipelines(manager: ?*c.VulkanPip
     
     const s = get_state(m);
     
-    if (!c.vk_create_simple_pipelines(s)) {
+    if (!vk_simple_pipelines.vk_create_simple_pipelines(s)) {
         log.cardinal_log_error("[PIPELINE_MANAGER] Failed to create simple pipelines", .{});
         return false;
     }
@@ -586,35 +640,35 @@ export fn vulkan_pipeline_manager_create_simple_pipelines(manager: ?*c.VulkanPip
     return true;
 }
 
-export fn vulkan_pipeline_manager_destroy_simple_pipelines(manager: ?*c.VulkanPipelineManager) callconv(.c) void {
+export fn vulkan_pipeline_manager_destroy_simple_pipelines(manager: ?*VulkanPipelineManager) callconv(.c) void {
     if (manager == null or manager.?.vulkan_state == null or !manager.?.simple_pipelines_enabled) {
         return;
     }
     const m = manager.?;
     const s = get_state(m);
     
-    c.vk_destroy_simple_pipelines(s);
+    vk_simple_pipelines.vk_destroy_simple_pipelines(s);
     
     m.simple_pipelines_enabled = false;
     
     log.cardinal_log_info("[PIPELINE_MANAGER] Simple pipelines destroyed", .{});
 }
 
-export fn vulkan_pipeline_manager_get_pipeline(manager: ?*c.VulkanPipelineManager, type_val: c.VulkanPipelineType) callconv(.c) ?*c.VulkanPipelineInfo {
+export fn vulkan_pipeline_manager_get_pipeline(manager: ?*VulkanPipelineManager, type_val: VulkanPipelineType) callconv(.c) ?*VulkanPipelineInfo {
     if (manager == null) {
         return null;
     }
     const m = manager.?;
     var i: u32 = 0;
     while (i < m.pipeline_count) : (i += 1) {
-        if (m.pipelines[i].type == type_val and m.pipelines[i].is_active) {
-            return &m.pipelines[i];
+        if (m.pipelines.?[i].type == type_val and m.pipelines.?[i].is_active) {
+            return &m.pipelines.?[i];
         }
     }
     return null;
 }
 
-export fn vulkan_pipeline_manager_destroy_pipeline(manager: ?*c.VulkanPipelineManager, type_val: c.VulkanPipelineType) callconv(.c) void {
+export fn vulkan_pipeline_manager_destroy_pipeline(manager: ?*VulkanPipelineManager, type_val: VulkanPipelineType) callconv(.c) void {
     if (manager == null or manager.?.vulkan_state == null) {
         return;
     }
@@ -623,7 +677,7 @@ export fn vulkan_pipeline_manager_destroy_pipeline(manager: ?*c.VulkanPipelineMa
     
     var i: u32 = 0;
     while (i < m.pipeline_count) : (i += 1) {
-        const info = &m.pipelines[i];
+        const info = &m.pipelines.?[i];
         if (info.type == type_val and info.is_active) {
             if (info.pipeline != null) {
                 c.vkDestroyPipeline(s.context.device, info.pipeline, null);
@@ -641,7 +695,7 @@ export fn vulkan_pipeline_manager_destroy_pipeline(manager: ?*c.VulkanPipelineMa
     remove_pipeline_from_manager(m, type_val);
 }
 
-export fn vulkan_pipeline_manager_is_supported(manager: ?*c.VulkanPipelineManager, type_val: c.VulkanPipelineType) callconv(.c) bool {
+export fn vulkan_pipeline_manager_is_supported(manager: ?*VulkanPipelineManager, type_val: VulkanPipelineType) callconv(.c) bool {
     if (manager == null or manager.?.vulkan_state == null) {
         return false;
     }
@@ -649,17 +703,16 @@ export fn vulkan_pipeline_manager_is_supported(manager: ?*c.VulkanPipelineManage
     const s = get_state(m);
     
     switch (type_val) {
-        c.VULKAN_PIPELINE_TYPE_MESH_SHADER => return s.context.supports_mesh_shader,
-        c.VULKAN_PIPELINE_TYPE_GRAPHICS,
-        c.VULKAN_PIPELINE_TYPE_COMPUTE,
-        c.VULKAN_PIPELINE_TYPE_PBR,
-        c.VULKAN_PIPELINE_TYPE_SIMPLE_UV,
-        c.VULKAN_PIPELINE_TYPE_SIMPLE_WIREFRAME => return true,
-        else => return false,
+        .VULKAN_PIPELINE_TYPE_MESH_SHADER => return s.context.supports_mesh_shader,
+        .VULKAN_PIPELINE_TYPE_GRAPHICS,
+        .VULKAN_PIPELINE_TYPE_COMPUTE,
+        .VULKAN_PIPELINE_TYPE_PBR,
+        .VULKAN_PIPELINE_TYPE_SIMPLE_UV,
+        .VULKAN_PIPELINE_TYPE_SIMPLE_WIREFRAME => return true,
     }
 }
 
-export fn vulkan_pipeline_manager_load_shader(manager: ?*c.VulkanPipelineManager, shader_path: [*c]const u8, shader_module: ?*c.VkShaderModule) callconv(.c) bool {
+export fn vulkan_pipeline_manager_load_shader(manager: ?*VulkanPipelineManager, shader_path: [*c]const u8, shader_module: ?*c.VkShaderModule) callconv(.c) bool {
     if (manager == null or shader_path == null or shader_module == null or manager.?.vulkan_state == null) {
         log.cardinal_log_error("[PIPELINE_MANAGER] Invalid parameters for shader loading", .{});
         return false;
@@ -673,8 +726,8 @@ export fn vulkan_pipeline_manager_load_shader(manager: ?*c.VulkanPipelineManager
         return true;
     }
     
-    if (!c.vk_shader_create_module(s.context.device, shader_path, shader_module.?)) {
-        log.cardinal_log_error("[PIPELINE_MANAGER] Failed to load shader: {s}", .{shader_path});
+    if (!shader_utils.vk_shader_create_module(s.context.device, shader_path, shader_module.?)) {
+        log.cardinal_log_error("[PIPELINE_MANAGER] Failed to load shader: {s}", .{if (shader_path) |p| std.mem.span(p) else "null"});
         return false;
     }
     
@@ -686,28 +739,28 @@ export fn vulkan_pipeline_manager_load_shader(manager: ?*c.VulkanPipelineManager
     
     const index = m.shader_module_count;
     m.shader_module_count += 1;
-    m.shader_modules[index] = shader_module.?.*;
-    m.shader_paths[index] = @ptrCast(c.malloc(c.strlen(shader_path) + 1));
-    if (m.shader_paths[index] != null) {
-        _ = c.strcpy(m.shader_paths[index], shader_path);
+    m.shader_modules.?[index] = shader_module.?.*;
+    m.shader_paths.?[index] = @ptrCast(c.malloc(c.strlen(shader_path) + 1));
+    if (m.shader_paths.?[index] != null) {
+        _ = c.strcpy(m.shader_paths.?[index], shader_path);
     }
     
     return true;
 }
 
-export fn vulkan_pipeline_manager_get_cached_shader(manager: ?*c.VulkanPipelineManager, shader_path: [*c]const u8) callconv(.c) c.VkShaderModule {
+export fn vulkan_pipeline_manager_get_cached_shader(manager: ?*VulkanPipelineManager, shader_path: [*c]const u8) callconv(.c) c.VkShaderModule {
     if (manager == null or shader_path == null) {
         return null;
     }
     const m = manager.?;
     const index = find_shader_index(m, shader_path);
     if (index >= 0) {
-        return m.shader_modules[@intCast(index)];
+        return m.shader_modules.?[@intCast(index)];
     }
     return null;
 }
 
-export fn vulkan_pipeline_manager_clear_shader_cache(manager: ?*c.VulkanPipelineManager) callconv(.c) void {
+export fn vulkan_pipeline_manager_clear_shader_cache(manager: ?*VulkanPipelineManager) callconv(.c) void {
     if (manager == null or manager.?.vulkan_state == null) {
         return;
     }
@@ -717,25 +770,25 @@ export fn vulkan_pipeline_manager_clear_shader_cache(manager: ?*c.VulkanPipeline
     
     var i: u32 = 0;
     while (i < m.shader_module_count) : (i += 1) {
-        if (m.shader_modules[i] != null) {
-            c.vkDestroyShaderModule(device, m.shader_modules[i], null);
+        if (m.shader_modules.?[i] != null) {
+            c.vkDestroyShaderModule(device, m.shader_modules.?[i], null);
         }
-        if (m.shader_paths[i] != null) {
-            c.free(@as(?*anyopaque, @ptrCast(m.shader_paths[i])));
+        if (m.shader_paths.?[i] != null) {
+            c.free(@as(?*anyopaque, @ptrCast(m.shader_paths.?[i])));
         }
     }
     
     m.shader_module_count = 0;
 }
 
-export fn vulkan_pipeline_manager_is_pbr_enabled(manager: ?*c.VulkanPipelineManager) callconv(.c) bool {
+export fn vulkan_pipeline_manager_is_pbr_enabled(manager: ?*VulkanPipelineManager) callconv(.c) bool {
     return if (manager) |m| m.pbr_pipeline_enabled else false;
 }
 
-export fn vulkan_pipeline_manager_is_mesh_shader_enabled(manager: ?*c.VulkanPipelineManager) callconv(.c) bool {
+export fn vulkan_pipeline_manager_is_mesh_shader_enabled(manager: ?*VulkanPipelineManager) callconv(.c) bool {
     return if (manager) |m| m.mesh_shader_pipeline_enabled else false;
 }
 
-export fn vulkan_pipeline_manager_is_simple_pipelines_enabled(manager: ?*c.VulkanPipelineManager) callconv(.c) bool {
+export fn vulkan_pipeline_manager_is_simple_pipelines_enabled(manager: ?*VulkanPipelineManager) callconv(.c) bool {
     return if (manager) |m| m.simple_pipelines_enabled else false;
 }

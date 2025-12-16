@@ -1,21 +1,20 @@
 const std = @import("std");
 const builtin = @import("builtin");
 const log = @import("../core/log.zig");
+const types = @import("vulkan_types.zig");
+const vk_allocator = @import("vulkan_allocator.zig");
 
-const c = @cImport({
-    @cDefine("CARDINAL_ZIG_BUILD", "1");
-    @cInclude("stdlib.h");
-    @cInclude("string.h");
-    @cInclude("vulkan/vulkan.h");
-    @cInclude("vulkan_buffer_manager.h");
-    @cInclude("vulkan_state.h");
-    
-    if (builtin.os.tag == .windows) {
-        @cInclude("windows.h");
-    } else {
-        @cInclude("stdatomic.h");
-    }
-});
+const c = @import("vulkan_c.zig").c;
+
+
+pub const VulkanBuffer = types.VulkanBuffer;
+
+pub const VulkanBufferCreateInfo = extern struct {
+    size: c.VkDeviceSize,
+    usage: c.VkBufferUsageFlags,
+    properties: c.VkMemoryPropertyFlags,
+    persistentlyMapped: bool,
+};
 
 // Helper function to begin a single-time command buffer
 fn begin_single_time_commands(device: c.VkDevice, commandPool: c.VkCommandPool) c.VkCommandBuffer {
@@ -38,7 +37,7 @@ fn begin_single_time_commands(device: c.VkDevice, commandPool: c.VkCommandPool) 
 
 // Helper function to end and submit a single-time command buffer with proper timeline synchronization
 fn end_single_time_commands(device: c.VkDevice, commandPool: c.VkCommandPool, queue: c.VkQueue,
-                            commandBuffer: c.VkCommandBuffer, vulkan_state: *c.VulkanState) void {
+                            commandBuffer: c.VkCommandBuffer, vulkan_state: *types.VulkanState) void {
     log.cardinal_log_info("[BUFFER_MANAGER] CMD_END_START: Ending command buffer {any}", .{commandBuffer});
     const result = c.vkEndCommandBuffer(commandBuffer);
     if (result != c.VK_SUCCESS) {
@@ -187,8 +186,8 @@ fn end_single_time_commands(device: c.VkDevice, commandPool: c.VkCommandPool, qu
         .{timeline_value});
 }
 
-pub export fn vk_buffer_create(buffer_ptr: ?*c.VulkanBuffer, device: c.VkDevice, allocator_ptr: ?*c.VulkanAllocator,
-                               createInfo_ptr: ?*const c.VulkanBufferCreateInfo) callconv(.c) bool {
+pub export fn vk_buffer_create(buffer_ptr: ?*VulkanBuffer, device: c.VkDevice, allocator_ptr: ?*types.VulkanAllocator,
+                               createInfo_ptr: ?*const VulkanBufferCreateInfo) callconv(.c) bool {
     // Basic validation
     if (device == null or allocator_ptr == null or createInfo_ptr == null or buffer_ptr == null) {
         log.cardinal_log_error("Invalid parameters for buffer creation", .{});
@@ -205,7 +204,7 @@ pub export fn vk_buffer_create(buffer_ptr: ?*c.VulkanBuffer, device: c.VkDevice,
     }
 
     // Clear buffer struct
-    @memset(@as([*]u8, @ptrCast(buffer))[0..@sizeOf(c.VulkanBuffer)], 0);
+    @memset(@as([*]u8, @ptrCast(buffer))[0..@sizeOf(VulkanBuffer)], 0);
 
     // Create buffer info
     var bufferInfo = std.mem.zeroes(c.VkBufferCreateInfo);
@@ -215,7 +214,7 @@ pub export fn vk_buffer_create(buffer_ptr: ?*c.VulkanBuffer, device: c.VkDevice,
     bufferInfo.sharingMode = c.VK_SHARING_MODE_EXCLUSIVE;
 
     // Allocate buffer and memory using allocator
-    if (!c.vk_allocator_allocate_buffer(allocator, &bufferInfo, &buffer.handle, &buffer.memory,
+    if (!vk_allocator.vk_allocator_allocate_buffer(allocator, &bufferInfo, &buffer.handle, &buffer.memory,
                                       createInfo.properties)) {
         log.cardinal_log_error("Failed to create and allocate buffer", .{});
         return false;
@@ -238,7 +237,7 @@ pub export fn vk_buffer_create(buffer_ptr: ?*c.VulkanBuffer, device: c.VkDevice,
     return true;
 }
 
-fn wait_for_buffer_idle(buffer: *c.VulkanBuffer, device: c.VkDevice, vulkan_state: ?*c.VulkanState) void {
+fn wait_for_buffer_idle(buffer: *VulkanBuffer, device: c.VkDevice, vulkan_state: ?*types.VulkanState) void {
     if (vulkan_state) |state| {
         if (state.sync.timeline_semaphore != null) {
             var current_value: u64 = 0;
@@ -301,7 +300,7 @@ fn wait_for_buffer_idle(buffer: *c.VulkanBuffer, device: c.VkDevice, vulkan_stat
     }
 }
 
-fn cleanup_buffer_resources(buffer: *c.VulkanBuffer, device: c.VkDevice, allocator: ?*c.VulkanAllocator) void {
+fn cleanup_buffer_resources(buffer: *VulkanBuffer, device: c.VkDevice, allocator: ?*types.VulkanAllocator) void {
     // Unmap if mapped
     if (buffer.mapped != null) {
         log.cardinal_log_info("[BUFFER_MANAGER] UNMAP: Unmapping buffer={any}", .{buffer.handle});
@@ -313,7 +312,7 @@ fn cleanup_buffer_resources(buffer: *c.VulkanBuffer, device: c.VkDevice, allocat
     if (allocator) |alloc| {
         log.cardinal_log_info("[BUFFER_MANAGER] FREE_START: About to free buffer={any} memory={any}",
             .{buffer.handle, buffer.memory});
-        c.vk_allocator_free_buffer(alloc, buffer.handle, buffer.memory);
+        vk_allocator.vk_allocator_free_buffer(alloc, buffer.handle, buffer.memory);
         log.cardinal_log_info("[BUFFER_MANAGER] FREE_COMPLETE: Freed buffer={any} memory={any}",
             .{buffer.handle, buffer.memory});
     } else {
@@ -321,11 +320,11 @@ fn cleanup_buffer_resources(buffer: *c.VulkanBuffer, device: c.VkDevice, allocat
     }
 
     // Clear structure
-    @memset(@as([*]u8, @ptrCast(buffer))[0..@sizeOf(c.VulkanBuffer)], 0);
+    @memset(@as([*]u8, @ptrCast(buffer))[0..@sizeOf(VulkanBuffer)], 0);
 }
 
-pub export fn vk_buffer_destroy(buffer_ptr: ?*c.VulkanBuffer, device: c.VkDevice, allocator: ?*c.VulkanAllocator,
-                                vulkan_state: ?*c.VulkanState) callconv(.c) void {
+pub export fn vk_buffer_destroy(buffer_ptr: ?*VulkanBuffer, device: c.VkDevice, allocator: ?*types.VulkanAllocator,
+                                vulkan_state: ?*types.VulkanState) callconv(.c) void {
     if (buffer_ptr == null) {
         log.cardinal_log_warn("[BUFFER_MANAGER] DESTROY_SKIP: Invalid buffer pointer", .{});
         return;
@@ -349,7 +348,7 @@ pub export fn vk_buffer_destroy(buffer_ptr: ?*c.VulkanBuffer, device: c.VkDevice
     log.cardinal_log_info("[BUFFER_MANAGER] DESTROY_COMPLETE: Buffer structure cleared", .{});
 }
 
-pub export fn vk_buffer_upload_data(buffer_ptr: ?*c.VulkanBuffer, device: c.VkDevice, data: ?*const anyopaque,
+pub export fn vk_buffer_upload_data(buffer_ptr: ?*VulkanBuffer, device: c.VkDevice, data: ?*const anyopaque,
                                     size: c.VkDeviceSize, offset: c.VkDeviceSize) callconv(.c) bool {
     if (data == null or buffer_ptr == null) {
         log.cardinal_log_error("Invalid parameters for buffer data upload", .{});
@@ -404,7 +403,7 @@ pub export fn vk_buffer_upload_data(buffer_ptr: ?*c.VulkanBuffer, device: c.VkDe
     return true;
 }
 
-pub export fn vk_buffer_map(buffer_ptr: ?*c.VulkanBuffer, device: c.VkDevice, offset: c.VkDeviceSize, size: c.VkDeviceSize) callconv(.c) ?*anyopaque {
+pub export fn vk_buffer_map(buffer_ptr: ?*VulkanBuffer, device: c.VkDevice, offset: c.VkDeviceSize, size: c.VkDeviceSize) callconv(.c) ?*anyopaque {
     if (buffer_ptr == null) {
         log.cardinal_log_error("Invalid buffer pointer for mapping", .{});
         return null;
@@ -434,7 +433,7 @@ pub export fn vk_buffer_map(buffer_ptr: ?*c.VulkanBuffer, device: c.VkDevice, of
     return mappedData;
 }
 
-pub export fn vk_buffer_unmap(buffer_ptr: ?*c.VulkanBuffer, device: c.VkDevice) callconv(.c) void {
+pub export fn vk_buffer_unmap(buffer_ptr: ?*VulkanBuffer, device: c.VkDevice) callconv(.c) void {
     if (buffer_ptr == null) {
         return;
     }
@@ -450,10 +449,10 @@ pub export fn vk_buffer_unmap(buffer_ptr: ?*c.VulkanBuffer, device: c.VkDevice) 
     }
 }
 
-pub export fn vk_buffer_create_device_local(buffer_ptr: ?*c.VulkanBuffer, device: c.VkDevice,
-                                            allocator_ptr: ?*c.VulkanAllocator, commandPool: c.VkCommandPool,
+pub export fn vk_buffer_create_device_local(buffer_ptr: ?*VulkanBuffer, device: c.VkDevice,
+                                            allocator_ptr: ?*types.VulkanAllocator, commandPool: c.VkCommandPool,
                                             queue: c.VkQueue, data: ?*const anyopaque, size: c.VkDeviceSize,
-                                            usage: c.VkBufferUsageFlags, vulkan_state: ?*c.VulkanState) callconv(.c) bool {
+                                            usage: c.VkBufferUsageFlags, vulkan_state: ?*types.VulkanState) callconv(.c) bool {
     if (data == null or size == 0 or buffer_ptr == null) {
         return false;
     }
@@ -461,13 +460,13 @@ pub export fn vk_buffer_create_device_local(buffer_ptr: ?*c.VulkanBuffer, device
     const allocator = allocator_ptr.?; // Assuming allocator is required here as we use it
 
     // Create staging buffer
-    var stagingInfo = std.mem.zeroes(c.VulkanBufferCreateInfo);
+    var stagingInfo = std.mem.zeroes(VulkanBufferCreateInfo);
     stagingInfo.size = size;
     stagingInfo.usage = c.VK_BUFFER_USAGE_TRANSFER_SRC_BIT;
     stagingInfo.properties = c.VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | c.VK_MEMORY_PROPERTY_HOST_COHERENT_BIT;
     stagingInfo.persistentlyMapped = false;
 
-    var stagingBuffer: c.VulkanBuffer = undefined;
+    var stagingBuffer: VulkanBuffer = undefined;
     if (!vk_buffer_create(&stagingBuffer, device, allocator, &stagingInfo)) {
         log.cardinal_log_error("Failed to create staging buffer", .{});
         return false;
@@ -481,7 +480,7 @@ pub export fn vk_buffer_create_device_local(buffer_ptr: ?*c.VulkanBuffer, device
     }
 
     // Create device local buffer
-    var deviceBufferInfo = std.mem.zeroes(c.VulkanBufferCreateInfo);
+    var deviceBufferInfo = std.mem.zeroes(VulkanBufferCreateInfo);
     deviceBufferInfo.size = size;
     deviceBufferInfo.usage = @bitCast(@as(u32, @bitCast(c.VK_BUFFER_USAGE_TRANSFER_DST_BIT)) | usage);
     deviceBufferInfo.properties = c.VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT;
@@ -508,9 +507,9 @@ pub export fn vk_buffer_create_device_local(buffer_ptr: ?*c.VulkanBuffer, device
     return true;
 }
 
-pub export fn vk_buffer_create_vertex(buffer: ?*c.VulkanBuffer, device: c.VkDevice, allocator: ?*c.VulkanAllocator,
+pub export fn vk_buffer_create_vertex(buffer: ?*VulkanBuffer, device: c.VkDevice, allocator: ?*types.VulkanAllocator,
                                       commandPool: c.VkCommandPool, queue: c.VkQueue, vertices: ?*const anyopaque,
-                                      vertexSize: c.VkDeviceSize, vulkan_state: ?*c.VulkanState) callconv(.c) bool {
+                                      vertexSize: c.VkDeviceSize, vulkan_state: ?*types.VulkanState) callconv(.c) bool {
     if (vertices == null or vertexSize == 0) {
         log.cardinal_log_error("Invalid vertex data for buffer creation", .{});
         return false;
@@ -527,9 +526,9 @@ pub export fn vk_buffer_create_vertex(buffer: ?*c.VulkanBuffer, device: c.VkDevi
     return true;
 }
 
-pub export fn vk_buffer_create_index(buffer: ?*c.VulkanBuffer, device: c.VkDevice, allocator: ?*c.VulkanAllocator,
+pub export fn vk_buffer_create_index(buffer: ?*VulkanBuffer, device: c.VkDevice, allocator: ?*types.VulkanAllocator,
                                      commandPool: c.VkCommandPool, queue: c.VkQueue, indices: ?*const anyopaque,
-                                     indexSize: c.VkDeviceSize, vulkan_state: ?*c.VulkanState) callconv(.c) bool {
+                                     indexSize: c.VkDeviceSize, vulkan_state: ?*types.VulkanState) callconv(.c) bool {
     if (indices == null or indexSize == 0) {
         log.cardinal_log_error("Invalid index data for buffer creation", .{});
         return false;
@@ -545,14 +544,14 @@ pub export fn vk_buffer_create_index(buffer: ?*c.VulkanBuffer, device: c.VkDevic
     return true;
 }
 
-pub export fn vk_buffer_create_uniform(buffer: ?*c.VulkanBuffer, device: c.VkDevice, allocator: ?*c.VulkanAllocator,
+pub export fn vk_buffer_create_uniform(buffer: ?*VulkanBuffer, device: c.VkDevice, allocator: ?*types.VulkanAllocator,
                                        size: c.VkDeviceSize) callconv(.c) bool {
     if (size == 0) {
         log.cardinal_log_error("Uniform buffer size cannot be zero", .{});
         return false;
     }
 
-    var uniformInfo = std.mem.zeroes(c.VulkanBufferCreateInfo);
+    var uniformInfo = std.mem.zeroes(VulkanBufferCreateInfo);
     uniformInfo.size = size;
     uniformInfo.usage = c.VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT;
     uniformInfo.properties =
@@ -570,7 +569,7 @@ pub export fn vk_buffer_create_uniform(buffer: ?*c.VulkanBuffer, device: c.VkDev
 
 pub export fn vk_buffer_copy(device: c.VkDevice, commandPool: c.VkCommandPool, queue: c.VkQueue, srcBuffer: c.VkBuffer,
                              dstBuffer: c.VkBuffer, size: c.VkDeviceSize, srcOffset: c.VkDeviceSize,
-                             dstOffset: c.VkDeviceSize, vulkan_state: ?*c.VulkanState) callconv(.c) bool {
+                             dstOffset: c.VkDeviceSize, vulkan_state: ?*types.VulkanState) callconv(.c) bool {
     if (srcBuffer == null or dstBuffer == null or size == 0 or vulkan_state == null) {
         log.cardinal_log_error("Invalid parameters for buffer copy", .{});
         return false;

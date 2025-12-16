@@ -1,27 +1,17 @@
 const std = @import("std");
 const builtin = @import("builtin");
 const log = @import("../core/log.zig");
+const types = @import("vulkan_types.zig");
 
-const c = @cImport({
-    @cDefine("CARDINAL_ZIG_BUILD", "1");
-    @cInclude("stdlib.h");
-    @cInclude("string.h");
-    @cInclude("vulkan/vulkan.h");
-    @cInclude("cardinal/renderer/vulkan_sync_manager.h");
-    
-    if (builtin.os.tag == .windows) {
-        @cInclude("windows.h");
-    } else {
-        @cInclude("stdatomic.h");
-    }
-});
+const c = @import("vulkan_c.zig").c;
+
 
 // Helper to cast u64/u32 to atomic value pointer
 fn atomic(ptr: anytype) *std.atomic.Value(@TypeOf(ptr.*)) {
     return @ptrCast(ptr);
 }
 
-pub export fn vulkan_sync_manager_init(sync_manager: ?*c.VulkanSyncManager, device: c.VkDevice,
+pub export fn vulkan_sync_manager_init(sync_manager: ?*types.VulkanSyncManager, device: c.VkDevice,
                                        graphics_queue: c.VkQueue, max_frames_in_flight: u32) callconv(.c) bool {
     if (sync_manager == null or device == null or max_frames_in_flight == 0) {
         log.cardinal_log_error("[SYNC_MANAGER] Invalid parameters for initialization", .{});
@@ -30,7 +20,7 @@ pub export fn vulkan_sync_manager_init(sync_manager: ?*c.VulkanSyncManager, devi
     const mgr = sync_manager.?;
 
     // Clear struct
-    @memset(@as([*]u8, @ptrCast(mgr))[0..@sizeOf(c.VulkanSyncManager)], 0);
+    @memset(@as([*]u8, @ptrCast(mgr))[0..@sizeOf(types.VulkanSyncManager)], 0);
     
     mgr.device = device;
     mgr.graphics_queue = graphics_queue;
@@ -68,13 +58,13 @@ pub export fn vulkan_sync_manager_init(sync_manager: ?*c.VulkanSyncManager, devi
         var semaphore_info = std.mem.zeroes(c.VkSemaphoreCreateInfo);
         semaphore_info.sType = c.VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO;
         
-        if (c.vkCreateSemaphore(device, &semaphore_info, null, &mgr.image_acquired_semaphores[i]) != c.VK_SUCCESS) {
+        if (c.vkCreateSemaphore(device, &semaphore_info, null, &mgr.image_acquired_semaphores.?[i]) != c.VK_SUCCESS) {
             log.cardinal_log_error("[SYNC_MANAGER] Failed to create image acquired semaphore for frame {d}", .{i});
             vulkan_sync_manager_destroy(mgr);
             return false;
         }
 
-        if (c.vkCreateSemaphore(device, &semaphore_info, null, &mgr.render_finished_semaphores[i]) != c.VK_SUCCESS) {
+        if (c.vkCreateSemaphore(device, &semaphore_info, null, &mgr.render_finished_semaphores.?[i]) != c.VK_SUCCESS) {
             log.cardinal_log_error("[SYNC_MANAGER] Failed to create render finished semaphore for frame {d}", .{i});
             vulkan_sync_manager_destroy(mgr);
             return false;
@@ -84,7 +74,7 @@ pub export fn vulkan_sync_manager_init(sync_manager: ?*c.VulkanSyncManager, devi
         fence_info.sType = c.VK_STRUCTURE_TYPE_FENCE_CREATE_INFO;
         fence_info.flags = c.VK_FENCE_CREATE_SIGNALED_BIT;
 
-        if (c.vkCreateFence(device, &fence_info, null, &mgr.in_flight_fences[i]) != c.VK_SUCCESS) {
+        if (c.vkCreateFence(device, &fence_info, null, &mgr.in_flight_fences.?[i]) != c.VK_SUCCESS) {
             log.cardinal_log_error("[SYNC_MANAGER] Failed to create in-flight fence for frame {d}", .{i});
             vulkan_sync_manager_destroy(mgr);
             return false;
@@ -123,7 +113,7 @@ pub export fn vulkan_sync_manager_init(sync_manager: ?*c.VulkanSyncManager, devi
     return true;
 }
 
-pub export fn vulkan_sync_manager_destroy(sync_manager: ?*c.VulkanSyncManager) callconv(.c) void {
+pub export fn vulkan_sync_manager_destroy(sync_manager: ?*types.VulkanSyncManager) callconv(.c) void {
     if (sync_manager == null) return;
     const mgr = sync_manager.?;
     
@@ -142,8 +132,8 @@ pub export fn vulkan_sync_manager_destroy(sync_manager: ?*c.VulkanSyncManager) c
     if (mgr.image_acquired_semaphores != null) {
         var i: u32 = 0;
         while (i < mgr.max_frames_in_flight) : (i += 1) {
-            if (mgr.image_acquired_semaphores[i] != null) {
-                c.vkDestroySemaphore(mgr.device, mgr.image_acquired_semaphores[i], null);
+            if (mgr.image_acquired_semaphores.?[i] != null) {
+                c.vkDestroySemaphore(mgr.device, mgr.image_acquired_semaphores.?[i], null);
             }
         }
         c.free(@ptrCast(mgr.image_acquired_semaphores));
@@ -153,8 +143,8 @@ pub export fn vulkan_sync_manager_destroy(sync_manager: ?*c.VulkanSyncManager) c
     if (mgr.render_finished_semaphores != null) {
         var i: u32 = 0;
         while (i < mgr.max_frames_in_flight) : (i += 1) {
-            if (mgr.render_finished_semaphores[i] != null) {
-                c.vkDestroySemaphore(mgr.device, mgr.render_finished_semaphores[i], null);
+            if (mgr.render_finished_semaphores.?[i] != null) {
+                c.vkDestroySemaphore(mgr.device, mgr.render_finished_semaphores.?[i], null);
             }
         }
         c.free(@ptrCast(mgr.render_finished_semaphores));
@@ -164,8 +154,8 @@ pub export fn vulkan_sync_manager_destroy(sync_manager: ?*c.VulkanSyncManager) c
     if (mgr.in_flight_fences != null) {
         var i: u32 = 0;
         while (i < mgr.max_frames_in_flight) : (i += 1) {
-            if (mgr.in_flight_fences[i] != null) {
-                c.vkDestroyFence(mgr.device, mgr.in_flight_fences[i], null);
+            if (mgr.in_flight_fences.?[i] != null) {
+                c.vkDestroyFence(mgr.device, mgr.in_flight_fences.?[i], null);
             }
         }
         c.free(@ptrCast(mgr.in_flight_fences));
@@ -176,12 +166,12 @@ pub export fn vulkan_sync_manager_destroy(sync_manager: ?*c.VulkanSyncManager) c
     log.cardinal_log_info("[SYNC_MANAGER] Destroyed", .{});
 }
 
-pub export fn vulkan_sync_manager_wait_for_frame(sync_manager: ?*c.VulkanSyncManager, timeout_ns: u64) callconv(.c) c.VkResult {
+pub export fn vulkan_sync_manager_wait_for_frame(sync_manager: ?*types.VulkanSyncManager, timeout_ns: u64) callconv(.c) c.VkResult {
     if (sync_manager == null) return c.VK_ERROR_INITIALIZATION_FAILED;
     const mgr = sync_manager.?;
     if (!mgr.initialized) return c.VK_ERROR_INITIALIZATION_FAILED;
 
-    const current_fence = mgr.in_flight_fences[mgr.current_frame];
+    const current_fence = mgr.in_flight_fences.?[mgr.current_frame];
 
     // Check status first
     const status = c.vkGetFenceStatus(mgr.device, current_fence);
@@ -194,16 +184,16 @@ pub export fn vulkan_sync_manager_wait_for_frame(sync_manager: ?*c.VulkanSyncMan
     return c.vkWaitForFences(mgr.device, 1, &current_fence, c.VK_TRUE, timeout_ns);
 }
 
-pub export fn vulkan_sync_manager_reset_frame_fence(sync_manager: ?*c.VulkanSyncManager) callconv(.c) c.VkResult {
+pub export fn vulkan_sync_manager_reset_frame_fence(sync_manager: ?*types.VulkanSyncManager) callconv(.c) c.VkResult {
     if (sync_manager == null) return c.VK_ERROR_INITIALIZATION_FAILED;
     const mgr = sync_manager.?;
     if (!mgr.initialized) return c.VK_ERROR_INITIALIZATION_FAILED;
 
-    const current_fence = mgr.in_flight_fences[mgr.current_frame];
+    const current_fence = mgr.in_flight_fences.?[mgr.current_frame];
     return c.vkResetFences(mgr.device, 1, &current_fence);
 }
 
-pub export fn vulkan_sync_manager_advance_frame(sync_manager: ?*c.VulkanSyncManager) callconv(.c) void {
+pub export fn vulkan_sync_manager_advance_frame(sync_manager: ?*types.VulkanSyncManager) callconv(.c) void {
     if (sync_manager == null) return;
     const mgr = sync_manager.?;
     if (!mgr.initialized) return;
@@ -217,8 +207,8 @@ pub export fn vulkan_sync_manager_advance_frame(sync_manager: ?*c.VulkanSyncMana
     atomic(&mgr.render_complete_value).store(base_value + 2, .seq_cst);
 }
 
-pub export fn vulkan_sync_manager_get_frame_sync_info(sync_manager: ?*c.VulkanSyncManager,
-                                                      sync_info: ?*c.VulkanFrameSyncInfo) callconv(.c) void {
+pub export fn vulkan_sync_manager_get_frame_sync_info(sync_manager: ?*types.VulkanSyncManager,
+                                                      sync_info: ?*types.VulkanFrameSyncInfo) callconv(.c) void {
     if (sync_manager == null or sync_info == null) return;
     const mgr = sync_manager.?;
     const info = sync_info.?;
@@ -226,14 +216,14 @@ pub export fn vulkan_sync_manager_get_frame_sync_info(sync_manager: ?*c.VulkanSy
 
     const frame = mgr.current_frame;
 
-    info.wait_semaphore = mgr.image_acquired_semaphores[frame];
-    info.signal_semaphore = mgr.render_finished_semaphores[frame];
-    info.fence = mgr.in_flight_fences[frame];
+    info.wait_semaphore = mgr.image_acquired_semaphores.?[frame];
+    info.signal_semaphore = mgr.render_finished_semaphores.?[frame];
+    info.fence = mgr.in_flight_fences.?[frame];
     info.timeline_value = atomic(&mgr.render_complete_value).load(.seq_cst);
     info.wait_stage = c.VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT;
 }
 
-pub export fn vulkan_sync_manager_create_semaphore(sync_manager: ?*c.VulkanSyncManager, semaphore: ?*c.VkSemaphore) callconv(.c) bool {
+pub export fn vulkan_sync_manager_create_semaphore(sync_manager: ?*types.VulkanSyncManager, semaphore: ?*c.VkSemaphore) callconv(.c) bool {
     if (sync_manager == null or semaphore == null) return false;
     const mgr = sync_manager.?;
     if (!mgr.initialized) return false;
@@ -244,7 +234,7 @@ pub export fn vulkan_sync_manager_create_semaphore(sync_manager: ?*c.VulkanSyncM
     return c.vkCreateSemaphore(mgr.device, &semaphore_info, null, semaphore) == c.VK_SUCCESS;
 }
 
-pub export fn vulkan_sync_manager_create_fence(sync_manager: ?*c.VulkanSyncManager, signaled: bool,
+pub export fn vulkan_sync_manager_create_fence(sync_manager: ?*types.VulkanSyncManager, signaled: bool,
                                       fence: ?*c.VkFence) callconv(.c) bool {
     if (sync_manager == null or fence == null) return false;
     const mgr = sync_manager.?;
@@ -257,7 +247,7 @@ pub export fn vulkan_sync_manager_create_fence(sync_manager: ?*c.VulkanSyncManag
     return c.vkCreateFence(mgr.device, &fence_info, null, fence) == c.VK_SUCCESS;
 }
 
-pub export fn vulkan_sync_manager_destroy_semaphore(sync_manager: ?*c.VulkanSyncManager, semaphore: c.VkSemaphore) callconv(.c) void {
+pub export fn vulkan_sync_manager_destroy_semaphore(sync_manager: ?*types.VulkanSyncManager, semaphore: c.VkSemaphore) callconv(.c) void {
     if (sync_manager == null or semaphore == null) return;
     const mgr = sync_manager.?;
     if (!mgr.initialized) return;
@@ -265,7 +255,7 @@ pub export fn vulkan_sync_manager_destroy_semaphore(sync_manager: ?*c.VulkanSync
     c.vkDestroySemaphore(mgr.device, semaphore, null);
 }
 
-pub export fn vulkan_sync_manager_destroy_fence(sync_manager: ?*c.VulkanSyncManager, fence: c.VkFence) callconv(.c) void {
+pub export fn vulkan_sync_manager_destroy_fence(sync_manager: ?*types.VulkanSyncManager, fence: c.VkFence) callconv(.c) void {
     if (sync_manager == null or fence == null) return;
     const mgr = sync_manager.?;
     if (!mgr.initialized) return;
@@ -273,7 +263,7 @@ pub export fn vulkan_sync_manager_destroy_fence(sync_manager: ?*c.VulkanSyncMana
     c.vkDestroyFence(mgr.device, fence, null);
 }
 
-pub export fn vulkan_sync_manager_wait_timeline(sync_manager: ?*c.VulkanSyncManager, value: u64,
+pub export fn vulkan_sync_manager_wait_timeline(sync_manager: ?*types.VulkanSyncManager, value: u64,
                                            timeout_ns: u64) callconv(.c) c.VkResult {
     if (sync_manager == null) return c.VK_ERROR_INITIALIZATION_FAILED;
     const mgr = sync_manager.?;
@@ -294,7 +284,7 @@ pub export fn vulkan_sync_manager_wait_timeline(sync_manager: ?*c.VulkanSyncMana
     return result;
 }
 
-pub export fn vulkan_sync_manager_signal_timeline(sync_manager: ?*c.VulkanSyncManager, value: u64) callconv(.c) c.VkResult {
+pub export fn vulkan_sync_manager_signal_timeline(sync_manager: ?*types.VulkanSyncManager, value: u64) callconv(.c) c.VkResult {
     if (sync_manager == null) return c.VK_ERROR_INITIALIZATION_FAILED;
     const mgr = sync_manager.?;
     if (!mgr.initialized) return c.VK_ERROR_INITIALIZATION_FAILED;
@@ -320,7 +310,7 @@ pub export fn vulkan_sync_manager_signal_timeline(sync_manager: ?*c.VulkanSyncMa
     return result;
 }
 
-pub export fn vulkan_sync_manager_get_timeline_value(sync_manager: ?*c.VulkanSyncManager, value: ?*u64) callconv(.c) c.VkResult {
+pub export fn vulkan_sync_manager_get_timeline_value(sync_manager: ?*types.VulkanSyncManager, value: ?*u64) callconv(.c) c.VkResult {
     if (sync_manager == null or value == null) return c.VK_ERROR_INITIALIZATION_FAILED;
     const mgr = sync_manager.?;
     if (!mgr.initialized) return c.VK_ERROR_INITIALIZATION_FAILED;
@@ -328,7 +318,7 @@ pub export fn vulkan_sync_manager_get_timeline_value(sync_manager: ?*c.VulkanSyn
     return c.vkGetSemaphoreCounterValue(mgr.device, mgr.timeline_semaphore, value);
 }
 
-pub export fn vulkan_sync_manager_get_next_timeline_value(sync_manager: ?*c.VulkanSyncManager) callconv(.c) u64 {
+pub export fn vulkan_sync_manager_get_next_timeline_value(sync_manager: ?*types.VulkanSyncManager) callconv(.c) u64 {
     if (sync_manager == null) return 0;
     const mgr = sync_manager.?;
     if (!mgr.initialized) return 0;
@@ -359,16 +349,16 @@ pub export fn vulkan_sync_manager_get_next_timeline_value(sync_manager: ?*c.Vulk
     }
 }
 
-pub export fn vulkan_sync_manager_is_frame_ready(sync_manager: ?*c.VulkanSyncManager) callconv(.c) bool {
+pub export fn vulkan_sync_manager_is_frame_ready(sync_manager: ?*types.VulkanSyncManager) callconv(.c) bool {
     if (sync_manager == null) return false;
     const mgr = sync_manager.?;
     if (!mgr.initialized) return false;
 
-    const current_fence = mgr.in_flight_fences[mgr.current_frame];
+    const current_fence = mgr.in_flight_fences.?[mgr.current_frame];
     return c.vkGetFenceStatus(mgr.device, current_fence) == c.VK_SUCCESS;
 }
 
-pub export fn vulkan_sync_manager_get_current_frame(sync_manager: ?*c.VulkanSyncManager) callconv(.c) u32 {
+pub export fn vulkan_sync_manager_get_current_frame(sync_manager: ?*types.VulkanSyncManager) callconv(.c) u32 {
     if (sync_manager == null) return 0;
     const mgr = sync_manager.?;
     if (!mgr.initialized) return 0;
@@ -376,7 +366,7 @@ pub export fn vulkan_sync_manager_get_current_frame(sync_manager: ?*c.VulkanSync
     return mgr.current_frame;
 }
 
-pub export fn vulkan_sync_manager_get_max_frames(sync_manager: ?*c.VulkanSyncManager) callconv(.c) u32 {
+pub export fn vulkan_sync_manager_get_max_frames(sync_manager: ?*types.VulkanSyncManager) callconv(.c) u32 {
     if (sync_manager == null) return 0;
     const mgr = sync_manager.?;
     if (!mgr.initialized) return 0;
@@ -384,7 +374,7 @@ pub export fn vulkan_sync_manager_get_max_frames(sync_manager: ?*c.VulkanSyncMan
     return mgr.max_frames_in_flight;
 }
 
-pub export fn vulkan_sync_manager_wait_timeline_batch(sync_manager: ?*c.VulkanSyncManager,
+pub export fn vulkan_sync_manager_wait_timeline_batch(sync_manager: ?*types.VulkanSyncManager,
                                                  values: ?[*]const u64, count: u32,
                                                  timeout_ns: u64) callconv(.c) c.VkResult {
     if (sync_manager == null or values == null or count == 0) return c.VK_ERROR_INITIALIZATION_FAILED;
@@ -416,7 +406,7 @@ pub export fn vulkan_sync_manager_wait_timeline_batch(sync_manager: ?*c.VulkanSy
     return result;
 }
 
-pub export fn vulkan_sync_manager_signal_timeline_batch(sync_manager: ?*c.VulkanSyncManager,
+pub export fn vulkan_sync_manager_signal_timeline_batch(sync_manager: ?*types.VulkanSyncManager,
                                                    values: ?[*]const u64, count: u32) callconv(.c) c.VkResult {
     if (sync_manager == null or values == null or count == 0) return c.VK_ERROR_INITIALIZATION_FAILED;
     const mgr = sync_manager.?;
@@ -439,64 +429,64 @@ pub export fn vulkan_sync_manager_signal_timeline_batch(sync_manager: ?*c.Vulkan
     return c.VK_SUCCESS;
 }
 
-pub export fn vulkan_timeline_error_to_string(err: c.VulkanTimelineError) callconv(.c) [*:0]const u8 {
+pub export fn vulkan_timeline_error_to_string(err: types.VulkanTimelineError) callconv(.c) [*:0]const u8 {
     return switch (err) {
-        c.VULKAN_TIMELINE_ERROR_NONE => "No error",
-        c.VULKAN_TIMELINE_ERROR_TIMEOUT => "Timeline semaphore wait timeout",
-        c.VULKAN_TIMELINE_ERROR_DEVICE_LOST => "Vulkan device lost",
-        c.VULKAN_TIMELINE_ERROR_OUT_OF_MEMORY => "Out of memory",
-        c.VULKAN_TIMELINE_ERROR_INVALID_VALUE => "Invalid timeline value",
-        c.VULKAN_TIMELINE_ERROR_SEMAPHORE_INVALID => "Timeline semaphore is invalid",
+        types.VulkanTimelineError.NONE => "No error",
+        types.VulkanTimelineError.TIMEOUT => "Timeline semaphore wait timeout",
+        types.VulkanTimelineError.DEVICE_LOST => "Vulkan device lost",
+        types.VulkanTimelineError.OUT_OF_MEMORY => "Out of memory",
+        types.VulkanTimelineError.INVALID_VALUE => "Invalid timeline value",
+        types.VulkanTimelineError.SEMAPHORE_INVALID => "Timeline semaphore is invalid",
         else => "Unknown error",
     };
 }
 
-fn vulkan_result_to_timeline_error(result: c.VkResult) c.VulkanTimelineError {
+fn vulkan_result_to_timeline_error(result: c.VkResult) types.VulkanTimelineError {
     return switch (result) {
-        c.VK_SUCCESS => c.VULKAN_TIMELINE_ERROR_NONE,
-        c.VK_TIMEOUT => c.VULKAN_TIMELINE_ERROR_TIMEOUT,
-        c.VK_ERROR_DEVICE_LOST => c.VULKAN_TIMELINE_ERROR_DEVICE_LOST,
-        c.VK_ERROR_OUT_OF_HOST_MEMORY, c.VK_ERROR_OUT_OF_DEVICE_MEMORY => c.VULKAN_TIMELINE_ERROR_OUT_OF_MEMORY,
-        else => c.VULKAN_TIMELINE_ERROR_UNKNOWN,
+        c.VK_SUCCESS => types.VulkanTimelineError.NONE,
+        c.VK_TIMEOUT => types.VulkanTimelineError.TIMEOUT,
+        c.VK_ERROR_DEVICE_LOST => types.VulkanTimelineError.DEVICE_LOST,
+        c.VK_ERROR_OUT_OF_HOST_MEMORY, c.VK_ERROR_OUT_OF_DEVICE_MEMORY => types.VulkanTimelineError.OUT_OF_MEMORY,
+        else => types.VulkanTimelineError.UNKNOWN,
     };
 }
 
-pub export fn vulkan_sync_manager_wait_timeline_safe(sync_manager: ?*c.VulkanSyncManager,
+pub export fn vulkan_sync_manager_wait_timeline_safe(sync_manager: ?*types.VulkanSyncManager,
                                                            value: u64, timeout_ns: u64,
-                                                           error_info: ?*c.VulkanTimelineErrorInfo) callconv(.c) c.VulkanTimelineError {
+                                                           error_info: ?*types.VulkanTimelineErrorInfo) callconv(.c) types.VulkanTimelineError {
     if (sync_manager == null) {
         if (error_info) |info| {
-            info.error_type = c.VULKAN_TIMELINE_ERROR_SEMAPHORE_INVALID;
+            info.error_type = types.VulkanTimelineError.SEMAPHORE_INVALID;
             info.vulkan_result = c.VK_ERROR_UNKNOWN;
             info.timeline_value = value;
             info.timeout_ns = timeout_ns;
             _ = std.fmt.bufPrint(info.error_message[0..], "Invalid sync manager or timeline semaphore", .{}) catch {};
         }
-        return c.VULKAN_TIMELINE_ERROR_SEMAPHORE_INVALID;
+        return types.VulkanTimelineError.SEMAPHORE_INVALID;
     }
     const mgr = sync_manager.?;
     if (mgr.timeline_semaphore == null) {
         if (error_info) |info| {
              // ... same error logic
-            info.error_type = c.VULKAN_TIMELINE_ERROR_SEMAPHORE_INVALID;
+            info.error_type = types.VulkanTimelineError.SEMAPHORE_INVALID;
             info.vulkan_result = c.VK_ERROR_UNKNOWN;
             info.timeline_value = value;
             info.timeout_ns = timeout_ns;
             _ = std.fmt.bufPrint(info.error_message[0..], "Invalid sync manager or timeline semaphore", .{}) catch {};
         }
-        return c.VULKAN_TIMELINE_ERROR_SEMAPHORE_INVALID;
+        return types.VulkanTimelineError.SEMAPHORE_INVALID;
     }
 
     const current_value = atomic(&mgr.global_timeline_counter).load(.seq_cst);
     if (value > current_value + 1000000) {
         if (error_info) |info| {
-            info.error_type = c.VULKAN_TIMELINE_ERROR_INVALID_VALUE;
+            info.error_type = types.VulkanTimelineError.INVALID_VALUE;
             info.vulkan_result = c.VK_ERROR_UNKNOWN;
             info.timeline_value = value;
             info.timeout_ns = timeout_ns;
             _ = std.fmt.bufPrint(info.error_message[0..], "Timeline value {d} is too far in the future (current: {d})", .{value, current_value}) catch {};
         }
-        return c.VULKAN_TIMELINE_ERROR_INVALID_VALUE;
+        return types.VulkanTimelineError.INVALID_VALUE;
     }
 
     var wait_val = value;
@@ -515,7 +505,7 @@ pub export fn vulkan_sync_manager_wait_timeline_safe(sync_manager: ?*c.VulkanSyn
         info.timeline_value = value;
         info.timeout_ns = timeout_ns;
 
-        if (timeline_error != c.VULKAN_TIMELINE_ERROR_NONE) {
+        if (timeline_error != types.VulkanTimelineError.NONE) {
              _ = std.fmt.bufPrint(info.error_message[0..], "Timeline wait failed: {s} (VkResult: {d})",
                      .{vulkan_timeline_error_to_string(timeline_error), result}) catch {};
         } else {
@@ -530,20 +520,20 @@ pub export fn vulkan_sync_manager_wait_timeline_safe(sync_manager: ?*c.VulkanSyn
     return timeline_error;
 }
 
-pub export fn vulkan_sync_manager_signal_timeline_safe(sync_manager: ?*c.VulkanSyncManager,
+pub export fn vulkan_sync_manager_signal_timeline_safe(sync_manager: ?*types.VulkanSyncManager,
                                                              value: u64,
-                                                             error_info: ?*c.VulkanTimelineErrorInfo) callconv(.c) c.VulkanTimelineError {
-    if (sync_manager == null) return c.VULKAN_TIMELINE_ERROR_SEMAPHORE_INVALID;
+                                                             error_info: ?*types.VulkanTimelineErrorInfo) callconv(.c) types.VulkanTimelineError {
+    if (sync_manager == null) return types.VulkanTimelineError.SEMAPHORE_INVALID;
     const mgr = sync_manager.?;
     if (mgr.timeline_semaphore == null) {
         if (error_info) |info| {
-            info.error_type = c.VULKAN_TIMELINE_ERROR_SEMAPHORE_INVALID;
+            info.error_type = types.VulkanTimelineError.SEMAPHORE_INVALID;
             info.vulkan_result = c.VK_ERROR_UNKNOWN;
             info.timeline_value = value;
             info.timeout_ns = 0;
             _ = std.fmt.bufPrint(info.error_message[0..], "Invalid sync manager or timeline semaphore", .{}) catch {};
         }
-        return c.VULKAN_TIMELINE_ERROR_SEMAPHORE_INVALID;
+        return types.VulkanTimelineError.SEMAPHORE_INVALID;
     }
 
     var current_value: u64 = 0;
@@ -563,13 +553,13 @@ pub export fn vulkan_sync_manager_signal_timeline_safe(sync_manager: ?*c.VulkanS
 
     if (value <= current_value) {
         if (error_info) |info| {
-            info.error_type = c.VULKAN_TIMELINE_ERROR_INVALID_VALUE;
+            info.error_type = types.VulkanTimelineError.INVALID_VALUE;
             info.vulkan_result = c.VK_ERROR_UNKNOWN;
             info.timeline_value = value;
             info.timeout_ns = 0;
             _ = std.fmt.bufPrint(info.error_message[0..], "Timeline value {d} must be greater than current value {d}", .{value, current_value}) catch {};
         }
-        return c.VULKAN_TIMELINE_ERROR_INVALID_VALUE;
+        return types.VulkanTimelineError.INVALID_VALUE;
     }
 
     var signal_info = std.mem.zeroes(c.VkSemaphoreSignalInfo);
@@ -586,7 +576,7 @@ pub export fn vulkan_sync_manager_signal_timeline_safe(sync_manager: ?*c.VulkanS
         info.timeline_value = value;
         info.timeout_ns = 0;
 
-        if (timeline_error != c.VULKAN_TIMELINE_ERROR_NONE) {
+        if (timeline_error != types.VulkanTimelineError.NONE) {
             _ = std.fmt.bufPrint(info.error_message[0..], "Timeline signal failed: {s} (VkResult: {d})",
                      .{vulkan_timeline_error_to_string(timeline_error), result}) catch {};
         } else {
@@ -601,7 +591,7 @@ pub export fn vulkan_sync_manager_signal_timeline_safe(sync_manager: ?*c.VulkanS
     return timeline_error;
 }
 
-pub export fn vulkan_sync_manager_validate_timeline_state(sync_manager: ?*c.VulkanSyncManager) callconv(.c) bool {
+pub export fn vulkan_sync_manager_validate_timeline_state(sync_manager: ?*types.VulkanSyncManager) callconv(.c) bool {
     if (sync_manager == null) {
         log.cardinal_log_error("[SYNC_MANAGER] Invalid sync manager or timeline semaphore", .{});
         return false;
@@ -629,15 +619,15 @@ pub export fn vulkan_sync_manager_validate_timeline_state(sync_manager: ?*c.Vulk
     return true;
 }
 
-pub export fn vulkan_sync_manager_recover_timeline_semaphore(sync_manager: ?*c.VulkanSyncManager,
-                                                    error_info: ?*c.VulkanTimelineErrorInfo) callconv(.c) bool {
+pub export fn vulkan_sync_manager_recover_timeline_semaphore(sync_manager: ?*types.VulkanSyncManager,
+                                                    error_info: ?*types.VulkanTimelineErrorInfo) callconv(.c) bool {
     if (sync_manager == null) return false;
     const mgr = sync_manager.?;
 
     log.cardinal_log_warn("[SYNC_MANAGER] Attempting timeline semaphore recovery", .{});
 
     if (error_info) |info| {
-        if (info.error_type == c.VULKAN_TIMELINE_ERROR_DEVICE_LOST) {
+        if (info.error_type == types.VulkanTimelineError.DEVICE_LOST) {
             log.cardinal_log_error("[SYNC_MANAGER] Cannot recover from device lost error", .{});
             return false;
         }
@@ -671,7 +661,7 @@ pub export fn vulkan_sync_manager_recover_timeline_semaphore(sync_manager: ?*c.V
     return true;
 }
 
-pub export fn vulkan_sync_manager_init_value_strategy(sync_manager: ?*c.VulkanSyncManager,
+pub export fn vulkan_sync_manager_init_value_strategy(sync_manager: ?*types.VulkanSyncManager,
                                              increment_step: u64, auto_reset_enabled: bool) callconv(.c) bool {
     if (sync_manager == null) return false;
     const mgr = sync_manager.?;
@@ -688,7 +678,7 @@ pub export fn vulkan_sync_manager_init_value_strategy(sync_manager: ?*c.VulkanSy
     return true;
 }
 
-pub export fn vulkan_sync_manager_get_optimized_next_value(sync_manager: ?*c.VulkanSyncManager,
+pub export fn vulkan_sync_manager_get_optimized_next_value(sync_manager: ?*types.VulkanSyncManager,
                                                       min_increment: u64) callconv(.c) u64 {
     if (sync_manager == null) return 0;
     const mgr = sync_manager.?;
@@ -715,7 +705,7 @@ pub export fn vulkan_sync_manager_get_optimized_next_value(sync_manager: ?*c.Vul
     return next_value;
 }
 
-pub export fn vulkan_sync_manager_check_overflow_risk(sync_manager: ?*c.VulkanSyncManager,
+pub export fn vulkan_sync_manager_check_overflow_risk(sync_manager: ?*types.VulkanSyncManager,
                                              remaining_values: ?*u64) callconv(.c) bool {
     if (sync_manager == null) return false;
     const mgr = sync_manager.?;
@@ -736,7 +726,7 @@ pub export fn vulkan_sync_manager_check_overflow_risk(sync_manager: ?*c.VulkanSy
     return at_risk;
 }
 
-pub export fn vulkan_sync_manager_reset_timeline_values(sync_manager: ?*c.VulkanSyncManager) callconv(.c) bool {
+pub export fn vulkan_sync_manager_reset_timeline_values(sync_manager: ?*types.VulkanSyncManager) callconv(.c) bool {
     if (sync_manager == null) return false;
     const mgr = sync_manager.?;
     if (mgr.timeline_semaphore == null) return false;
@@ -790,7 +780,7 @@ pub export fn vulkan_sync_manager_reset_timeline_values(sync_manager: ?*c.Vulkan
     return true;
 }
 
-pub export fn vulkan_sync_manager_optimize_value_allocation(sync_manager: ?*c.VulkanSyncManager) callconv(.c) void {
+pub export fn vulkan_sync_manager_optimize_value_allocation(sync_manager: ?*types.VulkanSyncManager) callconv(.c) void {
     if (sync_manager == null) return;
     const mgr = sync_manager.?;
 
@@ -821,7 +811,7 @@ pub export fn vulkan_sync_manager_optimize_value_allocation(sync_manager: ?*c.Vu
     }
 }
 
-pub export fn vulkan_sync_manager_is_timeline_value_reached(sync_manager: ?*c.VulkanSyncManager,
+pub export fn vulkan_sync_manager_is_timeline_value_reached(sync_manager: ?*types.VulkanSyncManager,
                                                        value: u64, reached: ?*bool) callconv(.c) c.VkResult {
     if (sync_manager == null or reached == null) return c.VK_ERROR_INITIALIZATION_FAILED;
     const mgr = sync_manager.?;
@@ -835,7 +825,7 @@ pub export fn vulkan_sync_manager_is_timeline_value_reached(sync_manager: ?*c.Vu
     return c.VK_SUCCESS;
 }
 
-pub export fn vulkan_sync_manager_get_timeline_stats(sync_manager: ?*c.VulkanSyncManager,
+pub export fn vulkan_sync_manager_get_timeline_stats(sync_manager: ?*types.VulkanSyncManager,
                                                 wait_count: ?*u64, signal_count: ?*u64,
                                                 current_value: ?*u64) callconv(.c) c.VkResult {
     if (sync_manager == null) return c.VK_ERROR_INITIALIZATION_FAILED;

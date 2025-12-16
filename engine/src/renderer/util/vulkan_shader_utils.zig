@@ -1,13 +1,9 @@
 const std = @import("std");
 const log = @import("../../core/log.zig");
 
-const c = @cImport({
-    @cDefine("CARDINAL_ZIG_BUILD", "1");
-    @cInclude("vulkan/vulkan.h");
-    @cInclude("stdlib.h");
-});
+const c = @import("../vulkan_c.zig").c;
 
-export fn vk_shader_create_module(device: c.VkDevice, filename: ?[*:0]const u8, shader_module: ?*c.VkShaderModule) callconv(.c) bool {
+pub export fn vk_shader_create_module(device: c.VkDevice, filename: ?[*:0]const u8, shader_module: ?*c.VkShaderModule) callconv(.c) bool {
     if (filename == null or shader_module == null) {
         log.cardinal_log_error("Invalid parameters for shader module creation", .{});
         return false;
@@ -59,7 +55,7 @@ export fn vk_shader_create_module(device: c.VkDevice, filename: ?[*:0]const u8, 
     return vk_shader_create_module_from_code(device, @ptrCast(@alignCast(code.ptr)), @intCast(stat.size), shader_module);
 }
 
-export fn vk_shader_create_module_from_code(device: c.VkDevice, code: ?[*]const u32, code_size: usize, shader_module: ?*c.VkShaderModule) callconv(.c) bool {
+pub export fn vk_shader_create_module_from_code(device: c.VkDevice, code: ?[*]const u32, code_size: usize, shader_module: ?*c.VkShaderModule) callconv(.c) bool {
     if (device == null or code == null or code_size == 0 or shader_module == null) {
         log.cardinal_log_error("Invalid parameters for shader module creation from code", .{});
         return false;
@@ -79,7 +75,7 @@ export fn vk_shader_create_module_from_code(device: c.VkDevice, code: ?[*]const 
     return true;
 }
 
-export fn vk_shader_destroy_module(device: c.VkDevice, shader_module: c.VkShaderModule) callconv(.c) void {
+pub export fn vk_shader_destroy_module(device: c.VkDevice, shader_module: c.VkShaderModule) callconv(.c) void {
     if (device != null and shader_module != null) {
         c.vkDestroyShaderModule(device, shader_module, null);
     }

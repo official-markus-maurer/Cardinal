@@ -1,22 +1,10 @@
 const std = @import("std");
 const builtin = @import("builtin");
 const log = @import("../core/log.zig");
+const types = @import("vulkan_types.zig");
+const vk_allocator = @import("vulkan_allocator.zig");
 
-const c = @cImport({
-    @cDefine("CARDINAL_ZIG_BUILD", "1");
-    @cDefine("VK_USE_PLATFORM_WIN32_KHR", "1");
-    @cInclude("stdlib.h");
-    @cInclude("string.h");
-    @cInclude("stdio.h");
-    @cInclude("vulkan/vulkan.h");
-    @cInclude("GLFW/glfw3.h");
-    @cInclude("vulkan_state.h");
-    @cInclude("cardinal/core/window.h");
-    @cInclude("cardinal/core/log.h");
-    @cInclude("cardinal/renderer/vulkan_instance.h");
-    @cInclude("vulkan_buffer_manager.h");
-    @cInclude("windows.h");
-});
+const c = @import("vulkan_c.zig").c;
 
 // Validation statistics
 var g_validation_stats = std.mem.zeroes(c.ValidationStats);
@@ -98,22 +86,19 @@ fn debug_callback(
 
     var buffer: [1400]u8 = undefined;
     _ = c.snprintf(&buffer, 1400, "VK_DEBUG [%s|%s] (%d:%s): %s", severity_str.ptr, type_str.ptr, msg_id_num, msg_id_name, message);
+    const log_msg = std.mem.span(@as([*:0]u8, @ptrCast(&buffer)));
 
     if ((message_severity & c.VK_DEBUG_UTILS_MESSAGE_SEVERITY_ERROR_BIT_EXT) != 0) {
-        log.cardinal_log_error("{s}", .{&buffer});
+        log.cardinal_log_error("{s}", .{log_msg});
         if ((message_type & c.VK_DEBUG_UTILS_MESSAGE_TYPE_VALIDATION_BIT_EXT) != 0) {
             log.cardinal_log_error("[VALIDATION] This error indicates a Vulkan specification violation", .{});
         }
     } else if ((message_severity & c.VK_DEBUG_UTILS_MESSAGE_SEVERITY_WARNING_BIT_EXT) != 0) {
-        if ((message_type & c.VK_DEBUG_UTILS_MESSAGE_TYPE_PERFORMANCE_BIT_EXT) != 0) {
-            log.cardinal_log_warn("[PERFORMANCE] {s}", .{&buffer});
-        } else {
-            log.cardinal_log_warn("{s}", .{&buffer});
-        }
+        log.cardinal_log_warn("{s}", .{log_msg});
     } else if ((message_severity & c.VK_DEBUG_UTILS_MESSAGE_SEVERITY_INFO_BIT_EXT) != 0) {
-        log.cardinal_log_info("{s}", .{&buffer});
+        log.cardinal_log_info("{s}", .{log_msg});
     } else {
-        log.cardinal_log_debug("{s}", .{&buffer});
+        log.cardinal_log_debug("{s}", .{log_msg});
     }
 
     return c.VK_FALSE;
@@ -214,7 +199,7 @@ fn get_instance_extensions(out_extensions: *[*c]const [*c]const u8, out_count: *
     log.cardinal_log_info("[INSTANCE] GLFW requires {d} extensions", .{glfw_count});
     var i: u32 = 0;
     while (i < glfw_count) : (i += 1) {
-        log.cardinal_log_info("[INSTANCE] GLFW extension {d}: {s}", .{i, glfw_exts[i]});
+        log.cardinal_log_info("[INSTANCE] GLFW extension {d}: {s}", .{i, std.mem.span(glfw_exts[i])});
     }
 
     if (!validation_enabled()) {
@@ -280,7 +265,7 @@ fn configure_validation(ci: *c.VkInstanceCreateInfo, layers: [*]const [*c]const 
     log.cardinal_log_info("[INSTANCE] Validation enabled - enabling validation layers", .{});
     ci.enabledLayerCount = 1;
     ci.ppEnabledLayerNames = layers;
-    log.cardinal_log_info("[INSTANCE] Enabling validation layer: {s}", .{layers[0]});
+    log.cardinal_log_info("[INSTANCE] Enabling validation layer: {s}", .{std.mem.span(layers[0])});
 
     debug_ci.sType = c.VK_STRUCTURE_TYPE_DEBUG_UTILS_MESSENGER_CREATE_INFO_EXT;
     debug_ci.messageSeverity = select_debug_severity_from_log_level();
@@ -311,7 +296,7 @@ fn configure_validation(ci: *c.VkInstanceCreateInfo, layers: [*]const [*c]const 
     log.cardinal_log_info("[INSTANCE] Debug messenger configured (layer settings skipped)", .{});
 }
 
-pub export fn vk_create_instance(s: ?*c.VulkanState) callconv(.c) bool {
+pub export fn vk_create_instance(s: ?*types.VulkanState) callconv(.c) bool {
     log.cardinal_log_info("[INSTANCE] Starting Vulkan instance creation", .{});
     if (s == null) return false;
     const vs = s.?;
@@ -329,7 +314,7 @@ pub export fn vk_create_instance(s: ?*c.VulkanState) callconv(.c) bool {
     log.cardinal_log_info("[INSTANCE] Final extension count: {d}", .{extension_count});
     var i: u32 = 0;
     while (i < extension_count) : (i += 1) {
-        log.cardinal_log_info("[INSTANCE] Extension {d}: {s}", .{i, if (extensions[i] != null) extensions[i] else @as([*c]const u8, "(null)")});
+        log.cardinal_log_info("[INSTANCE] Extension {d}: {s}", .{i, if (extensions[i] != null) std.mem.span(extensions[i]) else "(null)"});
     }
 
     const layers = [_][*c]const u8{ "VK_LAYER_KHRONOS_validation" };
@@ -369,7 +354,7 @@ pub export fn vk_create_instance(s: ?*c.VulkanState) callconv(.c) bool {
     return true;
 }
 
-pub export fn vk_pick_physical_device(s: ?*c.VulkanState) callconv(.c) bool {
+pub export fn vk_pick_physical_device(s: ?*types.VulkanState) callconv(.c) bool {
     log.cardinal_log_info("[DEVICE] Starting physical device selection", .{});
     if (s == null) return false;
     const vs = s.?;
@@ -397,7 +382,7 @@ pub export fn vk_pick_physical_device(s: ?*c.VulkanState) callconv(.c) bool {
     c.vkGetPhysicalDeviceProperties(vs.context.physical_device, &props);
     
     log.cardinal_log_info("[DEVICE] Selected device: {s} (API {d}.{d}.{d}, Driver {d}.{d}.{d})", .{
-        &props.deviceName,
+        std.mem.sliceTo(&props.deviceName, 0),
         c.VK_VERSION_MAJOR(props.apiVersion), c.VK_VERSION_MINOR(props.apiVersion), c.VK_VERSION_PATCH(props.apiVersion),
         c.VK_VERSION_MAJOR(props.driverVersion), c.VK_VERSION_MINOR(props.driverVersion), c.VK_VERSION_PATCH(props.driverVersion)
     });
@@ -405,7 +390,7 @@ pub export fn vk_pick_physical_device(s: ?*c.VulkanState) callconv(.c) bool {
     return vs.context.physical_device != null;
 }
 
-pub export fn vk_create_device(s: ?*c.VulkanState) callconv(.c) bool {
+pub export fn vk_create_device(s: ?*types.VulkanState) callconv(.c) bool {
     log.cardinal_log_info("[DEVICE] Starting logical device creation", .{});
     if (s == null) return false;
     const vs = s.?;
@@ -718,7 +703,7 @@ pub export fn vk_create_device(s: ?*c.VulkanState) callconv(.c) bool {
     log.cardinal_log_info("[DEVICE] Enabling {d} device extension(s)", .{dci.enabledExtensionCount});
     i = 0;
     while (i < dci.enabledExtensionCount) : (i += 1) {
-        log.cardinal_log_info("[DEVICE] Device extension {d}: {s}", .{i, device_extensions[i]});
+        log.cardinal_log_info("[DEVICE] Device extension {d}: {s}", .{i, std.mem.span(device_extensions[i])});
     }
 
     const result = c.vkCreateDevice(vs.context.physical_device, &dci, null, &vs.context.device);
@@ -802,7 +787,7 @@ pub export fn vk_create_device(s: ?*c.VulkanState) callconv(.c) bool {
         vs.context.supports_descriptor_buffer = false;
     }
 
-    if (!c.vk_allocator_init(&vs.allocator, vs.context.physical_device, vs.context.device,
+    if (!vk_allocator.vk_allocator_init(&vs.allocator, vs.context.physical_device, vs.context.device,
                            vs.context.vkGetDeviceBufferMemoryRequirements,
                            vs.context.vkGetDeviceImageMemoryRequirements,
                            vs.context.vkGetBufferDeviceAddress,
@@ -817,7 +802,7 @@ pub export fn vk_create_device(s: ?*c.VulkanState) callconv(.c) bool {
     return true;
 }
 
-pub export fn vk_create_surface(s: ?*c.VulkanState, window: ?*c.CardinalWindow) callconv(.c) bool {
+pub export fn vk_create_surface(s: ?*types.VulkanState, window: ?*c.CardinalWindow) callconv(.c) bool {
     log.cardinal_log_info("[SURFACE] Creating surface from window", .{});
     if (s == null or window == null) return false;
     const vs = s.?;
@@ -838,7 +823,7 @@ pub export fn vk_create_surface(s: ?*c.VulkanState, window: ?*c.CardinalWindow) 
     return result == c.VK_SUCCESS;
 }
 
-pub export fn vk_destroy_device_objects(s: ?*c.VulkanState) callconv(.c) void {
+pub export fn vk_destroy_device_objects(s: ?*types.VulkanState) callconv(.c) void {
     log.cardinal_log_info("[DESTROY] Destroying device objects and cleanup", .{});
     if (s == null) return;
     const vs = s.?;
@@ -847,7 +832,7 @@ pub export fn vk_destroy_device_objects(s: ?*c.VulkanState) callconv(.c) void {
         _ = c.vkDeviceWaitIdle(vs.context.device);
     }
 
-    c.vk_allocator_shutdown(&vs.allocator);
+    vk_allocator.vk_allocator_shutdown(&vs.allocator);
 
     if (vs.context.device != null) {
         c.vkDestroyDevice(vs.context.device, null);
@@ -873,7 +858,7 @@ pub export fn vk_destroy_device_objects(s: ?*c.VulkanState) callconv(.c) void {
     }
 }
 
-pub export fn vk_recreate_debug_messenger(s: ?*c.VulkanState) callconv(.c) void {
+pub export fn vk_recreate_debug_messenger(s: ?*types.VulkanState) callconv(.c) void {
     if (s == null or s.?.context.instance == null) return;
     if (!validation_enabled()) return;
     const vs = s.?;

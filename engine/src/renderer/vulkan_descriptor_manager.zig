@@ -1,35 +1,35 @@
 const std = @import("std");
 const builtin = @import("builtin");
 const log = @import("../core/log.zig");
+const types = @import("vulkan_types.zig");
+const vk_allocator = @import("vulkan_allocator.zig");
 
-const c = @cImport({
-    @cDefine("CARDINAL_ZIG_BUILD", "1");
-    @cInclude("stdlib.h");
-    @cInclude("string.h");
-    @cInclude("vulkan/vulkan.h");
-    @cInclude("vulkan_descriptor_manager.h");
-    @cInclude("vulkan_state.h");
-    
-    if (builtin.os.tag == .windows) {
-        @cInclude("windows.h");
-    }
-});
+const c = @import("vulkan_c.zig").c;
+
+
+pub const VulkanDescriptorManagerCreateInfo = extern struct {
+    bindings: ?[*]types.VulkanDescriptorBinding,
+    bindingCount: u32,
+    maxSets: u32,
+    preferDescriptorBuffers: bool,
+    poolFlags: c.VkDescriptorPoolCreateFlags,
+};
 
 // Helper functions
-fn get_binding_descriptor_type(manager: *const c.VulkanDescriptorManager, binding: u32) c.VkDescriptorType {
+fn get_binding_descriptor_type(manager: *const types.VulkanDescriptorManager, binding: u32) c.VkDescriptorType {
     if (manager.bindings == null or manager.bindingCount == 0) {
         return c.VK_DESCRIPTOR_TYPE_MAX_ENUM;
     }
     var i: u32 = 0;
     while (i < manager.bindingCount) : (i += 1) {
-        if (manager.bindings[i].binding == binding) {
-            return manager.bindings[i].descriptorType;
+        if (manager.bindings.?[i].binding == binding) {
+            return manager.bindings.?[i].descriptorType;
         }
     }
     return c.VK_DESCRIPTOR_TYPE_MAX_ENUM;
 }
 
-fn get_descriptor_size_for_type(state: *const c.VulkanState, dtype: c.VkDescriptorType) c.VkDeviceSize {
+fn get_descriptor_size_for_type(state: *const types.VulkanState, dtype: c.VkDescriptorType) c.VkDeviceSize {
     return switch (dtype) {
         c.VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER => state.context.descriptor_buffer_uniform_buffer_size,
         c.VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER => state.context.descriptor_buffer_combined_image_sampler_size,
@@ -37,19 +37,19 @@ fn get_descriptor_size_for_type(state: *const c.VulkanState, dtype: c.VkDescript
     };
 }
 
-fn create_descriptor_pool(manager: *c.VulkanDescriptorManager, maxSets: u32, flags: c.VkDescriptorPoolCreateFlags) bool {
+fn create_descriptor_pool(manager: *types.VulkanDescriptorManager, maxSets: u32, flags: c.VkDescriptorPoolCreateFlags) bool {
     var poolSizes: [16]c.VkDescriptorPoolSize = undefined;
     var poolSizeCount: u32 = 0;
 
     var i: u32 = 0;
     while (i < manager.bindingCount) : (i += 1) {
-        const dtype = manager.bindings[i].descriptorType;
+        const dtype = manager.bindings.?[i].descriptorType;
         
         var found = false;
         var j: u32 = 0;
         while (j < poolSizeCount) : (j += 1) {
             if (poolSizes[j].type == dtype) {
-                poolSizes[j].descriptorCount += manager.bindings[i].descriptorCount * maxSets;
+                poolSizes[j].descriptorCount += manager.bindings.?[i].descriptorCount * maxSets;
                 found = true;
                 break;
             }
@@ -57,7 +57,7 @@ fn create_descriptor_pool(manager: *c.VulkanDescriptorManager, maxSets: u32, fla
 
         if (!found and poolSizeCount < 16) {
             poolSizes[poolSizeCount].type = dtype;
-            poolSizes[poolSizeCount].descriptorCount = manager.bindings[i].descriptorCount * maxSets;
+            poolSizes[poolSizeCount].descriptorCount = manager.bindings.?[i].descriptorCount * maxSets;
             poolSizeCount += 1;
         }
     }
@@ -83,7 +83,7 @@ fn create_descriptor_pool(manager: *c.VulkanDescriptorManager, maxSets: u32, fla
     return true;
 }
 
-fn create_descriptor_set_layout(manager: *c.VulkanDescriptorManager) bool {
+fn create_descriptor_set_layout(manager: *types.VulkanDescriptorManager) bool {
     const ptr = c.malloc(manager.bindingCount * @sizeOf(c.VkDescriptorSetLayoutBinding));
     if (ptr == null) {
         log.cardinal_log_error("Failed to allocate memory for layout bindings", .{});
@@ -94,11 +94,11 @@ fn create_descriptor_set_layout(manager: *c.VulkanDescriptorManager) bool {
 
     var i: u32 = 0;
     while (i < manager.bindingCount) : (i += 1) {
-        layoutBindings[i].binding = manager.bindings[i].binding;
-        layoutBindings[i].descriptorType = manager.bindings[i].descriptorType;
-        layoutBindings[i].descriptorCount = manager.bindings[i].descriptorCount;
-        layoutBindings[i].stageFlags = manager.bindings[i].stageFlags;
-        layoutBindings[i].pImmutableSamplers = manager.bindings[i].pImmutableSamplers;
+        layoutBindings[i].binding = manager.bindings.?[i].binding;
+        layoutBindings[i].descriptorType = manager.bindings.?[i].descriptorType;
+        layoutBindings[i].descriptorCount = manager.bindings.?[i].descriptorCount;
+        layoutBindings[i].stageFlags = manager.bindings.?[i].stageFlags;
+        layoutBindings[i].pImmutableSamplers = manager.bindings.?[i].pImmutableSamplers;
     }
 
     var layoutInfo = std.mem.zeroes(c.VkDescriptorSetLayoutCreateInfo);
@@ -116,8 +116,8 @@ fn create_descriptor_set_layout(manager: *c.VulkanDescriptorManager) bool {
         
         i = 0;
         while (i < manager.bindingCount) : (i += 1) {
-            if (manager.bindings[i].descriptorType == c.VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER and
-                manager.bindings[i].descriptorCount > 1) {
+            if (manager.bindings.?[i].descriptorType == c.VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER and
+                manager.bindings.?[i].descriptorCount > 1) {
                 
                 bindingFlags.?[i] = c.VK_DESCRIPTOR_BINDING_VARIABLE_DESCRIPTOR_COUNT_BIT |
                                   c.VK_DESCRIPTOR_BINDING_PARTIALLY_BOUND_BIT;
@@ -163,7 +163,7 @@ fn create_descriptor_set_layout(manager: *c.VulkanDescriptorManager) bool {
     return true;
 }
 
-fn setup_descriptor_buffer(manager: *c.VulkanDescriptorManager, maxSets: u32, vulkan_state: *c.VulkanState) bool {
+fn setup_descriptor_buffer(manager: *types.VulkanDescriptorManager, maxSets: u32, vulkan_state: *types.VulkanState) bool {
     if (vulkan_state.context.vkGetDescriptorSetLayoutSizeEXT == null) {
         log.cardinal_log_error("Descriptor buffer extension not available", .{});
         return false;
@@ -191,7 +191,7 @@ fn setup_descriptor_buffer(manager: *c.VulkanDescriptorManager, maxSets: u32, vu
     bufferInfo.usage = c.VK_BUFFER_USAGE_RESOURCE_DESCRIPTOR_BUFFER_BIT_EXT | c.VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT;
     bufferInfo.sharingMode = c.VK_SHARING_MODE_EXCLUSIVE;
 
-    if (!c.vk_allocator_allocate_buffer(manager.allocator, &bufferInfo, &manager.descriptorBuffer,
+    if (!vk_allocator.vk_allocator_allocate_buffer(manager.allocator, &bufferInfo, &manager.descriptorBuffer,
                                       &manager.descriptorBufferMemory,
                                       c.VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | c.VK_MEMORY_PROPERTY_HOST_COHERENT_BIT)) {
         log.cardinal_log_error("Failed to create and allocate descriptor buffer", .{});
@@ -202,15 +202,15 @@ fn setup_descriptor_buffer(manager: *c.VulkanDescriptorManager, maxSets: u32, vu
                     manager.descriptorBufferSize, 0,
                     &manager.descriptorBufferMapped) != c.VK_SUCCESS) {
         log.cardinal_log_error("Failed to map descriptor buffer memory", .{});
-        c.vk_allocator_free_buffer(manager.allocator, manager.descriptorBuffer, manager.descriptorBufferMemory);
+        vk_allocator.vk_allocator_free_buffer(manager.allocator, manager.descriptorBuffer, manager.descriptorBufferMemory);
         return false;
     }
 
     var max_binding: u32 = 0;
     var i: u32 = 0;
     while (i < manager.bindingCount) : (i += 1) {
-        if (manager.bindings[i].binding > max_binding) {
-            max_binding = manager.bindings[i].binding;
+        if (manager.bindings.?[i].binding > max_binding) {
+            max_binding = manager.bindings.?[i].binding;
         }
     }
     manager.bindingOffsetCount = max_binding + 1;
@@ -220,7 +220,7 @@ fn setup_descriptor_buffer(manager: *c.VulkanDescriptorManager, maxSets: u32, vu
     if (manager.bindingOffsets == null) {
         log.cardinal_log_error("Failed to allocate binding offsets array", .{});
         c.vkUnmapMemory(manager.device, manager.descriptorBufferMemory);
-        c.vk_allocator_free_buffer(manager.allocator, manager.descriptorBuffer, manager.descriptorBufferMemory);
+        vk_allocator.vk_allocator_free_buffer(@ptrCast(manager.allocator), manager.descriptorBuffer, manager.descriptorBufferMemory);
         manager.descriptorBuffer = null;
         manager.descriptorBufferMemory = null;
         return false;
@@ -233,10 +233,10 @@ fn setup_descriptor_buffer(manager: *c.VulkanDescriptorManager, maxSets: u32, vu
 
     i = 0;
     while (i < manager.bindingCount) : (i += 1) {
-        const b = manager.bindings[i].binding;
+        const b = manager.bindings.?[i].binding;
         var offset: c.VkDeviceSize = 0;
         vulkan_state.context.vkGetDescriptorSetLayoutBindingOffsetEXT.?(manager.device, manager.layout, b, &offset);
-        manager.bindingOffsets[b] = offset;
+        manager.bindingOffsets.?[b] = offset;
     }
 
     log.cardinal_log_debug("Created descriptor buffer: size={d}, set_size={d}, max_sets={d}",
@@ -246,10 +246,10 @@ fn setup_descriptor_buffer(manager: *c.VulkanDescriptorManager, maxSets: u32, vu
 
 // Exported functions
 
-pub export fn vk_descriptor_manager_create(manager: ?*c.VulkanDescriptorManager, device: c.VkDevice,
-                                  allocator: ?*c.VulkanAllocator,
-                                  createInfo: ?*const c.VulkanDescriptorManagerCreateInfo,
-                                  vulkan_state: ?*c.VulkanState) callconv(.c) bool {
+pub export fn vk_descriptor_manager_create(manager: ?*types.VulkanDescriptorManager, device: c.VkDevice,
+                                  allocator: ?*types.VulkanAllocator,
+                                  createInfo: ?*const VulkanDescriptorManagerCreateInfo,
+                                  vulkan_state: ?*types.VulkanState) callconv(.c) bool {
     if (manager == null or device == null or allocator == null or createInfo == null or createInfo.?.bindings == null or createInfo.?.bindingCount == 0) {
         log.cardinal_log_error("Invalid parameters for descriptor manager creation", .{});
         return false;
@@ -257,7 +257,7 @@ pub export fn vk_descriptor_manager_create(manager: ?*c.VulkanDescriptorManager,
     const mgr = manager.?;
     const info = createInfo.?;
 
-    @memset(@as([*]u8, @ptrCast(mgr))[0..@sizeOf(c.VulkanDescriptorManager)], 0);
+    @memset(@as([*]u8, @ptrCast(mgr))[0..@sizeOf(types.VulkanDescriptorManager)], 0);
 
     mgr.device = device;
     mgr.allocator = allocator;
@@ -265,13 +265,14 @@ pub export fn vk_descriptor_manager_create(manager: ?*c.VulkanDescriptorManager,
     mgr.maxSets = info.maxSets;
     mgr.vulkan_state = vulkan_state;
 
-    const ptr = c.malloc(info.bindingCount * @sizeOf(c.VulkanDescriptorBinding));
+    const ptr = c.malloc(info.bindingCount * @sizeOf(types.VulkanDescriptorBinding));
     if (ptr == null) {
         log.cardinal_log_error("Failed to allocate memory for descriptor bindings", .{});
         return false;
     }
-    mgr.bindings = @as([*]c.VulkanDescriptorBinding, @ptrCast(@alignCast(ptr.?)));
-    @memcpy(mgr.bindings[0..info.bindingCount], info.bindings[0..info.bindingCount]);
+    mgr.bindings = @as([*]types.VulkanDescriptorBinding, @ptrCast(@alignCast(ptr.?)));
+    @memcpy(@as([*]u8, @ptrCast(mgr.bindings.?))[0..info.bindingCount * @sizeOf(types.VulkanDescriptorBinding)],
+           @as([*]const u8, @ptrCast(info.bindings.?))[0..info.bindingCount * @sizeOf(types.VulkanDescriptorBinding)]);
 
     mgr.useDescriptorBuffers = info.preferDescriptorBuffers and vulkan_state != null and
                                     vulkan_state.?.context.vkGetDescriptorSetLayoutSizeEXT != null;
@@ -315,7 +316,7 @@ pub export fn vk_descriptor_manager_create(manager: ?*c.VulkanDescriptorManager,
     return true;
 }
 
-pub export fn vk_descriptor_manager_destroy(manager: ?*c.VulkanDescriptorManager) callconv(.c) void {
+pub export fn vk_descriptor_manager_destroy(manager: ?*types.VulkanDescriptorManager) callconv(.c) void {
     if (manager == null) return;
     const mgr = manager.?;
     if (!mgr.initialized) return;
@@ -327,7 +328,7 @@ pub export fn vk_descriptor_manager_destroy(manager: ?*c.VulkanDescriptorManager
             c.vkUnmapMemory(mgr.device, mgr.descriptorBufferMemory);
         }
         if (mgr.descriptorBuffer != null) {
-            c.vk_allocator_free_buffer(mgr.allocator, mgr.descriptorBuffer, mgr.descriptorBufferMemory);
+            vk_allocator.vk_allocator_free_buffer(@ptrCast(mgr.allocator), mgr.descriptorBuffer, mgr.descriptorBufferMemory);
         }
         if (mgr.bindingOffsets != null) {
             c.free(@as(?*anyopaque, @ptrCast(mgr.bindingOffsets)));
@@ -351,10 +352,11 @@ pub export fn vk_descriptor_manager_destroy(manager: ?*c.VulkanDescriptorManager
         c.free(@as(?*anyopaque, @ptrCast(mgr.bindings)));
     }
 
-    @memset(@as([*]u8, @ptrCast(mgr))[0..@sizeOf(c.VulkanDescriptorManager)], 0);
+    @memset(@as([*]u8, @ptrCast(mgr))[0..@sizeOf(types.VulkanDescriptorManager)], 0);
+    log.cardinal_log_debug("Descriptor manager destroyed", .{});
 }
 
-pub export fn vk_descriptor_manager_allocate_sets(manager: ?*c.VulkanDescriptorManager, setCount: u32,
+pub export fn vk_descriptor_manager_allocate_sets(manager: ?*types.VulkanDescriptorManager, setCount: u32,
                                          pDescriptorSets: ?[*]c.VkDescriptorSet) callconv(.c) bool {
     if (manager == null or pDescriptorSets == null) return false;
     if (setCount == 0) return true;
@@ -397,7 +399,7 @@ pub export fn vk_descriptor_manager_allocate_sets(manager: ?*c.VulkanDescriptorM
     i = 0;
     while (i < setCount) : (i += 1) {
         if (mgr.descriptorSetCount < mgr.maxSets) {
-            mgr.descriptorSets[mgr.descriptorSetCount] = pDescriptorSets.?[i];
+            mgr.descriptorSets.?[mgr.descriptorSetCount] = pDescriptorSets.?[i];
             mgr.descriptorSetCount += 1;
         } else {
             log.cardinal_log_warn("Descriptor set limit reached ({d}), not tracking new set", .{mgr.maxSets});
@@ -408,7 +410,7 @@ pub export fn vk_descriptor_manager_allocate_sets(manager: ?*c.VulkanDescriptorM
     return true;
 }
 
-pub export fn vk_descriptor_manager_update_buffer(manager: ?*c.VulkanDescriptorManager, setIndex: u32,
+pub export fn vk_descriptor_manager_update_buffer(manager: ?*types.VulkanDescriptorManager, setIndex: u32,
                                          binding: u32, buffer: c.VkBuffer, offset: c.VkDeviceSize,
                                          range: c.VkDeviceSize) callconv(.c) bool {
     if (manager == null) return false;
@@ -431,7 +433,7 @@ pub export fn vk_descriptor_manager_update_buffer(manager: ?*c.VulkanDescriptorM
             log.cardinal_log_error("Descriptor buffer extension not available for updates", .{});
             return false;
         }
-        const vs = @as(*c.VulkanState, @ptrCast(mgr.vulkan_state));
+        const vs = @as(*types.VulkanState, @ptrCast(@alignCast(mgr.vulkan_state)));
         if (vs.context.vkGetDescriptorEXT == null) {
             log.cardinal_log_error("Descriptor buffer extension not available for updates", .{});
             return false;
@@ -454,7 +456,7 @@ pub export fn vk_descriptor_manager_update_buffer(manager: ?*c.VulkanDescriptorM
         getInfo.data.pUniformBuffer = &addressDesc;
 
         const setOffset = mgr.descriptorSetSize * setIndex;
-        const bindingOffset = if (binding < mgr.bindingOffsetCount) mgr.bindingOffsets[binding] else 0;
+        const bindingOffset = if (binding < mgr.bindingOffsetCount) mgr.bindingOffsets.?[binding] else 0;
         const dstOffset = setOffset + bindingOffset;
 
         const descSize = get_descriptor_size_for_type(vs, c.VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER);
@@ -474,7 +476,7 @@ pub export fn vk_descriptor_manager_update_buffer(manager: ?*c.VulkanDescriptorM
 
         var descriptorWrite = std.mem.zeroes(c.VkWriteDescriptorSet);
         descriptorWrite.sType = c.VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
-        descriptorWrite.dstSet = mgr.descriptorSets[setIndex];
+        descriptorWrite.dstSet = mgr.descriptorSets.?[setIndex];
         descriptorWrite.dstBinding = binding;
         descriptorWrite.dstArrayElement = 0;
         descriptorWrite.descriptorType = dtype;
@@ -486,7 +488,7 @@ pub export fn vk_descriptor_manager_update_buffer(manager: ?*c.VulkanDescriptorM
     }
 }
 
-pub export fn vk_descriptor_manager_update_image(manager: ?*c.VulkanDescriptorManager, setIndex: u32,
+pub export fn vk_descriptor_manager_update_image(manager: ?*types.VulkanDescriptorManager, setIndex: u32,
                                         binding: u32, imageView: c.VkImageView, sampler: c.VkSampler,
                                         imageLayout: c.VkImageLayout) callconv(.c) bool {
     if (manager == null) return false;
@@ -499,7 +501,7 @@ pub export fn vk_descriptor_manager_update_image(manager: ?*c.VulkanDescriptorMa
     if (mgr.useDescriptorBuffers) {
         if (dtype != c.VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER) return false;
         if (mgr.vulkan_state == null) return false;
-        const vs = @as(*c.VulkanState, @ptrCast(mgr.vulkan_state));
+        const vs = @as(*types.VulkanState, @ptrCast(@alignCast(mgr.vulkan_state)));
         
         var imageInfo = std.mem.zeroes(c.VkDescriptorImageInfo);
         imageInfo.imageLayout = imageLayout;
@@ -512,7 +514,7 @@ pub export fn vk_descriptor_manager_update_image(manager: ?*c.VulkanDescriptorMa
         getInfo.data.pCombinedImageSampler = &imageInfo;
 
         const setOffset = mgr.descriptorSetSize * setIndex;
-        const bindingOffset = if (binding < mgr.bindingOffsetCount) mgr.bindingOffsets[binding] else 0;
+        const bindingOffset = if (binding < mgr.bindingOffsetCount) mgr.bindingOffsets.?[binding] else 0;
         const dstOffset = setOffset + bindingOffset;
         const descSize = get_descriptor_size_for_type(vs, c.VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER);
 
@@ -529,7 +531,7 @@ pub export fn vk_descriptor_manager_update_image(manager: ?*c.VulkanDescriptorMa
 
         var descriptorWrite = std.mem.zeroes(c.VkWriteDescriptorSet);
         descriptorWrite.sType = c.VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
-        descriptorWrite.dstSet = mgr.descriptorSets[setIndex];
+        descriptorWrite.dstSet = mgr.descriptorSets.?[setIndex];
         descriptorWrite.dstBinding = binding;
         descriptorWrite.descriptorType = dtype;
         descriptorWrite.descriptorCount = 1;
@@ -540,19 +542,17 @@ pub export fn vk_descriptor_manager_update_image(manager: ?*c.VulkanDescriptorMa
     }
 }
 
-
-
 // Internal helper for textures update
-fn update_textures_internal(manager: *c.VulkanDescriptorManager, setIndex: u32, binding: u32,
+fn update_textures_internal(manager: *types.VulkanDescriptorManager, setIndex: u32, binding: u32,
                            imageViews: [*]c.VkImageView, samplers: ?[*]c.VkSampler, singleSampler: c.VkSampler,
                            imageLayout: c.VkImageLayout, count: u32, dtype: c.VkDescriptorType) bool {
     
     if (manager.useDescriptorBuffers) {
         if (manager.vulkan_state == null) return false;
-        const vs = @as(*c.VulkanState, @ptrCast(manager.vulkan_state));
+        const vs = @as(*types.VulkanState, @ptrCast(@alignCast(manager.vulkan_state)));
 
         const setOffset = manager.descriptorSetSize * setIndex;
-        const bindingOffset = if (binding < manager.bindingOffsetCount) manager.bindingOffsets[binding] else 0;
+        const bindingOffset = if (binding < manager.bindingOffsetCount) manager.bindingOffsets.?[binding] else 0;
         const descSize = get_descriptor_size_for_type(vs, c.VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER);
 
         var i: u32 = 0;
@@ -587,7 +587,7 @@ fn update_textures_internal(manager: *c.VulkanDescriptorManager, setIndex: u32, 
 
         var descriptorWrite = std.mem.zeroes(c.VkWriteDescriptorSet);
         descriptorWrite.sType = c.VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
-        descriptorWrite.dstSet = manager.descriptorSets[setIndex];
+        descriptorWrite.dstSet = manager.descriptorSets.?[setIndex];
         descriptorWrite.dstBinding = binding;
         descriptorWrite.descriptorType = dtype;
         descriptorWrite.descriptorCount = count;
@@ -599,7 +599,7 @@ fn update_textures_internal(manager: *c.VulkanDescriptorManager, setIndex: u32, 
 }
 
 // Re-implement exports using helper
-pub export fn vk_descriptor_manager_update_textures(manager: ?*c.VulkanDescriptorManager, setIndex: u32,
+pub export fn vk_descriptor_manager_update_textures(manager: ?*types.VulkanDescriptorManager, setIndex: u32,
                                            binding: u32, imageViews: ?[*]c.VkImageView,
                                            sampler: c.VkSampler, imageLayout: c.VkImageLayout,
                                            count: u32) callconv(.c) bool {
@@ -611,7 +611,7 @@ pub export fn vk_descriptor_manager_update_textures(manager: ?*c.VulkanDescripto
     return update_textures_internal(mgr, setIndex, binding, imageViews.?, null, sampler, imageLayout, count, dtype);
 }
 
-pub export fn vk_descriptor_manager_update_textures_with_samplers(manager: ?*c.VulkanDescriptorManager,
+pub export fn vk_descriptor_manager_update_textures_with_samplers(manager: ?*types.VulkanDescriptorManager,
                                            setIndex: u32, binding: u32,
                                            imageViews: ?[*]c.VkImageView,
                                            samplers: ?[*]c.VkSampler,
@@ -625,7 +625,7 @@ pub export fn vk_descriptor_manager_update_textures_with_samplers(manager: ?*c.V
     return update_textures_internal(mgr, setIndex, binding, imageViews.?, samplers, null, imageLayout, count, dtype);
 }
 
-pub export fn vk_descriptor_manager_bind_sets(manager: ?*c.VulkanDescriptorManager,
+pub export fn vk_descriptor_manager_bind_sets(manager: ?*types.VulkanDescriptorManager,
                                      commandBuffer: c.VkCommandBuffer, pipelineLayout: c.VkPipelineLayout,
                                      firstSet: u32, setCount: u32,
                                      pDescriptorSets: ?[*]const c.VkDescriptorSet,
@@ -637,7 +637,7 @@ pub export fn vk_descriptor_manager_bind_sets(manager: ?*c.VulkanDescriptorManag
 
     if (mgr.useDescriptorBuffers) {
         if (mgr.vulkan_state == null) return;
-        const vs = @as(*c.VulkanState, @ptrCast(mgr.vulkan_state));
+        const vs = @as(*types.VulkanState, @ptrCast(@alignCast(mgr.vulkan_state)));
 
         var addressInfo = std.mem.zeroes(c.VkBufferDeviceAddressInfo);
         addressInfo.sType = c.VK_STRUCTURE_TYPE_BUFFER_DEVICE_ADDRESS_INFO;
@@ -681,19 +681,19 @@ pub export fn vk_descriptor_manager_bind_sets(manager: ?*c.VulkanDescriptorManag
     }
 }
 
-pub export fn vk_descriptor_manager_get_layout(manager: ?*const c.VulkanDescriptorManager) callconv(.c) c.VkDescriptorSetLayout {
+pub export fn vk_descriptor_manager_get_layout(manager: ?*const types.VulkanDescriptorManager) callconv(.c) c.VkDescriptorSetLayout {
     return if (manager) |mgr| mgr.layout else null;
 }
 
-pub export fn vk_descriptor_manager_uses_buffers(manager: ?*const c.VulkanDescriptorManager) callconv(.c) bool {
+pub export fn vk_descriptor_manager_uses_buffers(manager: ?*const types.VulkanDescriptorManager) callconv(.c) bool {
     return if (manager) |mgr| mgr.useDescriptorBuffers else false;
 }
 
-pub export fn vk_descriptor_manager_get_set_size(manager: ?*const c.VulkanDescriptorManager) callconv(.c) c.VkDeviceSize {
+pub export fn vk_descriptor_manager_get_set_size(manager: ?*const types.VulkanDescriptorManager) callconv(.c) c.VkDeviceSize {
     return if (manager) |mgr| mgr.descriptorSetSize else 0;
 }
 
-pub export fn vk_descriptor_manager_get_set_data(manager: ?*c.VulkanDescriptorManager, setIndex: u32) callconv(.c) ?*anyopaque {
+pub export fn vk_descriptor_manager_get_set_data(manager: ?*types.VulkanDescriptorManager, setIndex: u32) callconv(.c) ?*anyopaque {
     if (manager == null) return null;
     const mgr = manager.?;
     if (!mgr.useDescriptorBuffers or mgr.descriptorBufferMapped == null) return null;

@@ -1,15 +1,10 @@
 const std = @import("std");
 const log = @import("../core/log.zig");
+const types = @import("vulkan_types.zig");
+const vk_allocator = @import("vulkan_allocator.zig");
+const c = @import("vulkan_c.zig").c;
 
-const c = @cImport({
-    @cDefine("CARDINAL_ZIG_BUILD", "1");
-    @cInclude("stdlib.h");
-    @cInclude("vulkan/vulkan.h");
-    @cInclude("vulkan_state.h");
-    @cInclude("vulkan_buffer_manager.h");
-});
-
-fn create_depth_resources(s: *c.VulkanState) bool {
+fn create_depth_resources(s: *types.VulkanState) bool {
     // Find a suitable depth format
     const candidates = [_]c.VkFormat{ c.VK_FORMAT_D32_SFLOAT, c.VK_FORMAT_D32_SFLOAT_S8_UINT, c.VK_FORMAT_D24_UNORM_S8_UINT };
     s.swapchain.depth_format = c.VK_FORMAT_UNDEFINED;
@@ -45,7 +40,7 @@ fn create_depth_resources(s: *c.VulkanState) bool {
     imageInfo.sharingMode = c.VK_SHARING_MODE_EXCLUSIVE;
 
     // Use VulkanAllocator to allocate and bind image + memory
-    if (!c.vk_allocator_allocate_image(&s.allocator, &imageInfo, &s.swapchain.depth_image,
+    if (!vk_allocator.vk_allocator_allocate_image(&s.allocator, &imageInfo, &s.swapchain.depth_image,
                                      &s.swapchain.depth_image_memory,
                                      c.VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT)) {
         log.cardinal_log_error("pipeline: allocator failed to create depth image", .{});
@@ -67,7 +62,7 @@ fn create_depth_resources(s: *c.VulkanState) bool {
     if (c.vkCreateImageView(s.context.device, &viewInfo, null, &s.swapchain.depth_image_view) != c.VK_SUCCESS) {
         log.cardinal_log_error("pipeline: failed to create depth image view", .{});
         // Free image + memory via allocator on failure
-        c.vk_allocator_free_image(&s.allocator, s.swapchain.depth_image, s.swapchain.depth_image_memory);
+        vk_allocator.vk_allocator_free_image(&s.allocator, s.swapchain.depth_image, s.swapchain.depth_image_memory);
         s.swapchain.depth_image = null;
         s.swapchain.depth_image_memory = null;
         return false;
@@ -80,7 +75,7 @@ fn create_depth_resources(s: *c.VulkanState) bool {
     return true;
 }
 
-fn destroy_depth_resources(s: *c.VulkanState) void {
+fn destroy_depth_resources(s: *types.VulkanState) void {
     if (s.context.device == null) return;
 
     // Validate and destroy depth image view
@@ -93,7 +88,7 @@ fn destroy_depth_resources(s: *c.VulkanState) void {
     if (s.swapchain.depth_image != null or s.swapchain.depth_image_memory != null) {
         // Ensure allocator is valid before freeing
         if (s.allocator.device != null) {
-            c.vk_allocator_free_image(&s.allocator, s.swapchain.depth_image, s.swapchain.depth_image_memory);
+            vk_allocator.vk_allocator_free_image(&s.allocator, s.swapchain.depth_image, s.swapchain.depth_image_memory);
         }
         s.swapchain.depth_image = null;
         s.swapchain.depth_image_memory = null;
@@ -103,7 +98,7 @@ fn destroy_depth_resources(s: *c.VulkanState) void {
     s.swapchain.depth_layout_initialized = false;
 }
 
-pub export fn vk_create_pipeline(s: ?*c.VulkanState) callconv(.c) bool {
+pub export fn vk_create_pipeline(s: ?*types.VulkanState) callconv(.c) bool {
     if (s == null) return false;
     const vs = s.?;
 
@@ -116,7 +111,7 @@ pub export fn vk_create_pipeline(s: ?*c.VulkanState) callconv(.c) bool {
     return true;
 }
 
-pub export fn vk_destroy_pipeline(s: ?*c.VulkanState) callconv(.c) void {
+pub export fn vk_destroy_pipeline(s: ?*types.VulkanState) callconv(.c) void {
     if (s == null or s.?.context.device == null) return;
     const vs = s.?;
 

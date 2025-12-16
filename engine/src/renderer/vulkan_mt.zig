@@ -2,37 +2,15 @@ const std = @import("std");
 const builtin = @import("builtin");
 const memory = @import("../core/memory.zig");
 const log = @import("../core/log.zig");
-
-const c = @cImport({
-    @cInclude("stdlib.h");
-    @cInclude("string.h");
-    @cInclude("stdint.h");
-    // Skip stdatomic.h and define types manually
-    @cDefine("__STDATOMIC_H", "1");
-    @cDefine("_STDATOMIC_H", "1");
-    @cDefine("__CLANG_STDATOMIC_H", "1");
-    @cDefine("__zig_translate_c__", "1");
-    @cDefine("CARDINAL_ZIG_BUILD", "1");
-    @cInclude("vulkan/vulkan.h");
-    @cInclude("vulkan_state.h");
-    @cInclude("cardinal/renderer/vulkan_mt.h");
-    // Windows specific
-    if (builtin.os.tag == .windows) {
-        @cInclude("windows.h");
-        @cInclude("process.h");
-    } else {
-        @cInclude("pthread.h");
-        @cInclude("unistd.h");
-        @cInclude("time.h");
-    }
-});
+const types = @import("vulkan_types.zig");
+const c = @import("vulkan_c.zig").c;
 
 // Global subsystem instance
-pub export var g_cardinal_mt_subsystem: c.CardinalMTSubsystem = std.mem.zeroes(c.CardinalMTSubsystem);
+pub export var g_cardinal_mt_subsystem: types.CardinalMTSubsystem = std.mem.zeroes(types.CardinalMTSubsystem);
 
 // === Platform-specific threading utilities ===
 
-pub export fn cardinal_mt_mutex_init(mutex: *c.cardinal_mutex_t) callconv(.c) bool {
+pub export fn cardinal_mt_mutex_init(mutex: *types.cardinal_mutex_t) callconv(.c) bool {
     if (builtin.os.tag == .windows) {
         c.InitializeCriticalSection(mutex);
         return true;
@@ -41,7 +19,7 @@ pub export fn cardinal_mt_mutex_init(mutex: *c.cardinal_mutex_t) callconv(.c) bo
     }
 }
 
-pub export fn cardinal_mt_mutex_destroy(mutex: *c.cardinal_mutex_t) callconv(.c) void {
+pub export fn cardinal_mt_mutex_destroy(mutex: *types.cardinal_mutex_t) callconv(.c) void {
     if (builtin.os.tag == .windows) {
         c.DeleteCriticalSection(mutex);
     } else {
@@ -49,7 +27,7 @@ pub export fn cardinal_mt_mutex_destroy(mutex: *c.cardinal_mutex_t) callconv(.c)
     }
 }
 
-pub export fn cardinal_mt_mutex_lock(mutex: *c.cardinal_mutex_t) callconv(.c) void {
+pub export fn cardinal_mt_mutex_lock(mutex: *types.cardinal_mutex_t) callconv(.c) void {
     if (builtin.os.tag == .windows) {
         c.EnterCriticalSection(mutex);
     } else {
@@ -57,7 +35,7 @@ pub export fn cardinal_mt_mutex_lock(mutex: *c.cardinal_mutex_t) callconv(.c) vo
     }
 }
 
-pub export fn cardinal_mt_mutex_unlock(mutex: *c.cardinal_mutex_t) callconv(.c) void {
+pub export fn cardinal_mt_mutex_unlock(mutex: *types.cardinal_mutex_t) callconv(.c) void {
     if (builtin.os.tag == .windows) {
         c.LeaveCriticalSection(mutex);
     } else {
@@ -65,7 +43,7 @@ pub export fn cardinal_mt_mutex_unlock(mutex: *c.cardinal_mutex_t) callconv(.c) 
     }
 }
 
-pub export fn cardinal_mt_cond_init(cond: *c.cardinal_cond_t) callconv(.c) bool {
+pub export fn cardinal_mt_cond_init(cond: *types.cardinal_cond_t) callconv(.c) bool {
     if (builtin.os.tag == .windows) {
         c.InitializeConditionVariable(cond);
         return true;
@@ -74,7 +52,7 @@ pub export fn cardinal_mt_cond_init(cond: *c.cardinal_cond_t) callconv(.c) bool 
     }
 }
 
-pub export fn cardinal_mt_cond_destroy(cond: *c.cardinal_cond_t) callconv(.c) void {
+pub export fn cardinal_mt_cond_destroy(cond: *types.cardinal_cond_t) callconv(.c) void {
     if (builtin.os.tag == .windows) {
         // No destroy needed for CONDITION_VARIABLE on Windows
     } else {
@@ -82,7 +60,7 @@ pub export fn cardinal_mt_cond_destroy(cond: *c.cardinal_cond_t) callconv(.c) vo
     }
 }
 
-pub export fn cardinal_mt_cond_wait(cond: *c.cardinal_cond_t, mutex: *c.cardinal_mutex_t) callconv(.c) void {
+pub export fn cardinal_mt_cond_wait(cond: *types.cardinal_cond_t, mutex: *types.cardinal_mutex_t) callconv(.c) void {
     if (builtin.os.tag == .windows) {
         _ = c.SleepConditionVariableCS(cond, mutex, c.INFINITE);
     } else {
@@ -90,7 +68,7 @@ pub export fn cardinal_mt_cond_wait(cond: *c.cardinal_cond_t, mutex: *c.cardinal
     }
 }
 
-pub export fn cardinal_mt_cond_signal(cond: *c.cardinal_cond_t) callconv(.c) void {
+pub export fn cardinal_mt_cond_signal(cond: *types.cardinal_cond_t) callconv(.c) void {
     if (builtin.os.tag == .windows) {
         c.WakeConditionVariable(cond);
     } else {
@@ -98,7 +76,7 @@ pub export fn cardinal_mt_cond_signal(cond: *c.cardinal_cond_t) callconv(.c) voi
     }
 }
 
-pub export fn cardinal_mt_cond_broadcast(cond: *c.cardinal_cond_t) callconv(.c) void {
+pub export fn cardinal_mt_cond_broadcast(cond: *types.cardinal_cond_t) callconv(.c) void {
     if (builtin.os.tag == .windows) {
         c.WakeAllConditionVariable(cond);
     } else {
@@ -106,7 +84,7 @@ pub export fn cardinal_mt_cond_broadcast(cond: *c.cardinal_cond_t) callconv(.c) 
     }
 }
 
-pub export fn cardinal_mt_cond_wait_timeout(cond: *c.cardinal_cond_t, mutex: *c.cardinal_mutex_t, timeout_ms: u32) callconv(.c) bool {
+pub export fn cardinal_mt_cond_wait_timeout(cond: *types.cardinal_cond_t, mutex: *types.cardinal_mutex_t, timeout_ms: u32) callconv(.c) bool {
     if (builtin.os.tag == .windows) {
         return c.SleepConditionVariableCS(cond, mutex, timeout_ms) != 0;
     } else {
@@ -122,7 +100,7 @@ pub export fn cardinal_mt_cond_wait_timeout(cond: *c.cardinal_cond_t, mutex: *c.
     }
 }
 
-pub export fn cardinal_mt_get_current_thread_id() callconv(.c) c.cardinal_thread_id_t {
+pub export fn cardinal_mt_get_current_thread_id() callconv(.c) types.cardinal_thread_id_t {
     if (builtin.os.tag == .windows) {
         return c.GetCurrentThreadId();
     } else {
@@ -130,7 +108,7 @@ pub export fn cardinal_mt_get_current_thread_id() callconv(.c) c.cardinal_thread
     }
 }
 
-pub export fn cardinal_mt_thread_ids_equal(thread1: c.cardinal_thread_id_t, thread2: c.cardinal_thread_id_t) callconv(.c) bool {
+pub export fn cardinal_mt_thread_ids_equal(thread1: types.cardinal_thread_id_t, thread2: types.cardinal_thread_id_t) callconv(.c) bool {
     if (builtin.os.tag == .windows) {
         return thread1 == thread2;
     } else {
@@ -162,7 +140,7 @@ fn cardinal_mt_worker_thread_func(arg: ?*anyopaque) callconv(if (builtin.os.tag 
             if (t.execute_func) |exec| {
                 exec(t.data);
                 t.success = true; // Assume success if no crash, logic can refine this
-            } else if (t.type == c.CARDINAL_MT_TASK_COMMAND_RECORD) {
+            } else if (t.type == types.CardinalMTTaskType.CARDINAL_MT_TASK_COMMAND_RECORD) {
                 // Special handling for command recording
                 // This part was implicit in the C code or handled by execute_func?
                 // Looking at C code:
@@ -179,19 +157,18 @@ fn cardinal_mt_worker_thread_func(arg: ?*anyopaque) callconv(if (builtin.os.tag 
     return if (builtin.os.tag == .windows) 0 else null;
 }
 
-fn cardinal_mt_create_thread(thread: *c.cardinal_thread_handle_t, arg: ?*anyopaque) bool {
+fn cardinal_mt_create_thread(thread: *types.cardinal_thread_handle_t, arg: ?*anyopaque) bool {
     if (builtin.os.tag == .windows) {
-        // _beginthreadex signature: 
-        // uintptr_t _beginthreadex(void *security, unsigned stack_size, unsigned ( __stdcall *start_address )( void * ), void *arglist, unsigned initflag, unsigned *thrdaddr);
-        const handle = c._beginthreadex(null, 0, cardinal_mt_worker_thread_func, arg, 0, null);
-        thread.* = @ptrCast(@alignCast(@as(?*anyopaque, @ptrFromInt(handle))));
+        // Use CreateThread instead of _beginthreadex due to missing process.h
+        const handle = c.CreateThread(null, 0, cardinal_mt_worker_thread_func, arg, 0, null);
+        thread.* = handle;
         return thread.* != null;
     } else {
         return c.pthread_create(thread, null, cardinal_mt_worker_thread_func, arg) == 0;
     }
 }
 
-fn cardinal_mt_join_thread(thread: c.cardinal_thread_handle_t) void {
+fn cardinal_mt_join_thread(thread: types.cardinal_thread_handle_t) void {
     if (builtin.os.tag == .windows) {
         _ = c.WaitForSingleObject(thread, c.INFINITE);
         _ = c.CloseHandle(thread);
@@ -202,7 +179,7 @@ fn cardinal_mt_join_thread(thread: c.cardinal_thread_handle_t) void {
 
 // === Task Queue Management ===
 
-fn cardinal_mt_task_queue_init(queue: *c.CardinalMTTaskQueue) bool {
+fn cardinal_mt_task_queue_init(queue: *types.CardinalMTTaskQueue) bool {
     queue.head = null;
     queue.tail = null;
     queue.task_count = 0;
@@ -219,7 +196,7 @@ fn cardinal_mt_task_queue_init(queue: *c.CardinalMTTaskQueue) bool {
     return true;
 }
 
-fn cardinal_mt_task_queue_shutdown(queue: *c.CardinalMTTaskQueue) void {
+fn cardinal_mt_task_queue_shutdown(queue: *types.CardinalMTTaskQueue) void {
     cardinal_mt_mutex_lock(&queue.queue_mutex);
     
     // Free remaining tasks
@@ -228,12 +205,12 @@ fn cardinal_mt_task_queue_shutdown(queue: *c.CardinalMTTaskQueue) void {
     
     while (current != null) {
         const curr = current;
-        const next = curr.*.next;
+        const next = curr.?.*.next;
         // Free data if needed (similar to process_completed_tasks)
-        if (curr.*.data != null) {
-             if (curr.*.type == c.CARDINAL_MT_TASK_TEXTURE_LOAD or
-                curr.*.type == c.CARDINAL_MT_TASK_MESH_LOAD) {
-                memory.cardinal_free(allocator, curr.*.data);
+        if (curr.?.*.data != null) {
+             if (curr.?.*.type == types.CardinalMTTaskType.CARDINAL_MT_TASK_TEXTURE_LOAD or
+                curr.?.*.type == types.CardinalMTTaskType.CARDINAL_MT_TASK_MESH_LOAD) {
+                memory.cardinal_free(allocator, curr.?.*.data);
             }
         }
         memory.cardinal_free(allocator, curr);
@@ -249,13 +226,13 @@ fn cardinal_mt_task_queue_shutdown(queue: *c.CardinalMTTaskQueue) void {
     cardinal_mt_cond_destroy(&queue.queue_condition);
 }
 
-fn cardinal_mt_task_queue_push(queue: *c.CardinalMTTaskQueue, task: *c.CardinalMTTask) void {
+fn cardinal_mt_task_queue_push(queue: *types.CardinalMTTaskQueue, task: *types.CardinalMTTask) void {
     cardinal_mt_mutex_lock(&queue.queue_mutex);
 
     task.next = null;
 
     if (queue.tail != null) {
-        queue.tail.*.next = task;
+        queue.tail.?.*.next = task;
     } else {
         queue.head = task;
     }
@@ -267,7 +244,7 @@ fn cardinal_mt_task_queue_push(queue: *c.CardinalMTTaskQueue, task: *c.CardinalM
     cardinal_mt_mutex_unlock(&queue.queue_mutex);
 }
 
-fn cardinal_mt_task_queue_pop(queue: *c.CardinalMTTaskQueue) ?*c.CardinalMTTask {
+fn cardinal_mt_task_queue_pop(queue: *types.CardinalMTTaskQueue) ?*types.CardinalMTTask {
     cardinal_mt_mutex_lock(&queue.queue_mutex);
 
     while (queue.head == null and g_cardinal_mt_subsystem.is_running) {
@@ -276,29 +253,29 @@ fn cardinal_mt_task_queue_pop(queue: *c.CardinalMTTaskQueue) ?*c.CardinalMTTask 
 
     const task = queue.head;
     if (task != null) {
-        queue.head = task.*.next;
+        queue.head = task.?.*.next;
         if (queue.head == null) {
             queue.tail = null;
         }
         queue.task_count -= 1;
-        task.*.next = null;
+        task.?.*.next = null;
     }
 
     cardinal_mt_mutex_unlock(&queue.queue_mutex);
     return task;
 }
 
-fn cardinal_mt_task_queue_try_pop(queue: *c.CardinalMTTaskQueue) ?*c.CardinalMTTask {
+fn cardinal_mt_task_queue_try_pop(queue: *types.CardinalMTTaskQueue) ?*types.CardinalMTTask {
     cardinal_mt_mutex_lock(&queue.queue_mutex);
 
     const task = queue.head;
     if (task != null) {
-        queue.head = task.*.next;
+        queue.head = task.?.*.next;
         if (queue.head == null) {
             queue.tail = null;
         }
         queue.task_count -= 1;
-        task.*.next = null;
+        task.?.*.next = null;
     }
 
     cardinal_mt_mutex_unlock(&queue.queue_mutex);
@@ -307,13 +284,13 @@ fn cardinal_mt_task_queue_try_pop(queue: *c.CardinalMTTaskQueue) ?*c.CardinalMTT
 
 // === Command Buffer Management ===
 
-pub export fn cardinal_mt_command_manager_init(manager: *c.CardinalMTCommandManager, vulkan_state: ?*c.VulkanState) callconv(.c) bool {
+pub export fn cardinal_mt_command_manager_init(manager: *types.CardinalMTCommandManager, vulkan_state: ?*types.VulkanState) callconv(.c) bool {
     if (vulkan_state == null) {
         log.cardinal_log_error("[MT] Invalid parameters for command manager initialization", .{});
         return false;
     }
 
-    manager.vulkan_state = vulkan_state.?;
+    manager.vulkan_state = vulkan_state;
     manager.active_thread_count = 0;
     manager.is_initialized = false;
 
@@ -323,7 +300,7 @@ pub export fn cardinal_mt_command_manager_init(manager: *c.CardinalMTCommandMana
     }
 
     var i: u32 = 0;
-    while (i < c.CARDINAL_MAX_MT_THREADS) : (i += 1) {
+    while (i < types.CARDINAL_MAX_MT_THREADS) : (i += 1) {
         var pool = &manager.thread_pools[i];
         pool.primary_pool = null; // VK_NULL_HANDLE
         pool.secondary_pool = null;
@@ -338,13 +315,13 @@ pub export fn cardinal_mt_command_manager_init(manager: *c.CardinalMTCommandMana
     return true;
 }
 
-pub export fn cardinal_mt_command_manager_shutdown(manager: *c.CardinalMTCommandManager) callconv(.c) void {
+pub export fn cardinal_mt_command_manager_shutdown(manager: *types.CardinalMTCommandManager) callconv(.c) void {
     if (!manager.is_initialized) return;
 
     cardinal_mt_mutex_lock(&manager.pool_mutex);
 
     var i: u32 = 0;
-    while (i < c.CARDINAL_MAX_MT_THREADS) : (i += 1) {
+    while (i < types.CARDINAL_MAX_MT_THREADS) : (i += 1) {
         var pool = &manager.thread_pools[i];
         if (pool.is_active) {
             const allocator = memory.cardinal_get_allocator_for_category(.RENDERER);
@@ -352,12 +329,15 @@ pub export fn cardinal_mt_command_manager_shutdown(manager: *c.CardinalMTCommand
                 memory.cardinal_free(allocator, @ptrCast(pool.secondary_buffers));
                 pool.secondary_buffers = null;
             }
+            
+            const vs = manager.vulkan_state.?;
+            
             if (pool.primary_pool != null) {
-                c.vkDestroyCommandPool(manager.vulkan_state.*.context.device, pool.primary_pool, null);
+                c.vkDestroyCommandPool(vs.context.device, pool.primary_pool, null);
                 pool.primary_pool = null;
             }
             if (pool.secondary_pool != null) {
-                c.vkDestroyCommandPool(manager.vulkan_state.*.context.device, pool.secondary_pool, null);
+                c.vkDestroyCommandPool(vs.context.device, pool.secondary_pool, null);
                 pool.secondary_pool = null;
             }
             pool.is_active = false;
@@ -373,7 +353,7 @@ pub export fn cardinal_mt_command_manager_shutdown(manager: *c.CardinalMTCommand
     log.cardinal_log_info("[MT] Command manager shutdown completed", .{});
 }
 
-pub export fn cardinal_mt_get_thread_command_pool(manager: *c.CardinalMTCommandManager) callconv(.c) ?*c.CardinalThreadCommandPool {
+pub export fn cardinal_mt_get_thread_command_pool(manager: *types.CardinalMTCommandManager) callconv(.c) ?*types.CardinalThreadCommandPool {
     if (!manager.is_initialized) return null;
 
     const thread_id = cardinal_mt_get_current_thread_id();
@@ -382,7 +362,7 @@ pub export fn cardinal_mt_get_thread_command_pool(manager: *c.CardinalMTCommandM
 
     // Find existing pool
     var i: u32 = 0;
-    while (i < c.CARDINAL_MAX_MT_THREADS) : (i += 1) {
+    while (i < types.CARDINAL_MAX_MT_THREADS) : (i += 1) {
         const pool = &manager.thread_pools[i];
         if (pool.is_active and cardinal_mt_thread_ids_equal(pool.thread_id, thread_id)) {
             cardinal_mt_mutex_unlock(&manager.pool_mutex);
@@ -392,8 +372,8 @@ pub export fn cardinal_mt_get_thread_command_pool(manager: *c.CardinalMTCommandM
 
     // Allocate new pool
     i = 0;
-    var free_pool: ?*c.CardinalThreadCommandPool = null;
-    while (i < c.CARDINAL_MAX_MT_THREADS) : (i += 1) {
+    var free_pool: ?*types.CardinalThreadCommandPool = null;
+    while (i < types.CARDINAL_MAX_MT_THREADS) : (i += 1) {
         if (!manager.thread_pools[i].is_active) {
             free_pool = &manager.thread_pools[i];
             break;
@@ -410,7 +390,8 @@ pub export fn cardinal_mt_get_thread_command_pool(manager: *c.CardinalMTCommandM
     pool.thread_id = thread_id;
     
     // Create pools
-    const queue_family_index = manager.vulkan_state.*.context.graphics_queue_family;
+    const vs = manager.vulkan_state.?;
+    const queue_family_index = vs.context.graphics_queue_family;
     
     var pool_info = c.VkCommandPoolCreateInfo{
         .sType = c.VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO,
@@ -419,28 +400,28 @@ pub export fn cardinal_mt_get_thread_command_pool(manager: *c.CardinalMTCommandM
         .queueFamilyIndex = queue_family_index,
     };
 
-    if (c.vkCreateCommandPool(manager.vulkan_state.*.context.device, &pool_info, null, &pool.primary_pool) != c.VK_SUCCESS) {
+    if (c.vkCreateCommandPool(vs.context.device, &pool_info, null, &pool.primary_pool) != c.VK_SUCCESS) {
         log.cardinal_log_error("[MT] Failed to create primary command pool", .{});
         cardinal_mt_mutex_unlock(&manager.pool_mutex);
         return null;
     }
 
-    if (c.vkCreateCommandPool(manager.vulkan_state.*.context.device, &pool_info, null, &pool.secondary_pool) != c.VK_SUCCESS) {
+    if (c.vkCreateCommandPool(vs.context.device, &pool_info, null, &pool.secondary_pool) != c.VK_SUCCESS) {
         log.cardinal_log_error("[MT] Failed to create secondary command pool", .{});
-        c.vkDestroyCommandPool(manager.vulkan_state.*.context.device, pool.primary_pool, null);
+        c.vkDestroyCommandPool(vs.context.device, pool.primary_pool, null);
         pool.primary_pool = null;
         cardinal_mt_mutex_unlock(&manager.pool_mutex);
         return null;
     }
 
-    pool.secondary_buffer_count = c.CARDINAL_MAX_SECONDARY_COMMAND_BUFFERS;
+    pool.secondary_buffer_count = types.CARDINAL_MAX_SECONDARY_COMMAND_BUFFERS;
     const allocator = memory.cardinal_get_allocator_for_category(.RENDERER);
     pool.secondary_buffers = @ptrCast(@alignCast(memory.cardinal_alloc(allocator, @sizeOf(c.VkCommandBuffer) * pool.secondary_buffer_count)));
     
     if (pool.secondary_buffers == null) {
         log.cardinal_log_error("[MT] Failed to allocate memory for secondary command buffers", .{});
-        c.vkDestroyCommandPool(manager.vulkan_state.*.context.device, pool.secondary_pool, null);
-        c.vkDestroyCommandPool(manager.vulkan_state.*.context.device, pool.primary_pool, null);
+        c.vkDestroyCommandPool(vs.context.device, pool.secondary_pool, null);
+        c.vkDestroyCommandPool(vs.context.device, pool.primary_pool, null);
         pool.primary_pool = null;
         pool.secondary_pool = null;
         cardinal_mt_mutex_unlock(&manager.pool_mutex);
@@ -455,12 +436,12 @@ pub export fn cardinal_mt_get_thread_command_pool(manager: *c.CardinalMTCommandM
         .commandBufferCount = pool.secondary_buffer_count,
     };
 
-    if (c.vkAllocateCommandBuffers(manager.vulkan_state.*.context.device, &alloc_info, pool.secondary_buffers) != c.VK_SUCCESS) {
+    if (c.vkAllocateCommandBuffers(vs.context.device, &alloc_info, pool.secondary_buffers) != c.VK_SUCCESS) {
         log.cardinal_log_error("[MT] Failed to allocate secondary command buffers", .{});
         memory.cardinal_free(allocator, @ptrCast(pool.secondary_buffers));
         pool.secondary_buffers = null;
-        c.vkDestroyCommandPool(manager.vulkan_state.*.context.device, pool.secondary_pool, null);
-        c.vkDestroyCommandPool(manager.vulkan_state.*.context.device, pool.primary_pool, null);
+        c.vkDestroyCommandPool(vs.context.device, pool.secondary_pool, null);
+        c.vkDestroyCommandPool(vs.context.device, pool.primary_pool, null);
         pool.primary_pool = null;
         pool.secondary_pool = null;
         cardinal_mt_mutex_unlock(&manager.pool_mutex);
@@ -477,13 +458,18 @@ pub export fn cardinal_mt_get_thread_command_pool(manager: *c.CardinalMTCommandM
     return pool;
 }
 
-pub export fn cardinal_mt_allocate_secondary_command_buffer(pool: *c.CardinalThreadCommandPool, context: *c.CardinalSecondaryCommandContext) callconv(.c) bool {
+pub export fn cardinal_mt_allocate_secondary_command_buffer(pool: *types.CardinalThreadCommandPool, context: *types.CardinalSecondaryCommandContext) callconv(.c) bool {
     if (pool.next_secondary_index >= pool.secondary_buffer_count) {
         log.cardinal_log_warn("[MT] Thread command pool exhausted", .{});
         return false;
     }
 
-    context.command_buffer = pool.secondary_buffers[pool.next_secondary_index];
+    if (pool.secondary_buffers) |bufs| {
+        context.command_buffer = bufs[pool.next_secondary_index];
+    } else {
+        return false;
+    }
+
     pool.next_secondary_index += 1;
     context.is_recording = false;
     
@@ -495,7 +481,7 @@ pub export fn cardinal_mt_allocate_secondary_command_buffer(pool: *c.CardinalThr
     return true;
 }
 
-pub export fn cardinal_mt_begin_secondary_command_buffer(context: *c.CardinalSecondaryCommandContext, inheritance_info: *const c.VkCommandBufferInheritanceInfo) callconv(.c) bool {
+pub export fn cardinal_mt_begin_secondary_command_buffer(context: *types.CardinalSecondaryCommandContext, inheritance_info: *const c.VkCommandBufferInheritanceInfo) callconv(.c) bool {
     var begin_info = c.VkCommandBufferBeginInfo{
         .sType = c.VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO,
         .pNext = null,
@@ -513,7 +499,7 @@ pub export fn cardinal_mt_begin_secondary_command_buffer(context: *c.CardinalSec
     return true;
 }
 
-pub export fn cardinal_mt_end_secondary_command_buffer(context: *c.CardinalSecondaryCommandContext) callconv(.c) bool {
+pub export fn cardinal_mt_end_secondary_command_buffer(context: *types.CardinalSecondaryCommandContext) callconv(.c) bool {
     if (!context.is_recording) return false;
 
     if (c.vkEndCommandBuffer(context.command_buffer) != c.VK_SUCCESS) {
@@ -525,7 +511,7 @@ pub export fn cardinal_mt_end_secondary_command_buffer(context: *c.CardinalSecon
     return true;
 }
 
-pub export fn cardinal_mt_execute_secondary_command_buffers(primary_cmd: c.VkCommandBuffer, secondary_contexts: [*]c.CardinalSecondaryCommandContext, count: u32) callconv(.c) void {
+pub export fn cardinal_mt_execute_secondary_command_buffers(primary_cmd: c.VkCommandBuffer, secondary_contexts: [*]types.CardinalSecondaryCommandContext, count: u32) callconv(.c) void {
     if (count == 0) return;
 
     // We need to collect VkCommandBuffers into an array
@@ -561,9 +547,19 @@ pub export fn cardinal_mt_execute_secondary_command_buffers(primary_cmd: c.VkCom
     }
 }
 
+pub export fn cardinal_mt_wait_task(task: *types.CardinalMTTask) callconv(.c) void {
+    while (!task.is_completed) {
+        if (builtin.os.tag == .windows) {
+            c.Sleep(1);
+        } else {
+            _ = c.usleep(1000);
+        }
+    }
+}
+
 // === Multi-Threading Subsystem Functions ===
 
-pub export fn cardinal_mt_subsystem_init(vulkan_state: ?*c.VulkanState, worker_thread_count_in: u32) callconv(.c) bool {
+pub export fn cardinal_mt_subsystem_init(vulkan_state: ?*types.VulkanState, worker_thread_count_in: u32) callconv(.c) bool {
     if (g_cardinal_mt_subsystem.is_running) {
         log.cardinal_log_warn("[MT] Subsystem already initialized", .{});
         return true;
@@ -578,11 +574,11 @@ pub export fn cardinal_mt_subsystem_init(vulkan_state: ?*c.VulkanState, worker_t
     if (worker_thread_count == 0) {
         worker_thread_count = cardinal_mt_get_optimal_thread_count();
     }
-    if (worker_thread_count > c.CARDINAL_MAX_MT_THREADS) {
-        worker_thread_count = c.CARDINAL_MAX_MT_THREADS;
+    if (worker_thread_count > types.CARDINAL_MAX_MT_THREADS) {
+        worker_thread_count = types.CARDINAL_MAX_MT_THREADS;
     }
 
-    g_cardinal_mt_subsystem = std.mem.zeroes(c.CardinalMTSubsystem);
+    g_cardinal_mt_subsystem = std.mem.zeroes(types.CardinalMTSubsystem);
 
     if (!cardinal_mt_command_manager_init(&g_cardinal_mt_subsystem.command_manager, vulkan_state)) {
         log.cardinal_log_error("[MT] Failed to initialize command manager", .{});
@@ -656,12 +652,12 @@ pub export fn cardinal_mt_subsystem_shutdown() callconv(.c) void {
     cardinal_mt_task_queue_shutdown(&g_cardinal_mt_subsystem.pending_queue);
     cardinal_mt_command_manager_shutdown(&g_cardinal_mt_subsystem.command_manager);
 
-    g_cardinal_mt_subsystem = std.mem.zeroes(c.CardinalMTSubsystem);
+    g_cardinal_mt_subsystem = std.mem.zeroes(types.CardinalMTSubsystem);
 
     log.cardinal_log_info("[MT] Subsystem shutdown completed", .{});
 }
 
-pub export fn cardinal_mt_submit_task(task: *c.CardinalMTTask) callconv(.c) bool {
+pub export fn cardinal_mt_submit_task(task: *types.CardinalMTTask) callconv(.c) bool {
     if (!g_cardinal_mt_subsystem.is_running) {
         log.cardinal_log_error("[MT] Invalid task or subsystem not running", .{});
         return false;
@@ -687,8 +683,8 @@ pub export fn cardinal_mt_process_completed_tasks(max_tasks: u32) callconv(.c) v
         }
 
         if (t.data != null) {
-            if (t.type == c.CARDINAL_MT_TASK_TEXTURE_LOAD or
-                t.type == c.CARDINAL_MT_TASK_MESH_LOAD) {
+            if (t.type == types.CardinalMTTaskType.CARDINAL_MT_TASK_TEXTURE_LOAD or
+                t.type == types.CardinalMTTaskType.CARDINAL_MT_TASK_MESH_LOAD) {
                 memory.cardinal_free(allocator, t.data);
             }
         }
@@ -698,21 +694,21 @@ pub export fn cardinal_mt_process_completed_tasks(max_tasks: u32) callconv(.c) v
     }
 }
 
-pub export fn cardinal_mt_create_texture_load_task(file_path: ?[*:0]const u8, callback: ?*const fn(?*anyopaque, bool) callconv(.c) void) callconv(.c) ?*c.CardinalMTTask {
+pub export fn cardinal_mt_create_texture_load_task(file_path: ?[*:0]const u8, callback: ?*const fn(?*anyopaque, bool) callconv(.c) void) callconv(.c) ?*types.CardinalMTTask {
     if (file_path == null) {
         log.cardinal_log_error("[MT] Invalid file path for texture load task", .{});
         return null;
     }
 
     const allocator = memory.cardinal_get_allocator_for_category(.RENDERER);
-    const task_ptr = memory.cardinal_alloc(allocator, @sizeOf(c.CardinalMTTask));
+    const task_ptr = memory.cardinal_alloc(allocator, @sizeOf(types.CardinalMTTask));
     if (task_ptr == null) {
         log.cardinal_log_error("[MT] Failed to allocate memory for texture load task", .{});
         return null;
     }
-    const task: *c.CardinalMTTask = @ptrCast(@alignCast(task_ptr));
+    const task: *types.CardinalMTTask = @ptrCast(@alignCast(task_ptr));
 
-    task.type = c.CARDINAL_MT_TASK_TEXTURE_LOAD;
+    task.type = types.CardinalMTTaskType.CARDINAL_MT_TASK_TEXTURE_LOAD;
     const len = c.strlen(file_path) + 1;
     task.data = memory.cardinal_alloc(allocator, len);
     if (task.data) |data| {
@@ -727,21 +723,21 @@ pub export fn cardinal_mt_create_texture_load_task(file_path: ?[*:0]const u8, ca
     return task;
 }
 
-pub export fn cardinal_mt_create_mesh_load_task(file_path: ?[*:0]const u8, callback: ?*const fn(?*anyopaque, bool) callconv(.c) void) callconv(.c) ?*c.CardinalMTTask {
+pub export fn cardinal_mt_create_mesh_load_task(file_path: ?[*:0]const u8, callback: ?*const fn(?*anyopaque, bool) callconv(.c) void) callconv(.c) ?*types.CardinalMTTask {
     if (file_path == null) {
         log.cardinal_log_error("[MT] Invalid file path for mesh load task", .{});
         return null;
     }
 
     const allocator = memory.cardinal_get_allocator_for_category(.RENDERER);
-    const task_ptr = memory.cardinal_alloc(allocator, @sizeOf(c.CardinalMTTask));
+    const task_ptr = memory.cardinal_alloc(allocator, @sizeOf(types.CardinalMTTask));
     if (task_ptr == null) {
         log.cardinal_log_error("[MT] Failed to allocate memory for mesh load task", .{});
         return null;
     }
-    const task: *c.CardinalMTTask = @ptrCast(@alignCast(task_ptr));
+    const task: *types.CardinalMTTask = @ptrCast(@alignCast(task_ptr));
 
-    task.type = c.CARDINAL_MT_TASK_MESH_LOAD;
+    task.type = types.CardinalMTTaskType.CARDINAL_MT_TASK_MESH_LOAD;
     const len = c.strlen(file_path) + 1;
     task.data = memory.cardinal_alloc(allocator, len);
     if (task.data) |data| {
@@ -756,16 +752,16 @@ pub export fn cardinal_mt_create_mesh_load_task(file_path: ?[*:0]const u8, callb
     return task;
 }
 
-pub export fn cardinal_mt_create_command_record_task(user_data: ?*anyopaque, record_func: ?*const fn(?*anyopaque) callconv(.c) void, callback: ?*const fn(?*anyopaque, bool) callconv(.c) void) callconv(.c) ?*c.CardinalMTTask {
+pub export fn cardinal_mt_create_command_record_task(record_func: ?*const fn(?*anyopaque) callconv(.c) void, user_data: ?*anyopaque, callback: ?*const fn(?*anyopaque, bool) callconv(.c) void) callconv(.c) ?*types.CardinalMTTask {
     const allocator = memory.cardinal_get_allocator_for_category(.RENDERER);
-    const task_ptr = memory.cardinal_alloc(allocator, @sizeOf(c.CardinalMTTask));
+    const task_ptr = memory.cardinal_alloc(allocator, @sizeOf(types.CardinalMTTask));
     if (task_ptr == null) {
         log.cardinal_log_error("[MT] Failed to allocate memory for command record task", .{});
         return null;
     }
-    const task: *c.CardinalMTTask = @ptrCast(@alignCast(task_ptr));
+    const task: *types.CardinalMTTask = @ptrCast(@alignCast(task_ptr));
 
-    task.type = c.CARDINAL_MT_TASK_COMMAND_RECORD;
+    task.type = types.CardinalMTTaskType.CARDINAL_MT_TASK_COMMAND_RECORD;
     task.data = user_data;
     task.execute_func = record_func;
     task.callback_func = callback;

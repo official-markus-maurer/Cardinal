@@ -130,13 +130,36 @@ pub fn build(b: *std.Build) void {
     engine.root_module.addCMacro("CARDINAL_USE_SPDLOG", "1");
     engine.root_module.addCMacro("_CRT_SECURE_NO_WARNINGS", "");
 
-    const engine_sources = &[_][]const u8{
-        "engine/src/assets/stb_impl.c",
-        "engine/src/assets/cgltf_impl.c",
-    };
+    // Generate C implementation files
+    const gen_c_files = b.addWriteFiles();
+    
+    const stb_impl_c = gen_c_files.add("stb_impl.c", 
+        \\#define STB_IMAGE_IMPLEMENTATION
+        \\#define STBI_NO_HDR
+        \\#define STBI_NO_PSD
+        \\#define STBI_NO_PIC
+        \\#define STBI_NO_PNM
+        \\#define STBI_NO_GIF
+        \\#define STBI_NO_TGA
+        \\#define STBI_NO_LINEAR
+        \\#include <stdlib.h>
+        \\#include "stb_image.h"
+    );
 
-    engine.addCSourceFiles(.{
-        .files = engine_sources,
+    const cgltf_impl_c = gen_c_files.add("cgltf_impl.c", 
+        \\#define CGLTF_IMPLEMENTATION
+        \\#include "cgltf.h"
+    );
+
+    // Compile stb_image implementation
+    engine.addCSourceFile(.{
+        .file = stb_impl_c,
+        .flags = &.{"-std=c17"},
+    });
+
+    // Compile cgltf implementation
+    engine.addCSourceFile(.{
+        .file = cgltf_impl_c,
         .flags = &.{"-std=c17"},
     });
 

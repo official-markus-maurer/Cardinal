@@ -1,20 +1,15 @@
 const std = @import("std");
 const builtin = @import("builtin");
 const log = @import("../core/log.zig");
+const buffer_mgr = @import("vulkan_buffer_manager.zig");
+const types = @import("vulkan_types.zig");
+const vk_allocator = @import("vulkan_allocator.zig");
+const scene = @import("../assets/scene.zig");
+const shader_utils = @import("util/vulkan_shader_utils.zig");
+const material_utils = @import("util/vulkan_material_utils.zig");
 
-const c = @cImport({
-    @cDefine("CARDINAL_ZIG_BUILD", "1");
-    @cInclude("stdlib.h");
-    @cInclude("string.h");
-    @cInclude("stdio.h");
-    @cInclude("vulkan/vulkan.h");
-    @cInclude("vulkan_state.h");
-    @cInclude("vulkan_buffer_manager.h");
-    @cInclude("cardinal/renderer/util/vulkan_descriptor_utils.h");
-    @cInclude("cardinal/renderer/util/vulkan_material_utils.h");
-    @cInclude("cardinal/renderer/util/vulkan_shader_utils.h");
-    @cInclude("cardinal/renderer/vulkan_pbr.h");
-});
+const c = @import("vulkan_c.zig").c;
+
 
 const SimpleUniformBufferObject = extern struct {
     model: [16]f32,
@@ -22,7 +17,7 @@ const SimpleUniformBufferObject = extern struct {
     proj: [16]f32,
 };
 
-fn create_simple_descriptor_layout(s: *c.VulkanState) bool {
+fn create_simple_descriptor_layout(s: *types.VulkanState) bool {
     var uboLayoutBinding = std.mem.zeroes(c.VkDescriptorSetLayoutBinding);
     uboLayoutBinding.binding = 0;
     uboLayoutBinding.descriptorType = c.VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
@@ -43,17 +38,17 @@ fn create_simple_descriptor_layout(s: *c.VulkanState) bool {
     return true;
 }
 
-fn create_simple_uniform_buffer(s: *c.VulkanState) bool {
+fn create_simple_uniform_buffer(s: *types.VulkanState) bool {
     const bufferSize = @sizeOf(SimpleUniformBufferObject);
 
-    var simpleBuffer = std.mem.zeroes(c.VulkanBuffer);
-    var createInfo = std.mem.zeroes(c.VulkanBufferCreateInfo);
+    var simpleBuffer = std.mem.zeroes(buffer_mgr.VulkanBuffer);
+    var createInfo = std.mem.zeroes(buffer_mgr.VulkanBufferCreateInfo);
     createInfo.size = bufferSize;
     createInfo.usage = c.VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT;
     createInfo.properties = c.VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | c.VK_MEMORY_PROPERTY_HOST_COHERENT_BIT;
     createInfo.persistentlyMapped = true;
 
-    if (!c.vk_buffer_create(&simpleBuffer, s.context.device, &s.allocator, &createInfo)) {
+    if (!buffer_mgr.vk_buffer_create(&simpleBuffer, s.context.device, @ptrCast(&s.allocator), &createInfo)) {
         log.cardinal_log_error("Failed to create simple uniform buffer!", .{});
         return false;
     }
@@ -71,7 +66,7 @@ fn create_simple_uniform_buffer(s: *c.VulkanState) bool {
     return true;
 }
 
-fn create_simple_descriptor_pool(s: *c.VulkanState) bool {
+fn create_simple_descriptor_pool(s: *types.VulkanState) bool {
     var poolSize = std.mem.zeroes(c.VkDescriptorPoolSize);
     poolSize.type = c.VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
     poolSize.descriptorCount = 1;
@@ -117,13 +112,13 @@ fn create_simple_descriptor_pool(s: *c.VulkanState) bool {
     return true;
 }
 
-fn create_simple_pipeline(s: *c.VulkanState, vertShaderPath: [*c]const u8, fragShaderPath: [*c]const u8, pipeline: *c.VkPipeline, pipelineLayout: *c.VkPipelineLayout, wireframe: bool) bool {
+fn create_simple_pipeline(s: *types.VulkanState, vertShaderPath: [*c]const u8, fragShaderPath: [*c]const u8, pipeline: *c.VkPipeline, pipelineLayout: *c.VkPipelineLayout, wireframe: bool) bool {
     // Load shaders
     var vertShaderModule: c.VkShaderModule = null;
     var fragShaderModule: c.VkShaderModule = null;
 
-    if (!c.vk_shader_create_module(s.context.device, vertShaderPath, &vertShaderModule) or
-        !c.vk_shader_create_module(s.context.device, fragShaderPath, &fragShaderModule)) {
+    if (!shader_utils.vk_shader_create_module(s.context.device, vertShaderPath, &vertShaderModule) or
+        !shader_utils.vk_shader_create_module(s.context.device, fragShaderPath, &fragShaderModule)) {
         log.cardinal_log_error("Failed to load simple pipeline shaders", .{});
         if (vertShaderModule != null) c.vkDestroyShaderModule(s.context.device, vertShaderModule, null);
         if (fragShaderModule != null) c.vkDestroyShaderModule(s.context.device, fragShaderModule, null);
@@ -149,7 +144,7 @@ fn create_simple_pipeline(s: *c.VulkanState, vertShaderPath: [*c]const u8, fragS
     // Vertex input (same as PBR pipeline)
     var bindingDescription = std.mem.zeroes(c.VkVertexInputBindingDescription);
     bindingDescription.binding = 0;
-    bindingDescription.stride = @sizeOf(c.CardinalVertex);
+    bindingDescription.stride = @sizeOf(scene.CardinalVertex);
     bindingDescription.inputRate = c.VK_VERTEX_INPUT_RATE_VERTEX;
 
     var attributeDescriptions: [3]c.VkVertexInputAttributeDescription = undefined;
@@ -157,17 +152,17 @@ fn create_simple_pipeline(s: *c.VulkanState, vertShaderPath: [*c]const u8, fragS
     attributeDescriptions[0].binding = 0;
     attributeDescriptions[0].location = 0;
     attributeDescriptions[0].format = c.VK_FORMAT_R32G32B32_SFLOAT;
-    attributeDescriptions[0].offset = @offsetOf(c.CardinalVertex, "px");
+    attributeDescriptions[0].offset = @offsetOf(scene.CardinalVertex, "px");
     // Normal
     attributeDescriptions[1].binding = 0;
     attributeDescriptions[1].location = 1;
     attributeDescriptions[1].format = c.VK_FORMAT_R32G32B32_SFLOAT;
-    attributeDescriptions[1].offset = @offsetOf(c.CardinalVertex, "nx");
+    attributeDescriptions[1].offset = @offsetOf(scene.CardinalVertex, "nx");
     // UV
     attributeDescriptions[2].binding = 0;
     attributeDescriptions[2].location = 2;
     attributeDescriptions[2].format = c.VK_FORMAT_R32G32_SFLOAT;
-    attributeDescriptions[2].offset = @offsetOf(c.CardinalVertex, "u");
+    attributeDescriptions[2].offset = @offsetOf(scene.CardinalVertex, "u");
 
     var vertexInputInfo = std.mem.zeroes(c.VkPipelineVertexInputStateCreateInfo);
     vertexInputInfo.sType = c.VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO;
@@ -230,7 +225,7 @@ fn create_simple_pipeline(s: *c.VulkanState, vertShaderPath: [*c]const u8, fragS
     var pushConstantRange = std.mem.zeroes(c.VkPushConstantRange);
     pushConstantRange.stageFlags = c.VK_SHADER_STAGE_VERTEX_BIT | c.VK_SHADER_STAGE_FRAGMENT_BIT;
     pushConstantRange.offset = 0;
-    pushConstantRange.size = @sizeOf(c.PBRPushConstants);
+    pushConstantRange.size = @sizeOf(types.PBRPushConstants);
 
     var pipelineLayoutInfo = std.mem.zeroes(c.VkPipelineLayoutCreateInfo);
     pipelineLayoutInfo.sType = c.VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO;
@@ -279,7 +274,7 @@ fn create_simple_pipeline(s: *c.VulkanState, vertShaderPath: [*c]const u8, fragS
     return true;
 }
 
-pub export fn vk_create_simple_pipelines(s: ?*c.VulkanState) callconv(.c) bool {
+pub export fn vk_create_simple_pipelines(s: ?*types.VulkanState) callconv(.c) bool {
     if (s == null) return false;
     const vs = s.?;
 
@@ -328,7 +323,7 @@ pub export fn vk_create_simple_pipelines(s: ?*c.VulkanState) callconv(.c) bool {
     return true;
 }
 
-pub export fn vk_destroy_simple_pipelines(s: ?*c.VulkanState) callconv(.c) void {
+pub export fn vk_destroy_simple_pipelines(s: ?*types.VulkanState) callconv(.c) void {
     if (s == null) return;
     const vs = s.?;
 
@@ -338,7 +333,7 @@ pub export fn vk_destroy_simple_pipelines(s: ?*c.VulkanState) callconv(.c) void 
     }
 
     if (vs.pipelines.simple_uniform_buffer != null or vs.pipelines.simple_uniform_buffer_memory != null) {
-        c.vk_allocator_free_buffer(&vs.allocator, vs.pipelines.simple_uniform_buffer, vs.pipelines.simple_uniform_buffer_memory);
+        vk_allocator.vk_allocator_free_buffer(&vs.allocator, vs.pipelines.simple_uniform_buffer, vs.pipelines.simple_uniform_buffer_memory);
         vs.pipelines.simple_uniform_buffer = null;
         vs.pipelines.simple_uniform_buffer_memory = null;
     }
@@ -381,7 +376,7 @@ pub export fn vk_destroy_simple_pipelines(s: ?*c.VulkanState) callconv(.c) void 
     }
 }
 
-pub export fn vk_update_simple_uniforms(s: ?*c.VulkanState, model: ?*const f32, view: ?*const f32, proj: ?*const f32) callconv(.c) void {
+pub export fn vk_update_simple_uniforms(s: ?*types.VulkanState, model: ?*const f32, view: ?*const f32, proj: ?*const f32) callconv(.c) void {
     if (s == null or s.?.pipelines.simple_uniform_buffer_mapped == null or model == null or view == null or proj == null) return;
     const vs = s.?;
 
@@ -394,7 +389,7 @@ pub export fn vk_update_simple_uniforms(s: ?*c.VulkanState, model: ?*const f32, 
             @as([*]const u8, @ptrCast(&ubo))[0..@sizeOf(SimpleUniformBufferObject)]);
 }
 
-pub export fn vk_render_simple(s: ?*c.VulkanState, commandBuffer: c.VkCommandBuffer, pipeline: c.VkPipeline, pipelineLayout: c.VkPipelineLayout) callconv(.c) void {
+pub export fn vk_render_simple(s: ?*types.VulkanState, commandBuffer: c.VkCommandBuffer, pipeline: c.VkPipeline, pipelineLayout: c.VkPipelineLayout) callconv(.c) void {
     if (s == null) return;
     const vs = s.?;
     if (vs.current_scene == null or vs.scene_meshes == null) return;
@@ -405,19 +400,26 @@ pub export fn vk_render_simple(s: ?*c.VulkanState, commandBuffer: c.VkCommandBuf
     // Render each mesh
     var i: u32 = 0;
     while (i < vs.scene_mesh_count) : (i += 1) {
-        const mesh = &vs.scene_meshes[i];
+        const mesh = &vs.scene_meshes.?[i];
         if (mesh.vbuf == null) continue;
 
         // Prepare push constants
-        if (i < vs.current_scene.*.mesh_count) {
-            const sceneMesh = &vs.current_scene.*.meshes[i];
+        if (vs.current_scene) |current_scene| {
+            if (i < current_scene.mesh_count) {
+                // Access meshes via pointer arithmetic if slice access is tricky with C pointers
+                // In Zig, if scene.meshes is [*]CardinalMesh, we can use slice syntax if we trust the count
+                if (current_scene.meshes) |meshes| {
+                    const sceneMesh = &meshes[i];
 
-            if (!sceneMesh.visible) continue;
+                    if (!sceneMesh.visible) continue;
 
-            var pushConstants = std.mem.zeroes(c.PBRPushConstants);
-            c.vk_material_setup_push_constants(&pushConstants, sceneMesh, vs.current_scene, vs.pipelines.pbr_pipeline.textureManager);
+                    var pushConstants = std.mem.zeroes(types.PBRPushConstants);
+                    // Cast to C types for the C function call
+                    material_utils.vk_material_setup_push_constants(@ptrCast(&pushConstants), @ptrCast(sceneMesh), @ptrCast(current_scene), @ptrCast(vs.pipelines.pbr_pipeline.textureManager));
 
-            c.vkCmdPushConstants(commandBuffer, pipelineLayout, c.VK_SHADER_STAGE_VERTEX_BIT | c.VK_SHADER_STAGE_FRAGMENT_BIT, 0, @sizeOf(c.PBRPushConstants), &pushConstants);
+                    c.vkCmdPushConstants(commandBuffer, pipelineLayout, c.VK_SHADER_STAGE_VERTEX_BIT | c.VK_SHADER_STAGE_FRAGMENT_BIT, 0, @sizeOf(types.PBRPushConstants), &pushConstants);
+                }
+            }
         }
 
         const vertexBuffers = [_]c.VkBuffer{ mesh.vbuf };

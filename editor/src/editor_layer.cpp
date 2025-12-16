@@ -1965,6 +1965,17 @@ void editor_layer_shutdown(void) {
   // internally Manual descriptor pool destruction removed to prevent
   // double-free heap corruption The descriptor pool will be cleaned up by
   // ImGui's internal shutdown process
+  if (g_descriptor_pool != VK_NULL_HANDLE) {
+      if (g_renderer) {
+          VkDevice device = cardinal_renderer_internal_device(g_renderer);
+          printf("[EDITOR] Destroying descriptor pool: %p using device: %p\n", (void*)g_descriptor_pool, (void*)device);
+          vkDestroyDescriptorPool(device, g_descriptor_pool, NULL);
+      } else {
+          printf("[EDITOR] Cannot destroy descriptor pool: g_renderer is NULL\n");
+      }
+  } else {
+      printf("[EDITOR] Descriptor pool is already NULL\n");
+  }
   g_descriptor_pool = VK_NULL_HANDLE;
 
   ImGui::DestroyContext();

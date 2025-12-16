@@ -7,7 +7,6 @@ const c = @cImport({
     @cInclude("stdlib.h");
     @cInclude("string.h");
     @cInclude("vulkan/vulkan.h");
-    @cInclude("vulkan_swapchain_manager.h");
     if (builtin.os.tag == .windows) {
         @cInclude("windows.h");
     } else {
@@ -15,13 +14,57 @@ const c = @cImport({
     }
 });
 
+pub const VulkanSwapchainManager = extern struct {
+    device: c.VkDevice,
+    physicalDevice: c.VkPhysicalDevice,
+    surface: c.VkSurfaceKHR,
+
+    swapchain: c.VkSwapchainKHR,
+    format: c.VkFormat,
+    extent: c.VkExtent2D,
+    colorSpace: c.VkColorSpaceKHR,
+    presentMode: c.VkPresentModeKHR,
+
+    images: ?[*]c.VkImage,
+    imageViews: ?[*]c.VkImageView,
+    imageCount: u32,
+
+    recreationPending: bool,
+    lastRecreationTime: u64,
+    recreationCount: u32,
+
+    initialized: bool,
+};
+
+pub const VulkanSwapchainCreateInfo = extern struct {
+    device: c.VkDevice,
+    physicalDevice: c.VkPhysicalDevice,
+    surface: c.VkSurfaceKHR,
+
+    preferredImageCount: u32,
+    preferredFormat: c.VkFormat,
+    preferredColorSpace: c.VkColorSpaceKHR,
+    preferredPresentMode: c.VkPresentModeKHR,
+
+    windowExtent: c.VkExtent2D,
+    oldSwapchain: c.VkSwapchainKHR,
+};
+
+pub const VulkanSurfaceSupport = extern struct {
+    capabilities: c.VkSurfaceCapabilitiesKHR,
+    formats: ?[*]c.VkSurfaceFormatKHR,
+    formatCount: u32,
+    presentModes: ?[*]c.VkPresentModeKHR,
+    presentModeCount: u32,
+};
+
 // Internal helper for time
 fn get_current_time_ms() u64 {
     return @intCast(std.time.milliTimestamp());
 }
 
 // Helper functions (internal)
-fn create_image_views(manager: *c.VulkanSwapchainManager) bool {
+fn create_image_views(manager: *VulkanSwapchainManager) bool {
     const ptr = c.malloc(manager.imageCount * @sizeOf(c.VkImageView));
     if (ptr == null) {
         log.cardinal_log_error("[SWAPCHAIN] Failed to allocate memory for image views", .{});
@@ -32,7 +75,7 @@ fn create_image_views(manager: *c.VulkanSwapchainManager) bool {
     // Initialize all image views to null
     var i: u32 = 0;
     while (i < manager.imageCount) : (i += 1) {
-        manager.imageViews[i] = null;
+        manager.imageViews.?[i] = null;
     }
 
     // Create image views
@@ -40,7 +83,7 @@ fn create_image_views(manager: *c.VulkanSwapchainManager) bool {
     while (i < manager.imageCount) : (i += 1) {
         var createInfo = std.mem.zeroes(c.VkImageViewCreateInfo);
         createInfo.sType = c.VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO;
-        createInfo.image = manager.images[i];
+        createInfo.image = manager.images.?[i];
         createInfo.viewType = c.VK_IMAGE_VIEW_TYPE_2D;
         createInfo.format = manager.format;
         createInfo.components.r = c.VK_COMPONENT_SWIZZLE_IDENTITY;
@@ -53,14 +96,14 @@ fn create_image_views(manager: *c.VulkanSwapchainManager) bool {
         createInfo.subresourceRange.baseArrayLayer = 0;
         createInfo.subresourceRange.layerCount = 1;
 
-        if (c.vkCreateImageView(manager.device, &createInfo, null, &manager.imageViews[i]) != c.VK_SUCCESS) {
+        if (c.vkCreateImageView(manager.device, &createInfo, null, &manager.imageViews.?[i]) != c.VK_SUCCESS) {
             log.cardinal_log_error("[SWAPCHAIN] Failed to create image view {d}", .{i});
 
             // Clean up previously created image views
             var j: u32 = 0;
             while (j < i) : (j += 1) {
-                if (manager.imageViews[j] != null) {
-                    c.vkDestroyImageView(manager.device, manager.imageViews[j], null);
+                if (manager.imageViews.?[j] != null) {
+                    c.vkDestroyImageView(manager.device, manager.imageViews.?[j], null);
                 }
             }
             c.free(@ptrCast(manager.imageViews));
@@ -73,12 +116,12 @@ fn create_image_views(manager: *c.VulkanSwapchainManager) bool {
     return true;
 }
 
-fn destroy_image_views(manager: *c.VulkanSwapchainManager) void {
+fn destroy_image_views(manager: *VulkanSwapchainManager) void {
     if (manager.imageViews != null) {
         var i: u32 = 0;
         while (i < manager.imageCount) : (i += 1) {
-            if (manager.imageViews[i] != null) {
-                c.vkDestroyImageView(manager.device, manager.imageViews[i], null);
+            if (manager.imageViews.?[i] != null) {
+                c.vkDestroyImageView(manager.device, manager.imageViews.?[i], null);
             }
         }
         c.free(@ptrCast(manager.imageViews));
@@ -86,9 +129,9 @@ fn destroy_image_views(manager: *c.VulkanSwapchainManager) void {
     }
 }
 
-fn create_swapchain_internal(manager: *c.VulkanSwapchainManager, createInfo: *const c.VulkanSwapchainCreateInfo) bool {
+fn create_swapchain_internal(manager: *VulkanSwapchainManager, createInfo: *const VulkanSwapchainCreateInfo) bool {
     // Query surface support
-    var support = std.mem.zeroes(c.VulkanSurfaceSupport);
+    var support = std.mem.zeroes(VulkanSurfaceSupport);
     if (!vk_swapchain_query_surface_support(manager.physicalDevice, manager.surface, &support)) {
         log.cardinal_log_error("[SWAPCHAIN] Failed to query surface support", .{});
         return false;
@@ -191,7 +234,7 @@ fn create_swapchain_internal(manager: *c.VulkanSwapchainManager, createInfo: *co
     manager.images = @as([*]c.VkImage, @ptrCast(@alignCast(ptr.?)));
 
     // Get swapchain images
-    result = c.vkGetSwapchainImagesKHR(manager.device, manager.swapchain, &manager.imageCount, manager.images);
+    result = c.vkGetSwapchainImagesKHR(manager.device, manager.swapchain, &manager.imageCount, manager.images.?);
     if (result != c.VK_SUCCESS) {
         log.cardinal_log_error("[SWAPCHAIN] Failed to retrieve swapchain images: {d}", .{result});
         c.free(@ptrCast(manager.images));
@@ -222,8 +265,8 @@ fn create_swapchain_internal(manager: *c.VulkanSwapchainManager, createInfo: *co
 
 // Exported functions
 
-pub export fn vk_swapchain_manager_create(manager: ?*c.VulkanSwapchainManager,
-                                 createInfo: ?*const c.VulkanSwapchainCreateInfo) callconv(.c) bool {
+pub export fn vk_swapchain_manager_create(manager: ?*VulkanSwapchainManager,
+                                 createInfo: ?*const VulkanSwapchainCreateInfo) callconv(.c) bool {
     if (manager == null or createInfo == null) {
         log.cardinal_log_error("[SWAPCHAIN] Invalid parameters for swapchain manager creation", .{});
         return false;
@@ -236,7 +279,7 @@ pub export fn vk_swapchain_manager_create(manager: ?*c.VulkanSwapchainManager,
         return false;
     }
 
-    @memset(@as([*]u8, @ptrCast(mgr))[0..@sizeOf(c.VulkanSwapchainManager)], 0);
+    @memset(@as([*]u8, @ptrCast(mgr))[0..@sizeOf(VulkanSwapchainManager)], 0);
 
     mgr.device = info.device;
     mgr.physicalDevice = info.physicalDevice;
@@ -253,7 +296,7 @@ pub export fn vk_swapchain_manager_create(manager: ?*c.VulkanSwapchainManager,
     return true;
 }
 
-pub export fn vk_swapchain_manager_destroy(manager: ?*c.VulkanSwapchainManager) callconv(.c) void {
+pub export fn vk_swapchain_manager_destroy(manager: ?*VulkanSwapchainManager) callconv(.c) void {
     if (manager == null) return;
     const mgr = manager.?;
     if (!mgr.initialized) return;
@@ -273,12 +316,12 @@ pub export fn vk_swapchain_manager_destroy(manager: ?*c.VulkanSwapchainManager) 
         mgr.swapchain = null;
     }
 
-    @memset(@as([*]u8, @ptrCast(mgr))[0..@sizeOf(c.VulkanSwapchainManager)], 0);
+    @memset(@as([*]u8, @ptrCast(mgr))[0..@sizeOf(VulkanSwapchainManager)], 0);
 
     log.cardinal_log_debug("[SWAPCHAIN] Swapchain manager destroyed", .{});
 }
 
-pub export fn vk_swapchain_manager_recreate(manager: ?*c.VulkanSwapchainManager, newExtent: c.VkExtent2D) callconv(.c) bool {
+pub export fn vk_swapchain_manager_recreate(manager: ?*VulkanSwapchainManager, newExtent: c.VkExtent2D) callconv(.c) bool {
     if (manager == null) {
         log.cardinal_log_error("[SWAPCHAIN] Invalid manager for recreation", .{});
         return false;
@@ -322,7 +365,7 @@ pub export fn vk_swapchain_manager_recreate(manager: ?*c.VulkanSwapchainManager,
     mgr.imageCount = 0;
 
     // Create new swapchain
-    var createInfo = std.mem.zeroes(c.VulkanSwapchainCreateInfo);
+    var createInfo = std.mem.zeroes(VulkanSwapchainCreateInfo);
     createInfo.device = mgr.device;
     createInfo.physicalDevice = mgr.physicalDevice;
     createInfo.surface = mgr.surface;
@@ -350,8 +393,8 @@ pub export fn vk_swapchain_manager_recreate(manager: ?*c.VulkanSwapchainManager,
     if (oldImageViews != null) {
         var i: u32 = 0;
         while (i < oldImageCount) : (i += 1) {
-            if (oldImageViews[i] != null) {
-                c.vkDestroyImageView(mgr.device, oldImageViews[i], null);
+            if (oldImageViews.?[i] != null) {
+                c.vkDestroyImageView(mgr.device, oldImageViews.?[i], null);
             }
         }
         c.free(@ptrCast(oldImageViews));
@@ -370,7 +413,7 @@ pub export fn vk_swapchain_manager_recreate(manager: ?*c.VulkanSwapchainManager,
     return true;
 }
 
-pub export fn vk_swapchain_manager_acquire_image(manager: ?*c.VulkanSwapchainManager, timeout: u64,
+pub export fn vk_swapchain_manager_acquire_image(manager: ?*VulkanSwapchainManager, timeout: u64,
                                             semaphore: c.VkSemaphore, fence: c.VkFence,
                                             imageIndex: ?*u32) callconv(.c) c.VkResult {
     if (manager == null or imageIndex == null) {
@@ -386,7 +429,7 @@ pub export fn vk_swapchain_manager_acquire_image(manager: ?*c.VulkanSwapchainMan
     return c.vkAcquireNextImageKHR(mgr.device, mgr.swapchain, timeout, semaphore, fence, imageIndex);
 }
 
-pub export fn vk_swapchain_manager_present(manager: ?*c.VulkanSwapchainManager, presentQueue: c.VkQueue,
+pub export fn vk_swapchain_manager_present(manager: ?*VulkanSwapchainManager, presentQueue: c.VkQueue,
                                       imageIndex: u32, waitSemaphoreCount: u32,
                                       waitSemaphores: ?[*]const c.VkSemaphore) callconv(.c) c.VkResult {
     if (manager == null or presentQueue == null) {
@@ -412,13 +455,13 @@ pub export fn vk_swapchain_manager_present(manager: ?*c.VulkanSwapchainManager, 
 }
 
 pub export fn vk_swapchain_query_surface_support(physicalDevice: c.VkPhysicalDevice, surface: c.VkSurfaceKHR,
-                                        support: ?*c.VulkanSurfaceSupport) callconv(.c) bool {
+                                        support: ?*VulkanSurfaceSupport) callconv(.c) bool {
     if (physicalDevice == null or surface == null or support == null) {
         return false;
     }
     const supp = support.?;
 
-    @memset(@as([*]u8, @ptrCast(supp))[0..@sizeOf(c.VulkanSurfaceSupport)], 0);
+    @memset(@as([*]u8, @ptrCast(supp))[0..@sizeOf(VulkanSurfaceSupport)], 0);
 
     // Get surface capabilities
     var result = c.vkGetPhysicalDeviceSurfaceCapabilitiesKHR(physicalDevice, surface, &supp.capabilities);
@@ -441,7 +484,7 @@ pub export fn vk_swapchain_query_surface_support(physicalDevice: c.VkPhysicalDev
     }
     supp.formats = @as([*]c.VkSurfaceFormatKHR, @ptrCast(@alignCast(ptr.?)));
 
-    result = c.vkGetPhysicalDeviceSurfaceFormatsKHR(physicalDevice, surface, &supp.formatCount, supp.formats);
+    result = c.vkGetPhysicalDeviceSurfaceFormatsKHR(physicalDevice, surface, &supp.formatCount, supp.formats.?);
     if (result != c.VK_SUCCESS) {
         log.cardinal_log_error("[SWAPCHAIN] Failed to retrieve surface formats: {d}", .{result});
         c.free(@ptrCast(supp.formats));
@@ -467,7 +510,7 @@ pub export fn vk_swapchain_query_surface_support(physicalDevice: c.VkPhysicalDev
     }
     supp.presentModes = @as([*]c.VkPresentModeKHR, @ptrCast(@alignCast(ptr2.?)));
 
-    result = c.vkGetPhysicalDeviceSurfacePresentModesKHR(physicalDevice, surface, &supp.presentModeCount, supp.presentModes);
+    result = c.vkGetPhysicalDeviceSurfacePresentModesKHR(physicalDevice, surface, &supp.presentModeCount, supp.presentModes.?);
     if (result != c.VK_SUCCESS) {
         log.cardinal_log_error("[SWAPCHAIN] Failed to retrieve present modes: {d}", .{result});
         c.free(@ptrCast(supp.presentModes));
@@ -480,7 +523,7 @@ pub export fn vk_swapchain_query_surface_support(physicalDevice: c.VkPhysicalDev
     return true;
 }
 
-pub export fn vk_swapchain_free_surface_support(support: ?*c.VulkanSurfaceSupport) callconv(.c) void {
+pub export fn vk_swapchain_free_surface_support(support: ?*VulkanSurfaceSupport) callconv(.c) void {
     if (support == null) return;
     const supp = support.?;
 
@@ -609,7 +652,7 @@ pub export fn vk_swapchain_choose_extent(capabilities: ?*const c.VkSurfaceCapabi
     return actualExtent;
 }
 
-pub export fn vk_swapchain_manager_mark_for_recreation(manager: ?*c.VulkanSwapchainManager) callconv(.c) void {
+pub export fn vk_swapchain_manager_mark_for_recreation(manager: ?*VulkanSwapchainManager) callconv(.c) void {
     if (manager) |mgr| {
         if (mgr.initialized) {
             mgr.recreationPending = true;
@@ -617,19 +660,19 @@ pub export fn vk_swapchain_manager_mark_for_recreation(manager: ?*c.VulkanSwapch
     }
 }
 
-pub export fn vk_swapchain_manager_is_recreation_pending(manager: ?*const c.VulkanSwapchainManager) callconv(.c) bool {
+pub export fn vk_swapchain_manager_is_recreation_pending(manager: ?*const VulkanSwapchainManager) callconv(.c) bool {
     return if (manager) |mgr| (mgr.initialized and mgr.recreationPending) else false;
 }
 
-pub export fn vk_swapchain_manager_get_swapchain(manager: ?*const c.VulkanSwapchainManager) callconv(.c) c.VkSwapchainKHR {
+pub export fn vk_swapchain_manager_get_swapchain(manager: ?*const VulkanSwapchainManager) callconv(.c) c.VkSwapchainKHR {
     return if (manager) |mgr| (if (mgr.initialized) mgr.swapchain else null) else null;
 }
 
-pub export fn vk_swapchain_manager_get_format(manager: ?*const c.VulkanSwapchainManager) callconv(.c) c.VkFormat {
+pub export fn vk_swapchain_manager_get_format(manager: ?*const VulkanSwapchainManager) callconv(.c) c.VkFormat {
     return if (manager) |mgr| (if (mgr.initialized) mgr.format else c.VK_FORMAT_UNDEFINED) else c.VK_FORMAT_UNDEFINED;
 }
 
-pub export fn vk_swapchain_manager_get_extent(manager: ?*const c.VulkanSwapchainManager) callconv(.c) c.VkExtent2D {
+pub export fn vk_swapchain_manager_get_extent(manager: ?*const VulkanSwapchainManager) callconv(.c) c.VkExtent2D {
     if (manager) |mgr| {
         if (mgr.initialized) {
             return mgr.extent;
@@ -638,19 +681,19 @@ pub export fn vk_swapchain_manager_get_extent(manager: ?*const c.VulkanSwapchain
     return .{ .width = 0, .height = 0 };
 }
 
-pub export fn vk_swapchain_manager_get_image_count(manager: ?*const c.VulkanSwapchainManager) callconv(.c) u32 {
+pub export fn vk_swapchain_manager_get_image_count(manager: ?*const VulkanSwapchainManager) callconv(.c) u32 {
     return if (manager) |mgr| (if (mgr.initialized) mgr.imageCount else 0) else 0;
 }
 
-pub export fn vk_swapchain_manager_get_images(manager: ?*const c.VulkanSwapchainManager) callconv(.c) ?[*]const c.VkImage {
+pub export fn vk_swapchain_manager_get_images(manager: ?*const VulkanSwapchainManager) callconv(.c) ?[*]const c.VkImage {
     return if (manager) |mgr| (if (mgr.initialized) mgr.images else null) else null;
 }
 
-pub export fn vk_swapchain_manager_get_image_views(manager: ?*const c.VulkanSwapchainManager) callconv(.c) ?[*]const c.VkImageView {
+pub export fn vk_swapchain_manager_get_image_views(manager: ?*const VulkanSwapchainManager) callconv(.c) ?[*]const c.VkImageView {
     return if (manager) |mgr| (if (mgr.initialized) mgr.imageViews else null) else null;
 }
 
-pub export fn vk_swapchain_manager_get_recreation_stats(manager: ?*const c.VulkanSwapchainManager,
+pub export fn vk_swapchain_manager_get_recreation_stats(manager: ?*const VulkanSwapchainManager,
                                                recreationCount: ?*u32,
                                                lastRecreationTime: ?*u64) callconv(.c) void {
     if (manager == null or !manager.?.initialized) {
