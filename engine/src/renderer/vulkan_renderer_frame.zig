@@ -14,6 +14,8 @@ const vk_pbr = @import("vulkan_pbr.zig");
 const vk_mesh_shader = @import("vulkan_mesh_shader.zig");
 const vk_simple_pipelines = @import("vulkan_simple_pipelines.zig");
 const vk_renderer = @import("vulkan_renderer.zig");
+const vk_buffer_utils = @import("util/vulkan_buffer_utils.zig");
+const window = @import("../core/window.zig");
 
 // Helper to get time in ms
 fn cardinal_now_ms() u64 {
@@ -21,7 +23,7 @@ fn cardinal_now_ms() u64 {
 }
 
 // Helper to cast opaque pointer to VulkanState
-fn get_state(renderer: ?*c.CardinalRenderer) ?*types.VulkanState {
+fn get_state(renderer: ?*types.CardinalRenderer) ?*types.VulkanState {
     if (renderer == null) return null;
     return @ptrCast(@alignCast(renderer.?._opaque));
 }
@@ -220,8 +222,8 @@ fn vk_recover_from_device_loss(s: *types.VulkanState) bool {
 fn check_render_feasibility(s: *types.VulkanState) bool {
     var minimized = false;
     if (s.recovery.window != null) {
-        const win = @as(*c.CardinalWindow, @ptrCast(@alignCast(s.recovery.window.?)));
-        minimized = c.cardinal_window_is_minimized(win);
+        const win = @as(*window.CardinalWindow, @ptrCast(@alignCast(s.recovery.window.?)));
+        minimized = win.is_minimized;
     }
 
     if (minimized) {
@@ -236,7 +238,7 @@ fn check_render_feasibility(s: *types.VulkanState) bool {
     return true;
 }
 
-fn handle_pending_recreation(renderer: ?*c.CardinalRenderer, s: *types.VulkanState) bool {
+fn handle_pending_recreation(renderer: ?*types.CardinalRenderer, s: *types.VulkanState) bool {
     if (s.swapchain.window_resize_pending) {
         log.cardinal_log_info("[SWAPCHAIN] Frame {d}: Window resize pending", .{s.sync.current_frame});
         s.swapchain.recreation_pending = true;
@@ -512,7 +514,7 @@ fn present_swapchain_image(s: *types.VulkanState, image_index: u32, signal_value
     s.commands.current_buffer_index = 1 - s.commands.current_buffer_index;
 }
 
-pub export fn cardinal_renderer_draw_frame(renderer: ?*c.CardinalRenderer) callconv(.c) void {
+pub export fn cardinal_renderer_draw_frame(renderer: ?*types.CardinalRenderer) callconv(.c) void {
     const s = get_state(renderer) orelse return;
 
     if (!check_render_feasibility(s))
@@ -529,7 +531,7 @@ pub export fn cardinal_renderer_draw_frame(renderer: ?*c.CardinalRenderer) callc
     vk_mesh_shader.vk_mesh_shader_process_pending_cleanup(s);
 
     // Prepare mesh shader rendering
-    if (@intFromEnum(s.current_rendering_mode) == c.CARDINAL_RENDERING_MODE_MESH_SHADER) {
+    if (s.current_rendering_mode == .MESH_SHADER) {
         vk_commands.vk_prepare_mesh_shader_rendering(@ptrCast(s));
     }
 

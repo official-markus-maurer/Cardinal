@@ -1,13 +1,7 @@
 const std = @import("std");
 const log = @import("../core/log.zig");
 
-const c = @cImport({
-    @cDefine("CARDINAL_ZIG_BUILD", "1");
-    @cInclude("stdlib.h");
-    @cInclude("string.h");
-    @cInclude("vulkan/vulkan.h");
-    @cInclude("cardinal/renderer/vulkan_utils.h");
-});
+const c = @import("vulkan_c.zig").c;
 
 // =============================================================================
 // Error Handling Implementation

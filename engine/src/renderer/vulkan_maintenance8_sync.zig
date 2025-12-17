@@ -2,6 +2,7 @@ const std = @import("std");
 const builtin = @import("builtin");
 const log = @import("../core/log.zig");
 const types = @import("vulkan_types.zig");
+const vk_barrier_validation = @import("vulkan_barrier_validation.zig");
 
 const c = @import("vulkan_c.zig").c;
 
@@ -148,7 +149,7 @@ pub export fn vk_record_enhanced_ownership_transfer(
     });
 
     // Validate the pipeline barrier before execution
-    if (!c.cardinal_barrier_validation_validate_pipeline_barrier(&dependency_info, cmd, get_current_thread_id())) {
+    if (!vk_barrier_validation.cardinal_barrier_validation_validate_pipeline_barrier(&dependency_info, cmd, get_current_thread_id())) {
         log.cardinal_log_warn("[MAINTENANCE8_SYNC] Pipeline barrier validation failed for enhanced ownership transfer", .{});
     }
 

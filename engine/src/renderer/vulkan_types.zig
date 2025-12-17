@@ -6,10 +6,80 @@ const c = @import("vulkan_c.zig").c;
 
 // Forward declarations for external types
 pub const CardinalWindow = anyopaque;
+pub const CardinalRenderer = extern struct {
+    _opaque: ?*anyopaque,
+};
 pub const CardinalScene = scene.CardinalScene;
 pub const CardinalMesh = scene.CardinalMesh;
+pub const CardinalVertex = scene.CardinalVertex;
 pub const CardinalMaterial = scene.CardinalMaterial;
 pub const CardinalSceneNode = scene.CardinalSceneNode;
+
+pub const ValidationStats = extern struct {
+    total_messages: u32,
+    error_count: u32,
+    warning_count: u32,
+    info_count: u32,
+    performance_count: u32,
+    validation_count: u32,
+    general_count: u32,
+    filtered_count: u32,
+};
+
+pub const CardinalResourceAccessType = enum(c_int) {
+    CARDINAL_ACCESS_READ = 0,
+    CARDINAL_ACCESS_WRITE = 1,
+    CARDINAL_ACCESS_READ_WRITE = 2,
+};
+
+pub const CardinalResourceType = enum(c_int) {
+    CARDINAL_RESOURCE_BUFFER = 0,
+    CARDINAL_RESOURCE_IMAGE = 1,
+    CARDINAL_RESOURCE_DESCRIPTOR_SET = 2,
+};
+
+pub const CardinalResourceAccess = extern struct {
+    resource_id: u64,
+    resource_type: CardinalResourceType,
+    access_type: CardinalResourceAccessType,
+    stage_mask: c.VkPipelineStageFlags2,
+    access_mask: c.VkAccessFlags2,
+    thread_id: u32,
+    timestamp: u64,
+    command_buffer: c.VkCommandBuffer,
+};
+
+pub const CardinalBarrierValidationContext = extern struct {
+    resource_accesses: [*c]CardinalResourceAccess,
+    access_count: u32,
+    max_accesses: u32,
+    validation_enabled: bool,
+    strict_mode: bool,
+};
+
+pub const PBRTextureTransform = extern struct {
+    offset: [2]f32,
+    scale: [2]f32,
+    rotation: f32,
+};
+
+pub const PBRUniformBufferObject = extern struct {
+    model: [16]f32,
+    view: [16]f32,
+    proj: [16]f32,
+    viewPos: [3]f32,
+    _padding1: f32,
+};
+
+pub const PBRLightingData = extern struct {
+    lightDirection: [3]f32,
+    _padding1: f32,
+    lightColor: [3]f32,
+    lightIntensity: f32,
+    ambientColor: [3]f32,
+    _padding2: f32,
+};
+
 pub const PBRPushConstants = extern struct {
     modelMatrix: [16]f32,
 
@@ -42,6 +112,21 @@ pub const PBRPushConstants = extern struct {
     aoTransform: scene.CardinalTextureTransform,
     _padding4: f32,
     emissiveTransform: scene.CardinalTextureTransform,
+};
+
+pub const PBRMaterialProperties = extern struct {
+    albedoFactor: [3]f32,
+    metallicFactor: f32,
+    emissiveFactor: [3]f32,
+    roughnessFactor: f32,
+    normalScale: f32,
+    aoStrength: f32,
+    albedoTextureIndex: u32,
+    normalTextureIndex: u32,
+    metallicRoughnessTextureIndex: u32,
+    aoTextureIndex: u32,
+    emissiveTextureIndex: u32,
+    supportsDescriptorIndexing: u32,
 };
 
 pub const VulkanAllocator = extern struct {
@@ -193,36 +278,36 @@ pub const VulkanSyncManager = extern struct {
     device: c.VkDevice,
     graphics_queue: c.VkQueue,
     max_frames_in_flight: u32,
-
-    // Per-frame synchronization objects
+    current_frame: u32,
+    
+    // Per-frame resources
+    in_flight_fences: ?[*]c.VkFence,
     image_acquired_semaphores: ?[*]c.VkSemaphore,
     render_finished_semaphores: ?[*]c.VkSemaphore,
-    in_flight_fences: ?[*]c.VkFence,
-
-    // Timeline semaphore for advanced synchronization
+    
+    // Timeline semaphore
     timeline_semaphore: c.VkSemaphore,
-    current_frame_value: u64, // atomic_uint_fast64_t
-    image_available_value: u64, // atomic_uint_fast64_t
-    render_complete_value: u64, // atomic_uint_fast64_t
-    global_timeline_counter: u64, // atomic_uint_fast64_t
-
-    // Performance statistics
-    timeline_wait_count: u64, // atomic_uint_fast64_t
-    timeline_signal_count: u64, // atomic_uint_fast64_t
-
-    // Timeline value optimization strategy
+    
+    // Counters
+    current_frame_value: u64,
+    image_available_value: u64,
+    render_complete_value: u64,
+    global_timeline_counter: u64,
+    timeline_wait_count: u64,
+    timeline_signal_count: u64,
+    
     value_strategy: VulkanTimelineValueStrategy,
-
-    // Frame tracking
-    current_frame: u32,
-
-    // Initialization state
     initialized: bool,
 };
 
-//
-// VulkanFrameSync
-//
+pub const VulkanFrameSyncInfo = extern struct {
+    wait_semaphore: c.VkSemaphore,
+    signal_semaphore: c.VkSemaphore,
+    fence: c.VkFence,
+    timeline_value: u64,
+    wait_stage: c.VkPipelineStageFlags,
+};
+
 pub const VkQueueFamilyOwnershipTransferInfo = extern struct {
     src_queue_family: u32,
     dst_queue_family: u32,
@@ -234,34 +319,29 @@ pub const VkQueueFamilyOwnershipTransferInfo = extern struct {
 };
 
 pub const VulkanFrameSync = extern struct {
-    image_acquired_semaphores: ?[*]c.VkSemaphore,
-    render_finished_semaphores: ?[*]c.VkSemaphore,
-    in_flight_fences: ?[*]c.VkFence,
-
-    timeline_semaphore: c.VkSemaphore,
+    current_frame: u32,
+    max_frames_in_flight: u32,
     current_frame_value: u64,
     image_available_value: u64,
     render_complete_value: u64,
-
-    max_frames_in_flight: u32,
-    current_frame: u32,
-
-    manager: ?*VulkanSyncManager,
+    
+    in_flight_fences: ?[*]c.VkFence,
+    image_acquired_semaphores: ?[*]c.VkSemaphore,
+    render_finished_semaphores: ?[*]c.VkSemaphore,
+    
+    timeline_semaphore: c.VkSemaphore,
 };
 
-//
-// VulkanRecovery
-//
 pub const VulkanRecovery = extern struct {
     device_lost: bool,
     recovery_in_progress: bool,
     attempt_count: u32,
     max_attempts: u32,
+    
     window: ?*CardinalWindow,
-
-    // Callbacks
-    device_loss_callback: ?*const fn (user_data: ?*anyopaque) callconv(.c) void,
-    recovery_complete_callback: ?*const fn (user_data: ?*anyopaque, success: bool) callconv(.c) void,
+    
+    device_loss_callback: ?*const fn(?*anyopaque) callconv(.c) void,
+    recovery_complete_callback: ?*const fn(?*anyopaque, bool) callconv(.c) void,
     callback_user_data: ?*anyopaque,
 };
 
@@ -273,33 +353,37 @@ pub const VulkanDescriptorBinding = extern struct {
     descriptorType: c.VkDescriptorType,
     descriptorCount: u32,
     stageFlags: c.VkShaderStageFlags,
-    pImmutableSamplers: ?[*]c.VkSampler,
+    pImmutableSamplers: ?*const c.VkSampler,
 };
 
 pub const VulkanDescriptorManager = extern struct {
-    device: c.VkDevice,
-    allocator: ?*VulkanAllocator,
-    vulkan_state: ?*anyopaque, // Forward declaration to avoid cycle: ?*VulkanState
-
-    layout: c.VkDescriptorSetLayout,
-    bindings: ?[*]VulkanDescriptorBinding,
-    bindingCount: u32,
-
     descriptorPool: c.VkDescriptorPool,
+    descriptorSetLayout: c.VkDescriptorSetLayout,
     descriptorSets: ?[*]c.VkDescriptorSet,
     descriptorSetCount: u32,
+    
+    // Config
     maxSets: u32,
-
+    bindings: ?[*]const VulkanDescriptorBinding,
+    bindingCount: u32,
+    
+    // State
+    initialized: bool,
+    device: c.VkDevice,
+    
+    // Descriptor Buffer support
     useDescriptorBuffers: bool,
-    descriptorBuffer: c.VkBuffer,
-    descriptorBufferMemory: c.VkDeviceMemory,
-    descriptorBufferSize: c.VkDeviceSize,
-    descriptorBufferMapped: ?*anyopaque,
+    descriptorBuffer: VulkanBuffer,
     descriptorSetSize: c.VkDeviceSize,
+    descriptorBufferSize: c.VkDeviceSize,
     bindingOffsets: ?[*]c.VkDeviceSize,
     bindingOffsetCount: u32,
-
-    initialized: bool,
+    descriptorBufferIndices: ?[*]u32,
+    
+    allocator: ?*VulkanAllocator,
+    vulkan_state: ?*anyopaque,
+    
+    mutex: ?*anyopaque,
 };
 
 //
@@ -314,26 +398,7 @@ pub const VulkanManagedTexture = extern struct {
     height: u32,
     channels: u32,
     isPlaceholder: bool,
-    path: ?[*:0]u8,
-};
-
-pub const VulkanTextureManager = extern struct {
-    device: c.VkDevice,
-    allocator: ?*VulkanAllocator,
-    commandPool: c.VkCommandPool,
-    graphicsQueue: c.VkQueue,
-    syncManager: ?*VulkanSyncManager,
-
-    // Texture storage
-    textures: ?[*]VulkanManagedTexture,
-    textureCount: u32,
-    textureCapacity: u32,
-
-    // Shared sampler
-    defaultSampler: c.VkSampler,
-
-    // Placeholder texture (always at index 0)
-    hasPlaceholder: bool,
+    path: [*c]u8,
 };
 
 pub const VulkanTextureManagerConfig = extern struct {
@@ -345,54 +410,29 @@ pub const VulkanTextureManagerConfig = extern struct {
     initialCapacity: u32,
 };
 
+pub const VulkanTextureManager = extern struct {
+    textures: [*]VulkanManagedTexture,
+    textureCount: u32,
+    textureCapacity: u32,
+    
+    device: c.VkDevice,
+    allocator: *VulkanAllocator,
+    commandPool: c.VkCommandPool,
+    graphicsQueue: c.VkQueue,
+    syncManager: ?*VulkanSyncManager,
+    
+    defaultSampler: c.VkSampler,
+    hasPlaceholder: bool,
+    
+    // Thread safety
+    mutex: ?*anyopaque,
+};
+
 //
-// VulkanPBR
+// VulkanTimelineDebug
 //
-pub const PBRUniformBufferObject = extern struct {
-    model: [16]f32,
-    view: [16]f32,
-    proj: [16]f32,
-    viewPos: [3]f32,
-    _padding1: f32,
-};
-
-pub const PBRTextureTransform = extern struct {
-    offset: [2]f32,
-    scale: [2]f32,
-    rotation: f32,
-};
-
-// PBR structures defined at top of file now
-
-pub const PBRLightingData = extern struct {
-    lightDirection: [3]f32,
-    _padding1: f32,
-    lightColor: [3]f32,
-    lightIntensity: f32,
-    ambientColor: [3]f32,
-    _padding2: f32,
-};
-
-pub const PBRMaterialProperties = extern struct {
-    albedoFactor: [3]f32,
-    metallicFactor: f32,
-    roughnessFactor: f32,
-    emissiveFactor: [3]f32,
-    normalScale: f32,
-    aoStrength: f32,
-
-    albedoTextureIndex: u32,
-    normalTextureIndex: u32,
-    metallicRoughnessTextureIndex: u32,
-    aoTextureIndex: u32,
-    emissiveTextureIndex: u32,
-    supportsDescriptorIndexing: u32,
-    _padding: [2]f32,
-};
-
-pub const VulkanFrameSyncInfo = extern struct {
-    wait_semaphore: c.VkSemaphore,
-    signal_semaphore: c.VkSemaphore,
+pub const VulkanTimelineWaitInfo = extern struct {
+    semaphore: c.VkSemaphore,
     fence: c.VkFence,
     timeline_value: u64,
     wait_stage: c.VkPipelineStageFlags,

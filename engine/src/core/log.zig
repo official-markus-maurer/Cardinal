@@ -46,7 +46,7 @@ fn getLevelStr(level: CardinalLogLevel) [:0]const u8 {
     };
 }
 
-export fn cardinal_log_init() void {
+pub export fn cardinal_log_init() void {
     cardinal_log_init_with_level(min_log_level);
 }
 

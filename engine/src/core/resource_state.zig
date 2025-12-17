@@ -85,7 +85,7 @@ fn find_state_tracker_unsafe(identifier: ?[*:0]const u8) ?*CardinalResourceState
 }
 
 // Exports
-export fn cardinal_resource_state_init(bucket_count: usize) callconv(.c) bool {
+pub export fn cardinal_resource_state_init(bucket_count: usize) callconv(.c) bool {
     if (g_state_registry.initialized) {
         std.log.warn("Resource state tracking system already initialized", .{});
         return true;
@@ -119,7 +119,7 @@ export fn cardinal_resource_state_init(bucket_count: usize) callconv(.c) bool {
     return true;
 }
 
-export fn cardinal_resource_state_shutdown() callconv(.c) void {
+pub export fn cardinal_resource_state_shutdown() callconv(.c) void {
     if (!g_state_registry.initialized) return;
 
     std.log.info("Shutting down resource state tracking system...", .{});

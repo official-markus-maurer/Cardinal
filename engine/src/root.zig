@@ -38,6 +38,7 @@ pub const vulkan_compute = @import("renderer/vulkan_compute.zig");
 pub const vulkan_pipeline = @import("renderer/vulkan_pipeline.zig");
 pub const vulkan_simple_pipelines = @import("renderer/vulkan_simple_pipelines.zig");
 pub const vulkan_utils = @import("renderer/vulkan_utils.zig");
+pub const vulkan_types = @import("renderer/vulkan_types.zig");
 pub const vulkan_maintenance8_sync = @import("renderer/vulkan_maintenance8_sync.zig");
 pub const vulkan_buffer_utils = @import("renderer/util/vulkan_buffer_utils.zig");
 pub const vulkan_texture_utils = @import("renderer/util/vulkan_texture_utils.zig");
@@ -87,6 +88,7 @@ comptime {
     _ = vulkan_pipeline;
     _ = vulkan_simple_pipelines;
     _ = vulkan_utils;
+    _ = vulkan_types;
     _ = vulkan_maintenance8_sync;
     _ = vulkan_buffer_utils;
     _ = vulkan_texture_utils;

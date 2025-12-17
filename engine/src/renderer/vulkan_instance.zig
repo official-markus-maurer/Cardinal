@@ -7,7 +7,7 @@ const vk_allocator = @import("vulkan_allocator.zig");
 const c = @import("vulkan_c.zig").c;
 
 // Validation statistics
-var g_validation_stats = std.mem.zeroes(c.ValidationStats);
+var g_validation_stats = std.mem.zeroes(types.ValidationStats);
 
 // Helper to filter messages
 fn should_filter_message(message_id: i32, message_id_name: ?[*:0]const u8) bool {
@@ -126,12 +126,12 @@ fn validation_enabled() bool {
     return true;
 }
 
-pub export fn vk_get_validation_stats() callconv(.c) *const c.ValidationStats {
+pub export fn vk_get_validation_stats() callconv(.c) *const types.ValidationStats {
     return &g_validation_stats;
 }
 
 pub export fn vk_reset_validation_stats() callconv(.c) void {
-    g_validation_stats = std.mem.zeroes(c.ValidationStats);
+    g_validation_stats = std.mem.zeroes(types.ValidationStats);
 }
 
 pub export fn vk_log_validation_stats() callconv(.c) void {

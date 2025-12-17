@@ -150,7 +150,7 @@ export fn cardinal_memory_get_stats(out_stats: ?*CardinalGlobalMemoryStats) void
     }
 }
 
-export fn cardinal_memory_reset_stats() void {
+pub export fn cardinal_memory_reset_stats() void {
     g_stats = std.mem.zeroes(CardinalGlobalMemoryStats);
 }
 
@@ -405,7 +405,7 @@ fn tracked_reset(self: *CardinalAllocator) callconv(.c) void {
 }
 
 // Initialization and Shutdown
-export fn cardinal_memory_init(default_linear_capacity: usize) void {
+pub export fn cardinal_memory_init(default_linear_capacity: usize) void {
     cardinal_memory_reset_stats();
 
     // Dynamic
@@ -463,7 +463,7 @@ export fn cardinal_memory_init(default_linear_capacity: usize) void {
     }
 }
 
-export fn cardinal_memory_shutdown() void {
+pub export fn cardinal_memory_shutdown() void {
     if (g_linear_state.capacity > 0) {
         if (g_linear_state.buffer) |b| {
             c.free(@ptrCast(b));
@@ -553,7 +553,7 @@ export fn cardinal_linear_allocator_create(capacity: usize) ?*CardinalAllocator 
     return a;
 }
 
-export fn cardinal_linear_allocator_destroy(allocator: ?*CardinalAllocator) void {
+pub export fn cardinal_linear_allocator_destroy(allocator: ?*CardinalAllocator) void {
     if (allocator) |a| {
         if (a.type != .LINEAR) return;
         

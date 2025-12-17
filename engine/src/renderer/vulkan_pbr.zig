@@ -537,7 +537,7 @@ fn create_pbr_mesh_buffers(pipeline: *types.VulkanPBRPipeline, device: c.VkDevic
     return true;
 }
 
-fn update_pbr_descriptor_sets(pipeline: *c.VulkanPBRPipeline) bool {
+fn update_pbr_descriptor_sets(pipeline: *types.VulkanPBRPipeline) bool {
     const dm = @as(*types.VulkanDescriptorManager, @ptrCast(@alignCast(pipeline.descriptorManager)));
     const setIndex = if (dm.descriptorSetCount > 0)
                             dm.descriptorSetCount - 1
@@ -546,7 +546,7 @@ fn update_pbr_descriptor_sets(pipeline: *c.VulkanPBRPipeline) bool {
     // Update uniform buffer (binding 0)
     if (!descriptor_mgr.vk_descriptor_manager_update_buffer(dm, setIndex, 0,
                                              pipeline.uniformBuffer, 0,
-                                             @sizeOf(c.PBRUniformBufferObject))) {
+                                             @sizeOf(types.PBRUniformBufferObject))) {
         log.cardinal_log_error("Failed to update uniform buffer descriptor", .{});
         return false;
     }
@@ -562,12 +562,12 @@ fn update_pbr_descriptor_sets(pipeline: *c.VulkanPBRPipeline) bool {
     // Update placeholder textures for fixed bindings 1-5
     var b: u32 = 1;
     while (b <= 5) : (b += 1) {
-        const placeholderView = if (pipeline.textureManager.*.textureCount > 0)
-                                          pipeline.textureManager.*.textures[0].view
+        const placeholderView = if (pipeline.textureManager.?.textureCount > 0)
+                                          pipeline.textureManager.?.textures[0].view
                                           else null;
-        const placeholderSampler = if (pipeline.textureManager.*.textureCount > 0)
-                                           pipeline.textureManager.*.textures[0].sampler
-                                           else pipeline.textureManager.*.defaultSampler;
+        const placeholderSampler = if (pipeline.textureManager.?.textureCount > 0)
+                                           pipeline.textureManager.?.textures[0].sampler
+                                           else pipeline.textureManager.?.defaultSampler;
 
         if (!descriptor_mgr.vk_descriptor_manager_update_image(dm, setIndex, b,
                                                 placeholderView,
@@ -579,7 +579,7 @@ fn update_pbr_descriptor_sets(pipeline: *c.VulkanPBRPipeline) bool {
     }
 
     // Update variable descriptor array (binding 9)
-    const texCount = pipeline.textureManager.*.textureCount;
+    const texCount = pipeline.textureManager.?.textureCount;
     if (texCount > 0) {
         const views = c.malloc(@sizeOf(c.VkImageView) * texCount);
         const samplers = c.malloc(@sizeOf(c.VkSampler) * texCount);
@@ -598,8 +598,8 @@ fn update_pbr_descriptor_sets(pipeline: *c.VulkanPBRPipeline) bool {
 
         var i: u32 = 0;
         while (i < texCount) : (i += 1) {
-            viewsPtr[i] = pipeline.textureManager.*.textures[i].view;
-            samplersPtr[i] = pipeline.textureManager.*.textures[i].sampler;
+            viewsPtr[i] = pipeline.textureManager.?.textures[i].view;
+            samplersPtr[i] = pipeline.textureManager.?.textures[i].sampler;
         }
 
         if (!descriptor_mgr.vk_descriptor_manager_update_textures_with_samplers(dm, setIndex, 9, viewsPtr,
@@ -704,7 +704,7 @@ pub export fn vk_pbr_load_scene(pipeline: ?*types.VulkanPBRPipeline, device: c.V
     allocInfo.sType = c.VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO;
     allocInfo.descriptorPool = dm.descriptorPool;
     allocInfo.descriptorSetCount = 1;
-    allocInfo.pSetLayouts = &dm.layout;
+    allocInfo.pSetLayouts = &dm.descriptorSetLayout;
 
     var variableCounts = [1]u32{variableDescriptorCount};
     var variableInfo = std.mem.zeroes(c.VkDescriptorSetVariableDescriptorCountAllocateInfo);
@@ -941,7 +941,7 @@ pub export fn vk_pbr_render(pipeline: ?*types.VulkanPBRPipeline, commandBuffer: 
             continue;
         }
 
-        var pushConstants = std.mem.zeroes(c.PBRPushConstants);
+        var pushConstants = std.mem.zeroes(types.PBRPushConstants);
         const tm_opaque: ?*const anyopaque = if (pipe.textureManager) |tm| @ptrCast(tm) else null;
         material_utils.vk_material_setup_push_constants(@ptrCast(&pushConstants), @ptrCast(mesh), @ptrCast(scn), @ptrCast(@alignCast(tm_opaque)));
 
@@ -967,7 +967,7 @@ pub export fn vk_pbr_render(pipeline: ?*types.VulkanPBRPipeline, commandBuffer: 
             }
         }
 
-        c.vkCmdPushConstants(commandBuffer, pipe.pipelineLayout, c.VK_SHADER_STAGE_VERTEX_BIT | c.VK_SHADER_STAGE_FRAGMENT_BIT, 0, @sizeOf(c.PBRPushConstants), &pushConstants);
+        c.vkCmdPushConstants(commandBuffer, pipe.pipelineLayout, c.VK_SHADER_STAGE_VERTEX_BIT | c.VK_SHADER_STAGE_FRAGMENT_BIT, 0, @sizeOf(types.PBRPushConstants), &pushConstants);
 
         if (indexOffset + mesh.index_count > pipe.totalIndexCount) break;
 
@@ -1007,7 +1007,7 @@ pub export fn vk_pbr_render(pipeline: ?*types.VulkanPBRPipeline, commandBuffer: 
             continue;
         }
 
-        var pushConstants = std.mem.zeroes(c.PBRPushConstants);
+        var pushConstants = std.mem.zeroes(types.PBRPushConstants);
         const tm_opaque: ?*const anyopaque = if (pipe.textureManager) |tm| @ptrCast(tm) else null;
         material_utils.vk_material_setup_push_constants(@ptrCast(&pushConstants), @ptrCast(mesh), @ptrCast(scn), @ptrCast(@alignCast(tm_opaque)));
 
@@ -1033,7 +1033,7 @@ pub export fn vk_pbr_render(pipeline: ?*types.VulkanPBRPipeline, commandBuffer: 
             }
         }
 
-        c.vkCmdPushConstants(commandBuffer, pipe.pipelineLayout, c.VK_SHADER_STAGE_VERTEX_BIT | c.VK_SHADER_STAGE_FRAGMENT_BIT, 0, @sizeOf(c.PBRPushConstants), &pushConstants);
+        c.vkCmdPushConstants(commandBuffer, pipe.pipelineLayout, c.VK_SHADER_STAGE_VERTEX_BIT | c.VK_SHADER_STAGE_FRAGMENT_BIT, 0, @sizeOf(types.PBRPushConstants), &pushConstants);
 
         if (indexOffset + mesh.index_count > pipe.totalIndexCount) break;
 

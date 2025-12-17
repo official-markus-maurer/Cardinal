@@ -1,18 +1,16 @@
 const std = @import("std");
-const log = @import("cardinal_engine").log;
-
-const c = @cImport({
-    @cInclude("cardinal/assets/material_loader.h");
-    @cInclude("cardinal/assets/mesh_loader.h");
-    @cInclude("cardinal/assets/texture_loader.h");
-    @cInclude("cardinal/cardinal.h");
-    @cInclude("cardinal/core/async_loader.h");
-    // @cInclude("cardinal/core/log.h");
-    @cInclude("cardinal/core/memory.h");
-    @cInclude("cardinal/core/ref_counting.h");
-    @cInclude("stdio.h");
-    @cInclude("string.h");
-});
+const engine = @import("cardinal_engine");
+const log = engine.log;
+const memory = engine.memory;
+const async_loader = engine.async_loader;
+const texture_loader = engine.texture_loader;
+const mesh_loader = engine.mesh_loader;
+const material_loader = engine.material_loader;
+const window = engine.window;
+const vulkan_renderer = engine.vulkan_renderer;
+const vulkan_renderer_frame = engine.vulkan_renderer_frame;
+const types = engine.vulkan_types;
+const ref_counting = engine.ref_counting;
 
 fn print_usage(program_name: []const u8) void {
     std.debug.print("Usage: {s} [options]\n", .{program_name});
@@ -46,66 +44,66 @@ pub fn main() !u8 {
     log.cardinal_log_init_with_level(log_level);
 
     // Initialize memory system
-    c.cardinal_memory_init(1024 * 1024 * 64); // 64MB
+    memory.cardinal_memory_init(1024 * 1024 * 64); // 64MB
 
     // Initialize async loader
-    var async_config = c.CardinalAsyncLoaderConfig{
+    const async_config = async_loader.CardinalAsyncLoaderConfig{
         .worker_thread_count = 4,
         .max_queue_size = 256,
         .enable_priority_queue = true,
     };
 
-    if (!c.cardinal_async_loader_init(&async_config)) {
+    if (!async_loader.cardinal_async_loader_init(&async_config)) {
         log.cardinal_log_error("Failed to initialize async loader", .{});
-        c.cardinal_memory_shutdown();
+        memory.cardinal_memory_shutdown();
         log.cardinal_log_shutdown();
         return 255;
     }
 
     // Initialize asset caches
-    _ = c.texture_cache_initialize(1000);
-    _ = c.mesh_cache_initialize(1000);
-    _ = c.material_cache_initialize(1000);
+    _ = texture_loader.texture_cache_initialize(1000);
+    _ = mesh_loader.mesh_cache_initialize(1000);
+    _ = material_loader.material_cache_initialize(1000);
 
     log.cardinal_log_info("Multi-threaded engine initialized successfully", .{});
 
-    var config = c.CardinalWindowConfig{
+    const config = window.CardinalWindowConfig{
         .title = "Cardinal Client",
         .width = 1024,
         .height = 768,
         .resizable = true,
     };
-    const window = c.cardinal_window_create(&config);
-    if (window == null) {
+    const win = window.cardinal_window_create(&config);
+    if (win == null) {
         log.cardinal_log_shutdown();
         return 255;
     }
 
-    var renderer: c.CardinalRenderer = undefined;
-    if (!c.cardinal_renderer_create(&renderer, window)) {
-        c.cardinal_window_destroy(window);
+    var renderer: types.CardinalRenderer = .{ ._opaque = null };
+    if (!vulkan_renderer.cardinal_renderer_create(&renderer, win)) {
+        window.cardinal_window_destroy(win);
         log.cardinal_log_shutdown();
         return 255;
     }
 
-    while (!c.cardinal_window_should_close(window)) {
-        c.cardinal_window_poll(window);
-        c.cardinal_renderer_draw_frame(&renderer);
+    while (!window.cardinal_window_should_close(win)) {
+        window.cardinal_window_poll(win);
+        vulkan_renderer_frame.cardinal_renderer_draw_frame(&renderer);
     }
 
-    c.cardinal_renderer_wait_idle(&renderer);
-    c.cardinal_renderer_destroy(&renderer);
-    c.cardinal_window_destroy(window);
+    vulkan_renderer.cardinal_renderer_wait_idle(&renderer);
+    vulkan_renderer.cardinal_renderer_destroy(&renderer);
+    window.cardinal_window_destroy(win);
 
     log.cardinal_log_info("Shutting down multi-threaded engine systems", .{});
 
-    c.texture_cache_shutdown_system();
-    c.mesh_cache_shutdown_system();
-    c.material_cache_shutdown_system();
+    texture_loader.texture_cache_shutdown_system();
+    mesh_loader.mesh_cache_shutdown_system();
+    material_loader.material_cache_shutdown_system();
 
-    c.cardinal_async_loader_shutdown();
-    c.cardinal_ref_counting_shutdown();
-    c.cardinal_memory_shutdown();
+    async_loader.cardinal_async_loader_shutdown();
+    ref_counting.cardinal_ref_counting_shutdown();
+    memory.cardinal_memory_shutdown();
     log.cardinal_log_shutdown();
 
     return 0;

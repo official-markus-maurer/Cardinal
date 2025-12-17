@@ -1,0 +1,205 @@
+const std = @import("std");
+const engine = @import("cardinal_engine");
+const log = engine.log;
+const memory = engine.memory;
+const ref_counting = engine.ref_counting;
+const resource_state = engine.resource_state;
+const async_loader = engine.async_loader;
+const window = engine.window;
+const vulkan_renderer = engine.vulkan_renderer;
+const vulkan_renderer_frame = engine.vulkan_renderer_frame;
+const types = engine.vulkan_types;
+const texture_loader = engine.texture_loader;
+const mesh_loader = engine.mesh_loader;
+const material_loader = engine.material_loader;
+
+const c = @cImport({
+    @cInclude("editor_layer.h");
+    @cInclude("stdio.h");
+});
+
+pub const EditorConfig = struct {
+    window_title: [*:0]const u8 = "Cardinal Editor",
+    window_width: u32 = 1600,
+    window_height: u32 = 900,
+    window_resizable: bool = true,
+    memory_size: usize = 4 * 1024 * 1024,
+    ref_counting_buckets: u32 = 1009,
+    async_worker_threads: u32 = 2,
+    async_queue_size: u32 = 100,
+    cache_size: u32 = 1000,
+};
+
+pub const EditorApp = struct {
+    allocator: std.mem.Allocator,
+    window: ?*window.CardinalWindow,
+    renderer: types.CardinalRenderer,
+    config: EditorConfig,
+    
+    // Track initialization state to ensure proper cleanup order
+    memory_initialized: bool = false,
+    ref_counting_initialized: bool = false,
+    resource_state_initialized: bool = false,
+    async_loader_initialized: bool = false,
+    caches_initialized: bool = false,
+    window_initialized: bool = false,
+    renderer_initialized: bool = false,
+    editor_layer_initialized: bool = false,
+
+    pub fn create(allocator: std.mem.Allocator, config: EditorConfig) !*EditorApp {
+        const app = try allocator.create(EditorApp);
+        app.* = EditorApp{
+            .allocator = allocator,
+            .config = config,
+            .window = null,
+            .renderer = .{ ._opaque = null },
+        };
+        errdefer {
+            app.deinit();
+            allocator.destroy(app);
+        }
+
+        try app.initSystems();
+        try app.initWindowAndRenderer();
+        try app.initEditorLayer();
+
+        return app;
+    }
+
+    fn initSystems(self: *EditorApp) !void {
+        log.cardinal_log_info("Initializing memory management system...", .{});
+        memory.cardinal_memory_init(self.config.memory_size);
+        self.memory_initialized = true;
+        log.cardinal_log_info("Memory management system initialized", .{});
+
+        log.cardinal_log_info("Initializing reference counting system...", .{});
+        if (!ref_counting.cardinal_ref_counting_init(self.config.ref_counting_buckets)) {
+            log.cardinal_log_error("Failed to initialize reference counting system", .{});
+            return error.RefCountingInitFailed;
+        }
+        self.ref_counting_initialized = true;
+        log.cardinal_log_info("Reference counting system initialized", .{});
+
+        log.cardinal_log_info("Initializing resource state tracking system...", .{});
+        if (!resource_state.cardinal_resource_state_init(self.config.ref_counting_buckets)) {
+            log.cardinal_log_error("Failed to initialize resource state tracking system", .{});
+            return error.ResourceStateInitFailed;
+        }
+        self.resource_state_initialized = true;
+        log.cardinal_log_info("Resource state tracking system initialized", .{});
+
+        log.cardinal_log_info("Initializing async loader system...", .{});
+
+        // memory.cardinal_get_allocator_for_category returns a pointer, so it is assumed to be valid if init was called.
+        log.cardinal_log_info("Memory allocator check passed", .{});
+
+        const async_config = async_loader.CardinalAsyncLoaderConfig{
+            .worker_thread_count = self.config.async_worker_threads,
+            .max_queue_size = self.config.async_queue_size,
+            .enable_priority_queue = true,
+        };
+
+        log.cardinal_log_info("About to call cardinal_async_loader_init...", .{});
+        if (!async_loader.cardinal_async_loader_init(&async_config)) {
+            log.cardinal_log_error("Failed to initialize async loader system", .{});
+            return error.AsyncLoaderInitFailed;
+        }
+        self.async_loader_initialized = true;
+        log.cardinal_log_info("Async loader system initialized successfully", .{});
+
+        _ = texture_loader.texture_cache_initialize(self.config.cache_size);
+        _ = mesh_loader.mesh_cache_initialize(self.config.cache_size);
+        _ = material_loader.material_cache_initialize(self.config.cache_size);
+        self.caches_initialized = true;
+
+        log.cardinal_log_info("Multi-threaded asset caches initialized successfully", .{});
+    }
+
+    fn initWindowAndRenderer(self: *EditorApp) !void {
+        const config = window.CardinalWindowConfig{
+            .title = self.config.window_title,
+            .width = self.config.window_width,
+            .height = self.config.window_height,
+            .resizable = self.config.window_resizable,
+        };
+        self.window = window.cardinal_window_create(&config);
+        if (self.window == null) {
+            return error.WindowCreateFailed;
+        }
+        self.window_initialized = true;
+
+        if (!vulkan_renderer.cardinal_renderer_create(&self.renderer, self.window)) {
+            // Cleanup window if renderer creation fails
+            window.cardinal_window_destroy(self.window);
+            self.window = null;
+            self.window_initialized = false;
+            return error.RendererCreateFailed;
+        }
+        self.renderer_initialized = true;
+    }
+
+    fn initEditorLayer(self: *EditorApp) !void {
+        // Cast window and renderer to opaque C pointers for editor_layer
+        if (!c.editor_layer_init(@ptrCast(self.window), @ptrCast(&self.renderer))) {
+            return error.EditorLayerInitFailed;
+        }
+        self.editor_layer_initialized = true;
+    }
+
+    pub fn run(self: *EditorApp) !void {
+        while (!window.cardinal_window_should_close(self.window)) {
+            window.cardinal_window_poll(self.window);
+
+            c.editor_layer_update();
+            c.editor_layer_render();
+
+            _ = vulkan_renderer_frame.cardinal_renderer_draw_frame(&self.renderer);
+
+            log.cardinal_log_debug("[EDITOR] Processing pending uploads after frame draw", .{});
+            c.editor_layer_process_pending_uploads();
+        }
+
+        vulkan_renderer.cardinal_renderer_wait_idle(&self.renderer);
+    }
+
+    pub fn destroy(self: *EditorApp) void {
+        self.deinit();
+        self.allocator.destroy(self);
+    }
+
+    fn deinit(self: *EditorApp) void {
+        if (self.editor_layer_initialized) {
+            c.editor_layer_shutdown();
+        }
+        
+        if (self.renderer_initialized) {
+            vulkan_renderer.cardinal_renderer_destroy(&self.renderer);
+        }
+
+        if (self.window_initialized) {
+            window.cardinal_window_destroy(self.window);
+        }
+
+        if (self.caches_initialized) {
+            material_loader.material_cache_shutdown_system();
+            mesh_loader.mesh_cache_shutdown_system();
+            texture_loader.texture_cache_shutdown_system();
+        }
+
+        if (self.async_loader_initialized) {
+            async_loader.cardinal_async_loader_shutdown();
+        }
+
+        if (self.resource_state_initialized) {
+            resource_state.cardinal_resource_state_shutdown();
+        }
+
+        if (self.ref_counting_initialized) {
+            ref_counting.cardinal_ref_counting_shutdown();
+        }
+
+        if (self.memory_initialized) {
+            memory.cardinal_memory_shutdown();
+        }
+    }
+};

@@ -166,8 +166,12 @@ fn record_texture_copy_commands(commandBuffer: c.VkCommandBuffer, stagingBuffer:
     dependencyInfo.pImageMemoryBarriers = &barrier;
 
     const thread_id = get_current_thread_id();
-    if (!c.cardinal_barrier_validation_validate_pipeline_barrier(&dependencyInfo, commandBuffer, thread_id)) {
-        log.cardinal_log_warn("Pipeline barrier validation failed for texture transfer transition", .{});
+    const vk_barrier_validation = @import("../vulkan_barrier_validation.zig");
+
+// ...
+
+    if (!vk_barrier_validation.cardinal_barrier_validation_validate_pipeline_barrier(&dependencyInfo, commandBuffer, thread_id)) {
+        log.cardinal_log_warn("Pipeline barrier validation failed during texture upload", .{});
     }
 
     c.vkCmdPipelineBarrier2(commandBuffer, &dependencyInfo);
@@ -192,7 +196,7 @@ fn record_texture_copy_commands(commandBuffer: c.VkCommandBuffer, stagingBuffer:
     barrier.oldLayout = c.VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
     barrier.newLayout = c.VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
 
-    if (!c.cardinal_barrier_validation_validate_pipeline_barrier(&dependencyInfo, commandBuffer, thread_id)) {
+    if (!vk_barrier_validation.cardinal_barrier_validation_validate_pipeline_barrier(&dependencyInfo, commandBuffer, thread_id)) {
         log.cardinal_log_warn("Pipeline barrier validation failed for texture shader read transition", .{});
     }
 

@@ -87,7 +87,7 @@ fn window_iconify_callback(window: ?*c.GLFWwindow, iconified: c_int) callconv(.c
 }
 
 // Exported functions
-export fn cardinal_window_create(config: *const CardinalWindowConfig) callconv(.c) ?*CardinalWindow {
+pub export fn cardinal_window_create(config: *const CardinalWindowConfig) callconv(.c) ?*CardinalWindow {
     std.log.info("cardinal_window_create: begin", .{});
     
     if (c.glfwInit() == c.GLFW_FALSE) {
@@ -141,7 +141,7 @@ export fn cardinal_window_create(config: *const CardinalWindowConfig) callconv(.
     return win;
 }
 
-export fn cardinal_window_poll(window: ?*CardinalWindow) callconv(.c) void {
+pub export fn cardinal_window_poll(window: ?*CardinalWindow) callconv(.c) void {
     if (window) |win| {
         if (builtin.os.tag == .windows) {
             c.EnterCriticalSection(&win.mutex);
@@ -160,14 +160,14 @@ export fn cardinal_window_poll(window: ?*CardinalWindow) callconv(.c) void {
     }
 }
 
-export fn cardinal_window_should_close(window: ?*const CardinalWindow) callconv(.c) bool {
+pub export fn cardinal_window_should_close(window: ?*const CardinalWindow) callconv(.c) bool {
     if (window) |win| {
         return win.should_close;
     }
     return true;
 }
 
-export fn cardinal_window_destroy(window: ?*CardinalWindow) callconv(.c) void {
+pub export fn cardinal_window_destroy(window: ?*CardinalWindow) callconv(.c) void {
     if (window) |win| {
         if (builtin.os.tag == .windows) {
             c.EnterCriticalSection(&win.mutex);
@@ -204,7 +204,7 @@ export fn cardinal_window_get_native_handle(window: ?*const CardinalWindow) call
     return null;
 }
 
-export fn cardinal_window_is_minimized(window: ?*const CardinalWindow) callconv(.c) bool {
+pub export fn cardinal_window_is_minimized(window: ?*const CardinalWindow) callconv(.c) bool {
     if (window) |win| {
         return win.is_minimized;
     }

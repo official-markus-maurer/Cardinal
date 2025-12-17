@@ -65,8 +65,7 @@ fn ensure_capacity(manager: *types.VulkanTextureManager, required_capacity: u32)
     const new_textures = @as([*]types.VulkanManagedTexture, @ptrCast(@alignCast(new_textures_ptr)));
 
     // Initialize new slots
-    var i: u32 = manager.textureCapacity;
-    while (i < new_capacity) : (i += 1) {
+    for (manager.textureCapacity..new_capacity) |i| {
         new_textures[i] = std.mem.zeroes(types.VulkanManagedTexture);
     }
 
@@ -83,7 +82,7 @@ fn destroy_texture(manager: *types.VulkanTextureManager, index: u32) void {
     }
 
     // log.cardinal_log_debug("Destroying texture {d}", .{index});
-    var texture = &manager.textures.?[index];
+    var texture = &manager.textures[index];
 
     if (texture.view != null) {
         c.vkDestroyImageView(manager.device, texture.view, null);
@@ -91,7 +90,7 @@ fn destroy_texture(manager: *types.VulkanTextureManager, index: u32) void {
     }
 
     if (texture.image != null and texture.memory != null) {
-        vk_allocator.vk_allocator_free_image(manager.allocator, texture.image, texture.memory);
+        vk_allocator.vk_allocator_free_image(@ptrCast(manager.allocator), texture.image, texture.memory);
         texture.image = null;
         texture.memory = null;
     }
@@ -164,7 +163,7 @@ pub export fn vk_texture_manager_init(manager: *types.VulkanTextureManager, conf
     manager.* = std.mem.zeroes(types.VulkanTextureManager);
 
     manager.device = config.?.device;
-    manager.allocator = config.?.allocator;
+    manager.allocator = config.?.allocator.?;
     manager.commandPool = config.?.commandPool;
     manager.graphicsQueue = config.?.graphicsQueue;
     manager.syncManager = config.?.syncManager;
@@ -219,10 +218,9 @@ pub export fn vk_texture_manager_destroy(manager: *types.VulkanTextureManager) c
     }
 
     // Free texture storage
-    if (manager.textures != null) {
+    if (manager.textureCapacity > 0) {
         const allocator = memory.cardinal_get_allocator_for_category(.RENDERER);
         memory.cardinal_free(allocator, @as(?*anyopaque, @ptrCast(manager.textures)));
-        manager.textures = null;
     }
 
     manager.* = std.mem.zeroes(types.VulkanTextureManager);
@@ -333,7 +331,7 @@ pub export fn vk_texture_manager_load_texture(manager: *types.VulkanTextureManag
     }
 
     const index = manager.textureCount;
-    var managed_texture = &manager.textures.?[index];
+    var managed_texture = &manager.textures[index];
 
     // Use existing texture utility to create the texture
     if (!vk_texture_utils.vk_texture_create_from_data(manager.allocator, manager.device, manager.commandPool,
@@ -398,7 +396,7 @@ pub export fn vk_texture_manager_create_placeholder(manager: *types.VulkanTextur
     }
 
     const index = manager.textureCount;
-    var managed_texture = &manager.textures.?[index];
+    var managed_texture = &manager.textures[index];
 
     // Use existing texture utility to create placeholder
     if (!vk_texture_utils.vk_texture_create_placeholder(manager.allocator, manager.device, manager.commandPool,
@@ -439,7 +437,7 @@ pub export fn vk_texture_manager_get_texture(manager: *const types.VulkanTexture
     if (index >= manager.textureCount) {
         return null;
     }
-    return &manager.textures.?[index];
+    return &manager.textures[index];
 }
 
 pub export fn vk_texture_manager_get_default_sampler(manager: ?*const types.VulkanTextureManager) callconv(.c) c.VkSampler {
@@ -459,7 +457,7 @@ pub export fn vk_texture_manager_get_image_views(manager: *const types.VulkanTex
 
     var i: u32 = 0;
     while (i < copy_count) : (i += 1) {
-        out_views[i] = manager.textures.?[i].view;
+        out_views[i] = manager.textures[i].view;
     }
 
     return copy_count;

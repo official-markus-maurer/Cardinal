@@ -2,10 +2,12 @@ const std = @import("std");
 const builtin = @import("builtin");
 const log = @import("../core/log.zig");
 const types = @import("vulkan_types.zig");
+const vk_utils = @import("vulkan_utils.zig");
+const vk_barrier_validation = @import("vulkan_barrier_validation.zig");
+pub const vulkan_mt = @import("vulkan_mt.zig");
 const vk_pbr = @import("vulkan_pbr.zig");
 const vk_mesh_shader = @import("vulkan_mesh_shader.zig");
 const vk_simple_pipelines = @import("vulkan_simple_pipelines.zig");
-pub const vulkan_mt = @import("vulkan_mt.zig");
 
 const c = @import("vulkan_c.zig").c;
 
@@ -28,7 +30,7 @@ fn create_command_pools(s: *types.VulkanState) bool {
     
     var i: u32 = 0;
     while (i < s.sync.max_frames_in_flight) : (i += 1) {
-        if (!c.vk_utils_create_command_pool(s.context.device, s.context.graphics_queue_family,
+        if (!vk_utils.vk_utils_create_command_pool(s.context.device, s.context.graphics_queue_family,
                                           c.VK_COMMAND_POOL_CREATE_RESET_COMMAND_BUFFER_BIT,
                                           &s.commands.pools.?[i], "graphics command pool")) {
             return false;
@@ -152,7 +154,7 @@ fn create_sync_objects(s: *types.VulkanState) bool {
 
     i = 0;
     while (i < s.sync.max_frames_in_flight) : (i += 1) {
-        if (!c.vk_utils_create_fence(s.context.device, &s.sync.in_flight_fences.?[i], true, "in-flight fence")) {
+        if (!vk_utils.vk_utils_create_fence(s.context.device, &s.sync.in_flight_fences.?[i], true, "in-flight fence")) {
             log.cardinal_log_error("[INIT] Failed to create in-flight fence for frame {d}", .{i});
             return false;
         }
@@ -263,7 +265,7 @@ fn transition_images(s: *types.VulkanState, cmd: c.VkCommandBuffer, image_index:
         dep.imageMemoryBarrierCount = 1;
         dep.pImageMemoryBarriers = &barrier;
 
-        if (!c.cardinal_barrier_validation_validate_pipeline_barrier(&dep, cmd, thread_id)) {
+        if (!vk_barrier_validation.cardinal_barrier_validation_validate_pipeline_barrier(&dep, cmd, thread_id)) {
             log.cardinal_log_warn("[CMD] Pipeline barrier validation failed for depth image transition", .{});
         }
 
@@ -305,7 +307,7 @@ fn transition_images(s: *types.VulkanState, cmd: c.VkCommandBuffer, image_index:
     dep.imageMemoryBarrierCount = 1;
     dep.pImageMemoryBarriers = &barrier;
 
-    if (!c.cardinal_barrier_validation_validate_pipeline_barrier(&dep, cmd, thread_id)) {
+    if (!vk_barrier_validation.cardinal_barrier_validation_validate_pipeline_barrier(&dep, cmd, thread_id)) {
         log.cardinal_log_warn("[CMD] Pipeline barrier validation failed for swapchain image transition", .{});
     }
 
@@ -397,7 +399,7 @@ fn end_recording(s: *types.VulkanState, cmd: c.VkCommandBuffer, image_index: u32
     dep.pImageMemoryBarriers = &barrier;
 
     const thread_id = get_current_thread_id();
-    if (!c.cardinal_barrier_validation_validate_pipeline_barrier(&dep, cmd, thread_id)) {
+    if (!vk_barrier_validation.cardinal_barrier_validation_validate_pipeline_barrier(&dep, cmd, thread_id)) {
         log.cardinal_log_warn("[CMD] Pipeline barrier validation failed for swapchain present transition", .{});
     }
 
@@ -739,8 +741,8 @@ pub export fn vk_prepare_mesh_shader_rendering(s: ?*c.VulkanState) callconv(.c) 
         if (texture_views != null and samplers != null) {
             var i: u32 = 0;
             while (i < texture_count) : (i += 1) {
-                texture_views.?[i] = vs.pipelines.pbr_pipeline.textureManager.?.textures.?[i].view;
-                const texSampler = vs.pipelines.pbr_pipeline.textureManager.?.textures.?[i].sampler;
+                texture_views.?[i] = vs.pipelines.pbr_pipeline.textureManager.?.textures[i].view;
+                const texSampler = vs.pipelines.pbr_pipeline.textureManager.?.textures[i].sampler;
                 samplers.?[i] = if (texSampler != null) texSampler else vs.pipelines.pbr_pipeline.textureManager.?.defaultSampler;
             }
         } else {

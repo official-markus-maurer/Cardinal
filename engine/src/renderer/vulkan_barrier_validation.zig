@@ -1,36 +1,12 @@
 const std = @import("std");
 const builtin = @import("builtin");
 const log = @import("../core/log.zig");
+const types = @import("vulkan_types.zig");
 
-const c = @cImport({
-    @cInclude("stdlib.h");
-    @cInclude("string.h");
-    @cInclude("time.h");
-    @cInclude("stdint.h");
-    
-    // Skip stdatomic.h and define types manually
-    @cDefine("__STDATOMIC_H", "1");
-    @cDefine("_STDATOMIC_H", "1");
-    @cDefine("__CLANG_STDATOMIC_H", "1");
-    @cDefine("__zig_translate_c__", "1");
-    @cDefine("CARDINAL_ZIG_BUILD", "1");
-    
-    @cInclude("vulkan/vulkan.h");
-    @cInclude("cardinal/renderer/vulkan_barrier_validation.h");
-    @cInclude("cardinal/core/memory.h");
-    @cInclude("cardinal/renderer/vulkan_mt.h");
-
-    if (builtin.os.tag == .windows) {
-        @cInclude("windows.h");
-    } else {
-        @cInclude("pthread.h");
-        @cInclude("sys/syscall.h");
-        @cInclude("unistd.h");
-    }
-});
+const c = @import("vulkan_c.zig").c;
 
 // Global state
-var g_validation_context: c.CardinalBarrierValidationContext = std.mem.zeroes(c.CardinalBarrierValidationContext);
+var g_validation_context: types.CardinalBarrierValidationContext = std.mem.zeroes(types.CardinalBarrierValidationContext);
 var g_validation_initialized: bool = false;
 
 // Statistics
@@ -92,7 +68,7 @@ pub export fn cardinal_barrier_validation_init(max_tracked_accesses: u32, strict
 
     const allocator = c.cardinal_get_allocator_for_category(c.CARDINAL_MEMORY_CATEGORY_ENGINE);
 
-    const ptr = c.cardinal_alloc(allocator, @sizeOf(c.CardinalResourceAccess) * max_tracked_accesses);
+    const ptr = c.cardinal_alloc(allocator, @sizeOf(types.CardinalResourceAccess) * max_tracked_accesses);
     if (ptr == null) {
         log.cardinal_log_error("[BARRIER_VALIDATION] Failed to allocate memory for resource tracking", .{});
         return false;
@@ -158,8 +134,8 @@ pub export fn cardinal_barrier_validation_set_enabled(enabled: bool) callconv(.c
 }
 
 pub export fn cardinal_barrier_validation_track_access(resource_id: u64,
-                                              resource_type: c.CardinalResourceType,
-                                              access_type: c.CardinalResourceAccessType,
+                                              resource_type: types.CardinalResourceType,
+                                              access_type: types.CardinalResourceAccessType,
                                               stage_mask: c.VkPipelineStageFlags2,
                                               access_mask: c.VkAccessFlags2, thread_id: u32,
                                               command_buffer: c.VkCommandBuffer) callconv(.c) bool {
@@ -187,7 +163,7 @@ pub export fn cardinal_barrier_validation_track_access(resource_id: u64,
         const existing = &g_validation_context.resource_accesses[i];
 
         if (existing.resource_id == resource_id and existing.thread_id != thread_id) {
-            if (access_type == c.CARDINAL_ACCESS_WRITE or existing.access_type == c.CARDINAL_ACCESS_WRITE) {
+            if (access_type == types.CardinalResourceAccessType.CARDINAL_ACCESS_WRITE or existing.access_type == types.CardinalResourceAccessType.CARDINAL_ACCESS_WRITE) {
                 log.cardinal_log_warn("[BARRIER_VALIDATION] Potential race condition detected: Resource 0x{x} accessed by threads {d} and {d}",
                     .{resource_id, existing.thread_id, thread_id});
                 g_race_conditions += 1;
@@ -247,14 +223,14 @@ pub export fn cardinal_barrier_validation_validate_buffer_barrier(barrier: ?*con
     const valid = true;
     const buffer_id = @intFromPtr(b.buffer);
 
-    var access_type: c.CardinalResourceAccessType = c.CARDINAL_ACCESS_READ_WRITE;
+    var access_type: types.CardinalResourceAccessType = types.CardinalResourceAccessType.CARDINAL_ACCESS_READ_WRITE;
     if ((b.srcAccessMask & (c.VK_ACCESS_2_SHADER_WRITE_BIT | c.VK_ACCESS_2_TRANSFER_WRITE_BIT)) != 0) {
-        access_type = c.CARDINAL_ACCESS_WRITE;
+        access_type = types.CardinalResourceAccessType.CARDINAL_ACCESS_WRITE;
     } else if ((b.srcAccessMask & (c.VK_ACCESS_2_SHADER_READ_BIT | c.VK_ACCESS_2_TRANSFER_READ_BIT)) != 0) {
-        access_type = c.CARDINAL_ACCESS_READ;
+        access_type = types.CardinalResourceAccessType.CARDINAL_ACCESS_READ;
     }
 
-    _ = cardinal_barrier_validation_track_access(buffer_id, c.CARDINAL_RESOURCE_BUFFER, access_type,
+    _ = cardinal_barrier_validation_track_access(buffer_id, types.CardinalResourceType.CARDINAL_RESOURCE_BUFFER, access_type,
                                              b.srcStageMask, b.srcAccessMask,
                                              thread_id, command_buffer);
 
@@ -278,14 +254,14 @@ pub export fn cardinal_barrier_validation_validate_image_barrier(barrier: ?*cons
     var valid = true;
     const image_id = @intFromPtr(b.image);
 
-    var access_type: c.CardinalResourceAccessType = c.CARDINAL_ACCESS_READ_WRITE;
+    var access_type: types.CardinalResourceAccessType = types.CardinalResourceAccessType.CARDINAL_ACCESS_READ_WRITE;
     if ((b.srcAccessMask & (c.VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT | c.VK_ACCESS_2_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT)) != 0) {
-        access_type = c.CARDINAL_ACCESS_WRITE;
+        access_type = types.CardinalResourceAccessType.CARDINAL_ACCESS_WRITE;
     } else if ((b.srcAccessMask & (c.VK_ACCESS_2_SHADER_READ_BIT | c.VK_ACCESS_2_INPUT_ATTACHMENT_READ_BIT)) != 0) {
-        access_type = c.CARDINAL_ACCESS_READ;
+        access_type = types.CardinalResourceAccessType.CARDINAL_ACCESS_READ;
     }
 
-    _ = cardinal_barrier_validation_track_access(image_id, c.CARDINAL_RESOURCE_IMAGE, access_type,
+    _ = cardinal_barrier_validation_track_access(image_id, types.CardinalResourceType.CARDINAL_RESOURCE_IMAGE, access_type,
                                              b.srcStageMask, b.srcAccessMask,
                                              thread_id, command_buffer);
 
@@ -355,7 +331,7 @@ pub export fn cardinal_barrier_validation_validate_secondary_recording(context: 
     const cmd_buffer_id = @intFromPtr(ctx.command_buffer);
     
     _ = cardinal_barrier_validation_track_access(
-        cmd_buffer_id, c.CARDINAL_RESOURCE_DESCRIPTOR_SET, c.CARDINAL_ACCESS_WRITE,
+        cmd_buffer_id, types.CardinalResourceType.CARDINAL_RESOURCE_DESCRIPTOR_SET, types.CardinalResourceAccessType.CARDINAL_ACCESS_WRITE,
         c.VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT, c.VK_ACCESS_2_MEMORY_WRITE_BIT, thread_id,
         ctx.command_buffer);
 
@@ -383,7 +359,7 @@ pub export fn cardinal_barrier_validation_check_race_condition(thread_id1: u32, 
             if (access2.thread_id != thread_id2) continue;
 
             if (access1.resource_id == access2.resource_id and
-                (access1.access_type == c.CARDINAL_ACCESS_WRITE or access2.access_type == c.CARDINAL_ACCESS_WRITE)) {
+                (access1.access_type == types.CardinalResourceAccessType.CARDINAL_ACCESS_WRITE or access2.access_type == types.CardinalResourceAccessType.CARDINAL_ACCESS_WRITE)) {
                 log.cardinal_log_warn("[BARRIER_VALIDATION] Race condition detected between threads {d} and {d} on resource 0x{x}",
                     .{thread_id1, thread_id2, access1.resource_id});
                 race_detected = true;

@@ -1,15 +1,15 @@
 const std = @import("std");
+const types = @import("../vulkan_types.zig");
 
 const c = @cImport({
     @cDefine("CARDINAL_ZIG_BUILD", "1");
     @cInclude("stdlib.h");
     @cInclude("string.h");
     @cInclude("vulkan/vulkan.h");
-    @cInclude("cardinal/renderer/util/vulkan_material_utils.h");
     @cInclude("cardinal/renderer/vulkan_texture_manager.h");
 });
 
-fn set_default_material_properties(pushConstants: *c.PBRPushConstants, hasTextures: bool) void {
+fn set_default_material_properties(pushConstants: *types.PBRPushConstants, hasTextures: bool) void {
     pushConstants.albedoFactor[0] = 1.0;
     pushConstants.albedoFactor[1] = 1.0;
     pushConstants.albedoFactor[2] = 1.0;
@@ -80,7 +80,7 @@ fn resolve_texture_index(textureIndex: u32, hasTextures: bool, textureCount: u32
     return c.UINT32_MAX;
 }
 
-fn set_texture_indices(pushConstants: *c.PBRPushConstants, material: *const c.CardinalMaterial, hasTextures: bool, textureCount: u32, hasPlaceholder: bool) void {
+fn set_texture_indices(pushConstants: *types.PBRPushConstants, material: *const c.CardinalMaterial, hasTextures: bool, textureCount: u32, hasPlaceholder: bool) void {
     pushConstants.albedoTextureIndex = resolve_texture_index(material.albedo_texture, hasTextures, textureCount, hasPlaceholder);
     pushConstants.normalTextureIndex = resolve_texture_index(material.normal_texture, hasTextures, textureCount, hasPlaceholder);
     pushConstants.metallicRoughnessTextureIndex = resolve_texture_index(material.metallic_roughness_texture, hasTextures, textureCount, hasPlaceholder);
@@ -88,7 +88,7 @@ fn set_texture_indices(pushConstants: *c.PBRPushConstants, material: *const c.Ca
     pushConstants.emissiveTextureIndex = resolve_texture_index(material.emissive_texture, hasTextures, textureCount, hasPlaceholder);
 }
 
-fn set_texture_transforms(pushConstants: *c.PBRPushConstants, material: *const c.CardinalMaterial) void {
+fn set_texture_transforms(pushConstants: *types.PBRPushConstants, material: *const c.CardinalMaterial) void {
     // Albedo
     @memcpy(pushConstants.albedoTransform.offset[0..2], material.albedo_transform.offset[0..2]);
     @memcpy(pushConstants.albedoTransform.scale[0..2], material.albedo_transform.scale[0..2]);
@@ -115,7 +115,7 @@ fn set_texture_transforms(pushConstants: *c.PBRPushConstants, material: *const c
     pushConstants.emissiveTransform.rotation = material.emissive_transform.rotation;
 }
 
-fn set_material_properties(pushConstants: *c.PBRPushConstants, material: *const c.CardinalMaterial) void {
+fn set_material_properties(pushConstants: *types.PBRPushConstants, material: *const c.CardinalMaterial) void {
     @memcpy(pushConstants.albedoFactor[0..3], material.albedo_factor[0..3]);
     pushConstants.metallicFactor = material.metallic_factor;
     @memcpy(pushConstants.emissiveFactor[0..3], material.emissive_factor[0..3]);
@@ -132,7 +132,7 @@ fn set_material_properties(pushConstants: *c.PBRPushConstants, material: *const 
     pushConstants.alphaCutoff = material.alpha_cutoff;
 }
 
-pub export fn vk_material_setup_push_constants(pushConstants: ?*c.PBRPushConstants, mesh: ?*const c.CardinalMesh,
+pub export fn vk_material_setup_push_constants(pushConstants: ?*types.PBRPushConstants, mesh: ?*const c.CardinalMesh,
                                       scene: ?*const c.CardinalScene,
                                       textureManager: ?*const c.VulkanTextureManager) callconv(.c) void {
     if (pushConstants == null or mesh == null or scene == null) {

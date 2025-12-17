@@ -2,6 +2,7 @@ const std = @import("std");
 const builtin = @import("builtin");
 const log = @import("../core/log.zig");
 const types = @import("vulkan_types.zig");
+const window = @import("../core/window.zig");
 
 const c = @import("vulkan_c.zig").c;
 
@@ -16,9 +17,10 @@ const vk_compute = @import("vulkan_compute.zig");
 const vk_simple_pipelines = @import("vulkan_simple_pipelines.zig");
 const vk_allocator = @import("vulkan_allocator.zig");
 const vk_buffer_utils = @import("util/vulkan_buffer_utils.zig");
+const vk_barrier_validation = @import("vulkan_barrier_validation.zig");
 
 // Helper to cast opaque pointer to VulkanState
-fn get_state(renderer: ?*c.CardinalRenderer) ?*types.VulkanState {
+fn get_state(renderer: ?*types.CardinalRenderer) ?*types.VulkanState {
     if (renderer == null) return null;
     return @ptrCast(@alignCast(renderer.?._opaque));
 }
@@ -33,14 +35,14 @@ fn vk_handle_window_resize(width: u32, height: u32, user_data: ?*anyopaque) call
     log.cardinal_log_info("[SWAPCHAIN] Resize event: {d}x{d}, marking recreation pending", .{width, height});
 }
 
-fn init_vulkan_core(s: *types.VulkanState, window: ?*c.CardinalWindow) bool {
+fn init_vulkan_core(s: *types.VulkanState, win: ?*window.CardinalWindow) bool {
     log.cardinal_log_warn("renderer_create: begin", .{});
     if (!vk_instance.vk_create_instance(@ptrCast(s))) {
         log.cardinal_log_error("vk_create_instance failed", .{});
         return false;
     }
     log.cardinal_log_info("renderer_create: instance", .{});
-    if (!vk_instance.vk_create_surface(@ptrCast(s), @ptrCast(window))) {
+    if (!vk_instance.vk_create_surface(@ptrCast(s), @ptrCast(win))) {
         log.cardinal_log_error("vk_create_surface failed", .{});
         return false;
     }
@@ -227,8 +229,8 @@ fn init_pipelines(s: *types.VulkanState) bool {
     return true;
 }
 
-pub export fn cardinal_renderer_create(out_renderer: ?*c.CardinalRenderer, window: ?*c.CardinalWindow) callconv(.c) bool {
-    if (out_renderer == null or window == null)
+pub export fn cardinal_renderer_create(out_renderer: ?*types.CardinalRenderer, win: ?*window.CardinalWindow) callconv(.c) bool {
+    if (out_renderer == null or win == null)
         return false;
     
     const s_ptr = c.calloc(1, @sizeOf(types.VulkanState));
@@ -242,16 +244,16 @@ pub export fn cardinal_renderer_create(out_renderer: ?*c.CardinalRenderer, windo
     s.recovery.recovery_in_progress = false;
     s.recovery.attempt_count = 0;
     s.recovery.max_attempts = 3;
-    s.recovery.window = window;
+    s.recovery.window = @ptrCast(win);
     s.recovery.device_loss_callback = null;
     s.recovery.recovery_complete_callback = null;
     s.recovery.callback_user_data = null;
     
     // Register window resize callback
-    window.?.resize_callback = vk_handle_window_resize;
-    window.?.resize_user_data = s;
+    win.?.resize_callback = vk_handle_window_resize;
+    win.?.resize_user_data = s;
 
-    if (!init_vulkan_core(s, window))
+    if (!init_vulkan_core(s, win))
         return false;
     if (!init_ref_counting())
         return false;
@@ -284,7 +286,7 @@ pub export fn cardinal_renderer_create(out_renderer: ?*c.CardinalRenderer, windo
         return false;
 
     // Initialize barrier validation system
-    if (!c.cardinal_barrier_validation_init(1000, false)) {
+    if (!vk_barrier_validation.cardinal_barrier_validation_init(1000, false)) {
         log.cardinal_log_error("cardinal_barrier_validation_init failed", .{});
         // Continue anyway, validation is optional
     } else {
@@ -294,7 +296,7 @@ pub export fn cardinal_renderer_create(out_renderer: ?*c.CardinalRenderer, windo
     return true;
 }
 
-pub export fn cardinal_renderer_create_headless(out_renderer: ?*c.CardinalRenderer, width: u32, height: u32) callconv(.c) bool {
+pub export fn cardinal_renderer_create_headless(out_renderer: ?*types.CardinalRenderer, width: u32, height: u32) callconv(.c) bool {
     if (out_renderer == null)
         return false;
     
@@ -361,19 +363,19 @@ pub export fn cardinal_renderer_create_headless(out_renderer: ?*c.CardinalRender
     return true;
 }
 
-pub export fn cardinal_renderer_set_skip_present(renderer: ?*c.CardinalRenderer, skip: bool) callconv(.c) void {
+pub export fn cardinal_renderer_set_skip_present(renderer: ?*types.CardinalRenderer, skip: bool) callconv(.c) void {
     if (renderer == null) return;
     const s = get_state(renderer) orelse return;
     s.swapchain.skip_present = skip;
 }
 
-pub export fn cardinal_renderer_set_headless_mode(renderer: ?*c.CardinalRenderer, enable: bool) callconv(.c) void {
+pub export fn cardinal_renderer_set_headless_mode(renderer: ?*types.CardinalRenderer, enable: bool) callconv(.c) void {
     if (renderer == null) return;
     const s = get_state(renderer) orelse return;
     s.swapchain.headless_mode = enable;
 }
 
-pub export fn cardinal_renderer_wait_idle(renderer: ?*c.CardinalRenderer) callconv(.c) void {
+pub export fn cardinal_renderer_wait_idle(renderer: ?*types.CardinalRenderer) callconv(.c) void {
     if (renderer == null) return;
     const s = get_state(renderer) orelse return;
     _ = c.vkDeviceWaitIdle(s.context.device);
@@ -436,7 +438,7 @@ pub fn destroy_scene_buffers(vs: *types.VulkanState) void {
     log.cardinal_log_debug("[RENDERER] destroy_scene_buffers: completed", .{});
 }
 
-pub export fn cardinal_renderer_destroy(renderer: ?*c.CardinalRenderer) callconv(.c) void {
+pub export fn cardinal_renderer_destroy(renderer: ?*types.CardinalRenderer) callconv(.c) void {
     if (renderer == null or renderer.?._opaque == null) return;
     const s = get_state(renderer) orelse return;
 
@@ -473,7 +475,7 @@ pub export fn cardinal_renderer_destroy(renderer: ?*c.CardinalRenderer) callconv
     c.cardinal_ref_counting_shutdown();
 
     // Shutdown barrier validation system
-    c.cardinal_barrier_validation_shutdown();
+    vk_barrier_validation.cardinal_barrier_validation_shutdown();
 
     // Destroy simple pipelines
     log.cardinal_log_debug("[DESTROY] Destroying simple pipelines", .{});
@@ -508,23 +510,23 @@ pub export fn cardinal_renderer_destroy(renderer: ?*c.CardinalRenderer) callconv
     renderer.?._opaque = null;
 }
 
-pub export fn cardinal_renderer_internal_current_cmd(renderer: ?*c.CardinalRenderer, image_index: u32) callconv(.c) c.VkCommandBuffer {
+pub export fn cardinal_renderer_internal_current_cmd(renderer: ?*types.CardinalRenderer, image_index: u32) callconv(.c) c.VkCommandBuffer {
     const s = get_state(renderer) orelse return null;
     _ = image_index;
     return s.commands.buffers.?[s.sync.current_frame];
 }
 
-pub export fn cardinal_renderer_internal_device(renderer: ?*c.CardinalRenderer) callconv(.c) c.VkDevice {
+pub export fn cardinal_renderer_internal_device(renderer: ?*types.CardinalRenderer) callconv(.c) c.VkDevice {
     const s = get_state(renderer) orelse return null;
     return s.context.device;
 }
 
-pub export fn cardinal_renderer_internal_physical_device(renderer: ?*c.CardinalRenderer) callconv(.c) c.VkPhysicalDevice {
+pub export fn cardinal_renderer_internal_physical_device(renderer: ?*types.CardinalRenderer) callconv(.c) c.VkPhysicalDevice {
     const s = get_state(renderer) orelse return null;
     return s.context.physical_device;
 }
 
-pub export fn cardinal_renderer_internal_graphics_queue(renderer: ?*c.CardinalRenderer) callconv(.c) c.VkQueue {
+pub export fn cardinal_renderer_internal_graphics_queue(renderer: ?*types.CardinalRenderer) callconv(.c) c.VkQueue {
     const s = get_state(renderer) orelse return null;
     return s.context.graphics_queue;
 }
@@ -572,14 +574,14 @@ fn create_view_matrix(eye: [*]const f32, center: [*]const f32, up: [*]const f32,
     matrix[15] = 1.0;
 }
 
-pub export fn cardinal_renderer_set_camera(renderer: ?*c.CardinalRenderer, camera: ?*const c.CardinalCamera) callconv(.c) void {
+pub export fn cardinal_renderer_set_camera(renderer: ?*types.CardinalRenderer, camera: ?*const c.CardinalCamera) callconv(.c) void {
     if (renderer == null or camera == null) return;
     const s = get_state(renderer) orelse return;
     const cam = camera.?;
 
     if (!s.pipelines.use_pbr_pipeline) return;
 
-    var ubo = std.mem.zeroes(c.PBRUniformBufferObject);
+    var ubo = std.mem.zeroes(types.PBRUniformBufferObject);
 
     // Create model matrix (identity for now)
     c.cardinal_matrix_identity(&ubo.model);
@@ -596,22 +598,22 @@ pub export fn cardinal_renderer_set_camera(renderer: ?*c.CardinalRenderer, camer
     ubo.viewPos[2] = cam.position[2];
 
     // Update the uniform buffer
-    @memcpy(@as([*]u8, @ptrCast(s.pipelines.pbr_pipeline.uniformBufferMapped))[0..@sizeOf(c.PBRUniformBufferObject)], @as([*]const u8, @ptrCast(&ubo))[0..@sizeOf(c.PBRUniformBufferObject)]);
+    @memcpy(@as([*]u8, @ptrCast(s.pipelines.pbr_pipeline.uniformBufferMapped))[0..@sizeOf(types.PBRUniformBufferObject)], @as([*]const u8, @ptrCast(&ubo))[0..@sizeOf(types.PBRUniformBufferObject)]);
 
     // Also invoke the centralized PBR uniform updater
-    var lighting: c.PBRLightingData = undefined;
-    @memcpy(@as([*]u8, @ptrCast(&lighting))[0..@sizeOf(c.PBRLightingData)], @as([*]const u8, @ptrCast(s.pipelines.pbr_pipeline.lightingBufferMapped))[0..@sizeOf(c.PBRLightingData)]);
+    var lighting: types.PBRLightingData = undefined;
+    @memcpy(@as([*]u8, @ptrCast(&lighting))[0..@sizeOf(types.PBRLightingData)], @as([*]const u8, @ptrCast(s.pipelines.pbr_pipeline.lightingBufferMapped))[0..@sizeOf(types.PBRLightingData)]);
     vk_pbr.vk_pbr_update_uniforms(@ptrCast(&s.pipelines.pbr_pipeline), @ptrCast(&ubo), @ptrCast(&lighting));
 }
 
-pub export fn cardinal_renderer_set_lighting(renderer: ?*c.CardinalRenderer, light: ?*const c.CardinalLight) callconv(.c) void {
+pub export fn cardinal_renderer_set_lighting(renderer: ?*types.CardinalRenderer, light: ?*const c.CardinalLight) callconv(.c) void {
     if (renderer == null or light == null) return;
     const s = get_state(renderer) orelse return;
     const l = light.?;
 
     if (!s.pipelines.use_pbr_pipeline) return;
 
-    var lighting = std.mem.zeroes(c.PBRLightingData);
+    var lighting = std.mem.zeroes(types.PBRLightingData);
 
     // Set light direction
     lighting.lightDirection[0] = l.direction[0];
@@ -630,15 +632,15 @@ pub export fn cardinal_renderer_set_lighting(renderer: ?*c.CardinalRenderer, lig
     lighting.ambientColor[2] = l.ambient[2];
 
     // Update the lighting buffer
-    @memcpy(@as([*]u8, @ptrCast(s.pipelines.pbr_pipeline.lightingBufferMapped))[0..@sizeOf(c.PBRLightingData)], @as([*]const u8, @ptrCast(&lighting))[0..@sizeOf(c.PBRLightingData)]);
+    @memcpy(@as([*]u8, @ptrCast(s.pipelines.pbr_pipeline.lightingBufferMapped))[0..@sizeOf(types.PBRLightingData)], @as([*]const u8, @ptrCast(&lighting))[0..@sizeOf(types.PBRLightingData)]);
 
     // Also invoke the centralized PBR uniform updater
-    var ubo: c.PBRUniformBufferObject = undefined;
-    @memcpy(@as([*]u8, @ptrCast(&ubo))[0..@sizeOf(c.PBRUniformBufferObject)], @as([*]const u8, @ptrCast(s.pipelines.pbr_pipeline.uniformBufferMapped))[0..@sizeOf(c.PBRUniformBufferObject)]);
+    var ubo: types.PBRUniformBufferObject = undefined;
+    @memcpy(@as([*]u8, @ptrCast(&ubo))[0..@sizeOf(types.PBRUniformBufferObject)], @as([*]const u8, @ptrCast(s.pipelines.pbr_pipeline.uniformBufferMapped))[0..@sizeOf(types.PBRUniformBufferObject)]);
     vk_pbr.vk_pbr_update_uniforms(@ptrCast(&s.pipelines.pbr_pipeline), @ptrCast(&ubo), @ptrCast(&lighting));
 }
 
-pub export fn cardinal_renderer_enable_pbr(renderer: ?*c.CardinalRenderer, enable: bool) callconv(.c) void {
+pub export fn cardinal_renderer_enable_pbr(renderer: ?*types.CardinalRenderer, enable: bool) callconv(.c) void {
     if (renderer == null) return;
     const s = get_state(renderer) orelse return;
 
@@ -672,13 +674,13 @@ pub export fn cardinal_renderer_enable_pbr(renderer: ?*c.CardinalRenderer, enabl
     }
 }
 
-pub export fn cardinal_renderer_is_pbr_enabled(renderer: ?*c.CardinalRenderer) callconv(.c) bool {
+pub export fn cardinal_renderer_is_pbr_enabled(renderer: ?*types.CardinalRenderer) callconv(.c) bool {
     if (renderer == null) return false;
     const s = get_state(renderer) orelse return false;
     return s.pipelines.use_pbr_pipeline;
 }
 
-pub export fn cardinal_renderer_enable_mesh_shader(renderer: ?*c.CardinalRenderer, enable: bool) callconv(.c) void {
+pub export fn cardinal_renderer_enable_mesh_shader(renderer: ?*types.CardinalRenderer, enable: bool) callconv(.c) void {
     if (renderer == null) return;
     const s = get_state(renderer) orelse return;
 
@@ -730,49 +732,49 @@ pub export fn cardinal_renderer_enable_mesh_shader(renderer: ?*c.CardinalRendere
     }
 }
 
-pub export fn cardinal_renderer_is_mesh_shader_enabled(renderer: ?*c.CardinalRenderer) callconv(.c) bool {
+pub export fn cardinal_renderer_is_mesh_shader_enabled(renderer: ?*types.CardinalRenderer) callconv(.c) bool {
     if (renderer == null) return false;
     const s = get_state(renderer) orelse return false;
     return s.pipelines.use_mesh_shader_pipeline;
 }
 
-pub export fn cardinal_renderer_supports_mesh_shader(renderer: ?*c.CardinalRenderer) callconv(.c) bool {
+pub export fn cardinal_renderer_supports_mesh_shader(renderer: ?*types.CardinalRenderer) callconv(.c) bool {
     if (renderer == null) return false;
     const s = get_state(renderer) orelse return false;
     return s.context.supports_mesh_shader;
 }
 
-pub export fn cardinal_renderer_internal_graphics_queue_family(renderer: ?*c.CardinalRenderer) callconv(.c) u32 {
+pub export fn cardinal_renderer_internal_graphics_queue_family(renderer: ?*types.CardinalRenderer) callconv(.c) u32 {
     const s = get_state(renderer) orelse return 0;
     return s.context.graphics_queue_family;
 }
 
-pub export fn cardinal_renderer_internal_instance(renderer: ?*c.CardinalRenderer) callconv(.c) c.VkInstance {
+pub export fn cardinal_renderer_internal_instance(renderer: ?*types.CardinalRenderer) callconv(.c) c.VkInstance {
     const s = get_state(renderer) orelse return null;
     return s.context.instance;
 }
 
-pub export fn cardinal_renderer_internal_swapchain_image_count(renderer: ?*c.CardinalRenderer) callconv(.c) u32 {
+pub export fn cardinal_renderer_internal_swapchain_image_count(renderer: ?*types.CardinalRenderer) callconv(.c) u32 {
     const s = get_state(renderer) orelse return 0;
     return s.swapchain.image_count;
 }
 
-pub export fn cardinal_renderer_internal_swapchain_format(renderer: ?*c.CardinalRenderer) callconv(.c) c.VkFormat {
+pub export fn cardinal_renderer_internal_swapchain_format(renderer: ?*types.CardinalRenderer) callconv(.c) c.VkFormat {
     const s = get_state(renderer) orelse return c.VK_FORMAT_UNDEFINED;
     return s.swapchain.format;
 }
 
-pub export fn cardinal_renderer_internal_depth_format(renderer: ?*c.CardinalRenderer) callconv(.c) c.VkFormat {
+pub export fn cardinal_renderer_internal_depth_format(renderer: ?*types.CardinalRenderer) callconv(.c) c.VkFormat {
     const s = get_state(renderer) orelse return c.VK_FORMAT_UNDEFINED;
     return s.swapchain.depth_format;
 }
 
-pub export fn cardinal_renderer_internal_swapchain_extent(renderer: ?*c.CardinalRenderer) callconv(.c) c.VkExtent2D {
+pub export fn cardinal_renderer_internal_swapchain_extent(renderer: ?*types.CardinalRenderer) callconv(.c) c.VkExtent2D {
     const s = get_state(renderer) orelse return c.VkExtent2D{ .width = 0, .height = 0 };
     return s.swapchain.extent;
 }
 
-pub export fn cardinal_renderer_set_ui_callback(renderer: ?*c.CardinalRenderer, callback: ?*const fn (c.VkCommandBuffer) callconv(.c) void) callconv(.c) void {
+pub export fn cardinal_renderer_set_ui_callback(renderer: ?*types.CardinalRenderer, callback: ?*const fn (c.VkCommandBuffer) callconv(.c) void) callconv(.c) void {
     const s = get_state(renderer) orelse return;
     s.ui_record_callback = callback;
 }
@@ -838,7 +840,7 @@ fn submit_and_wait(s: *types.VulkanState, cmd: c.VkCommandBuffer) void {
     }
 }
 
-pub export fn cardinal_renderer_immediate_submit(renderer: ?*c.CardinalRenderer, record: ?*const fn (c.VkCommandBuffer) callconv(.c) void) callconv(.c) void {
+pub export fn cardinal_renderer_immediate_submit(renderer: ?*types.CardinalRenderer, record: ?*const fn (c.VkCommandBuffer) callconv(.c) void) callconv(.c) void {
     const s = get_state(renderer) orelse return;
 
     var ai = c.VkCommandBufferAllocateInfo{
@@ -937,7 +939,7 @@ fn try_submit_secondary(s: *types.VulkanState, record: ?*const fn (c.VkCommandBu
     return true;
 }
 
-pub export fn cardinal_renderer_immediate_submit_with_secondary(renderer: ?*c.CardinalRenderer, record: ?*const fn (c.VkCommandBuffer) callconv(.c) void, use_secondary: bool) callconv(.c) void {
+pub export fn cardinal_renderer_immediate_submit_with_secondary(renderer: ?*types.CardinalRenderer, record: ?*const fn (c.VkCommandBuffer) callconv(.c) void, use_secondary: bool) callconv(.c) void {
     const s = get_state(renderer) orelse return;
 
     if (use_secondary) {
@@ -950,7 +952,7 @@ pub export fn cardinal_renderer_immediate_submit_with_secondary(renderer: ?*c.Ca
     cardinal_renderer_immediate_submit(renderer, record);
 }
 
-fn upload_single_mesh(s: *types.VulkanState, src: *const c.CardinalMesh, dst: *types.GpuMesh, mesh_index: u32) bool {
+fn upload_single_mesh(s: *types.VulkanState, src: *const types.CardinalMesh, dst: *types.GpuMesh, mesh_index: u32) bool {
     dst.vbuf = null;
     dst.vmem = null;
     dst.ibuf = null;
@@ -958,7 +960,7 @@ fn upload_single_mesh(s: *types.VulkanState, src: *const c.CardinalMesh, dst: *t
     dst.vtx_count = 0;
     dst.idx_count = 0;
 
-    dst.vtx_stride = @sizeOf(c.CardinalVertex);
+    dst.vtx_stride = @sizeOf(types.CardinalVertex);
     const vsize: c.VkDeviceSize = src.vertex_count * dst.vtx_stride;
     const index_size: c.VkDeviceSize = src.index_count * @sizeOf(u32);
 
@@ -994,7 +996,7 @@ fn upload_single_mesh(s: *types.VulkanState, src: *const c.CardinalMesh, dst: *t
     return true;
 }
 
-pub export fn cardinal_renderer_upload_scene(renderer: ?*c.CardinalRenderer, scene: ?*const c.CardinalScene) callconv(.c) void {
+pub export fn cardinal_renderer_upload_scene(renderer: ?*types.CardinalRenderer, scene: ?*const types.CardinalScene) callconv(.c) void {
     const s = get_state(renderer) orelse return;
 
     log.cardinal_log_info("[UPLOAD] Starting scene upload; meshes={d}", .{if (scene != null) scene.?.mesh_count else 0});
@@ -1035,7 +1037,7 @@ pub export fn cardinal_renderer_upload_scene(renderer: ?*c.CardinalRenderer, sce
 
     var i: u32 = 0;
     while (i < scene.?.mesh_count) : (i += 1) {
-        const src = &scene.?.meshes[i];
+        const src = &scene.?.meshes.?[i];
         const dst = &s.scene_meshes.?[i];
 
         if (!upload_single_mesh(s, @ptrCast(src), dst, i)) {
@@ -1051,12 +1053,12 @@ pub export fn cardinal_renderer_upload_scene(renderer: ?*c.CardinalRenderer, sce
         }
     }
 
-    s.current_scene = if (scene) |ptr| @ptrCast(ptr) else null;
+    s.current_scene = if (scene) |ptr| @ptrCast(@constCast(ptr)) else null;
 
     log.cardinal_log_info("Scene upload completed successfully with {d} meshes", .{scene.?.mesh_count});
 }
 
-pub export fn cardinal_renderer_clear_scene(renderer: ?*c.CardinalRenderer) callconv(.c) void {
+pub export fn cardinal_renderer_clear_scene(renderer: ?*types.CardinalRenderer) callconv(.c) void {
     const s = get_state(renderer) orelse return;
 
     _ = c.vkDeviceWaitIdle(s.context.device);
@@ -1064,35 +1066,35 @@ pub export fn cardinal_renderer_clear_scene(renderer: ?*c.CardinalRenderer) call
     destroy_scene_buffers(s);
 }
 
-pub export fn cardinal_renderer_set_rendering_mode(renderer: ?*c.CardinalRenderer, mode: c.CardinalRenderingMode) callconv(.c) void {
+pub export fn cardinal_renderer_set_rendering_mode(renderer: ?*types.CardinalRenderer, mode: types.CardinalRenderingMode) callconv(.c) void {
     const s = get_state(renderer) orelse {
         log.cardinal_log_error("Invalid renderer state", .{});
         return;
     };
 
     const previous_mode = s.current_rendering_mode;
-    s.current_rendering_mode = @enumFromInt(mode);
+    s.current_rendering_mode = mode;
 
-    if (mode == c.CARDINAL_RENDERING_MODE_MESH_SHADER and previous_mode != types.CardinalRenderingMode.MESH_SHADER) {
+    if (mode == .MESH_SHADER and previous_mode != .MESH_SHADER) {
         cardinal_renderer_enable_mesh_shader(renderer, true);
-    } else if (mode != c.CARDINAL_RENDERING_MODE_MESH_SHADER and previous_mode == types.CardinalRenderingMode.MESH_SHADER) {
+    } else if (mode != .MESH_SHADER and previous_mode == .MESH_SHADER) {
         cardinal_renderer_enable_mesh_shader(renderer, false);
     }
 
-    log.cardinal_log_info("Rendering mode changed to: {d}", .{mode});
+    log.cardinal_log_info("Rendering mode changed to: {d}", .{@intFromEnum(mode)});
 }
 
-pub export fn cardinal_renderer_get_rendering_mode(renderer: ?*c.CardinalRenderer) callconv(.c) c.CardinalRenderingMode {
+pub export fn cardinal_renderer_get_rendering_mode(renderer: ?*types.CardinalRenderer) callconv(.c) types.CardinalRenderingMode {
     const s = get_state(renderer) orelse {
         log.cardinal_log_error("Invalid renderer state", .{});
-        return c.CARDINAL_RENDERING_MODE_NORMAL;
+        return .NORMAL;
     };
 
-    return @intCast(@intFromEnum(s.current_rendering_mode));
+    return s.current_rendering_mode;
 }
 
 pub export fn cardinal_renderer_set_device_loss_callbacks(
-    renderer: ?*c.CardinalRenderer, 
+    renderer: ?*types.CardinalRenderer, 
     device_loss_callback: ?*const fn (?*anyopaque) callconv(.c) void,
     recovery_complete_callback: ?*const fn (?*anyopaque, bool) callconv(.c) void, 
     user_data: ?*anyopaque
@@ -1114,13 +1116,13 @@ pub export fn cardinal_renderer_set_device_loss_callbacks(
     log.cardinal_log_info("Device loss recovery callbacks set", .{});
 }
 
-pub export fn cardinal_renderer_is_device_lost(renderer: ?*c.CardinalRenderer) callconv(.c) bool {
+pub export fn cardinal_renderer_is_device_lost(renderer: ?*types.CardinalRenderer) callconv(.c) bool {
     if (renderer == null) return false;
     const s = get_state(renderer) orelse return false;
     return s.recovery.device_lost;
 }
 
-pub export fn cardinal_renderer_get_recovery_stats(renderer: ?*c.CardinalRenderer, out_attempt_count: ?*u32, out_max_attempts: ?*u32) callconv(.c) bool {
+pub export fn cardinal_renderer_get_recovery_stats(renderer: ?*types.CardinalRenderer, out_attempt_count: ?*u32, out_max_attempts: ?*u32) callconv(.c) bool {
     if (renderer == null or out_attempt_count == null or out_max_attempts == null) {
         return false;
     }
