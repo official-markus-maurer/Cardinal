@@ -932,7 +932,8 @@ fn try_submit_secondary(s: *types.VulkanState, record: ?*const fn (c.VkCommandBu
         return false;
     }
 
-    vk_commands.vulkan_mt.cardinal_mt_execute_secondary_command_buffers(primary_cmd, @ptrCast(&secondary_context), 1);
+    const contexts = @as([*]types.CardinalSecondaryCommandContext, @ptrCast(&secondary_context))[0..1];
+    vk_commands.vulkan_mt.cardinal_mt_execute_secondary_command_buffers(primary_cmd, contexts);
     _ = c.vkEndCommandBuffer(primary_cmd);
 
     submit_and_wait(s, primary_cmd);

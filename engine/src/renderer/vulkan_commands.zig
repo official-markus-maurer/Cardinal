@@ -465,8 +465,8 @@ fn vk_record_scene_with_secondary_buffers(s: *types.VulkanState, primary_cmd: c.
         return;
     }
 
-    var secondary_context: c.CardinalSecondaryCommandContext = undefined;
-    if (!c.cardinal_mt_allocate_secondary_command_buffer(@ptrCast(&mt_manager.?.thread_pools[0]), &secondary_context)) {
+    var secondary_context: types.CardinalSecondaryCommandContext = undefined;
+    if (!vulkan_mt.cardinal_mt_allocate_secondary_command_buffer(&mt_manager.?.thread_pools[0], &secondary_context)) {
         log.cardinal_log_warn("[MT] Failed to allocate secondary command buffer, falling back to direct rendering", .{});
         vk_record_scene_direct(s, primary_cmd);
         return;
@@ -490,7 +490,7 @@ fn vk_record_scene_with_secondary_buffers(s: *types.VulkanState, primary_cmd: c.
     inheritance_info.queryFlags = 0;
     inheritance_info.pipelineStatistics = 0;
 
-    if (!c.cardinal_mt_begin_secondary_command_buffer(&secondary_context, &inheritance_info)) {
+    if (!vulkan_mt.cardinal_mt_begin_secondary_command_buffer(&secondary_context, &inheritance_info)) {
         log.cardinal_log_error("[MT] Failed to begin secondary command buffer", .{});
         vk_record_scene_direct(s, primary_cmd);
         return;
@@ -515,13 +515,15 @@ fn vk_record_scene_with_secondary_buffers(s: *types.VulkanState, primary_cmd: c.
 
     vk_record_scene_commands(s, secondary_cmd);
 
-    if (!c.cardinal_mt_end_secondary_command_buffer(&secondary_context)) {
+    if (!vulkan_mt.cardinal_mt_end_secondary_command_buffer(&secondary_context)) {
         log.cardinal_log_error("[MT] Failed to end secondary command buffer", .{});
         vk_record_scene_direct(s, primary_cmd);
         return;
     }
 
-    c.cardinal_mt_execute_secondary_command_buffers(primary_cmd, &secondary_context, 1);
+    // Pass slice of 1 context
+    const contexts = @as([*]types.CardinalSecondaryCommandContext, @ptrCast(&secondary_context))[0..1];
+    vulkan_mt.cardinal_mt_execute_secondary_command_buffers(primary_cmd, contexts);
     log.cardinal_log_debug("[MT] Scene rendered using secondary command buffer", .{});
 }
 
@@ -555,12 +557,12 @@ pub export fn vk_create_commands_sync(s: ?*types.VulkanState) callconv(.c) bool 
     vs.sync.image_available_value = 1;
     vs.sync.render_complete_value = 2;
 
-    var optimal_thread_count = c.cardinal_mt_get_optimal_thread_count();
+    var optimal_thread_count = vulkan_mt.cardinal_mt_get_optimal_thread_count();
     if (optimal_thread_count > 4) {
         optimal_thread_count = 4;
     }
 
-    if (!c.cardinal_mt_subsystem_init(@ptrCast(vs), optimal_thread_count)) {
+    if (!vulkan_mt.cardinal_mt_subsystem_init(@ptrCast(vs), optimal_thread_count)) {
         log.cardinal_log_warn("[INIT] Failed to initialize multi-threading subsystem, continuing without MT support", .{});
     } else {
         log.cardinal_log_info("[INIT] Multi-threading subsystem initialized with {d} threads", .{optimal_thread_count});
@@ -592,7 +594,7 @@ pub export fn vk_destroy_commands_sync(s: ?*c.VulkanState) callconv(.c) void {
     if (s == null) return;
     const vs = @as(*types.VulkanState, @ptrCast(@alignCast(s.?)));
 
-    c.cardinal_mt_subsystem_shutdown();
+    vulkan_mt.cardinal_mt_subsystem_shutdown();
     log.cardinal_log_info("[CLEANUP] Multi-threading subsystem shutdown completed", .{});
 
     if (vs.context.device != null) {
@@ -766,7 +768,7 @@ pub export fn vk_prepare_mesh_shader_rendering(s: ?*c.VulkanState) callconv(.c) 
     if (samplers) |p| c.free(@as(?*anyopaque, @ptrCast(p)));
 }
 
-pub export fn vk_get_mt_command_manager() callconv(.c) ?*types.CardinalMTCommandManager {
+pub fn vk_get_mt_command_manager() ?*types.CardinalMTCommandManager {
     // Note: accessing global g_cardinal_mt_subsystem from vulkan_mt.zig
     
     if (!vulkan_mt.g_cardinal_mt_subsystem.is_running) {
@@ -776,26 +778,26 @@ pub export fn vk_get_mt_command_manager() callconv(.c) ?*types.CardinalMTCommand
     return &vulkan_mt.g_cardinal_mt_subsystem.command_manager;
 }
 
-pub export fn vk_submit_mt_command_task(record_func: ?*const fn(?*anyopaque) callconv(.c) void, user_data: ?*anyopaque, callback: ?*const fn(?*anyopaque, bool) callconv(.c) void) callconv(.c) bool {
-    if (record_func == null) {
-        log.cardinal_log_error("[MT] Invalid record function for command task", .{});
-        return false;
-    }
-
-    if (!vulkan_mt.g_cardinal_mt_subsystem.is_running) {
-        log.cardinal_log_warn("[MT] Multi-threading subsystem not running, executing task synchronously", .{});
-        record_func.?(user_data);
-        if (callback) |cb| {
-            cb(user_data, true);
-        }
-        return true;
-    }
-
-    const task = vulkan_mt.cardinal_mt_create_command_record_task(record_func, user_data, callback);
-    if (task == null) {
-        log.cardinal_log_error("[MT] Failed to create command record task", .{});
-        return false;
-    }
-
-    return vulkan_mt.cardinal_mt_submit_task(task.?);
-}
+// pub export fn vk_submit_mt_command_task(record_func: ?*const fn(?*anyopaque) callconv(.c) void, user_data: ?*anyopaque, callback: ?*const fn(?*anyopaque, bool) callconv(.c) void) callconv(.c) bool {
+//     if (record_func == null) {
+//         log.cardinal_log_error("[MT] Invalid record function for command task", .{});
+//         return false;
+//     }
+// 
+//     if (!vulkan_mt.g_cardinal_mt_subsystem.is_running) {
+//         log.cardinal_log_warn("[MT] Multi-threading subsystem not running, executing task synchronously", .{});
+//         record_func.?(user_data);
+//         if (callback) |cb| {
+//             cb(user_data, true);
+//         }
+//         return true;
+//     }
+// 
+//     const task = vulkan_mt.cardinal_mt_create_command_record_task(record_func, user_data, callback);
+//     if (task == null) {
+//         log.cardinal_log_error("[MT] Failed to create command record task", .{});
+//         return false;
+//     }
+// 
+//     return vulkan_mt.cardinal_mt_submit_task(task.?);
+// }

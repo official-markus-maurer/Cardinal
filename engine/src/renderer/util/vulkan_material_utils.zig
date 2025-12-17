@@ -6,7 +6,6 @@ const c = @cImport({
     @cInclude("stdlib.h");
     @cInclude("string.h");
     @cInclude("vulkan/vulkan.h");
-    @cInclude("cardinal/renderer/vulkan_texture_manager.h");
 });
 
 fn set_default_material_properties(pushConstants: *types.PBRPushConstants, hasTextures: bool) void {
@@ -80,7 +79,7 @@ fn resolve_texture_index(textureIndex: u32, hasTextures: bool, textureCount: u32
     return c.UINT32_MAX;
 }
 
-fn set_texture_indices(pushConstants: *types.PBRPushConstants, material: *const c.CardinalMaterial, hasTextures: bool, textureCount: u32, hasPlaceholder: bool) void {
+fn set_texture_indices(pushConstants: *types.PBRPushConstants, material: *const types.CardinalMaterial, hasTextures: bool, textureCount: u32, hasPlaceholder: bool) void {
     pushConstants.albedoTextureIndex = resolve_texture_index(material.albedo_texture, hasTextures, textureCount, hasPlaceholder);
     pushConstants.normalTextureIndex = resolve_texture_index(material.normal_texture, hasTextures, textureCount, hasPlaceholder);
     pushConstants.metallicRoughnessTextureIndex = resolve_texture_index(material.metallic_roughness_texture, hasTextures, textureCount, hasPlaceholder);
@@ -88,7 +87,7 @@ fn set_texture_indices(pushConstants: *types.PBRPushConstants, material: *const 
     pushConstants.emissiveTextureIndex = resolve_texture_index(material.emissive_texture, hasTextures, textureCount, hasPlaceholder);
 }
 
-fn set_texture_transforms(pushConstants: *types.PBRPushConstants, material: *const c.CardinalMaterial) void {
+fn set_texture_transforms(pushConstants: *types.PBRPushConstants, material: *const types.CardinalMaterial) void {
     // Albedo
     @memcpy(pushConstants.albedoTransform.offset[0..2], material.albedo_transform.offset[0..2]);
     @memcpy(pushConstants.albedoTransform.scale[0..2], material.albedo_transform.scale[0..2]);
@@ -115,7 +114,7 @@ fn set_texture_transforms(pushConstants: *types.PBRPushConstants, material: *con
     pushConstants.emissiveTransform.rotation = material.emissive_transform.rotation;
 }
 
-fn set_material_properties(pushConstants: *types.PBRPushConstants, material: *const c.CardinalMaterial) void {
+fn set_material_properties(pushConstants: *types.PBRPushConstants, material: *const types.CardinalMaterial) void {
     @memcpy(pushConstants.albedoFactor[0..3], material.albedo_factor[0..3]);
     pushConstants.metallicFactor = material.metallic_factor;
     @memcpy(pushConstants.emissiveFactor[0..3], material.emissive_factor[0..3]);
@@ -125,16 +124,16 @@ fn set_material_properties(pushConstants: *types.PBRPushConstants, material: *co
     
     // Pack flags
     pushConstants.flags = 0;
-    pushConstants.flags |= (material.alpha_mode & 3); // Bits 0-1: Alpha Mode
+    pushConstants.flags |= (@as(u32, @intCast(@intFromEnum(material.alpha_mode))) & 3); // Bits 0-1: Alpha Mode
     // Skeleton bit (bit 2) will be set in vk_pbr_render
     // Descriptor indexing bit (bit 3) is set below
     
     pushConstants.alphaCutoff = material.alpha_cutoff;
 }
 
-pub export fn vk_material_setup_push_constants(pushConstants: ?*types.PBRPushConstants, mesh: ?*const c.CardinalMesh,
-                                      scene: ?*const c.CardinalScene,
-                                      textureManager: ?*const c.VulkanTextureManager) callconv(.c) void {
+pub export fn vk_material_setup_push_constants(pushConstants: ?*types.PBRPushConstants, mesh: ?*const types.CardinalMesh,
+                                      scene: ?*const types.CardinalScene,
+                                      textureManager: ?*const types.VulkanTextureManager) callconv(.c) void {
     if (pushConstants == null or mesh == null or scene == null) {
         return;
     }
@@ -153,11 +152,11 @@ pub export fn vk_material_setup_push_constants(pushConstants: ?*types.PBRPushCon
 
     // Set material properties for this mesh
     if (m.material_index < s.material_count) {
-        const material = &s.materials[m.material_index];
+        const material = &s.materials.?[m.material_index];
 
-        set_material_properties(pc, @as(*const c.CardinalMaterial, @ptrCast(material)));
-        set_texture_indices(pc, @as(*const c.CardinalMaterial, @ptrCast(material)), hasTextures, textureCount, hasPlaceholder);
-        set_texture_transforms(pc, @as(*const c.CardinalMaterial, @ptrCast(material)));
+        set_material_properties(pc, material);
+        set_texture_indices(pc, material, hasTextures, textureCount, hasPlaceholder);
+        set_texture_transforms(pc, material);
 
         // Set descriptor indexing flag
         if (hasTextures) {

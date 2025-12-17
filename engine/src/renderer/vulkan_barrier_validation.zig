@@ -315,7 +315,7 @@ pub export fn cardinal_barrier_validation_validate_pipeline_barrier(dependency_i
     return valid;
 }
 
-pub export fn cardinal_barrier_validation_validate_secondary_recording(context: ?*const c.CardinalSecondaryCommandContext) callconv(.c) bool {
+pub fn cardinal_barrier_validation_validate_secondary_recording(context: ?*const types.CardinalSecondaryCommandContext) bool {
     if (!g_validation_initialized or !g_validation_context.validation_enabled or context == null) {
         return true;
     }

@@ -39,11 +39,11 @@ pub export fn vk_buffer_find_memory_type(physicalDevice: c.VkPhysicalDevice, typ
     return c.UINT32_MAX;
 }
 
-pub export fn vk_buffer_create_with_staging(allocator: ?*types.VulkanAllocator, device: c.VkDevice,
+pub fn vk_buffer_create_with_staging(allocator: ?*types.VulkanAllocator, device: c.VkDevice,
                                             commandPool: c.VkCommandPool, graphicsQueue: c.VkQueue,
                                             data: ?*const anyopaque, size: c.VkDeviceSize,
                                             usage: c.VkBufferUsageFlags, buffer: ?*c.VkBuffer,
-                                            bufferMemory: ?*c.VkDeviceMemory, vulkan_state: ?*types.VulkanState) callconv(.c) bool {
+                                            bufferMemory: ?*c.VkDeviceMemory, vulkan_state: ?*types.VulkanState) bool {
     if (data == null or size == 0 or allocator == null or buffer == null or bufferMemory == null) {
         log.cardinal_log_error("Invalid parameters for staging buffer creation", .{});
         return false;

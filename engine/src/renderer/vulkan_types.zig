@@ -667,12 +667,12 @@ pub const VulkanState = extern struct {
 pub const CARDINAL_MAX_MT_THREADS = 8;
 pub const CARDINAL_MAX_SECONDARY_COMMAND_BUFFERS = 16;
 
-pub const cardinal_thread_handle_t = if (builtin.os.tag == .windows) c.HANDLE else c.pthread_t;
-pub const cardinal_thread_id_t = if (builtin.os.tag == .windows) c.DWORD else c.pthread_t;
-pub const cardinal_mutex_t = if (builtin.os.tag == .windows) c.CRITICAL_SECTION else c.pthread_mutex_t;
-pub const cardinal_cond_t = if (builtin.os.tag == .windows) c.CONDITION_VARIABLE else c.pthread_cond_t;
+pub const cardinal_thread_handle_t = std.Thread;
+pub const cardinal_thread_id_t = std.Thread.Id;
+pub const cardinal_mutex_t = std.Thread.Mutex;
+pub const cardinal_cond_t = std.Thread.Condition;
 
-pub const CardinalThreadCommandPool = extern struct {
+pub const CardinalThreadCommandPool = struct {
     primary_pool: c.VkCommandPool,
     secondary_pool: c.VkCommandPool,
     secondary_buffers: ?[*]c.VkCommandBuffer,
@@ -682,7 +682,7 @@ pub const CardinalThreadCommandPool = extern struct {
     is_active: bool,
 };
 
-pub const CardinalMTCommandManager = extern struct {
+pub const CardinalMTCommandManager = struct {
     vulkan_state: ?*VulkanState,
     thread_pools: [CARDINAL_MAX_MT_THREADS]CardinalThreadCommandPool,
     active_thread_count: u32,
@@ -690,14 +690,14 @@ pub const CardinalMTCommandManager = extern struct {
     is_initialized: bool,
 };
 
-pub const CardinalSecondaryCommandContext = extern struct {
+pub const CardinalSecondaryCommandContext = struct {
     command_buffer: c.VkCommandBuffer,
     inheritance: c.VkCommandBufferInheritanceInfo,
     thread_index: u32,
     is_recording: bool,
 };
 
-pub const CardinalMTTaskType = enum(c_int) {
+pub const CardinalMTTaskType = enum(u32) {
     CARDINAL_MT_TASK_TEXTURE_LOAD = 0,
     CARDINAL_MT_TASK_MESH_LOAD = 1,
     CARDINAL_MT_TASK_MATERIAL_LOAD = 2,
@@ -705,17 +705,17 @@ pub const CardinalMTTaskType = enum(c_int) {
     CARDINAL_MT_TASK_COUNT = 4,
 };
 
-pub const CardinalMTTask = extern struct {
+pub const CardinalMTTask = struct {
     type: CardinalMTTaskType,
     data: ?*anyopaque,
-    execute_func: ?*const fn(?*anyopaque) callconv(.c) void,
-    callback_func: ?*const fn(?*anyopaque, bool) callconv(.c) void,
+    execute_func: ?*const fn(?*anyopaque) void,
+    callback_func: ?*const fn(?*anyopaque, bool) void,
     is_completed: bool,
     success: bool,
     next: ?*CardinalMTTask,
 };
 
-pub const CardinalMTTaskQueue = extern struct {
+pub const CardinalMTTaskQueue = struct {
     head: ?*CardinalMTTask,
     tail: ?*CardinalMTTask,
     queue_mutex: cardinal_mutex_t,
@@ -723,11 +723,11 @@ pub const CardinalMTTaskQueue = extern struct {
     task_count: u32,
 };
 
-pub const CardinalMTSubsystem = extern struct {
+pub const CardinalMTSubsystem = struct {
     command_manager: CardinalMTCommandManager,
     pending_queue: CardinalMTTaskQueue,
     completed_queue: CardinalMTTaskQueue,
-    worker_threads: [CARDINAL_MAX_MT_THREADS]cardinal_thread_handle_t,
+    worker_threads: [CARDINAL_MAX_MT_THREADS]?cardinal_thread_handle_t,
     worker_thread_count: u32,
     is_running: bool,
     subsystem_mutex: cardinal_mutex_t,

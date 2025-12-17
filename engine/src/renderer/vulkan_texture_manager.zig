@@ -154,7 +154,7 @@ fn create_sampler_from_config(device: c.VkDevice, config: *const scene.CardinalS
 
 // Public API Implementation
 
-pub export fn vk_texture_manager_init(manager: *types.VulkanTextureManager, config: ?*const types.VulkanTextureManagerConfig) callconv(.c) bool {
+pub fn vk_texture_manager_init(manager: *types.VulkanTextureManager, config: ?*const types.VulkanTextureManagerConfig) bool {
     if (config == null) {
         log.cardinal_log_error("Invalid parameters for texture manager initialization", .{});
         return false;
@@ -204,7 +204,7 @@ pub export fn vk_texture_manager_init(manager: *types.VulkanTextureManager, conf
     return true;
 }
 
-pub export fn vk_texture_manager_destroy(manager: *types.VulkanTextureManager) callconv(.c) void {
+pub fn vk_texture_manager_destroy(manager: *types.VulkanTextureManager) void {
     // Destroy all textures
     var i: u32 = 0;
     while (i < manager.textureCount) : (i += 1) {
@@ -259,7 +259,7 @@ fn load_single_scene_texture(manager: *types.VulkanTextureManager, scene_data: *
     }
 }
 
-pub export fn vk_texture_manager_load_scene_textures(manager: *types.VulkanTextureManager, scene_data: ?*const scene.CardinalScene) callconv(.c) bool {
+pub fn vk_texture_manager_load_scene_textures(manager: *types.VulkanTextureManager, scene_data: ?*const scene.CardinalScene) bool {
     if (scene_data == null) {
         log.cardinal_log_error("Invalid parameters for scene texture loading", .{});
         return false;
@@ -318,7 +318,7 @@ pub export fn vk_texture_manager_load_scene_textures(manager: *types.VulkanTextu
     return true;
 }
 
-pub export fn vk_texture_manager_load_texture(manager: *types.VulkanTextureManager, texture: ?*const scene.CardinalTexture, out_index: ?*u32, out_timeline_value: *u64) callconv(.c) bool {
+pub fn vk_texture_manager_load_texture(manager: *types.VulkanTextureManager, texture: ?*const scene.CardinalTexture, out_index: ?*u32, out_timeline_value: *u64) bool {
     if (texture == null or out_index == null) {
         log.cardinal_log_error("Invalid parameters for texture loading", .{});
         return false;
@@ -383,7 +383,7 @@ pub export fn vk_texture_manager_load_texture(manager: *types.VulkanTextureManag
     return true;
 }
 
-pub export fn vk_texture_manager_create_placeholder(manager: *types.VulkanTextureManager, out_index: ?*u32) callconv(.c) bool {
+pub fn vk_texture_manager_create_placeholder(manager: *types.VulkanTextureManager, out_index: ?*u32) bool {
     if (out_index == null) {
         log.cardinal_log_error("Invalid parameters for placeholder creation", .{});
         return false;
@@ -433,22 +433,22 @@ pub export fn vk_texture_manager_create_placeholder(manager: *types.VulkanTextur
     return true;
 }
 
-pub export fn vk_texture_manager_get_texture(manager: *const types.VulkanTextureManager, index: u32) callconv(.c) ?*const types.VulkanManagedTexture {
+pub fn vk_texture_manager_get_texture(manager: *const types.VulkanTextureManager, index: u32) ?*const types.VulkanManagedTexture {
     if (index >= manager.textureCount) {
         return null;
     }
     return &manager.textures[index];
 }
 
-pub export fn vk_texture_manager_get_default_sampler(manager: ?*const types.VulkanTextureManager) callconv(.c) c.VkSampler {
+pub fn vk_texture_manager_get_default_sampler(manager: ?*const types.VulkanTextureManager) c.VkSampler {
     return if (manager) |m| m.defaultSampler else null;
 }
 
-pub export fn vk_texture_manager_get_texture_count(manager: ?*const types.VulkanTextureManager) callconv(.c) u32 {
+pub fn vk_texture_manager_get_texture_count(manager: ?*const types.VulkanTextureManager) u32 {
     return if (manager) |m| m.textureCount else 0;
 }
 
-pub export fn vk_texture_manager_get_image_views(manager: *const types.VulkanTextureManager, out_views: [*c]c.VkImageView, max_views: u32) callconv(.c) u32 {
+pub fn vk_texture_manager_get_image_views(manager: *const types.VulkanTextureManager, out_views: [*c]c.VkImageView, max_views: u32) u32 {
     if (out_views == null or max_views == 0) {
         return 0;
     }
@@ -463,7 +463,7 @@ pub export fn vk_texture_manager_get_image_views(manager: *const types.VulkanTex
     return copy_count;
 }
 
-pub export fn vk_texture_manager_clear_textures(manager: *types.VulkanTextureManager) callconv(.c) void {
+pub fn vk_texture_manager_clear_textures(manager: *types.VulkanTextureManager) void {
     // Destroy all textures except placeholder (if it exists)
     const start_index: u32 = if (manager.hasPlaceholder) 1 else 0;
 

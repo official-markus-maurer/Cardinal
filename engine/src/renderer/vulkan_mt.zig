@@ -4,134 +4,90 @@ const memory = @import("../core/memory.zig");
 const log = @import("../core/log.zig");
 const types = @import("vulkan_types.zig");
 const c = @import("vulkan_c.zig").c;
+const texture_loader = @import("../assets/texture_loader.zig");
+const gltf_loader = @import("../assets/gltf_loader.zig");
+const scene = @import("../assets/scene.zig");
+const ref_counting = @import("../core/ref_counting.zig");
 
 // Global subsystem instance
-pub export var g_cardinal_mt_subsystem: types.CardinalMTSubsystem = std.mem.zeroes(types.CardinalMTSubsystem);
+pub var g_cardinal_mt_subsystem: types.CardinalMTSubsystem = std.mem.zeroes(types.CardinalMTSubsystem);
+
+// Task context structures
+const TextureLoadContext = struct {
+    file_path: [:0]u8,
+    // We store the resulting resource here.
+    // If successful, this will be non-null.
+    result_resource: ?*ref_counting.CardinalRefCountedResource,
+};
+
+const MeshLoadContext = struct {
+    file_path: [:0]u8,
+    // We store the resulting scene here.
+    result_scene: ?*scene.CardinalScene,
+};
 
 // === Platform-specific threading utilities ===
 
-pub export fn cardinal_mt_mutex_init(mutex: *types.cardinal_mutex_t) callconv(.c) bool {
-    if (builtin.os.tag == .windows) {
-        c.InitializeCriticalSection(mutex);
-        return true;
-    } else {
-        return c.pthread_mutex_init(mutex, null) == 0;
-    }
+pub fn cardinal_mt_mutex_init(mutex: *types.cardinal_mutex_t) bool {
+    mutex.* = .{};
+    return true;
 }
 
-pub export fn cardinal_mt_mutex_destroy(mutex: *types.cardinal_mutex_t) callconv(.c) void {
-    if (builtin.os.tag == .windows) {
-        c.DeleteCriticalSection(mutex);
-    } else {
-        _ = c.pthread_mutex_destroy(mutex);
-    }
+pub fn cardinal_mt_mutex_destroy(mutex: *types.cardinal_mutex_t) void {
+    mutex.* = undefined;
 }
 
-pub export fn cardinal_mt_mutex_lock(mutex: *types.cardinal_mutex_t) callconv(.c) void {
-    if (builtin.os.tag == .windows) {
-        c.EnterCriticalSection(mutex);
-    } else {
-        _ = c.pthread_mutex_lock(mutex);
-    }
+pub fn cardinal_mt_mutex_lock(mutex: *types.cardinal_mutex_t) void {
+    mutex.lock();
 }
 
-pub export fn cardinal_mt_mutex_unlock(mutex: *types.cardinal_mutex_t) callconv(.c) void {
-    if (builtin.os.tag == .windows) {
-        c.LeaveCriticalSection(mutex);
-    } else {
-        _ = c.pthread_mutex_unlock(mutex);
-    }
+pub fn cardinal_mt_mutex_unlock(mutex: *types.cardinal_mutex_t) void {
+    mutex.unlock();
 }
 
-pub export fn cardinal_mt_cond_init(cond: *types.cardinal_cond_t) callconv(.c) bool {
-    if (builtin.os.tag == .windows) {
-        c.InitializeConditionVariable(cond);
-        return true;
-    } else {
-        return c.pthread_cond_init(cond, null) == 0;
-    }
+pub fn cardinal_mt_cond_init(cond: *types.cardinal_cond_t) bool {
+    cond.* = .{};
+    return true;
 }
 
-pub export fn cardinal_mt_cond_destroy(cond: *types.cardinal_cond_t) callconv(.c) void {
-    if (builtin.os.tag == .windows) {
-        // No destroy needed for CONDITION_VARIABLE on Windows
-    } else {
-        _ = c.pthread_cond_destroy(cond);
-    }
+pub fn cardinal_mt_cond_destroy(cond: *types.cardinal_cond_t) void {
+    cond.* = undefined;
 }
 
-pub export fn cardinal_mt_cond_wait(cond: *types.cardinal_cond_t, mutex: *types.cardinal_mutex_t) callconv(.c) void {
-    if (builtin.os.tag == .windows) {
-        _ = c.SleepConditionVariableCS(cond, mutex, c.INFINITE);
-    } else {
-        _ = c.pthread_cond_wait(cond, mutex);
-    }
+pub fn cardinal_mt_cond_wait(cond: *types.cardinal_cond_t, mutex: *types.cardinal_mutex_t) void {
+    cond.wait(mutex);
 }
 
-pub export fn cardinal_mt_cond_signal(cond: *types.cardinal_cond_t) callconv(.c) void {
-    if (builtin.os.tag == .windows) {
-        c.WakeConditionVariable(cond);
-    } else {
-        _ = c.pthread_cond_signal(cond);
-    }
+pub fn cardinal_mt_cond_signal(cond: *types.cardinal_cond_t) void {
+    cond.signal();
 }
 
-pub export fn cardinal_mt_cond_broadcast(cond: *types.cardinal_cond_t) callconv(.c) void {
-    if (builtin.os.tag == .windows) {
-        c.WakeAllConditionVariable(cond);
-    } else {
-        _ = c.pthread_cond_broadcast(cond);
-    }
+pub fn cardinal_mt_cond_broadcast(cond: *types.cardinal_cond_t) void {
+    cond.broadcast();
 }
 
-pub export fn cardinal_mt_cond_wait_timeout(cond: *types.cardinal_cond_t, mutex: *types.cardinal_mutex_t, timeout_ms: u32) callconv(.c) bool {
-    if (builtin.os.tag == .windows) {
-        return c.SleepConditionVariableCS(cond, mutex, timeout_ms) != 0;
-    } else {
-        var ts: c.timespec = undefined;
-        _ = c.clock_gettime(c.CLOCK_REALTIME, &ts);
-        ts.tv_sec += @intCast(timeout_ms / 1000);
-        ts.tv_nsec += @intCast((timeout_ms % 1000) * 1000000);
-        if (ts.tv_nsec >= 1000000000) {
-            ts.tv_sec += 1;
-            ts.tv_nsec -= 1000000000;
-        }
-        return c.pthread_cond_timedwait(cond, mutex, &ts) == 0;
-    }
+pub fn cardinal_mt_cond_wait_timeout(cond: *types.cardinal_cond_t, mutex: *types.cardinal_mutex_t, timeout_ms: u32) bool {
+    cond.timedWait(mutex, @as(u64, timeout_ms) * 1_000_000) catch return false;
+    return true;
 }
 
-pub export fn cardinal_mt_get_current_thread_id() callconv(.c) types.cardinal_thread_id_t {
-    if (builtin.os.tag == .windows) {
-        return c.GetCurrentThreadId();
-    } else {
-        return c.pthread_self();
-    }
+pub fn cardinal_mt_get_current_thread_id() types.cardinal_thread_id_t {
+    return std.Thread.getCurrentId();
 }
 
-pub export fn cardinal_mt_thread_ids_equal(thread1: types.cardinal_thread_id_t, thread2: types.cardinal_thread_id_t) callconv(.c) bool {
-    if (builtin.os.tag == .windows) {
-        return thread1 == thread2;
-    } else {
-        return c.pthread_equal(thread1, thread2) != 0;
-    }
+pub fn cardinal_mt_thread_ids_equal(thread1: types.cardinal_thread_id_t, thread2: types.cardinal_thread_id_t) bool {
+    return thread1 == thread2;
 }
 
-pub export fn cardinal_mt_get_optimal_thread_count() callconv(.c) u32 {
-    if (builtin.os.tag == .windows) {
-        var sys_info: c.SYSTEM_INFO = undefined;
-        c.GetSystemInfo(&sys_info);
-        return sys_info.dwNumberOfProcessors;
-    } else {
-        const nprocs = c.sysconf(c._SC_NPROCESSORS_ONLN);
-        return if (nprocs > 0) @intCast(nprocs) else 4;
-    }
+pub fn cardinal_mt_get_optimal_thread_count() u32 {
+    return @intCast(std.Thread.getCpuCount() catch 4);
 }
 
 // Worker thread function
-fn cardinal_mt_worker_thread_func(arg: ?*anyopaque) callconv(if (builtin.os.tag == .windows) .winapi else .C) if (builtin.os.tag == .windows) c_uint else ?*anyopaque {
+fn cardinal_mt_worker_thread_func(arg: ?*anyopaque) void {
     _ = arg;
     const thread_id = cardinal_mt_get_current_thread_id();
-    log.cardinal_log_debug("[MT] Worker thread started (ID: {d})", .{thread_id});
+    log.cardinal_log_debug("[MT] Worker thread started (ID: {any})", .{thread_id});
 
     while (g_cardinal_mt_subsystem.is_running) {
         const task = cardinal_mt_task_queue_pop(&g_cardinal_mt_subsystem.pending_queue);
@@ -153,28 +109,16 @@ fn cardinal_mt_worker_thread_func(arg: ?*anyopaque) callconv(if (builtin.os.tag 
         }
     }
 
-    log.cardinal_log_debug("[MT] Worker thread stopping (ID: {d})", .{thread_id});
-    return if (builtin.os.tag == .windows) 0 else null;
+    log.cardinal_log_debug("[MT] Worker thread stopping (ID: {any})", .{thread_id});
 }
 
-fn cardinal_mt_create_thread(thread: *types.cardinal_thread_handle_t, arg: ?*anyopaque) bool {
-    if (builtin.os.tag == .windows) {
-        // Use CreateThread instead of _beginthreadex due to missing process.h
-        const handle = c.CreateThread(null, 0, cardinal_mt_worker_thread_func, arg, 0, null);
-        thread.* = handle;
-        return thread.* != null;
-    } else {
-        return c.pthread_create(thread, null, cardinal_mt_worker_thread_func, arg) == 0;
-    }
+fn cardinal_mt_create_thread(thread: *?types.cardinal_thread_handle_t, arg: ?*anyopaque) bool {
+    thread.* = std.Thread.spawn(.{}, cardinal_mt_worker_thread_func, .{arg}) catch return false;
+    return true;
 }
 
 fn cardinal_mt_join_thread(thread: types.cardinal_thread_handle_t) void {
-    if (builtin.os.tag == .windows) {
-        _ = c.WaitForSingleObject(thread, c.INFINITE);
-        _ = c.CloseHandle(thread);
-    } else {
-        _ = c.pthread_join(thread, null);
-    }
+    thread.join();
 }
 
 // === Task Queue Management ===
@@ -206,11 +150,26 @@ fn cardinal_mt_task_queue_shutdown(queue: *types.CardinalMTTaskQueue) void {
     while (current != null) {
         const curr = current;
         const next = curr.?.*.next;
-        // Free data if needed (similar to process_completed_tasks)
-        if (curr.?.*.data != null) {
-             if (curr.?.*.type == types.CardinalMTTaskType.CARDINAL_MT_TASK_TEXTURE_LOAD or
-                curr.?.*.type == types.CardinalMTTaskType.CARDINAL_MT_TASK_MESH_LOAD) {
-                memory.cardinal_free(allocator, curr.?.*.data);
+        
+        // Free data if needed
+        if (curr.?.*.data) |data| {
+             if (curr.?.*.type == types.CardinalMTTaskType.CARDINAL_MT_TASK_TEXTURE_LOAD) {
+                const ctx: *TextureLoadContext = @ptrCast(@alignCast(data));
+                memory.cardinal_free(allocator, ctx.file_path.ptr);
+                // Note: result_resource is ref counted, should be released if not picked up?
+                // But this is shutdown, so we should release.
+                if (ctx.result_resource) |res| {
+                    ref_counting.cardinal_ref_release(res);
+                }
+                memory.cardinal_free(allocator, ctx);
+            } else if (curr.?.*.type == types.CardinalMTTaskType.CARDINAL_MT_TASK_MESH_LOAD) {
+                const ctx: *MeshLoadContext = @ptrCast(@alignCast(data));
+                memory.cardinal_free(allocator, ctx.file_path.ptr);
+                if (ctx.result_scene) |s| {
+                    scene.cardinal_scene_destroy(s);
+                    memory.cardinal_free(allocator, s);
+                }
+                memory.cardinal_free(allocator, ctx);
             }
         }
         memory.cardinal_free(allocator, curr);
@@ -284,7 +243,7 @@ fn cardinal_mt_task_queue_try_pop(queue: *types.CardinalMTTaskQueue) ?*types.Car
 
 // === Command Buffer Management ===
 
-pub export fn cardinal_mt_command_manager_init(manager: *types.CardinalMTCommandManager, vulkan_state: ?*types.VulkanState) callconv(.c) bool {
+pub fn cardinal_mt_command_manager_init(manager: *types.CardinalMTCommandManager, vulkan_state: ?*types.VulkanState) bool {
     if (vulkan_state == null) {
         log.cardinal_log_error("[MT] Invalid parameters for command manager initialization", .{});
         return false;
@@ -315,7 +274,7 @@ pub export fn cardinal_mt_command_manager_init(manager: *types.CardinalMTCommand
     return true;
 }
 
-pub export fn cardinal_mt_command_manager_shutdown(manager: *types.CardinalMTCommandManager) callconv(.c) void {
+pub fn cardinal_mt_command_manager_shutdown(manager: *types.CardinalMTCommandManager) void {
     if (!manager.is_initialized) return;
 
     cardinal_mt_mutex_lock(&manager.pool_mutex);
@@ -353,7 +312,7 @@ pub export fn cardinal_mt_command_manager_shutdown(manager: *types.CardinalMTCom
     log.cardinal_log_info("[MT] Command manager shutdown completed", .{});
 }
 
-pub export fn cardinal_mt_get_thread_command_pool(manager: *types.CardinalMTCommandManager) callconv(.c) ?*types.CardinalThreadCommandPool {
+pub fn cardinal_mt_get_thread_command_pool(manager: *types.CardinalMTCommandManager) ?*types.CardinalThreadCommandPool {
     if (!manager.is_initialized) return null;
 
     const thread_id = cardinal_mt_get_current_thread_id();
@@ -458,7 +417,7 @@ pub export fn cardinal_mt_get_thread_command_pool(manager: *types.CardinalMTComm
     return pool;
 }
 
-pub export fn cardinal_mt_allocate_secondary_command_buffer(pool: *types.CardinalThreadCommandPool, context: *types.CardinalSecondaryCommandContext) callconv(.c) bool {
+pub fn cardinal_mt_allocate_secondary_command_buffer(pool: *types.CardinalThreadCommandPool, context: *types.CardinalSecondaryCommandContext) bool {
     if (pool.next_secondary_index >= pool.secondary_buffer_count) {
         log.cardinal_log_warn("[MT] Thread command pool exhausted", .{});
         return false;
@@ -473,15 +432,12 @@ pub export fn cardinal_mt_allocate_secondary_command_buffer(pool: *types.Cardina
     pool.next_secondary_index += 1;
     context.is_recording = false;
     
-    // We can't easily get thread index here without searching manager, 
-    // but context.thread_index might not be critical or used for logging only.
-    // For now set to 0 or we need to pass manager.
     context.thread_index = 0; 
 
     return true;
 }
 
-pub export fn cardinal_mt_begin_secondary_command_buffer(context: *types.CardinalSecondaryCommandContext, inheritance_info: *const c.VkCommandBufferInheritanceInfo) callconv(.c) bool {
+pub fn cardinal_mt_begin_secondary_command_buffer(context: *types.CardinalSecondaryCommandContext, inheritance_info: *const c.VkCommandBufferInheritanceInfo) bool {
     var begin_info = c.VkCommandBufferBeginInfo{
         .sType = c.VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO,
         .pNext = null,
@@ -499,7 +455,7 @@ pub export fn cardinal_mt_begin_secondary_command_buffer(context: *types.Cardina
     return true;
 }
 
-pub export fn cardinal_mt_end_secondary_command_buffer(context: *types.CardinalSecondaryCommandContext) callconv(.c) bool {
+pub fn cardinal_mt_end_secondary_command_buffer(context: *types.CardinalSecondaryCommandContext) bool {
     if (!context.is_recording) return false;
 
     if (c.vkEndCommandBuffer(context.command_buffer) != c.VK_SUCCESS) {
@@ -511,13 +467,10 @@ pub export fn cardinal_mt_end_secondary_command_buffer(context: *types.CardinalS
     return true;
 }
 
-pub export fn cardinal_mt_execute_secondary_command_buffers(primary_cmd: c.VkCommandBuffer, secondary_contexts: [*]types.CardinalSecondaryCommandContext, count: u32) callconv(.c) void {
-    if (count == 0) return;
+pub fn cardinal_mt_execute_secondary_command_buffers(primary_cmd: c.VkCommandBuffer, secondary_contexts: []types.CardinalSecondaryCommandContext) void {
+    if (secondary_contexts.len == 0) return;
 
-    // We need to collect VkCommandBuffers into an array
-    // Since this is called frequently, avoiding allocation would be nice.
-    // But we need a contiguous array of VkCommandBuffer.
-    // Max secondary buffers is small (16 per thread * 8 threads = 128 max total).
+    const count = @as(u32, @intCast(secondary_contexts.len));
     
     // Stack allocation for typical case
     var stack_buffers: [64]c.VkCommandBuffer = undefined;
@@ -547,7 +500,7 @@ pub export fn cardinal_mt_execute_secondary_command_buffers(primary_cmd: c.VkCom
     }
 }
 
-pub export fn cardinal_mt_wait_task(task: *types.CardinalMTTask) callconv(.c) void {
+pub fn cardinal_mt_wait_task(task: *types.CardinalMTTask) void {
     while (!task.is_completed) {
         if (builtin.os.tag == .windows) {
             c.Sleep(1);
@@ -559,7 +512,7 @@ pub export fn cardinal_mt_wait_task(task: *types.CardinalMTTask) callconv(.c) vo
 
 // === Multi-Threading Subsystem Functions ===
 
-pub export fn cardinal_mt_subsystem_init(vulkan_state: ?*types.VulkanState, worker_thread_count_in: u32) callconv(.c) bool {
+pub fn cardinal_mt_subsystem_init(vulkan_state: ?*types.VulkanState, worker_thread_count_in: u32) bool {
     if (g_cardinal_mt_subsystem.is_running) {
         log.cardinal_log_warn("[MT] Subsystem already initialized", .{});
         return true;
@@ -619,7 +572,9 @@ pub export fn cardinal_mt_subsystem_init(vulkan_state: ?*types.VulkanState, work
 
             var j: u32 = 0;
             while (j < i) : (j += 1) {
-                cardinal_mt_join_thread(g_cardinal_mt_subsystem.worker_threads[j]);
+                if (g_cardinal_mt_subsystem.worker_threads[j]) |thread| {
+                    cardinal_mt_join_thread(thread);
+                }
             }
 
             cardinal_mt_mutex_destroy(&g_cardinal_mt_subsystem.subsystem_mutex);
@@ -634,7 +589,7 @@ pub export fn cardinal_mt_subsystem_init(vulkan_state: ?*types.VulkanState, work
     return true;
 }
 
-pub export fn cardinal_mt_subsystem_shutdown() callconv(.c) void {
+pub fn cardinal_mt_subsystem_shutdown() void {
     if (!g_cardinal_mt_subsystem.is_running) return;
 
     log.cardinal_log_info("[MT] Shutting down subsystem...", .{});
@@ -644,7 +599,9 @@ pub export fn cardinal_mt_subsystem_shutdown() callconv(.c) void {
 
     var i: u32 = 0;
     while (i < g_cardinal_mt_subsystem.worker_thread_count) : (i += 1) {
-        cardinal_mt_join_thread(g_cardinal_mt_subsystem.worker_threads[i]);
+        if (g_cardinal_mt_subsystem.worker_threads[i]) |thread| {
+            cardinal_mt_join_thread(thread);
+        }
     }
 
     cardinal_mt_mutex_destroy(&g_cardinal_mt_subsystem.subsystem_mutex);
@@ -657,7 +614,7 @@ pub export fn cardinal_mt_subsystem_shutdown() callconv(.c) void {
     log.cardinal_log_info("[MT] Subsystem shutdown completed", .{});
 }
 
-pub export fn cardinal_mt_submit_task(task: *types.CardinalMTTask) callconv(.c) bool {
+pub fn cardinal_mt_submit_task(task: *types.CardinalMTTask) bool {
     if (!g_cardinal_mt_subsystem.is_running) {
         log.cardinal_log_error("[MT] Invalid task or subsystem not running", .{});
         return false;
@@ -667,7 +624,7 @@ pub export fn cardinal_mt_submit_task(task: *types.CardinalMTTask) callconv(.c) 
     return true;
 }
 
-pub export fn cardinal_mt_process_completed_tasks(max_tasks: u32) callconv(.c) void {
+pub fn cardinal_mt_process_completed_tasks(max_tasks: u32) void {
     if (!g_cardinal_mt_subsystem.is_running) return;
 
     var processed: u32 = 0;
@@ -683,9 +640,27 @@ pub export fn cardinal_mt_process_completed_tasks(max_tasks: u32) callconv(.c) v
         }
 
         if (t.data != null) {
-            if (t.type == types.CardinalMTTaskType.CARDINAL_MT_TASK_TEXTURE_LOAD or
-                t.type == types.CardinalMTTaskType.CARDINAL_MT_TASK_MESH_LOAD) {
-                memory.cardinal_free(allocator, t.data);
+            if (t.type == types.CardinalMTTaskType.CARDINAL_MT_TASK_TEXTURE_LOAD) {
+                const ctx: *TextureLoadContext = @ptrCast(@alignCast(t.data));
+                memory.cardinal_free(allocator, ctx.file_path.ptr);
+                // Note: result_resource is ref counted, so if callback didn't take it (and inc ref),
+                // we should release it here?
+                // The callback gets the context. If it wants to keep the resource, it should have used it.
+                // But ref_acquire increments ref count.
+                // So here we should release our reference.
+                if (ctx.result_resource) |res| {
+                    ref_counting.cardinal_ref_release(res);
+                }
+                memory.cardinal_free(allocator, ctx);
+            } else if (t.type == types.CardinalMTTaskType.CARDINAL_MT_TASK_MESH_LOAD) {
+                const ctx: *MeshLoadContext = @ptrCast(@alignCast(t.data));
+                memory.cardinal_free(allocator, ctx.file_path.ptr);
+                // Similar logic for scene
+                if (ctx.result_scene) |s| {
+                    scene.cardinal_scene_destroy(s);
+                    memory.cardinal_free(allocator, s);
+                }
+                memory.cardinal_free(allocator, ctx);
             }
         }
 
@@ -694,8 +669,26 @@ pub export fn cardinal_mt_process_completed_tasks(max_tasks: u32) callconv(.c) v
     }
 }
 
-pub export fn cardinal_mt_create_texture_load_task(file_path: ?[*:0]const u8, callback: ?*const fn(?*anyopaque, bool) callconv(.c) void) callconv(.c) ?*types.CardinalMTTask {
-    if (file_path == null) {
+// === Task Implementations ===
+
+fn execute_texture_load(data: ?*anyopaque) void {
+    if (data == null) return;
+    const ctx: *TextureLoadContext = @ptrCast(@alignCast(data));
+    
+    // Use the existing texture loader
+    var tex_data: texture_loader.TextureData = undefined;
+    const ref_res = texture_loader.texture_load_with_ref_counting(ctx.file_path.ptr, &tex_data);
+    
+    if (ref_res) |res| {
+        ctx.result_resource = res;
+    } else {
+        log.cardinal_log_error("[MT] Failed to load texture: {s}", .{ctx.file_path});
+        ctx.result_resource = null;
+    }
+}
+
+pub fn cardinal_mt_create_texture_load_task(file_path: []const u8, callback: ?*const fn(?*anyopaque, bool) void) ?*types.CardinalMTTask {
+    if (file_path.len == 0) {
         log.cardinal_log_error("[MT] Invalid file path for texture load task", .{});
         return null;
     }
@@ -708,13 +701,32 @@ pub export fn cardinal_mt_create_texture_load_task(file_path: ?[*:0]const u8, ca
     }
     const task: *types.CardinalMTTask = @ptrCast(@alignCast(task_ptr));
 
-    task.type = types.CardinalMTTaskType.CARDINAL_MT_TASK_TEXTURE_LOAD;
-    const len = c.strlen(file_path) + 1;
-    task.data = memory.cardinal_alloc(allocator, len);
-    if (task.data) |data| {
-        _ = c.strcpy(@ptrCast(data), file_path);
+    // Allocate context
+    const ctx_ptr = memory.cardinal_alloc(allocator, @sizeOf(TextureLoadContext));
+    if (ctx_ptr == null) {
+        memory.cardinal_free(allocator, task_ptr);
+        return null;
     }
-    task.execute_func = null; // TODO: Implement texture loading function
+    const ctx: *TextureLoadContext = @ptrCast(@alignCast(ctx_ptr));
+    
+    // Copy string
+    const path_copy_ptr = memory.cardinal_alloc(allocator, file_path.len + 1);
+    if (path_copy_ptr == null) {
+        memory.cardinal_free(allocator, ctx_ptr);
+        memory.cardinal_free(allocator, task_ptr);
+        return null;
+    }
+    
+    const path_slice = @as([*]u8, @ptrCast(path_copy_ptr))[0..file_path.len];
+    @memcpy(path_slice, file_path);
+    @as([*]u8, @ptrCast(path_copy_ptr))[file_path.len] = 0;
+    
+    ctx.file_path = @as([*:0]u8, @ptrCast(path_copy_ptr))[0..file_path.len :0];
+    ctx.result_resource = null;
+
+    task.type = types.CardinalMTTaskType.CARDINAL_MT_TASK_TEXTURE_LOAD;
+    task.data = ctx;
+    task.execute_func = execute_texture_load;
     task.callback_func = callback;
     task.is_completed = false;
     task.success = false;
@@ -723,8 +735,27 @@ pub export fn cardinal_mt_create_texture_load_task(file_path: ?[*:0]const u8, ca
     return task;
 }
 
-pub export fn cardinal_mt_create_mesh_load_task(file_path: ?[*:0]const u8, callback: ?*const fn(?*anyopaque, bool) callconv(.c) void) callconv(.c) ?*types.CardinalMTTask {
-    if (file_path == null) {
+fn execute_mesh_load(data: ?*anyopaque) void {
+    if (data == null) return;
+    const ctx: *MeshLoadContext = @ptrCast(@alignCast(data));
+    
+    const allocator = memory.cardinal_get_allocator_for_category(.RENDERER);
+    const scene_ptr = memory.cardinal_alloc(allocator, @sizeOf(scene.CardinalScene));
+    if (scene_ptr == null) return;
+    
+    const s: *scene.CardinalScene = @ptrCast(@alignCast(scene_ptr));
+    
+    if (gltf_loader.cardinal_gltf_load_scene(ctx.file_path.ptr, s)) {
+        ctx.result_scene = s;
+    } else {
+        log.cardinal_log_error("[MT] Failed to load mesh/scene: {s}", .{ctx.file_path});
+        memory.cardinal_free(allocator, scene_ptr);
+        ctx.result_scene = null;
+    }
+}
+
+pub fn cardinal_mt_create_mesh_load_task(file_path: []const u8, callback: ?*const fn(?*anyopaque, bool) void) ?*types.CardinalMTTask {
+    if (file_path.len == 0) {
         log.cardinal_log_error("[MT] Invalid file path for mesh load task", .{});
         return null;
     }
@@ -737,13 +768,32 @@ pub export fn cardinal_mt_create_mesh_load_task(file_path: ?[*:0]const u8, callb
     }
     const task: *types.CardinalMTTask = @ptrCast(@alignCast(task_ptr));
 
-    task.type = types.CardinalMTTaskType.CARDINAL_MT_TASK_MESH_LOAD;
-    const len = c.strlen(file_path) + 1;
-    task.data = memory.cardinal_alloc(allocator, len);
-    if (task.data) |data| {
-        _ = c.strcpy(@ptrCast(data), file_path);
+    // Allocate context
+    const ctx_ptr = memory.cardinal_alloc(allocator, @sizeOf(MeshLoadContext));
+    if (ctx_ptr == null) {
+        memory.cardinal_free(allocator, task_ptr);
+        return null;
     }
-    task.execute_func = null; // TODO: Implement mesh loading
+    const ctx: *MeshLoadContext = @ptrCast(@alignCast(ctx_ptr));
+    
+    // Copy string
+    const path_copy_ptr = memory.cardinal_alloc(allocator, file_path.len + 1);
+    if (path_copy_ptr == null) {
+        memory.cardinal_free(allocator, ctx_ptr);
+        memory.cardinal_free(allocator, task_ptr);
+        return null;
+    }
+    
+    const path_slice = @as([*]u8, @ptrCast(path_copy_ptr))[0..file_path.len];
+    @memcpy(path_slice, file_path);
+    @as([*]u8, @ptrCast(path_copy_ptr))[file_path.len] = 0;
+    
+    ctx.file_path = @as([*:0]u8, @ptrCast(path_copy_ptr))[0..file_path.len :0];
+    ctx.result_scene = null;
+
+    task.type = types.CardinalMTTaskType.CARDINAL_MT_TASK_MESH_LOAD;
+    task.data = ctx;
+    task.execute_func = execute_mesh_load;
     task.callback_func = callback;
     task.is_completed = false;
     task.success = false;
@@ -752,7 +802,7 @@ pub export fn cardinal_mt_create_mesh_load_task(file_path: ?[*:0]const u8, callb
     return task;
 }
 
-pub export fn cardinal_mt_create_command_record_task(record_func: ?*const fn(?*anyopaque) callconv(.c) void, user_data: ?*anyopaque, callback: ?*const fn(?*anyopaque, bool) callconv(.c) void) callconv(.c) ?*types.CardinalMTTask {
+pub fn cardinal_mt_create_command_record_task(record_func: ?*const fn(?*anyopaque) void, user_data: ?*anyopaque, callback: ?*const fn(?*anyopaque, bool) void) ?*types.CardinalMTTask {
     const allocator = memory.cardinal_get_allocator_for_category(.RENDERER);
     const task_ptr = memory.cardinal_alloc(allocator, @sizeOf(types.CardinalMTTask));
     if (task_ptr == null) {
