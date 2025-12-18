@@ -10,239 +10,24 @@ const loader = engine.loader;
 const async_loader = engine.async_loader;
 const animation = engine.animation;
 
-const c = @cImport({
-    @cInclude("imgui_bridge.h");
-    @cInclude("GLFW/glfw3.h");
-    @cInclude("vulkan/vulkan.h");
-});
+const editor_state = @import("editor_state.zig");
+const EditorState = editor_state.EditorState;
+const AssetState = editor_state.AssetState;
+
+const scene_hierarchy = @import("panels/scene_hierarchy.zig");
+const content_browser = @import("panels/content_browser.zig");
+const inspector = @import("panels/inspector.zig");
+const input_system = @import("systems/input.zig");
+const camera_controller = @import("systems/camera_controller.zig");
+
+const c = @import("c.zig").c;
 
 // Global allocator for editor state
 var gpa = std.heap.GeneralPurposeAllocator(.{}){};
 const allocator = gpa.allocator();
 
-// State
-const AssetState = struct {
-    entries: std.ArrayListUnmanaged(AssetEntry) = .{},
-    filtered_entries: std.ArrayListUnmanaged(AssetEntry) = .{},
-    current_dir: [:0]u8,
-    assets_dir: [:0]u8,
-    search_filter: []u8,
-    show_folders_only: bool = false,
-    show_gltf_only: bool = false,
-    show_textures_only: bool = false,
-
-    const AssetType = enum {
-        FOLDER,
-        GLTF,
-        GLB,
-        TEXTURE,
-        OTHER,
-    };
-
-    const AssetEntry = struct {
-        display: [:0]u8,
-        full_path: [:0]u8,
-        relative_path: [:0]u8,
-        type: AssetType,
-        is_directory: bool,
-
-        fn deinit(self: AssetEntry, alloc: std.mem.Allocator) void {
-            // Free the full allocated size (len + 1 for sentinel)
-            alloc.free(self.display[0 .. self.display.len + 1]);
-            alloc.free(self.full_path[0 .. self.full_path.len + 1]);
-            alloc.free(self.relative_path[0 .. self.relative_path.len + 1]);
-        }
-    };
-};
-
-const EditorState = struct {
-    renderer: *types.CardinalRenderer = undefined,
-    window: *window.CardinalWindow = undefined,
-    descriptor_pool: c.VkDescriptorPool = null,
-    
-    // Scene & Models
-    model_manager: model_manager.CardinalModelManager = undefined,
-    combined_scene: scene.CardinalScene = undefined,
-    scene_loaded: bool = false,
-    loading_task: ?*async_loader.CardinalAsyncTask = null,
-    is_loading: bool = false,
-    loading_scene_path: ?[:0]u8 = null,
-    
-    // Scene Upload
-    scene_upload_pending: bool = false,
-    pending_scene: scene.CardinalScene = undefined,
-    
-    // UI State
-    status_msg: [256]u8 = [_]u8{0} ** 256,
-    scene_path: [512]u8 = [_]u8{0} ** 512,
-    selected_model_id: u32 = 0,
-    
-    // Panel Visibility
-    show_scene_graph: bool = true,
-    show_assets: bool = true,
-    show_model_manager: bool = true,
-    show_pbr_settings: bool = true,
-    show_animation: bool = true,
-    
-    // Assets
-    assets: AssetState = undefined,
-    
-    // Camera & Light
-    camera: types.CardinalCamera = undefined,
-    light: types.CardinalLight = undefined,
-    pbr_enabled: bool = true,
-    
-    // Camera Control
-    mouse_captured: bool = false,
-    last_mouse_x: f64 = 0,
-    last_mouse_y: f64 = 0,
-    first_mouse: bool = true,
-    yaw: f32 = 90.0,
-    pitch: f32 = 0.0,
-    camera_speed: f32 = 5.0,
-    mouse_sensitivity: f32 = 0.1,
-    
-    // Animation
-    selected_animation: i32 = -1,
-    animation_time: f32 = 0.0,
-    animation_playing: bool = false,
-    animation_looping: bool = true,
-    animation_speed: f32 = 1.0,
-    
-    // Material Override
-    material_override_enabled: bool = false,
-    material_albedo: [3]f32 = .{1.0, 1.0, 1.0},
-    material_metallic: f32 = 0.0,
-    material_roughness: f32 = 0.5,
-    material_emissive: [3]f32 = .{0.0, 0.0, 0.0},
-    material_normal_scale: f32 = 1.0,
-    material_ao_strength: f32 = 1.0,
-    
-    // UI Toggles
-    show_material_0_toggle: bool = true,
-    tab_key_pressed: bool = false,
-};
-
 var state: EditorState = undefined;
 var initialized: bool = false;
-
-// Helper functions
-fn get_asset_type(path: []const u8) AssetState.AssetType {
-    const ext = std.fs.path.extension(path);
-    if (std.mem.eql(u8, ext, ".gltf")) return .GLTF;
-    if (std.mem.eql(u8, ext, ".glb")) return .GLB;
-    if (std.mem.eql(u8, ext, ".png") or std.mem.eql(u8, ext, ".jpg") or 
-        std.mem.eql(u8, ext, ".tga") or std.mem.eql(u8, ext, ".bmp") or
-        std.mem.eql(u8, ext, ".jpeg")) return .TEXTURE;
-    return .OTHER;
-}
-
-fn scan_assets_dir() void {
-    log.cardinal_log_info("Scanning assets dir: {s}", .{state.assets.current_dir});
-    
-    // Clear old entries
-    for (state.assets.entries.items) |entry| {
-        entry.deinit(allocator);
-    }
-    state.assets.entries.clearRetainingCapacity();
-    state.assets.filtered_entries.clearRetainingCapacity();
-
-    var dir = std.fs.openDirAbsolute(state.assets.current_dir, .{ .iterate = true }) catch |err| {
-        log.cardinal_log_error("Failed to open directory {s}: {}", .{state.assets.current_dir, err});
-        return;
-    };
-    defer dir.close();
-
-    // Add parent directory if not root
-    // Zig's path handling is a bit different, let's just use string manipulation for simplicity or standard library
-    const parent_path = std.fs.path.dirname(state.assets.current_dir);
-    if (parent_path) |parent| {
-        if (!std.mem.eql(u8, state.assets.current_dir, state.assets.assets_dir)) {
-             state.assets.entries.append(allocator, .{
-                 .display = allocator.dupeZ(u8, "..") catch return,
-                 .full_path = allocator.dupeZ(u8, parent) catch return,
-                 .relative_path = allocator.dupeZ(u8, "..") catch return,
-                 .type = .FOLDER,
-                 .is_directory = true,
-             }) catch return;
-        }
-    }
-
-    var iterator = dir.iterate();
-    while (iterator.next() catch return) |entry| {
-        const full_path = std.fs.path.join(allocator, &[_][]const u8{state.assets.current_dir, entry.name}) catch continue;
-        const relative = std.fs.path.relative(allocator, state.assets.assets_dir, full_path) catch full_path;
-        
-        var asset_type: AssetState.AssetType = .OTHER;
-        var is_dir = false;
-        
-        if (entry.kind == .directory) {
-            asset_type = .FOLDER;
-            is_dir = true;
-        } else {
-            asset_type = get_asset_type(entry.name);
-        }
-
-        // Ensure strings are null-terminated for C interop
-        const full_path_z = allocator.dupeZ(u8, full_path) catch continue;
-        // relative might be same as full_path if failed, or new slice. 
-        // If it's a new slice from allocator, we need to dupeZ it to be safe or ensure we track it.
-        // Simplified: just dupeZ everything we store.
-        const relative_z = allocator.dupeZ(u8, relative) catch continue;
-
-        // Cleanup temporary paths if they were allocated by join/relative
-        // Logic: free relative if it's not a slice of full_path or assets_dir
-        const full_path_start = @intFromPtr(full_path.ptr);
-        const full_path_end = full_path_start + full_path.len;
-        const assets_dir_start = @intFromPtr(state.assets.assets_dir.ptr);
-        const assets_dir_end = assets_dir_start + state.assets.assets_dir.len;
-        const relative_start = @intFromPtr(relative.ptr);
-
-        const is_slice_of_full = (relative_start >= full_path_start and relative_start < full_path_end);
-        const is_slice_of_assets = (relative_start >= assets_dir_start and relative_start < assets_dir_end);
-
-        if (!is_slice_of_full and !is_slice_of_assets) {
-            allocator.free(relative);
-        }
-        
-        // full_path is always allocated by path.join in this loop
-        if (full_path.ptr != state.assets.current_dir.ptr) allocator.free(full_path);
-
-        state.assets.entries.append(allocator, .{
-            .display = allocator.dupeZ(u8, entry.name) catch continue,
-            .full_path = full_path_z,
-            .relative_path = relative_z,
-            .type = asset_type,
-            .is_directory = is_dir,
-        }) catch continue;
-    }
-
-    // Sort
-    std.sort.block(AssetState.AssetEntry, state.assets.entries.items, {}, struct {
-        fn less(_: void, lhs: AssetState.AssetEntry, rhs: AssetState.AssetEntry) bool {
-            if (std.mem.eql(u8, lhs.display, "..")) return true;
-            if (std.mem.eql(u8, rhs.display, "..")) return false;
-            if (lhs.is_directory != rhs.is_directory) return lhs.is_directory;
-            return std.mem.lessThan(u8, lhs.display, rhs.display);
-        }
-    }.less);
-
-    // Filter
-    const filter_text = std.mem.span(@as([*:0]const u8, @ptrCast(&state.assets.search_filter)));
-    
-    for (state.assets.entries.items) |entry| {
-        if (filter_text.len > 0) {
-            // Case insensitive search would be better, but simple substring for now
-            if (std.mem.indexOf(u8, entry.display, filter_text) == null) continue;
-        }
-        
-        if (state.assets.show_folders_only and !entry.is_directory) continue;
-        if (state.assets.show_gltf_only and entry.type != .GLTF and entry.type != .GLB) continue;
-        if (state.assets.show_textures_only and entry.type != .TEXTURE) continue;
-
-        state.assets.filtered_entries.append(allocator, entry) catch continue;
-    }
-}
 
 fn check_loading_status() void {
     if (!state.is_loading or state.loading_task == null) return;
@@ -305,292 +90,6 @@ fn check_loading_status() void {
             allocator.free(p);
             state.loading_scene_path = null;
         }
-    }
-}
-
-fn load_scene(path: []const u8) void {
-    if (state.is_loading) {
-        _ = std.fmt.bufPrintZ(&state.status_msg, "Already loading...", .{}) catch {};
-        return;
-    }
-    
-    if (state.loading_task) |task| {
-        _ = async_loader.cardinal_async_cancel_task(task);
-        async_loader.cardinal_async_free_task(task);
-        state.loading_task = null;
-    }
-    
-    // Clear previous path if any (should be null if logic is correct)
-    if (state.loading_scene_path) |p| {
-        allocator.free(p);
-        state.loading_scene_path = null;
-    }
-    
-    state.is_loading = true;
-    _ = std.fmt.bufPrintZ(&state.status_msg, "Loading scene: {s}...", .{path}) catch {};
-    
-    const path_copy = allocator.dupeZ(u8, path) catch return;
-    state.loading_scene_path = path_copy;
-    
-    state.loading_task = loader.cardinal_scene_load_async(
-        path_copy, 
-        .HIGH, 
-        null, 
-        null
-    );
-}
-
-fn draw_scene_node(node: *scene.CardinalSceneNode, depth: i32) void {
-    // Node ID
-    var node_id_buf: [256]u8 = undefined;
-    const node_name = if (node.name) |n| std.mem.span(n) else "Unnamed Node";
-    const node_id = std.fmt.bufPrintZ(&node_id_buf, "{s}##{*}", .{node_name, node}) catch "Node";
-    
-    const node_open = c.imgui_bridge_tree_node(node_id.ptr);
-    
-    c.imgui_bridge_same_line(0, -1);
-    c.imgui_bridge_text_disabled("(meshes: %d, children: %d)", node.mesh_count, node.child_count);
-    
-    if (node_open) {
-        if (c.imgui_bridge_tree_node("Transform")) {
-            c.imgui_bridge_text("Local Transform:");
-            c.imgui_bridge_text("  Translation: (%.2f, %.2f, %.2f)", node.local_transform[12], node.local_transform[13], node.local_transform[14]);
-            
-            c.imgui_bridge_text("World Transform:");
-            c.imgui_bridge_text("  Translation: (%.2f, %.2f, %.2f)", node.world_transform[12], node.world_transform[13], node.world_transform[14]);
-            c.imgui_bridge_tree_pop();
-        }
-        
-        if (node.mesh_count > 0 and c.imgui_bridge_tree_node("Meshes")) {
-            var i: u32 = 0;
-            while (i < node.mesh_count) : (i += 1) {
-                if (node.mesh_indices) |indices| {
-                    const mesh_idx = indices[i];
-                    if (mesh_idx < state.combined_scene.mesh_count) {
-                        if (state.combined_scene.meshes) |meshes| {
-                            const m = &meshes[mesh_idx];
-                            
-                            var cb_id: [64]u8 = undefined;
-                            const cb_id_z = std.fmt.bufPrintZ(&cb_id, "Visible##mesh_{d}", .{mesh_idx}) catch "Visible";
-                            
-                            _ = c.imgui_bridge_checkbox(cb_id_z.ptr, &m.visible);
-                            c.imgui_bridge_same_line(0, -1);
-                            c.imgui_bridge_bullet_text("Mesh %d: %d vertices, %d indices", mesh_idx, m.vertex_count, m.index_count);
-                        }
-                    }
-                }
-            }
-            c.imgui_bridge_tree_pop();
-        }
-        
-        var i: u32 = 0;
-        while (i < node.child_count) : (i += 1) {
-            if (node.children) |children| {
-                if (children[i]) |child| {
-                    draw_scene_node(child, depth + 1);
-                }
-            }
-        }
-        
-        c.imgui_bridge_tree_pop();
-    }
-}
-
-fn draw_scene_graph_panel() void {
-    if (state.show_scene_graph) {
-        if (c.imgui_bridge_begin("Scene Graph", &state.show_scene_graph, 0)) {
-            if (c.imgui_bridge_tree_node("Scene")) {
-                c.imgui_bridge_bullet_text("Camera");
-                c.imgui_bridge_bullet_text("Directional Light");
-                
-                if (state.scene_loaded) {
-                    if (c.imgui_bridge_tree_node("Loaded Scene")) {
-                        c.imgui_bridge_text("Total Meshes: %d", state.combined_scene.mesh_count);
-                        c.imgui_bridge_text("Root Nodes: %d", state.combined_scene.root_node_count);
-                        
-                        c.imgui_bridge_separator();
-                        c.imgui_bridge_text("Bulk Visibility Controls:");
-                        
-                        if (c.imgui_bridge_button("Show All Meshes")) {
-                            var i: u32 = 0;
-                            while (i < state.combined_scene.mesh_count) : (i += 1) {
-                                if (state.combined_scene.meshes) |meshes| {
-                                    meshes[i].visible = true;
-                                }
-                            }
-                        }
-                        c.imgui_bridge_same_line(0, -1);
-                        if (c.imgui_bridge_button("Hide All Meshes")) {
-                            var i: u32 = 0;
-                            while (i < state.combined_scene.mesh_count) : (i += 1) {
-                                if (state.combined_scene.meshes) |meshes| {
-                                    meshes[i].visible = false;
-                                }
-                            }
-                        }
-                        
-                        // Material-based visibility controls
-                        if (c.imgui_bridge_button("Show Only Material 0")) {
-                            var i: u32 = 0;
-                            while (i < state.combined_scene.mesh_count) : (i += 1) {
-                                if (state.combined_scene.meshes) |meshes| {
-                                    meshes[i].visible = (meshes[i].material_index == 0);
-                                }
-                            }
-                        }
-                        c.imgui_bridge_same_line(0, -1);
-                        if (c.imgui_bridge_button("Show Only Material 1")) {
-                            var i: u32 = 0;
-                            while (i < state.combined_scene.mesh_count) : (i += 1) {
-                                if (state.combined_scene.meshes) |meshes| {
-                                    meshes[i].visible = (meshes[i].material_index == 1);
-                                }
-                            }
-                        }
-                        
-                        if (c.imgui_bridge_button("Toggle Materials 0/1")) {
-                            var i: u32 = 0;
-                            while (i < state.combined_scene.mesh_count) : (i += 1) {
-                                if (state.combined_scene.meshes) |meshes| {
-                                    if (meshes[i].material_index == 0) {
-                                        meshes[i].visible = state.show_material_0_toggle;
-                                    } else if (meshes[i].material_index == 1) {
-                                        meshes[i].visible = !state.show_material_0_toggle;
-                                    }
-                                }
-                            }
-                            state.show_material_0_toggle = !state.show_material_0_toggle;
-                        }
-                        
-                        if (state.combined_scene.root_node_count > 0) {
-                            c.imgui_bridge_separator();
-                            var i: u32 = 0;
-                            while (i < state.combined_scene.root_node_count) : (i += 1) {
-                                if (state.combined_scene.root_nodes) |root_nodes| {
-                                    if (root_nodes[i]) |root| {
-                                        draw_scene_node(root, 0);
-                                    }
-                                }
-                            }
-                        } else {
-                            c.imgui_bridge_text("No scene hierarchy - showing flat mesh list:");
-                            var i: u32 = 0;
-                            while (i < state.combined_scene.mesh_count) : (i += 1) {
-                                if (state.combined_scene.meshes) |meshes| {
-                                    const m = &meshes[i];
-                                    var cb_id: [64]u8 = undefined;
-                                    const cb_id_z = std.fmt.bufPrintZ(&cb_id, "Visible##flat_mesh_{d}", .{i}) catch "Visible";
-                                    _ = c.imgui_bridge_checkbox(cb_id_z.ptr, &m.visible);
-                                    c.imgui_bridge_same_line(0, -1);
-                                    c.imgui_bridge_bullet_text("Mesh %d: %d vertices, %d indices", i, m.vertex_count, m.index_count);
-                                }
-                            }
-                        }
-                        c.imgui_bridge_tree_pop();
-                    }
-                }
-                c.imgui_bridge_tree_pop();
-            }
-        }
-        c.imgui_bridge_end();
-    }
-}
-
-fn draw_model_manager_panel() void {
-    if (state.show_model_manager) {
-        if (c.imgui_bridge_begin("Model Manager", &state.show_model_manager, 0)) {
-            c.imgui_bridge_text("Loaded Models:");
-            c.imgui_bridge_separator();
-            
-            const model_count = state.model_manager.model_count;
-            if (model_count == 0) {
-                c.imgui_bridge_text("No models loaded");
-                c.imgui_bridge_text_wrapped("Load models from the Assets panel to see them here.");
-            } else {
-                if (c.imgui_bridge_begin_child("##model_list", 0, 300, true, 0)) {
-                    var i: u32 = 0;
-                    while (i < model_count) : (i += 1) {
-                        const model_ptr = model_manager.cardinal_model_manager_get_model_by_index(&state.model_manager, i);
-                        if (model_ptr) |model| {
-                            c.imgui_bridge_push_id_int(@intCast(model.id));
-                            
-                            const is_selected = (state.selected_model_id == model.id);
-                            const name = if (model.name) |n| std.mem.span(n) else "Unnamed Model";
-                            
-                            if (c.imgui_bridge_selectable(name.ptr, is_selected, 0)) {
-                                state.selected_model_id = model.id;
-                                model_manager.cardinal_model_manager_set_selected(&state.model_manager, model.id);
-                            }
-                            
-                            c.imgui_bridge_same_line(0, -1);
-                            
-                            if (c.imgui_bridge_checkbox("##visible", &model.visible)) {
-                                _ = model_manager.cardinal_model_manager_set_visible(&state.model_manager, model.id, model.visible);
-                            }
-                            if (c.imgui_bridge_is_item_hovered(0)) {
-                                c.imgui_bridge_set_tooltip("Toggle visibility");
-                            }
-                            
-                            c.imgui_bridge_same_line(0, -1);
-                            if (c.imgui_bridge_button("Remove")) {
-                                _ = model_manager.cardinal_model_manager_remove_model(&state.model_manager, model.id);
-                                if (state.selected_model_id == model.id) {
-                                    state.selected_model_id = 0;
-                                }
-                                c.imgui_bridge_pop_id();
-                                break; // Modified array
-                            }
-                            
-                            if (is_selected) {
-                                c.imgui_bridge_indent(10.0);
-                                c.imgui_bridge_text("ID: %d", model.id);
-                                c.imgui_bridge_text("Meshes: %d", model.scene.mesh_count);
-                                c.imgui_bridge_text("Materials: %d", model.scene.material_count);
-                                if (model.file_path) |fp| {
-                                    c.imgui_bridge_text("Path: %s", fp);
-                                }
-                                
-                                c.imgui_bridge_separator();
-                                c.imgui_bridge_text("Transform:");
-                                
-                                var pos = [3]f32{model.transform[12], model.transform[13], model.transform[14]};
-                                if (c.imgui_bridge_drag_float3("Position", &pos, 0.1, 0.0, 0.0, "%.3f", 0)) {
-                                    var new_transform: [16]f32 = undefined;
-                                    @memcpy(&new_transform, &model.transform);
-                                    new_transform[12] = pos[0];
-                                    new_transform[13] = pos[1];
-                                    new_transform[14] = pos[2];
-                                    _ = model_manager.cardinal_model_manager_set_transform(&state.model_manager, model.id, &new_transform);
-                                }
-                                
-                                // Simplified scale
-                                const current_scale = std.math.sqrt(model.transform[0]*model.transform[0] + model.transform[1]*model.transform[1] + model.transform[2]*model.transform[2]);
-                                var scale = current_scale;
-                                if (c.imgui_bridge_drag_float("Scale", &scale, 0.01, 0.01, 10.0, "%.3f", 0)) {
-                                    // Uniform scale logic... simplified
-                                    // Just re-creating matrix for now as in C++
-                                    // NOTE: This loses rotation if not handled carefully, but following C++ logic
-                                    var scale_matrix: [16]f32 = undefined;
-                                    // Identity
-                                    @memset(&scale_matrix, 0);
-                                    scale_matrix[0] = scale; scale_matrix[5] = scale; scale_matrix[10] = scale; scale_matrix[15] = 1.0;
-                                    scale_matrix[12] = pos[0];
-                                    scale_matrix[13] = pos[1];
-                                    scale_matrix[14] = pos[2];
-                                    _ = model_manager.cardinal_model_manager_set_transform(&state.model_manager, model.id, &scale_matrix);
-                                }
-                                
-                                c.imgui_bridge_unindent(10.0);
-                            }
-                            
-                            c.imgui_bridge_pop_id();
-                        }
-                    }
-                }
-                c.imgui_bridge_end_child();
-            }
-        }
-        c.imgui_bridge_end();
     }
 }
 
@@ -689,125 +188,120 @@ fn draw_pbr_settings_panel() void {
     }
 }
 
+fn draw_animation_panel() void {
+    if (state.show_animation) {
+        if (c.imgui_bridge_begin("Animation", &state.show_animation, 0)) {
+            if (state.scene_loaded and state.combined_scene.animation_system != null) {
+                const anim_sys_opaque = state.combined_scene.animation_system.?;
+                const anim_sys = @as(*animation.CardinalAnimationSystem, @ptrCast(@alignCast(anim_sys_opaque)));
+                
+                // Animation selection
+                c.imgui_bridge_text("Animations (%d)", anim_sys.animation_count);
+                c.imgui_bridge_separator();
+                
+                if (c.imgui_bridge_begin_child("##animation_list", 0, 120, true, 0)) {
+                    var i: u32 = 0;
+                    while (i < anim_sys.animation_count) : (i += 1) {
+                        const anim = &anim_sys.animations.?[i];
+                        const name = if (anim.name) |n| std.mem.span(n) else "Unnamed Animation";
+                        
+                        const is_selected = (state.selected_animation == @as(i32, @intCast(i)));
+                        if (c.imgui_bridge_selectable(name.ptr, is_selected, 0)) {
+                            state.selected_animation = @as(i32, @intCast(i));
+                            state.animation_time = 0.0; // Reset time
+                        }
+                        
+                        c.imgui_bridge_same_line(0, -1);
+                        c.imgui_bridge_text_disabled("(%.2fs, %d channels)", anim.duration, anim.channel_count);
+                    }
+                    c.imgui_bridge_end_child();
+                }
+                
+                c.imgui_bridge_separator();
+                
+                // Playback controls
+                if (state.selected_animation >= 0 and state.selected_animation < anim_sys.animation_count) {
+                    const current_anim = &anim_sys.animations.?[@intCast(state.selected_animation)];
+                    
+                    c.imgui_bridge_text("Playback Controls");
+                    
+                    if (state.animation_playing) {
+                        if (c.imgui_bridge_button("Pause")) {
+                            state.animation_playing = false;
+                            _ = animation.cardinal_animation_pause(anim_sys, @intCast(state.selected_animation));
+                        }
+                    } else {
+                        if (c.imgui_bridge_button("Play")) {
+                            state.animation_playing = true;
+                            _ = animation.cardinal_animation_play(anim_sys, @intCast(state.selected_animation), state.animation_looping, 1.0);
+                        }
+                    }
+                    
+                    c.imgui_bridge_same_line(0, -1);
+                    if (c.imgui_bridge_button("Stop")) {
+                        state.animation_playing = false;
+                        state.animation_time = 0.0;
+                        _ = animation.cardinal_animation_stop(anim_sys, @intCast(state.selected_animation));
+                    }
+                    
+                    c.imgui_bridge_same_line(0, -1);
+                    _ = c.imgui_bridge_checkbox("Loop", &state.animation_looping);
+                    
+                    // Speed control
+                    c.imgui_bridge_set_next_item_width(100);
+                    if (c.imgui_bridge_slider_float("Speed", &state.animation_speed, 0.1, 3.0, "%.1fx")) {
+                        _ = animation.cardinal_animation_set_speed(anim_sys, @intCast(state.selected_animation), state.animation_speed);
+                    }
+                    
+                    // Timeline
+                    c.imgui_bridge_separator();
+                    c.imgui_bridge_text("Timeline");
+                    
+                    c.imgui_bridge_text("Time: %.2f / %.2f seconds", state.animation_time, current_anim.duration);
+                    
+                    // Timeline scrubber
+                    if (c.imgui_bridge_slider_float("##timeline", &state.animation_time, 0.0, current_anim.duration, "%.2fs")) {
+                         if (state.animation_time < 0.0) state.animation_time = 0.0;
+                         if (state.animation_time > current_anim.duration) {
+                             if (state.animation_looping) {
+                                 state.animation_time = @mod(state.animation_time, current_anim.duration);
+                             } else {
+                                 state.animation_time = current_anim.duration;
+                                 state.animation_playing = false;
+                             }
+                         }
+                    }
+                    
+                    c.imgui_bridge_separator();
+                    c.imgui_bridge_text("Animation Info");
+                    c.imgui_bridge_text("Name: %s", if (current_anim.name) |n| n else "Unnamed");
+                    c.imgui_bridge_text("Duration: %.2f seconds", current_anim.duration);
+                    c.imgui_bridge_text("Channels: %d", current_anim.channel_count);
+                    c.imgui_bridge_text("Samplers: %d", current_anim.sampler_count);
+                    
+                    if (c.imgui_bridge_collapsing_header("Channels", 0)) {
+                        var i: u32 = 0;
+                        while (i < current_anim.channel_count) : (i += 1) {
+                            const channel = &current_anim.channels.?[i];
+                            c.imgui_bridge_text("Channel %d: Node %d, Target %d", i, channel.target.node_index, @intFromEnum(channel.target.path));
+                        }
+                    }
+                } else {
+                     c.imgui_bridge_text_disabled("Select an animation to see controls");
+                }
+            } else {
+                c.imgui_bridge_text("No animations");
+                c.imgui_bridge_text_wrapped("Load a scene with animations to see animation controls.");
+            }
+        }
+        c.imgui_bridge_end();
+    }
+}
+
 const VkCommandBuffer = c.VkCommandBuffer;
 
 fn ui_draw_callback(cmd: VkCommandBuffer) callconv(.c) void {
     c.imgui_bridge_impl_vulkan_render_draw_data(@ptrCast(cmd));
-}
-
-// Camera Movement
-fn process_input_and_move_camera(dt: f32) void {
-    const win = @as(?*c.GLFWwindow, @ptrCast(state.window.handle));
-    if (win == null) return;
-    if (dt <= 0.0) return;
-
-    if (state.first_mouse) {
-         log.cardinal_log_info("DEBUG: process_input - state.window: {*}, handle: {*}", .{state.window, win});
-    }
-
-    if (state.mouse_captured) {
-        var xpos: f64 = 0;
-        var ypos: f64 = 0;
-        c.glfwGetCursorPos(win, &xpos, &ypos);
-        
-        if (state.first_mouse) {
-            state.last_mouse_x = xpos;
-            state.last_mouse_y = ypos;
-            state.first_mouse = false;
-        }
-        
-        const xoffset = xpos - state.last_mouse_x;
-        const yoffset = state.last_mouse_y - ypos; // Reversed
-        state.last_mouse_x = xpos;
-        state.last_mouse_y = ypos;
-        
-        state.yaw += @floatCast(xoffset * state.mouse_sensitivity);
-        state.pitch += @floatCast(yoffset * state.mouse_sensitivity);
-        
-        if (state.pitch > 89.0) state.pitch = 89.0;
-        if (state.pitch < -89.0) state.pitch = -89.0;
-        
-        // Update target
-        const radYaw = state.yaw * std.math.pi / 180.0;
-        const radPitch = state.pitch * std.math.pi / 180.0;
-        
-        var front: [3]f32 = undefined;
-        front[0] = @cos(radYaw) * @cos(radPitch);
-        front[1] = @sin(radPitch);
-        front[2] = @sin(radYaw) * @cos(radPitch);
-        
-        const len = @sqrt(front[0]*front[0] + front[1]*front[1] + front[2]*front[2]);
-        front[0] /= len;
-        front[1] /= len;
-        front[2] /= len;
-        
-        state.camera.target[0] = state.camera.position[0] + front[0];
-        state.camera.target[1] = state.camera.position[1] + front[1];
-        state.camera.target[2] = state.camera.position[2] + front[2];
-        
-        // Keyboard
-        var speed = state.camera_speed * dt;
-        if (c.glfwGetKey(win, c.GLFW_KEY_LEFT_CONTROL) == c.GLFW_PRESS) {
-            speed *= 4.0;
-        }
-
-        var right: [3]f32 = undefined;
-        const up = [3]f32{0.0, 1.0, 0.0};
-        
-        right[0] = front[1] * up[2] - front[2] * up[1];
-        right[1] = front[2] * up[0] - front[0] * up[2];
-        right[2] = front[0] * up[1] - front[1] * up[0];
-        const rlen = @sqrt(right[0]*right[0] + right[1]*right[1] + right[2]*right[2]);
-        right[0] /= rlen;
-        right[1] /= rlen;
-        right[2] /= rlen;
-        
-        if (c.glfwGetKey(win, c.GLFW_KEY_W) == c.GLFW_PRESS) {
-            state.camera.position[0] += front[0] * speed;
-            state.camera.position[1] += front[1] * speed;
-            state.camera.position[2] += front[2] * speed;
-        }
-        if (c.glfwGetKey(win, c.GLFW_KEY_S) == c.GLFW_PRESS) {
-            state.camera.position[0] -= front[0] * speed;
-            state.camera.position[1] -= front[1] * speed;
-            state.camera.position[2] -= front[2] * speed;
-        }
-        if (c.glfwGetKey(win, c.GLFW_KEY_A) == c.GLFW_PRESS) {
-            state.camera.position[0] -= right[0] * speed;
-            state.camera.position[1] -= right[1] * speed;
-            state.camera.position[2] -= right[2] * speed;
-        }
-        if (c.glfwGetKey(win, c.GLFW_KEY_D) == c.GLFW_PRESS) {
-            state.camera.position[0] += right[0] * speed;
-            state.camera.position[1] += right[1] * speed;
-            state.camera.position[2] += right[2] * speed;
-        }
-        
-        if (c.glfwGetKey(win, c.GLFW_KEY_SPACE) == c.GLFW_PRESS) {
-            state.camera.position[1] += speed;
-        }
-        if (c.glfwGetKey(win, c.GLFW_KEY_LEFT_SHIFT) == c.GLFW_PRESS) {
-            state.camera.position[1] -= speed;
-        }
-        
-        if (state.pbr_enabled) {
-            renderer.cardinal_renderer_set_camera(state.renderer, &state.camera);
-        }
-    }
-    
-    // Toggle capture
-    const tab_pressed = c.glfwGetKey(win, c.GLFW_KEY_TAB) == c.GLFW_PRESS;
-    if (tab_pressed and !state.tab_key_pressed) {
-        state.mouse_captured = !state.mouse_captured;
-        state.first_mouse = true;
-        
-        if (state.mouse_captured) {
-            c.glfwSetInputMode(win, c.GLFW_CURSOR, c.GLFW_CURSOR_DISABLED);
-        } else {
-            c.glfwSetInputMode(win, c.GLFW_CURSOR, c.GLFW_CURSOR_NORMAL);
-        }
-    }
-    state.tab_key_pressed = tab_pressed;
 }
 
 // Public API
@@ -893,7 +387,7 @@ pub fn init(win_ptr: *window.CardinalWindow, rnd_ptr: *types.CardinalRenderer) b
 
     if (!c.imgui_bridge_impl_vulkan_init(&init_info)) return false;
 
-    scan_assets_dir();
+    content_browser.scan_assets_dir(&state, allocator);
 
     renderer.cardinal_renderer_set_camera(rnd_ptr, &state.camera);
     renderer.cardinal_renderer_set_lighting(rnd_ptr, &state.light);
@@ -959,7 +453,9 @@ pub fn update() void {
         }
     }
     
-    process_input_and_move_camera(dt);
+    // Systems update
+    input_system.update(&state);
+    camera_controller.update(&state, dt);
     
     // --- Main DockSpace ---
     // Create a full-screen window for the dockspace
@@ -1014,11 +510,11 @@ pub fn update() void {
         }
         
         // Panels
-        draw_scene_graph_panel();
-        draw_asset_browser_panel(); // Was inline, need to wrap or use existing
-        draw_model_manager_panel();
+        scene_hierarchy.draw_scene_graph_panel(&state);
+        content_browser.draw_asset_browser_panel(&state, allocator);
+        inspector.draw_inspector_panel(&state);
         draw_pbr_settings_panel();
-        draw_animation_panel();     // Was inline, need to wrap
+        draw_animation_panel();
         
         // Status Bar (as a simple window for now, or part of dockspace)
         if (c.imgui_bridge_begin("Status", null, 0)) {
@@ -1029,247 +525,6 @@ pub fn update() void {
         
     }
     c.imgui_bridge_end(); // End DockSpace window
-}
-
-// Wrapping existing inline panels into functions for cleaner update loop
-fn draw_asset_browser_panel() void {
-    if (state.show_assets) {
-        if (c.imgui_bridge_begin("Assets", &state.show_assets, 0)) {
-            c.imgui_bridge_text("Project Assets");
-            c.imgui_bridge_separator();
-            
-            // Assets directory controls
-            c.imgui_bridge_text("Assets Root:");
-            c.imgui_bridge_set_next_item_width(-1.0);
-            
-            // Note: In a real implementation we would want to edit assets_dir, but for now just display current_dir effectively
-            // Since we don't have a robust text input buffer management in this quick port, we'll skip the editable root path for now
-            // or use a fixed buffer if needed.
-            
-            if (c.imgui_bridge_button("Refresh")) {
-                scan_assets_dir();
-            }
-            
-            // Current directory display
-            c.imgui_bridge_text("Current: %s", state.assets.current_dir.ptr);
-            
-            c.imgui_bridge_separator();
-            
-            // Search and filter controls
-            c.imgui_bridge_text("Search & Filter:");
-            c.imgui_bridge_set_next_item_width(-1.0);
-            
-            if (c.imgui_bridge_input_text_with_hint("##search_filter", "Search files...", @as([*c]u8, @ptrCast(state.assets.search_filter.ptr)), state.assets.search_filter.len)) {
-                scan_assets_dir();
-            }
-            
-            // Filter checkboxes
-            var filter_changed = false;
-            if (c.imgui_bridge_checkbox("Folders Only", &state.assets.show_folders_only)) filter_changed = true;
-            c.imgui_bridge_same_line(0, -1);
-            if (c.imgui_bridge_checkbox("glTF/GLB", &state.assets.show_gltf_only)) filter_changed = true;
-            c.imgui_bridge_same_line(0, -1);
-            if (c.imgui_bridge_checkbox("Textures", &state.assets.show_textures_only)) filter_changed = true;
-            
-            if (filter_changed) {
-                scan_assets_dir();
-            }
-            
-            if (c.imgui_bridge_button("Clear Filters")) {
-                @memset(state.assets.search_filter, 0);
-                state.assets.show_folders_only = false;
-                state.assets.show_gltf_only = false;
-                state.assets.show_textures_only = false;
-                scan_assets_dir();
-            }
-            
-            c.imgui_bridge_separator();
-            
-            // Simple scene load controls
-            c.imgui_bridge_text("Load Scene (glTF/glb)");
-            c.imgui_bridge_set_next_item_width(-1.0);
-            if (c.imgui_bridge_input_text_with_hint("##scene_path", "C:/path/to/scene.gltf or .glb", @ptrCast(&state.scene_path), state.scene_path.len)) {
-                // Input handling
-            }
-            if (c.imgui_bridge_button("Load")) {
-                const path_len = std.mem.indexOf(u8, &state.scene_path, &[_]u8{0}) orelse state.scene_path.len;
-                if (path_len > 0) {
-                    load_scene(state.scene_path[0..path_len]);
-                }
-            }
-            
-            if (state.is_loading) {
-                c.imgui_bridge_same_line(0, -1);
-                c.imgui_bridge_text("Loading...");
-            }
-            
-            c.imgui_bridge_separator();
-            
-            if (c.imgui_bridge_begin_child("##assets_list", 0, 0, true, 0)) {
-                if (state.assets.filtered_entries.items.len == 0) {
-                     c.imgui_bridge_text_disabled("No assets found in '%s'", state.assets.current_dir.ptr);
-                } else {
-                    for (state.assets.filtered_entries.items) |entry| {
-                        // Icon
-                        const icon = switch (entry.type) {
-                            .FOLDER => "[D]",
-                            .GLTF, .GLB => "[M]",
-                            .TEXTURE => "[T]",
-                            else => "[F]",
-                        };
-                        c.imgui_bridge_text("%s", icon);
-                        c.imgui_bridge_same_line(0, -1);
-                        
-                        if (c.imgui_bridge_selectable(@as([*:0]const u8, @ptrCast(entry.display.ptr)), false, 0)) {
-                            // Single click logic
-                            if (entry.is_directory) {
-                                const old_dir = state.assets.current_dir;
-                                if (std.mem.eql(u8, entry.display, "..")) {
-                                    // Go up
-                                    const parent = std.fs.path.dirname(old_dir) orelse old_dir;
-                                    state.assets.current_dir = allocator.dupeZ(u8, parent) catch old_dir;
-                                } else {
-                                    // Go down
-                                    state.assets.current_dir = allocator.dupeZ(u8, entry.full_path) catch old_dir;
-                                }
-                                
-                                if (state.assets.current_dir.ptr != old_dir.ptr) allocator.free(old_dir[0 .. old_dir.len + 1]);
-                                scan_assets_dir();
-                                break;
-                            } else if (entry.type == .GLTF or entry.type == .GLB) {
-                                // Select file logic (auto-load in C++, so here too?)
-                                // C++: Auto-load glTF/GLB files on single click
-                                load_scene(entry.full_path);
-                            }
-                        }
-                        
-                        // Double click support
-                        if (!entry.is_directory and c.imgui_bridge_is_item_hovered(0) and c.imgui_bridge_is_mouse_double_clicked(0)) {
-                             if (entry.type == .GLTF or entry.type == .GLB) {
-                                load_scene(entry.full_path);
-                            }
-                        }
-                    }
-                }
-            }
-            c.imgui_bridge_end_child();
-        }
-        c.imgui_bridge_end();
-    }
-}
-
-fn draw_animation_panel() void {
-    if (state.show_animation) {
-        if (c.imgui_bridge_begin("Animation", &state.show_animation, 0)) {
-            if (state.scene_loaded and state.combined_scene.animation_system != null) {
-                const anim_sys_opaque = state.combined_scene.animation_system.?;
-                const anim_sys = @as(*animation.CardinalAnimationSystem, @ptrCast(@alignCast(anim_sys_opaque)));
-                
-                // Animation selection
-                c.imgui_bridge_text("Animations (%d)", anim_sys.animation_count);
-                c.imgui_bridge_separator();
-                
-                if (c.imgui_bridge_begin_child("##animation_list", 0, 120, true, 0)) {
-                    var i: u32 = 0;
-                    while (i < anim_sys.animation_count) : (i += 1) {
-                        const anim = &anim_sys.animations.?[i];
-                        const name = if (anim.name) |n| std.mem.span(n) else "Unnamed Animation";
-                        
-                        const is_selected = (state.selected_animation == @as(i32, @intCast(i)));
-                        if (c.imgui_bridge_selectable(name.ptr, is_selected, 0)) {
-                            state.selected_animation = @as(i32, @intCast(i));
-                            state.animation_time = 0.0; // Reset time
-                        }
-                        
-                        c.imgui_bridge_same_line(0, -1);
-                        c.imgui_bridge_text_disabled("(%.2fs, %d channels)", anim.duration, anim.channel_count);
-                    }
-                    c.imgui_bridge_end_child();
-                }
-                
-                c.imgui_bridge_separator();
-                
-                // Playback controls
-                if (state.selected_animation >= 0 and state.selected_animation < anim_sys.animation_count) {
-                    const current_anim = &anim_sys.animations.?[@intCast(state.selected_animation)];
-                    
-                    c.imgui_bridge_text("Playback Controls");
-                    
-                    if (state.animation_playing) {
-                        if (c.imgui_bridge_button("Pause")) {
-                            state.animation_playing = false;
-                            _ = animation.cardinal_animation_pause(anim_sys, @intCast(state.selected_animation));
-                        }
-                    } else {
-                        if (c.imgui_bridge_button("Play")) {
-                            state.animation_playing = true;
-                            _ = animation.cardinal_animation_play(anim_sys, @intCast(state.selected_animation), state.animation_looping, 1.0);
-                        }
-                    }
-                    
-                    c.imgui_bridge_same_line(0, -1);
-                    if (c.imgui_bridge_button("Stop")) {
-                        state.animation_playing = false;
-                        state.animation_time = 0.0;
-                        _ = animation.cardinal_animation_stop(anim_sys, @intCast(state.selected_animation));
-                    }
-                    
-                    c.imgui_bridge_same_line(0, -1);
-                    _ = c.imgui_bridge_checkbox("Loop", &state.animation_looping);
-                    
-                    // Speed control
-                    c.imgui_bridge_set_next_item_width(100);
-                    if (c.imgui_bridge_slider_float("Speed", &state.animation_speed, 0.1, 3.0, "%.1fx")) {
-                        _ = animation.cardinal_animation_set_speed(anim_sys, @intCast(state.selected_animation), state.animation_speed);
-                    }
-                    
-                    // Timeline
-                    c.imgui_bridge_separator();
-                    c.imgui_bridge_text("Timeline");
-                    
-                    c.imgui_bridge_text("Time: %.2f / %.2f seconds", state.animation_time, current_anim.duration);
-                    
-                    // Timeline scrubber
-                    if (c.imgui_bridge_slider_float("##timeline", &state.animation_time, 0.0, current_anim.duration, "%.2fs")) {
-                         if (state.animation_time < 0.0) state.animation_time = 0.0;
-                         if (state.animation_time > current_anim.duration) {
-                             if (state.animation_looping) {
-                                 state.animation_time = @mod(state.animation_time, current_anim.duration);
-                             } else {
-                                 state.animation_time = current_anim.duration;
-                                 state.animation_playing = false;
-                             }
-                         }
-                    }
-                    
-                    // Update animation time during playback handled in update loop or here?
-                    // Zig version: update loop handles system update, but we need to sync state
-                    // In C++ version, update() syncs state. We should do the same.
-                    
-                    c.imgui_bridge_separator();
-                    c.imgui_bridge_text("Animation Info");
-                    c.imgui_bridge_text("Name: %s", if (current_anim.name) |n| n else "Unnamed");
-                    c.imgui_bridge_text("Duration: %.2f seconds", current_anim.duration);
-                    c.imgui_bridge_text("Channels: %d", current_anim.channel_count);
-                    c.imgui_bridge_text("Samplers: %d", current_anim.sampler_count);
-                    
-                    if (c.imgui_bridge_collapsing_header("Channels", 0)) {
-                        var i: u32 = 0;
-                        while (i < current_anim.channel_count) : (i += 1) {
-                            const channel = &current_anim.channels.?[i];
-                            c.imgui_bridge_text("Channel %d: Node %d, Target %d", i, channel.target.node_index, @intFromEnum(channel.target.path));
-                        }
-                    }
-                } else {
-                     c.imgui_bridge_text_disabled("Select an animation to see controls");
-                }
-            } else {
-                c.imgui_bridge_text("No animations");
-                c.imgui_bridge_text_wrapped("Load a scene with animations to see animation controls.");
-            }
-        }
-        c.imgui_bridge_end();
-    }
 }
 
 pub fn render() void {

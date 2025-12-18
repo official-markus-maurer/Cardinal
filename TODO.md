@@ -50,7 +50,7 @@ This document outlines areas for improvement, refactoring, and future extensions
 ## 4. Editor
 
 ### Architecture
-- [ ] **Componentization**: Refactor `editor_layer.zig` (currently monolithic) into separate systems/panels:
+- [x] **Componentization**: Refactor `editor_layer.zig` (currently monolithic) into separate systems/panels:
     - `panels/scene_hierarchy.zig`
     - `panels/inspector.zig`
     - `panels/content_browser.zig`
