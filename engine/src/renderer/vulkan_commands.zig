@@ -622,9 +622,9 @@ pub export fn vk_create_commands_sync(s: ?*types.VulkanState) callconv(.c) bool 
     return true;
 }
 
-pub export fn vk_recreate_images_in_flight(s: ?*c.VulkanState) callconv(.c) bool {
+pub export fn vk_recreate_images_in_flight(s: ?*types.VulkanState) callconv(.c) bool {
     if (s == null) return false;
-    const vs = @as(*types.VulkanState, @ptrCast(@alignCast(s.?)));
+    const vs = s.?;
 
     if (vs.swapchain.image_layout_initialized != null) {
         c.free(vs.swapchain.image_layout_initialized);
@@ -641,9 +641,9 @@ pub export fn vk_recreate_images_in_flight(s: ?*c.VulkanState) callconv(.c) bool
     return true;
 }
 
-pub export fn vk_destroy_commands_sync(s: ?*c.VulkanState) callconv(.c) void {
+pub export fn vk_destroy_commands_sync(s: ?*types.VulkanState) callconv(.c) void {
     if (s == null) return;
-    const vs = @as(*types.VulkanState, @ptrCast(@alignCast(s.?)));
+    const vs = s.?;
 
     vulkan_mt.cardinal_mt_subsystem_shutdown();
     log.cardinal_log_info("[CLEANUP] Multi-threading subsystem shutdown completed", .{});
@@ -722,9 +722,9 @@ pub export fn vk_destroy_commands_sync(s: ?*c.VulkanState) callconv(.c) void {
     }
 }
 
-pub export fn vk_record_cmd(s: ?*c.VulkanState, image_index: u32) callconv(.c) void {
+pub export fn vk_record_cmd(s: ?*types.VulkanState, image_index: u32) callconv(.c) void {
     if (s == null) return;
-    const vs = @as(*types.VulkanState, @ptrCast(@alignCast(s.?)));
+    const vs = s.?;
 
     const cmd = select_command_buffer(vs);
     if (cmd == null) return;
@@ -779,9 +779,9 @@ pub export fn vk_record_cmd(s: ?*c.VulkanState, image_index: u32) callconv(.c) v
     end_recording(vs, cmd, image_index);
 }
 
-pub export fn vk_prepare_mesh_shader_rendering(s: ?*c.VulkanState) callconv(.c) void {
+pub export fn vk_prepare_mesh_shader_rendering(s: ?*types.VulkanState) callconv(.c) void {
     if (s == null) return;
-    const vs = @as(*types.VulkanState, @ptrCast(@alignCast(s.?)));
+    const vs = s.?;
 
     if (!vs.pipelines.use_mesh_shader_pipeline or 
         vs.pipelines.mesh_shader_pipeline.pipeline == null or 

@@ -4,6 +4,9 @@ const log = @import("../core/log.zig");
 const types = @import("vulkan_types.zig");
 const c = @import("vulkan_c.zig").c;
 
+const CARDINAL_BINDLESS_TEXTURE_BINDING = 0;
+const CARDINAL_BINDLESS_SAMPLER_BINDING = 1;
+
 // Helper function to create default sampler
 fn create_default_sampler(device: c.VkDevice, out_sampler: *c.VkSampler) bool {
     var sampler_info = std.mem.zeroes(c.VkSamplerCreateInfo);
@@ -58,7 +61,7 @@ fn create_bindless_descriptor_pool(device: c.VkDevice, max_textures: u32, out_po
     return true;
 }
 
-pub export fn vk_bindless_texture_pool_init(pool: ?*c.BindlessTexturePool, vulkan_state: ?*types.VulkanState, max_textures: u32) callconv(.c) bool {
+pub export fn vk_bindless_texture_pool_init(pool: ?*types.BindlessTexturePool, vulkan_state: ?*types.VulkanState, max_textures: u32) callconv(.c) bool {
     if (pool == null or vulkan_state == null) {
         log.cardinal_log_error("Invalid parameters for bindless texture pool initialization", .{});
         return false;
@@ -71,21 +74,20 @@ pub export fn vk_bindless_texture_pool_init(pool: ?*c.BindlessTexturePool, vulka
         return false;
     }
 
-    @memset(@as([*]u8, @ptrCast(p))[0..@sizeOf(c.BindlessTexturePool)], 0);
+    @memset(@as([*]u8, @ptrCast(p))[0..@sizeOf(types.BindlessTexturePool)], 0);
 
     p.device = state.context.device;
     p.physical_device = state.context.physical_device;
-    // Cast types.VulkanAllocator to c.VulkanAllocator (which is opaque in C header)
-    p.allocator = @as(?*c.VulkanAllocator, @ptrCast(&state.allocator));
+    p.allocator = &state.allocator;
     p.max_textures = max_textures;
 
     // Allocate texture array
-    const textures_ptr = c.calloc(max_textures, @sizeOf(c.BindlessTexture));
+    const textures_ptr = c.calloc(max_textures, @sizeOf(types.BindlessTexture));
     if (textures_ptr == null) {
         log.cardinal_log_error("Failed to allocate memory for bindless textures", .{});
         return false;
     }
-    p.textures = @as([*]c.BindlessTexture, @ptrCast(@alignCast(textures_ptr)));
+    p.textures = @as([*]types.BindlessTexture, @ptrCast(@alignCast(textures_ptr)));
 
     // Initialize free list
     const free_indices_ptr = c.malloc(max_textures * @sizeOf(u32));
@@ -99,7 +101,7 @@ pub export fn vk_bindless_texture_pool_init(pool: ?*c.BindlessTexturePool, vulka
     // Initialize all indices as free
     var i: u32 = 0;
     while (i < max_textures) : (i += 1) {
-        p.free_indices[i] = max_textures - 1 - i; // Reverse order for stack behavior
+        p.free_indices.?[i] = max_textures - 1 - i; // Reverse order for stack behavior
     }
     p.free_count = max_textures;
 
@@ -124,14 +126,14 @@ pub export fn vk_bindless_texture_pool_init(pool: ?*c.BindlessTexturePool, vulka
     // Create descriptor set layout
     var bindings = [_]c.VkDescriptorSetLayoutBinding{
         .{
-            .binding = c.CARDINAL_BINDLESS_TEXTURE_BINDING,
+            .binding = CARDINAL_BINDLESS_TEXTURE_BINDING,
             .descriptorType = c.VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE,
             .descriptorCount = max_textures,
             .stageFlags = c.VK_SHADER_STAGE_FRAGMENT_BIT | c.VK_SHADER_STAGE_MESH_BIT_EXT,
             .pImmutableSamplers = null,
         },
         .{
-            .binding = c.CARDINAL_BINDLESS_SAMPLER_BINDING,
+            .binding = CARDINAL_BINDLESS_SAMPLER_BINDING,
             .descriptorType = c.VK_DESCRIPTOR_TYPE_SAMPLER,
             .descriptorCount = max_textures,
             .stageFlags = c.VK_SHADER_STAGE_FRAGMENT_BIT | c.VK_SHADER_STAGE_MESH_BIT_EXT,
@@ -140,7 +142,7 @@ pub export fn vk_bindless_texture_pool_init(pool: ?*c.BindlessTexturePool, vulka
     };
 
     if (!vk_create_variable_descriptor_layout(p.device, 2, &bindings,
-                                              c.CARDINAL_BINDLESS_TEXTURE_BINDING, max_textures,
+                                              CARDINAL_BINDLESS_TEXTURE_BINDING, max_textures,
                                               &p.descriptor_layout)) {
         c.vkDestroySampler(p.device, p.default_sampler, null);
         c.free(p.textures);
@@ -176,7 +178,7 @@ pub export fn vk_bindless_texture_pool_init(pool: ?*c.BindlessTexturePool, vulka
     return true;
 }
 
-pub export fn vk_bindless_texture_pool_destroy(pool: ?*c.BindlessTexturePool) callconv(.c) void {
+pub export fn vk_bindless_texture_pool_destroy(pool: ?*types.BindlessTexturePool) callconv(.c) void {
     if (pool == null or pool.?.device == null) {
         return;
     }
@@ -185,7 +187,7 @@ pub export fn vk_bindless_texture_pool_destroy(pool: ?*c.BindlessTexturePool) ca
     // Free all allocated textures
     var i: u32 = 0;
     while (i < p.max_textures) : (i += 1) {
-        if (p.textures[i].is_allocated) {
+        if (p.textures.?[i].is_allocated) {
             vk_bindless_texture_free(p, i);
         }
     }
@@ -208,13 +210,13 @@ pub export fn vk_bindless_texture_pool_destroy(pool: ?*c.BindlessTexturePool) ca
     c.free(p.free_indices);
     c.free(p.pending_updates);
 
-    @memset(@as([*]u8, @ptrCast(p))[0..@sizeOf(c.BindlessTexturePool)], 0);
+    @memset(@as([*]u8, @ptrCast(p))[0..@sizeOf(types.BindlessTexturePool)], 0);
 
     log.cardinal_log_info("Bindless texture pool destroyed", .{});
 }
 
-pub export fn vk_bindless_texture_allocate(pool: ?*c.BindlessTexturePool,
-                                  create_info: ?*const c.BindlessTextureCreateInfo,
+pub export fn vk_bindless_texture_allocate(pool: ?*types.BindlessTexturePool,
+                                  create_info: ?*const types.BindlessTextureCreateInfo,
                                   out_index: ?*u32) callconv(.c) bool {
     if (pool == null or create_info == null or out_index == null) {
         log.cardinal_log_error("Invalid parameters for bindless texture allocation", .{});
@@ -230,8 +232,8 @@ pub export fn vk_bindless_texture_allocate(pool: ?*c.BindlessTexturePool,
 
     // Get free index
     p.free_count -= 1;
-    const index = p.free_indices[p.free_count];
-    var texture = &p.textures[index];
+    const index = p.free_indices.?[p.free_count];
+    var texture = &p.textures.?[index];
 
     // Create image
     var image_info = std.mem.zeroes(c.VkImageCreateInfo);
@@ -250,7 +252,7 @@ pub export fn vk_bindless_texture_allocate(pool: ?*c.BindlessTexturePool,
     var result = c.vkCreateImage(p.device, &image_info, null, &texture.image);
     if (result != c.VK_SUCCESS) {
         log.cardinal_log_error("Failed to create bindless texture image: {d}", .{result});
-        p.free_indices[p.free_count] = index;
+        p.free_indices.?[p.free_count] = index;
         p.free_count += 1;
         return false;
     }
@@ -281,7 +283,7 @@ pub export fn vk_bindless_texture_allocate(pool: ?*c.BindlessTexturePool,
     if (memory_type_index == c.UINT32_MAX) {
         log.cardinal_log_error("Failed to find suitable memory type for bindless texture", .{});
         c.vkDestroyImage(p.device, texture.image, null);
-        p.free_indices[p.free_count] = index;
+        p.free_indices.?[p.free_count] = index;
         p.free_count += 1;
         return false;
     }
@@ -292,7 +294,7 @@ pub export fn vk_bindless_texture_allocate(pool: ?*c.BindlessTexturePool,
     if (result != c.VK_SUCCESS) {
         log.cardinal_log_error("Failed to allocate memory for bindless texture: {d}", .{result});
         c.vkDestroyImage(p.device, texture.image, null);
-        p.free_indices[p.free_count] = index;
+        p.free_indices.?[p.free_count] = index;
         p.free_count += 1;
         return false;
     }
@@ -302,7 +304,7 @@ pub export fn vk_bindless_texture_allocate(pool: ?*c.BindlessTexturePool,
         log.cardinal_log_error("Failed to bind memory to bindless texture: {d}", .{result});
         c.vkFreeMemory(p.device, texture.memory, null);
         c.vkDestroyImage(p.device, texture.image, null);
-        p.free_indices[p.free_count] = index;
+        p.free_indices.?[p.free_count] = index;
         p.free_count += 1;
         return false;
     }
@@ -324,7 +326,7 @@ pub export fn vk_bindless_texture_allocate(pool: ?*c.BindlessTexturePool,
         log.cardinal_log_error("Failed to create image view for bindless texture: {d}", .{result});
         c.vkFreeMemory(p.device, texture.memory, null);
         c.vkDestroyImage(p.device, texture.image, null);
-        p.free_indices[p.free_count] = index;
+        p.free_indices.?[p.free_count] = index;
         p.free_count += 1;
         return false;
     }
@@ -338,7 +340,7 @@ pub export fn vk_bindless_texture_allocate(pool: ?*c.BindlessTexturePool,
     texture.mip_levels = info.mip_levels;
 
     // Mark for descriptor update
-    p.pending_updates[p.pending_update_count] = index;
+    p.pending_updates.?[p.pending_update_count] = index;
     p.pending_update_count += 1;
     p.needs_descriptor_update = true;
 
@@ -349,14 +351,14 @@ pub export fn vk_bindless_texture_allocate(pool: ?*c.BindlessTexturePool,
     return true;
 }
 
-pub export fn vk_bindless_texture_free(pool: ?*c.BindlessTexturePool, texture_index: u32) callconv(.c) void {
+pub export fn vk_bindless_texture_free(pool: ?*types.BindlessTexturePool, texture_index: u32) callconv(.c) void {
     if (pool == null or texture_index >= pool.?.max_textures) {
         log.cardinal_log_error("Invalid texture index for bindless texture free: {d}", .{texture_index});
         return;
     }
     const p = pool.?;
 
-    const texture = &p.textures[texture_index];
+    const texture = &p.textures.?[texture_index];
     if (!texture.is_allocated) {
         log.cardinal_log_warn("Attempting to free already freed bindless texture at index {d}", .{texture_index});
         return;
@@ -376,17 +378,17 @@ pub export fn vk_bindless_texture_free(pool: ?*c.BindlessTexturePool, texture_in
     }
 
     // Reset texture
-    @memset(@as([*]u8, @ptrCast(texture))[0..@sizeOf(c.BindlessTexture)], 0);
+    @memset(@as([*]u8, @ptrCast(texture))[0..@sizeOf(types.BindlessTexture)], 0);
 
     // Return index to free list
-    p.free_indices[p.free_count] = texture_index;
+    p.free_indices.?[p.free_count] = texture_index;
     p.free_count += 1;
     p.allocated_count -= 1;
 
     log.cardinal_log_debug("Freed bindless texture at index {d}", .{texture_index});
 }
 
-pub export fn vk_bindless_texture_update_data(pool: ?*c.BindlessTexturePool, texture_index: u32,
+pub export fn vk_bindless_texture_update_data(pool: ?*types.BindlessTexturePool, texture_index: u32,
                                      data: ?*const anyopaque, data_size: c.VkDeviceSize,
                                      command_buffer: c.VkCommandBuffer) callconv(.c) bool {
     _ = pool;
@@ -399,17 +401,17 @@ pub export fn vk_bindless_texture_update_data(pool: ?*c.BindlessTexturePool, tex
     return false;
 }
 
-pub export fn vk_bindless_texture_get_descriptor_set(pool: ?*const c.BindlessTexturePool) callconv(.c) c.VkDescriptorSet {
+pub export fn vk_bindless_texture_get_descriptor_set(pool: ?*const types.BindlessTexturePool) callconv(.c) c.VkDescriptorSet {
     if (pool == null) return null;
     return pool.?.descriptor_set;
 }
 
-pub export fn vk_bindless_texture_get_layout(pool: ?*const c.BindlessTexturePool) callconv(.c) c.VkDescriptorSetLayout {
+pub export fn vk_bindless_texture_get_layout(pool: ?*const types.BindlessTexturePool) callconv(.c) c.VkDescriptorSetLayout {
     if (pool == null) return null;
     return pool.?.descriptor_layout;
 }
 
-pub export fn vk_bindless_texture_flush_updates(pool: ?*c.BindlessTexturePool) callconv(.c) bool {
+pub export fn vk_bindless_texture_flush_updates(pool: ?*types.BindlessTexturePool) callconv(.c) bool {
     if (pool == null or !pool.?.needs_descriptor_update or pool.?.pending_update_count == 0) {
         return true;
     }
@@ -436,8 +438,8 @@ pub export fn vk_bindless_texture_flush_updates(pool: ?*c.BindlessTexturePool) c
 
     var i: u32 = 0;
     while (i < p.pending_update_count) : (i += 1) {
-        const texture_index = p.pending_updates[i];
-        const texture = &p.textures[texture_index];
+        const texture_index = p.pending_updates.?[i];
+        const texture = &p.textures.?[texture_index];
 
         if (!texture.is_allocated) {
             continue;
@@ -453,7 +455,7 @@ pub export fn vk_bindless_texture_flush_updates(pool: ?*c.BindlessTexturePool) c
         writes[write_count] = .{
             .sType = c.VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
             .dstSet = p.descriptor_set,
-            .dstBinding = c.CARDINAL_BINDLESS_TEXTURE_BINDING,
+            .dstBinding = CARDINAL_BINDLESS_TEXTURE_BINDING,
             .dstArrayElement = texture_index,
             .descriptorType = c.VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE,
             .descriptorCount = 1,
@@ -474,7 +476,7 @@ pub export fn vk_bindless_texture_flush_updates(pool: ?*c.BindlessTexturePool) c
         writes[write_count] = .{
             .sType = c.VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
             .dstSet = p.descriptor_set,
-            .dstBinding = c.CARDINAL_BINDLESS_SAMPLER_BINDING,
+            .dstBinding = CARDINAL_BINDLESS_SAMPLER_BINDING,
             .dstArrayElement = texture_index,
             .descriptorType = c.VK_DESCRIPTOR_TYPE_SAMPLER,
             .descriptorCount = 1,
@@ -503,13 +505,13 @@ pub export fn vk_bindless_texture_flush_updates(pool: ?*c.BindlessTexturePool) c
     return true;
 }
 
-pub export fn vk_bindless_texture_get(pool: ?*const c.BindlessTexturePool,
-                                               texture_index: u32) callconv(.c) ?*const c.BindlessTexture {
+pub export fn vk_bindless_texture_get(pool: ?*const types.BindlessTexturePool,
+                                               texture_index: u32) callconv(.c) ?*const types.BindlessTexture {
     if (pool == null or texture_index >= pool.?.max_textures or
-        !pool.?.textures[texture_index].is_allocated) {
+        !pool.?.textures.?[texture_index].is_allocated) {
         return null;
     }
-    return &pool.?.textures[texture_index];
+    return &pool.?.textures.?[texture_index];
 }
 
 pub export fn vk_descriptor_indexing_supported(vulkan_state: ?*const types.VulkanState) callconv(.c) bool {

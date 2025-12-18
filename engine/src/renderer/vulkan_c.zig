@@ -8,9 +8,6 @@ pub const c = @cImport({
     @cInclude("stdio.h");
     @cInclude("vulkan/vulkan.h");
     @cInclude("GLFW/glfw3.h");
-    @cInclude("cardinal/renderer/vulkan_descriptor_indexing.h");
-    @cInclude("cardinal/renderer/vulkan_compute.h");
-    @cInclude("cardinal/renderer/util/vulkan_shader_utils.h");
     
     if (builtin.os.tag == .windows) {
         @cInclude("windows.h");

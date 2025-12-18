@@ -300,6 +300,94 @@ pub const VulkanSwapchain = extern struct {
 };
 
 //
+// Bindless Texture
+//
+pub const BindlessTexture = extern struct {
+    image: c.VkImage,
+    image_view: c.VkImageView,
+    memory: c.VkDeviceMemory,
+    sampler: c.VkSampler,
+    descriptor_index: u32,
+    is_allocated: bool,
+    format: c.VkFormat,
+    extent: c.VkExtent3D,
+    mip_levels: u32,
+};
+
+pub const BindlessTexturePool = extern struct {
+    device: c.VkDevice,
+    physical_device: c.VkPhysicalDevice,
+    allocator: *VulkanAllocator,
+    descriptor_layout: c.VkDescriptorSetLayout,
+    descriptor_pool: c.VkDescriptorPool,
+    descriptor_set: c.VkDescriptorSet,
+    textures: ?[*]BindlessTexture,
+    max_textures: u32,
+    allocated_count: u32,
+    free_indices: ?[*]u32,
+    free_count: u32,
+    default_sampler: c.VkSampler,
+    needs_descriptor_update: bool,
+    pending_updates: ?[*]u32,
+    pending_update_count: u32,
+};
+
+pub const BindlessTextureCreateInfo = extern struct {
+    extent: c.VkExtent3D,
+    format: c.VkFormat,
+    mip_levels: u32,
+    usage: c.VkImageUsageFlags,
+    samples: c.VkSampleCountFlagBits,
+    custom_sampler: c.VkSampler,
+    initial_data: ?*const anyopaque,
+    data_size: c.VkDeviceSize,
+};
+
+//
+// Compute
+//
+pub const ComputePipelineConfig = extern struct {
+    compute_shader_path: ?[*:0]const u8,
+    push_constant_size: u32,
+    push_constant_stages: c.VkShaderStageFlags,
+    descriptor_set_count: u32,
+    descriptor_layouts: ?[*]c.VkDescriptorSetLayout,
+    local_size_x: u32,
+    local_size_y: u32,
+    local_size_z: u32,
+};
+
+pub const ComputePipeline = extern struct {
+    pipeline: c.VkPipeline,
+    pipeline_layout: c.VkPipelineLayout,
+    descriptor_layouts: ?[*]c.VkDescriptorSetLayout,
+    descriptor_set_count: u32,
+    push_constant_size: u32,
+    push_constant_stages: c.VkShaderStageFlags,
+    local_size_x: u32,
+    local_size_y: u32,
+    local_size_z: u32,
+    initialized: bool,
+};
+
+pub const ComputeDispatchInfo = extern struct {
+    group_count_x: u32,
+    group_count_y: u32,
+    group_count_z: u32,
+    descriptor_sets: ?[*]c.VkDescriptorSet,
+    descriptor_set_count: u32,
+    push_constants: ?*const anyopaque,
+    push_constant_size: u32,
+};
+
+pub const ComputeMemoryBarrier = extern struct {
+    src_stage_mask: c.VkPipelineStageFlags,
+    dst_stage_mask: c.VkPipelineStageFlags,
+    src_access_mask: c.VkAccessFlags,
+    dst_access_mask: c.VkAccessFlags,
+};
+
+//
 // VulkanCommands
 //
 pub const VulkanCommands = extern struct {

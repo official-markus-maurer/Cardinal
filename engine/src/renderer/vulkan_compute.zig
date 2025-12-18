@@ -2,6 +2,7 @@ const std = @import("std");
 const log = @import("../core/log.zig");
 const types = @import("vulkan_types.zig");
 const c = @import("vulkan_c.zig").c;
+const shader_utils = @import("util/vulkan_shader_utils.zig");
 
 pub export fn vk_compute_init(vulkan_state: ?*types.VulkanState) callconv(.c) bool {
     if (vulkan_state == null) {
@@ -21,7 +22,7 @@ pub export fn vk_compute_cleanup(vulkan_state: ?*types.VulkanState) callconv(.c)
     log.cardinal_log_info("[COMPUTE] Compute shader support cleaned up", .{});
 }
 
-pub export fn vk_compute_validate_config(vulkan_state: ?*types.VulkanState, config: ?*const c.ComputePipelineConfig) callconv(.c) bool {
+pub export fn vk_compute_validate_config(vulkan_state: ?*types.VulkanState, config: ?*const types.ComputePipelineConfig) callconv(.c) bool {
     if (vulkan_state == null or config == null) {
         log.cardinal_log_error("[COMPUTE] Invalid parameters for config validation", .{});
         return false;
@@ -88,8 +89,8 @@ pub export fn vk_compute_create_descriptor_layout(
 
 pub export fn vk_compute_create_pipeline(
     vulkan_state: ?*types.VulkanState,
-    config: ?*const c.ComputePipelineConfig,
-    pipeline: ?*c.ComputePipeline
+    config: ?*const types.ComputePipelineConfig,
+    pipeline: ?*types.ComputePipeline
 ) callconv(.c) bool {
     if (vulkan_state == null or config == null or pipeline == null) {
         log.cardinal_log_error("[COMPUTE] Invalid parameters for compute pipeline creation", .{});
@@ -105,12 +106,12 @@ pub export fn vk_compute_create_pipeline(
     }
 
     // Initialize pipeline structure
-    @memset(@as([*]u8, @ptrCast(pipe))[0..@sizeOf(c.ComputePipeline)], 0);
+    @memset(@as([*]u8, @ptrCast(pipe))[0..@sizeOf(types.ComputePipeline)], 0);
 
     // Load compute shader
     var compute_shader: c.VkShaderModule = null;
-    if (!c.vk_shader_create_module(vs.context.device, cfg.compute_shader_path, &compute_shader)) {
-        log.cardinal_log_error("[COMPUTE] Failed to load compute shader: {s}", .{if (cfg.compute_shader_path != null) std.mem.span(cfg.compute_shader_path) else "null"});
+    if (!shader_utils.vk_shader_create_module(vs.context.device, cfg.compute_shader_path, &compute_shader)) {
+        log.cardinal_log_error("[COMPUTE] Failed to load compute shader: {s}", .{if (cfg.compute_shader_path) |p| std.mem.span(p) else "null"});
         return false;
     }
 
@@ -189,7 +190,7 @@ pub export fn vk_compute_create_pipeline(
     return true;
 }
 
-pub export fn vk_compute_destroy_pipeline(vulkan_state: ?*types.VulkanState, pipeline: ?*c.ComputePipeline) callconv(.c) void {
+pub export fn vk_compute_destroy_pipeline(vulkan_state: ?*types.VulkanState, pipeline: ?*types.ComputePipeline) callconv(.c) void {
     if (vulkan_state == null or pipeline == null or !pipeline.?.initialized) {
         return;
     }
@@ -218,8 +219,8 @@ pub export fn vk_compute_destroy_pipeline(vulkan_state: ?*types.VulkanState, pip
 
 pub export fn vk_compute_dispatch(
     cmd_buffer: c.VkCommandBuffer,
-    pipeline: ?*const c.ComputePipeline,
-    dispatch_info: ?*const c.ComputeDispatchInfo
+    pipeline: ?*const types.ComputePipeline,
+    dispatch_info: ?*const types.ComputeDispatchInfo
 ) callconv(.c) void {
     if (cmd_buffer == null or pipeline == null or dispatch_info == null or !pipeline.?.initialized) {
         log.cardinal_log_error("[COMPUTE] Invalid parameters for compute dispatch", .{});
@@ -248,7 +249,7 @@ pub export fn vk_compute_dispatch(
     c.vkCmdDispatch(cmd_buffer, info.group_count_x, info.group_count_y, info.group_count_z);
 }
 
-pub export fn vk_compute_memory_barrier(cmd_buffer: c.VkCommandBuffer, barrier: ?*const c.ComputeMemoryBarrier) callconv(.c) void {
+pub export fn vk_compute_memory_barrier(cmd_buffer: c.VkCommandBuffer, barrier: ?*const types.ComputeMemoryBarrier) callconv(.c) void {
     if (cmd_buffer == null or barrier == null) {
         log.cardinal_log_error("[COMPUTE] Invalid parameters for memory barrier", .{});
         return;
