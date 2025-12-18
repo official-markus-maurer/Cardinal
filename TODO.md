@@ -82,4 +82,4 @@ This document outlines areas for improvement, refactoring, and future extensions
 
 ## 7. Math
 
-- [ ] **Math Library**: Consolidate math types. Currently using arrays `[16]f32`. Create/Use a struct-based library (e.g., `zmath` or internal structs) with methods (`vec3.add()`, `mat4.mul()`) for better readability.
+- [x] **Math Library**: Consolidate math types. Currently using arrays `[16]f32`. Create/Use a struct-based library (e.g., `zmath` or internal structs) with methods (`vec3.add()`, `mat4.mul()`) for better readability.

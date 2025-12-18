@@ -29,46 +29,93 @@ const MeshLoadContext = struct {
 // === Platform-specific threading utilities ===
 
 pub fn cardinal_mt_mutex_init(mutex: *types.cardinal_mutex_t) bool {
-    mutex.* = .{};
+    const mem_alloc = memory.cardinal_get_allocator_for_category(.RENDERER);
+    const m = memory.cardinal_alloc(mem_alloc, @sizeOf(std.Thread.Mutex));
+    if (m == null) return false;
+    
+    const mutex_ptr = @as(*std.Thread.Mutex, @ptrCast(@alignCast(m)));
+    mutex_ptr.* = .{};
+    
+    mutex.* = @ptrCast(mutex_ptr);
     return true;
 }
 
 pub fn cardinal_mt_mutex_destroy(mutex: *types.cardinal_mutex_t) void {
-    mutex.* = undefined;
+    if (mutex.*) |ptr| {
+        const mem_alloc = memory.cardinal_get_allocator_for_category(.RENDERER);
+        memory.cardinal_free(mem_alloc, ptr);
+        mutex.* = null;
+    }
 }
 
 pub fn cardinal_mt_mutex_lock(mutex: *types.cardinal_mutex_t) void {
-    mutex.lock();
+    if (mutex.*) |ptr| {
+        const mutex_ptr = @as(*std.Thread.Mutex, @ptrCast(@alignCast(ptr)));
+        mutex_ptr.lock();
+    }
 }
 
 pub fn cardinal_mt_mutex_unlock(mutex: *types.cardinal_mutex_t) void {
-    mutex.unlock();
+    if (mutex.*) |ptr| {
+        const mutex_ptr = @as(*std.Thread.Mutex, @ptrCast(@alignCast(ptr)));
+        mutex_ptr.unlock();
+    }
 }
 
 pub fn cardinal_mt_cond_init(cond: *types.cardinal_cond_t) bool {
-    cond.* = .{};
+    const mem_alloc = memory.cardinal_get_allocator_for_category(.RENDERER);
+    const c_ptr = memory.cardinal_alloc(mem_alloc, @sizeOf(std.Thread.Condition));
+    if (c_ptr == null) return false;
+    
+    const cond_ptr = @as(*std.Thread.Condition, @ptrCast(@alignCast(c_ptr)));
+    cond_ptr.* = .{};
+    
+    cond.* = @ptrCast(cond_ptr);
     return true;
 }
 
 pub fn cardinal_mt_cond_destroy(cond: *types.cardinal_cond_t) void {
-    cond.* = undefined;
+    if (cond.*) |ptr| {
+        const mem_alloc = memory.cardinal_get_allocator_for_category(.RENDERER);
+        memory.cardinal_free(mem_alloc, ptr);
+        cond.* = null;
+    }
 }
 
 pub fn cardinal_mt_cond_wait(cond: *types.cardinal_cond_t, mutex: *types.cardinal_mutex_t) void {
-    cond.wait(mutex);
+    if (cond.*) |c_ptr| {
+        if (mutex.*) |m_ptr| {
+            const cond_ptr = @as(*std.Thread.Condition, @ptrCast(@alignCast(c_ptr)));
+            const mutex_ptr = @as(*std.Thread.Mutex, @ptrCast(@alignCast(m_ptr)));
+            cond_ptr.wait(mutex_ptr);
+        }
+    }
 }
 
 pub fn cardinal_mt_cond_signal(cond: *types.cardinal_cond_t) void {
-    cond.signal();
+    if (cond.*) |ptr| {
+        const cond_ptr = @as(*std.Thread.Condition, @ptrCast(@alignCast(ptr)));
+        cond_ptr.signal();
+    }
 }
 
 pub fn cardinal_mt_cond_broadcast(cond: *types.cardinal_cond_t) void {
-    cond.broadcast();
+    if (cond.*) |ptr| {
+        const cond_ptr = @as(*std.Thread.Condition, @ptrCast(@alignCast(ptr)));
+        cond_ptr.broadcast();
+    }
 }
 
 pub fn cardinal_mt_cond_wait_timeout(cond: *types.cardinal_cond_t, mutex: *types.cardinal_mutex_t, timeout_ms: u32) bool {
-    cond.timedWait(mutex, @as(u64, timeout_ms) * 1_000_000) catch return false;
-    return true;
+    if (cond.*) |c_ptr| {
+        if (mutex.*) |m_ptr| {
+            const cond_ptr = @as(*std.Thread.Condition, @ptrCast(@alignCast(c_ptr)));
+            const mutex_ptr = @as(*std.Thread.Mutex, @ptrCast(@alignCast(m_ptr)));
+            cond_ptr.timedWait(mutex_ptr, @as(u64, timeout_ms) * 1_000_000) catch return false;
+            return true;
+        }
+    }
+    return false;
 }
 
 pub fn cardinal_mt_get_current_thread_id() types.cardinal_thread_id_t {
@@ -258,9 +305,19 @@ pub fn cardinal_mt_command_manager_init(manager: *types.CardinalMTCommandManager
         return false;
     }
 
+    // Allocate thread pools
+    const allocator = memory.cardinal_get_allocator_for_category(.RENDERER);
+    const ptr = memory.cardinal_alloc(allocator, @sizeOf(types.CardinalThreadCommandPool) * types.CARDINAL_MAX_MT_THREADS);
+    if (ptr == null) {
+        log.cardinal_log_error("[MT] Failed to allocate thread pools", .{});
+        cardinal_mt_mutex_destroy(&manager.pool_mutex);
+        return false;
+    }
+    manager.thread_pools = @as([*]types.CardinalThreadCommandPool, @ptrCast(@alignCast(ptr)));
+
     var i: u32 = 0;
     while (i < types.CARDINAL_MAX_MT_THREADS) : (i += 1) {
-        var pool = &manager.thread_pools[i];
+        var pool = &manager.thread_pools.?[i];
         pool.primary_pool = null; // VK_NULL_HANDLE
         pool.secondary_pool = null;
         pool.secondary_buffers = null;
@@ -281,7 +338,7 @@ pub fn cardinal_mt_command_manager_shutdown(manager: *types.CardinalMTCommandMan
 
     var i: u32 = 0;
     while (i < types.CARDINAL_MAX_MT_THREADS) : (i += 1) {
-        var pool = &manager.thread_pools[i];
+        var pool = &manager.thread_pools.?[i];
         if (pool.is_active) {
             const allocator = memory.cardinal_get_allocator_for_category(.RENDERER);
             if (pool.secondary_buffers != null) {
@@ -302,14 +359,17 @@ pub fn cardinal_mt_command_manager_shutdown(manager: *types.CardinalMTCommandMan
             pool.is_active = false;
         }
     }
-
-    manager.active_thread_count = 0;
-    manager.is_initialized = false;
+    
+    // Free thread pools array
+    if (manager.thread_pools != null) {
+        const allocator = memory.cardinal_get_allocator_for_category(.RENDERER);
+        memory.cardinal_free(allocator, @ptrCast(manager.thread_pools));
+        manager.thread_pools = null;
+    }
 
     cardinal_mt_mutex_unlock(&manager.pool_mutex);
     cardinal_mt_mutex_destroy(&manager.pool_mutex);
-
-    log.cardinal_log_info("[MT] Command manager shutdown completed", .{});
+    manager.is_initialized = false;
 }
 
 pub fn cardinal_mt_get_thread_command_pool(manager: *types.CardinalMTCommandManager) ?*types.CardinalThreadCommandPool {
@@ -322,7 +382,7 @@ pub fn cardinal_mt_get_thread_command_pool(manager: *types.CardinalMTCommandMana
     // Find existing pool
     var i: u32 = 0;
     while (i < types.CARDINAL_MAX_MT_THREADS) : (i += 1) {
-        const pool = &manager.thread_pools[i];
+        const pool = &manager.thread_pools.?[i];
         if (pool.is_active and cardinal_mt_thread_ids_equal(pool.thread_id, thread_id)) {
             cardinal_mt_mutex_unlock(&manager.pool_mutex);
             return pool;
@@ -333,8 +393,8 @@ pub fn cardinal_mt_get_thread_command_pool(manager: *types.CardinalMTCommandMana
     i = 0;
     var free_pool: ?*types.CardinalThreadCommandPool = null;
     while (i < types.CARDINAL_MAX_MT_THREADS) : (i += 1) {
-        if (!manager.thread_pools[i].is_active) {
-            free_pool = &manager.thread_pools[i];
+        if (!manager.thread_pools.?[i].is_active) {
+            free_pool = &manager.thread_pools.?[i];
             break;
         }
     }
@@ -516,7 +576,7 @@ pub fn cardinal_mt_reset_all_command_pools(manager: *types.CardinalMTCommandMana
 
     var i: u32 = 0;
     while (i < types.CARDINAL_MAX_MT_THREADS) : (i += 1) {
-        var pool = &manager.thread_pools[i];
+        var pool = &manager.thread_pools.?[i];
         if (pool.is_active) {
              const device = manager.vulkan_state.?.context.device;
              
@@ -593,6 +653,25 @@ pub fn cardinal_mt_subsystem_init(vulkan_state: ?*types.VulkanState, worker_thre
     g_cardinal_mt_subsystem.worker_thread_count = worker_thread_count;
     g_cardinal_mt_subsystem.is_running = true;
 
+    // Allocate worker threads array
+    const allocator = memory.cardinal_get_allocator_for_category(.RENDERER);
+    const threads_ptr = memory.cardinal_alloc(allocator, @sizeOf(?types.cardinal_thread_handle_t) * worker_thread_count);
+    if (threads_ptr == null) {
+        log.cardinal_log_error("[MT] Failed to allocate worker threads array", .{});
+        cardinal_mt_mutex_destroy(&g_cardinal_mt_subsystem.subsystem_mutex);
+        cardinal_mt_task_queue_shutdown(&g_cardinal_mt_subsystem.completed_queue);
+        cardinal_mt_task_queue_shutdown(&g_cardinal_mt_subsystem.pending_queue);
+        cardinal_mt_command_manager_shutdown(&g_cardinal_mt_subsystem.command_manager);
+        return false;
+    }
+    g_cardinal_mt_subsystem.worker_threads = @as([*]?types.cardinal_thread_handle_t, @ptrCast(@alignCast(threads_ptr)))[0..worker_thread_count];
+    
+    // Initialize threads to null
+    var k: u32 = 0;
+    while (k < worker_thread_count) : (k += 1) {
+        g_cardinal_mt_subsystem.worker_threads[k] = null;
+    }
+
     var i: u32 = 0;
     while (i < worker_thread_count) : (i += 1) {
         if (!cardinal_mt_create_thread(&g_cardinal_mt_subsystem.worker_threads[i], null)) {
@@ -607,6 +686,9 @@ pub fn cardinal_mt_subsystem_init(vulkan_state: ?*types.VulkanState, worker_thre
                     cardinal_mt_join_thread(thread);
                 }
             }
+            
+            memory.cardinal_free(allocator, threads_ptr);
+            g_cardinal_mt_subsystem.worker_threads = &.{};
 
             cardinal_mt_mutex_destroy(&g_cardinal_mt_subsystem.subsystem_mutex);
             cardinal_mt_task_queue_shutdown(&g_cardinal_mt_subsystem.completed_queue);
@@ -633,6 +715,13 @@ pub fn cardinal_mt_subsystem_shutdown() void {
         if (g_cardinal_mt_subsystem.worker_threads[i]) |thread| {
             cardinal_mt_join_thread(thread);
         }
+    }
+    
+    // Free worker threads array
+    if (g_cardinal_mt_subsystem.worker_threads.len > 0) {
+        const allocator = memory.cardinal_get_allocator_for_category(.RENDERER);
+        memory.cardinal_free(allocator, @ptrCast(g_cardinal_mt_subsystem.worker_threads.ptr));
+        g_cardinal_mt_subsystem.worker_threads = &.{};
     }
 
     cardinal_mt_mutex_destroy(&g_cardinal_mt_subsystem.subsystem_mutex);

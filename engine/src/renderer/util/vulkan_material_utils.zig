@@ -33,28 +33,28 @@ fn set_default_material_properties(pushConstants: *types.PBRPushConstants, hasTe
     }
 
     // Default texture transforms (identity)
-    pushConstants.albedoTransform.scale[0] = 1.0;
-    pushConstants.albedoTransform.scale[1] = 1.0;
-    pushConstants.normalTransform.scale[0] = 1.0;
-    pushConstants.normalTransform.scale[1] = 1.0;
-    pushConstants.metallicRoughnessTransform.scale[0] = 1.0;
-    pushConstants.metallicRoughnessTransform.scale[1] = 1.0;
-    pushConstants.aoTransform.scale[0] = 1.0;
-    pushConstants.aoTransform.scale[1] = 1.0;
-    pushConstants.emissiveTransform.scale[0] = 1.0;
-    pushConstants.emissiveTransform.scale[1] = 1.0;
+    pushConstants.albedoTransform.scale.x = 1.0;
+    pushConstants.albedoTransform.scale.y = 1.0;
+    pushConstants.normalTransform.scale.x = 1.0;
+    pushConstants.normalTransform.scale.y = 1.0;
+    pushConstants.metallicRoughnessTransform.scale.x = 1.0;
+    pushConstants.metallicRoughnessTransform.scale.y = 1.0;
+    pushConstants.aoTransform.scale.x = 1.0;
+    pushConstants.aoTransform.scale.y = 1.0;
+    pushConstants.emissiveTransform.scale.x = 1.0;
+    pushConstants.emissiveTransform.scale.y = 1.0;
 
     // Set default offsets and rotations to zero
-    pushConstants.albedoTransform.offset[0] = 0.0;
-    pushConstants.albedoTransform.offset[1] = 0.0;
-    pushConstants.normalTransform.offset[0] = 0.0;
-    pushConstants.normalTransform.offset[1] = 0.0;
-    pushConstants.metallicRoughnessTransform.offset[0] = 0.0;
-    pushConstants.metallicRoughnessTransform.offset[1] = 0.0;
-    pushConstants.aoTransform.offset[0] = 0.0;
-    pushConstants.aoTransform.offset[1] = 0.0;
-    pushConstants.emissiveTransform.offset[0] = 0.0;
-    pushConstants.emissiveTransform.offset[1] = 0.0;
+    pushConstants.albedoTransform.offset.x = 0.0;
+    pushConstants.albedoTransform.offset.y = 0.0;
+    pushConstants.normalTransform.offset.x = 0.0;
+    pushConstants.normalTransform.offset.y = 0.0;
+    pushConstants.metallicRoughnessTransform.offset.x = 0.0;
+    pushConstants.metallicRoughnessTransform.offset.y = 0.0;
+    pushConstants.aoTransform.offset.x = 0.0;
+    pushConstants.aoTransform.offset.y = 0.0;
+    pushConstants.emissiveTransform.offset.x = 0.0;
+    pushConstants.emissiveTransform.offset.y = 0.0;
 
     pushConstants.albedoTransform.rotation = 0.0;
     pushConstants.normalTransform.rotation = 0.0;
@@ -89,28 +89,38 @@ fn set_texture_indices(pushConstants: *types.PBRPushConstants, material: *const 
 
 fn set_texture_transforms(pushConstants: *types.PBRPushConstants, material: *const types.CardinalMaterial) void {
     // Albedo
-    @memcpy(pushConstants.albedoTransform.offset[0..2], material.albedo_transform.offset[0..2]);
-    @memcpy(pushConstants.albedoTransform.scale[0..2], material.albedo_transform.scale[0..2]);
+    pushConstants.albedoTransform.offset.x = material.albedo_transform.offset[0];
+    pushConstants.albedoTransform.offset.y = material.albedo_transform.offset[1];
+    pushConstants.albedoTransform.scale.x = material.albedo_transform.scale[0];
+    pushConstants.albedoTransform.scale.y = material.albedo_transform.scale[1];
     pushConstants.albedoTransform.rotation = material.albedo_transform.rotation;
 
     // Normal
-    @memcpy(pushConstants.normalTransform.offset[0..2], material.normal_transform.offset[0..2]);
-    @memcpy(pushConstants.normalTransform.scale[0..2], material.normal_transform.scale[0..2]);
+    pushConstants.normalTransform.offset.x = material.normal_transform.offset[0];
+    pushConstants.normalTransform.offset.y = material.normal_transform.offset[1];
+    pushConstants.normalTransform.scale.x = material.normal_transform.scale[0];
+    pushConstants.normalTransform.scale.y = material.normal_transform.scale[1];
     pushConstants.normalTransform.rotation = material.normal_transform.rotation;
 
     // Metallic Roughness
-    @memcpy(pushConstants.metallicRoughnessTransform.offset[0..2], material.metallic_roughness_transform.offset[0..2]);
-    @memcpy(pushConstants.metallicRoughnessTransform.scale[0..2], material.metallic_roughness_transform.scale[0..2]);
+    pushConstants.metallicRoughnessTransform.offset.x = material.metallic_roughness_transform.offset[0];
+    pushConstants.metallicRoughnessTransform.offset.y = material.metallic_roughness_transform.offset[1];
+    pushConstants.metallicRoughnessTransform.scale.x = material.metallic_roughness_transform.scale[0];
+    pushConstants.metallicRoughnessTransform.scale.y = material.metallic_roughness_transform.scale[1];
     pushConstants.metallicRoughnessTransform.rotation = material.metallic_roughness_transform.rotation;
 
     // AO
-    @memcpy(pushConstants.aoTransform.offset[0..2], material.ao_transform.offset[0..2]);
-    @memcpy(pushConstants.aoTransform.scale[0..2], material.ao_transform.scale[0..2]);
+    pushConstants.aoTransform.offset.x = material.ao_transform.offset[0];
+    pushConstants.aoTransform.offset.y = material.ao_transform.offset[1];
+    pushConstants.aoTransform.scale.x = material.ao_transform.scale[0];
+    pushConstants.aoTransform.scale.y = material.ao_transform.scale[1];
     pushConstants.aoTransform.rotation = material.ao_transform.rotation;
 
     // Emissive
-    @memcpy(pushConstants.emissiveTransform.offset[0..2], material.emissive_transform.offset[0..2]);
-    @memcpy(pushConstants.emissiveTransform.scale[0..2], material.emissive_transform.scale[0..2]);
+    pushConstants.emissiveTransform.offset.x = material.emissive_transform.offset[0];
+    pushConstants.emissiveTransform.offset.y = material.emissive_transform.offset[1];
+    pushConstants.emissiveTransform.scale.x = material.emissive_transform.scale[0];
+    pushConstants.emissiveTransform.scale.y = material.emissive_transform.scale[1];
     pushConstants.emissiveTransform.rotation = material.emissive_transform.rotation;
 }
 

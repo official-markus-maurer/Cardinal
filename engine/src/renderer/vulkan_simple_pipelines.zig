@@ -426,11 +426,11 @@ pub export fn vk_render_simple(s: ?*types.VulkanState, commandBuffer: c.VkComman
         const offsets = [_]c.VkDeviceSize{ 0 };
         c.vkCmdBindVertexBuffers(commandBuffer, 0, 1, &vertexBuffers, &offsets);
 
-        if (mesh.ibuf != null and mesh.idx_count > 0) {
+        if (mesh.ibuf != null and mesh.index_count > 0) {
             c.vkCmdBindIndexBuffer(commandBuffer, mesh.ibuf, 0, c.VK_INDEX_TYPE_UINT32);
-            c.vkCmdDrawIndexed(commandBuffer, mesh.idx_count, 1, 0, 0, 0);
+            c.vkCmdDrawIndexed(commandBuffer, mesh.index_count, 1, 0, 0, 0);
         } else {
-            c.vkCmdDraw(commandBuffer, mesh.vtx_count, 1, 0, 0);
+            c.vkCmdDraw(commandBuffer, mesh.vertex_count, 1, 0, 0);
         }
     }
 }

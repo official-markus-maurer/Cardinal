@@ -2,6 +2,8 @@ const std = @import("std");
 const engine = @import("cardinal_engine");
 const log = engine.log;
 const renderer = engine.vulkan_renderer;
+const math = engine.math;
+const Vec3 = math.Vec3;
 const c = @import("../c.zig").c;
 const EditorState = @import("../editor_state.zig").EditorState;
 
@@ -40,19 +42,14 @@ pub fn update(state: *EditorState, dt: f32) void {
         const radYaw = state.yaw * std.math.pi / 180.0;
         const radPitch = state.pitch * std.math.pi / 180.0;
         
-        var front: [3]f32 = undefined;
-        front[0] = @cos(radYaw) * @cos(radPitch);
-        front[1] = @sin(radPitch);
-        front[2] = @sin(radYaw) * @cos(radPitch);
+        var front = Vec3{
+            .x = @cos(radYaw) * @cos(radPitch),
+            .y = @sin(radPitch),
+            .z = @sin(radYaw) * @cos(radPitch),
+        };
+        front = front.normalize();
         
-        const len = @sqrt(front[0]*front[0] + front[1]*front[1] + front[2]*front[2]);
-        front[0] /= len;
-        front[1] /= len;
-        front[2] /= len;
-        
-        state.camera.target[0] = state.camera.position[0] + front[0];
-        state.camera.target[1] = state.camera.position[1] + front[1];
-        state.camera.target[2] = state.camera.position[2] + front[2];
+        state.camera.target = state.camera.position.add(front);
         
         // Keyboard
         var speed = state.camera_speed * dt;
@@ -60,43 +57,27 @@ pub fn update(state: *EditorState, dt: f32) void {
             speed *= 4.0;
         }
 
-        var right: [3]f32 = undefined;
-        const up = [3]f32{0.0, 1.0, 0.0};
-        
-        right[0] = front[1] * up[2] - front[2] * up[1];
-        right[1] = front[2] * up[0] - front[0] * up[2];
-        right[2] = front[0] * up[1] - front[1] * up[0];
-        const rlen = @sqrt(right[0]*right[0] + right[1]*right[1] + right[2]*right[2]);
-        right[0] /= rlen;
-        right[1] /= rlen;
-        right[2] /= rlen;
+        const up = Vec3{ .x = 0.0, .y = 1.0, .z = 0.0 };
+        const right = front.cross(up).normalize();
         
         if (c.glfwGetKey(win, c.GLFW_KEY_W) == c.GLFW_PRESS) {
-            state.camera.position[0] += front[0] * speed;
-            state.camera.position[1] += front[1] * speed;
-            state.camera.position[2] += front[2] * speed;
+            state.camera.position = state.camera.position.add(front.mul(speed));
         }
         if (c.glfwGetKey(win, c.GLFW_KEY_S) == c.GLFW_PRESS) {
-            state.camera.position[0] -= front[0] * speed;
-            state.camera.position[1] -= front[1] * speed;
-            state.camera.position[2] -= front[2] * speed;
+            state.camera.position = state.camera.position.sub(front.mul(speed));
         }
         if (c.glfwGetKey(win, c.GLFW_KEY_A) == c.GLFW_PRESS) {
-            state.camera.position[0] -= right[0] * speed;
-            state.camera.position[1] -= right[1] * speed;
-            state.camera.position[2] -= right[2] * speed;
+            state.camera.position = state.camera.position.sub(right.mul(speed));
         }
         if (c.glfwGetKey(win, c.GLFW_KEY_D) == c.GLFW_PRESS) {
-            state.camera.position[0] += right[0] * speed;
-            state.camera.position[1] += right[1] * speed;
-            state.camera.position[2] += right[2] * speed;
+            state.camera.position = state.camera.position.add(right.mul(speed));
         }
         
         if (c.glfwGetKey(win, c.GLFW_KEY_SPACE) == c.GLFW_PRESS) {
-            state.camera.position[1] += speed;
+            state.camera.position.y += speed;
         }
         if (c.glfwGetKey(win, c.GLFW_KEY_LEFT_SHIFT) == c.GLFW_PRESS) {
-            state.camera.position[1] -= speed;
+            state.camera.position.y -= speed;
         }
         
         if (state.pbr_enabled) {

@@ -1001,8 +1001,8 @@ pub export fn vk_mesh_shader_record_frame(s: ?*types.VulkanState, cmd: c.VkComma
                                 
                                 var t: u32 = 0;
                                 while (t < texture_count) : (t += 1) {
-                                    texture_views.?[t] = tm.?.textures[t].view;
-                                    const texSampler = tm.?.textures[t].sampler;
+                                    texture_views.?[t] = tm.?.textures.?[t].view;
+                                    const texSampler = tm.?.textures.?[t].sampler;
                                     samplers.?[t] = if (texSampler != null) texSampler else tm.?.defaultSampler;
                                 }
                             }

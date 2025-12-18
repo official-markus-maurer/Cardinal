@@ -597,15 +597,15 @@ pub export fn cardinal_renderer_set_camera(renderer: ?*types.CardinalRenderer, c
     transform.cardinal_matrix_identity(&ubo.model);
 
     // Create view matrix
-    create_view_matrix(&cam.position, &cam.target, &cam.up, &ubo.view);
+    create_view_matrix(@ptrCast(&cam.position), @ptrCast(&cam.target), @ptrCast(&cam.up), &ubo.view);
 
     // Create projection matrix
     create_perspective_matrix(cam.fov, cam.aspect, cam.near_plane, cam.far_plane, &ubo.proj);
 
     // Set view position
-    ubo.viewPos[0] = cam.position[0];
-    ubo.viewPos[1] = cam.position[1];
-    ubo.viewPos[2] = cam.position[2];
+    ubo.viewPos[0] = cam.position.x;
+    ubo.viewPos[1] = cam.position.y;
+    ubo.viewPos[2] = cam.position.z;
 
     // Update the uniform buffer
     @memcpy(@as([*]u8, @ptrCast(s.pipelines.pbr_pipeline.uniformBufferMapped))[0..@sizeOf(types.PBRUniformBufferObject)], @as([*]const u8, @ptrCast(&ubo))[0..@sizeOf(types.PBRUniformBufferObject)]);
@@ -626,20 +626,20 @@ pub export fn cardinal_renderer_set_lighting(renderer: ?*types.CardinalRenderer,
     var lighting = std.mem.zeroes(types.PBRLightingData);
 
     // Set light direction
-    lighting.lightDirection[0] = l.direction[0];
-    lighting.lightDirection[1] = l.direction[1];
-    lighting.lightDirection[2] = l.direction[2];
+    lighting.lightDirection[0] = l.direction.x;
+    lighting.lightDirection[1] = l.direction.y;
+    lighting.lightDirection[2] = l.direction.z;
 
     // Set light color and intensity
-    lighting.lightColor[0] = l.color[0];
-    lighting.lightColor[1] = l.color[1];
-    lighting.lightColor[2] = l.color[2];
+    lighting.lightColor[0] = l.color.x;
+    lighting.lightColor[1] = l.color.y;
+    lighting.lightColor[2] = l.color.z;
     lighting.lightIntensity = l.intensity;
 
     // Set ambient color
-    lighting.ambientColor[0] = l.ambient[0];
-    lighting.ambientColor[1] = l.ambient[1];
-    lighting.ambientColor[2] = l.ambient[2];
+    lighting.ambientColor[0] = l.ambient.x;
+    lighting.ambientColor[1] = l.ambient.y;
+    lighting.ambientColor[2] = l.ambient.z;
 
     // Update the lighting buffer
     @memcpy(@as([*]u8, @ptrCast(s.pipelines.pbr_pipeline.lightingBufferMapped))[0..@sizeOf(types.PBRLightingData)], @as([*]const u8, @ptrCast(&lighting))[0..@sizeOf(types.PBRLightingData)]);
@@ -883,7 +883,7 @@ pub export fn cardinal_renderer_immediate_submit(renderer: ?*types.CardinalRende
 
 fn try_submit_secondary(s: *types.VulkanState, record: ?*const fn (c.VkCommandBuffer) callconv(.c) void) bool {
     const mt_manager = vk_commands.vk_get_mt_command_manager() orelse return false;
-    if (!mt_manager.thread_pools[0].is_active) {
+    if (!mt_manager.thread_pools.?[0].is_active) {
         return false;
     }
 
@@ -907,7 +907,7 @@ fn try_submit_secondary(s: *types.VulkanState, record: ?*const fn (c.VkCommandBu
     _ = c.vkBeginCommandBuffer(primary_cmd, &bi);
 
     var secondary_context: types.CardinalSecondaryCommandContext = undefined;
-    if (!vk_commands.vulkan_mt.cardinal_mt_allocate_secondary_command_buffer(&mt_manager.thread_pools[0], &secondary_context)) {
+    if (!vk_commands.vulkan_mt.cardinal_mt_allocate_secondary_command_buffer(&mt_manager.thread_pools.?[0], &secondary_context)) {
         _ = c.vkEndCommandBuffer(primary_cmd);
         return false;
     }
@@ -1033,8 +1033,8 @@ fn upload_single_mesh(s: *types.VulkanState, src: *const types.CardinalMesh, dst
     dst.vmem = null;
     dst.ibuf = null;
     dst.imem = null;
-    dst.vtx_count = 0;
-    dst.idx_count = 0;
+    dst.vertex_count = 0;
+    dst.index_count = 0;
 
     dst.vtx_stride = @sizeOf(types.CardinalVertex);
     const vsize: c.VkDeviceSize = src.vertex_count * dst.vtx_stride;
@@ -1061,12 +1061,12 @@ fn upload_single_mesh(s: *types.VulkanState, src: *const types.CardinalMesh, dst
         if (vk_buffer_utils.vk_buffer_create_with_staging(
                 @ptrCast(&s.allocator), s.context.device, s.commands.pools.?[0], s.context.graphics_queue,
                 src.indices, index_size, c.VK_BUFFER_USAGE_INDEX_BUFFER_BIT, &dst.ibuf, &dst.imem, s)) {
-            dst.idx_count = src.index_count;
+            dst.index_count = src.index_count;
         } else {
             log.cardinal_log_error("Failed to create index buffer for mesh {d}", .{mesh_index});
         }
     }
-    dst.vtx_count = src.vertex_count;
+    dst.vertex_count = src.vertex_count;
 
     log.cardinal_log_debug("Successfully uploaded mesh {d}: {d} vertices, {d} indices", .{mesh_index, src.vertex_count, src.index_count});
     return true;
@@ -1079,7 +1079,7 @@ pub export fn cardinal_renderer_upload_scene(renderer: ?*types.CardinalRenderer,
 
     if (s.swapchain.recreation_pending or s.swapchain.window_resize_pending or
         s.recovery.recovery_in_progress or s.recovery.device_lost) {
-        s.pending_scene_upload = @ptrCast(scene);
+        s.pending_scene_upload = @ptrCast(@constCast(scene));
         s.scene_upload_pending = true;
         log.cardinal_log_warn("[UPLOAD] Deferring scene upload due to swapchain/recovery state", .{});
         return;

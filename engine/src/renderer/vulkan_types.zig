@@ -3,7 +3,11 @@ const builtin = @import("builtin");
 const scene = @import("../assets/scene.zig");
 const c = @import("vulkan_c.zig").c;
 const window = @import("../core/window.zig");
+const math = @import("../core/math.zig");
 
+// Constants
+pub const CARDINAL_MAX_SECONDARY_COMMAND_BUFFERS = 64;
+pub const CARDINAL_MAX_MT_THREADS = 16;
 
 // Forward declarations for external types
 pub const CardinalWindow = window.CardinalWindow;
@@ -16,10 +20,42 @@ pub const CardinalVertex = scene.CardinalVertex;
 pub const CardinalMaterial = scene.CardinalMaterial;
 pub const CardinalSceneNode = scene.CardinalSceneNode;
 
+pub const cardinal_mutex_t = ?*anyopaque;
+pub const cardinal_cond_t = ?*anyopaque;
+pub const cardinal_thread_id_t = std.Thread.Id;
+pub const cardinal_thread_handle_t = std.Thread;
+
+pub const CardinalRenderingMode = enum(c_int) {
+    NORMAL = 0,
+    MESH_SHADER = 1,
+    DEBUG = 2,
+    UV = 3,
+    WIREFRAME = 4,
+};
+
+pub const CardinalResourceType = enum(c_int) {
+    TEXTURE = 0,
+    MESH = 1,
+    MATERIAL = 2,
+    SHADER = 3,
+    PIPELINE = 4,
+    DESCRIPTOR_SET = 5,
+    BUFFER = 6,
+    CARDINAL_RESOURCE_BUFFER = 7,
+    CARDINAL_RESOURCE_IMAGE = 8,
+};
+
+pub const CardinalResourceAccessType = enum(c_int) {
+    CARDINAL_ACCESS_NONE = 0,
+    CARDINAL_ACCESS_READ = 1,
+    CARDINAL_ACCESS_WRITE = 2,
+    CARDINAL_ACCESS_READ_WRITE = 3,
+};
+
 pub const CardinalCamera = extern struct {
-    position: [3]f32,
-    target: [3]f32,
-    up: [3]f32,
+    position: math.Vec3,
+    target: math.Vec3,
+    up: math.Vec3,
     fov: f32,
     aspect: f32,
     near_plane: f32,
@@ -27,33 +63,59 @@ pub const CardinalCamera = extern struct {
 };
 
 pub const CardinalLight = extern struct {
-    direction: [3]f32,
-    color: [3]f32,
+    direction: math.Vec3,
+    color: math.Vec3,
     intensity: f32,
-    ambient: [3]f32,
+    ambient: math.Vec3,
 };
 
-pub const ValidationStats = extern struct {
-    total_messages: u32,
-    error_count: u32,
-    warning_count: u32,
-    info_count: u32,
-    performance_count: u32,
-    validation_count: u32,
-    general_count: u32,
-    filtered_count: u32,
+pub const CardinalMTTaskType = enum(c_int) {
+    CARDINAL_MT_TASK_COMMAND_RECORD = 0,
+    CARDINAL_MT_TASK_TEXTURE_LOAD = 1,
+    CARDINAL_MT_TASK_MESH_LOAD = 2,
 };
 
-pub const CardinalResourceAccessType = enum(c_int) {
-    CARDINAL_ACCESS_READ = 0,
-    CARDINAL_ACCESS_WRITE = 1,
-    CARDINAL_ACCESS_READ_WRITE = 2,
+pub const CardinalMTTask = extern struct {
+    type: CardinalMTTaskType,
+    data: ?*anyopaque,
+    execute_func: ?*const fn (?*anyopaque) callconv(.c) void,
+    callback_func: ?*const fn (?*anyopaque, bool) callconv(.c) void,
+    success: bool,
+    is_completed: bool,
+    next: ?*CardinalMTTask,
 };
 
-pub const CardinalResourceType = enum(c_int) {
-    CARDINAL_RESOURCE_BUFFER = 0,
-    CARDINAL_RESOURCE_IMAGE = 1,
-    CARDINAL_RESOURCE_DESCRIPTOR_SET = 2,
+pub const CardinalMTTaskQueue = extern struct {
+    head: ?*CardinalMTTask,
+    tail: ?*CardinalMTTask,
+    task_count: u32,
+    queue_mutex: cardinal_mutex_t,
+    queue_condition: cardinal_cond_t,
+};
+
+pub const CardinalMTThreadPool = extern struct {
+    threads: ?[*]cardinal_thread_handle_t,
+    thread_count: u32,
+    is_active: bool,
+    queue: ?*CardinalMTTaskQueue,
+};
+
+pub const CardinalMTCommandManager = extern struct {
+    vulkan_state: ?*VulkanState,
+    thread_pools: ?[*]CardinalThreadCommandPool,
+    is_initialized: bool,
+    pool_mutex: cardinal_mutex_t,
+    active_thread_count: u32,
+};
+
+pub const CardinalMTSubsystem = struct {
+    pending_queue: CardinalMTTaskQueue,
+    completed_queue: CardinalMTTaskQueue,
+    command_manager: CardinalMTCommandManager,
+    is_running: bool,
+    worker_thread_count: u32,
+    worker_threads: []?cardinal_thread_handle_t,
+    subsystem_mutex: cardinal_mutex_t,
 };
 
 pub const CardinalResourceAccess = extern struct {
@@ -75,9 +137,24 @@ pub const CardinalBarrierValidationContext = extern struct {
     strict_mode: bool,
 };
 
+pub const ValidationStats = extern struct {
+    total_accesses: u32,
+    validation_errors: u32,
+    race_conditions: u32,
+    total_messages: u32,
+    error_count: u32,
+    warning_count: u32,
+    info_count: u32,
+    validation_count: u32,
+    performance_count: u32,
+    general_count: u32,
+    filtered_count: u32,
+};
+
+// PBR Types
 pub const PBRTextureTransform = extern struct {
-    offset: [2]f32,
-    scale: [2]f32,
+    offset: math.Vec2,
+    scale: math.Vec2,
     rotation: f32,
 };
 
@@ -98,73 +175,12 @@ pub const PBRLightingData = extern struct {
     _padding2: f32,
 };
 
-pub const PBRPushConstants = extern struct {
-    modelMatrix: [16]f32,
-
-    albedoFactor: [3]f32,
-    metallicFactor: f32,
-
-    emissiveFactor: [3]f32,
-    roughnessFactor: f32,
-
-    normalScale: f32,
-    aoStrength: f32,
-
-    albedoTextureIndex: u32,
-    normalTextureIndex: u32,
-    metallicRoughnessTextureIndex: u32,
-    aoTextureIndex: u32,
-    emissiveTextureIndex: u32,
-    
-    flags: u32,
-
-    alphaCutoff: f32,
-    _pad3: u32,
-
-    albedoTransform: scene.CardinalTextureTransform,
-    _padding1: f32,
-    normalTransform: scene.CardinalTextureTransform,
-    _padding2: f32,
-    metallicRoughnessTransform: scene.CardinalTextureTransform,
-    _padding3: f32,
-    aoTransform: scene.CardinalTextureTransform,
-    _padding4: f32,
-    emissiveTransform: scene.CardinalTextureTransform,
-};
-
-pub const DescriptorBufferCreateInfo = extern struct {
-    device: c.VkDevice,
-    allocator: *VulkanAllocator,
-    layout: c.VkDescriptorSetLayout,
-    max_sets: u32,
-};
-
-pub const DescriptorBufferAllocation = extern struct {
-    buffer: c.VkBuffer,
-    memory: c.VkDeviceMemory,
-    size: c.VkDeviceSize,
-    alignment: c.VkDeviceSize,
-    mapped_data: ?*anyopaque,
-    usage: c.VkBufferUsageFlags,
-};
-
-pub const DescriptorBufferManager = extern struct {
-    device: c.VkDevice,
-    allocator: *VulkanAllocator,
-    layout: c.VkDescriptorSetLayout,
-    layout_size: c.VkDeviceSize,
-    buffer_alignment: c.VkDeviceSize,
-    buffer_alloc: DescriptorBufferAllocation,
-    binding_offsets: ?[*]c.VkDeviceSize,
-    binding_count: u32,
-    needs_update: bool,
-};
-
 pub const PBRMaterialProperties = extern struct {
-    albedoFactor: [3]f32,
+    albedoFactor: [4]f32, // vec4 in shader
     metallicFactor: f32,
-    emissiveFactor: [3]f32,
     roughnessFactor: f32,
+    emissiveFactor: [4]f32, // vec4 in shader (xyz + padding/roughness) - shader uses separate float for roughness but zig struct might pack it
+    
     normalScale: f32,
     aoStrength: f32,
     albedoTextureIndex: u32,
@@ -175,27 +191,84 @@ pub const PBRMaterialProperties = extern struct {
     supportsDescriptorIndexing: u32,
 };
 
+pub const PBRPushConstants = extern struct {
+    modelMatrix: math.Mat4,
+    
+    // Material data (offset 64)
+    // vec4 albedoAndMetallic;
+    albedoFactor: [3]f32,
+    metallicFactor: f32,
+    
+    // vec4 emissiveAndRoughness;
+    emissiveFactor: [3]f32,
+    roughnessFactor: f32,
+    
+    normalScale: f32,
+    aoStrength: f32,
+    
+    albedoTextureIndex: u32,
+    normalTextureIndex: u32,
+    metallicRoughnessTextureIndex: u32,
+    aoTextureIndex: u32,
+    emissiveTextureIndex: u32,
+    
+    flags: u32,
+    alphaCutoff: f32,
+    
+    _pad3: u32,
+    
+    albedoTransform: PBRTextureTransform,
+    _padding1: f32,
+    
+    normalTransform: PBRTextureTransform,
+    _padding2: f32,
+    
+    metallicRoughnessTransform: PBRTextureTransform,
+    _padding3: f32,
+    
+    aoTransform: PBRTextureTransform,
+    _padding4: f32,
+    
+    emissiveTransform: PBRTextureTransform,
+    _padding5: f32,
+};
+
+pub const MeshShaderUniformBuffer = extern struct {
+    model: [16]f32,
+    view: [16]f32,
+    proj: [16]f32,
+    materialIndex: u32,
+    _padding: [3]u32,
+};
+
+// --- Restored Vulkan Internal Types ---
+
+pub const VkQueueFamilyOwnershipTransferInfo = extern struct {
+    src_stage_mask: c.VkPipelineStageFlags2,
+    dst_stage_mask: c.VkPipelineStageFlags2,
+    src_access_mask: c.VkAccessFlags2,
+    dst_access_mask: c.VkAccessFlags2,
+    src_queue_family: u32,
+    dst_queue_family: u32,
+    use_maintenance8_enhancement: bool,
+};
+
 pub const VulkanAllocator = extern struct {
-    device: c.VkDevice,
     physical_device: c.VkPhysicalDevice,
-    // Function pointers - maintenance4 (required)
+    device: c.VkDevice,
+    total_device_mem_allocated: c.VkDeviceSize,
+    total_device_mem_freed: c.VkDeviceSize,
+    
     fpGetDeviceBufferMemReq: c.PFN_vkGetDeviceBufferMemoryRequirements,
     fpGetDeviceImageMemReq: c.PFN_vkGetDeviceImageMemoryRequirements,
     fpGetBufferDeviceAddress: c.PFN_vkGetBufferDeviceAddress,
-    // Function pointers - maintenance8
     fpGetDeviceBufferMemReqKHR: c.PFN_vkGetDeviceBufferMemoryRequirementsKHR,
     fpGetDeviceImageMemReqKHR: c.PFN_vkGetDeviceImageMemoryRequirementsKHR,
+    
     supports_maintenance8: bool,
-    // Stats
-    total_device_mem_allocated: u64,
-    total_device_mem_freed: u64,
-    // Thread safety (using opaque pointer for mutex to avoid including platform headers)
-    allocation_mutex: ?*anyopaque, 
+    allocation_mutex: cardinal_mutex_t,
 };
 
-//
-// VulkanBuffer
-//
 pub const VulkanBuffer = extern struct {
     handle: c.VkBuffer,
     memory: c.VkDeviceMemory,
@@ -205,51 +278,75 @@ pub const VulkanBuffer = extern struct {
     properties: c.VkMemoryPropertyFlags,
 };
 
-//
-// VulkanContext
-//
+pub const VulkanDescriptorBinding = extern struct {
+    binding: u32,
+    descriptorType: c.VkDescriptorType,
+    descriptorCount: u32,
+    stageFlags: c.VkShaderStageFlags,
+    pImmutableSamplers: ?[*]const c.VkSampler,
+};
+
+pub const VulkanBufferAlloc = extern struct {
+    buffer: c.VkBuffer,
+    memory: c.VkDeviceMemory,
+    mapped_data: ?*anyopaque,
+    size: c.VkDeviceSize,
+    alignment: c.VkDeviceSize,
+    usage: c.VkBufferUsageFlags,
+};
+
+pub const VulkanDescriptorManager = extern struct {
+    bindings: ?[*]const VulkanDescriptorBinding,
+    bindingCount: u32,
+    maxSets: u32,
+    useDescriptorBuffers: bool,
+    descriptorPool: c.VkDescriptorPool,
+    device: c.VkDevice,
+    descriptorSetLayout: c.VkDescriptorSetLayout,
+    descriptorSetSize: c.VkDeviceSize,
+    descriptorBufferSize: c.VkDeviceSize,
+    descriptorBuffer: VulkanBuffer,
+    allocator: ?*VulkanAllocator,
+    
+    // Additional fields found in usage
+    descriptorSets: ?[*]c.VkDescriptorSet,
+    descriptorSetCount: u32,
+    bindingOffsets: ?[*]c.VkDeviceSize,
+    bindingOffsetCount: u32,
+    initialized: bool,
+    vulkan_state: ?*VulkanState,
+};
+
+pub const DescriptorBufferCreateInfo = extern struct {
+    device: c.VkDevice,
+    allocator: *VulkanAllocator,
+    layout: c.VkDescriptorSetLayout,
+    max_sets: u32,
+};
+
+pub const DescriptorBufferManager = extern struct {
+    device: c.VkDevice,
+    allocator: *VulkanAllocator,
+    layout: c.VkDescriptorSetLayout,
+    layout_size: c.VkDeviceSize,
+    buffer_alignment: c.VkDeviceSize,
+    buffer_alloc: VulkanBufferAlloc,
+    binding_offsets: ?[*]c.VkDeviceSize,
+    binding_count: u32,
+    needs_update: bool,
+};
+
 pub const VulkanContext = extern struct {
     instance: c.VkInstance,
     physical_device: c.VkPhysicalDevice,
     device: c.VkDevice,
-    graphics_queue: c.VkQueue,
-    present_queue: c.VkQueue,
     graphics_queue_family: u32,
-    present_queue_family: u32,
-    surface: c.VkSurfaceKHR,
-    debug_messenger: c.VkDebugUtilsMessengerEXT,
-
-    // Feature flags
-    supports_dynamic_rendering: bool,
-    supports_vulkan_12_features: bool,
-    supports_vulkan_13_features: bool,
-    supports_vulkan_14_features: bool,
-    supports_maintenance4: bool,
-    supports_maintenance8: bool,
-    supports_mesh_shader: bool,
-    supports_descriptor_indexing: bool,
-    supports_buffer_device_address: bool,
-    supports_descriptor_buffer: bool,
-    supports_shader_quad_control: bool,
-    supports_shader_maximal_reconvergence: bool,
-
-    // Function pointers
-    vkCmdBeginRendering: c.PFN_vkCmdBeginRendering,
-    vkCmdEndRendering: c.PFN_vkCmdEndRendering,
-    vkCmdPipelineBarrier2: c.PFN_vkCmdPipelineBarrier2,
-    vkQueueSubmit2: c.PFN_vkQueueSubmit2,
-    vkWaitSemaphores: c.PFN_vkWaitSemaphores,
-    vkSignalSemaphore: c.PFN_vkSignalSemaphore,
-    vkGetSemaphoreCounterValue: c.PFN_vkGetSemaphoreCounterValue,
-    vkGetDeviceBufferMemoryRequirements: c.PFN_vkGetDeviceBufferMemoryRequirements,
-    vkGetDeviceImageMemoryRequirements: c.PFN_vkGetDeviceImageMemoryRequirements,
-    vkGetDeviceBufferMemoryRequirementsKHR: c.PFN_vkGetDeviceBufferMemoryRequirementsKHR,
-    vkGetDeviceImageMemoryRequirementsKHR: c.PFN_vkGetDeviceImageMemoryRequirementsKHR,
-    vkGetBufferDeviceAddress: c.PFN_vkGetBufferDeviceAddress,
-
-    // Descriptor buffer extension function pointers
+    descriptor_buffer_uniform_buffer_size: c.VkDeviceSize,
+    descriptor_buffer_combined_image_sampler_size: c.VkDeviceSize,
+    
     vkGetDescriptorSetLayoutSizeEXT: c.PFN_vkGetDescriptorSetLayoutSizeEXT,
     vkGetDescriptorSetLayoutBindingOffsetEXT: c.PFN_vkGetDescriptorSetLayoutBindingOffsetEXT,
+    vkGetBufferDeviceAddress: c.PFN_vkGetBufferDeviceAddress,
     vkGetDescriptorEXT: c.PFN_vkGetDescriptorEXT,
     vkCmdBindDescriptorBuffersEXT: c.PFN_vkCmdBindDescriptorBuffersEXT,
     vkCmdSetDescriptorBufferOffsetsEXT: c.PFN_vkCmdSetDescriptorBufferOffsetsEXT,
@@ -258,103 +355,170 @@ pub const VulkanContext = extern struct {
     vkGetImageOpaqueCaptureDescriptorDataEXT: c.PFN_vkGetImageOpaqueCaptureDescriptorDataEXT,
     vkGetImageViewOpaqueCaptureDescriptorDataEXT: c.PFN_vkGetImageViewOpaqueCaptureDescriptorDataEXT,
     vkGetSamplerOpaqueCaptureDescriptorDataEXT: c.PFN_vkGetSamplerOpaqueCaptureDescriptorDataEXT,
-
-    // Descriptor buffer properties
+    vkGetSemaphoreCounterValue: c.PFN_vkGetSemaphoreCounterValue,
+    
+    supports_descriptor_indexing: bool,
+    debug_messenger: c.VkDebugUtilsMessengerEXT,
+    present_queue: c.VkQueue,
+    vkCmdBeginRendering: c.PFN_vkCmdBeginRendering,
+    vkCmdEndRendering: c.PFN_vkCmdEndRendering,
+    vkWaitSemaphores: c.PFN_vkWaitSemaphores,
+    
+    vkGetDeviceBufferMemoryRequirements: c.PFN_vkGetDeviceBufferMemoryRequirements,
+    vkGetDeviceImageMemoryRequirements: c.PFN_vkGetDeviceImageMemoryRequirements,
+    vkGetDeviceBufferMemoryRequirementsKHR: c.PFN_vkGetDeviceBufferMemoryRequirementsKHR,
+    vkGetDeviceImageMemoryRequirementsKHR: c.PFN_vkGetDeviceImageMemoryRequirementsKHR,
+    
+    supports_maintenance8: bool,
+    supports_descriptor_buffer: bool,
     descriptor_buffer_extension_available: bool,
-    descriptor_buffer_uniform_buffer_size: c.VkDeviceSize,
-    descriptor_buffer_combined_image_sampler_size: c.VkDeviceSize,
+    supports_shader_quad_control: bool,
+    supports_shader_maximal_reconvergence: bool,
+    supports_buffer_device_address: bool,
+    supports_mesh_shader: bool,
+    supports_dynamic_rendering: bool,
+    supports_vulkan_12_features: bool,
+    supports_vulkan_13_features: bool,
+    supports_vulkan_14_features: bool,
+    supports_maintenance4: bool,
+
+    graphics_queue: c.VkQueue,
+    surface: c.VkSurfaceKHR,
+    present_queue_family: u32,
+
+    vkQueueSubmit2: c.PFN_vkQueueSubmit2,
+    vkCmdPipelineBarrier2: c.PFN_vkCmdPipelineBarrier2,
+    vkSignalSemaphore: c.PFN_vkSignalSemaphore,
 };
 
-//
-// VulkanSwapchain
-//
 pub const VulkanSwapchain = extern struct {
     handle: c.VkSwapchainKHR,
-    format: c.VkFormat,
-    extent: c.VkExtent2D,
     images: ?[*]c.VkImage,
     image_views: ?[*]c.VkImageView,
     image_count: u32,
-
-    // Depth resources
-    depth_format: c.VkFormat,
-    depth_image: c.VkImage,
-    depth_image_memory: c.VkDeviceMemory,
-    depth_image_view: c.VkImageView,
-    depth_layout_initialized: bool,
+    extent: c.VkExtent2D,
+    format: c.VkFormat,
     image_layout_initialized: ?[*]bool,
 
-    // Optimization state
-    recreation_pending: bool,
-    last_recreation_time: u64,
-    recreation_count: u32,
-    consecutive_recreation_failures: u32,
-    frame_pacing_enabled: bool,
-    skip_present: bool,
     headless_mode: bool,
-
-    // Resize state
+    skip_present: bool,
+    depth_format: c.VkFormat,
+    recreation_pending: bool,
     window_resize_pending: bool,
+    frame_pacing_enabled: bool,
+    last_recreation_time: u64,
+    depth_image_view: c.VkImageView,
+    
+    depth_image: c.VkImage,
+    depth_image_memory: c.VkDeviceMemory,
     pending_width: u32,
     pending_height: u32,
+    consecutive_recreation_failures: u32,
+    recreation_count: u32,
+    depth_layout_initialized: bool,
 };
 
-//
-// Bindless Texture
-//
-pub const BindlessTexture = extern struct {
+pub const DeviceLossRecovery = extern struct {
+    recovery_in_progress: bool,
+    attempt_count: u32,
+    max_attempts: u32,
+    device_lost: bool,
+    device_loss_callback: ?*const fn (?*anyopaque) callconv(.c) void,
+    recovery_complete_callback: ?*const fn (?*anyopaque, bool) callconv(.c) void,
+    callback_user_data: ?*anyopaque,
+    window: ?*CardinalWindow,
+};
+
+pub const TimelineValueStrategy = extern struct {
+    base_value: u64,
+    increment_step: u64,
+    max_safe_value: u64,
+    overflow_threshold: u64,
+    auto_reset_enabled: bool,
+};
+
+pub const VulkanSyncManager = extern struct {
+    device: c.VkDevice,
+    graphics_queue: c.VkQueue,
+    max_frames_in_flight: u32,
+    current_frame: u32,
+    image_acquired_semaphores: ?[*]c.VkSemaphore,
+    render_finished_semaphores: ?[*]c.VkSemaphore,
+    in_flight_fences: ?[*]c.VkFence,
+    timeline_semaphore: c.VkSemaphore,
+    initialized: bool,
+    global_timeline_counter: u64,
+    current_frame_value: u64,
+    timeline_wait_count: u64,
+    image_available_value: u64,
+    render_complete_value: u64,
+    timeline_signal_count: u64,
+    value_strategy: TimelineValueStrategy,
+};
+
+pub const VulkanCommands = extern struct {
+    pools: ?[*]c.VkCommandPool,
+    buffers: ?[*]c.VkCommandBuffer,
+    secondary_buffers: ?[*]c.VkCommandBuffer,
+    scene_secondary_buffers: ?[*]c.VkCommandBuffer,
+    current_buffer_index: u32,
+};
+
+// Texture Manager Types
+pub const VulkanManagedTexture = extern struct {
     image: c.VkImage,
-    image_view: c.VkImageView,
+    view: c.VkImageView,
     memory: c.VkDeviceMemory,
     sampler: c.VkSampler,
-    descriptor_index: u32,
-    is_allocated: bool,
-    format: c.VkFormat,
-    extent: c.VkExtent3D,
-    mip_levels: u32,
-};
-
-pub const BindlessTexturePool = extern struct {
-    device: c.VkDevice,
-    physical_device: c.VkPhysicalDevice,
-    allocator: *VulkanAllocator,
-    descriptor_layout: c.VkDescriptorSetLayout,
-    descriptor_pool: c.VkDescriptorPool,
     descriptor_set: c.VkDescriptorSet,
-    textures: ?[*]BindlessTexture,
-    max_textures: u32,
-    allocated_count: u32,
-    free_indices: ?[*]u32,
-    free_count: u32,
-    default_sampler: c.VkSampler,
-    needs_descriptor_update: bool,
-    pending_updates: ?[*]u32,
-    pending_update_count: u32,
-};
-
-pub const BindlessTextureCreateInfo = extern struct {
-    extent: c.VkExtent3D,
+    width: u32,
+    height: u32,
+    channels: u32,
     format: c.VkFormat,
     mip_levels: u32,
-    usage: c.VkImageUsageFlags,
-    samples: c.VkSampleCountFlagBits,
-    custom_sampler: c.VkSampler,
-    initial_data: ?*const anyopaque,
-    data_size: c.VkDeviceSize,
+    layer_count: u32,
+    is_allocated: bool,
+    isPlaceholder: bool,
+    path: ?[*:0]u8,
 };
 
-//
-// Compute
-//
+pub const VulkanTextureManagerConfig = extern struct {
+    device: c.VkDevice,
+    allocator: *VulkanAllocator,
+    commandPool: c.VkCommandPool,
+    graphicsQueue: c.VkQueue,
+    syncManager: ?*VulkanSyncManager,
+    initialCapacity: u32,
+};
+
+pub const VulkanTextureManager = extern struct {
+    device: c.VkDevice,
+    allocator: ?*VulkanAllocator,
+    commandPool: c.VkCommandPool,
+    graphicsQueue: c.VkQueue,
+    syncManager: ?*VulkanSyncManager,
+    
+    textures: ?[*]VulkanManagedTexture,
+    textureCount: u32,
+    textureCapacity: u32,
+    
+    defaultSampler: c.VkSampler,
+    initialized: bool,
+    
+    manager_mutex: cardinal_mutex_t,
+    hasPlaceholder: bool,
+};
+
+// Compute Pipeline Types
 pub const ComputePipelineConfig = extern struct {
     compute_shader_path: ?[*:0]const u8,
+    local_size_x: u32,
+    local_size_y: u32,
+    local_size_z: u32,
     push_constant_size: u32,
     push_constant_stages: c.VkShaderStageFlags,
     descriptor_set_count: u32,
     descriptor_layouts: ?[*]c.VkDescriptorSetLayout,
-    local_size_x: u32,
-    local_size_y: u32,
-    local_size_z: u32,
 };
 
 pub const ComputePipeline = extern struct {
@@ -371,308 +535,106 @@ pub const ComputePipeline = extern struct {
 };
 
 pub const ComputeDispatchInfo = extern struct {
-    group_count_x: u32,
-    group_count_y: u32,
-    group_count_z: u32,
     descriptor_sets: ?[*]c.VkDescriptorSet,
     descriptor_set_count: u32,
     push_constants: ?*const anyopaque,
     push_constant_size: u32,
+    group_count_x: u32,
+    group_count_y: u32,
+    group_count_z: u32,
 };
 
 pub const ComputeMemoryBarrier = extern struct {
-    src_stage_mask: c.VkPipelineStageFlags,
-    dst_stage_mask: c.VkPipelineStageFlags,
     src_access_mask: c.VkAccessFlags,
     dst_access_mask: c.VkAccessFlags,
+    src_stage_mask: c.VkPipelineStageFlags,
+    dst_stage_mask: c.VkPipelineStageFlags,
 };
 
-//
-// VulkanCommands
-//
-pub const VulkanCommands = extern struct {
-    pools: ?[*]c.VkCommandPool,               // Per frame
-    buffers: ?[*]c.VkCommandBuffer,           // Per frame
-    secondary_buffers: ?[*]c.VkCommandBuffer, // Per frame (double buffering)
-    scene_secondary_buffers: ?[*]c.VkCommandBuffer, // Per frame (Level Secondary)
-    current_buffer_index: u32,
-};
-
-//
-// VulkanSyncManager
-//
-pub const VulkanTimelineValueStrategy = extern struct {
-    base_value: u64,
-    increment_step: u64,
-    max_safe_value: u64,
-    overflow_threshold: u64,
-    auto_reset_enabled: bool,
-};
-
-pub const VulkanSyncManager = extern struct {
-    device: c.VkDevice,
-    graphics_queue: c.VkQueue,
-    max_frames_in_flight: u32,
-    current_frame: u32,
-    
-    // Per-frame resources
-    in_flight_fences: ?[*]c.VkFence,
-    image_acquired_semaphores: ?[*]c.VkSemaphore,
-    render_finished_semaphores: ?[*]c.VkSemaphore,
-    
-    // Timeline semaphore
-    timeline_semaphore: c.VkSemaphore,
-    
-    // Counters
-    current_frame_value: u64,
-    image_available_value: u64,
-    render_complete_value: u64,
-    global_timeline_counter: u64,
-    timeline_wait_count: u64,
-    timeline_signal_count: u64,
-    
-    value_strategy: VulkanTimelineValueStrategy,
-    initialized: bool,
-};
-
-pub const VulkanFrameSyncInfo = extern struct {
-    wait_semaphore: c.VkSemaphore,
-    signal_semaphore: c.VkSemaphore,
-    fence: c.VkFence,
-    timeline_value: u64,
-    wait_stage: c.VkPipelineStageFlags,
-};
-
-pub const VkQueueFamilyOwnershipTransferInfo = extern struct {
-    src_queue_family: u32,
-    dst_queue_family: u32,
-    src_stage_mask: c.VkPipelineStageFlags2,
-    dst_stage_mask: c.VkPipelineStageFlags2,
-    src_access_mask: c.VkAccessFlags2,
-    dst_access_mask: c.VkAccessFlags2,
-    use_maintenance8_enhancement: bool,
-};
-
-pub const VulkanFrameSync = extern struct {
-    current_frame: u32,
-    max_frames_in_flight: u32,
-    current_frame_value: u64,
-    image_available_value: u64,
-    render_complete_value: u64,
-    
-    in_flight_fences: ?[*]c.VkFence,
-    image_acquired_semaphores: ?[*]c.VkSemaphore,
-    render_finished_semaphores: ?[*]c.VkSemaphore,
-    
-    timeline_semaphore: c.VkSemaphore,
-};
-
-pub const VulkanRecovery = extern struct {
-    device_lost: bool,
-    recovery_in_progress: bool,
-    attempt_count: u32,
-    max_attempts: u32,
-    
-    window: ?*CardinalWindow,
-    
-    device_loss_callback: ?*const fn(?*anyopaque) callconv(.c) void,
-    recovery_complete_callback: ?*const fn(?*anyopaque, bool) callconv(.c) void,
-    callback_user_data: ?*anyopaque,
-};
-
-//
-// VulkanDescriptorManager
-//
-pub const VulkanDescriptorBinding = extern struct {
-    binding: u32,
-    descriptorType: c.VkDescriptorType,
-    descriptorCount: u32,
-    stageFlags: c.VkShaderStageFlags,
-    pImmutableSamplers: ?*const c.VkSampler,
-};
-
-pub const VulkanDescriptorManager = extern struct {
-    descriptorPool: c.VkDescriptorPool,
-    descriptorSetLayout: c.VkDescriptorSetLayout,
-    descriptorSets: ?[*]c.VkDescriptorSet,
-    descriptorSetCount: u32,
-    
-    // Config
-    maxSets: u32,
-    bindings: ?[*]const VulkanDescriptorBinding,
-    bindingCount: u32,
-    
-    // State
-    initialized: bool,
-    device: c.VkDevice,
-    
-    // Descriptor Buffer support
-    useDescriptorBuffers: bool,
-    descriptorBuffer: VulkanBuffer,
-    descriptorSetSize: c.VkDeviceSize,
-    descriptorBufferSize: c.VkDeviceSize,
-    bindingOffsets: ?[*]c.VkDeviceSize,
-    bindingOffsetCount: u32,
-    descriptorBufferIndices: ?[*]u32,
-    
-    allocator: ?*VulkanAllocator,
-    vulkan_state: ?*anyopaque,
-    
-    mutex: ?*anyopaque,
-};
-
-//
-// VulkanTextureManager
-//
-pub const VulkanManagedTexture = extern struct {
+// Bindless Texture Types
+pub const BindlessTexture = extern struct {
     image: c.VkImage,
+    image_view: c.VkImageView,
     memory: c.VkDeviceMemory,
-    view: c.VkImageView,
     sampler: c.VkSampler,
-    width: u32,
-    height: u32,
-    channels: u32,
-    isPlaceholder: bool,
-    path: [*c]u8,
+    descriptor_index: u32,
+    is_allocated: bool,
+    format: c.VkFormat,
+    extent: c.VkExtent3D,
+    mip_levels: u32,
 };
 
-pub const VulkanTextureManagerConfig = extern struct {
-    device: c.VkDevice,
-    allocator: ?*VulkanAllocator,
-    commandPool: c.VkCommandPool,
-    graphicsQueue: c.VkQueue,
-    syncManager: ?*VulkanSyncManager,
-    initialCapacity: u32,
+pub const BindlessTextureCreateInfo = extern struct {
+    format: c.VkFormat,
+    extent: c.VkExtent3D,
+    mip_levels: u32,
+    samples: c.VkSampleCountFlagBits,
+    usage: c.VkImageUsageFlags,
+    custom_sampler: c.VkSampler,
 };
 
-pub const VulkanTextureManager = extern struct {
-    textures: [*]VulkanManagedTexture,
-    textureCount: u32,
-    textureCapacity: u32,
-    
+pub const BindlessTexturePool = extern struct {
     device: c.VkDevice,
+    physical_device: c.VkPhysicalDevice,
     allocator: *VulkanAllocator,
-    commandPool: c.VkCommandPool,
-    graphicsQueue: c.VkQueue,
-    syncManager: ?*VulkanSyncManager,
     
-    defaultSampler: c.VkSampler,
-    hasPlaceholder: bool,
+    textures: ?[*]BindlessTexture,
+    max_textures: u32,
+    allocated_count: u32,
     
-    // Thread safety
-    mutex: ?*anyopaque,
+    free_indices: ?[*]u32,
+    free_count: u32,
+    
+    descriptor_pool: c.VkDescriptorPool,
+    descriptor_layout: c.VkDescriptorSetLayout,
+    descriptor_set: c.VkDescriptorSet,
+    
+    default_sampler: c.VkSampler,
+    
+    // Pending updates for flush
+    pending_updates: ?[*]u32,
+    pending_update_count: u32,
+    needs_descriptor_update: bool,
 };
 
-//
-// VulkanTimelineDebug
-//
-pub const VulkanTimelineWaitInfo = extern struct {
-    semaphore: c.VkSemaphore,
-    fence: c.VkFence,
-    timeline_value: u64,
-    wait_stage: c.VkPipelineStageFlags,
-};
-
-pub const VulkanTimelineError = enum(c_int) {
-    NONE = 0,
-    TIMEOUT = 1,
-    DEVICE_LOST = 2,
-    OUT_OF_MEMORY = 3,
-    INVALID_VALUE = 4,
-    SEMAPHORE_INVALID = 5,
-    UNKNOWN = 6,
-};
-
-pub const VulkanTimelineErrorInfo = extern struct {
-    error_type: VulkanTimelineError,
-    vulkan_result: c.VkResult,
-    timeline_value: u64,
-    timeout_ns: u64,
-    error_message: [256]u8,
-};
-
-pub const VulkanPBRPipeline = extern struct {
-    pipeline: c.VkPipeline,
-    pipelineBlend: c.VkPipeline,
-    pipelineLayout: c.VkPipelineLayout,
-
-    descriptorManager: ?*VulkanDescriptorManager,
-    textureManager: ?*VulkanTextureManager,
-
-    uniformBuffer: c.VkBuffer,
-    uniformBufferMemory: c.VkDeviceMemory,
-    uniformBufferMapped: ?*anyopaque,
-
-    materialBuffer: c.VkBuffer,
-    materialBufferMemory: c.VkDeviceMemory,
-    materialBufferMapped: ?*anyopaque,
-
-    lightingBuffer: c.VkBuffer,
-    lightingBufferMemory: c.VkDeviceMemory,
-    lightingBufferMapped: ?*anyopaque,
-
-    boneMatricesBuffer: c.VkBuffer,
-    boneMatricesBufferMemory: c.VkDeviceMemory,
-    boneMatricesBufferMapped: ?*anyopaque,
-    maxBones: u32,
-
-    vertexBuffer: c.VkBuffer,
-    vertexBufferMemory: c.VkDeviceMemory,
-    indexBuffer: c.VkBuffer,
-    indexBufferMemory: c.VkDeviceMemory,
-    totalIndexCount: u32,
-
-    supportsDescriptorIndexing: bool,
-    initialized: bool,
-};
-
-//
-// VulkanMeshShader
-//
+// Mesh Shader Types
 pub const MeshShaderPipelineConfig = extern struct {
     mesh_shader_path: ?[*:0]const u8,
     task_shader_path: ?[*:0]const u8,
-    fragment_shader_path: ?[*:0]const u8,
-
-    topology: c.VkPrimitiveTopology,
+    fragment_shader_path: ?[*:0]const u8, // Using 'fragment_' to match likely usage or just 'frag_'? Checked code: cfg.fragment_shader_path in vulkan_mesh_shader.zig:107
+    max_vertices_per_meshlet: u32,
+    max_primitives_per_meshlet: u32,
+    
     polygon_mode: c.VkPolygonMode,
     cull_mode: c.VkCullModeFlags,
     front_face: c.VkFrontFace,
-
     depth_test_enable: bool,
     depth_write_enable: bool,
     depth_compare_op: c.VkCompareOp,
-
     blend_enable: bool,
     src_color_blend_factor: c.VkBlendFactor,
     dst_color_blend_factor: c.VkBlendFactor,
     color_blend_op: c.VkBlendOp,
-
-    max_vertices_per_meshlet: u32,
-    max_primitives_per_meshlet: u32,
+    topology: c.VkPrimitiveTopology,
 };
 
 pub const MeshShaderPipeline = extern struct {
     pipeline: c.VkPipeline,
     pipeline_layout: c.VkPipelineLayout,
-
+    descriptor_pool: c.VkDescriptorPool,
     set0_layout: c.VkDescriptorSetLayout,
     set1_layout: c.VkDescriptorSetLayout,
-    global_descriptor_set: c.VkDescriptorSet,
-    descriptor_pool: c.VkDescriptorPool,
-
     default_material_buffer: c.VkBuffer,
     default_material_memory: c.VkDeviceMemory,
-
-    descriptor_manager: ?*VulkanDescriptorManager,
-
+    global_descriptor_set: c.VkDescriptorSet,
     has_task_shader: bool,
     max_meshlets_per_workgroup: u32,
     max_vertices_per_meshlet: u32,
-    max_primitives_per_meshlet: u32,
+    initialized: bool,
 };
 
 pub const MeshShaderDrawData = extern struct {
+    descriptor_set: c.VkDescriptorSet,
     vertex_buffer: c.VkBuffer,
     vertex_memory: c.VkDeviceMemory,
     meshlet_buffer: c.VkBuffer,
@@ -682,13 +644,10 @@ pub const MeshShaderDrawData = extern struct {
     draw_command_buffer: c.VkBuffer,
     draw_command_memory: c.VkDeviceMemory,
     uniform_buffer: c.VkBuffer,
-    uniform_memory: c.VkDeviceMemory,
-    uniform_mapped: ?*anyopaque,
-
+    uniform_memory: c.VkDeviceMemory, // Added likely missing memory field
     meshlet_count: u32,
+    uniform_mapped: ?*anyopaque,
     draw_command_count: u32,
-
-    descriptor_set: c.VkDescriptorSet,
 };
 
 pub const GpuMeshlet = extern struct {
@@ -698,172 +657,122 @@ pub const GpuMeshlet = extern struct {
     primitive_count: u32,
 };
 
-pub const MeshShaderUniformBuffer = extern struct {
-    model: [16]f32,
-    view: [16]f32,
-    proj: [16]f32,
-    materialIndex: u32,
-    _padding: [3]u32, // Align to 16 bytes if needed, or matches C struct alignment
+pub const GpuMesh = extern struct {
+    vertex_offset: u32,
+    vertex_count: u32,
+    index_offset: u32,
+    index_count: u32,
+    vtx_stride: u32,
+    material_index: u32,
+    transform: [16]f32,
+    bounding_box_min: [3]f32,
+    bounding_box_max: [3]f32,
+    vbuf: c.VkBuffer,
+    ibuf: c.VkBuffer,
+    vmem: c.VkDeviceMemory,
+    imem: c.VkDeviceMemory,
 };
 
-//
-// VulkanPipelines
-//
 pub const VulkanPipelines = extern struct {
-    // PBR Pipeline
-    use_pbr_pipeline: bool,
-    pbr_pipeline: VulkanPBRPipeline,
-
-    // Mesh Shader Pipeline
-    use_mesh_shader_pipeline: bool,
     mesh_shader_pipeline: MeshShaderPipeline,
-
-    // Compute Shader
+    simple_descriptor_layout: c.VkDescriptorSetLayout,
+    pbr_pipeline: VulkanPBRPipeline,
+    use_pbr_pipeline: bool,
+    
+    use_mesh_shader_pipeline: bool,
     compute_shader_initialized: bool,
+    simple_uniform_buffer: c.VkBuffer,
+    simple_uniform_buffer_memory: c.VkDeviceMemory,
+    simple_descriptor_pool: c.VkDescriptorPool,
+    simple_descriptor_set: c.VkDescriptorSet,
+    uv_pipeline: c.VkPipeline,
+    uv_pipeline_layout: c.VkPipelineLayout,
+    simple_uniform_buffer_mapped: ?*anyopaque,
+
+    wireframe_pipeline: c.VkPipeline,
+    wireframe_pipeline_layout: c.VkPipelineLayout,
+    
     compute_descriptor_pool: c.VkDescriptorPool,
     compute_command_pool: c.VkCommandPool,
     compute_command_buffer: c.VkCommandBuffer,
-
-    // UV and Wireframe (Simple pipelines)
-    uv_pipeline: c.VkPipeline,
-    uv_pipeline_layout: c.VkPipelineLayout,
-    wireframe_pipeline: c.VkPipeline,
-    wireframe_pipeline_layout: c.VkPipelineLayout,
-
-    // Shared Resources for Simple Pipelines
-    simple_descriptor_layout: c.VkDescriptorSetLayout,
-    simple_descriptor_pool: c.VkDescriptorPool,
-    simple_descriptor_set: c.VkDescriptorSet,
-    simple_uniform_buffer: c.VkBuffer,
-    simple_uniform_buffer_memory: c.VkDeviceMemory,
-    simple_uniform_buffer_mapped: ?*anyopaque,
 };
 
-//
-// VulkanState (GpuMesh)
-//
-pub const GpuMesh = extern struct {
-    vbuf: c.VkBuffer,
-    vmem: c.VkDeviceMemory,
-    ibuf: c.VkBuffer,
-    imem: c.VkDeviceMemory,
-    vtx_count: u32,
-    idx_count: u32,
-    vtx_stride: u32,
+pub const VulkanPBRPipeline = extern struct {
+    pipeline: c.VkPipeline,
+    pipelineLayout: c.VkPipelineLayout,
+    descriptorSetLayout: c.VkDescriptorSetLayout,
+    descriptorPool: c.VkDescriptorPool,
+    descriptorSet: c.VkDescriptorSet,
+    
+    vertexBuffer: c.VkBuffer,
+    vertexBufferMemory: c.VkDeviceMemory,
+    indexBuffer: c.VkBuffer,
+    indexBufferMemory: c.VkDeviceMemory,
+    lightingBuffer: c.VkBuffer,
+    lightingBufferMemory: c.VkDeviceMemory,
+    
+    textureManager: ?*VulkanTextureManager,
+    descriptorManager: ?*VulkanDescriptorManager,
+    
+    initialized: bool,
+    supportsDescriptorIndexing: bool,
+    uniformBuffer: c.VkBuffer,
+    uniformBufferMemory: c.VkDeviceMemory,
+    uniformBufferMapped: ?*anyopaque,
+    boneMatricesBufferMapped: ?*anyopaque,
+    
+    totalIndexCount: u32,
+    materialBuffer: c.VkBuffer,
+    materialBufferMemory: c.VkDeviceMemory,
+    lightingBufferMapped: ?*anyopaque,
+    pipelineBlend: c.VkPipeline,
+    
+    materialBufferMapped: ?*anyopaque,
+    boneMatricesBuffer: c.VkBuffer,
+    boneMatricesBufferMemory: c.VkDeviceMemory,
+    maxBones: u32,
 };
 
-pub const CardinalRenderingMode = enum(c_int) {
-    NORMAL = 0,
-    UV = 1,
-    WIREFRAME = 2,
-    MESH_SHADER = 3,
-};
-
+// Main State
 pub const VulkanState = extern struct {
-    // Modular subsystems
     context: VulkanContext,
     swapchain: VulkanSwapchain,
     commands: VulkanCommands,
-    sync: VulkanFrameSync,
-    pipelines: VulkanPipelines,
-    recovery: VulkanRecovery,
-
-    // Unified Vulkan memory allocator
+    sync: VulkanSyncManager,
+    recovery: DeviceLossRecovery,
     allocator: VulkanAllocator,
-
-    // Centralized synchronization manager
-    sync_manager: ?*VulkanSyncManager,
-
-    // UI callback
-    ui_record_callback: ?*const fn (cmd: c.VkCommandBuffer) callconv(.c) void,
-
-    // Rendering mode state
-    current_rendering_mode: CardinalRenderingMode,
-
-    // Scene mesh buffers
-    scene_meshes: ?[*]GpuMesh,
-    scene_mesh_count: u32,
-
-    // Scene
-    current_scene: ?*const CardinalScene,
-    pending_scene_upload: ?*const CardinalScene,
-    scene_upload_pending: bool,
-
-    // Mesh shader draw data pending cleanup (per-frame)
+    descriptor_manager: VulkanDescriptorManager,
+    pipelines: VulkanPipelines,
+    
     pending_cleanup_lists: ?[*]?[*]MeshShaderDrawData,
     pending_cleanup_counts: ?[*]u32,
     pending_cleanup_capacities: ?[*]u32,
+
+    sync_manager: ?*VulkanSyncManager,
+    current_rendering_mode: CardinalRenderingMode,
+    current_scene: ?*CardinalScene,
+    scene_meshes: ?[*]GpuMesh,
+    scene_mesh_count: u32,
+    
+    pending_scene_upload: ?*anyopaque,
+    scene_upload_pending: bool,
+    ui_record_callback: ?*const fn(c.VkCommandBuffer) callconv(.c) void,
 };
 
-//
-// Multi-Threading Types
-//
+// Secondary Command Context (from texture manager usage)
+pub const CardinalSecondaryCommandContext = extern struct {
+    command_buffer: c.VkCommandBuffer,
+    is_recording: bool,
+    thread_index: u32,
+    inheritance: c.VkCommandBufferInheritanceInfo,
+};
 
-pub const CARDINAL_MAX_MT_THREADS = 16;
-pub const CARDINAL_MAX_SECONDARY_COMMAND_BUFFERS = 1024;
-
-pub const cardinal_thread_handle_t = std.Thread;
-pub const cardinal_thread_id_t = std.Thread.Id;
-pub const cardinal_mutex_t = std.Thread.Mutex;
-pub const cardinal_cond_t = std.Thread.Condition;
-
-pub const CardinalThreadCommandPool = struct {
+pub const CardinalThreadCommandPool = extern struct {
     primary_pool: c.VkCommandPool,
     secondary_pool: c.VkCommandPool,
     secondary_buffers: ?[*]c.VkCommandBuffer,
     secondary_buffer_count: u32,
     next_secondary_index: u32,
-    thread_id: cardinal_thread_id_t,
     is_active: bool,
-};
-
-pub const CardinalMTCommandManager = struct {
-    vulkan_state: ?*VulkanState,
-    thread_pools: [CARDINAL_MAX_MT_THREADS]CardinalThreadCommandPool,
-    active_thread_count: u32,
-    pool_mutex: cardinal_mutex_t,
-    is_initialized: bool,
-};
-
-pub const CardinalSecondaryCommandContext = struct {
-    command_buffer: c.VkCommandBuffer,
-    inheritance: c.VkCommandBufferInheritanceInfo,
-    thread_index: u32,
-    is_recording: bool,
-};
-
-pub const CardinalMTTaskType = enum(u32) {
-    CARDINAL_MT_TASK_TEXTURE_LOAD = 0,
-    CARDINAL_MT_TASK_MESH_LOAD = 1,
-    CARDINAL_MT_TASK_MATERIAL_LOAD = 2,
-    CARDINAL_MT_TASK_COMMAND_RECORD = 3,
-    CARDINAL_MT_TASK_COUNT = 4,
-};
-
-pub const CardinalMTTask = struct {
-    type: CardinalMTTaskType,
-    data: ?*anyopaque,
-    execute_func: ?*const fn(?*anyopaque) void,
-    callback_func: ?*const fn(?*anyopaque, bool) void,
-    is_completed: bool,
-    success: bool,
-    next: ?*CardinalMTTask,
-};
-
-pub const CardinalMTTaskQueue = struct {
-    head: ?*CardinalMTTask,
-    tail: ?*CardinalMTTask,
-    queue_mutex: cardinal_mutex_t,
-    queue_condition: cardinal_cond_t,
-    task_count: u32,
-};
-
-pub const CardinalMTSubsystem = struct {
-    command_manager: CardinalMTCommandManager,
-    pending_queue: CardinalMTTaskQueue,
-    completed_queue: CardinalMTTaskQueue,
-    worker_threads: [CARDINAL_MAX_MT_THREADS]?cardinal_thread_handle_t,
-    worker_thread_count: u32,
-    is_running: bool,
-    subsystem_mutex: cardinal_mutex_t,
+    thread_id: cardinal_thread_id_t,
 };

@@ -1,5 +1,7 @@
 const std = @import("std");
 const engine = @import("cardinal_engine");
+const math = engine.math;
+const Vec3 = math.Vec3;
 const log = engine.log;
 const window = engine.window;
 const renderer = engine.vulkan_renderer;
@@ -108,8 +110,8 @@ fn draw_pbr_settings_panel() void {
             
             if (c.imgui_bridge_collapsing_header("Camera", c.ImGuiTreeNodeFlags_DefaultOpen)) {
                 var cam_changed = false;
-                if (c.imgui_bridge_drag_float3("Position", &state.camera.position, 0.1, 0.0, 0.0, "%.3f", 0)) cam_changed = true;
-                if (c.imgui_bridge_drag_float3("Target", &state.camera.target, 0.1, 0.0, 0.0, "%.3f", 0)) cam_changed = true;
+                if (c.imgui_bridge_drag_float3("Position", @ptrCast(&state.camera.position), 0.1, 0.0, 0.0, "%.3f", 0)) cam_changed = true;
+                if (c.imgui_bridge_drag_float3("Target", @ptrCast(&state.camera.target), 0.1, 0.0, 0.0, "%.3f", 0)) cam_changed = true;
                 if (c.imgui_bridge_slider_float("FOV", &state.camera.fov, 10.0, 120.0, "%.1f")) cam_changed = true;
                 
                 if (cam_changed and state.pbr_enabled) {
@@ -121,10 +123,10 @@ fn draw_pbr_settings_panel() void {
             
             if (c.imgui_bridge_collapsing_header("Lighting", c.ImGuiTreeNodeFlags_DefaultOpen)) {
                 var light_changed = false;
-                if (c.imgui_bridge_drag_float3("Direction", &state.light.direction, 0.01, -1.0, 1.0, "%.3f", 0)) light_changed = true;
-                if (c.imgui_bridge_color_edit3("Color", &state.light.color, 0)) light_changed = true;
+                if (c.imgui_bridge_drag_float3("Direction", @ptrCast(&state.light.direction), 0.01, -1.0, 1.0, "%.3f", 0)) light_changed = true;
+                if (c.imgui_bridge_color_edit3("Color", @ptrCast(&state.light.color), 0)) light_changed = true;
                 if (c.imgui_bridge_slider_float("Intensity", &state.light.intensity, 0.0, 10.0, "%.2f")) light_changed = true;
-                if (c.imgui_bridge_color_edit3("Ambient", &state.light.ambient, 0)) light_changed = true;
+                if (c.imgui_bridge_color_edit3("Ambient", @ptrCast(&state.light.ambient), 0)) light_changed = true;
                 
                 if (light_changed and state.pbr_enabled) {
                     renderer.cardinal_renderer_set_lighting(state.renderer, &state.light);
@@ -311,19 +313,19 @@ pub fn init(win_ptr: *window.CardinalWindow, rnd_ptr: *types.CardinalRenderer) b
         .window = win_ptr,
         .renderer = rnd_ptr,
         .camera = .{
-            .position = .{0.0, 0.0, 2.0},
-            .target = .{0.0, 0.0, 0.0},
-            .up = .{0.0, 1.0, 0.0},
+            .position = .{ .x = 0.0, .y = 0.0, .z = 2.0 },
+            .target = .{ .x = 0.0, .y = 0.0, .z = 0.0 },
+            .up = .{ .x = 0.0, .y = 1.0, .z = 0.0 },
             .fov = 65.0,
             .aspect = 16.0 / 9.0,
             .near_plane = 0.1,
             .far_plane = 100.0,
         },
         .light = .{
-            .direction = .{-0.3, -0.7, -0.5},
-            .color = .{1.0, 1.0, 0.95},
+            .direction = .{ .x = -0.3, .y = -0.7, .z = -0.5 },
+            .color = .{ .x = 1.0, .y = 1.0, .z = 0.95 },
             .intensity = 8.0,
-            .ambient = .{0.3, 0.3, 0.35},
+            .ambient = .{ .x = 0.3, .y = 0.3, .z = 0.35 },
         },
     };
     

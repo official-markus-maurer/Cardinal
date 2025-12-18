@@ -486,6 +486,10 @@ fn vk_record_scene_commands(s: *types.VulkanState, cmd: c.VkCommandBuffer) void 
                  vk_simple_pipelines.vk_render_simple(s, cmd, s.pipelines.wireframe_pipeline, s.pipelines.wireframe_pipeline_layout);
             }
         },
+        types.CardinalRenderingMode.DEBUG => {
+            // Debug rendering (e.g. normals, bounds) - for now just use normal PBR or wireframe if available
+            // Or leave empty if not implemented
+        },
         types.CardinalRenderingMode.MESH_SHADER => {
              vk_mesh_shader.vk_mesh_shader_record_frame(s, cmd);
         },
@@ -825,8 +829,8 @@ pub export fn vk_prepare_mesh_shader_rendering(s: ?*types.VulkanState) callconv(
         if (texture_views != null and samplers != null) {
             var i: u32 = 0;
             while (i < texture_count) : (i += 1) {
-                texture_views.?[i] = vs.pipelines.pbr_pipeline.textureManager.?.textures[i].view;
-                const texSampler = vs.pipelines.pbr_pipeline.textureManager.?.textures[i].sampler;
+                texture_views.?[i] = vs.pipelines.pbr_pipeline.textureManager.?.textures.?[i].view;
+                const texSampler = vs.pipelines.pbr_pipeline.textureManager.?.textures.?[i].sampler;
                 samplers.?[i] = if (texSampler != null) texSampler else vs.pipelines.pbr_pipeline.textureManager.?.defaultSampler;
             }
         } else {

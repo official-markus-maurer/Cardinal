@@ -27,7 +27,7 @@ const TextureUploadContext = struct {
     finished: bool, // Simple flag, read/write should be atomic enough for bool on x86/x64, but better use atomic if possible. For now volatile is okayish or just careful.
 };
 
-fn upload_texture_task(data: ?*anyopaque) void {
+fn upload_texture_task(data: ?*anyopaque) callconv(.c) void {
     if (data == null) return;
     const ctx: *TextureUploadContext = @ptrCast(@alignCast(data));
     ctx.success = false;
@@ -214,7 +214,7 @@ fn destroy_texture(manager: *types.VulkanTextureManager, index: u32) void {
     }
 
     // log.cardinal_log_debug("Destroying texture {d}", .{index});
-    var texture = &manager.textures[index];
+    var texture = &manager.textures.?[index];
 
     if (texture.view != null) {
         c.vkDestroyImageView(manager.device, texture.view, null);
@@ -299,7 +299,7 @@ pub fn vk_texture_manager_init(manager: *types.VulkanTextureManager, config: ?*c
     manager.* = std.mem.zeroes(types.VulkanTextureManager);
 
     manager.device = config.?.device;
-    manager.allocator = config.?.allocator.?;
+    manager.allocator = config.?.allocator;
     manager.commandPool = config.?.commandPool;
     manager.graphicsQueue = config.?.graphicsQueue;
     manager.syncManager = config.?.syncManager;
@@ -426,10 +426,10 @@ pub fn vk_texture_manager_load_scene_textures(manager: *types.VulkanTextureManag
         const slot_index = 1 + i;
         
         // Initialize context
-        ctx_array[tasks_submitted].allocator = manager.allocator;
+        ctx_array[tasks_submitted].allocator = manager.allocator.?;
         ctx_array[tasks_submitted].device = manager.device;
         ctx_array[tasks_submitted].texture = texture;
-        ctx_array[tasks_submitted].managed_texture = &manager.textures[slot_index];
+        ctx_array[tasks_submitted].managed_texture = &manager.textures.?[slot_index];
         ctx_array[tasks_submitted].finished = false;
 
         // Create task
@@ -573,7 +573,7 @@ pub fn vk_texture_manager_load_texture(manager: *types.VulkanTextureManager, tex
     }
 
     const index = manager.textureCount;
-    var managed_texture = &manager.textures[index];
+    var managed_texture = &manager.textures.?[index];
 
     // Use existing texture utility to create the texture
     if (!vk_texture_utils.vk_texture_create_from_data(manager.allocator, manager.device, manager.commandPool,
@@ -638,7 +638,7 @@ pub fn vk_texture_manager_create_placeholder(manager: *types.VulkanTextureManage
     }
 
     const index = manager.textureCount;
-    var managed_texture = &manager.textures[index];
+    var managed_texture = &manager.textures.?[index];
 
     // Use existing texture utility to create placeholder
     if (!vk_texture_utils.vk_texture_create_placeholder(manager.allocator, manager.device, manager.commandPool,
@@ -679,7 +679,7 @@ pub fn vk_texture_manager_get_texture(manager: *const types.VulkanTextureManager
     if (index >= manager.textureCount) {
         return null;
     }
-    return &manager.textures[index];
+    return &manager.textures.?[index];
 }
 
 pub fn vk_texture_manager_get_default_sampler(manager: ?*const types.VulkanTextureManager) c.VkSampler {
@@ -699,7 +699,7 @@ pub fn vk_texture_manager_get_image_views(manager: *const types.VulkanTextureMan
 
     var i: u32 = 0;
     while (i < copy_count) : (i += 1) {
-        out_views[i] = manager.textures[i].view;
+        out_views[i] = manager.textures.?[i].view;
     }
 
     return copy_count;

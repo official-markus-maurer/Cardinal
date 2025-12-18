@@ -259,7 +259,7 @@ fn handle_pending_recreation(renderer: ?*types.CardinalRenderer, s: *types.Vulka
 
         if (s.scene_upload_pending and s.pending_scene_upload != null) {
             log.cardinal_log_info("[UPLOAD] Performing deferred scene upload", .{});
-            vk_renderer.cardinal_renderer_upload_scene(renderer, @ptrCast(s.pending_scene_upload));
+            vk_renderer.cardinal_renderer_upload_scene(renderer, @ptrCast(@alignCast(s.pending_scene_upload)));
             s.scene_upload_pending = false;
             s.pending_scene_upload = null;
         }

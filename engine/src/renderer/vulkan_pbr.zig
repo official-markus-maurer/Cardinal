@@ -568,10 +568,10 @@ fn update_pbr_descriptor_sets(pipeline: *types.VulkanPBRPipeline) bool {
     var b: u32 = 1;
     while (b <= 5) : (b += 1) {
         const placeholderView = if (pipeline.textureManager.?.textureCount > 0)
-                                          pipeline.textureManager.?.textures[0].view
+                                          pipeline.textureManager.?.textures.?[0].view
                                           else null;
         const placeholderSampler = if (pipeline.textureManager.?.textureCount > 0)
-                                           pipeline.textureManager.?.textures[0].sampler
+                                           pipeline.textureManager.?.textures.?[0].sampler
                                            else pipeline.textureManager.?.defaultSampler;
 
         if (!descriptor_mgr.vk_descriptor_manager_update_image(dm, setIndex, b,
@@ -604,8 +604,8 @@ fn update_pbr_descriptor_sets(pipeline: *types.VulkanPBRPipeline) bool {
 
         var i: u32 = 0;
         while (i < texCount) : (i += 1) {
-            viewsPtr[i] = pipeline.textureManager.?.textures[i].view;
-            samplersPtr[i] = pipeline.textureManager.?.textures[i].sampler;
+            viewsPtr[i] = pipeline.textureManager.?.textures.?[i].view;
+            samplersPtr[i] = pipeline.textureManager.?.textures.?[i].sampler;
         }
 
         if (!descriptor_mgr.vk_descriptor_manager_update_textures_with_samplers(dm, setIndex, 9, viewsPtr,
