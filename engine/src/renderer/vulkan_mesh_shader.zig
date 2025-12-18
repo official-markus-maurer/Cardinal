@@ -1,6 +1,7 @@
 const std = @import("std");
 const builtin = @import("builtin");
 const log = @import("../core/log.zig");
+const memory = @import("../core/memory.zig");
 const buffer_mgr = @import("vulkan_buffer_manager.zig");
 const types = @import("vulkan_types.zig");
 const c = @import("vulkan_c.zig").c;
@@ -24,14 +25,15 @@ pub export fn vk_mesh_shader_init(s: ?*types.VulkanState) callconv(.c) bool {
     const frames = if (vs.sync.max_frames_in_flight > 0) vs.sync.max_frames_in_flight else 3;
 
     // Allocate arrays for per-frame lists
-    const lists_ptr = c.calloc(frames, @sizeOf([*]types.MeshShaderDrawData));
-    const counts_ptr = c.calloc(frames, @sizeOf(u32));
-    const capacities_ptr = c.calloc(frames, @sizeOf(u32));
+    const mem_alloc = memory.cardinal_get_allocator_for_category(.RENDERER);
+    const lists_ptr = memory.cardinal_calloc(mem_alloc, frames, @sizeOf([*]types.MeshShaderDrawData));
+    const counts_ptr = memory.cardinal_calloc(mem_alloc, frames, @sizeOf(u32));
+    const capacities_ptr = memory.cardinal_calloc(mem_alloc, frames, @sizeOf(u32));
 
     if (lists_ptr == null or counts_ptr == null or capacities_ptr == null) {
-        if (lists_ptr) |p| c.free(p);
-        if (counts_ptr) |p| c.free(p);
-        if (capacities_ptr) |p| c.free(p);
+        if (lists_ptr) |p| memory.cardinal_free(mem_alloc, p);
+        if (counts_ptr) |p| memory.cardinal_free(mem_alloc, p);
+        if (capacities_ptr) |p| memory.cardinal_free(mem_alloc, p);
         return false;
     }
 
@@ -50,6 +52,7 @@ pub export fn vk_mesh_shader_cleanup(s: ?*types.VulkanState) callconv(.c) void {
     
     // Process all pending cleanups
     if (vs.pending_cleanup_lists != null) {
+        const mem_alloc = memory.cardinal_get_allocator_for_category(.RENDERER);
         var f: u32 = 0;
         const frames = if (vs.sync.max_frames_in_flight > 0) vs.sync.max_frames_in_flight else 3;
         while (f < frames) : (f += 1) {
@@ -58,12 +61,12 @@ pub export fn vk_mesh_shader_cleanup(s: ?*types.VulkanState) callconv(.c) void {
                  while (i < vs.pending_cleanup_counts.?[f]) : (i += 1) {
                     vk_mesh_shader_destroy_draw_data(vs, &(vs.pending_cleanup_lists.?[f].?)[i]);
                 }
-                 c.free(@as(?*anyopaque, @ptrCast(vs.pending_cleanup_lists.?[f])));
+                 memory.cardinal_free(mem_alloc, @as(?*anyopaque, @ptrCast(vs.pending_cleanup_lists.?[f])));
             }
         }
-        c.free(@as(?*anyopaque, @ptrCast(vs.pending_cleanup_lists)));
-        c.free(@as(?*anyopaque, @ptrCast(vs.pending_cleanup_counts)));
-        c.free(@as(?*anyopaque, @ptrCast(vs.pending_cleanup_capacities)));
+        memory.cardinal_free(mem_alloc, @as(?*anyopaque, @ptrCast(vs.pending_cleanup_lists)));
+        memory.cardinal_free(mem_alloc, @as(?*anyopaque, @ptrCast(vs.pending_cleanup_counts)));
+        memory.cardinal_free(mem_alloc, @as(?*anyopaque, @ptrCast(vs.pending_cleanup_capacities)));
         vs.pending_cleanup_lists = null;
         vs.pending_cleanup_counts = null;
         vs.pending_cleanup_capacities = null;

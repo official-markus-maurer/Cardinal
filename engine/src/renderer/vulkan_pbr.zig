@@ -1,6 +1,7 @@
 const std = @import("std");
 const builtin = @import("builtin");
 const log = @import("../core/log.zig");
+const memory = @import("../core/memory.zig");
 const buffer_mgr = @import("vulkan_buffer_manager.zig");
 const descriptor_mgr = @import("vulkan_descriptor_manager.zig");
 const types = @import("vulkan_types.zig");
@@ -22,7 +23,8 @@ const c = @import("vulkan_c.zig").c;
 // Helper functions
 
 fn create_pbr_descriptor_manager(pipeline: *types.VulkanPBRPipeline, device: c.VkDevice, allocator: *types.VulkanAllocator, vulkan_state: ?*types.VulkanState) bool {
-    const ptr = c.malloc(@sizeOf(types.VulkanDescriptorManager));
+    const mem_alloc = memory.cardinal_get_allocator_for_category(.RENDERER);
+    const ptr = memory.cardinal_alloc(mem_alloc, @sizeOf(types.VulkanDescriptorManager));
     if (ptr == null) {
         log.cardinal_log_error("Failed to allocate memory for descriptor manager", .{});
         return false;
@@ -55,7 +57,7 @@ fn create_pbr_descriptor_manager(pipeline: *types.VulkanPBRPipeline, device: c.V
 
     if (!descriptor_mgr.vk_descriptor_manager_create(@ptrCast(pipeline.descriptorManager), device, @ptrCast(allocator), &createInfo, @ptrCast(vulkan_state))) {
         log.cardinal_log_error("Failed to create descriptor manager!", .{});
-        c.free(pipeline.descriptorManager);
+        memory.cardinal_free(mem_alloc, pipeline.descriptorManager);
         pipeline.descriptorManager = null;
         return false;
     }
@@ -63,7 +65,8 @@ fn create_pbr_descriptor_manager(pipeline: *types.VulkanPBRPipeline, device: c.V
 }
 
 fn create_pbr_texture_manager(pipeline: *types.VulkanPBRPipeline, device: c.VkDevice, allocator: *types.VulkanAllocator, commandPool: c.VkCommandPool, graphicsQueue: c.VkQueue, vulkan_state: ?*types.VulkanState) bool {
-    const ptr = c.malloc(@sizeOf(types.VulkanTextureManager));
+    const mem_alloc = memory.cardinal_get_allocator_for_category(.RENDERER);
+    const ptr = memory.cardinal_alloc(mem_alloc, @sizeOf(types.VulkanTextureManager));
     if (ptr == null) {
         log.cardinal_log_error("Failed to allocate texture manager for PBR pipeline", .{});
         return false;
@@ -86,7 +89,7 @@ fn create_pbr_texture_manager(pipeline: *types.VulkanPBRPipeline, device: c.VkDe
 
     if (!vk_texture_mgr.vk_texture_manager_init(pipeline.textureManager.?, &textureConfig)) {
         log.cardinal_log_error("Failed to initialize texture manager for PBR pipeline", .{});
-        c.free(pipeline.textureManager);
+        memory.cardinal_free(mem_alloc, pipeline.textureManager);
         pipeline.textureManager = null;
         return false;
     }
@@ -464,12 +467,13 @@ fn create_pbr_mesh_buffers(pipeline: *types.VulkanPBRPipeline, device: c.VkDevic
 
     // Prepare vertex data for upload
     const vertexBufferSize = totalVertices * @sizeOf(scene.CardinalVertex);
-    const vertexData = c.malloc(vertexBufferSize);
+    const mem_alloc = memory.cardinal_get_allocator_for_category(.RENDERER);
+    const vertexData = memory.cardinal_alloc(mem_alloc, vertexBufferSize);
     if (vertexData == null) {
         log.cardinal_log_error("Failed to allocate memory for vertex data", .{});
         return false;
     }
-    defer c.free(vertexData);
+    defer memory.cardinal_free(mem_alloc, vertexData);
     const vertices = @as([*]scene.CardinalVertex, @ptrCast(@alignCast(vertexData)));
 
     // Copy all vertex data into contiguous buffer
@@ -496,16 +500,17 @@ fn create_pbr_mesh_buffers(pipeline: *types.VulkanPBRPipeline, device: c.VkDevic
 
     // Create index buffer if we have indices
     if (totalIndices > 0) {
-        const indexBufferSize = totalIndices * @sizeOf(u32);
-        const indexData = c.malloc(indexBufferSize);
-        if (indexData == null) {
-            log.cardinal_log_error("Failed to allocate memory for index data", .{});
-            return false;
-        }
-        defer c.free(indexData);
-        const indices = @as([*]u32, @ptrCast(@alignCast(indexData)));
+        const indexBufferSize = @sizeOf(u32) * totalIndices;
 
-        // Copy all index data into contiguous buffer with vertex base offset adjustment
+        const indexData = memory.cardinal_alloc(mem_alloc, indexBufferSize);
+    if (indexData == null) {
+        log.cardinal_log_error("Failed to allocate memory for index data", .{});
+        return false;
+    }
+    defer memory.cardinal_free(mem_alloc, indexData);
+    const indices = @as([*]u32, @ptrCast(@alignCast(indexData)));
+
+    // Copy all index data into contiguous buffer with vertex base offset adjustment
         var indexOffset: u32 = 0;
         var vertexBaseOffset: u32 = 0;
         i = 0;
@@ -581,17 +586,18 @@ fn update_pbr_descriptor_sets(pipeline: *types.VulkanPBRPipeline) bool {
     // Update variable descriptor array (binding 9)
     const texCount = pipeline.textureManager.?.textureCount;
     if (texCount > 0) {
-        const views = c.malloc(@sizeOf(c.VkImageView) * texCount);
-        const samplers = c.malloc(@sizeOf(c.VkSampler) * texCount);
+        const mem_alloc = memory.cardinal_get_allocator_for_category(.RENDERER);
+        const views = memory.cardinal_alloc(mem_alloc, @sizeOf(c.VkImageView) * texCount);
+        const samplers = memory.cardinal_alloc(mem_alloc, @sizeOf(c.VkSampler) * texCount);
 
         if (views == null or samplers == null) {
             log.cardinal_log_error("Failed to allocate arrays for descriptor update", .{});
-            if (views != null) c.free(views);
-            if (samplers != null) c.free(samplers);
+            if (views != null) memory.cardinal_free(mem_alloc, views);
+            if (samplers != null) memory.cardinal_free(mem_alloc, samplers);
             return false;
         }
-        defer c.free(views);
-        defer c.free(samplers);
+        defer memory.cardinal_free(mem_alloc, views);
+        defer memory.cardinal_free(mem_alloc, samplers);
 
         const viewsPtr = @as([*]c.VkImageView, @ptrCast(@alignCast(views)));
         const samplersPtr = @as([*]c.VkSampler, @ptrCast(@alignCast(samplers)));
@@ -815,13 +821,23 @@ pub export fn vk_pbr_pipeline_create(pipeline: ?*types.VulkanPBRPipeline, device
 }
 
 pub export fn vk_pbr_pipeline_destroy(pipeline: ?*types.VulkanPBRPipeline, device: c.VkDevice, allocator: ?*types.VulkanAllocator) callconv(.c) void {
-    if (pipeline == null or !pipeline.?.initialized) return;
+    if (pipeline == null) {
+        log.cardinal_log_error("vk_pbr_pipeline_destroy called with null pipeline", .{});
+        return;
+    }
+    if (!pipeline.?.initialized) {
+        log.cardinal_log_warn("vk_pbr_pipeline_destroy called on uninitialized pipeline", .{});
+        return;
+    }
     const pipe = pipeline.?;
     const alloc = allocator.?;
 
+    log.cardinal_log_debug("vk_pbr_pipeline_destroy: start", .{});
+
     if (pipe.textureManager != null) {
+        const mem_alloc = memory.cardinal_get_allocator_for_category(.RENDERER);
         vk_texture_mgr.vk_texture_manager_destroy(pipe.textureManager.?);
-        c.free(@as(?*anyopaque, @ptrCast(pipe.textureManager)));
+        memory.cardinal_free(mem_alloc, @as(?*anyopaque, @ptrCast(pipe.textureManager)));
         pipe.textureManager = null;
     }
 
@@ -846,8 +862,9 @@ pub export fn vk_pbr_pipeline_destroy(pipeline: ?*types.VulkanPBRPipeline, devic
     }
 
     if (pipe.descriptorManager != null) {
+        const mem_alloc = memory.cardinal_get_allocator_for_category(.RENDERER);
         descriptor_mgr.vk_descriptor_manager_destroy(@ptrCast(pipe.descriptorManager));
-        c.free(pipe.descriptorManager);
+        memory.cardinal_free(mem_alloc, pipe.descriptorManager);
         pipe.descriptorManager = null;
     }
 
@@ -886,11 +903,17 @@ pub export fn vk_pbr_update_uniforms(pipeline: ?*types.VulkanPBRPipeline, ubo: ?
 }
 
 pub export fn vk_pbr_render(pipeline: ?*types.VulkanPBRPipeline, commandBuffer: c.VkCommandBuffer, scene_data: ?*const scene.CardinalScene) callconv(.c) void {
-    if (pipeline == null or !pipeline.?.initialized or scene_data == null) return;
+    if (pipeline == null or !pipeline.?.initialized or scene_data == null) {
+        // log.cardinal_log_warn("vk_pbr_render skipped: pipeline or scene null", .{});
+        return;
+    }
     const pipe = pipeline.?;
     const scn = scene_data.?;
 
-    if (pipe.vertexBuffer == null or pipe.indexBuffer == null) return;
+    if (pipe.vertexBuffer == null or pipe.indexBuffer == null) {
+        log.cardinal_log_warn("vk_pbr_render skipped: vertex/index buffer null", .{});
+        return;
+    }
 
     const vertexBuffers = [_]c.VkBuffer{ pipe.vertexBuffer };
     const offsets = [_]c.VkDeviceSize{ 0 };
@@ -904,9 +927,11 @@ pub export fn vk_pbr_render(pipeline: ?*types.VulkanPBRPipeline, commandBuffer: 
             const setIndex = dm.descriptorSetCount - 1;
             descriptorSet = dm.descriptorSets.?[setIndex];
         } else {
+            log.cardinal_log_warn("vk_pbr_render skipped: no descriptor sets", .{});
             return;
         }
     } else {
+        log.cardinal_log_warn("vk_pbr_render skipped: no descriptor manager", .{});
         return;
     }
 
@@ -917,6 +942,7 @@ pub export fn vk_pbr_render(pipeline: ?*types.VulkanPBRPipeline, commandBuffer: 
 
     var indexOffset: u32 = 0;
     var i: u32 = 0;
+    var drawn_count: u32 = 0;
     while (i < scn.mesh_count) : (i += 1) {
         const mesh = &scn.meshes.?[i];
         var is_blend = false;
@@ -972,8 +998,11 @@ pub export fn vk_pbr_render(pipeline: ?*types.VulkanPBRPipeline, commandBuffer: 
         if (indexOffset + mesh.index_count > pipe.totalIndexCount) break;
 
         c.vkCmdDrawIndexed(commandBuffer, mesh.index_count, 1, indexOffset, 0, 0);
+        drawn_count += 1;
         indexOffset += mesh.index_count;
     }
+    
+    // if (drawn_count > 0) log.cardinal_log_debug("PBR Render: Drawn {d} opaque meshes", .{drawn_count});
 
     // Pass 2: Blend
     c.vkCmdBindPipeline(commandBuffer, c.VK_PIPELINE_BIND_POINT_GRAPHICS, pipe.pipelineBlend);

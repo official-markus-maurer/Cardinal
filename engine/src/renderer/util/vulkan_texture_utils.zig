@@ -29,7 +29,9 @@ fn get_current_thread_id() u32 {
 }
 
 pub fn add_staging_buffer_cleanup(buffer: c.VkBuffer, memory: c.VkDeviceMemory, device: c.VkDevice, timeline_value: u64) void {
-    const cleanup = c.malloc(@sizeOf(StagingBufferCleanup));
+    const mem_alloc = @import("../../core/memory.zig").cardinal_get_allocator_for_category(.RENDERER);
+    const mem_utils = @import("../../core/memory.zig");
+    const cleanup = mem_utils.cardinal_alloc(mem_alloc, @sizeOf(StagingBufferCleanup));
     if (cleanup == null) {
         log.cardinal_log_error("[TEXTURE_UTILS] Failed to allocate cleanup tracking, immediate cleanup", .{});
         c.vkDestroyBuffer(device, buffer, null);

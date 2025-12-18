@@ -1,6 +1,7 @@
 const std = @import("std");
 const builtin = @import("builtin");
 const log = @import("../core/log.zig");
+const memory = @import("../core/memory.zig");
 const types = @import("vulkan_types.zig");
 const window = @import("../core/window.zig");
 
@@ -94,7 +95,8 @@ fn setup_function_pointers(s: *types.VulkanState) void {
 
 fn init_sync_manager(s: *types.VulkanState) bool {
     // Initialize centralized sync manager
-    const sync_mgr_ptr = c.malloc(@sizeOf(types.VulkanSyncManager));
+    const mem_alloc = memory.cardinal_get_allocator_for_category(.RENDERER);
+    const sync_mgr_ptr = memory.cardinal_alloc(mem_alloc, @sizeOf(types.VulkanSyncManager));
     if (sync_mgr_ptr == null) {
         log.cardinal_log_error("Failed to allocate memory for VulkanSyncManager", .{});
         return false;
@@ -103,7 +105,7 @@ fn init_sync_manager(s: *types.VulkanState) bool {
 
     if (!vk_sync_manager.vulkan_sync_manager_init(@ptrCast(s.sync_manager), s.context.device, s.context.graphics_queue, s.sync.max_frames_in_flight)) {
         log.cardinal_log_error("vulkan_sync_manager_init failed", .{});
-        c.free(s.sync_manager);
+        memory.cardinal_free(mem_alloc, s.sync_manager);
         s.sync_manager = null;
         return false;
     }
@@ -236,7 +238,8 @@ pub export fn cardinal_renderer_create(out_renderer: ?*types.CardinalRenderer, w
     if (out_renderer == null or win == null)
         return false;
     
-    const s_ptr = c.calloc(1, @sizeOf(types.VulkanState));
+    const mem_alloc = memory.cardinal_get_allocator_for_category(.RENDERER);
+    const s_ptr = memory.cardinal_calloc(mem_alloc, 1, @sizeOf(types.VulkanState));
     if (s_ptr == null) return false;
     const s: *types.VulkanState = @ptrCast(@alignCast(s_ptr));
     
@@ -303,7 +306,8 @@ pub export fn cardinal_renderer_create_headless(out_renderer: ?*types.CardinalRe
     if (out_renderer == null)
         return false;
     
-    const s_ptr = c.calloc(1, @sizeOf(types.VulkanState));
+    const mem_alloc = memory.cardinal_get_allocator_for_category(.RENDERER);
+    const s_ptr = memory.cardinal_calloc(mem_alloc, 1, @sizeOf(types.VulkanState));
     if (s_ptr == null) return false;
     const s: *types.VulkanState = @ptrCast(@alignCast(s_ptr));
     
@@ -338,7 +342,7 @@ pub export fn cardinal_renderer_create_headless(out_renderer: ?*types.CardinalRe
         return false;
     }
 
-    const sync_mgr_ptr = c.malloc(@sizeOf(types.VulkanSyncManager));
+    const sync_mgr_ptr = memory.cardinal_alloc(mem_alloc, @sizeOf(types.VulkanSyncManager));
     if (sync_mgr_ptr == null) {
         log.cardinal_log_error("Failed to allocate VulkanSyncManager", .{});
         return false;
@@ -347,7 +351,7 @@ pub export fn cardinal_renderer_create_headless(out_renderer: ?*types.CardinalRe
 
     if (!vk_sync_manager.vulkan_sync_manager_init(@ptrCast(s.sync_manager), s.context.device, s.context.graphics_queue, s.sync.max_frames_in_flight)) {
         log.cardinal_log_error("vulkan_sync_manager_init failed", .{});
-        c.free(s.sync_manager);
+        memory.cardinal_free(mem_alloc, s.sync_manager);
         s.sync_manager = null;
         return false;
     }
@@ -435,7 +439,8 @@ pub fn destroy_scene_buffers(vs: *types.VulkanState) void {
             m.imem = null;
         }
     }
-    c.free(vs.scene_meshes);
+    const mem_alloc = memory.cardinal_get_allocator_for_category(.RENDERER);
+    memory.cardinal_free(mem_alloc, vs.scene_meshes);
     vs.scene_meshes = null;
     vs.scene_mesh_count = 0;
     log.cardinal_log_debug("[RENDERER] destroy_scene_buffers: completed", .{});
@@ -463,7 +468,8 @@ pub export fn cardinal_renderer_destroy(renderer: ?*types.CardinalRenderer) call
         log.cardinal_log_debug("[DESTROY] Cleaning up sync manager", .{});
         const sm = @as(?*types.VulkanSyncManager, @ptrCast(s.sync_manager));
         vk_sync_manager.vulkan_sync_manager_destroy(@ptrCast(sm));
-        c.free(s.sync_manager);
+        const mem_alloc = memory.cardinal_get_allocator_for_category(.RENDERER);
+        memory.cardinal_free(mem_alloc, s.sync_manager);
         s.sync_manager = null;
     }
 
@@ -509,7 +515,8 @@ pub export fn cardinal_renderer_destroy(renderer: ?*types.CardinalRenderer) call
     vk_instance.vk_destroy_device_objects(@ptrCast(s));
 
     log.cardinal_log_info("[DESTROY] Freeing renderer state", .{});
-    c.free(s);
+    const mem_alloc = memory.cardinal_get_allocator_for_category(.RENDERER);
+    memory.cardinal_free(mem_alloc, s);
     renderer.?._opaque = null;
 }
 
@@ -1095,7 +1102,8 @@ pub export fn cardinal_renderer_upload_scene(renderer: ?*types.CardinalRenderer,
     }
 
     s.scene_mesh_count = scene.?.mesh_count;
-    const meshes_ptr = c.calloc(s.scene_mesh_count, @sizeOf(types.GpuMesh));
+    const mem_alloc = memory.cardinal_get_allocator_for_category(.RENDERER);
+    const meshes_ptr = memory.cardinal_calloc(mem_alloc, s.scene_mesh_count, @sizeOf(types.GpuMesh));
     if (meshes_ptr == null) {
         log.cardinal_log_error("Failed to allocate memory for scene meshes", .{});
         return;

@@ -1,6 +1,7 @@
 const std = @import("std");
 const builtin = @import("builtin");
 const log = @import("../core/log.zig");
+const memory = @import("../core/memory.zig");
 const types = @import("vulkan_types.zig");
 const vk_allocator = @import("vulkan_allocator.zig");
 
@@ -84,13 +85,14 @@ fn create_descriptor_pool(manager: *types.VulkanDescriptorManager, maxSets: u32,
 }
 
 fn create_descriptor_set_layout(manager: *types.VulkanDescriptorManager) bool {
-    const ptr = c.malloc(manager.bindingCount * @sizeOf(c.VkDescriptorSetLayoutBinding));
+    const mem_alloc = memory.cardinal_get_allocator_for_category(.RENDERER);
+    const ptr = memory.cardinal_alloc(mem_alloc, manager.bindingCount * @sizeOf(c.VkDescriptorSetLayoutBinding));
     if (ptr == null) {
         log.cardinal_log_error("Failed to allocate memory for layout bindings", .{});
         return false;
     }
     const layoutBindings = @as([*]c.VkDescriptorSetLayoutBinding, @ptrCast(@alignCast(ptr.?)));
-    defer c.free(ptr.?);
+    defer memory.cardinal_free(mem_alloc, ptr.?);
 
     var i: u32 = 0;
     while (i < manager.bindingCount) : (i += 1) {
@@ -106,13 +108,13 @@ fn create_descriptor_set_layout(manager: *types.VulkanDescriptorManager) bool {
     layoutInfo.bindingCount = manager.bindingCount;
     layoutInfo.pBindings = layoutBindings;
     
-    const ptr2 = c.calloc(manager.bindingCount, @sizeOf(c.VkDescriptorBindingFlags));
+    const ptr2 = memory.cardinal_calloc(mem_alloc, manager.bindingCount, @sizeOf(c.VkDescriptorBindingFlags));
     const bindingFlags = if (ptr2) |p| @as([*]c.VkDescriptorBindingFlags, @ptrCast(@alignCast(p))) else null;
 
     var hasUpdateAfterBind = false;
     
     if (bindingFlags != null) {
-        defer c.free(ptr2);
+        defer memory.cardinal_free(mem_alloc, ptr2);
         
         i = 0;
         while (i < manager.bindingCount) : (i += 1) {
@@ -214,7 +216,8 @@ fn setup_descriptor_buffer(manager: *types.VulkanDescriptorManager, maxSets: u32
         }
     }
     manager.bindingOffsetCount = max_binding + 1;
-    const ptr = c.calloc(manager.bindingOffsetCount, @sizeOf(c.VkDeviceSize));
+    const mem_alloc = memory.cardinal_get_allocator_for_category(.RENDERER);
+    const ptr = memory.cardinal_calloc(mem_alloc, manager.bindingOffsetCount, @sizeOf(c.VkDeviceSize));
     manager.bindingOffsets = if (ptr) |p| @as([*]c.VkDeviceSize, @ptrCast(@alignCast(p))) else null;
     
     if (manager.bindingOffsets == null) {
@@ -264,12 +267,13 @@ pub export fn vk_descriptor_manager_create(manager: ?*types.VulkanDescriptorMana
     mgr.maxSets = info.maxSets;
     mgr.vulkan_state = vulkan_state;
 
-    const ptr = c.malloc(info.bindingCount * @sizeOf(types.VulkanDescriptorBinding));
+    const mem_alloc = memory.cardinal_get_allocator_for_category(.RENDERER);
+    const ptr = memory.cardinal_alloc(mem_alloc, info.bindingCount * @sizeOf(types.VulkanDescriptorBinding));
     if (ptr == null) {
         log.cardinal_log_error("Failed to allocate memory for descriptor bindings", .{});
         return false;
     }
-    mgr.bindings = @as([*]const types.VulkanDescriptorBinding, @ptrCast(@alignCast(ptr.?)));
+    mgr.bindings = @as([*]const types.VulkanDescriptorBinding, @ptrCast(@alignCast(ptr)));
     @memcpy(@as([*]u8, @ptrCast(@constCast(mgr.bindings.?)))[0..info.bindingCount * @sizeOf(types.VulkanDescriptorBinding)],
            @as([*]const u8, @ptrCast(info.bindings.?))[0..info.bindingCount * @sizeOf(types.VulkanDescriptorBinding)]);
 
@@ -277,7 +281,7 @@ pub export fn vk_descriptor_manager_create(manager: ?*types.VulkanDescriptorMana
                                     vulkan_state.?.context.vkGetDescriptorSetLayoutSizeEXT != null;
 
     if (!create_descriptor_set_layout(mgr)) {
-        c.free(@as(?*anyopaque, @ptrCast(@constCast(mgr.bindings))));
+        memory.cardinal_free(mem_alloc, @as(?*anyopaque, @ptrCast(@constCast(mgr.bindings))));
         return false;
     }
 
@@ -291,18 +295,18 @@ pub export fn vk_descriptor_manager_create(manager: ?*types.VulkanDescriptorMana
     if (!mgr.useDescriptorBuffers) {
         if (!create_descriptor_pool(mgr, info.maxSets, info.poolFlags)) {
             c.vkDestroyDescriptorSetLayout(mgr.device, mgr.descriptorSetLayout, null);
-            c.free(@as(?*anyopaque, @ptrCast(@constCast(mgr.bindings))));
+            memory.cardinal_free(mem_alloc, @as(?*anyopaque, @ptrCast(@constCast(mgr.bindings))));
             return false;
         }
 
-        const ptr2 = c.malloc(info.maxSets * @sizeOf(c.VkDescriptorSet));
+        const ptr2 = memory.cardinal_alloc(mem_alloc, info.maxSets * @sizeOf(c.VkDescriptorSet));
         mgr.descriptorSets = if (ptr2) |p| @as([*]c.VkDescriptorSet, @ptrCast(@alignCast(p))) else null;
 
         if (mgr.descriptorSets == null) {
             log.cardinal_log_error("Failed to allocate memory for descriptor sets", .{});
             c.vkDestroyDescriptorPool(mgr.device, mgr.descriptorPool, null);
             c.vkDestroyDescriptorSetLayout(mgr.device, mgr.descriptorSetLayout, null);
-            c.free(@as(?*anyopaque, @ptrCast(@constCast(mgr.bindings))));
+            memory.cardinal_free(mem_alloc, @as(?*anyopaque, @ptrCast(@constCast(mgr.bindings))));
             return false;
         }
         mgr.descriptorSetCount = 0;
@@ -327,19 +331,17 @@ pub export fn vk_descriptor_manager_destroy(manager: ?*types.VulkanDescriptorMan
             c.vkUnmapMemory(mgr.device, mgr.descriptorBuffer.memory);
         }
         if (mgr.descriptorBuffer.handle != null) {
-            // Assuming allocator usage logic would be here, but skipping allocator dependency for now
-            // since VulkanDescriptorManager struct no longer has allocator field.
-            // If allocator is needed, it should be passed or stored.
-            c.vkDestroyBuffer(mgr.device, mgr.descriptorBuffer.handle, null);
-            c.vkFreeMemory(mgr.device, mgr.descriptorBuffer.memory, null);
+            vk_allocator.vk_allocator_free_buffer(mgr.allocator, mgr.descriptorBuffer.handle, mgr.descriptorBuffer.memory);
         }
         if (mgr.bindingOffsets != null) {
-            c.free(@as(?*anyopaque, @ptrCast(mgr.bindingOffsets)));
+            const mem_alloc = memory.cardinal_get_allocator_for_category(.RENDERER);
+            memory.cardinal_free(mem_alloc, @as(?*anyopaque, @ptrCast(mgr.bindingOffsets)));
             mgr.bindingOffsets = null;
         }
     } else {
+        const mem_alloc = memory.cardinal_get_allocator_for_category(.RENDERER);
         if (mgr.descriptorSets != null) {
-            c.free(@as(?*anyopaque, @ptrCast(mgr.descriptorSets)));
+            memory.cardinal_free(mem_alloc, @as(?*anyopaque, @ptrCast(mgr.descriptorSets)));
         }
         if (mgr.descriptorPool != null) {
             c.vkDestroyDescriptorPool(mgr.device, mgr.descriptorPool, null);
@@ -351,7 +353,8 @@ pub export fn vk_descriptor_manager_destroy(manager: ?*types.VulkanDescriptorMan
     }
 
     if (mgr.bindings != null) {
-        c.free(@as(?*anyopaque, @ptrCast(@constCast(mgr.bindings))));
+        const mem_alloc = memory.cardinal_get_allocator_for_category(.RENDERER);
+        memory.cardinal_free(mem_alloc, @as(?*anyopaque, @ptrCast(@constCast(mgr.bindings))));
     }
 
     @memset(@as([*]u8, @ptrCast(mgr))[0..@sizeOf(types.VulkanDescriptorManager)], 0);
@@ -372,13 +375,14 @@ pub export fn vk_descriptor_manager_allocate_sets(manager: ?*types.VulkanDescrip
         return false;
     }
 
-    const ptr = c.malloc(setCount * @sizeOf(c.VkDescriptorSetLayout));
+    const mem_alloc = memory.cardinal_get_allocator_for_category(.RENDERER);
+    const ptr = memory.cardinal_alloc(mem_alloc, setCount * @sizeOf(c.VkDescriptorSetLayout));
     if (ptr == null) {
         log.cardinal_log_error("Failed to allocate memory for descriptor set layouts", .{});
         return false;
     }
-    const layouts = @as([*]c.VkDescriptorSetLayout, @ptrCast(@alignCast(ptr.?)));
-    defer c.free(ptr.?);
+    const layouts = @as([*]c.VkDescriptorSetLayout, @ptrCast(@alignCast(ptr)));
+    defer memory.cardinal_free(mem_alloc, ptr);
 
     var i: u32 = 0;
     while (i < setCount) : (i += 1) {
@@ -575,10 +579,11 @@ fn update_textures_internal(manager: *types.VulkanDescriptorManager, setIndex: u
         }
         return true;
     } else {
-        const ptr = c.malloc(count * @sizeOf(c.VkDescriptorImageInfo));
+        const mem_alloc = memory.cardinal_get_allocator_for_category(.RENDERER);
+        const ptr = memory.cardinal_alloc(mem_alloc, count * @sizeOf(c.VkDescriptorImageInfo));
         if (ptr == null) return false;
-        const imageInfos = @as([*]c.VkDescriptorImageInfo, @ptrCast(@alignCast(ptr.?)));
-        defer c.free(ptr.?);
+        const imageInfos = @as([*]c.VkDescriptorImageInfo, @ptrCast(@alignCast(ptr)));
+        defer memory.cardinal_free(mem_alloc, ptr);
 
         var i: u32 = 0;
         while (i < count) : (i += 1) {

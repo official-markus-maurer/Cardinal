@@ -74,7 +74,10 @@ export fn vk_descriptor_buffer_create_manager(create_info: ?*const types.Descrip
     
     // Get binding offsets
     const max_bindings: u32 = 16;
-    m.binding_offsets = @ptrCast(@alignCast(c.malloc(max_bindings * @sizeOf(c.VkDeviceSize))));
+    const mem_alloc = @import("../../core/memory.zig").cardinal_get_allocator_for_category(.RENDERER);
+    const memory = @import("../../core/memory.zig");
+    const offsets_ptr = memory.cardinal_alloc(mem_alloc, max_bindings * @sizeOf(c.VkDeviceSize));
+    m.binding_offsets = @ptrCast(@alignCast(offsets_ptr));
     if (m.binding_offsets == null) {
         log.cardinal_log_error("Failed to allocate memory for binding offsets", .{});
         c.vkUnmapMemory(m.device, m.buffer_alloc.memory);
@@ -207,12 +210,15 @@ export fn vk_descriptor_buffer_bind(cmd_buffer: c.VkCommandBuffer, pipeline_bind
     }
     const s = vulkan_state.?;
     
-    const binding_infos = c.malloc(set_count * @sizeOf(c.VkDescriptorBufferBindingInfoEXT));
+    const mem_alloc = @import("../../core/memory.zig").cardinal_get_allocator_for_category(.RENDERER);
+    const memory = @import("../../core/memory.zig");
+
+    const binding_infos = memory.cardinal_alloc(mem_alloc, set_count * @sizeOf(c.VkDescriptorBufferBindingInfoEXT));
     if (binding_infos == null) {
         log.cardinal_log_error("Failed to allocate memory for binding infos", .{});
         return;
     }
-    defer c.free(binding_infos);
+    defer memory.cardinal_free(mem_alloc, binding_infos);
     
     const infos = @as([*]c.VkDescriptorBufferBindingInfoEXT, @ptrCast(@alignCast(binding_infos)));
     

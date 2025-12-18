@@ -1,6 +1,7 @@
 const std = @import("std");
 const builtin = @import("builtin");
 const log = @import("../core/log.zig");
+const memory = @import("../core/memory.zig");
 const vk_simple_pipelines = @import("vulkan_simple_pipelines.zig");
 const types = @import("vulkan_types.zig");
 const vk_commands = @import("vulkan_commands.zig");
@@ -167,10 +168,11 @@ fn get_surface_details(s: *types.VulkanState, caps: *c.VkSurfaceCapabilitiesKHR,
         return false;
     }
     
-    const fmts_ptr = c.malloc(@sizeOf(c.VkSurfaceFormatKHR) * count);
+    const mem_alloc = memory.cardinal_get_allocator_for_category(.RENDERER);
+    const fmts_ptr = memory.cardinal_alloc(mem_alloc, @sizeOf(c.VkSurfaceFormatKHR) * count);
     if (fmts_ptr == null) return false;
     const fmts = @as([*]c.VkSurfaceFormatKHR, @ptrCast(@alignCast(fmts_ptr)));
-    defer c.free(fmts_ptr);
+    defer memory.cardinal_free(mem_alloc, fmts_ptr);
 
     if (c.vkGetPhysicalDeviceSurfaceFormatsKHR(s.context.physical_device, s.context.surface, &count, fmts) != c.VK_SUCCESS) {
         log.cardinal_log_error("[SWAPCHAIN] Failed to retrieve surface formats", .{});
@@ -183,10 +185,10 @@ fn get_surface_details(s: *types.VulkanState, caps: *c.VkSurfaceCapabilitiesKHR,
         return false;
     }
     
-    const modes_ptr = c.malloc(@sizeOf(c.VkPresentModeKHR) * count);
+    const modes_ptr = memory.cardinal_alloc(mem_alloc, @sizeOf(c.VkPresentModeKHR) * count);
     if (modes_ptr == null) return false;
     const modes = @as([*]c.VkPresentModeKHR, @ptrCast(@alignCast(modes_ptr)));
-    defer c.free(modes_ptr);
+    defer memory.cardinal_free(mem_alloc, modes_ptr);
 
     if (c.vkGetPhysicalDeviceSurfacePresentModesKHR(s.context.physical_device, s.context.surface, &count, modes) != c.VK_SUCCESS) {
         log.cardinal_log_error("[SWAPCHAIN] Failed to retrieve present modes", .{});
@@ -276,7 +278,8 @@ fn retrieve_swapchain_images(s: *types.VulkanState) bool {
         return false;
     }
 
-    const images_ptr = c.malloc(@sizeOf(c.VkImage) * s.swapchain.image_count);
+    const mem_alloc = memory.cardinal_get_allocator_for_category(.RENDERER);
+    const images_ptr = memory.cardinal_alloc(mem_alloc, @sizeOf(c.VkImage) * s.swapchain.image_count);
     if (images_ptr == null) return false;
     s.swapchain.images = @as([*]c.VkImage, @ptrCast(@alignCast(images_ptr)));
 
@@ -288,7 +291,8 @@ fn retrieve_swapchain_images(s: *types.VulkanState) bool {
 }
 
 fn create_swapchain_image_views(s: *types.VulkanState) bool {
-    const views_ptr = c.malloc(@sizeOf(c.VkImageView) * s.swapchain.image_count);
+    const mem_alloc = memory.cardinal_get_allocator_for_category(.RENDERER);
+    const views_ptr = memory.cardinal_alloc(mem_alloc, @sizeOf(c.VkImageView) * s.swapchain.image_count);
     if (views_ptr == null) return false;
     s.swapchain.image_views = @as([*]c.VkImageView, @ptrCast(@alignCast(views_ptr)));
 
@@ -314,7 +318,7 @@ fn create_swapchain_image_views(s: *types.VulkanState) bool {
             while (j < i) : (j += 1) {
                 c.vkDestroyImageView(s.context.device, s.swapchain.image_views.?[j], null);
             }
-            c.free(@as(?*anyopaque, @ptrCast(s.swapchain.image_views)));
+            memory.cardinal_free(mem_alloc, @as(?*anyopaque, @ptrCast(s.swapchain.image_views)));
             s.swapchain.image_views = null;
             return false;
         }
@@ -368,7 +372,8 @@ fn handle_recreation_failure(s: *types.VulkanState, old_state: *const SwapchainB
         vk_destroy_swapchain(s);
     }
     if (s.swapchain.image_layout_initialized != null) {
-        c.free(s.swapchain.image_layout_initialized);
+        const mem_alloc = memory.cardinal_get_allocator_for_category(.RENDERER);
+        memory.cardinal_free(mem_alloc, s.swapchain.image_layout_initialized);
         s.swapchain.image_layout_initialized = null;
     }
 
@@ -505,12 +510,14 @@ pub export fn vk_destroy_swapchain(s: ?*types.VulkanState) callconv(.c) void {
                 c.vkDestroyImageView(vs.context.device, vs.swapchain.image_views.?[i], null);
             }
         }
-        c.free(@as(?*anyopaque, @ptrCast(vs.swapchain.image_views)));
+        const mem_alloc = memory.cardinal_get_allocator_for_category(.RENDERER);
+        memory.cardinal_free(mem_alloc, @as(?*anyopaque, @ptrCast(vs.swapchain.image_views)));
         vs.swapchain.image_views = null;
     }
 
     if (vs.swapchain.images != null) {
-        c.free(@as(?*anyopaque, @ptrCast(vs.swapchain.images)));
+        const mem_alloc = memory.cardinal_get_allocator_for_category(.RENDERER);
+        memory.cardinal_free(mem_alloc, @as(?*anyopaque, @ptrCast(vs.swapchain.images)));
         vs.swapchain.images = null;
     }
 

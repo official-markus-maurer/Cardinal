@@ -1,6 +1,7 @@
 const std = @import("std");
 const builtin = @import("builtin");
 const log = @import("../core/log.zig");
+const memory = @import("../core/memory.zig");
 const types = @import("vulkan_types.zig");
 const vk_utils = @import("vulkan_utils.zig");
 const vk_barrier_validation = @import("vulkan_barrier_validation.zig");
@@ -23,7 +24,8 @@ fn get_current_thread_id() u32 {
 // Internal helpers
 
 fn create_command_pools(s: *types.VulkanState) bool {
-    const pools_ptr = c.malloc(s.sync.max_frames_in_flight * @sizeOf(c.VkCommandPool));
+    const mem_alloc = memory.cardinal_get_allocator_for_category(.RENDERER);
+    const pools_ptr = memory.cardinal_alloc(mem_alloc, s.sync.max_frames_in_flight * @sizeOf(c.VkCommandPool));
     if (pools_ptr == null) return false;
     
     s.commands.pools = @as([*]c.VkCommandPool, @ptrCast(@alignCast(pools_ptr)));
@@ -42,7 +44,8 @@ fn create_command_pools(s: *types.VulkanState) bool {
 
 fn allocate_command_buffers(s: *types.VulkanState) bool {
     // Primary buffers
-    const buffers_ptr = c.malloc(s.sync.max_frames_in_flight * @sizeOf(c.VkCommandBuffer));
+    const mem_alloc = memory.cardinal_get_allocator_for_category(.RENDERER);
+    const buffers_ptr = memory.cardinal_alloc(mem_alloc, s.sync.max_frames_in_flight * @sizeOf(c.VkCommandBuffer));
     if (buffers_ptr == null) return false;
     s.commands.buffers = @as([*]c.VkCommandBuffer, @ptrCast(@alignCast(buffers_ptr)));
 
@@ -61,7 +64,7 @@ fn allocate_command_buffers(s: *types.VulkanState) bool {
     log.cardinal_log_warn("[INIT] Allocated {d} primary command buffers", .{s.sync.max_frames_in_flight});
 
     // Secondary buffers
-    const sec_buffers_ptr = c.malloc(s.sync.max_frames_in_flight * @sizeOf(c.VkCommandBuffer));
+    const sec_buffers_ptr = memory.cardinal_alloc(mem_alloc, s.sync.max_frames_in_flight * @sizeOf(c.VkCommandBuffer));
     if (sec_buffers_ptr == null) return false;
     s.commands.secondary_buffers = @as([*]c.VkCommandBuffer, @ptrCast(@alignCast(sec_buffers_ptr)));
 
@@ -80,7 +83,7 @@ fn allocate_command_buffers(s: *types.VulkanState) bool {
     log.cardinal_log_warn("[INIT] Allocated {d} secondary command buffers", .{s.sync.max_frames_in_flight});
 
     // Scene secondary buffers (real secondary level)
-    const scene_sec_ptr = c.malloc(s.sync.max_frames_in_flight * @sizeOf(c.VkCommandBuffer));
+    const scene_sec_ptr = memory.cardinal_alloc(mem_alloc, s.sync.max_frames_in_flight * @sizeOf(c.VkCommandBuffer));
     if (scene_sec_ptr == null) return false;
     s.commands.scene_secondary_buffers = @as([*]c.VkCommandBuffer, @ptrCast(@alignCast(scene_sec_ptr)));
 
@@ -103,6 +106,7 @@ fn allocate_command_buffers(s: *types.VulkanState) bool {
 
 fn create_sync_objects(s: *types.VulkanState) bool {
     // Image acquired semaphores
+    const mem_alloc = memory.cardinal_get_allocator_for_category(.RENDERER);
     if (s.sync.image_acquired_semaphores != null) {
         var i: u32 = 0;
         while (i < s.sync.max_frames_in_flight) : (i += 1) {
@@ -110,12 +114,13 @@ fn create_sync_objects(s: *types.VulkanState) bool {
                 c.vkDestroySemaphore(s.context.device, s.sync.image_acquired_semaphores.?[i], null);
             }
         }
-        c.free(@as(?*anyopaque, @ptrCast(s.sync.image_acquired_semaphores)));
+        memory.cardinal_free(mem_alloc, @as(?*anyopaque, @ptrCast(s.sync.image_acquired_semaphores)));
         s.sync.image_acquired_semaphores = null;
     }
     
-    const sem_ptr = c.calloc(s.sync.max_frames_in_flight, @sizeOf(c.VkSemaphore));
+    const sem_ptr = memory.cardinal_alloc(mem_alloc, s.sync.max_frames_in_flight * @sizeOf(c.VkSemaphore));
     if (sem_ptr == null) return false;
+    @memset(@as([*]u8, @ptrCast(sem_ptr))[0..(s.sync.max_frames_in_flight * @sizeOf(c.VkSemaphore))], 0);
     s.sync.image_acquired_semaphores = @as([*]c.VkSemaphore, @ptrCast(@alignCast(sem_ptr)));
 
     var i: u32 = 0;
@@ -137,12 +142,13 @@ fn create_sync_objects(s: *types.VulkanState) bool {
                 c.vkDestroySemaphore(s.context.device, s.sync.render_finished_semaphores.?[i], null);
             }
         }
-        c.free(@as(?*anyopaque, @ptrCast(s.sync.render_finished_semaphores)));
+        memory.cardinal_free(mem_alloc, @as(?*anyopaque, @ptrCast(s.sync.render_finished_semaphores)));
         s.sync.render_finished_semaphores = null;
     }
     
-    const rf_sem_ptr = c.calloc(s.sync.max_frames_in_flight, @sizeOf(c.VkSemaphore));
+    const rf_sem_ptr = memory.cardinal_alloc(mem_alloc, s.sync.max_frames_in_flight * @sizeOf(c.VkSemaphore));
     if (rf_sem_ptr == null) return false;
+    @memset(@as([*]u8, @ptrCast(rf_sem_ptr))[0..(s.sync.max_frames_in_flight * @sizeOf(c.VkSemaphore))], 0);
     s.sync.render_finished_semaphores = @as([*]c.VkSemaphore, @ptrCast(@alignCast(rf_sem_ptr)));
 
     i = 0;
@@ -164,12 +170,13 @@ fn create_sync_objects(s: *types.VulkanState) bool {
                 c.vkDestroyFence(s.context.device, s.sync.in_flight_fences.?[i], null);
             }
         }
-        c.free(@as(?*anyopaque, @ptrCast(s.sync.in_flight_fences)));
+        memory.cardinal_free(mem_alloc, @as(?*anyopaque, @ptrCast(s.sync.in_flight_fences)));
         s.sync.in_flight_fences = null;
     }
     
-    const fences_ptr = c.calloc(s.sync.max_frames_in_flight, @sizeOf(c.VkFence));
+    const fences_ptr = memory.cardinal_alloc(mem_alloc, s.sync.max_frames_in_flight * @sizeOf(c.VkFence));
     if (fences_ptr == null) return false;
+    @memset(@as([*]u8, @ptrCast(fences_ptr))[0..(s.sync.max_frames_in_flight * @sizeOf(c.VkFence))], 0);
     s.sync.in_flight_fences = @as([*]c.VkFence, @ptrCast(@alignCast(fences_ptr)));
 
     i = 0;
@@ -593,13 +600,15 @@ pub export fn vk_create_commands_sync(s: ?*types.VulkanState) callconv(.c) bool 
     vs.commands.current_buffer_index = 0;
 
     log.cardinal_log_warn("[INIT] Allocating swapchain_image_layout_initialized for {d} swapchain images", .{vs.swapchain.image_count});
+    const mem_alloc = memory.cardinal_get_allocator_for_category(.RENDERER);
     if (vs.swapchain.image_layout_initialized != null) {
-        c.free(vs.swapchain.image_layout_initialized);
+        memory.cardinal_free(mem_alloc, vs.swapchain.image_layout_initialized);
         vs.swapchain.image_layout_initialized = null;
     }
     
-    const layout_ptr = c.calloc(vs.swapchain.image_count, @sizeOf(bool));
+    const layout_ptr = memory.cardinal_alloc(mem_alloc, vs.swapchain.image_count * @sizeOf(bool));
     if (layout_ptr == null) return false;
+    @memset(@as([*]u8, @ptrCast(layout_ptr))[0..(vs.swapchain.image_count * @sizeOf(bool))], 0);
     vs.swapchain.image_layout_initialized = @as([*]bool, @ptrCast(@alignCast(layout_ptr)));
 
     if (!create_sync_objects(vs)) return false;
@@ -627,16 +636,19 @@ pub export fn vk_recreate_images_in_flight(s: ?*types.VulkanState) callconv(.c) 
     const vs = s.?;
 
     if (vs.swapchain.image_layout_initialized != null) {
-        c.free(vs.swapchain.image_layout_initialized);
+        const mem_alloc = memory.cardinal_get_allocator_for_category(.RENDERER);
+        memory.cardinal_free(mem_alloc, vs.swapchain.image_layout_initialized);
         vs.swapchain.image_layout_initialized = null;
     }
     
     log.cardinal_log_info("[INIT] Recreating swapchain_image_layout_initialized for {d} swapchain images", .{vs.swapchain.image_count});
-    const layout_ptr = c.calloc(vs.swapchain.image_count, @sizeOf(bool));
+    const mem_alloc = memory.cardinal_get_allocator_for_category(.RENDERER);
+    const layout_ptr = memory.cardinal_alloc(mem_alloc, vs.swapchain.image_count * @sizeOf(bool));
     if (layout_ptr == null) {
         log.cardinal_log_error("[INIT] Failed to allocate swapchain_image_layout_initialized array", .{});
         return false;
     }
+    @memset(@as([*]u8, @ptrCast(layout_ptr))[0..(vs.swapchain.image_count * @sizeOf(bool))], 0);
     vs.swapchain.image_layout_initialized = @as([*]bool, @ptrCast(@alignCast(layout_ptr)));
     return true;
 }
@@ -657,6 +669,8 @@ pub export fn vk_destroy_commands_sync(s: ?*types.VulkanState) callconv(.c) void
         vs.sync.timeline_semaphore = null;
     }
 
+    const mem_alloc = memory.cardinal_get_allocator_for_category(.RENDERER);
+
     if (vs.sync.image_acquired_semaphores != null) {
         var i: u32 = 0;
         while (i < vs.sync.max_frames_in_flight) : (i += 1) {
@@ -664,7 +678,7 @@ pub export fn vk_destroy_commands_sync(s: ?*types.VulkanState) callconv(.c) void
                 c.vkDestroySemaphore(vs.context.device, vs.sync.image_acquired_semaphores.?[i], null);
             }
         }
-        c.free(@as(?*anyopaque, @ptrCast(vs.sync.image_acquired_semaphores)));
+        memory.cardinal_free(mem_alloc, @as(?*anyopaque, @ptrCast(vs.sync.image_acquired_semaphores)));
         vs.sync.image_acquired_semaphores = null;
     }
 
@@ -675,7 +689,7 @@ pub export fn vk_destroy_commands_sync(s: ?*types.VulkanState) callconv(.c) void
                 c.vkDestroySemaphore(vs.context.device, vs.sync.render_finished_semaphores.?[i], null);
             }
         }
-        c.free(@as(?*anyopaque, @ptrCast(vs.sync.render_finished_semaphores)));
+        memory.cardinal_free(mem_alloc, @as(?*anyopaque, @ptrCast(vs.sync.render_finished_semaphores)));
         vs.sync.render_finished_semaphores = null;
     }
 
@@ -686,27 +700,27 @@ pub export fn vk_destroy_commands_sync(s: ?*types.VulkanState) callconv(.c) void
                 c.vkDestroyFence(vs.context.device, vs.sync.in_flight_fences.?[i], null);
             }
         }
-        c.free(@as(?*anyopaque, @ptrCast(vs.sync.in_flight_fences)));
+        memory.cardinal_free(mem_alloc, @as(?*anyopaque, @ptrCast(vs.sync.in_flight_fences)));
         vs.sync.in_flight_fences = null;
     }
 
     if (vs.swapchain.image_layout_initialized != null) {
-        c.free(@as(?*anyopaque, @ptrCast(vs.swapchain.image_layout_initialized)));
+        memory.cardinal_free(mem_alloc, @as(?*anyopaque, @ptrCast(vs.swapchain.image_layout_initialized)));
         vs.swapchain.image_layout_initialized = null;
     }
     
     if (vs.commands.buffers != null) {
-        c.free(@as(?*anyopaque, @ptrCast(vs.commands.buffers)));
+        memory.cardinal_free(mem_alloc, @as(?*anyopaque, @ptrCast(vs.commands.buffers)));
         vs.commands.buffers = null;
     }
 
     if (vs.commands.secondary_buffers != null) {
-        c.free(@as(?*anyopaque, @ptrCast(vs.commands.secondary_buffers)));
+        memory.cardinal_free(mem_alloc, @as(?*anyopaque, @ptrCast(vs.commands.secondary_buffers)));
         vs.commands.secondary_buffers = null;
     }
 
     if (vs.commands.scene_secondary_buffers != null) {
-        c.free(@as(?*anyopaque, @ptrCast(vs.commands.scene_secondary_buffers)));
+        memory.cardinal_free(mem_alloc, @as(?*anyopaque, @ptrCast(vs.commands.scene_secondary_buffers)));
         vs.commands.scene_secondary_buffers = null;
     }
 
@@ -717,7 +731,7 @@ pub export fn vk_destroy_commands_sync(s: ?*types.VulkanState) callconv(.c) void
                 c.vkDestroyCommandPool(vs.context.device, vs.commands.pools.?[i], null);
             }
         }
-        c.free(@as(?*anyopaque, @ptrCast(vs.commands.pools)));
+        memory.cardinal_free(mem_alloc, @as(?*anyopaque, @ptrCast(vs.commands.pools)));
         vs.commands.pools = null;
     }
 }
@@ -801,8 +815,9 @@ pub export fn vk_prepare_mesh_shader_rendering(s: ?*types.VulkanState) callconv(
         
         texture_count = vs.pipelines.pbr_pipeline.textureManager.?.textureCount;
         
-        const views_ptr = c.malloc(@sizeOf(c.VkImageView) * texture_count);
-        const samplers_ptr = c.malloc(@sizeOf(c.VkSampler) * texture_count);
+        const mem_alloc = memory.cardinal_get_allocator_for_category(.RENDERER);
+        const views_ptr = memory.cardinal_alloc(mem_alloc, @sizeOf(c.VkImageView) * texture_count);
+        const samplers_ptr = memory.cardinal_alloc(mem_alloc, @sizeOf(c.VkSampler) * texture_count);
         
         texture_views = if (views_ptr) |p| @as([*]c.VkImageView, @ptrCast(@alignCast(p))) else null;
         samplers = if (samplers_ptr) |p| @as([*]c.VkSampler, @ptrCast(@alignCast(p))) else null;
@@ -815,8 +830,8 @@ pub export fn vk_prepare_mesh_shader_rendering(s: ?*types.VulkanState) callconv(
                 samplers.?[i] = if (texSampler != null) texSampler else vs.pipelines.pbr_pipeline.textureManager.?.defaultSampler;
             }
         } else {
-            if (texture_views) |p| c.free(@as(?*anyopaque, @ptrCast(p)));
-            if (samplers) |p| c.free(@as(?*anyopaque, @ptrCast(p)));
+            if (texture_views) |p| memory.cardinal_free(mem_alloc, @as(?*anyopaque, @ptrCast(p)));
+            if (samplers) |p| memory.cardinal_free(mem_alloc, @as(?*anyopaque, @ptrCast(p)));
             texture_views = null;
             samplers = null;
             texture_count = 0;
@@ -831,8 +846,14 @@ pub export fn vk_prepare_mesh_shader_rendering(s: ?*types.VulkanState) callconv(
         log.cardinal_log_debug("[MESH_SHADER] Updated descriptor buffers during preparation (bindless textures: {d})", .{texture_count});
     }
 
-    if (texture_views) |p| c.free(@as(?*anyopaque, @ptrCast(p)));
-    if (samplers) |p| c.free(@as(?*anyopaque, @ptrCast(p)));
+    if (texture_views) |p| {
+        const mem_alloc = memory.cardinal_get_allocator_for_category(.RENDERER);
+        memory.cardinal_free(mem_alloc, @as(?*anyopaque, @ptrCast(p)));
+    }
+    if (samplers) |p| {
+        const mem_alloc = memory.cardinal_get_allocator_for_category(.RENDERER);
+        memory.cardinal_free(mem_alloc, @as(?*anyopaque, @ptrCast(p)));
+    }
 }
 
 pub fn vk_get_mt_command_manager() ?*types.CardinalMTCommandManager {

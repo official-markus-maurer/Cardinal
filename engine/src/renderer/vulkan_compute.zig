@@ -1,5 +1,7 @@
 const std = @import("std");
+const builtin = @import("builtin");
 const log = @import("../core/log.zig");
+const memory = @import("../core/memory.zig");
 const types = @import("vulkan_types.zig");
 const c = @import("vulkan_c.zig").c;
 const shader_utils = @import("util/vulkan_shader_utils.zig");
@@ -177,7 +179,8 @@ pub export fn vk_compute_create_pipeline(
 
     // Copy descriptor layouts if provided
     if (cfg.descriptor_set_count > 0 and cfg.descriptor_layouts != null) {
-        const layouts = c.malloc(cfg.descriptor_set_count * @sizeOf(c.VkDescriptorSetLayout));
+        const mem_alloc = memory.cardinal_get_allocator_for_category(.RENDERER);
+        const layouts = memory.cardinal_alloc(mem_alloc, cfg.descriptor_set_count * @sizeOf(c.VkDescriptorSetLayout));
         if (layouts != null) {
             pipe.descriptor_layouts = @as([*]c.VkDescriptorSetLayout, @ptrCast(@alignCast(layouts)));
             @memcpy(@as([*]u8, @ptrCast(pipe.descriptor_layouts))[0..(cfg.descriptor_set_count * @sizeOf(c.VkDescriptorSetLayout))],
@@ -208,7 +211,8 @@ pub export fn vk_compute_destroy_pipeline(vulkan_state: ?*types.VulkanState, pip
     }
 
     if (pipe.descriptor_layouts != null) {
-        c.free(@as(?*anyopaque, @ptrCast(pipe.descriptor_layouts)));
+        const mem_alloc = memory.cardinal_get_allocator_for_category(.RENDERER);
+        memory.cardinal_free(mem_alloc, @as(?*anyopaque, @ptrCast(pipe.descriptor_layouts)));
         pipe.descriptor_layouts = null;
     }
 

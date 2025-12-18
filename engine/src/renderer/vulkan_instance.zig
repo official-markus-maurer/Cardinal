@@ -1,6 +1,7 @@
 const std = @import("std");
 const builtin = @import("builtin");
 const log = @import("../core/log.zig");
+const memory = @import("../core/memory.zig");
 const window = @import("../core/window.zig");
 const types = @import("vulkan_types.zig");
 const vk_allocator = @import("vulkan_allocator.zig");
@@ -229,7 +230,8 @@ fn get_instance_extensions(out_extensions: *[*c]const [*c]const u8, out_count: *
         return true;
     }
 
-    const exts = c.malloc(@sizeOf([*c]const u8) * (glfw_count + extra_count));
+    const mem_alloc = memory.cardinal_get_allocator_for_category(.RENDERER);
+    const exts = memory.cardinal_alloc(mem_alloc, @sizeOf([*c]const u8) * (glfw_count + extra_count));
     if (exts == null) return false;
     const exts_ptr = @as([*][*c]const u8, @ptrCast(@alignCast(exts)));
 
@@ -335,7 +337,8 @@ pub export fn vk_create_instance(s: ?*types.VulkanState) callconv(.c) bool {
     const result = c.vkCreateInstance(&ci, null, &vs.context.instance);
 
     if (extensions_allocated) {
-        c.free(@as(?*anyopaque, @ptrCast(@constCast(extensions))));
+        const mem_alloc = memory.cardinal_get_allocator_for_category(.RENDERER);
+        memory.cardinal_free(mem_alloc, @as(?*anyopaque, @ptrCast(@constCast(extensions))));
     }
 
     if (result != c.VK_SUCCESS) {
@@ -369,10 +372,11 @@ pub export fn vk_pick_physical_device(s: ?*types.VulkanState) callconv(.c) bool 
         return false;
     }
 
-    const devices = c.malloc(@sizeOf(c.VkPhysicalDevice) * count);
+    const mem_alloc = memory.cardinal_get_allocator_for_category(.RENDERER);
+    const devices = memory.cardinal_alloc(mem_alloc, @sizeOf(c.VkPhysicalDevice) * count);
     if (devices == null) return false;
     const devices_ptr = @as([*]c.VkPhysicalDevice, @ptrCast(@alignCast(devices)));
-    defer c.free(devices);
+    defer memory.cardinal_free(mem_alloc, devices);
 
     result = c.vkEnumeratePhysicalDevices(vs.context.instance, &count, devices_ptr);
     log.cardinal_log_info("[DEVICE] Enumerate devices result: {d}", .{result});
@@ -400,10 +404,11 @@ pub export fn vk_create_device(s: ?*types.VulkanState) callconv(.c) bool {
     c.vkGetPhysicalDeviceQueueFamilyProperties(vs.context.physical_device, &qf_count, null);
     log.cardinal_log_info("[DEVICE] Found {d} queue families", .{qf_count});
 
-    const qfp = c.malloc(@sizeOf(c.VkQueueFamilyProperties) * qf_count);
+    const mem_alloc = memory.cardinal_get_allocator_for_category(.RENDERER);
+    const qfp = memory.cardinal_alloc(mem_alloc, @sizeOf(c.VkQueueFamilyProperties) * qf_count);
     if (qfp == null) return false;
     const qfp_ptr = @as([*]c.VkQueueFamilyProperties, @ptrCast(@alignCast(qfp)));
-    defer c.free(qfp);
+    defer memory.cardinal_free(mem_alloc, qfp);
     
     c.vkGetPhysicalDeviceQueueFamilyProperties(vs.context.physical_device, &qf_count, qfp_ptr);
 
@@ -442,11 +447,11 @@ pub export fn vk_create_device(s: ?*types.VulkanState) callconv(.c) bool {
 
     var extension_count: u32 = 0;
     _ = c.vkEnumerateDeviceExtensionProperties(vs.context.physical_device, null, &extension_count, null);
-    const available_extensions = c.malloc(@sizeOf(c.VkExtensionProperties) * extension_count);
+    const available_extensions = memory.cardinal_alloc(mem_alloc, @sizeOf(c.VkExtensionProperties) * extension_count);
     if (available_extensions == null) return false;
     const available_extensions_ptr = @as([*]c.VkExtensionProperties, @ptrCast(@alignCast(available_extensions)));
     _ = c.vkEnumerateDeviceExtensionProperties(vs.context.physical_device, null, &extension_count, available_extensions_ptr);
-    defer c.free(available_extensions);
+    defer memory.cardinal_free(mem_alloc, available_extensions);
 
     var maintenance8_available = false;
     var mesh_shader_available = false;

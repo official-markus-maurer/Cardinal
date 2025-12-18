@@ -1,6 +1,7 @@
 const std = @import("std");
 const builtin = @import("builtin");
 const log = @import("../core/log.zig");
+const memory = @import("../core/memory.zig");
 const types = @import("vulkan_types.zig");
 const c = @import("vulkan_c.zig").c;
 
@@ -82,18 +83,20 @@ pub export fn vk_bindless_texture_pool_init(pool: ?*types.BindlessTexturePool, v
     p.max_textures = max_textures;
 
     // Allocate texture array
-    const textures_ptr = c.calloc(max_textures, @sizeOf(types.BindlessTexture));
+    const mem_alloc = memory.cardinal_get_allocator_for_category(.RENDERER);
+    const textures_ptr = memory.cardinal_alloc(mem_alloc, max_textures * @sizeOf(types.BindlessTexture));
     if (textures_ptr == null) {
         log.cardinal_log_error("Failed to allocate memory for bindless textures", .{});
         return false;
     }
+    @memset(@as([*]u8, @ptrCast(textures_ptr))[0..(max_textures * @sizeOf(types.BindlessTexture))], 0);
     p.textures = @as([*]types.BindlessTexture, @ptrCast(@alignCast(textures_ptr)));
 
     // Initialize free list
-    const free_indices_ptr = c.malloc(max_textures * @sizeOf(u32));
+    const free_indices_ptr = memory.cardinal_alloc(mem_alloc, max_textures * @sizeOf(u32));
     if (free_indices_ptr == null) {
         log.cardinal_log_error("Failed to allocate memory for free indices", .{});
-        c.free(p.textures);
+        memory.cardinal_free(mem_alloc, p.textures);
         return false;
     }
     p.free_indices = @as([*]u32, @ptrCast(@alignCast(free_indices_ptr)));
@@ -106,20 +109,20 @@ pub export fn vk_bindless_texture_pool_init(pool: ?*types.BindlessTexturePool, v
     p.free_count = max_textures;
 
     // Allocate pending updates array
-    const pending_updates_ptr = c.malloc(max_textures * @sizeOf(u32));
+    const pending_updates_ptr = memory.cardinal_alloc(mem_alloc, max_textures * @sizeOf(u32));
     if (pending_updates_ptr == null) {
         log.cardinal_log_error("Failed to allocate memory for pending updates", .{});
-        c.free(p.textures);
-        c.free(p.free_indices);
+        memory.cardinal_free(mem_alloc, p.textures);
+        memory.cardinal_free(mem_alloc, p.free_indices);
         return false;
     }
     p.pending_updates = @as([*]u32, @ptrCast(@alignCast(pending_updates_ptr)));
 
     // Create default sampler
     if (!create_default_sampler(p.device, &p.default_sampler)) {
-        c.free(p.textures);
-        c.free(p.free_indices);
-        c.free(p.pending_updates);
+        memory.cardinal_free(mem_alloc, p.textures);
+        memory.cardinal_free(mem_alloc, p.free_indices);
+        memory.cardinal_free(mem_alloc, p.pending_updates);
         return false;
     }
 
@@ -145,9 +148,9 @@ pub export fn vk_bindless_texture_pool_init(pool: ?*types.BindlessTexturePool, v
                                               CARDINAL_BINDLESS_TEXTURE_BINDING, max_textures,
                                               &p.descriptor_layout)) {
         c.vkDestroySampler(p.device, p.default_sampler, null);
-        c.free(p.textures);
-        c.free(p.free_indices);
-        c.free(p.pending_updates);
+        memory.cardinal_free(mem_alloc, p.textures);
+        memory.cardinal_free(mem_alloc, p.free_indices);
+        memory.cardinal_free(mem_alloc, p.pending_updates);
         return false;
     }
 
@@ -155,9 +158,9 @@ pub export fn vk_bindless_texture_pool_init(pool: ?*types.BindlessTexturePool, v
     if (!create_bindless_descriptor_pool(p.device, max_textures, &p.descriptor_pool)) {
         c.vkDestroyDescriptorSetLayout(p.device, p.descriptor_layout, null);
         c.vkDestroySampler(p.device, p.default_sampler, null);
-        c.free(p.textures);
-        c.free(p.free_indices);
-        c.free(p.pending_updates);
+        memory.cardinal_free(mem_alloc, p.textures);
+        memory.cardinal_free(mem_alloc, p.free_indices);
+        memory.cardinal_free(mem_alloc, p.pending_updates);
         return false;
     }
 
@@ -168,9 +171,9 @@ pub export fn vk_bindless_texture_pool_init(pool: ?*types.BindlessTexturePool, v
         c.vkDestroyDescriptorPool(p.device, p.descriptor_pool, null);
         c.vkDestroyDescriptorSetLayout(p.device, p.descriptor_layout, null);
         c.vkDestroySampler(p.device, p.default_sampler, null);
-        c.free(p.textures);
-        c.free(p.free_indices);
-        c.free(p.pending_updates);
+        memory.cardinal_free(mem_alloc, p.textures);
+        memory.cardinal_free(mem_alloc, p.free_indices);
+        memory.cardinal_free(mem_alloc, p.pending_updates);
         return false;
     }
 
@@ -206,9 +209,10 @@ pub export fn vk_bindless_texture_pool_destroy(pool: ?*types.BindlessTexturePool
     }
 
     // Free memory
-    c.free(p.textures);
-    c.free(p.free_indices);
-    c.free(p.pending_updates);
+    const mem_alloc = memory.cardinal_get_allocator_for_category(.RENDERER);
+    memory.cardinal_free(mem_alloc, p.textures);
+    memory.cardinal_free(mem_alloc, p.free_indices);
+    memory.cardinal_free(mem_alloc, p.pending_updates);
 
     @memset(@as([*]u8, @ptrCast(p))[0..@sizeOf(types.BindlessTexturePool)], 0);
 
@@ -418,15 +422,16 @@ pub export fn vk_bindless_texture_flush_updates(pool: ?*types.BindlessTexturePoo
     const p = pool.?;
 
     // Prepare descriptor writes for updated textures
-    const writes_ptr = c.malloc(p.pending_update_count * 2 * @sizeOf(c.VkWriteDescriptorSet));
-    const image_infos_ptr = c.malloc(p.pending_update_count * @sizeOf(c.VkDescriptorImageInfo));
-    const sampler_infos_ptr = c.malloc(p.pending_update_count * @sizeOf(c.VkDescriptorImageInfo));
+    const mem_alloc = memory.cardinal_get_allocator_for_category(.RENDERER);
+    const writes_ptr = memory.cardinal_alloc(mem_alloc, p.pending_update_count * 2 * @sizeOf(c.VkWriteDescriptorSet));
+    const image_infos_ptr = memory.cardinal_alloc(mem_alloc, p.pending_update_count * @sizeOf(c.VkDescriptorImageInfo));
+    const sampler_infos_ptr = memory.cardinal_alloc(mem_alloc, p.pending_update_count * @sizeOf(c.VkDescriptorImageInfo));
 
     if (writes_ptr == null or image_infos_ptr == null or sampler_infos_ptr == null) {
         log.cardinal_log_error("Failed to allocate memory for descriptor updates", .{});
-        if (writes_ptr != null) c.free(writes_ptr);
-        if (image_infos_ptr != null) c.free(image_infos_ptr);
-        if (sampler_infos_ptr != null) c.free(sampler_infos_ptr);
+        if (writes_ptr != null) memory.cardinal_free(mem_alloc, writes_ptr);
+        if (image_infos_ptr != null) memory.cardinal_free(mem_alloc, image_infos_ptr);
+        if (sampler_infos_ptr != null) memory.cardinal_free(mem_alloc, sampler_infos_ptr);
         return false;
     }
 
@@ -495,9 +500,9 @@ pub export fn vk_bindless_texture_flush_updates(pool: ?*types.BindlessTexturePoo
     }
 
     // Clean up
-    c.free(writes_ptr);
-    c.free(image_infos_ptr);
-    c.free(sampler_infos_ptr);
+    memory.cardinal_free(mem_alloc, writes_ptr);
+    memory.cardinal_free(mem_alloc, image_infos_ptr);
+    memory.cardinal_free(mem_alloc, sampler_infos_ptr);
 
     p.needs_descriptor_update = false;
     p.pending_update_count = 0;
@@ -530,11 +535,13 @@ pub export fn vk_create_variable_descriptor_layout(device: c.VkDevice, binding_c
     }
 
     // Create binding flags for variable descriptor count
-    const binding_flags_ptr = c.calloc(binding_count, @sizeOf(c.VkDescriptorBindingFlags));
+    const mem_alloc = memory.cardinal_get_allocator_for_category(.RENDERER);
+    const binding_flags_ptr = memory.cardinal_alloc(mem_alloc, binding_count * @sizeOf(c.VkDescriptorBindingFlags));
     if (binding_flags_ptr == null) {
         log.cardinal_log_error("Failed to allocate memory for binding flags", .{});
         return false;
     }
+    @memset(@as([*]u8, @ptrCast(binding_flags_ptr))[0..(binding_count * @sizeOf(c.VkDescriptorBindingFlags))], 0);
     const binding_flags = @as([*]c.VkDescriptorBindingFlags, @ptrCast(@alignCast(binding_flags_ptr)));
 
     // Set flags for variable binding
@@ -564,7 +571,7 @@ pub export fn vk_create_variable_descriptor_layout(device: c.VkDevice, binding_c
 
     const result = c.vkCreateDescriptorSetLayout(device, &layout_info, null, out_layout.?);
 
-    c.free(binding_flags_ptr);
+    memory.cardinal_free(mem_alloc, binding_flags_ptr);
 
     if (result != c.VK_SUCCESS) {
         log.cardinal_log_error("Failed to create variable descriptor set layout: {d}", .{result});

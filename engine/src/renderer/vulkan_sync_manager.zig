@@ -1,6 +1,7 @@
 const std = @import("std");
 const builtin = @import("builtin");
 const log = @import("../core/log.zig");
+const memory = @import("../core/memory.zig");
 const types = @import("vulkan_types.zig");
 
 const c = @import("vulkan_c.zig").c;
@@ -31,25 +32,29 @@ pub fn vulkan_sync_manager_init(sync_manager: ?*types.VulkanSyncManager, device:
     const sem_size = @sizeOf(c.VkSemaphore);
     const fence_size = @sizeOf(c.VkFence);
     
-    const ptr1 = c.calloc(max_frames_in_flight, sem_size) orelse {
+    const mem_alloc = memory.cardinal_get_allocator_for_category(.RENDERER);
+    const ptr1 = memory.cardinal_calloc(mem_alloc, max_frames_in_flight, sem_size);
+    if (ptr1 == null) {
         log.cardinal_log_error("[SYNC_MANAGER] Failed to allocate image acquired semaphores", .{});
         return false;
-    };
+    }
     mgr.image_acquired_semaphores = @ptrCast(@alignCast(ptr1));
 
-    const ptr2 = c.calloc(max_frames_in_flight, sem_size) orelse {
+    const ptr2 = memory.cardinal_calloc(mem_alloc, max_frames_in_flight, sem_size);
+    if (ptr2 == null) {
         log.cardinal_log_error("[SYNC_MANAGER] Failed to allocate render finished semaphores", .{});
-        c.free(@ptrCast(mgr.image_acquired_semaphores));
+        memory.cardinal_free(mem_alloc, @ptrCast(mgr.image_acquired_semaphores));
         return false;
-    };
+    }
     mgr.render_finished_semaphores = @ptrCast(@alignCast(ptr2));
 
-    const ptr3 = c.calloc(max_frames_in_flight, fence_size) orelse {
+    const ptr3 = memory.cardinal_calloc(mem_alloc, max_frames_in_flight, fence_size);
+    if (ptr3 == null) {
         log.cardinal_log_error("[SYNC_MANAGER] Failed to allocate in-flight fences", .{});
-        c.free(@ptrCast(mgr.image_acquired_semaphores));
-        c.free(@ptrCast(mgr.render_finished_semaphores));
+        memory.cardinal_free(mem_alloc, @ptrCast(mgr.image_acquired_semaphores));
+        memory.cardinal_free(mem_alloc, @ptrCast(mgr.render_finished_semaphores));
         return false;
-    };
+    }
     mgr.in_flight_fences = @ptrCast(@alignCast(ptr3));
 
     // Create semaphores and fences
@@ -129,6 +134,7 @@ pub fn vulkan_sync_manager_destroy(sync_manager: ?*types.VulkanSyncManager) void
     }
 
     // Destroy per-frame semaphores and fences
+    const mem_alloc = memory.cardinal_get_allocator_for_category(.RENDERER);
     if (mgr.image_acquired_semaphores != null) {
         var i: u32 = 0;
         while (i < mgr.max_frames_in_flight) : (i += 1) {
@@ -136,7 +142,7 @@ pub fn vulkan_sync_manager_destroy(sync_manager: ?*types.VulkanSyncManager) void
                 c.vkDestroySemaphore(mgr.device, mgr.image_acquired_semaphores.?[i], null);
             }
         }
-        c.free(@ptrCast(mgr.image_acquired_semaphores));
+        memory.cardinal_free(mem_alloc, @ptrCast(mgr.image_acquired_semaphores));
         mgr.image_acquired_semaphores = null;
     }
 
@@ -147,7 +153,7 @@ pub fn vulkan_sync_manager_destroy(sync_manager: ?*types.VulkanSyncManager) void
                 c.vkDestroySemaphore(mgr.device, mgr.render_finished_semaphores.?[i], null);
             }
         }
-        c.free(@ptrCast(mgr.render_finished_semaphores));
+        memory.cardinal_free(mem_alloc, @ptrCast(mgr.render_finished_semaphores));
         mgr.render_finished_semaphores = null;
     }
 
@@ -158,7 +164,7 @@ pub fn vulkan_sync_manager_destroy(sync_manager: ?*types.VulkanSyncManager) void
                 c.vkDestroyFence(mgr.device, mgr.in_flight_fences.?[i], null);
             }
         }
-        c.free(@ptrCast(mgr.in_flight_fences));
+        memory.cardinal_free(mem_alloc, @ptrCast(mgr.in_flight_fences));
         mgr.in_flight_fences = null;
     }
 

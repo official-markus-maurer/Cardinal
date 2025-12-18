@@ -223,20 +223,23 @@ pub export fn vk_descriptor_update_sets(device: c.VkDevice, descriptorSet: c.VkD
         return;
     }
 
-    const writesPtr = c.malloc((2 + imageCount) * @sizeOf(c.VkWriteDescriptorSet));
-    const bufferInfosPtr = c.malloc(2 * @sizeOf(c.VkDescriptorBufferInfo));
-    const imageInfosPtr = c.malloc(imageCount * @sizeOf(c.VkDescriptorImageInfo));
+    const mem_alloc = @import("../../core/memory.zig").cardinal_get_allocator_for_category(.RENDERER);
+    const memory = @import("../../core/memory.zig");
+
+    const writesPtr = memory.cardinal_alloc(mem_alloc, (2 + imageCount) * @sizeOf(c.VkWriteDescriptorSet));
+    const bufferInfosPtr = memory.cardinal_alloc(mem_alloc, 2 * @sizeOf(c.VkDescriptorBufferInfo));
+    const imageInfosPtr = memory.cardinal_alloc(mem_alloc, imageCount * @sizeOf(c.VkDescriptorImageInfo));
 
     if (writesPtr == null or bufferInfosPtr == null or imageInfosPtr == null) {
         log.cardinal_log_error("Failed to allocate memory for descriptor updates", .{});
-        if (writesPtr != null) c.free(writesPtr);
-        if (bufferInfosPtr != null) c.free(bufferInfosPtr);
-        if (imageInfosPtr != null) c.free(imageInfosPtr);
+        if (writesPtr != null) memory.cardinal_free(mem_alloc, writesPtr);
+        if (bufferInfosPtr != null) memory.cardinal_free(mem_alloc, bufferInfosPtr);
+        if (imageInfosPtr != null) memory.cardinal_free(mem_alloc, imageInfosPtr);
         return;
     }
-    defer c.free(writesPtr);
-    defer c.free(bufferInfosPtr);
-    defer c.free(imageInfosPtr);
+    defer memory.cardinal_free(mem_alloc, writesPtr);
+    defer memory.cardinal_free(mem_alloc, bufferInfosPtr);
+    defer memory.cardinal_free(mem_alloc, imageInfosPtr);
 
     const writes = @as([*]c.VkWriteDescriptorSet, @ptrCast(@alignCast(writesPtr)));
     const bufferInfos = @as([*]c.VkDescriptorBufferInfo, @ptrCast(@alignCast(bufferInfosPtr)));
