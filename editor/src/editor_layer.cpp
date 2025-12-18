@@ -11,16 +11,7 @@
 #include <imgui.h>
 
 #include "editor_layer.h"
-#include <cardinal/assets/loader.h>
-#include <cardinal/assets/model_manager.h>
-#include <cardinal/assets/scene.h>
-#include <cardinal/cardinal.h>
-#include <cardinal/core/async_loader.h>
-#include <cardinal/core/log.h>
-#include <cardinal/core/transform.h>
-#include <cardinal/core/window.h>
-#include <cardinal/renderer/renderer.h>
-#include <cardinal/renderer/renderer_internal.h>
+#include <cardinal_engine.h>
 
 #include <algorithm>
 #include <cmath>
