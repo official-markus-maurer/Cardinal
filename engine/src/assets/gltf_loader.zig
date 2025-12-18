@@ -314,7 +314,7 @@ fn extract_texture_transform(texture_view: *const c.cgltf_texture_view, out_tran
     if (texture_view.has_transform != 0) {
         const transform = &texture_view.transform;
         out_transform.offset[0] = transform.offset[0];
-        out_transform.offset[1] = 1.0 - transform.offset[1] - transform.scale[1];
+        out_transform.offset[1] = transform.offset[1];
         out_transform.scale[0] = transform.scale[0];
         out_transform.scale[1] = transform.scale[1];
         out_transform.rotation = transform.rotation;
@@ -325,24 +325,26 @@ fn extract_texture_transform(texture_view: *const c.cgltf_texture_view, out_tran
 
 fn convert_sampler(gltf_sampler: ?*const c.cgltf_sampler, out_sampler: *scene.CardinalSampler) void {
     if (gltf_sampler == null) {
-        out_sampler.wrap_s = .REPEAT;
-        out_sampler.wrap_t = .REPEAT;
+        // Default to CLAMP_TO_EDGE instead of REPEAT to prevent tiling artifacts
+        // on models that don't explicitly define samplers.
+        out_sampler.wrap_s = .CLAMP_TO_EDGE;
+        out_sampler.wrap_t = .CLAMP_TO_EDGE;
         out_sampler.min_filter = .LINEAR;
         out_sampler.mag_filter = .LINEAR;
         return;
     }
     const s = gltf_sampler.?;
 
-    if (s.wrap_s == 33071) {
-        out_sampler.wrap_s = .REPEAT;
+    if (s.wrap_s == 33071 or s.wrap_s == 33069 or s.wrap_s == 10496) {
+        out_sampler.wrap_s = .CLAMP_TO_EDGE;
     } else if (s.wrap_s == 33648) {
         out_sampler.wrap_s = .MIRRORED_REPEAT;
     } else {
         out_sampler.wrap_s = .REPEAT;
     }
 
-    if (s.wrap_t == 33071) {
-        out_sampler.wrap_t = .REPEAT;
+    if (s.wrap_t == 33071 or s.wrap_t == 33069 or s.wrap_t == 10496) {
+        out_sampler.wrap_t = .CLAMP_TO_EDGE;
     } else if (s.wrap_t == 33648) {
         out_sampler.wrap_t = .MIRRORED_REPEAT;
     } else {

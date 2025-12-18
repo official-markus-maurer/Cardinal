@@ -456,10 +456,18 @@ pub fn cardinal_mt_begin_secondary_command_buffer(context: *types.CardinalSecond
 }
 
 pub fn cardinal_mt_end_secondary_command_buffer(context: *types.CardinalSecondaryCommandContext) bool {
-    if (!context.is_recording) return false;
+    // Check if we think we are recording
+    if (!context.is_recording) {
+        log.cardinal_log_warn("[MT] Attempted to end secondary command buffer that is not recording", .{});
+        return false;
+    }
 
+    // Try to end the command buffer
     if (c.vkEndCommandBuffer(context.command_buffer) != c.VK_SUCCESS) {
+        // If it failed, it might not have been in recording state (validation error), or other error
         log.cardinal_log_error("[MT] Failed to end secondary command buffer", .{});
+        // We still mark it as not recording to avoid stuck state
+        context.is_recording = false;
         return false;
     }
 
@@ -497,6 +505,29 @@ pub fn cardinal_mt_execute_secondary_command_buffers(primary_cmd: c.VkCommandBuf
 
     if (allocated) {
         memory.cardinal_free(allocator, @ptrCast(buffers));
+    }
+}
+
+pub fn cardinal_mt_reset_all_command_pools(manager: *types.CardinalMTCommandManager) void {
+    if (!manager.is_initialized) return;
+
+    cardinal_mt_mutex_lock(&manager.pool_mutex);
+    defer cardinal_mt_mutex_unlock(&manager.pool_mutex);
+
+    var i: u32 = 0;
+    while (i < types.CARDINAL_MAX_MT_THREADS) : (i += 1) {
+        var pool = &manager.thread_pools[i];
+        if (pool.is_active) {
+             const device = manager.vulkan_state.?.context.device;
+             
+             // Reset secondary pool
+             if (pool.secondary_pool != null) {
+                 _ = c.vkResetCommandPool(device, pool.secondary_pool, 0);
+             }
+             
+             // Reset index
+             pool.next_secondary_index = 0;
+        }
     }
 }
 

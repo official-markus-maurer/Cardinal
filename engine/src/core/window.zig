@@ -193,7 +193,7 @@ pub export fn cardinal_window_destroy(window: ?*CardinalWindow) callconv(.c) voi
     }
 }
 
-export fn cardinal_window_get_native_handle(window: ?*const CardinalWindow) callconv(.c) ?*anyopaque {
+pub export fn cardinal_window_get_native_handle(window: ?*const CardinalWindow) callconv(.c) ?*anyopaque {
     if (window) |win| {
         if (win.handle) |h| {
             if (builtin.os.tag == .windows) {

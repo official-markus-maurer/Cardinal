@@ -1,6 +1,7 @@
 const std = @import("std");
 const builtin = @import("builtin");
 const log = @import("../core/log.zig");
+const memory = @import("../core/memory.zig");
 const types = @import("vulkan_types.zig");
 
 const c = @import("vulkan_c.zig").c;
@@ -66,9 +67,9 @@ pub export fn cardinal_barrier_validation_init(max_tracked_accesses: u32, strict
         _ = c.pthread_mutex_init(&g_validation_mutex, null);
     }
 
-    const allocator = c.cardinal_get_allocator_for_category(c.CARDINAL_MEMORY_CATEGORY_ENGINE);
+    const allocator = memory.cardinal_get_allocator_for_category(memory.CardinalMemoryCategory.ENGINE);
 
-    const ptr = c.cardinal_alloc(allocator, @sizeOf(types.CardinalResourceAccess) * max_tracked_accesses);
+    const ptr = memory.cardinal_alloc(allocator, @sizeOf(types.CardinalResourceAccess) * max_tracked_accesses);
     if (ptr == null) {
         log.cardinal_log_error("[BARRIER_VALIDATION] Failed to allocate memory for resource tracking", .{});
         return false;
@@ -98,8 +99,8 @@ pub export fn cardinal_barrier_validation_shutdown() callconv(.c) void {
     lock_validation_mutex();
 
     if (g_validation_context.resource_accesses != null) {
-        const allocator = c.cardinal_get_allocator_for_category(c.CARDINAL_MEMORY_CATEGORY_ENGINE);
-        c.cardinal_free(allocator, g_validation_context.resource_accesses);
+        const allocator = memory.cardinal_get_allocator_for_category(memory.CardinalMemoryCategory.ENGINE);
+        memory.cardinal_free(allocator, g_validation_context.resource_accesses);
         g_validation_context.resource_accesses = null;
     }
 

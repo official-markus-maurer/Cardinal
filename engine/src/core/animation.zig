@@ -1,13 +1,13 @@
 const std = @import("std");
 const builtin = @import("builtin");
 const transform = @import("transform.zig");
+const scene = @import("../assets/scene.zig");
 
 const c = @cImport({
     @cInclude("stdlib.h");
     @cInclude("string.h");
     @cInclude("math.h");
     @cInclude("float.h");
-    @cInclude("cardinal/assets/scene.h");
 });
 
 // Constants
@@ -557,7 +557,7 @@ export fn cardinal_animation_set_speed(system: ?*CardinalAnimationSystem, animat
     return false;
 }
 
-export fn cardinal_animation_system_update(system: ?*CardinalAnimationSystem, all_nodes: ?[*] ?*c.CardinalSceneNode, all_node_count: u32, delta_time: f32) callconv(.c) void {
+export fn cardinal_animation_system_update(system: ?*CardinalAnimationSystem, all_nodes: ?[*] ?*scene.CardinalSceneNode, all_node_count: u32, delta_time: f32) callconv(.c) void {
     if (system == null) return;
 
     var i: u32 = 0;
@@ -609,13 +609,13 @@ export fn cardinal_animation_system_update(system: ?*CardinalAnimationSystem, al
 
                 var new_transform: [16]f32 = undefined;
                 transform.cardinal_matrix_from_trs(&translation, &rotation, &scale, &new_transform);
-                c.cardinal_scene_node_set_local_transform(node, &new_transform);
+                scene.cardinal_scene_node_set_local_transform(node, &new_transform);
             }
         }
     }
 }
 
-export fn cardinal_skin_update_bone_matrices(skin: ?*const CardinalSkin, scene_nodes: ?[*] ?*const c.CardinalSceneNode, bone_matrices: ?[*]f32) callconv(.c) bool {
+export fn cardinal_skin_update_bone_matrices(skin: ?*const CardinalSkin, scene_nodes: ?[*] ?*const scene.CardinalSceneNode, bone_matrices: ?[*]f32) callconv(.c) bool {
     if (skin == null or scene_nodes == null or bone_matrices == null) return false;
 
     var i: u32 = 0;
@@ -625,7 +625,7 @@ export fn cardinal_skin_update_bone_matrices(skin: ?*const CardinalSkin, scene_n
 
         if (node == null) continue;
 
-        const world_transform = c.cardinal_scene_node_get_world_transform(@constCast(node));
+        const world_transform = scene.cardinal_scene_node_get_world_transform(@constCast(node));
         const bone_matrix = &bone_matrices.?[i * 16];
         // Cast to [16]f32 pointers for the Zig function
         const wt_ptr: *const [16]f32 = @ptrCast(world_transform);

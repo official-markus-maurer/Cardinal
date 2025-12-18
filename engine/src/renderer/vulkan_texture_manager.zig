@@ -1,3 +1,4 @@
+
 const std = @import("std");
 const builtin = @import("builtin");
 const log = @import("../core/log.zig");
@@ -8,6 +9,137 @@ const vk_texture_utils = @import("util/vulkan_texture_utils.zig");
 const vk_allocator = @import("vulkan_allocator.zig");
 const vk_sync_mgr = @import("vulkan_sync_manager.zig");
 const scene = @import("../assets/scene.zig");
+const vk_mt = @import("vulkan_mt.zig");
+const vk_commands = @import("vulkan_commands.zig");
+
+const TextureUploadContext = struct {
+    // Input
+    allocator: *types.VulkanAllocator,
+    device: c.VkDevice,
+    texture: *const scene.CardinalTexture,
+    managed_texture: *types.VulkanManagedTexture,
+    
+    // Output
+    staging_buffer: c.VkBuffer,
+    staging_memory: c.VkDeviceMemory,
+    secondary_context: types.CardinalSecondaryCommandContext,
+    success: bool,
+    finished: bool, // Simple flag, read/write should be atomic enough for bool on x86/x64, but better use atomic if possible. For now volatile is okayish or just careful.
+};
+
+fn upload_texture_task(data: ?*anyopaque) void {
+    if (data == null) return;
+    const ctx: *TextureUploadContext = @ptrCast(@alignCast(data));
+    ctx.success = false;
+
+    // Get thread command pool
+    const pool = vk_mt.cardinal_mt_get_thread_command_pool(&vk_mt.g_cardinal_mt_subsystem.command_manager);
+    if (pool == null) {
+        log.cardinal_log_error("Failed to get thread command pool", .{});
+        @atomicStore(bool, &ctx.finished, true, .release);
+        return;
+    }
+
+    // Allocate secondary command buffer
+    if (!vk_mt.cardinal_mt_allocate_secondary_command_buffer(pool.?, &ctx.secondary_context)) {
+        log.cardinal_log_error("Failed to allocate secondary command buffer", .{});
+        @atomicStore(bool, &ctx.finished, true, .release);
+        return;
+    }
+
+    // Begin command buffer (manually to avoid RENDER_PASS_CONTINUE_BIT)
+    var inheritance_info = std.mem.zeroes(c.VkCommandBufferInheritanceInfo);
+    inheritance_info.sType = c.VK_STRUCTURE_TYPE_COMMAND_BUFFER_INHERITANCE_INFO;
+    inheritance_info.renderPass = null;
+    inheritance_info.subpass = 0;
+    inheritance_info.framebuffer = null;
+    inheritance_info.occlusionQueryEnable = c.VK_FALSE;
+    inheritance_info.queryFlags = 0;
+    inheritance_info.pipelineStatistics = 0;
+
+    var begin_info = std.mem.zeroes(c.VkCommandBufferBeginInfo);
+    begin_info.sType = c.VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
+    begin_info.flags = c.VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
+    begin_info.pInheritanceInfo = &inheritance_info;
+    
+    // Debug log to ensure we are setting inheritance info
+    // log.cardinal_log_debug("Starting secondary cmd buffer: {any}, inheritance={*}", .{ctx.secondary_context.command_buffer, begin_info.pInheritanceInfo});
+
+    if (c.vkBeginCommandBuffer(ctx.secondary_context.command_buffer, &begin_info) != c.VK_SUCCESS) {
+        log.cardinal_log_error("Failed to begin secondary command buffer", .{});
+        @atomicStore(bool, &ctx.finished, true, .release);
+        return;
+    }
+    ctx.secondary_context.is_recording = true;
+
+    // Create staging buffer and copy data
+    if (!vk_texture_utils.create_staging_buffer_with_data(@ptrCast(ctx.allocator), ctx.device, ctx.texture, &ctx.staging_buffer, &ctx.staging_memory)) {
+        @atomicStore(bool, &ctx.finished, true, .release);
+        return;
+    }
+
+    // Create image and memory
+    if (!vk_texture_utils.create_image_and_memory(@ptrCast(ctx.allocator), ctx.device, ctx.texture.width, ctx.texture.height, &ctx.managed_texture.image, &ctx.managed_texture.memory)) {
+        c.vkDestroyBuffer(ctx.device, ctx.staging_buffer, null);
+        c.vkFreeMemory(ctx.device, ctx.staging_memory, null);
+        @atomicStore(bool, &ctx.finished, true, .release);
+        return;
+    }
+
+    // Record commands
+    vk_texture_utils.record_texture_copy_commands(ctx.secondary_context.command_buffer, ctx.staging_buffer, ctx.managed_texture.image, ctx.texture.width, ctx.texture.height);
+
+    // Create image view
+    if (!vk_texture_utils.create_texture_image_view(ctx.device, ctx.managed_texture.image, &ctx.managed_texture.view)) {
+        c.vkDestroyBuffer(ctx.device, ctx.staging_buffer, null);
+        c.vkFreeMemory(ctx.device, ctx.staging_memory, null);
+        c.vkDestroyImage(ctx.device, ctx.managed_texture.image, null);
+        c.vkFreeMemory(ctx.device, ctx.managed_texture.memory, null);
+        ctx.managed_texture.image = null;
+        ctx.managed_texture.memory = null;
+        @atomicStore(bool, &ctx.finished, true, .release);
+        return;
+    }
+
+    // Metadata & Sampler
+    ctx.managed_texture.width = ctx.texture.width;
+    ctx.managed_texture.height = ctx.texture.height;
+    ctx.managed_texture.channels = ctx.texture.channels;
+    ctx.managed_texture.isPlaceholder = false;
+
+    ctx.managed_texture.sampler = create_sampler_from_config(ctx.device, &ctx.texture.sampler);
+    if (ctx.managed_texture.sampler == null) {
+        var default_sampler_config = std.mem.zeroes(scene.CardinalSampler);
+        default_sampler_config.wrap_s = .REPEAT;
+        default_sampler_config.wrap_t = .REPEAT;
+        default_sampler_config.min_filter = .LINEAR;
+        default_sampler_config.mag_filter = .LINEAR;
+        ctx.managed_texture.sampler = create_sampler_from_config(ctx.device, &default_sampler_config);
+    }
+
+    // Path copy
+    if (ctx.texture.path) |path| {
+        const len = c.strlen(path);
+        const allocator_cat = memory.cardinal_get_allocator_for_category(.RENDERER);
+        const path_copy = memory.cardinal_alloc(allocator_cat, len + 1);
+        if (path_copy) |ptr| {
+            @memcpy(@as([*]u8, @ptrCast(ptr))[0..len], @as([*]const u8, @ptrCast(path))[0..len]);
+            @as([*]u8, @ptrCast(ptr))[len] = 0;
+            ctx.managed_texture.path = @ptrCast(ptr);
+        }
+    }
+
+    // End command buffer
+    if (c.vkEndCommandBuffer(ctx.secondary_context.command_buffer) != c.VK_SUCCESS) {
+        log.cardinal_log_error("Failed to end secondary command buffer", .{});
+        @atomicStore(bool, &ctx.finished, true, .release);
+        return;
+    }
+    ctx.secondary_context.is_recording = false;
+
+    ctx.success = true;
+    @atomicStore(bool, &ctx.finished, true, .release);
+}
 
 // Internal helper functions
 fn create_default_sampler(manager: *types.VulkanTextureManager) bool {
@@ -114,16 +246,23 @@ fn create_sampler_from_config(device: c.VkDevice, config: *const scene.CardinalS
     sampler_info.sType = c.VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO;
     
     // Map filters
-    sampler_info.magFilter = if (@intFromEnum(config.mag_filter) == c.CARDINAL_SAMPLER_FILTER_NEAREST) c.VK_FILTER_NEAREST else c.VK_FILTER_LINEAR;
-    sampler_info.minFilter = if (@intFromEnum(config.min_filter) == c.CARDINAL_SAMPLER_FILTER_NEAREST) c.VK_FILTER_NEAREST else c.VK_FILTER_LINEAR;
+    sampler_info.magFilter = if (config.mag_filter == .NEAREST) c.VK_FILTER_NEAREST else c.VK_FILTER_LINEAR;
+    sampler_info.minFilter = if (config.min_filter == .NEAREST) c.VK_FILTER_NEAREST else c.VK_FILTER_LINEAR;
 
     // Map address modes
-    // Force REPEAT even if CLAMP_TO_EDGE is requested, to fix asset export issues (matching C code comment)
     var wrap_s = c.VK_SAMPLER_ADDRESS_MODE_REPEAT;
-    if (@intFromEnum(config.wrap_s) == c.CARDINAL_SAMPLER_WRAP_MIRRORED_REPEAT) wrap_s = c.VK_SAMPLER_ADDRESS_MODE_MIRRORED_REPEAT;
+    if (config.wrap_s == .MIRRORED_REPEAT) {
+        wrap_s = c.VK_SAMPLER_ADDRESS_MODE_MIRRORED_REPEAT;
+    } else if (config.wrap_s == .CLAMP_TO_EDGE) {
+        wrap_s = c.VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
+    }
 
     var wrap_t = c.VK_SAMPLER_ADDRESS_MODE_REPEAT;
-    if (@intFromEnum(config.wrap_t) == c.CARDINAL_SAMPLER_WRAP_MIRRORED_REPEAT) wrap_t = c.VK_SAMPLER_ADDRESS_MODE_MIRRORED_REPEAT;
+    if (config.wrap_t == .MIRRORED_REPEAT) {
+        wrap_t = c.VK_SAMPLER_ADDRESS_MODE_MIRRORED_REPEAT;
+    } else if (config.wrap_t == .CLAMP_TO_EDGE) {
+        wrap_t = c.VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
+    }
 
     sampler_info.addressModeU = @intCast(wrap_s);
     sampler_info.addressModeV = @intCast(wrap_t);
@@ -145,9 +284,6 @@ fn create_sampler_from_config(device: c.VkDevice, config: *const scene.CardinalS
         log.cardinal_log_error("Failed to create texture sampler", .{});
         return null;
     }
-
-    log.cardinal_log_debug("Created sampler: handle={any}, addrU={d}, addrV={d}, min={d}, mag={d}",
-        .{sampler, sampler_info.addressModeU, sampler_info.addressModeV, sampler_info.minFilter, sampler_info.magFilter});
 
     return sampler;
 }
@@ -227,38 +363,6 @@ pub fn vk_texture_manager_destroy(manager: *types.VulkanTextureManager) void {
     log.cardinal_log_debug("Texture manager destroyed", .{});
 }
 
-fn load_single_scene_texture(manager: *types.VulkanTextureManager, scene_data: *const scene.CardinalScene, index: u32, successful_uploads: *u32, max_timeline_value: *u64) void {
-    const texture = &scene_data.textures.?[index];
-    var texture_index: u32 = 0;
-
-    // Skip invalid textures and create placeholder for them
-    if (texture.data == null or texture.width == 0 or texture.height == 0) {
-        const path = if (texture.path) |p| std.mem.span(p) else "unknown";
-        log.cardinal_log_warn("Skipping invalid texture {d} ({s}) - using placeholder", .{index, path});
-        return;
-    }
-
-    const path = if (texture.path) |p| std.mem.span(p) else "unknown";
-    log.cardinal_log_info("Uploading texture {d}: {d}x{d}, {d} channels ({s})", .{index, texture.width, texture.height, texture.channels, path});
-
-    var timeline_value: u64 = 0;
-    if (vk_texture_manager_load_texture(manager, texture, &texture_index, &timeline_value)) {
-        successful_uploads.* += 1;
-        if (timeline_value > max_timeline_value.*) {
-            max_timeline_value.* = timeline_value;
-        }
-    } else {
-        log.cardinal_log_error("Failed to upload texture {d} ({s}) - creating placeholder", .{index, path});
-        // Create a placeholder texture for the failed upload to maintain texture array consistency
-        var placeholder_index: u32 = 0;
-        if (vk_texture_manager_create_placeholder(manager, &placeholder_index)) {
-            log.cardinal_log_info("Created placeholder texture at index {d} for failed texture {d}", .{placeholder_index, index});
-        } else {
-            log.cardinal_log_error("Failed to create placeholder for failed texture {d}", .{index});
-        }
-    }
-}
-
 pub fn vk_texture_manager_load_scene_textures(manager: *types.VulkanTextureManager, scene_data: ?*const scene.CardinalScene) bool {
     if (scene_data == null) {
         log.cardinal_log_error("Invalid parameters for scene texture loading", .{});
@@ -290,31 +394,169 @@ pub fn vk_texture_manager_load_scene_textures(manager: *types.VulkanTextureManag
         return false;
     }
 
-    log.cardinal_log_info("Loading {d} textures from scene", .{scene_data.?.texture_count});
+    // Reset command pools to ensure we have enough secondary command buffers
+    // This prevents "Thread command pool exhausted" errors when loading many textures
+    _ = c.vkDeviceWaitIdle(manager.device);
+    vk_mt.cardinal_mt_reset_all_command_pools(&vk_mt.g_cardinal_mt_subsystem.command_manager);
 
-    var successful_uploads: u32 = 0;
-    var max_timeline_value: u64 = 0;
+    log.cardinal_log_info("Loading {d} textures from scene (Parallel)", .{scene_data.?.texture_count});
 
-    // Load scene textures starting from index 1 (index 0 is placeholder)
+    const allocator = memory.cardinal_get_allocator_for_category(.RENDERER);
+    
+    // Allocate contexts array
+    const contexts = memory.cardinal_calloc(allocator, scene_data.?.texture_count, @sizeOf(TextureUploadContext));
+    if (contexts == null) {
+         log.cardinal_log_error("Failed to allocate texture upload contexts", .{});
+         return false;
+    }
+    const ctx_array = @as([*]TextureUploadContext, @ptrCast(@alignCast(contexts)));
+
+    // Create tasks
+    var tasks_submitted: u32 = 0;
     var i: u32 = 0;
     while (i < scene_data.?.texture_count) : (i += 1) {
-        load_single_scene_texture(manager, scene_data.?, i, &successful_uploads, &max_timeline_value);
+        const texture = &scene_data.?.textures.?[i];
+        
+        // Skip invalid textures
+        if (texture.data == null or texture.width == 0 or texture.height == 0) {
+            continue;
+        }
+
+        // Texture index maps to manager index i + 1 (0 is placeholder)
+        const slot_index = 1 + i;
+        
+        // Initialize context
+        ctx_array[tasks_submitted].allocator = manager.allocator;
+        ctx_array[tasks_submitted].device = manager.device;
+        ctx_array[tasks_submitted].texture = texture;
+        ctx_array[tasks_submitted].managed_texture = &manager.textures[slot_index];
+        ctx_array[tasks_submitted].finished = false;
+
+        // Create task
+        const task_ptr = memory.cardinal_alloc(allocator, @sizeOf(types.CardinalMTTask));
+        if (task_ptr) |ptr| {
+            const task: *types.CardinalMTTask = @ptrCast(@alignCast(ptr));
+            task.type = types.CardinalMTTaskType.CARDINAL_MT_TASK_COMMAND_RECORD;
+            task.data = &ctx_array[tasks_submitted];
+            task.execute_func = upload_texture_task;
+            task.callback_func = null;
+            task.is_completed = false;
+            task.success = false;
+            task.next = null;
+
+            if (vk_mt.cardinal_mt_submit_task(task)) {
+                tasks_submitted += 1;
+            } else {
+                 log.cardinal_log_error("Failed to submit texture task {d}", .{i});
+                 memory.cardinal_free(allocator, ptr);
+            }
+        }
     }
-
-    log.cardinal_log_info("Texture loading phase completed. Max timeline value: {d}", .{max_timeline_value});
-
-    // Check if we encountered device loss during uploads
-    const device_status = c.vkDeviceWaitIdle(manager.device);
-    if (device_status != c.VK_SUCCESS) {
-        log.cardinal_log_error("Device status check failed after texture loading: {d}", .{device_status});
+    
+    // Wait for completion
+    log.cardinal_log_info("Waiting for {d} texture upload tasks...", .{tasks_submitted});
+    var finished_count: u32 = 0;
+    while (finished_count < tasks_submitted) {
+        // Drain completed queue to free task memory
+        vk_mt.cardinal_mt_process_completed_tasks(16);
+        
+        finished_count = 0;
+        var j: u32 = 0;
+        while (j < tasks_submitted) : (j += 1) {
+             if (@atomicLoad(bool, &ctx_array[j].finished, .acquire)) {
+                 finished_count += 1;
+             }
+        }
+        
+        if (finished_count < tasks_submitted) {
+            if (builtin.os.tag == .windows) {
+                c.Sleep(1);
+            } else {
+                _ = c.usleep(1000);
+            }
+        }
     }
-
-    if (successful_uploads < scene_data.?.texture_count) {
-        log.cardinal_log_warn("Uploaded {d}/{d} textures (some failed)", .{successful_uploads, scene_data.?.texture_count});
+    
+    // Execute secondary command buffers
+    log.cardinal_log_info("Executing texture copy commands...", .{});
+    
+    // Allocate primary command buffer
+    var cmd_buf_info = std.mem.zeroes(c.VkCommandBufferAllocateInfo);
+    cmd_buf_info.sType = c.VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO;
+    cmd_buf_info.commandPool = manager.commandPool;
+    cmd_buf_info.level = c.VK_COMMAND_BUFFER_LEVEL_PRIMARY;
+    cmd_buf_info.commandBufferCount = 1;
+    
+    var primary_cmd: c.VkCommandBuffer = null;
+    if (c.vkAllocateCommandBuffers(manager.device, &cmd_buf_info, &primary_cmd) != c.VK_SUCCESS) {
+        log.cardinal_log_error("Failed to allocate primary command buffer for texture upload", .{});
+        memory.cardinal_free(allocator, @as(?*anyopaque, @ptrCast(contexts)));
+        return false;
+    }
+    
+    // Begin primary
+    var begin_info = std.mem.zeroes(c.VkCommandBufferBeginInfo);
+    begin_info.sType = c.VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
+    begin_info.flags = c.VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
+    
+    _ = c.vkBeginCommandBuffer(primary_cmd, &begin_info);
+    
+    // Collect and execute secondary buffers
+    var success_count: u32 = 0;
+    var j: u32 = 0;
+    while (j < tasks_submitted) : (j += 1) {
+        if (ctx_array[j].success) {
+            c.vkCmdExecuteCommands(primary_cmd, 1, &ctx_array[j].secondary_context.command_buffer);
+            success_count += 1;
+        }
+    }
+    
+    _ = c.vkEndCommandBuffer(primary_cmd);
+    
+    // Submit
+    var submit_info = std.mem.zeroes(c.VkSubmitInfo);
+    submit_info.sType = c.VK_STRUCTURE_TYPE_SUBMIT_INFO;
+    submit_info.commandBufferCount = 1;
+    submit_info.pCommandBuffers = &primary_cmd;
+    
+    // Fence for wait
+    var fence: c.VkFence = null;
+    var fence_info = std.mem.zeroes(c.VkFenceCreateInfo);
+    fence_info.sType = c.VK_STRUCTURE_TYPE_FENCE_CREATE_INFO;
+    _ = c.vkCreateFence(manager.device, &fence_info, null, &fence);
+    
+    if (c.vkQueueSubmit(manager.graphicsQueue, 1, &submit_info, fence) != c.VK_SUCCESS) {
+        log.cardinal_log_error("Failed to submit texture upload commands", .{});
     } else {
-        log.cardinal_log_info("Successfully uploaded all {d} textures", .{successful_uploads});
+        _ = c.vkWaitForFences(manager.device, 1, &fence, c.VK_TRUE, c.UINT64_MAX);
     }
+    
+    c.vkDestroyFence(manager.device, fence, null);
+    c.vkFreeCommandBuffers(manager.device, manager.commandPool, 1, &primary_cmd);
+    
+    // Update manager count
+    manager.textureCount += success_count; // Approximation, actually it's sparse if some failed
+    // But we used fixed slots. 
+    // We should set manager.textureCount to max index + 1.
+    manager.textureCount = scene_data.?.texture_count + 1;
+    
+    // Cleanup staging buffers
+    j = 0;
+    while (j < tasks_submitted) : (j += 1) {
+        if (ctx_array[j].staging_buffer != null) {
+            c.vkDestroyBuffer(manager.device, ctx_array[j].staging_buffer, null);
+            c.vkFreeMemory(manager.device, ctx_array[j].staging_memory, null);
+        }
+    }
+    
+    memory.cardinal_free(allocator, @as(?*anyopaque, @ptrCast(contexts)));
 
+    // Reset command pools again to free up resources for the renderer
+    // The texture loading likely consumed many secondary buffers, which are now finished.
+    _ = c.vkDeviceWaitIdle(manager.device);
+    vk_mt.cardinal_mt_reset_all_command_pools(&vk_mt.g_cardinal_mt_subsystem.command_manager);
+    
+    log.cardinal_log_info("Successfully uploaded {d} textures", .{success_count});
     return true;
 }
 
@@ -415,10 +657,10 @@ pub fn vk_texture_manager_create_placeholder(manager: *types.VulkanTextureManage
 
     // Create default sampler for placeholder
     var default_sampler_config = std.mem.zeroes(scene.CardinalSampler);
-    default_sampler_config.wrap_s = @enumFromInt(c.CARDINAL_SAMPLER_WRAP_REPEAT);
-    default_sampler_config.wrap_t = @enumFromInt(c.CARDINAL_SAMPLER_WRAP_REPEAT);
-    default_sampler_config.min_filter = @enumFromInt(c.CARDINAL_SAMPLER_FILTER_LINEAR);
-    default_sampler_config.mag_filter = @enumFromInt(c.CARDINAL_SAMPLER_FILTER_LINEAR);
+    default_sampler_config.wrap_s = .REPEAT;
+    default_sampler_config.wrap_t = .REPEAT;
+    default_sampler_config.min_filter = .LINEAR;
+    default_sampler_config.mag_filter = .LINEAR;
     managed_texture.sampler = create_sampler_from_config(manager.device, &default_sampler_config);
 
     manager.textureCount += 1;

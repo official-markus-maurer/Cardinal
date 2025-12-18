@@ -28,7 +28,7 @@ fn get_current_thread_id() u32 {
     }
 }
 
-fn add_staging_buffer_cleanup(buffer: c.VkBuffer, memory: c.VkDeviceMemory, device: c.VkDevice, timeline_value: u64) void {
+pub fn add_staging_buffer_cleanup(buffer: c.VkBuffer, memory: c.VkDeviceMemory, device: c.VkDevice, timeline_value: u64) void {
     const cleanup = c.malloc(@sizeOf(StagingBufferCleanup));
     if (cleanup == null) {
         log.cardinal_log_error("[TEXTURE_UTILS] Failed to allocate cleanup tracking, immediate cleanup", .{});
@@ -49,7 +49,7 @@ fn add_staging_buffer_cleanup(buffer: c.VkBuffer, memory: c.VkDeviceMemory, devi
     log.cardinal_log_debug("[TEXTURE_UTILS] Added staging buffer {any} to deferred cleanup (timeline: {d})", .{buffer, timeline_value});
 }
 
-fn process_staging_buffer_cleanups(sync_manager: ?*types.VulkanSyncManager) void {
+pub fn process_staging_buffer_cleanups(sync_manager: ?*types.VulkanSyncManager) void {
     if (!g_cleanup_system_initialized or sync_manager == null) return;
 
     var current = &g_pending_cleanups;
@@ -69,7 +69,7 @@ fn process_staging_buffer_cleanups(sync_manager: ?*types.VulkanSyncManager) void
     }
 }
 
-fn create_staging_buffer_with_data(allocator: ?*types.VulkanAllocator, device: c.VkDevice, texture: *const scene.CardinalTexture, outBuffer: *c.VkBuffer, outMemory: *c.VkDeviceMemory) bool {
+pub fn create_staging_buffer_with_data(allocator: ?*types.VulkanAllocator, device: c.VkDevice, texture: *const scene.CardinalTexture, outBuffer: *c.VkBuffer, outMemory: *c.VkDeviceMemory) bool {
     const imageSize = @as(c.VkDeviceSize, texture.width) * texture.height * 4;
 
     var bufferInfo = std.mem.zeroes(c.VkBufferCreateInfo);
@@ -97,7 +97,7 @@ fn create_staging_buffer_with_data(allocator: ?*types.VulkanAllocator, device: c
     return true;
 }
 
-fn create_image_and_memory(allocator: ?*types.VulkanAllocator, device: c.VkDevice, width: u32, height: u32, outImage: *c.VkImage, outMemory: *c.VkDeviceMemory) bool {
+pub fn create_image_and_memory(allocator: ?*types.VulkanAllocator, device: c.VkDevice, width: u32, height: u32, outImage: *c.VkImage, outMemory: *c.VkDeviceMemory) bool {
     var imageInfo = std.mem.zeroes(c.VkImageCreateInfo);
     imageInfo.sType = c.VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO;
     imageInfo.imageType = c.VK_IMAGE_TYPE_2D;
@@ -136,13 +136,33 @@ fn create_image_and_memory(allocator: ?*types.VulkanAllocator, device: c.VkDevic
     return true;
 }
 
-fn record_texture_copy_commands(commandBuffer: c.VkCommandBuffer, stagingBuffer: c.VkBuffer, textureImage: c.VkImage, width: u32, height: u32) void {
-    var beginInfo = std.mem.zeroes(c.VkCommandBufferBeginInfo);
-    beginInfo.sType = c.VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
-    beginInfo.flags = c.VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
-
-    _ = c.vkBeginCommandBuffer(commandBuffer, &beginInfo);
-
+pub fn record_texture_copy_commands(commandBuffer: c.VkCommandBuffer, stagingBuffer: c.VkBuffer, textureImage: c.VkImage, width: u32, height: u32) void {
+    // Note: We don't call vkBeginCommandBuffer/vkEndCommandBuffer here because:
+    // 1. When called from upload_texture_task, the secondary buffer is already in recording state
+    // 2. When called from vk_texture_create_from_data, it's called with a primary buffer that should be managed by caller?
+    // Wait, vk_texture_create_from_data calls this function, but it allocates a primary buffer itself.
+    // However, upload_texture_task (in vulkan_texture_manager.zig) calls this function passing a secondary buffer that IS ALREADY in recording state.
+    // vk_texture_create_from_data does NOT put the buffer in recording state before calling this!
+    
+    // BUT looking at the code below, it calls vkBeginCommandBuffer!
+    // This is WRONG if the buffer is already recording (like in upload_texture_task).
+    
+    // Let's check if we are already recording or not? We can't easily check via API without tracking.
+    // Better strategy: Remove vkBegin/End from here, and ensure callers handle it.
+    
+    // However, vk_texture_create_from_data calls this function. Let's check vk_texture_create_from_data.
+    // vk_texture_create_from_data allocates a buffer but doesn't begin it.
+    
+    // So we should split this into "record_commands_internal" (no begin/end) and "record_commands" (with begin/end).
+    // Or better, just remove begin/end from here and fix vk_texture_create_from_data.
+    
+    // Wait, if I remove begin/end here, I must update vk_texture_create_from_data to begin/end.
+    // And upload_texture_task is already beginning/ending.
+    
+    // So the fix is:
+    // 1. Remove vkBeginCommandBuffer/vkEndCommandBuffer from THIS function.
+    // 2. Update vk_texture_create_from_data to begin/end the buffer.
+    
     var barrier = std.mem.zeroes(c.VkImageMemoryBarrier2);
     barrier.sType = c.VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2;
     barrier.srcStageMask = c.VK_PIPELINE_STAGE_2_TOP_OF_PIPE_BIT;
@@ -201,7 +221,7 @@ fn record_texture_copy_commands(commandBuffer: c.VkCommandBuffer, stagingBuffer:
     }
 
     c.vkCmdPipelineBarrier2(commandBuffer, &dependencyInfo);
-    _ = c.vkEndCommandBuffer(commandBuffer);
+    // _ = c.vkEndCommandBuffer(commandBuffer); // Removed
 }
 
 fn submit_texture_upload(device: c.VkDevice, graphicsQueue: c.VkQueue, commandBuffer: c.VkCommandBuffer, sync_manager: ?*types.VulkanSyncManager, outTimelineValue: ?*u64) bool {
@@ -259,7 +279,7 @@ fn submit_texture_upload(device: c.VkDevice, graphicsQueue: c.VkQueue, commandBu
     return true;
 }
 
-fn create_texture_image_view(device: c.VkDevice, image: c.VkImage, outImageView: *c.VkImageView) bool {
+pub fn create_texture_image_view(device: c.VkDevice, image: c.VkImage, outImageView: *c.VkImageView) bool {
     var viewInfo = std.mem.zeroes(c.VkImageViewCreateInfo);
     viewInfo.sType = c.VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO;
     viewInfo.image = image;
@@ -280,7 +300,7 @@ fn create_texture_image_view(device: c.VkDevice, image: c.VkImage, outImageView:
 
 pub export fn vk_texture_create_from_data(allocator: ?*types.VulkanAllocator, device: c.VkDevice,
                                           commandPool: c.VkCommandPool, graphicsQueue: c.VkQueue,
-                                          sync_manager: ?*types.VulkanSyncManager, texture: ?*const c.CardinalTexture,
+                                          sync_manager: ?*types.VulkanSyncManager, texture: ?*const scene.CardinalTexture,
                                           textureImage: ?*c.VkImage, textureImageMemory: ?*c.VkDeviceMemory,
                                           textureImageView: ?*c.VkImageView, outTimelineValue: ?*u64) callconv(.c) bool {
     if (texture == null or texture.?.data == null or textureImage == null or textureImageMemory == null or textureImageView == null) {
@@ -309,7 +329,14 @@ pub export fn vk_texture_create_from_data(allocator: ?*types.VulkanAllocator, de
     var commandBuffer: c.VkCommandBuffer = null;
     _ = c.vkAllocateCommandBuffers(device, &allocInfo, &commandBuffer);
 
+    var beginInfo = std.mem.zeroes(c.VkCommandBufferBeginInfo);
+    beginInfo.sType = c.VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
+    beginInfo.flags = c.VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
+    _ = c.vkBeginCommandBuffer(commandBuffer, &beginInfo);
+
     record_texture_copy_commands(commandBuffer, stagingBuffer, textureImage.?.*, texture.?.width, texture.?.height);
+
+    _ = c.vkEndCommandBuffer(commandBuffer);
 
     if (!submit_texture_upload(device, graphicsQueue, commandBuffer, sync_manager, outTimelineValue)) {
         log.cardinal_log_error("Failed to submit texture upload", .{});

@@ -2,10 +2,11 @@ const std = @import("std");
 const builtin = @import("builtin");
 const scene = @import("../assets/scene.zig");
 const c = @import("vulkan_c.zig").c;
+const window = @import("../core/window.zig");
 
 
 // Forward declarations for external types
-pub const CardinalWindow = anyopaque;
+pub const CardinalWindow = window.CardinalWindow;
 pub const CardinalRenderer = extern struct {
     _opaque: ?*anyopaque,
 };
@@ -14,6 +15,23 @@ pub const CardinalMesh = scene.CardinalMesh;
 pub const CardinalVertex = scene.CardinalVertex;
 pub const CardinalMaterial = scene.CardinalMaterial;
 pub const CardinalSceneNode = scene.CardinalSceneNode;
+
+pub const CardinalCamera = extern struct {
+    position: [3]f32,
+    target: [3]f32,
+    up: [3]f32,
+    fov: f32,
+    aspect: f32,
+    near_plane: f32,
+    far_plane: f32,
+};
+
+pub const CardinalLight = extern struct {
+    direction: [3]f32,
+    color: [3]f32,
+    intensity: f32,
+    ambient: [3]f32,
+};
 
 pub const ValidationStats = extern struct {
     total_messages: u32,
@@ -112,6 +130,34 @@ pub const PBRPushConstants = extern struct {
     aoTransform: scene.CardinalTextureTransform,
     _padding4: f32,
     emissiveTransform: scene.CardinalTextureTransform,
+};
+
+pub const DescriptorBufferCreateInfo = extern struct {
+    device: c.VkDevice,
+    allocator: *VulkanAllocator,
+    layout: c.VkDescriptorSetLayout,
+    max_sets: u32,
+};
+
+pub const DescriptorBufferAllocation = extern struct {
+    buffer: c.VkBuffer,
+    memory: c.VkDeviceMemory,
+    size: c.VkDeviceSize,
+    alignment: c.VkDeviceSize,
+    mapped_data: ?*anyopaque,
+    usage: c.VkBufferUsageFlags,
+};
+
+pub const DescriptorBufferManager = extern struct {
+    device: c.VkDevice,
+    allocator: *VulkanAllocator,
+    layout: c.VkDescriptorSetLayout,
+    layout_size: c.VkDeviceSize,
+    buffer_alignment: c.VkDeviceSize,
+    buffer_alloc: DescriptorBufferAllocation,
+    binding_offsets: ?[*]c.VkDeviceSize,
+    binding_count: u32,
+    needs_update: bool,
 };
 
 pub const PBRMaterialProperties = extern struct {
@@ -260,6 +306,7 @@ pub const VulkanCommands = extern struct {
     pools: ?[*]c.VkCommandPool,               // Per frame
     buffers: ?[*]c.VkCommandBuffer,           // Per frame
     secondary_buffers: ?[*]c.VkCommandBuffer, // Per frame (double buffering)
+    scene_secondary_buffers: ?[*]c.VkCommandBuffer, // Per frame (Level Secondary)
     current_buffer_index: u32,
 };
 
@@ -664,8 +711,8 @@ pub const VulkanState = extern struct {
 // Multi-Threading Types
 //
 
-pub const CARDINAL_MAX_MT_THREADS = 8;
-pub const CARDINAL_MAX_SECONDARY_COMMAND_BUFFERS = 16;
+pub const CARDINAL_MAX_MT_THREADS = 16;
+pub const CARDINAL_MAX_SECONDARY_COMMAND_BUFFERS = 1024;
 
 pub const cardinal_thread_handle_t = std.Thread;
 pub const cardinal_thread_id_t = std.Thread.Id;

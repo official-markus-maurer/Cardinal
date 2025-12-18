@@ -204,11 +204,11 @@ fn select_swapchain_extent(s: *types.VulkanState, caps: *const c.VkSurfaceCapabi
 
     var extent = c.VkExtent2D{ .width = 800, .height = 600 };
     if (s.recovery.window != null) {
-        const win = @as(*c.CardinalWindow, @ptrCast(@alignCast(s.recovery.window.?)));
+        const win = s.recovery.window.?;
         if (win.handle != null) {
             var w: c_int = 0;
             var h: c_int = 0;
-            c.glfwGetFramebufferSize(win.handle, &w, &h);
+            c.glfwGetFramebufferSize(@ptrCast(win.handle), &w, &h);
             extent.width = @intCast(w);
             extent.height = @intCast(h);
         }

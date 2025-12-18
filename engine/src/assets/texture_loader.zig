@@ -390,7 +390,7 @@ pub export fn texture_load_from_file(filepath: ?[*]const u8, out_texture: ?*Text
     };
     file.close();
     
-    stbi_set_flip_vertically_on_load(1);
+    stbi_set_flip_vertically_on_load(0);
     
     var w: c_int = 0;
     var h: c_int = 0;

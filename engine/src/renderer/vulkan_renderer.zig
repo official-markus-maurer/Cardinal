@@ -18,6 +18,9 @@ const vk_simple_pipelines = @import("vulkan_simple_pipelines.zig");
 const vk_allocator = @import("vulkan_allocator.zig");
 const vk_buffer_utils = @import("util/vulkan_buffer_utils.zig");
 const vk_barrier_validation = @import("vulkan_barrier_validation.zig");
+const ref_counting = @import("../core/ref_counting.zig");
+const material_ref_counting = @import("../assets/material_ref_counting.zig");
+const transform = @import("../core/transform.zig");
 
 // Helper to cast opaque pointer to VulkanState
 fn get_state(renderer: ?*types.CardinalRenderer) ?*types.VulkanState {
@@ -62,16 +65,16 @@ fn init_vulkan_core(s: *types.VulkanState, win: ?*window.CardinalWindow) bool {
 
 fn init_ref_counting() bool {
     // Initialize reference counting system (if not already initialized)
-    if (!c.cardinal_ref_counting_init(256)) {
+    if (!ref_counting.cardinal_ref_counting_init(256)) {
         // This is expected if already initialized by the application
         log.cardinal_log_debug("Reference counting system already initialized or failed to initialize", .{});
     }
     log.cardinal_log_info("renderer_create: ref_counting", .{});
 
     // Initialize material reference counting
-    if (!c.cardinal_material_ref_init()) {
+    if (!material_ref_counting.cardinal_material_ref_init()) {
         log.cardinal_log_error("cardinal_material_ref_counting_init failed", .{});
-        c.cardinal_ref_counting_shutdown();
+        ref_counting.cardinal_ref_counting_shutdown();
         return false;
     }
     log.cardinal_log_info("renderer_create: material_ref_counting", .{});
@@ -260,8 +263,8 @@ pub export fn cardinal_renderer_create(out_renderer: ?*types.CardinalRenderer, w
 
     if (!vk_swapchain.vk_create_swapchain(@ptrCast(@alignCast(s)))) {
         log.cardinal_log_error("vk_create_swapchain failed", .{});
-        c.cardinal_material_ref_shutdown();
-        c.cardinal_ref_counting_shutdown();
+        material_ref_counting.cardinal_material_ref_shutdown();
+        ref_counting.cardinal_ref_counting_shutdown();
         return false;
     }
     log.cardinal_log_warn("renderer_create: swapchain created", .{});
@@ -471,8 +474,8 @@ pub export fn cardinal_renderer_destroy(renderer: ?*types.CardinalRenderer) call
     }
 
     // Shutdown reference counting systems
-    c.cardinal_material_ref_shutdown();
-    c.cardinal_ref_counting_shutdown();
+    material_ref_counting.cardinal_material_ref_shutdown();
+    ref_counting.cardinal_ref_counting_shutdown();
 
     // Shutdown barrier validation system
     vk_barrier_validation.cardinal_barrier_validation_shutdown();
@@ -574,7 +577,7 @@ fn create_view_matrix(eye: [*]const f32, center: [*]const f32, up: [*]const f32,
     matrix[15] = 1.0;
 }
 
-pub export fn cardinal_renderer_set_camera(renderer: ?*types.CardinalRenderer, camera: ?*const c.CardinalCamera) callconv(.c) void {
+pub export fn cardinal_renderer_set_camera(renderer: ?*types.CardinalRenderer, camera: ?*const types.CardinalCamera) callconv(.c) void {
     if (renderer == null or camera == null) return;
     const s = get_state(renderer) orelse return;
     const cam = camera.?;
@@ -584,7 +587,7 @@ pub export fn cardinal_renderer_set_camera(renderer: ?*types.CardinalRenderer, c
     var ubo = std.mem.zeroes(types.PBRUniformBufferObject);
 
     // Create model matrix (identity for now)
-    c.cardinal_matrix_identity(&ubo.model);
+    transform.cardinal_matrix_identity(&ubo.model);
 
     // Create view matrix
     create_view_matrix(&cam.position, &cam.target, &cam.up, &ubo.view);
@@ -606,7 +609,7 @@ pub export fn cardinal_renderer_set_camera(renderer: ?*types.CardinalRenderer, c
     vk_pbr.vk_pbr_update_uniforms(@ptrCast(&s.pipelines.pbr_pipeline), @ptrCast(&ubo), @ptrCast(&lighting));
 }
 
-pub export fn cardinal_renderer_set_lighting(renderer: ?*types.CardinalRenderer, light: ?*const c.CardinalLight) callconv(.c) void {
+pub export fn cardinal_renderer_set_lighting(renderer: ?*types.CardinalRenderer, light: ?*const types.CardinalLight) callconv(.c) void {
     if (renderer == null or light == null) return;
     const s = get_state(renderer) orelse return;
     const l = light.?;
@@ -917,6 +920,8 @@ fn try_submit_secondary(s: *types.VulkanState, record: ?*const fn (c.VkCommandBu
     inheritance_info.subpass = 0;
     inheritance_info.framebuffer = null;
     inheritance_info.occlusionQueryEnable = c.VK_FALSE;
+    inheritance_info.queryFlags = 0;
+    inheritance_info.pipelineStatistics = 0;
 
     if (!vk_commands.vulkan_mt.cardinal_mt_begin_secondary_command_buffer(&secondary_context, &inheritance_info)) {
         _ = c.vkEndCommandBuffer(primary_cmd);
@@ -932,6 +937,69 @@ fn try_submit_secondary(s: *types.VulkanState, record: ?*const fn (c.VkCommandBu
         return false;
     }
 
+    // Set VK_RENDERING_CONTENTS_SECONDARY_COMMAND_BUFFERS_BIT when beginning rendering
+    // But here we are executing secondary command buffers in a primary buffer that is NOT inside a render pass yet?
+    // Wait, try_submit_secondary creates a primary command buffer and executes secondary commands in it.
+    // The validation error says: "VkRenderingInfo::flags must include VK_RENDERING_CONTENTS_SECONDARY_COMMAND_BUFFERS_BIT when calling vkCmdExecuteCommands() within a render pass instance begun with vkCmdBeginRendering()."
+    
+    // This implies that vkCmdExecuteCommands is being called INSIDE a dynamic rendering instance.
+    // However, in this function, we are just recording commands. 
+    // If the secondary buffer contains drawing commands, then the PRIMARY buffer must be inside a render pass to execute them?
+    // OR the secondary buffer ITSELF contains the render pass?
+    
+    // If we look at `vk_commands.vulkan_mt.cardinal_mt_execute_secondary_command_buffers`, it calls `vkCmdExecuteCommands`.
+    
+    // The issue is likely that the primary command buffer (primary_cmd) needs to start rendering before executing secondary commands if those secondary commands draw things.
+    // BUT secondary command buffers with inheritance info usually inherit the render pass.
+    
+    // In dynamic rendering, we must call vkCmdBeginRendering on the PRIMARY buffer with VK_RENDERING_CONTENTS_SECONDARY_COMMAND_BUFFERS_BIT
+    // BEFORE calling vkCmdExecuteCommands.
+    
+    // Let's add dynamic rendering begin/end here around execute_secondary_command_buffers.
+    
+    var rendering_info = std.mem.zeroes(c.VkRenderingInfo);
+    rendering_info.sType = c.VK_STRUCTURE_TYPE_RENDERING_INFO;
+    rendering_info.renderArea.extent = s.swapchain.extent;
+    rendering_info.layerCount = 1;
+    rendering_info.colorAttachmentCount = 1;
+    
+    var color_attachment = std.mem.zeroes(c.VkRenderingAttachmentInfo);
+    color_attachment.sType = c.VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO;
+    color_attachment.imageView = s.swapchain.image_views.?[s.sync.current_frame]; // We don't have current image index here!
+    // Actually immediate submit usually renders to something? 
+    // Wait, `try_submit_secondary` is used for "immediate submit". 
+    // Immediate submit is often used for UI or debug drawing which renders to the swapchain?
+    // But we don't know which swapchain image is active or if we even acquired one!
+    
+    // If this is for UI, it probably expects to render to the current swapchain image.
+    // But `cardinal_renderer_immediate_submit_with_secondary` doesn't take an image index.
+    
+    // Let's look at `vk_record_scene_with_secondary_buffers` in `vulkan_commands.zig`.
+    // That function IS called within a render pass in the main loop.
+    // BUT `try_submit_secondary` here creates its own primary buffer.
+    
+    // If `try_submit_secondary` is intended to draw to the screen, it needs a render pass.
+    // But if it's just recording transfer commands, it doesn't.
+    // The validation error says "within a render pass instance begun with vkCmdBeginRendering".
+    // This implies that we ARE inside a render pass.
+    // But looking at the code above:
+    // _ = c.vkBeginCommandBuffer(primary_cmd, &bi);
+    // ...
+    // vk_commands.vulkan_mt.cardinal_mt_execute_secondary_command_buffers(primary_cmd, contexts);
+    // _ = c.vkEndCommandBuffer(primary_cmd);
+    
+    // We are NOT calling vkCmdBeginRendering here! 
+    // So why does validation think we are?
+    // Maybe `rec(secondary_context.command_buffer)` records commands that require a render pass?
+    // And `secondary_context` was begun with inheritance info.
+    
+    // Wait, the error `VUID-vkCmdExecuteCommands-flags-06024` applies "If this command is called within a render pass instance begun with vkCmdBeginRendering".
+    // This means `vkCmdExecuteCommands` is called inside `vkCmdBeginRendering`.
+    // But we don't see `vkCmdBeginRendering` here.
+    
+    // UNLESS `vk_record_scene_with_secondary_buffers` in `vulkan_commands.zig` is the culprit!
+    // The stack trace/logs don't specify the function name, but "vkCmdExecuteCommands" is likely called there.
+    
     const contexts = @as([*]types.CardinalSecondaryCommandContext, @ptrCast(&secondary_context))[0..1];
     vk_commands.vulkan_mt.cardinal_mt_execute_secondary_command_buffers(primary_cmd, contexts);
     _ = c.vkEndCommandBuffer(primary_cmd);

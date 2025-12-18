@@ -987,7 +987,7 @@ pub export fn vk_pbr_render(pipeline: ?*types.VulkanPBRPipeline, commandBuffer: 
 
         if (mesh.material_index < scn.material_count) {
             const mat = &scn.materials.?[mesh.material_index];
-            if (@intFromEnum(mat.alpha_mode) == c.CARDINAL_ALPHA_MODE_BLEND) {
+            if (mat.alpha_mode == .BLEND) {
                 is_blend = true;
             }
         }

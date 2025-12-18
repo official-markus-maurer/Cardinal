@@ -9,7 +9,7 @@ fn get_state(s: *types.VulkanState) *types.VulkanState {
     return s;
 }
 
-export fn vk_descriptor_buffer_create_manager(create_info: ?*const c.DescriptorBufferCreateInfo, manager: ?*c.DescriptorBufferManager, vulkan_state: ?*types.VulkanState) callconv(.c) bool {
+export fn vk_descriptor_buffer_create_manager(create_info: ?*const types.DescriptorBufferCreateInfo, manager: ?*types.DescriptorBufferManager, vulkan_state: ?*types.VulkanState) callconv(.c) bool {
     if (create_info == null or manager == null or vulkan_state == null) {
         log.cardinal_log_error("Invalid parameters for descriptor buffer manager creation", .{});
         return false;
@@ -24,7 +24,7 @@ export fn vk_descriptor_buffer_create_manager(create_info: ?*const c.DescriptorB
         return false;
     }
     
-    _ = c.memset(m, 0, @sizeOf(c.DescriptorBufferManager));
+    _ = c.memset(m, 0, @sizeOf(types.DescriptorBufferManager));
     m.device = ci.device;
     m.allocator = ci.allocator;
     m.layout = ci.layout;
@@ -84,7 +84,7 @@ export fn vk_descriptor_buffer_create_manager(create_info: ?*const c.DescriptorB
     
     var i: u32 = 0;
     while (i < max_bindings) : (i += 1) {
-        s.context.vkGetDescriptorSetLayoutBindingOffsetEXT.?(m.device, m.layout, i, &m.binding_offsets[i]);
+        s.context.vkGetDescriptorSetLayoutBindingOffsetEXT.?(m.device, m.layout, i, &m.binding_offsets.?[i]);
     }
     m.binding_count = max_bindings;
     
@@ -92,7 +92,7 @@ export fn vk_descriptor_buffer_create_manager(create_info: ?*const c.DescriptorB
     return true;
 }
 
-export fn vk_descriptor_buffer_destroy_manager(manager: ?*c.DescriptorBufferManager) callconv(.c) void {
+export fn vk_descriptor_buffer_destroy_manager(manager: ?*types.DescriptorBufferManager) callconv(.c) void {
     if (manager == null or manager.?.device == null) {
         return;
     }
@@ -106,10 +106,10 @@ export fn vk_descriptor_buffer_destroy_manager(manager: ?*c.DescriptorBufferMana
     }
     
     c.free(m.binding_offsets);
-    _ = c.memset(m, 0, @sizeOf(c.DescriptorBufferManager));
+    _ = c.memset(m, 0, @sizeOf(types.DescriptorBufferManager));
 }
 
-export fn vk_descriptor_buffer_get_address(manager: ?*const c.DescriptorBufferManager, set_index: u32, vulkan_state: ?*types.VulkanState) callconv(.c) c.VkDeviceAddress {
+export fn vk_descriptor_buffer_get_address(manager: ?*const types.DescriptorBufferManager, set_index: u32, vulkan_state: ?*types.VulkanState) callconv(.c) c.VkDeviceAddress {
     if (manager == null or vulkan_state == null) {
         return 0;
     }
@@ -127,7 +127,7 @@ export fn vk_descriptor_buffer_get_address(manager: ?*const c.DescriptorBufferMa
     return base_address + (aligned_layout_size * set_index);
 }
 
-export fn vk_descriptor_buffer_update_uniform_buffer(manager: ?*c.DescriptorBufferManager, set_index: u32, binding: u32, buffer: c.VkBuffer, offset: c.VkDeviceSize, range: c.VkDeviceSize, vulkan_state: ?*types.VulkanState) callconv(.c) bool {
+export fn vk_descriptor_buffer_update_uniform_buffer(manager: ?*types.DescriptorBufferManager, set_index: u32, binding: u32, buffer: c.VkBuffer, offset: c.VkDeviceSize, range: c.VkDeviceSize, vulkan_state: ?*types.VulkanState) callconv(.c) bool {
     if (manager == null or vulkan_state == null or binding >= manager.?.binding_count) {
         log.cardinal_log_error("Invalid parameters for uniform buffer update", .{});
         return false;
@@ -153,7 +153,7 @@ export fn vk_descriptor_buffer_update_uniform_buffer(manager: ?*c.DescriptorBuff
     
     const aligned_layout_size = (m.layout_size + m.buffer_alignment - 1) & ~(m.buffer_alignment - 1);
     const set_offset = aligned_layout_size * set_index;
-    const binding_offset = m.binding_offsets[binding];
+    const binding_offset = m.binding_offsets.?[binding];
     
     const dest_ptr = @as([*]u8, @ptrCast(m.buffer_alloc.mapped_data)) + set_offset + binding_offset;
     
@@ -163,7 +163,7 @@ export fn vk_descriptor_buffer_update_uniform_buffer(manager: ?*c.DescriptorBuff
     return true;
 }
 
-export fn vk_descriptor_buffer_update_image_sampler(manager: ?*c.DescriptorBufferManager, set_index: u32, binding: u32, array_element: u32, image_view: c.VkImageView, vk_sampler: c.VkSampler, image_layout: c.VkImageLayout, vulkan_state: ?*types.VulkanState) callconv(.c) bool {
+export fn vk_descriptor_buffer_update_image_sampler(manager: ?*types.DescriptorBufferManager, set_index: u32, binding: u32, array_element: u32, image_view: c.VkImageView, vk_sampler: c.VkSampler, image_layout: c.VkImageLayout, vulkan_state: ?*types.VulkanState) callconv(.c) bool {
     if (manager == null or vulkan_state == null or binding >= manager.?.binding_count) {
         log.cardinal_log_error("Invalid parameters for image sampler update", .{});
         return false;
@@ -183,7 +183,7 @@ export fn vk_descriptor_buffer_update_image_sampler(manager: ?*c.DescriptorBuffe
     
     const aligned_layout_size = (m.layout_size + m.buffer_alignment - 1) & ~(m.buffer_alignment - 1);
     const set_offset = aligned_layout_size * set_index;
-    const binding_offset = m.binding_offsets[binding];
+    const binding_offset = m.binding_offsets.?[binding];
     
     const element_offset = array_element * s.context.descriptor_buffer_combined_image_sampler_size;
     

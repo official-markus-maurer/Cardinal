@@ -78,6 +78,26 @@ fn allocate_command_buffers(s: *types.VulkanState) bool {
         }
     }
     log.cardinal_log_warn("[INIT] Allocated {d} secondary command buffers", .{s.sync.max_frames_in_flight});
+
+    // Scene secondary buffers (real secondary level)
+    const scene_sec_ptr = c.malloc(s.sync.max_frames_in_flight * @sizeOf(c.VkCommandBuffer));
+    if (scene_sec_ptr == null) return false;
+    s.commands.scene_secondary_buffers = @as([*]c.VkCommandBuffer, @ptrCast(@alignCast(scene_sec_ptr)));
+
+    i = 0;
+    while (i < s.sync.max_frames_in_flight) : (i += 1) {
+        var ai = std.mem.zeroes(c.VkCommandBufferAllocateInfo);
+        ai.sType = c.VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO;
+        ai.commandPool = s.commands.pools.?[i];
+        ai.level = c.VK_COMMAND_BUFFER_LEVEL_SECONDARY;
+        ai.commandBufferCount = 1;
+
+        if (c.vkAllocateCommandBuffers(s.context.device, &ai, &s.commands.scene_secondary_buffers.?[i]) != c.VK_SUCCESS) {
+            return false;
+        }
+    }
+    log.cardinal_log_warn("[INIT] Allocated {d} scene secondary command buffers", .{s.sync.max_frames_in_flight});
+
     return true;
 }
 
@@ -316,7 +336,7 @@ fn transition_images(s: *types.VulkanState, cmd: c.VkCommandBuffer, image_index:
     }
 }
 
-fn begin_dynamic_rendering(s: *types.VulkanState, cmd: c.VkCommandBuffer, image_index: u32, use_depth: bool, clears: [*]c.VkClearValue) bool {
+fn begin_dynamic_rendering(s: *types.VulkanState, cmd: c.VkCommandBuffer, image_index: u32, use_depth: bool, clears: [*]c.VkClearValue, should_clear: bool, flags: c.VkRenderingFlags) bool {
     if (s.context.vkCmdBeginRendering == null or s.context.vkCmdEndRendering == null or s.context.vkCmdPipelineBarrier2 == null) {
         log.cardinal_log_error("[CMD] Frame {d}: Dynamic rendering functions not loaded", .{s.sync.current_frame});
         return false;
@@ -326,7 +346,7 @@ fn begin_dynamic_rendering(s: *types.VulkanState, cmd: c.VkCommandBuffer, image_
     colorAttachment.sType = c.VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO;
     colorAttachment.imageView = s.swapchain.image_views.?[image_index];
     colorAttachment.imageLayout = c.VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
-    colorAttachment.loadOp = c.VK_ATTACHMENT_LOAD_OP_CLEAR;
+    colorAttachment.loadOp = if (should_clear) c.VK_ATTACHMENT_LOAD_OP_CLEAR else c.VK_ATTACHMENT_LOAD_OP_LOAD;
     colorAttachment.storeOp = c.VK_ATTACHMENT_STORE_OP_STORE;
     colorAttachment.clearValue = clears[0];
 
@@ -335,14 +355,14 @@ fn begin_dynamic_rendering(s: *types.VulkanState, cmd: c.VkCommandBuffer, image_
         depthAttachment.sType = c.VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO;
         depthAttachment.imageView = s.swapchain.depth_image_view;
         depthAttachment.imageLayout = c.VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
-        depthAttachment.loadOp = c.VK_ATTACHMENT_LOAD_OP_CLEAR;
+        depthAttachment.loadOp = if (should_clear) c.VK_ATTACHMENT_LOAD_OP_CLEAR else c.VK_ATTACHMENT_LOAD_OP_LOAD;
         depthAttachment.storeOp = c.VK_ATTACHMENT_STORE_OP_DONT_CARE;
         depthAttachment.clearValue = clears[1];
     }
 
     var renderingInfo = std.mem.zeroes(c.VkRenderingInfo);
     renderingInfo.sType = c.VK_STRUCTURE_TYPE_RENDERING_INFO;
-    renderingInfo.flags = 0;
+    renderingInfo.flags = flags;
     renderingInfo.renderArea.offset.x = 0;
     renderingInfo.renderArea.offset.y = 0;
     renderingInfo.renderArea.extent = s.swapchain.extent;
@@ -353,28 +373,41 @@ fn begin_dynamic_rendering(s: *types.VulkanState, cmd: c.VkCommandBuffer, image_
 
     s.context.vkCmdBeginRendering.?(cmd, &renderingInfo);
 
-    var vp = std.mem.zeroes(c.VkViewport);
-    vp.x = 0;
-    vp.y = 0;
-    vp.width = @floatFromInt(s.swapchain.extent.width);
-    vp.height = @floatFromInt(s.swapchain.extent.height);
-    vp.minDepth = 0.0;
-    vp.maxDepth = 1.0;
-    c.vkCmdSetViewport(cmd, 0, 1, &vp);
+    // Set viewport/scissor only if not using secondary buffers (as they usually set their own or inherit? 
+    // Actually, dynamic rendering with secondary buffers might expect viewport to be set in secondary buffers or inherited.
+    // But vkCmdSetViewport is not allowed in Secondary buffer if it inherits?
+    // Secondary buffers record their own commands. 
+    // If we use secondary buffers, we don't need to set viewport in primary buffer UNLESS we are using it for inheritance?
+    // But let's keep it simple: always set it if flags == 0 (Inline).
+    // If flags != 0, we are just executing secondary buffers, so no inline commands allowed.
+    if (flags == 0) {
+        var vp = std.mem.zeroes(c.VkViewport);
+        vp.x = 0;
+        vp.y = 0;
+        vp.width = @floatFromInt(s.swapchain.extent.width);
+        vp.height = @floatFromInt(s.swapchain.extent.height);
+        vp.minDepth = 0.0;
+        vp.maxDepth = 1.0;
+        c.vkCmdSetViewport(cmd, 0, 1, &vp);
 
-    var sc = std.mem.zeroes(c.VkRect2D);
-    sc.offset.x = 0;
-    sc.offset.y = 0;
-    sc.extent = s.swapchain.extent;
-    c.vkCmdSetScissor(cmd, 0, 1, &sc);
+        var sc = std.mem.zeroes(c.VkRect2D);
+        sc.offset.x = 0;
+        sc.offset.y = 0;
+        sc.extent = s.swapchain.extent;
+        c.vkCmdSetScissor(cmd, 0, 1, &sc);
+    }
 
     return true;
 }
 
-fn end_recording(s: *types.VulkanState, cmd: c.VkCommandBuffer, image_index: u32) void {
+fn end_dynamic_rendering(s: *types.VulkanState, cmd: c.VkCommandBuffer) void {
     if (s.context.vkCmdEndRendering != null) {
         s.context.vkCmdEndRendering.?(cmd);
     }
+}
+
+fn end_recording(s: *types.VulkanState, cmd: c.VkCommandBuffer, image_index: u32) void {
+    // Note: vkCmdEndRendering is now handled by end_dynamic_rendering or caller
 
     var barrier = std.mem.zeroes(c.VkImageMemoryBarrier2);
     barrier.sType = c.VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2;
@@ -456,19 +489,30 @@ fn vk_record_scene_direct(s: *types.VulkanState, cmd: c.VkCommandBuffer) void {
     vk_record_scene_commands(s, cmd);
 }
 
-fn vk_record_scene_with_secondary_buffers(s: *types.VulkanState, primary_cmd: c.VkCommandBuffer, image_index: u32) void {
-    _ = image_index;
-    const mt_manager = vk_get_mt_command_manager();
-    if (mt_manager == null or !mt_manager.?.thread_pools[0].is_active) {
-        log.cardinal_log_warn("[MT] Secondary command buffers requested but MT subsystem not available", .{});
-        vk_record_scene_direct(s, primary_cmd);
+fn vk_record_scene_with_secondary_buffers(s: *types.VulkanState, primary_cmd: c.VkCommandBuffer, image_index: u32, use_depth: bool, clears: [*]c.VkClearValue) void {
+    // Use dedicated secondary command buffer for the main thread
+    // This avoids using the MT subsystem's thread pools which are prone to exhaustion/race conditions if not managed per-frame.
+    
+    if (s.commands.scene_secondary_buffers == null) {
+        // Fallback if not allocated
+        if (begin_dynamic_rendering(s, primary_cmd, image_index, use_depth, clears, true, 0)) {
+            vk_record_scene_direct(s, primary_cmd);
+            end_dynamic_rendering(s, primary_cmd);
+        }
         return;
     }
 
-    var secondary_context: types.CardinalSecondaryCommandContext = undefined;
-    if (!vulkan_mt.cardinal_mt_allocate_secondary_command_buffer(&mt_manager.?.thread_pools[0], &secondary_context)) {
-        log.cardinal_log_warn("[MT] Failed to allocate secondary command buffer, falling back to direct rendering", .{});
-        vk_record_scene_direct(s, primary_cmd);
+    var secondary_cmd = s.commands.scene_secondary_buffers.?[s.sync.current_frame];
+
+    // Reset the secondary command buffer
+    // Since it's allocated from a pool with VK_COMMAND_POOL_CREATE_RESET_COMMAND_BUFFER_BIT, this is allowed.
+    if (c.vkResetCommandBuffer(secondary_cmd, 0) != c.VK_SUCCESS) {
+        log.cardinal_log_error("[CMD] Failed to reset scene secondary command buffer", .{});
+        // Fallback
+        if (begin_dynamic_rendering(s, primary_cmd, image_index, use_depth, clears, true, 0)) {
+            vk_record_scene_direct(s, primary_cmd);
+            end_dynamic_rendering(s, primary_cmd);
+        }
         return;
     }
 
@@ -490,13 +534,15 @@ fn vk_record_scene_with_secondary_buffers(s: *types.VulkanState, primary_cmd: c.
     inheritance_info.queryFlags = 0;
     inheritance_info.pipelineStatistics = 0;
 
-    if (!vulkan_mt.cardinal_mt_begin_secondary_command_buffer(&secondary_context, &inheritance_info)) {
-        log.cardinal_log_error("[MT] Failed to begin secondary command buffer", .{});
-        vk_record_scene_direct(s, primary_cmd);
+    var begin_info = std.mem.zeroes(c.VkCommandBufferBeginInfo);
+    begin_info.sType = c.VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
+    begin_info.flags = c.VK_COMMAND_BUFFER_USAGE_RENDER_PASS_CONTINUE_BIT | c.VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
+    begin_info.pInheritanceInfo = &inheritance_info;
+
+    if (c.vkBeginCommandBuffer(secondary_cmd, &begin_info) != c.VK_SUCCESS) {
+        log.cardinal_log_error("[CMD] Failed to begin scene secondary command buffer", .{});
         return;
     }
-
-    const secondary_cmd = secondary_context.command_buffer;
 
     var vp = std.mem.zeroes(c.VkViewport);
     vp.x = 0;
@@ -515,16 +561,21 @@ fn vk_record_scene_with_secondary_buffers(s: *types.VulkanState, primary_cmd: c.
 
     vk_record_scene_commands(s, secondary_cmd);
 
-    if (!vulkan_mt.cardinal_mt_end_secondary_command_buffer(&secondary_context)) {
-        log.cardinal_log_error("[MT] Failed to end secondary command buffer", .{});
-        vk_record_scene_direct(s, primary_cmd);
+    if (c.vkEndCommandBuffer(secondary_cmd) != c.VK_SUCCESS) {
+        log.cardinal_log_error("[CMD] Failed to end scene secondary command buffer", .{});
         return;
     }
 
     // Pass slice of 1 context
-    const contexts = @as([*]types.CardinalSecondaryCommandContext, @ptrCast(&secondary_context))[0..1];
-    vulkan_mt.cardinal_mt_execute_secondary_command_buffers(primary_cmd, contexts);
-    log.cardinal_log_debug("[MT] Scene rendered using secondary command buffer", .{});
+    const cmd_buffers = @as([*]c.VkCommandBuffer, @ptrCast(&secondary_cmd))[0..1];
+    
+    // Execute with Secondary Bit
+    if (begin_dynamic_rendering(s, primary_cmd, image_index, use_depth, clears, true, c.VK_RENDERING_CONTENTS_SECONDARY_COMMAND_BUFFERS_BIT)) {
+        c.vkCmdExecuteCommands(primary_cmd, 1, cmd_buffers.ptr);
+        end_dynamic_rendering(s, primary_cmd);
+    }
+    
+    log.cardinal_log_debug("[CMD] Scene rendered using dedicated secondary command buffer", .{});
 }
 
 // Exported functions
@@ -654,6 +705,11 @@ pub export fn vk_destroy_commands_sync(s: ?*c.VulkanState) callconv(.c) void {
         vs.commands.secondary_buffers = null;
     }
 
+    if (vs.commands.scene_secondary_buffers != null) {
+        c.free(@as(?*anyopaque, @ptrCast(vs.commands.scene_secondary_buffers)));
+        vs.commands.scene_secondary_buffers = null;
+    }
+
     if (vs.commands.pools != null) {
         var i: u32 = 0;
         while (i < vs.sync.max_frames_in_flight) : (i += 1) {
@@ -691,22 +747,33 @@ pub export fn vk_record_cmd(s: ?*c.VulkanState, image_index: u32) callconv(.c) v
 
     transition_images(vs, cmd, image_index, use_depth);
 
-    if (!begin_dynamic_rendering(vs, cmd, image_index, use_depth, &clears)) {
-        _ = c.vkEndCommandBuffer(cmd);
-        return;
-    }
+    var scene_drawn = false;
 
     if (vs.current_scene != null) {
-        const mt_manager = vk_get_mt_command_manager();
-        if (mt_manager != null and mt_manager.?.thread_pools[0].is_active) {
-            vk_record_scene_with_secondary_buffers(vs, cmd, image_index);
+        if (vs.commands.scene_secondary_buffers != null) {
+            vk_record_scene_with_secondary_buffers(vs, cmd, image_index, use_depth, &clears);
+            scene_drawn = true;
         } else {
-            vk_record_scene_direct(vs, cmd);
+            if (begin_dynamic_rendering(vs, cmd, image_index, use_depth, &clears, true, 0)) {
+                vk_record_scene_direct(vs, cmd);
+                end_dynamic_rendering(vs, cmd);
+                scene_drawn = true;
+            }
+        }
+    } else {
+        // Clear screen if no scene
+        if (begin_dynamic_rendering(vs, cmd, image_index, use_depth, &clears, true, 0)) {
+            end_dynamic_rendering(vs, cmd);
+            scene_drawn = true;
         }
     }
 
     if (vs.ui_record_callback != null) {
-        vs.ui_record_callback.?(cmd);
+        // Load contents from previous pass (whether scene was drawn or just cleared)
+        if (begin_dynamic_rendering(vs, cmd, image_index, use_depth, &clears, false, 0)) {
+            vs.ui_record_callback.?(cmd);
+            end_dynamic_rendering(vs, cmd);
+        }
     }
 
     end_recording(vs, cmd, image_index);

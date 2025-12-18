@@ -1,6 +1,7 @@
 const std = @import("std");
 const builtin = @import("builtin");
 const log = @import("../core/log.zig");
+const window = @import("../core/window.zig");
 const types = @import("vulkan_types.zig");
 const vk_allocator = @import("vulkan_allocator.zig");
 
@@ -105,12 +106,12 @@ fn debug_callback(
 }
 
 fn select_debug_severity_from_log_level() c.VkDebugUtilsMessageSeverityFlagsEXT {
-    const lvl = c.cardinal_log_get_level();
+    const lvl = log.cardinal_log_get_level();
     var sev: c.VkDebugUtilsMessageSeverityFlagsEXT = c.VK_DEBUG_UTILS_MESSAGE_SEVERITY_WARNING_BIT_EXT | c.VK_DEBUG_UTILS_MESSAGE_SEVERITY_ERROR_BIT_EXT;
-    if (lvl <= c.CARDINAL_LOG_LEVEL_INFO) {
+    if (@intFromEnum(lvl) <= @intFromEnum(log.CardinalLogLevel.INFO)) {
         sev |= c.VK_DEBUG_UTILS_MESSAGE_SEVERITY_INFO_BIT_EXT;
     }
-    if (lvl <= c.CARDINAL_LOG_LEVEL_DEBUG) {
+    if (@intFromEnum(lvl) <= @intFromEnum(log.CardinalLogLevel.DEBUG)) {
         sev |= c.VK_DEBUG_UTILS_MESSAGE_SEVERITY_VERBOSE_BIT_EXT;
     }
     return sev;
@@ -802,15 +803,15 @@ pub export fn vk_create_device(s: ?*types.VulkanState) callconv(.c) bool {
     return true;
 }
 
-pub export fn vk_create_surface(s: ?*types.VulkanState, window: ?*c.CardinalWindow) callconv(.c) bool {
+pub export fn vk_create_surface(s: ?*types.VulkanState, win: ?*window.CardinalWindow) callconv(.c) bool {
     log.cardinal_log_info("[SURFACE] Creating surface from window", .{});
-    if (s == null or window == null) return false;
+    if (s == null or win == null) return false;
     const vs = s.?;
 
     var sci = std.mem.zeroes(c.VkWin32SurfaceCreateInfoKHR);
     sci.sType = c.VK_STRUCTURE_TYPE_WIN32_SURFACE_CREATE_INFO_KHR;
     sci.hinstance = c.GetModuleHandleA(null);
-    const native_handle = c.cardinal_window_get_native_handle(window);
+    const native_handle = window.cardinal_window_get_native_handle(win);
     if (native_handle == null) return false;
     
     // Hack: HWND might be an odd value (not aligned), but Zig's pointer types expect alignment.
