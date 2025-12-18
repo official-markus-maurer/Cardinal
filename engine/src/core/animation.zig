@@ -208,7 +208,7 @@ fn cubic_spline_interpolate(values: [*]const f32, prev_index: u32, next_index: u
     lerp_vector(prev_value, next_value, factor, component_count, result);
 }
 
-export fn cardinal_animation_interpolate(interpolation: CardinalAnimationInterpolation, time: f32, input: ?[*]const f32, output: ?[*]const f32, input_count: u32, component_count: u32, result: ?[*]f32) callconv(.c) bool {
+pub export fn cardinal_animation_interpolate(interpolation: CardinalAnimationInterpolation, time: f32, input: ?[*]const f32, output: ?[*]const f32, input_count: u32, component_count: u32, result: ?[*]f32) callconv(.c) bool {
     if (input == null or output == null or result == null or input_count == 0 or component_count == 0) {
         return false;
     }
@@ -418,7 +418,7 @@ pub export fn cardinal_animation_system_add_animation(system: ?*CardinalAnimatio
     return index;
 }
 
-export fn cardinal_animation_system_add_skin(system: ?*CardinalAnimationSystem, skin: ?*const CardinalSkin) callconv(.c) u32 {
+pub export fn cardinal_animation_system_add_skin(system: ?*CardinalAnimationSystem, skin: ?*const CardinalSkin) callconv(.c) u32 {
     if (system == null or skin == null) return std.math.maxInt(u32);
 
     const index = system.?.skin_count;
@@ -478,7 +478,7 @@ export fn cardinal_animation_system_add_skin(system: ?*CardinalAnimationSystem, 
     return index;
 }
 
-export fn cardinal_animation_play(system: ?*CardinalAnimationSystem, animation_index: u32, loop: bool, blend_weight: f32) callconv(.c) bool {
+pub export fn cardinal_animation_play(system: ?*CardinalAnimationSystem, animation_index: u32, loop: bool, blend_weight: f32) callconv(.c) bool {
     if (system == null or animation_index >= system.?.animation_count) return false;
 
     var state: ?*CardinalAnimationState = null;
@@ -511,7 +511,7 @@ export fn cardinal_animation_play(system: ?*CardinalAnimationSystem, animation_i
     return true;
 }
 
-export fn cardinal_animation_pause(system: ?*CardinalAnimationSystem, animation_index: u32) callconv(.c) bool {
+pub export fn cardinal_animation_pause(system: ?*CardinalAnimationSystem, animation_index: u32) callconv(.c) bool {
     if (system == null) return false;
 
     var i: u32 = 0;
@@ -526,7 +526,7 @@ export fn cardinal_animation_pause(system: ?*CardinalAnimationSystem, animation_
     return false;
 }
 
-export fn cardinal_animation_stop(system: ?*CardinalAnimationSystem, animation_index: u32) callconv(.c) bool {
+pub export fn cardinal_animation_stop(system: ?*CardinalAnimationSystem, animation_index: u32) callconv(.c) bool {
     if (system == null) return false;
 
     var i: u32 = 0;
@@ -542,7 +542,7 @@ export fn cardinal_animation_stop(system: ?*CardinalAnimationSystem, animation_i
     return false;
 }
 
-export fn cardinal_animation_set_speed(system: ?*CardinalAnimationSystem, animation_index: u32, speed: f32) callconv(.c) bool {
+pub export fn cardinal_animation_set_speed(system: ?*CardinalAnimationSystem, animation_index: u32, speed: f32) callconv(.c) bool {
     if (system == null) return false;
 
     var i: u32 = 0;
@@ -557,7 +557,7 @@ export fn cardinal_animation_set_speed(system: ?*CardinalAnimationSystem, animat
     return false;
 }
 
-export fn cardinal_animation_system_update(system: ?*CardinalAnimationSystem, all_nodes: ?[*] ?*scene.CardinalSceneNode, all_node_count: u32, delta_time: f32) callconv(.c) void {
+pub export fn cardinal_animation_system_update(system: ?*CardinalAnimationSystem, all_nodes: ?[*] ?*scene.CardinalSceneNode, all_node_count: u32, delta_time: f32) callconv(.c) void {
     if (system == null) return;
 
     var i: u32 = 0;
@@ -615,7 +615,7 @@ export fn cardinal_animation_system_update(system: ?*CardinalAnimationSystem, al
     }
 }
 
-export fn cardinal_skin_update_bone_matrices(skin: ?*const CardinalSkin, scene_nodes: ?[*] ?*const scene.CardinalSceneNode, bone_matrices: ?[*]f32) callconv(.c) bool {
+pub export fn cardinal_skin_update_bone_matrices(skin: ?*const CardinalSkin, scene_nodes: ?[*] ?*const scene.CardinalSceneNode, bone_matrices: ?[*]f32) callconv(.c) bool {
     if (skin == null or scene_nodes == null or bone_matrices == null) return false;
 
     var i: u32 = 0;

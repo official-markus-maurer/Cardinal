@@ -6,7 +6,6 @@ const c = @cImport({
     @cDefine("CARDINAL_ZIG_BUILD", "1");
     @cInclude("stdlib.h");
     @cInclude("vulkan/vulkan.h");
-    @cInclude("cardinal/renderer/util/vulkan_descriptor_utils.h");
 });
 
 pub export fn vk_descriptor_create_pbr_layout(device: c.VkDevice, descriptorSetLayout: ?*c.VkDescriptorSetLayout) callconv(.c) bool {

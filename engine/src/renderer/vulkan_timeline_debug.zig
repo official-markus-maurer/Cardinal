@@ -1,41 +1,9 @@
 const std = @import("std");
 const builtin = @import("builtin");
 const log = @import("../core/log.zig");
+const types = @import("vulkan_timeline_types.zig");
 
-const c = @cImport({
-    @cInclude("stdlib.h");
-    @cInclude("string.h");
-    @cInclude("stdint.h");
-    @cInclude("stdio.h");
-    
-    // Skip stdatomic.h and define types manually to avoid C import errors
-    @cDefine("__STDATOMIC_H", "1");
-    @cDefine("_STDATOMIC_H", "1");
-    @cDefine("__CLANG_STDATOMIC_H", "1");
-    @cDefine("__zig_translate_c__", "1");
-    @cDefine("CARDINAL_ZIG_BUILD", "1");
-    
-    @cDefine("memory_order", "int");
-    @cDefine("memory_order_relaxed", "0");
-    @cDefine("memory_order_consume", "1");
-    @cDefine("memory_order_acquire", "2");
-    @cDefine("memory_order_release", "3");
-    @cDefine("memory_order_acq_rel", "4");
-    @cDefine("memory_order_seq_cst", "5");
-    
-    @cInclude("vulkan/vulkan.h");
-    @cInclude("cardinal/renderer/vulkan_timeline_debug.h");
-    
-    if (builtin.os.tag == .windows) {
-        @cInclude("windows.h");
-        @cInclude("processthreadsapi.h");
-    } else {
-        @cInclude("pthread.h");
-        @cInclude("time.h");
-        @cInclude("unistd.h");
-        @cInclude("sys/syscall.h");
-    }
-});
+const c = types.c;
 
 // Platform-specific mutex helpers
 fn debug_mutex_init(mutex: *?*anyopaque) bool {
@@ -110,28 +78,29 @@ pub export fn vulkan_timeline_debug_get_thread_id() callconv(.c) u32 {
     } else {
         // SYS_gettid might not be available directly in all libc bindings
         // Using pthread_self might be safer but returns pointer/opaque
-        // C code used syscall(SYS_gettid), let's try to mimic
+        // C code used syscall(c.SYS_gettid), let's try to mimic
+        // Note: SYS_gettid might be missing in some libc imports or named differently
+        // If it fails compilation, we might need another way or just use 0
         return @intCast(c.syscall(c.SYS_gettid));
     }
 }
 
-pub export fn vulkan_timeline_debug_event_type_to_string(type_enum: c.VulkanTimelineEventType) callconv(.c) [*c]const u8 {
+pub export fn vulkan_timeline_debug_event_type_to_string(type_enum: types.VulkanTimelineEventType) callconv(.c) [*c]const u8 {
     return switch (type_enum) {
-        c.VULKAN_TIMELINE_EVENT_WAIT_START => "WAIT_START",
-        c.VULKAN_TIMELINE_EVENT_WAIT_END => "WAIT_END",
-        c.VULKAN_TIMELINE_EVENT_SIGNAL_START => "SIGNAL_START",
-        c.VULKAN_TIMELINE_EVENT_SIGNAL_END => "SIGNAL_END",
-        c.VULKAN_TIMELINE_EVENT_VALUE_QUERY => "VALUE_QUERY",
-        c.VULKAN_TIMELINE_EVENT_ERROR => "ERROR",
-        c.VULKAN_TIMELINE_EVENT_RECOVERY => "RECOVERY",
-        c.VULKAN_TIMELINE_EVENT_POOL_ALLOC => "POOL_ALLOC",
-        c.VULKAN_TIMELINE_EVENT_POOL_DEALLOC => "POOL_DEALLOC",
-        else => "UNKNOWN",
+        types.VULKAN_TIMELINE_EVENT_WAIT_START => "WAIT_START",
+        types.VULKAN_TIMELINE_EVENT_WAIT_END => "WAIT_END",
+        types.VULKAN_TIMELINE_EVENT_SIGNAL_START => "SIGNAL_START",
+        types.VULKAN_TIMELINE_EVENT_SIGNAL_END => "SIGNAL_END",
+        types.VULKAN_TIMELINE_EVENT_VALUE_QUERY => "VALUE_QUERY",
+        types.VULKAN_TIMELINE_EVENT_ERROR => "ERROR",
+        types.VULKAN_TIMELINE_EVENT_RECOVERY => "RECOVERY",
+        types.VULKAN_TIMELINE_EVENT_POOL_ALLOC => "POOL_ALLOC",
+        types.VULKAN_TIMELINE_EVENT_POOL_DEALLOC => "POOL_DEALLOC",
     };
 }
 
-pub export fn vulkan_timeline_debug_init(debug_ctx: *c.VulkanTimelineDebugContext) callconv(.c) bool {
-    @memset(@as([*]u8, @ptrCast(debug_ctx))[0..@sizeOf(c.VulkanTimelineDebugContext)], 0);
+pub export fn vulkan_timeline_debug_init(debug_ctx: *types.VulkanTimelineDebugContext) callconv(.c) bool {
+    @memset(@as([*]u8, @ptrCast(debug_ctx))[0..@sizeOf(types.VulkanTimelineDebugContext)], 0);
 
     if (!debug_mutex_init(&debug_ctx.mutex)) {
         log.cardinal_log_error("[TIMELINE_DEBUG] Failed to allocate mutex", .{});
@@ -162,16 +131,16 @@ pub export fn vulkan_timeline_debug_init(debug_ctx: *c.VulkanTimelineDebugContex
     return true;
 }
 
-pub export fn vulkan_timeline_debug_destroy(debug_ctx: *c.VulkanTimelineDebugContext) callconv(.c) void {
+pub export fn vulkan_timeline_debug_destroy(debug_ctx: *types.VulkanTimelineDebugContext) callconv(.c) void {
     if (debug_ctx.mutex == null) return;
 
     debug_mutex_destroy(&debug_ctx.mutex);
-    @memset(@as([*]u8, @ptrCast(debug_ctx))[0..@sizeOf(c.VulkanTimelineDebugContext)], 0);
+    @memset(@as([*]u8, @ptrCast(debug_ctx))[0..@sizeOf(types.VulkanTimelineDebugContext)], 0);
 
     log.cardinal_log_info("[TIMELINE_DEBUG] Debug context destroyed", .{});
 }
 
-pub export fn vulkan_timeline_debug_reset(debug_ctx: *c.VulkanTimelineDebugContext) callconv(.c) void {
+pub export fn vulkan_timeline_debug_reset(debug_ctx: *types.VulkanTimelineDebugContext) callconv(.c) void {
     if (!debug_ctx.enabled) return;
 
     debug_mutex_lock(debug_ctx.mutex);
@@ -197,31 +166,31 @@ pub export fn vulkan_timeline_debug_reset(debug_ctx: *c.VulkanTimelineDebugConte
     log.cardinal_log_info("[TIMELINE_DEBUG] Debug context reset", .{});
 }
 
-pub export fn vulkan_timeline_debug_set_enabled(debug_ctx: *c.VulkanTimelineDebugContext, enabled: bool) callconv(.c) void {
+pub export fn vulkan_timeline_debug_set_enabled(debug_ctx: *types.VulkanTimelineDebugContext, enabled: bool) callconv(.c) void {
     debug_ctx.enabled = enabled;
     log.cardinal_log_info("[TIMELINE_DEBUG] Debug {s}", .{if (enabled) "enabled" else "disabled"});
 }
 
-pub export fn vulkan_timeline_debug_set_event_collection(debug_ctx: *c.VulkanTimelineDebugContext, enabled: bool) callconv(.c) void {
+pub export fn vulkan_timeline_debug_set_event_collection(debug_ctx: *types.VulkanTimelineDebugContext, enabled: bool) callconv(.c) void {
     debug_ctx.collect_events = enabled;
 }
 
-pub export fn vulkan_timeline_debug_set_performance_collection(debug_ctx: *c.VulkanTimelineDebugContext, enabled: bool) callconv(.c) void {
+pub export fn vulkan_timeline_debug_set_performance_collection(debug_ctx: *types.VulkanTimelineDebugContext, enabled: bool) callconv(.c) void {
     debug_ctx.collect_performance = enabled;
 }
 
-pub export fn vulkan_timeline_debug_set_verbose_logging(debug_ctx: *c.VulkanTimelineDebugContext, enabled: bool) callconv(.c) void {
+pub export fn vulkan_timeline_debug_set_verbose_logging(debug_ctx: *types.VulkanTimelineDebugContext, enabled: bool) callconv(.c) void {
     debug_ctx.verbose_logging = enabled;
 }
 
-pub export fn vulkan_timeline_debug_set_snapshot_interval(debug_ctx: *c.VulkanTimelineDebugContext, interval_ns: u64) callconv(.c) void {
+pub export fn vulkan_timeline_debug_set_snapshot_interval(debug_ctx: *types.VulkanTimelineDebugContext, interval_ns: u64) callconv(.c) void {
     debug_ctx.snapshot_interval_ns = interval_ns;
 }
 
-pub export fn vulkan_timeline_debug_log_event(debug_ctx: *c.VulkanTimelineDebugContext, type_enum: c.VulkanTimelineEventType, timeline_value: u64, result: c.VkResult, name: [*c]const u8, details: [*c]const u8) callconv(.c) void {
+pub export fn vulkan_timeline_debug_log_event(debug_ctx: *types.VulkanTimelineDebugContext, type_enum: types.VulkanTimelineEventType, timeline_value: u64, result: c.VkResult, name: [*c]const u8, details: [*c]const u8) callconv(.c) void {
     if (!debug_ctx.enabled or !debug_ctx.collect_events) return;
 
-    const index = @atomicRmw(u32, &debug_ctx.event_write_index, .Add, 1, .seq_cst) % c.VULKAN_TIMELINE_DEBUG_MAX_EVENTS;
+    const index = @atomicRmw(u32, &debug_ctx.event_write_index, .Add, 1, .seq_cst) % types.VULKAN_TIMELINE_DEBUG_MAX_EVENTS;
     const event = &debug_ctx.events[index];
 
     event.type = type_enum;
@@ -232,8 +201,8 @@ pub export fn vulkan_timeline_debug_log_event(debug_ctx: *c.VulkanTimelineDebugC
     event.thread_id = vulkan_timeline_debug_get_thread_id();
 
     if (name != null) {
-        _ = c.strncpy(&event.name, name, c.VULKAN_TIMELINE_DEBUG_MAX_NAME_LENGTH - 1);
-        event.name[c.VULKAN_TIMELINE_DEBUG_MAX_NAME_LENGTH - 1] = 0;
+        _ = c.strncpy(&event.name, name, types.VULKAN_TIMELINE_DEBUG_MAX_NAME_LENGTH - 1);
+        event.name[types.VULKAN_TIMELINE_DEBUG_MAX_NAME_LENGTH - 1] = 0;
     } else {
         event.name[0] = 0;
     }
@@ -255,13 +224,13 @@ pub export fn vulkan_timeline_debug_log_event(debug_ctx: *c.VulkanTimelineDebugC
     }
 }
 
-pub export fn vulkan_timeline_debug_log_wait_start(debug_ctx: *c.VulkanTimelineDebugContext, value: u64, timeout_ns: u64, name: [*c]const u8) callconv(.c) void {
+pub export fn vulkan_timeline_debug_log_wait_start(debug_ctx: *types.VulkanTimelineDebugContext, value: u64, timeout_ns: u64, name: [*c]const u8) callconv(.c) void {
     var details: [128]u8 = undefined;
     _ = std.fmt.bufPrintZ(&details, "timeout={d} ns", .{timeout_ns}) catch {};
-    vulkan_timeline_debug_log_event(debug_ctx, c.VULKAN_TIMELINE_EVENT_WAIT_START, value, c.VK_SUCCESS, name, @ptrCast(&details));
+    vulkan_timeline_debug_log_event(debug_ctx, types.VULKAN_TIMELINE_EVENT_WAIT_START, value, c.VK_SUCCESS, name, @ptrCast(&details));
 }
 
-pub export fn vulkan_timeline_debug_log_wait_end(debug_ctx: *c.VulkanTimelineDebugContext, value: u64, result: c.VkResult, duration_ns: u64, name: [*c]const u8) callconv(.c) void {
+pub export fn vulkan_timeline_debug_log_wait_end(debug_ctx: *types.VulkanTimelineDebugContext, value: u64, result: c.VkResult, duration_ns: u64, name: [*c]const u8) callconv(.c) void {
     var details: [128]u8 = undefined;
     _ = std.fmt.bufPrintZ(&details, "duration={d} ns", .{duration_ns}) catch {};
 
@@ -269,33 +238,33 @@ pub export fn vulkan_timeline_debug_log_wait_end(debug_ctx: *c.VulkanTimelineDeb
     const event_count = @atomicLoad(u32, &debug_ctx.event_count, .seq_cst);
     
     var i: u32 = 0;
-    while (i < c.VULKAN_TIMELINE_DEBUG_MAX_EVENTS and i < event_count) : (i += 1) {
+    while (i < types.VULKAN_TIMELINE_DEBUG_MAX_EVENTS and i < event_count) : (i += 1) {
         // Handle wrapping manually since % operator behavior on negative numbers in C vs Zig might differ or just be safe
         // (current_index - 1 - i) can underflow u32, but wrapping arithmetic is fine for modulo if power of 2, 
         // but MAX_EVENTS is 1000.
         // Let's do it safely:
-        const check_index = (current_index + c.VULKAN_TIMELINE_DEBUG_MAX_EVENTS - 1 - i) % c.VULKAN_TIMELINE_DEBUG_MAX_EVENTS;
+        const check_index = (current_index + types.VULKAN_TIMELINE_DEBUG_MAX_EVENTS - 1 - i) % types.VULKAN_TIMELINE_DEBUG_MAX_EVENTS;
         const event = &debug_ctx.events[check_index];
 
-        if (event.type == c.VULKAN_TIMELINE_EVENT_WAIT_START and event.timeline_value == value and
+        if (event.type == types.VULKAN_TIMELINE_EVENT_WAIT_START and event.timeline_value == value and
             event.thread_id == vulkan_timeline_debug_get_thread_id() and event.duration_ns == 0) {
             event.duration_ns = duration_ns;
             break;
         }
     }
 
-    vulkan_timeline_debug_log_event(debug_ctx, c.VULKAN_TIMELINE_EVENT_WAIT_END, value, result, name, @ptrCast(&details));
+    vulkan_timeline_debug_log_event(debug_ctx, types.VULKAN_TIMELINE_EVENT_WAIT_END, value, result, name, @ptrCast(&details));
 
     if (debug_ctx.collect_performance) {
         vulkan_timeline_debug_update_wait_metrics(debug_ctx, duration_ns, result == c.VK_TIMEOUT);
     }
 }
 
-pub export fn vulkan_timeline_debug_log_signal_start(debug_ctx: *c.VulkanTimelineDebugContext, value: u64, name: [*c]const u8) callconv(.c) void {
-    vulkan_timeline_debug_log_event(debug_ctx, c.VULKAN_TIMELINE_EVENT_SIGNAL_START, value, c.VK_SUCCESS, name, null);
+pub export fn vulkan_timeline_debug_log_signal_start(debug_ctx: *types.VulkanTimelineDebugContext, value: u64, name: [*c]const u8) callconv(.c) void {
+    vulkan_timeline_debug_log_event(debug_ctx, types.VULKAN_TIMELINE_EVENT_SIGNAL_START, value, c.VK_SUCCESS, name, null);
 }
 
-pub export fn vulkan_timeline_debug_log_signal_end(debug_ctx: *c.VulkanTimelineDebugContext, value: u64, result: c.VkResult, duration_ns: u64, name: [*c]const u8) callconv(.c) void {
+pub export fn vulkan_timeline_debug_log_signal_end(debug_ctx: *types.VulkanTimelineDebugContext, value: u64, result: c.VkResult, duration_ns: u64, name: [*c]const u8) callconv(.c) void {
     var details: [128]u8 = undefined;
     _ = std.fmt.bufPrintZ(&details, "duration={d} ns", .{duration_ns}) catch {};
 
@@ -303,25 +272,25 @@ pub export fn vulkan_timeline_debug_log_signal_end(debug_ctx: *c.VulkanTimelineD
     const event_count = @atomicLoad(u32, &debug_ctx.event_count, .seq_cst);
 
     var i: u32 = 0;
-    while (i < c.VULKAN_TIMELINE_DEBUG_MAX_EVENTS and i < event_count) : (i += 1) {
-        const check_index = (current_index + c.VULKAN_TIMELINE_DEBUG_MAX_EVENTS - 1 - i) % c.VULKAN_TIMELINE_DEBUG_MAX_EVENTS;
+    while (i < types.VULKAN_TIMELINE_DEBUG_MAX_EVENTS and i < event_count) : (i += 1) {
+        const check_index = (current_index + types.VULKAN_TIMELINE_DEBUG_MAX_EVENTS - 1 - i) % types.VULKAN_TIMELINE_DEBUG_MAX_EVENTS;
         const event = &debug_ctx.events[check_index];
 
-        if (event.type == c.VULKAN_TIMELINE_EVENT_SIGNAL_START and event.timeline_value == value and
+        if (event.type == types.VULKAN_TIMELINE_EVENT_SIGNAL_START and event.timeline_value == value and
             event.thread_id == vulkan_timeline_debug_get_thread_id() and event.duration_ns == 0) {
             event.duration_ns = duration_ns;
             break;
         }
     }
 
-    vulkan_timeline_debug_log_event(debug_ctx, c.VULKAN_TIMELINE_EVENT_SIGNAL_END, value, result, name, @ptrCast(&details));
+    vulkan_timeline_debug_log_event(debug_ctx, types.VULKAN_TIMELINE_EVENT_SIGNAL_END, value, result, name, @ptrCast(&details));
 
     if (debug_ctx.collect_performance) {
         vulkan_timeline_debug_update_signal_metrics(debug_ctx, duration_ns);
     }
 }
 
-pub export fn vulkan_timeline_debug_update_wait_metrics(debug_ctx: *c.VulkanTimelineDebugContext, duration_ns: u64, timed_out: bool) callconv(.c) void {
+pub export fn vulkan_timeline_debug_update_wait_metrics(debug_ctx: *types.VulkanTimelineDebugContext, duration_ns: u64, timed_out: bool) callconv(.c) void {
     if (!debug_ctx.enabled or !debug_ctx.collect_performance) return;
 
     _ = @atomicRmw(u64, &debug_ctx.metrics.total_waits, .Add, 1, .seq_cst);
@@ -334,13 +303,6 @@ pub export fn vulkan_timeline_debug_update_wait_metrics(debug_ctx: *c.VulkanTime
     var current_max = @atomicLoad(u64, &debug_ctx.metrics.max_wait_time_ns, .seq_cst);
     while (duration_ns > current_max) {
         if (@atomicRmw(u64, &debug_ctx.metrics.max_wait_time_ns, .Xchg, duration_ns, .seq_cst) == current_max) {
-             // Actually Xchg isn't CAS, but close enough if we just want to update max? 
-             // Zig's cmpxchg is better.
-             // But wait, cmpxchg returns a struct/tuple.
-             // Let's use loop with cmpxchgWeak
-             // No, wait, if Xchg swaps, we might overwrite a larger value from another thread?
-             // CAS is better.
-             // However, atomicRmw .Max might exist? Zig doc check... .Max exists!
              break;
         }
         current_max = @atomicLoad(u64, &debug_ctx.metrics.max_wait_time_ns, .seq_cst);
@@ -349,7 +311,7 @@ pub export fn vulkan_timeline_debug_update_wait_metrics(debug_ctx: *c.VulkanTime
     _ = @atomicRmw(u64, &debug_ctx.metrics.max_wait_time_ns, .Max, duration_ns, .seq_cst);
 }
 
-pub export fn vulkan_timeline_debug_update_signal_metrics(debug_ctx: *c.VulkanTimelineDebugContext, duration_ns: u64) callconv(.c) void {
+pub export fn vulkan_timeline_debug_update_signal_metrics(debug_ctx: *types.VulkanTimelineDebugContext, duration_ns: u64) callconv(.c) void {
     if (!debug_ctx.enabled or !debug_ctx.collect_performance) return;
 
     _ = @atomicRmw(u64, &debug_ctx.metrics.total_signals, .Add, 1, .seq_cst);
@@ -358,19 +320,19 @@ pub export fn vulkan_timeline_debug_update_signal_metrics(debug_ctx: *c.VulkanTi
     _ = @atomicRmw(u64, &debug_ctx.metrics.max_signal_time_ns, .Max, duration_ns, .seq_cst);
 }
 
-pub export fn vulkan_timeline_debug_increment_error_count(debug_ctx: *c.VulkanTimelineDebugContext) callconv(.c) void {
+pub export fn vulkan_timeline_debug_increment_error_count(debug_ctx: *types.VulkanTimelineDebugContext) callconv(.c) void {
     if (debug_ctx.enabled and debug_ctx.collect_performance) {
         _ = @atomicRmw(u64, &debug_ctx.metrics.error_count, .Add, 1, .seq_cst);
     }
 }
 
-pub export fn vulkan_timeline_debug_increment_recovery_count(debug_ctx: *c.VulkanTimelineDebugContext) callconv(.c) void {
+pub export fn vulkan_timeline_debug_increment_recovery_count(debug_ctx: *types.VulkanTimelineDebugContext) callconv(.c) void {
     if (debug_ctx.enabled and debug_ctx.collect_performance) {
         _ = @atomicRmw(u64, &debug_ctx.metrics.recovery_count, .Add, 1, .seq_cst);
     }
 }
 
-pub export fn vulkan_timeline_debug_take_snapshot(debug_ctx: *c.VulkanTimelineDebugContext, device: c.VkDevice, timeline_semaphore: c.VkSemaphore) callconv(.c) void {
+pub export fn vulkan_timeline_debug_take_snapshot(debug_ctx: *types.VulkanTimelineDebugContext, device: c.VkDevice, timeline_semaphore: c.VkSemaphore) callconv(.c) void {
     if (!debug_ctx.enabled or device == null or timeline_semaphore == null) return;
 
     debug_mutex_lock(debug_ctx.mutex);
@@ -397,13 +359,13 @@ pub export fn vulkan_timeline_debug_take_snapshot(debug_ctx: *c.VulkanTimelineDe
     }
 }
 
-pub export fn vulkan_timeline_debug_should_take_snapshot(debug_ctx: *c.VulkanTimelineDebugContext) callconv(.c) bool {
+pub export fn vulkan_timeline_debug_should_take_snapshot(debug_ctx: *types.VulkanTimelineDebugContext) callconv(.c) bool {
     if (!debug_ctx.enabled) return false;
     const current_time = vulkan_timeline_debug_get_timestamp_ns();
     return (current_time - debug_ctx.last_snapshot_time) >= debug_ctx.snapshot_interval_ns;
 }
 
-pub export fn vulkan_timeline_debug_get_performance_metrics(debug_ctx: *c.VulkanTimelineDebugContext, metrics: *c.VulkanTimelinePerformanceMetrics) callconv(.c) bool {
+pub export fn vulkan_timeline_debug_get_performance_metrics(debug_ctx: *types.VulkanTimelineDebugContext, metrics: *types.VulkanTimelinePerformanceMetrics) callconv(.c) bool {
     metrics.total_waits = @atomicLoad(u64, &debug_ctx.metrics.total_waits, .seq_cst);
     metrics.total_signals = @atomicLoad(u64, &debug_ctx.metrics.total_signals, .seq_cst);
     metrics.total_wait_time_ns = @atomicLoad(u64, &debug_ctx.metrics.total_wait_time_ns, .seq_cst);
@@ -416,34 +378,34 @@ pub export fn vulkan_timeline_debug_get_performance_metrics(debug_ctx: *c.Vulkan
     return true;
 }
 
-pub export fn vulkan_timeline_debug_get_last_snapshot(debug_ctx: *c.VulkanTimelineDebugContext, snapshot: *c.VulkanTimelineStateSnapshot) callconv(.c) bool {
+pub export fn vulkan_timeline_debug_get_last_snapshot(debug_ctx: *types.VulkanTimelineDebugContext, snapshot: *types.VulkanTimelineStateSnapshot) callconv(.c) bool {
     debug_mutex_lock(debug_ctx.mutex);
     snapshot.* = debug_ctx.last_snapshot;
     debug_mutex_unlock(debug_ctx.mutex);
     return true;
 }
 
-pub export fn vulkan_timeline_debug_get_event_count(debug_ctx: *c.VulkanTimelineDebugContext) callconv(.c) u32 {
+pub export fn vulkan_timeline_debug_get_event_count(debug_ctx: *types.VulkanTimelineDebugContext) callconv(.c) u32 {
     const count = @atomicLoad(u32, &debug_ctx.event_count, .seq_cst);
-    return if (count > c.VULKAN_TIMELINE_DEBUG_MAX_EVENTS) c.VULKAN_TIMELINE_DEBUG_MAX_EVENTS else count;
+    return if (count > types.VULKAN_TIMELINE_DEBUG_MAX_EVENTS) types.VULKAN_TIMELINE_DEBUG_MAX_EVENTS else count;
 }
 
-pub export fn vulkan_timeline_debug_get_events(debug_ctx: *c.VulkanTimelineDebugContext, events: [*]c.VulkanTimelineDebugEvent, max_events: u32, actual_count: *u32) callconv(.c) bool {
+pub export fn vulkan_timeline_debug_get_events(debug_ctx: *types.VulkanTimelineDebugContext, events: [*]types.VulkanTimelineDebugEvent, max_events: u32, actual_count: *u32) callconv(.c) bool {
     debug_mutex_lock(debug_ctx.mutex);
 
     const available_events = vulkan_timeline_debug_get_event_count(debug_ctx);
     const copy_count = if (available_events < max_events) available_events else max_events;
 
     var start_index = @atomicLoad(u32, &debug_ctx.event_write_index, .seq_cst);
-    if (available_events < c.VULKAN_TIMELINE_DEBUG_MAX_EVENTS) {
+    if (available_events < types.VULKAN_TIMELINE_DEBUG_MAX_EVENTS) {
         start_index = 0;
     } else {
-        start_index = (start_index + c.VULKAN_TIMELINE_DEBUG_MAX_EVENTS - available_events) % c.VULKAN_TIMELINE_DEBUG_MAX_EVENTS;
+        start_index = (start_index + types.VULKAN_TIMELINE_DEBUG_MAX_EVENTS - available_events) % types.VULKAN_TIMELINE_DEBUG_MAX_EVENTS;
     }
 
     var i: u32 = 0;
     while (i < copy_count) : (i += 1) {
-        const index = (start_index + i) % c.VULKAN_TIMELINE_DEBUG_MAX_EVENTS;
+        const index = (start_index + i) % types.VULKAN_TIMELINE_DEBUG_MAX_EVENTS;
         events[i] = debug_ctx.events[index];
     }
 
@@ -453,8 +415,8 @@ pub export fn vulkan_timeline_debug_get_events(debug_ctx: *c.VulkanTimelineDebug
     return true;
 }
 
-pub export fn vulkan_timeline_debug_print_performance_report(debug_ctx: *c.VulkanTimelineDebugContext) callconv(.c) void {
-    var metrics: c.VulkanTimelinePerformanceMetrics = undefined;
+pub export fn vulkan_timeline_debug_print_performance_report(debug_ctx: *types.VulkanTimelineDebugContext) callconv(.c) void {
+    var metrics: types.VulkanTimelinePerformanceMetrics = undefined;
     if (!vulkan_timeline_debug_get_performance_metrics(debug_ctx, &metrics)) return;
 
     log.cardinal_log_info("[TIMELINE_DEBUG] === Performance Report ===", .{});
@@ -479,7 +441,7 @@ pub export fn vulkan_timeline_debug_print_performance_report(debug_ctx: *c.Vulka
     log.cardinal_log_info("[TIMELINE_DEBUG] =========================", .{});
 }
 
-pub export fn vulkan_timeline_debug_print_event_summary(debug_ctx: *c.VulkanTimelineDebugContext) callconv(.c) void {
+pub export fn vulkan_timeline_debug_print_event_summary(debug_ctx: *types.VulkanTimelineDebugContext) callconv(.c) void {
     const event_count = vulkan_timeline_debug_get_event_count(debug_ctx);
     log.cardinal_log_info("[TIMELINE_DEBUG] === Event Summary ===", .{});
     log.cardinal_log_info("[TIMELINE_DEBUG] Total events recorded: {d}", .{event_count});
@@ -487,19 +449,16 @@ pub export fn vulkan_timeline_debug_print_event_summary(debug_ctx: *c.VulkanTime
     var type_counts: [9]u32 = std.mem.zeroes([9]u32);
     
     // Allocate temp buffer
-    const events = std.heap.c_allocator.alloc(c.VulkanTimelineDebugEvent, event_count) catch return;
+    const events = std.heap.c_allocator.alloc(types.VulkanTimelineDebugEvent, event_count) catch return;
     defer std.heap.c_allocator.free(events);
 
     var actual_count: u32 = 0;
     if (vulkan_timeline_debug_get_events(debug_ctx, events.ptr, event_count, &actual_count)) {
         var i: u32 = 0;
         while (i < actual_count) : (i += 1) {
-            // events[i].type is c_uint, not an enum in Zig's C import if not typedeffed perfectly
-            // But we know it's VulkanTimelineEventType.
-            // If the error says 'expected enum or tagged union, found c_uint', it means @intFromEnum is wrong because it's already an int.
-            const t = events[i].type;
+            const t = @intFromEnum(events[i].type);
             if (t < 9) {
-                type_counts[t] += 1;
+                type_counts[@intCast(t)] += 1;
             }
         }
     }
@@ -507,7 +466,7 @@ pub export fn vulkan_timeline_debug_print_event_summary(debug_ctx: *c.VulkanTime
     var i: u32 = 0;
     while (i < 9) : (i += 1) {
         if (type_counts[i] > 0) {
-            const type_str = std.mem.span(vulkan_timeline_debug_event_type_to_string(@as(c.VulkanTimelineEventType, i)));
+            const type_str = std.mem.span(vulkan_timeline_debug_event_type_to_string(@as(types.VulkanTimelineEventType, @enumFromInt(i))));
             log.cardinal_log_info("[TIMELINE_DEBUG] {s}: {d}", .{type_str, type_counts[i]});
         }
     }
@@ -515,8 +474,8 @@ pub export fn vulkan_timeline_debug_print_event_summary(debug_ctx: *c.VulkanTime
     log.cardinal_log_info("[TIMELINE_DEBUG] ===================", .{});
 }
 
-pub export fn vulkan_timeline_debug_print_state_report(debug_ctx: *c.VulkanTimelineDebugContext) callconv(.c) void {
-    var snapshot: c.VulkanTimelineStateSnapshot = undefined;
+pub export fn vulkan_timeline_debug_print_state_report(debug_ctx: *types.VulkanTimelineDebugContext) callconv(.c) void {
+    var snapshot: types.VulkanTimelineStateSnapshot = undefined;
     if (!vulkan_timeline_debug_get_last_snapshot(debug_ctx, &snapshot)) return;
 
     log.cardinal_log_info("[TIMELINE_DEBUG] === State Report ===", .{});
@@ -533,7 +492,7 @@ pub export fn vulkan_timeline_debug_print_state_report(debug_ctx: *c.VulkanTimel
 }
 
 // Export functions (simplified)
-pub export fn vulkan_timeline_debug_export_events_csv(debug_ctx: *c.VulkanTimelineDebugContext, filename: [*c]const u8) callconv(.c) bool {
+pub export fn vulkan_timeline_debug_export_events_csv(debug_ctx: *types.VulkanTimelineDebugContext, filename: [*c]const u8) callconv(.c) bool {
     if (filename == null) {
         log.cardinal_log_error("[TIMELINE_DEBUG] Invalid filename for CSV export", .{});
         return false;
@@ -549,7 +508,7 @@ pub export fn vulkan_timeline_debug_export_events_csv(debug_ctx: *c.VulkanTimeli
     file.writeAll("timestamp_ns,type,timeline_value,duration_ns,result,thread_id,name,details\n") catch return false;
 
     const event_count = vulkan_timeline_debug_get_event_count(debug_ctx);
-    const events = std.heap.c_allocator.alloc(c.VulkanTimelineDebugEvent, event_count) catch return false;
+    const events = std.heap.c_allocator.alloc(types.VulkanTimelineDebugEvent, event_count) catch return false;
     defer std.heap.c_allocator.free(events);
 
     var actual_count: u32 = 0;
@@ -580,8 +539,8 @@ pub export fn vulkan_timeline_debug_export_events_csv(debug_ctx: *c.VulkanTimeli
     return true;
 }
 
-pub export fn vulkan_timeline_debug_export_performance_json(debug_ctx: *c.VulkanTimelineDebugContext, filename: [*c]const u8) callconv(.c) bool {
-    var metrics: c.VulkanTimelinePerformanceMetrics = undefined;
+pub export fn vulkan_timeline_debug_export_performance_json(debug_ctx: *types.VulkanTimelineDebugContext, filename: [*c]const u8) callconv(.c) bool {
+    var metrics: types.VulkanTimelinePerformanceMetrics = undefined;
     if (!vulkan_timeline_debug_get_performance_metrics(debug_ctx, &metrics)) return false;
 
     if (filename == null) {

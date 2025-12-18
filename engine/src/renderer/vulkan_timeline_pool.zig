@@ -1,28 +1,9 @@
 const std = @import("std");
 const builtin = @import("builtin");
 const log = @import("../core/log.zig");
+const types = @import("vulkan_timeline_types.zig");
 
-const c = @cImport({
-    @cInclude("stdlib.h");
-    @cInclude("string.h");
-    @cInclude("stdint.h");
-    // Skip stdatomic.h and define types manually to avoid C import errors
-    @cDefine("__STDATOMIC_H", "1");
-    @cDefine("_STDATOMIC_H", "1");
-    @cDefine("__CLANG_STDATOMIC_H", "1");
-    @cDefine("__zig_translate_c__", "1");
-    @cDefine("CARDINAL_ZIG_BUILD", "1");
-    
-    @cInclude("vulkan/vulkan.h");
-    @cInclude("cardinal/renderer/vulkan_timeline_pool.h");
-    
-    if (builtin.os.tag == .windows) {
-        @cInclude("windows.h");
-    } else {
-        @cInclude("pthread.h");
-        @cInclude("time.h");
-    }
-});
+const c = types.c;
 
 // Platform-specific mutex helpers
 fn pool_mutex_init(mutex: *?*anyopaque) bool {
@@ -114,7 +95,7 @@ fn create_timeline_semaphore(device: c.VkDevice, semaphore: *c.VkSemaphore) bool
     return true;
 }
 
-pub export fn vulkan_timeline_pool_init(pool: *c.VulkanTimelinePool, device: c.VkDevice, initial_size: u32, max_size: u32) callconv(.c) bool {
+pub export fn vulkan_timeline_pool_init(pool: *types.VulkanTimelinePool, device: c.VkDevice, initial_size: u32, max_size: u32) callconv(.c) bool {
     if (initial_size == 0) {
         return false;
     }
@@ -125,7 +106,7 @@ pub export fn vulkan_timeline_pool_init(pool: *c.VulkanTimelinePool, device: c.V
     @atomicStore(u32, &pool.active_count, 0, .seq_cst);
 
     // Allocate entries array
-    const entries_size = @sizeOf(c.VulkanTimelinePoolEntry) * pool.max_pool_size;
+    const entries_size = @sizeOf(types.VulkanTimelinePoolEntry) * pool.max_pool_size;
     const entries_ptr = std.heap.c_allocator.alloc(u8, entries_size) catch {
         log.cardinal_log_error("[TIMELINE_POOL] Failed to allocate pool entries", .{});
         return false;
@@ -172,7 +153,7 @@ pub export fn vulkan_timeline_pool_init(pool: *c.VulkanTimelinePool, device: c.V
     return true;
 }
 
-pub export fn vulkan_timeline_pool_destroy(pool: *c.VulkanTimelinePool) callconv(.c) void {
+pub export fn vulkan_timeline_pool_destroy(pool: *types.VulkanTimelinePool) callconv(.c) void {
     if (!pool.initialized) {
         return;
     }
@@ -196,18 +177,16 @@ pub export fn vulkan_timeline_pool_destroy(pool: *c.VulkanTimelinePool) callconv
     // We allocated as u8 slice, but stored as pointer. 
     // Need to reconstruct slice or use free on pointer if allocator supports it (c_allocator uses free)
     // std.heap.c_allocator.free expects slice.
-    const entries_slice = @as([*]u8, @ptrCast(pool.entries))[0..(@sizeOf(c.VulkanTimelinePoolEntry) * pool.max_pool_size)];
+    const entries_slice = @as([*]u8, @ptrCast(pool.entries))[0..(@sizeOf(types.VulkanTimelinePoolEntry) * pool.max_pool_size)];
     std.heap.c_allocator.free(entries_slice);
 
     // Zero out struct
-    // pool.* = std.mem.zeroes(c.VulkanTimelinePool); // Zig struct copy
-    // Or just memset
-    _ = c.memset(pool, 0, @sizeOf(c.VulkanTimelinePool));
+    _ = c.memset(pool, 0, @sizeOf(types.VulkanTimelinePool));
 
     log.cardinal_log_info("[TIMELINE_POOL] Destroyed", .{});
 }
 
-pub export fn vulkan_timeline_pool_allocate(pool: *c.VulkanTimelinePool, allocation: *c.VulkanTimelinePoolAllocation) callconv(.c) bool {
+pub export fn vulkan_timeline_pool_allocate(pool: *types.VulkanTimelinePool, allocation: *types.VulkanTimelinePoolAllocation) callconv(.c) bool {
     if (!pool.initialized) {
         return false;
     }
@@ -258,7 +237,7 @@ pub export fn vulkan_timeline_pool_allocate(pool: *c.VulkanTimelinePool, allocat
     return false;
 }
 
-pub export fn vulkan_timeline_pool_deallocate(pool: *c.VulkanTimelinePool, pool_index: u32, last_value: u64) callconv(.c) void {
+pub export fn vulkan_timeline_pool_deallocate(pool: *types.VulkanTimelinePool, pool_index: u32, last_value: u64) callconv(.c) void {
     if (!pool.initialized or pool_index >= pool.pool_size) {
         return;
     }
@@ -276,7 +255,7 @@ pub export fn vulkan_timeline_pool_deallocate(pool: *c.VulkanTimelinePool, pool_
     pool_mutex_unlock(pool.mutex);
 }
 
-pub export fn vulkan_timeline_pool_cleanup_idle(pool: *c.VulkanTimelinePool, current_time_ns: u64) callconv(.c) u32 {
+pub export fn vulkan_timeline_pool_cleanup_idle(pool: *types.VulkanTimelinePool, current_time_ns: u64) callconv(.c) u32 {
     if (!pool.initialized) {
         return 0;
     }
@@ -307,7 +286,7 @@ pub export fn vulkan_timeline_pool_cleanup_idle(pool: *c.VulkanTimelinePool, cur
     return cleaned_up;
 }
 
-pub export fn vulkan_timeline_pool_get_stats(pool: *c.VulkanTimelinePool, active_count: ?*u32, total_allocations: ?*u64, cache_hit_rate: ?*f32) callconv(.c) bool {
+pub export fn vulkan_timeline_pool_get_stats(pool: *types.VulkanTimelinePool, active_count: ?*u32, total_allocations: ?*u64, cache_hit_rate: ?*f32) callconv(.c) bool {
     if (!pool.initialized) {
         return false;
     }
@@ -329,7 +308,7 @@ pub export fn vulkan_timeline_pool_get_stats(pool: *c.VulkanTimelinePool, active
     return true;
 }
 
-pub export fn vulkan_timeline_pool_configure_cleanup(pool: *c.VulkanTimelinePool, enabled: bool, max_idle_time_ns: u64) callconv(.c) void {
+pub export fn vulkan_timeline_pool_configure_cleanup(pool: *types.VulkanTimelinePool, enabled: bool, max_idle_time_ns: u64) callconv(.c) void {
     if (!pool.initialized) {
         return;
     }
@@ -343,7 +322,7 @@ pub export fn vulkan_timeline_pool_configure_cleanup(pool: *c.VulkanTimelinePool
         .{if (enabled) "enabled" else "disabled", max_idle_time_ns});
 }
 
-pub export fn vulkan_timeline_pool_reset_stats(pool: *c.VulkanTimelinePool) callconv(.c) void {
+pub export fn vulkan_timeline_pool_reset_stats(pool: *types.VulkanTimelinePool) callconv(.c) void {
     if (!pool.initialized) {
         return;
     }

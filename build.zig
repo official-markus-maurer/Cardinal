@@ -112,7 +112,6 @@ pub fn build(b: *std.Build) void {
     engine.linkLibC();
     engine.linkLibCpp(); 
     
-    engine.addIncludePath(b.path("engine/include"));
     engine.addIncludePath(b.path("engine/src"));
     engine.addIncludePath(b.path("engine/src/renderer"));
     engine.addIncludePath(b.path("libs/cgltf"));
@@ -183,7 +182,6 @@ pub fn build(b: *std.Build) void {
         }),
     });
     
-    client.addIncludePath(b.path("engine/include"));
     client.addIncludePath(b.path("libs/cgltf"));
     client.addIncludePath(b.path("libs/stb"));
 
@@ -219,12 +217,11 @@ pub fn build(b: *std.Build) void {
     editor.root_module.addImport("cardinal_engine", engine.root_module);
     
     editor.addCSourceFiles(.{
-        .files = &.{"editor/src/editor_layer.cpp"},
+        .files = &.{"editor/src/imgui_bridge.cpp"},
         .flags = &.{"-std=c++20"},
     });
 
     editor.addIncludePath(b.path("editor/include"));
-    editor.addIncludePath(b.path("engine/include"));
     editor.addIncludePath(b.path("libs/cgltf"));
     editor.addIncludePath(b.path("libs/stb"));
     editor.addIncludePath(b.path("libs/imgui"));

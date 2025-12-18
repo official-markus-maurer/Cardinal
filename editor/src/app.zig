@@ -13,8 +13,9 @@ const texture_loader = engine.texture_loader;
 const mesh_loader = engine.mesh_loader;
 const material_loader = engine.material_loader;
 
+const editor_layer = @import("editor_layer.zig");
+
 const c = @cImport({
-    @cInclude("editor_layer.h");
     @cInclude("stdio.h");
 });
 
@@ -139,8 +140,8 @@ pub const EditorApp = struct {
     }
 
     fn initEditorLayer(self: *EditorApp) !void {
-        // Cast window and renderer to opaque C pointers for editor_layer
-        if (!c.editor_layer_init(@ptrCast(self.window), @ptrCast(&self.renderer))) {
+        // Pass pointers directly
+        if (!editor_layer.init(self.window.?, &self.renderer)) {
             return error.EditorLayerInitFailed;
         }
         self.editor_layer_initialized = true;
@@ -150,13 +151,13 @@ pub const EditorApp = struct {
         while (!window.cardinal_window_should_close(self.window)) {
             window.cardinal_window_poll(self.window);
 
-            c.editor_layer_update();
-            c.editor_layer_render();
+            editor_layer.update();
+            editor_layer.render();
 
             _ = vulkan_renderer_frame.cardinal_renderer_draw_frame(&self.renderer);
 
             log.cardinal_log_debug("[EDITOR] Processing pending uploads after frame draw", .{});
-            c.editor_layer_process_pending_uploads();
+            editor_layer.process_pending_uploads();
         }
 
         vulkan_renderer.cardinal_renderer_wait_idle(&self.renderer);
@@ -169,7 +170,7 @@ pub const EditorApp = struct {
 
     fn deinit(self: *EditorApp) void {
         if (self.editor_layer_initialized) {
-            c.editor_layer_shutdown();
+            editor_layer.shutdown();
         }
         
         if (self.renderer_initialized) {
