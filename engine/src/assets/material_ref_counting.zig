@@ -61,11 +61,11 @@ pub export fn cardinal_material_generate_hash(material: ?*const CardinalMaterial
 
     // Hash texture indices
     const texture_indices = [_]u32{
-        mat.albedo_texture,
-        mat.normal_texture,
-        mat.metallic_roughness_texture,
-        mat.ao_texture,
-        mat.emissive_texture,
+        mat.albedo_texture.index,
+        mat.normal_texture.index,
+        mat.metallic_roughness_texture.index,
+        mat.ao_texture.index,
+        mat.emissive_texture.index,
     };
     hash.texture_hash = hash_64(std.mem.asBytes(&texture_indices));
 

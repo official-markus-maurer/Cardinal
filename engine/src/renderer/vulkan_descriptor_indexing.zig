@@ -6,7 +6,6 @@ const types = @import("vulkan_types.zig");
 const c = @import("vulkan_c.zig").c;
 
 const CARDINAL_BINDLESS_TEXTURE_BINDING = 0;
-const CARDINAL_BINDLESS_SAMPLER_BINDING = 1;
 
 // Helper function to create default sampler
 fn create_default_sampler(device: c.VkDevice, out_sampler: *c.VkSampler) bool {
@@ -40,15 +39,14 @@ fn create_default_sampler(device: c.VkDevice, out_sampler: *c.VkSampler) bool {
 // Helper function to create descriptor pool for bindless textures
 fn create_bindless_descriptor_pool(device: c.VkDevice, max_textures: u32, out_pool: *c.VkDescriptorPool) bool {
     const pool_sizes = [_]c.VkDescriptorPoolSize{
-        .{ .type = c.VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE, .descriptorCount = max_textures },
-        .{ .type = c.VK_DESCRIPTOR_TYPE_SAMPLER, .descriptorCount = max_textures },
+        .{ .type = c.VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, .descriptorCount = max_textures },
     };
 
     var pool_info = std.mem.zeroes(c.VkDescriptorPoolCreateInfo);
     pool_info.sType = c.VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO;
     pool_info.flags = c.VK_DESCRIPTOR_POOL_CREATE_UPDATE_AFTER_BIND_BIT;
     pool_info.maxSets = 100; // Increased from 1 to support multiple bindless sets
-    pool_info.poolSizeCount = 2;
+    pool_info.poolSizeCount = 1;
     pool_info.pPoolSizes = &pool_sizes;
 
     log.cardinal_log_info("Creating bindless descriptor pool with {d} max sets", .{pool_info.maxSets});
@@ -130,21 +128,14 @@ pub export fn vk_bindless_texture_pool_init(pool: ?*types.BindlessTexturePool, v
     var bindings = [_]c.VkDescriptorSetLayoutBinding{
         .{
             .binding = CARDINAL_BINDLESS_TEXTURE_BINDING,
-            .descriptorType = c.VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE,
-            .descriptorCount = max_textures,
-            .stageFlags = c.VK_SHADER_STAGE_FRAGMENT_BIT | c.VK_SHADER_STAGE_MESH_BIT_EXT,
-            .pImmutableSamplers = null,
-        },
-        .{
-            .binding = CARDINAL_BINDLESS_SAMPLER_BINDING,
-            .descriptorType = c.VK_DESCRIPTOR_TYPE_SAMPLER,
+            .descriptorType = c.VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
             .descriptorCount = max_textures,
             .stageFlags = c.VK_SHADER_STAGE_FRAGMENT_BIT | c.VK_SHADER_STAGE_MESH_BIT_EXT,
             .pImmutableSamplers = null,
         },
     };
 
-    if (!vk_create_variable_descriptor_layout(p.device, 2, &bindings, CARDINAL_BINDLESS_TEXTURE_BINDING, max_textures, &p.descriptor_layout)) {
+    if (!vk_create_variable_descriptor_layout(p.device, 1, &bindings, CARDINAL_BINDLESS_TEXTURE_BINDING, max_textures, &p.descriptor_layout)) {
         c.vkDestroySampler(p.device, p.default_sampler, null);
         memory.cardinal_free(mem_alloc, p.textures);
         memory.cardinal_free(mem_alloc, p.free_indices);
@@ -337,6 +328,7 @@ pub export fn vk_bindless_texture_allocate(pool: ?*types.BindlessTexturePool, cr
     texture.format = info.format;
     texture.extent = info.extent;
     texture.mip_levels = info.mip_levels;
+    texture.owns_resources = true;
 
     // Mark for descriptor update
     p.pending_updates.?[p.pending_update_count] = index;
@@ -347,6 +339,35 @@ pub export fn vk_bindless_texture_allocate(pool: ?*types.BindlessTexturePool, cr
     out_index.?.* = index;
 
     log.cardinal_log_debug("Allocated bindless texture at index {d}", .{index});
+    return true;
+}
+
+pub export fn vk_bindless_texture_register_existing(pool: ?*types.BindlessTexturePool, image: c.VkImage, view: c.VkImageView, sampler: c.VkSampler, out_index: ?*u32) callconv(.c) bool {
+    if (pool == null or out_index == null) return false;
+    const p = pool.?;
+
+    if (p.free_count == 0) {
+        log.cardinal_log_error("No free bindless texture slots available", .{});
+        return false;
+    }
+
+    p.free_count -= 1;
+    const index = p.free_indices.?[p.free_count];
+    var texture = &p.textures.?[index];
+
+    texture.image = image;
+    texture.image_view = view;
+    texture.sampler = sampler;
+    texture.descriptor_index = index;
+    texture.is_allocated = true;
+    texture.owns_resources = false;
+
+    p.pending_updates.?[p.pending_update_count] = index;
+    p.pending_update_count += 1;
+    p.needs_descriptor_update = true;
+
+    p.allocated_count += 1;
+    out_index.?.* = index;
     return true;
 }
 
@@ -363,17 +384,19 @@ pub export fn vk_bindless_texture_free(pool: ?*types.BindlessTexturePool, textur
         return;
     }
 
-    // Destroy Vulkan objects
-    if (texture.image_view != null) {
-        c.vkDestroyImageView(p.device, texture.image_view, null);
-    }
+    // Destroy Vulkan objects only if we own them
+    if (texture.owns_resources) {
+        if (texture.image_view != null) {
+            c.vkDestroyImageView(p.device, texture.image_view, null);
+        }
 
-    if (texture.image != null) {
-        c.vkDestroyImage(p.device, texture.image, null);
-    }
+        if (texture.image != null) {
+            c.vkDestroyImage(p.device, texture.image, null);
+        }
 
-    if (texture.memory != null) {
-        c.vkFreeMemory(p.device, texture.memory, null);
+        if (texture.memory != null) {
+            c.vkFreeMemory(p.device, texture.memory, null);
+        }
     }
 
     // Reset texture
@@ -416,21 +439,18 @@ pub export fn vk_bindless_texture_flush_updates(pool: ?*types.BindlessTexturePoo
 
     // Prepare descriptor writes for updated textures
     const mem_alloc = memory.cardinal_get_allocator_for_category(.RENDERER);
-    const writes_ptr = memory.cardinal_alloc(mem_alloc, p.pending_update_count * 2 * @sizeOf(c.VkWriteDescriptorSet));
+    const writes_ptr = memory.cardinal_alloc(mem_alloc, p.pending_update_count * @sizeOf(c.VkWriteDescriptorSet));
     const image_infos_ptr = memory.cardinal_alloc(mem_alloc, p.pending_update_count * @sizeOf(c.VkDescriptorImageInfo));
-    const sampler_infos_ptr = memory.cardinal_alloc(mem_alloc, p.pending_update_count * @sizeOf(c.VkDescriptorImageInfo));
 
-    if (writes_ptr == null or image_infos_ptr == null or sampler_infos_ptr == null) {
+    if (writes_ptr == null or image_infos_ptr == null) {
         log.cardinal_log_error("Failed to allocate memory for descriptor updates", .{});
         if (writes_ptr != null) memory.cardinal_free(mem_alloc, writes_ptr);
         if (image_infos_ptr != null) memory.cardinal_free(mem_alloc, image_infos_ptr);
-        if (sampler_infos_ptr != null) memory.cardinal_free(mem_alloc, sampler_infos_ptr);
         return false;
     }
 
     const writes = @as([*]c.VkWriteDescriptorSet, @ptrCast(@alignCast(writes_ptr)));
     const image_infos = @as([*]c.VkDescriptorImageInfo, @ptrCast(@alignCast(image_infos_ptr)));
-    const sampler_infos = @as([*]c.VkDescriptorImageInfo, @ptrCast(@alignCast(sampler_infos_ptr)));
 
     var write_count: u32 = 0;
 
@@ -447,7 +467,7 @@ pub export fn vk_bindless_texture_flush_updates(pool: ?*types.BindlessTexturePoo
         image_infos[i] = .{
             .imageLayout = c.VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
             .imageView = texture.image_view,
-            .sampler = null,
+            .sampler = texture.sampler,
         };
 
         writes[write_count] = .{
@@ -455,30 +475,9 @@ pub export fn vk_bindless_texture_flush_updates(pool: ?*types.BindlessTexturePoo
             .dstSet = p.descriptor_set,
             .dstBinding = CARDINAL_BINDLESS_TEXTURE_BINDING,
             .dstArrayElement = texture_index,
-            .descriptorType = c.VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE,
+            .descriptorType = c.VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
             .descriptorCount = 1,
             .pImageInfo = &image_infos[i],
-            .pNext = null,
-            .pBufferInfo = null,
-            .pTexelBufferView = null,
-        };
-        write_count += 1;
-
-        // Sampler descriptor write
-        sampler_infos[i] = .{
-            .imageLayout = c.VK_IMAGE_LAYOUT_UNDEFINED,
-            .imageView = null,
-            .sampler = texture.sampler,
-        };
-
-        writes[write_count] = .{
-            .sType = c.VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
-            .dstSet = p.descriptor_set,
-            .dstBinding = CARDINAL_BINDLESS_SAMPLER_BINDING,
-            .dstArrayElement = texture_index,
-            .descriptorType = c.VK_DESCRIPTOR_TYPE_SAMPLER,
-            .descriptorCount = 1,
-            .pImageInfo = &sampler_infos[i],
             .pNext = null,
             .pBufferInfo = null,
             .pTexelBufferView = null,
@@ -489,13 +488,12 @@ pub export fn vk_bindless_texture_flush_updates(pool: ?*types.BindlessTexturePoo
     // Update descriptor sets
     if (write_count > 0) {
         c.vkUpdateDescriptorSets(p.device, write_count, writes, 0, null);
-        log.cardinal_log_debug("Updated {d} bindless texture descriptors", .{write_count / 2});
+        log.cardinal_log_debug("Updated {d} bindless texture descriptors", .{write_count});
     }
 
     // Clean up
     memory.cardinal_free(mem_alloc, writes_ptr);
     memory.cardinal_free(mem_alloc, image_infos_ptr);
-    memory.cardinal_free(mem_alloc, sampler_infos_ptr);
 
     p.needs_descriptor_update = false;
     p.pending_update_count = 0;

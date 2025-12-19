@@ -492,6 +492,8 @@ pub const VulkanManagedTexture = extern struct {
     is_allocated: bool,
     isPlaceholder: bool,
     path: ?[*:0]u8,
+    bindless_index: u32,
+    generation: u32,
 };
 
 pub const VulkanTextureManagerConfig = extern struct {
@@ -501,6 +503,7 @@ pub const VulkanTextureManagerConfig = extern struct {
     graphicsQueue: c.VkQueue,
     syncManager: ?*VulkanSyncManager,
     initialCapacity: u32,
+    vulkan_state: ?*VulkanState,
 };
 
 pub const VulkanTextureManager = extern struct {
@@ -519,6 +522,7 @@ pub const VulkanTextureManager = extern struct {
 
     manager_mutex: cardinal_mutex_t,
     hasPlaceholder: bool,
+    bindless_pool: BindlessTexturePool,
 };
 
 // Compute Pipeline Types
@@ -575,6 +579,7 @@ pub const BindlessTexture = extern struct {
     format: c.VkFormat,
     extent: c.VkExtent3D,
     mip_levels: u32,
+    owns_resources: bool,
 };
 
 pub const BindlessTextureCreateInfo = extern struct {

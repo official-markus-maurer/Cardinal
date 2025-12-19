@@ -6,6 +6,7 @@ pub const transform = @import("core/transform.zig");
 pub const math = @import("core/math.zig");
 pub const animation = @import("core/animation.zig");
 pub const ref_counting = @import("core/ref_counting.zig");
+pub const job_system = @import("core/job_system.zig");
 pub const material_ref_counting = @import("assets/material_ref_counting.zig");
 pub const async_loader = @import("core/async_loader.zig");
 pub const texture_loader = @import("assets/texture_loader.zig");

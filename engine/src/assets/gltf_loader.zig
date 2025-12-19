@@ -8,6 +8,7 @@ const transform_math = @import("../core/transform.zig");
 const log = @import("../core/log.zig");
 const memory = @import("../core/memory.zig");
 const builtin = @import("builtin");
+const handles = @import("../core/handles.zig");
 
 const c = @cImport({
     @cInclude("cgltf.h");
@@ -15,6 +16,7 @@ const c = @cImport({
     @cInclude("stdio.h");
     @cInclude("stdlib.h");
     @cInclude("time.h");
+    @cInclude("vulkan/vulkan.h");
 });
 
 // Texture path cache
@@ -317,40 +319,40 @@ fn convert_sampler(gltf_sampler: ?*const c.cgltf_sampler, out_sampler: *scene.Ca
     if (gltf_sampler == null) {
         // Default to CLAMP_TO_EDGE instead of REPEAT to prevent tiling artifacts
         // on models that don't explicitly define samplers.
-        out_sampler.wrap_s = .CLAMP_TO_EDGE;
-        out_sampler.wrap_t = .CLAMP_TO_EDGE;
-        out_sampler.min_filter = .LINEAR;
-        out_sampler.mag_filter = .LINEAR;
+        out_sampler.wrap_s = c.VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
+        out_sampler.wrap_t = c.VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
+        out_sampler.min_filter = c.VK_FILTER_LINEAR;
+        out_sampler.mag_filter = c.VK_FILTER_LINEAR;
         return;
     }
     const s = gltf_sampler.?;
 
     if (s.wrap_s == 33071 or s.wrap_s == 33069 or s.wrap_s == 10496) {
-        out_sampler.wrap_s = .CLAMP_TO_EDGE;
+        out_sampler.wrap_s = c.VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
     } else if (s.wrap_s == 33648) {
-        out_sampler.wrap_s = .MIRRORED_REPEAT;
+        out_sampler.wrap_s = c.VK_SAMPLER_ADDRESS_MODE_MIRRORED_REPEAT;
     } else {
-        out_sampler.wrap_s = .REPEAT;
+        out_sampler.wrap_s = c.VK_SAMPLER_ADDRESS_MODE_REPEAT;
     }
 
     if (s.wrap_t == 33071 or s.wrap_t == 33069 or s.wrap_t == 10496) {
-        out_sampler.wrap_t = .CLAMP_TO_EDGE;
+        out_sampler.wrap_t = c.VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
     } else if (s.wrap_t == 33648) {
-        out_sampler.wrap_t = .MIRRORED_REPEAT;
+        out_sampler.wrap_t = c.VK_SAMPLER_ADDRESS_MODE_MIRRORED_REPEAT;
     } else {
-        out_sampler.wrap_t = .REPEAT;
+        out_sampler.wrap_t = c.VK_SAMPLER_ADDRESS_MODE_REPEAT;
     }
 
     if (s.min_filter == 9728 or s.min_filter == 9984 or s.min_filter == 9986) {
-        out_sampler.min_filter = .NEAREST;
+        out_sampler.min_filter = c.VK_FILTER_NEAREST;
     } else {
-        out_sampler.min_filter = .LINEAR;
+        out_sampler.min_filter = c.VK_FILTER_LINEAR;
     }
 
     if (s.mag_filter == 9728) {
-        out_sampler.mag_filter = .NEAREST;
+        out_sampler.mag_filter = c.VK_FILTER_NEAREST;
     } else {
-        out_sampler.mag_filter = .LINEAR;
+        out_sampler.mag_filter = c.VK_FILTER_LINEAR;
     }
 }
 
@@ -825,11 +827,11 @@ pub export fn cardinal_gltf_load_scene(path: [*:0]const u8, out_scene: *scene.Ca
             const mat = &d.materials[i];
             const card_mat = &materials.?[material_count];
 
-            card_mat.albedo_texture = std.math.maxInt(u32);
-            card_mat.normal_texture = std.math.maxInt(u32);
-            card_mat.metallic_roughness_texture = std.math.maxInt(u32);
-            card_mat.ao_texture = std.math.maxInt(u32);
-            card_mat.emissive_texture = std.math.maxInt(u32);
+            card_mat.albedo_texture = handles.TextureHandle.INVALID;
+            card_mat.normal_texture = handles.TextureHandle.INVALID;
+            card_mat.metallic_roughness_texture = handles.TextureHandle.INVALID;
+            card_mat.ao_texture = handles.TextureHandle.INVALID;
+            card_mat.emissive_texture = handles.TextureHandle.INVALID;
 
             card_mat.albedo_factor = .{ 1, 1, 1 };
             card_mat.metallic_factor = 0.0;
@@ -871,7 +873,7 @@ pub export fn cardinal_gltf_load_scene(path: [*:0]const u8, out_scene: *scene.Ca
                     } else {
                         tex_idx = @intCast((@intFromPtr(pbr.base_color_texture.texture.*.image) - @intFromPtr(d.images)) / @sizeOf(c.cgltf_image));
                     }
-                    if (tex_idx < texture_count) card_mat.albedo_texture = tex_idx;
+                    if (tex_idx < texture_count) card_mat.albedo_texture = .{ .index = tex_idx, .generation = 1 };
                     extract_texture_transform(&pbr.base_color_texture, &card_mat.albedo_transform);
                 }
 
@@ -882,7 +884,7 @@ pub export fn cardinal_gltf_load_scene(path: [*:0]const u8, out_scene: *scene.Ca
                     } else {
                         tex_idx = @intCast((@intFromPtr(pbr.metallic_roughness_texture.texture.*.image) - @intFromPtr(d.images)) / @sizeOf(c.cgltf_image));
                     }
-                    if (tex_idx < texture_count) card_mat.metallic_roughness_texture = tex_idx;
+                    if (tex_idx < texture_count) card_mat.metallic_roughness_texture = .{ .index = tex_idx, .generation = 1 };
                     extract_texture_transform(&pbr.metallic_roughness_texture, &card_mat.metallic_roughness_transform);
                 }
             }
@@ -894,7 +896,7 @@ pub export fn cardinal_gltf_load_scene(path: [*:0]const u8, out_scene: *scene.Ca
                 } else {
                     tex_idx = @intCast((@intFromPtr(mat.normal_texture.texture.*.image) - @intFromPtr(d.images)) / @sizeOf(c.cgltf_image));
                 }
-                if (tex_idx < texture_count) card_mat.normal_texture = tex_idx;
+                if (tex_idx < texture_count) card_mat.normal_texture = .{ .index = tex_idx, .generation = 1 };
                 card_mat.normal_scale = mat.normal_texture.scale;
                 extract_texture_transform(&mat.normal_texture, &card_mat.normal_transform);
             }
@@ -906,7 +908,7 @@ pub export fn cardinal_gltf_load_scene(path: [*:0]const u8, out_scene: *scene.Ca
                 } else {
                     tex_idx = @intCast((@intFromPtr(mat.occlusion_texture.texture.*.image) - @intFromPtr(d.images)) / @sizeOf(c.cgltf_image));
                 }
-                if (tex_idx < texture_count) card_mat.ao_texture = tex_idx;
+                if (tex_idx < texture_count) card_mat.ao_texture = .{ .index = tex_idx, .generation = 1 };
                 card_mat.ao_strength = mat.occlusion_texture.scale;
                 extract_texture_transform(&mat.occlusion_texture, &card_mat.ao_transform);
             }
@@ -918,7 +920,7 @@ pub export fn cardinal_gltf_load_scene(path: [*:0]const u8, out_scene: *scene.Ca
                 } else {
                     tex_idx = @intCast((@intFromPtr(mat.emissive_texture.texture.*.image) - @intFromPtr(d.images)) / @sizeOf(c.cgltf_image));
                 }
-                if (tex_idx < texture_count) card_mat.emissive_texture = tex_idx;
+                if (tex_idx < texture_count) card_mat.emissive_texture = .{ .index = tex_idx, .generation = 1 };
                 extract_texture_transform(&mat.emissive_texture, &card_mat.emissive_transform);
             }
 

@@ -14,18 +14,18 @@ This document outlines areas for improvement, refactoring, and future extensions
 - [ ] **Log Categories**: Define clear categories (Render, Asset, Input, System) to filter logs effectively in the Editor.
 
 ### Async Systems
-- [ ] **Task Dependencies**: `CardinalAsyncTask` currently links via `next` pointer, but true dependency graph support (Task A waits for Task B) would be beneficial.
-- [ ] **Job System**: Consider migrating `CardinalAsyncLoader` to a more generic Job System for general engine tasks (physics, AI, etc.), not just loading.
+- [x] **Task Dependencies**: `CardinalAsyncTask` currently links via `next` pointer, but true dependency graph support (Task A waits for Task B) would be beneficial.
+- [x] **Job System**: Migrated `CardinalAsyncLoader` to a more generic Job System (`job_system.zig`).
 
 ## 2. Rendering (Vulkan)
 
 ### Abstraction & Safety
-- [ ] **Vulkan Wrappers**: Reduce raw C-style Vulkan calls in high-level logic. Create safe Zig wrappers for `VkDevice`, `VkQueue`, `VkCommandBuffer`.
-- [ ] **Handle Safety**: Use typed handles (e.g., `TextureHandle`, `MeshHandle`) instead of raw pointers to avoid use-after-free and dangling pointers.
+- [x] **Vulkan Wrappers**: Reduce raw C-style Vulkan calls in high-level logic. Create safe Zig wrappers for `VkDevice`, `VkQueue`, `VkCommandBuffer`.
+- [x] **Handle Safety**: Use typed handles (e.g., `TextureHandle`, `MeshHandle`) instead of raw pointers to avoid use-after-free and dangling pointers.
 - [x] **Descriptor Management**: The manual descriptor binding in `vulkan_pbr.zig` is fragile. Implement a reflection-based or data-driven descriptor set layout system.
 
 ### Features
-- [ ] **Bindless Textures**: The code hints at descriptor indexing (`descriptorCount = 5000` in `vulkan_pbr.zig`), but fully utilizing bindless resources would simplify material management.
+- [x] **Bindless Textures**: The code hints at descriptor indexing (`descriptorCount = 5000` in `vulkan_pbr.zig`), but fully utilizing bindless resources would simplify material management.
 - [ ] **Render Graph**: Move from hardcoded pipeline steps to a Frame Graph / Render Graph to handle complex dependencies (Shadows -> GBuffer -> Lighting -> PostFX).
 - [ ] **Shader Hot-Reloading**: Implement file watchers to reload shaders at runtime without restarting the editor.
 

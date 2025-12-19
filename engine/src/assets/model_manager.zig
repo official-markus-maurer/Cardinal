@@ -334,11 +334,11 @@ fn rebuild_combined_scene(manager: *CardinalModelManager) void {
                 dst_material.* = src_material.*;
 
                 // Adjust texture indices
-                if (dst_material.albedo_texture != std.math.maxInt(u32)) dst_material.albedo_texture += texture_offset;
-                if (dst_material.normal_texture != std.math.maxInt(u32)) dst_material.normal_texture += texture_offset;
-                if (dst_material.metallic_roughness_texture != std.math.maxInt(u32)) dst_material.metallic_roughness_texture += texture_offset;
-                if (dst_material.ao_texture != std.math.maxInt(u32)) dst_material.ao_texture += texture_offset;
-                if (dst_material.emissive_texture != std.math.maxInt(u32)) dst_material.emissive_texture += texture_offset;
+                if (dst_material.albedo_texture.is_valid()) dst_material.albedo_texture.index += texture_offset;
+                if (dst_material.normal_texture.is_valid()) dst_material.normal_texture.index += texture_offset;
+                if (dst_material.metallic_roughness_texture.is_valid()) dst_material.metallic_roughness_texture.index += texture_offset;
+                if (dst_material.ao_texture.is_valid()) dst_material.ao_texture.index += texture_offset;
+                if (dst_material.emissive_texture.is_valid()) dst_material.emissive_texture.index += texture_offset;
 
                 // Acquire reference
                 if (src_material.ref_resource) |res| {

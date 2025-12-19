@@ -442,6 +442,12 @@ pub export fn vk_descriptor_manager_allocate_sets(manager: ?*types.VulkanDescrip
     return true;
 }
 
+pub export fn vk_descriptor_manager_allocate(manager: ?*types.VulkanDescriptorManager) callconv(.c) bool {
+    if (manager == null) return false;
+    var set: c.VkDescriptorSet = null;
+    return vk_descriptor_manager_allocate_sets(manager, 1, @ptrCast(&set));
+}
+
 pub export fn vk_descriptor_manager_update_buffer(manager: ?*types.VulkanDescriptorManager, setIndex: u32, binding: u32, buffer: c.VkBuffer, offset: c.VkDeviceSize, range: c.VkDeviceSize) callconv(.c) bool {
     if (manager == null) return false;
     const mgr = manager.?;

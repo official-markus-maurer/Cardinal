@@ -4,6 +4,7 @@ const memory = @import("../core/memory.zig");
 const log = @import("../core/log.zig");
 const transform_math = @import("../core/transform.zig");
 const pool_alloc = @import("../core/pool_allocator.zig");
+const handles = @import("../core/handles.zig");
 
 // --- Global Pool for Scene Nodes ---
 var g_node_pool: ?pool_alloc.PoolAllocator(CardinalSceneNode) = null;
@@ -64,18 +65,18 @@ pub const CardinalTextureTransform = extern struct {
 };
 
 pub const CardinalSampler = extern struct {
-    wrap_s: CardinalSamplerWrap,
-    wrap_t: CardinalSamplerWrap,
-    min_filter: CardinalSamplerFilter,
-    mag_filter: CardinalSamplerFilter,
+    mag_filter: c_int,
+    min_filter: c_int,
+    wrap_s: c_int,
+    wrap_t: c_int,
 };
 
 pub const CardinalMaterial = extern struct {
-    albedo_texture: u32,
-    normal_texture: u32,
-    metallic_roughness_texture: u32,
-    ao_texture: u32,
-    emissive_texture: u32,
+    albedo_texture: handles.TextureHandle,
+    normal_texture: handles.TextureHandle,
+    metallic_roughness_texture: handles.TextureHandle,
+    ao_texture: handles.TextureHandle,
+    emissive_texture: handles.TextureHandle,
 
     albedo_factor: [3]f32,
     metallic_factor: f32,

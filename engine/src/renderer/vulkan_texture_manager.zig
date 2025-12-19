@@ -10,6 +10,8 @@ const vk_sync_mgr = @import("vulkan_sync_manager.zig");
 const scene = @import("../assets/scene.zig");
 const vk_mt = @import("vulkan_mt.zig");
 const vk_commands = @import("vulkan_commands.zig");
+const vk_descriptor_indexing = @import("vulkan_descriptor_indexing.zig");
+const handles = @import("../core/handles.zig");
 
 const TextureUploadContext = struct {
     // Input
@@ -108,10 +110,10 @@ fn upload_texture_task(data: ?*anyopaque) callconv(.c) void {
     ctx.managed_texture.sampler = create_sampler_from_config(ctx.device, &ctx.texture.sampler);
     if (ctx.managed_texture.sampler == null) {
         var default_sampler_config = std.mem.zeroes(scene.CardinalSampler);
-        default_sampler_config.wrap_s = .REPEAT;
-        default_sampler_config.wrap_t = .REPEAT;
-        default_sampler_config.min_filter = .LINEAR;
-        default_sampler_config.mag_filter = .LINEAR;
+        default_sampler_config.wrap_s = c.VK_SAMPLER_ADDRESS_MODE_REPEAT;
+        default_sampler_config.wrap_t = c.VK_SAMPLER_ADDRESS_MODE_REPEAT;
+        default_sampler_config.min_filter = c.VK_FILTER_LINEAR;
+        default_sampler_config.mag_filter = c.VK_FILTER_LINEAR;
         ctx.managed_texture.sampler = create_sampler_from_config(ctx.device, &default_sampler_config);
     }
 
@@ -197,6 +199,8 @@ fn ensure_capacity(manager: *types.VulkanTextureManager, required_capacity: u32)
     // Initialize new slots
     for (manager.textureCapacity..new_capacity) |i| {
         new_textures[i] = std.mem.zeroes(types.VulkanManagedTexture);
+        new_textures[i].bindless_index = c.UINT32_MAX;
+        new_textures[i].generation = 0;
     }
 
     manager.textures = new_textures;
@@ -213,6 +217,11 @@ fn destroy_texture(manager: *types.VulkanTextureManager, index: u32) void {
 
     // log.cardinal_log_debug("Destroying texture {d}", .{index});
     var texture = &manager.textures.?[index];
+
+    if (manager.bindless_pool.textures != null and texture.bindless_index != c.UINT32_MAX) {
+        vk_descriptor_indexing.vk_bindless_texture_free(&manager.bindless_pool, texture.bindless_index);
+        texture.bindless_index = c.UINT32_MAX;
+    }
 
     if (texture.view != null) {
         c.vkDestroyImageView(manager.device, texture.view, null);
@@ -236,7 +245,11 @@ fn destroy_texture(manager: *types.VulkanTextureManager, index: u32) void {
         texture.sampler = null;
     }
 
+    // Return index to free list or mark as free
+    const next_gen = texture.generation + 1;
     texture.* = std.mem.zeroes(types.VulkanManagedTexture);
+    texture.generation = next_gen;
+    texture.is_allocated = false;
 }
 
 fn create_sampler_from_config(device: c.VkDevice, config: *const scene.CardinalSampler) c.VkSampler {
@@ -244,26 +257,12 @@ fn create_sampler_from_config(device: c.VkDevice, config: *const scene.CardinalS
     sampler_info.sType = c.VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO;
 
     // Map filters
-    sampler_info.magFilter = if (config.mag_filter == .NEAREST) c.VK_FILTER_NEAREST else c.VK_FILTER_LINEAR;
-    sampler_info.minFilter = if (config.min_filter == .NEAREST) c.VK_FILTER_NEAREST else c.VK_FILTER_LINEAR;
+    sampler_info.magFilter = @intCast(config.mag_filter);
+    sampler_info.minFilter = @intCast(config.min_filter);
 
     // Map address modes
-    var wrap_s = c.VK_SAMPLER_ADDRESS_MODE_REPEAT;
-    if (config.wrap_s == .MIRRORED_REPEAT) {
-        wrap_s = c.VK_SAMPLER_ADDRESS_MODE_MIRRORED_REPEAT;
-    } else if (config.wrap_s == .CLAMP_TO_EDGE) {
-        wrap_s = c.VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
-    }
-
-    var wrap_t = c.VK_SAMPLER_ADDRESS_MODE_REPEAT;
-    if (config.wrap_t == .MIRRORED_REPEAT) {
-        wrap_t = c.VK_SAMPLER_ADDRESS_MODE_MIRRORED_REPEAT;
-    } else if (config.wrap_t == .CLAMP_TO_EDGE) {
-        wrap_t = c.VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
-    }
-
-    sampler_info.addressModeU = @intCast(wrap_s);
-    sampler_info.addressModeV = @intCast(wrap_t);
+    sampler_info.addressModeU = @intCast(config.wrap_s);
+    sampler_info.addressModeV = @intCast(config.wrap_t);
     sampler_info.addressModeW = @intCast(c.VK_SAMPLER_ADDRESS_MODE_REPEAT); // Usually not used for 2D textures
 
     sampler_info.anisotropyEnable = c.VK_FALSE;
@@ -334,11 +333,21 @@ pub fn vk_texture_manager_init(manager: *types.VulkanTextureManager, config: ?*c
     }
     manager.hasPlaceholder = true;
 
+    // Initialize bindless pool
+    if (config.?.vulkan_state != null) {
+        if (!vk_descriptor_indexing.vk_bindless_texture_pool_init(&manager.bindless_pool, config.?.vulkan_state, 5000)) {
+            log.cardinal_log_error("Failed to initialize bindless texture pool", .{});
+        }
+    }
+
     log.cardinal_log_info("Texture manager initialized with capacity {d} and default placeholder", .{initial_capacity});
     return true;
 }
 
 pub fn vk_texture_manager_destroy(manager: *types.VulkanTextureManager) void {
+    // Destroy bindless pool
+    vk_descriptor_indexing.vk_bindless_texture_pool_destroy(&manager.bindless_pool);
+
     // Destroy all textures
     var i: u32 = 0;
     while (i < manager.textureCount) : (i += 1) {
@@ -475,6 +484,27 @@ pub fn vk_texture_manager_load_scene_textures(manager: *types.VulkanTextureManag
         }
     }
 
+    // Register textures in bindless pool
+    if (manager.bindless_pool.textures != null) {
+        var k: u32 = 0;
+        while (k < tasks_submitted) : (k += 1) {
+            const ctx = &ctx_array[k];
+            if (ctx.success) {
+                var bindless_idx: u32 = 0;
+                if (vk_descriptor_indexing.vk_bindless_texture_register_existing(
+                    &manager.bindless_pool,
+                    ctx.managed_texture.image,
+                    ctx.managed_texture.view,
+                    ctx.managed_texture.sampler,
+                    &bindless_idx
+                )) {
+                    ctx.managed_texture.bindless_index = bindless_idx;
+                }
+            }
+        }
+        _ = vk_descriptor_indexing.vk_bindless_texture_flush_updates(&manager.bindless_pool);
+    }
+
     // Execute secondary command buffers
     log.cardinal_log_info("Executing texture copy commands...", .{});
 
@@ -562,10 +592,10 @@ pub fn vk_texture_manager_load_scene_textures(manager: *types.VulkanTextureManag
 
             // Create sampler (copy of placeholder sampler)
             var default_sampler_config = std.mem.zeroes(scene.CardinalSampler);
-            default_sampler_config.wrap_s = .REPEAT;
-            default_sampler_config.wrap_t = .REPEAT;
-            default_sampler_config.min_filter = .LINEAR;
-            default_sampler_config.mag_filter = .LINEAR;
+            default_sampler_config.wrap_s = c.VK_SAMPLER_ADDRESS_MODE_REPEAT;
+            default_sampler_config.wrap_t = c.VK_SAMPLER_ADDRESS_MODE_REPEAT;
+            default_sampler_config.min_filter = c.VK_FILTER_LINEAR;
+            default_sampler_config.mag_filter = c.VK_FILTER_LINEAR;
             tex.sampler = create_sampler_from_config(manager.device, &default_sampler_config);
 
             tex.image = null; // Do not own image
@@ -632,10 +662,10 @@ pub fn vk_texture_manager_load_texture(manager: *types.VulkanTextureManager, tex
         log.cardinal_log_error("Failed to create sampler for texture {d} - using default", .{index});
         // Let's create a default sampler copy to keep ownership consistent
         var default_sampler_config = std.mem.zeroes(scene.CardinalSampler);
-        default_sampler_config.wrap_s = @enumFromInt(c.CARDINAL_SAMPLER_WRAP_REPEAT);
-        default_sampler_config.wrap_t = @enumFromInt(c.CARDINAL_SAMPLER_WRAP_REPEAT);
-        default_sampler_config.min_filter = @enumFromInt(c.CARDINAL_SAMPLER_FILTER_LINEAR);
-        default_sampler_config.mag_filter = @enumFromInt(c.CARDINAL_SAMPLER_FILTER_LINEAR);
+        default_sampler_config.wrap_s = c.VK_SAMPLER_ADDRESS_MODE_REPEAT;
+        default_sampler_config.wrap_t = c.VK_SAMPLER_ADDRESS_MODE_REPEAT;
+        default_sampler_config.min_filter = c.VK_FILTER_LINEAR;
+        default_sampler_config.mag_filter = c.VK_FILTER_LINEAR;
         managed_texture.sampler = create_sampler_from_config(manager.device, &default_sampler_config);
     }
 
@@ -657,6 +687,20 @@ pub fn vk_texture_manager_load_texture(manager: *types.VulkanTextureManager, tex
 
     const path_str = if (managed_texture.path) |p| std.mem.span(p) else "unknown";
     log.cardinal_log_debug("Loaded texture at index {d}: {d}x{d}, {d} channels ({s})", .{ index, managed_texture.width, managed_texture.height, managed_texture.channels, path_str });
+
+    if (manager.bindless_pool.textures != null) {
+        var bindless_idx: u32 = 0;
+        if (vk_descriptor_indexing.vk_bindless_texture_register_existing(
+            &manager.bindless_pool,
+            managed_texture.image,
+            managed_texture.view,
+            managed_texture.sampler,
+            &bindless_idx
+        )) {
+            managed_texture.bindless_index = bindless_idx;
+            _ = vk_descriptor_indexing.vk_bindless_texture_flush_updates(&manager.bindless_pool);
+        }
+    }
 
     return true;
 }
@@ -691,11 +735,25 @@ pub fn vk_texture_manager_create_placeholder(manager: *types.VulkanTextureManage
 
     // Create default sampler for placeholder
     var default_sampler_config = std.mem.zeroes(scene.CardinalSampler);
-    default_sampler_config.wrap_s = .REPEAT;
-    default_sampler_config.wrap_t = .REPEAT;
-    default_sampler_config.min_filter = .LINEAR;
-    default_sampler_config.mag_filter = .LINEAR;
+    default_sampler_config.wrap_s = c.VK_SAMPLER_ADDRESS_MODE_REPEAT;
+    default_sampler_config.wrap_t = c.VK_SAMPLER_ADDRESS_MODE_REPEAT;
+    default_sampler_config.min_filter = c.VK_FILTER_LINEAR;
+    default_sampler_config.mag_filter = c.VK_FILTER_LINEAR;
     managed_texture.sampler = create_sampler_from_config(manager.device, &default_sampler_config);
+
+    if (manager.bindless_pool.textures != null) {
+        var bindless_idx: u32 = 0;
+        if (vk_descriptor_indexing.vk_bindless_texture_register_existing(
+            &manager.bindless_pool,
+            managed_texture.image,
+            managed_texture.view,
+            managed_texture.sampler,
+            &bindless_idx
+        )) {
+            managed_texture.bindless_index = bindless_idx;
+            _ = vk_descriptor_indexing.vk_bindless_texture_flush_updates(&manager.bindless_pool);
+        }
+    }
 
     manager.textureCount += 1;
     out_index.?.* = index;

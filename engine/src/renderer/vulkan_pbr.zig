@@ -14,6 +14,8 @@ const material_utils = @import("util/vulkan_material_utils.zig");
 const shader_utils = @import("util/vulkan_shader_utils.zig");
 const texture_utils = @import("util/vulkan_texture_utils.zig");
 const vk_utils = @import("vulkan_utils.zig");
+const vk_descriptor_indexing = @import("vulkan_descriptor_indexing.zig");
+const wrappers = @import("vulkan_wrappers.zig");
 const scene = @import("../assets/scene.zig");
 const animation = @import("../core/animation.zig");
 
@@ -44,7 +46,6 @@ fn create_pbr_descriptor_manager(pipeline: *types.VulkanPBRPipeline, device: c.V
         builder.add_binding(6, c.VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, 1, c.VK_SHADER_STAGE_VERTEX_BIT) catch break :blk false;
         // Binding 7 removed
         builder.add_binding(8, c.VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, 1, c.VK_SHADER_STAGE_FRAGMENT_BIT) catch break :blk false;
-        builder.add_binding(9, c.VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 5000, c.VK_SHADER_STAGE_FRAGMENT_BIT) catch break :blk false;
         break :blk true;
     };
 
@@ -89,6 +90,7 @@ fn create_pbr_texture_manager(pipeline: *types.VulkanPBRPipeline, device: c.VkDe
         textureConfig.syncManager = vulkan_state.?.sync_manager;
     }
 
+    textureConfig.vulkan_state = vulkan_state;
     textureConfig.initialCapacity = 16;
 
     if (!vk_texture_mgr.vk_texture_manager_init(pipeline.textureManager.?, &textureConfig)) {
@@ -101,21 +103,33 @@ fn create_pbr_texture_manager(pipeline: *types.VulkanPBRPipeline, device: c.VkDe
 }
 
 fn create_pbr_pipeline_layout(pipeline: *types.VulkanPBRPipeline, device: c.VkDevice) bool {
-    var pushConstantRange = c.VkPushConstantRange{
+    const pushConstantRange = c.VkPushConstantRange{
         .stageFlags = c.VK_SHADER_STAGE_VERTEX_BIT | c.VK_SHADER_STAGE_FRAGMENT_BIT,
         .offset = 0,
         .size = @sizeOf(types.PBRPushConstants),
     };
 
-    var descriptorLayout = descriptor_mgr.vk_descriptor_manager_get_layout(@ptrCast(pipeline.descriptorManager));
-    var pipelineLayoutInfo = std.mem.zeroes(c.VkPipelineLayoutCreateInfo);
-    pipelineLayoutInfo.sType = c.VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO;
-    pipelineLayoutInfo.setLayoutCount = 1;
-    pipelineLayoutInfo.pSetLayouts = &descriptorLayout;
-    pipelineLayoutInfo.pushConstantRangeCount = 1;
-    pipelineLayoutInfo.pPushConstantRanges = &pushConstantRange;
+    var descriptorLayouts: [2]c.VkDescriptorSetLayout = undefined;
+    descriptorLayouts[0] = descriptor_mgr.vk_descriptor_manager_get_layout(@ptrCast(pipeline.descriptorManager));
+    var layoutCount: u32 = 1;
 
-    return vk_utils.vk_utils_create_pipeline_layout(@ptrCast(device), @ptrCast(&pipelineLayoutInfo), &pipeline.pipelineLayout, "PBR pipeline layout");
+    if (pipeline.textureManager != null) {
+        const bindlessLayout = vk_descriptor_indexing.vk_bindless_texture_get_layout(&pipeline.textureManager.?.bindless_pool);
+        if (bindlessLayout != null) {
+            descriptorLayouts[1] = bindlessLayout;
+            layoutCount = 2;
+        }
+    }
+
+    const device_wrapper = wrappers.Device.init(device);
+    const setLayouts = descriptorLayouts[0..layoutCount];
+    const pushConstantRanges = [_]c.VkPushConstantRange{pushConstantRange};
+
+    pipeline.pipelineLayout = device_wrapper.createPipelineLayout(setLayouts, &pushConstantRanges) catch |err| {
+        log.cardinal_log_error("Failed to create PBR pipeline layout: {s}", .{@errorName(err)});
+        return false;
+    };
+    return true;
 }
 
 fn load_pbr_shaders(device: c.VkDevice, vertShaderModule: *c.VkShaderModule, fragShaderModule: *c.VkShaderModule) bool {
@@ -142,7 +156,7 @@ fn load_pbr_shaders(device: c.VkDevice, vertShaderModule: *c.VkShaderModule, fra
 
     if (!shader_utils.vk_shader_create_module(device, frag_path_ptr, fragShaderModule)) {
         log.cardinal_log_error("Failed to create fragment shader module!", .{});
-        c.vkDestroyShaderModule(device, vertShaderModule.*, null);
+        wrappers.Device.init(device).destroyShaderModule(vertShaderModule.*);
         return false;
     }
     return true;
@@ -577,38 +591,8 @@ fn update_pbr_descriptor_sets(pipeline: *types.VulkanPBRPipeline) bool {
         }
     }
 
-    // Update variable descriptor array (binding 9)
-    const texCount = pipeline.textureManager.?.textureCount;
-    if (texCount > 0) {
-        const mem_alloc = memory.cardinal_get_allocator_for_category(.RENDERER);
-        const views = memory.cardinal_alloc(mem_alloc, @sizeOf(c.VkImageView) * texCount);
-        const samplers = memory.cardinal_alloc(mem_alloc, @sizeOf(c.VkSampler) * texCount);
-
-        if (views == null or samplers == null) {
-            log.cardinal_log_error("Failed to allocate arrays for descriptor update", .{});
-            if (views != null) memory.cardinal_free(mem_alloc, views);
-            if (samplers != null) memory.cardinal_free(mem_alloc, samplers);
-            return false;
-        }
-        defer memory.cardinal_free(mem_alloc, views);
-        defer memory.cardinal_free(mem_alloc, samplers);
-
-        const viewsPtr = @as([*]c.VkImageView, @ptrCast(@alignCast(views)));
-        const samplersPtr = @as([*]c.VkSampler, @ptrCast(@alignCast(samplers)));
-
-        var i: u32 = 0;
-        while (i < texCount) : (i += 1) {
-            viewsPtr[i] = pipeline.textureManager.?.textures.?[i].view;
-            samplersPtr[i] = pipeline.textureManager.?.textures.?[i].sampler;
-        }
-
-        if (!descriptor_mgr.vk_descriptor_manager_update_textures_with_samplers(dm, setIndex, 9, viewsPtr, samplersPtr, c.VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, texCount)) {
-            log.cardinal_log_error("Failed to update variable texture array (binding 9)", .{});
-            return false;
-        }
-    }
-
     // Note: Material data is passed via Push Constants, so no binding 7 update needed.
+    // Binding 9 (Texture Array) is now handled via bindless descriptor set (Set 1), managed by BindlessTexturePool.
 
     // Update lighting buffer (binding 8)
     if (!descriptor_mgr.vk_descriptor_manager_update_buffer(dm, setIndex, 8, pipeline.lightingBuffer, 0, @sizeOf(types.PBRLightingData))) {
@@ -638,7 +622,7 @@ pub export fn vk_pbr_load_scene(pipeline: ?*types.VulkanPBRPipeline, device: c.V
     // We use vkDeviceWaitIdle instead of timeline semaphore wait to avoid issues with
     // timeline resets/overflows during scene loading.
     if (vulkan_state != null and vulkan_state.?.context.device != null) {
-        _ = c.vkDeviceWaitIdle(vulkan_state.?.context.device);
+        wrappers.Device.init(vulkan_state.?.context.device).waitIdle() catch {};
     }
 
     if (pipe.vertexBuffer != null or pipe.vertexBufferMemory != null) {
@@ -682,37 +666,11 @@ pub export fn vk_pbr_load_scene(pipeline: ?*types.VulkanPBRPipeline, device: c.V
     }
 
     // Allocate descriptor set using descriptor manager
-    var descriptorSet: c.VkDescriptorSet = null;
-    const variableDescriptorCount = pipe.textureManager.?.textureCount;
-
     const dm = @as(*types.VulkanDescriptorManager, @ptrCast(pipe.descriptorManager));
 
-    // Allocate with variable descriptor count to satisfy binding 9 array size
-    var allocInfo = std.mem.zeroes(c.VkDescriptorSetAllocateInfo);
-    allocInfo.sType = c.VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO;
-    allocInfo.descriptorPool = dm.descriptorPool;
-    allocInfo.descriptorSetCount = 1;
-    allocInfo.pSetLayouts = &dm.descriptorSetLayout;
-
-    var variableCounts = [1]u32{variableDescriptorCount};
-    var variableInfo = std.mem.zeroes(c.VkDescriptorSetVariableDescriptorCountAllocateInfo);
-    variableInfo.sType = c.VK_STRUCTURE_TYPE_DESCRIPTOR_SET_VARIABLE_DESCRIPTOR_COUNT_ALLOCATE_INFO;
-    variableInfo.descriptorSetCount = 1;
-    variableInfo.pDescriptorCounts = &variableCounts;
-
-    allocInfo.pNext = &variableInfo;
-
-    if (c.vkAllocateDescriptorSets(dm.device, &allocInfo, &descriptorSet) != c.VK_SUCCESS) {
-        log.cardinal_log_error("Failed to allocate descriptor set with variable count using descriptor manager", .{});
+    if (!descriptor_mgr.vk_descriptor_manager_allocate(dm)) {
+        log.cardinal_log_error("Failed to allocate descriptor set", .{});
         return false;
-    }
-
-    // Track the allocated set in the manager
-    if (dm.descriptorSetCount < dm.maxSets and
-        dm.descriptorSets != null)
-    {
-        dm.descriptorSets.?[dm.descriptorSetCount] = descriptorSet;
-        dm.descriptorSetCount += 1;
     }
 
     // Wait for graphics queue to complete before updating descriptor sets
@@ -772,20 +730,22 @@ pub export fn vk_pbr_pipeline_create(pipeline: ?*types.VulkanPBRPipeline, device
         return false;
     }
 
+    const dev = wrappers.Device.init(device);
+
     if (!create_pbr_graphics_pipeline(pipe, device, vertShader, fragShader, swapchainFormat, depthFormat, false, true, &pipe.pipeline)) {
-        c.vkDestroyShaderModule(device, vertShader, null);
-        c.vkDestroyShaderModule(device, fragShader, null);
+        dev.destroyShaderModule(vertShader);
+        dev.destroyShaderModule(fragShader);
         return false;
     }
 
     if (!create_pbr_graphics_pipeline(pipe, device, vertShader, fragShader, swapchainFormat, depthFormat, true, false, &pipe.pipelineBlend)) {
-        c.vkDestroyShaderModule(device, vertShader, null);
-        c.vkDestroyShaderModule(device, fragShader, null);
+        dev.destroyShaderModule(vertShader);
+        dev.destroyShaderModule(fragShader);
         return false;
     }
 
-    c.vkDestroyShaderModule(device, vertShader, null);
-    c.vkDestroyShaderModule(device, fragShader, null);
+    dev.destroyShaderModule(vertShader);
+    dev.destroyShaderModule(fragShader);
 
     log.cardinal_log_debug("PBR graphics pipelines created", .{});
 
@@ -875,7 +835,7 @@ pub export fn vk_pbr_pipeline_destroy(pipeline: ?*types.VulkanPBRPipeline, devic
     }
 
     if (pipe.pipelineLayout != null) {
-        c.vkDestroyPipelineLayout(device, pipe.pipelineLayout, null);
+        wrappers.Device.init(device).destroyPipelineLayout(pipe.pipelineLayout);
     }
 
     if (pipe.boneMatricesBuffer != null or pipe.boneMatricesBufferMemory != null) {
@@ -910,6 +870,7 @@ pub export fn vk_pbr_render(pipeline: ?*types.VulkanPBRPipeline, commandBuffer: 
     }
     const pipe = pipeline.?;
     const scn = scene_data.?;
+    const cmd = wrappers.CommandBuffer.init(commandBuffer);
 
     if (pipe.vertexBuffer == null or pipe.indexBuffer == null) {
         log.cardinal_log_warn("vk_pbr_render skipped: vertex/index buffer null", .{});
@@ -918,8 +879,8 @@ pub export fn vk_pbr_render(pipeline: ?*types.VulkanPBRPipeline, commandBuffer: 
 
     const vertexBuffers = [_]c.VkBuffer{pipe.vertexBuffer};
     const offsets = [_]c.VkDeviceSize{0};
-    c.vkCmdBindVertexBuffers(commandBuffer, 0, 1, &vertexBuffers, &offsets);
-    c.vkCmdBindIndexBuffer(commandBuffer, pipe.indexBuffer, 0, c.VK_INDEX_TYPE_UINT32);
+    cmd.bindVertexBuffers(0, &vertexBuffers, &offsets);
+    cmd.bindIndexBuffer(pipe.indexBuffer, 0, c.VK_INDEX_TYPE_UINT32);
 
     var descriptorSet: c.VkDescriptorSet = null;
     if (pipe.descriptorManager != null) {
@@ -937,8 +898,16 @@ pub export fn vk_pbr_render(pipeline: ?*types.VulkanPBRPipeline, commandBuffer: 
     }
 
     // Pass 1: Opaque
-    c.vkCmdBindPipeline(commandBuffer, c.VK_PIPELINE_BIND_POINT_GRAPHICS, pipe.pipeline);
-    c.vkCmdBindDescriptorSets(commandBuffer, c.VK_PIPELINE_BIND_POINT_GRAPHICS, pipe.pipelineLayout, 0, 1, &descriptorSet, 0, null);
+    cmd.bindPipeline(c.VK_PIPELINE_BIND_POINT_GRAPHICS, pipe.pipeline);
+    const descriptorSets = [_]c.VkDescriptorSet{descriptorSet};
+    cmd.bindDescriptorSets(c.VK_PIPELINE_BIND_POINT_GRAPHICS, pipe.pipelineLayout, 0, &descriptorSets, &[_]u32{});
+
+    if (pipe.textureManager != null and pipe.textureManager.?.bindless_pool.descriptor_set != null) {
+        const bindlessSet = pipe.textureManager.?.bindless_pool.descriptor_set;
+        const bindlessSets = [_]c.VkDescriptorSet{bindlessSet};
+        cmd.bindDescriptorSets(c.VK_PIPELINE_BIND_POINT_GRAPHICS, pipe.pipelineLayout, 1, &bindlessSets, &[_]u32{});
+    }
+
     c.vkCmdSetDepthBias(commandBuffer, 0.0, 0.0, 0.0);
 
     var indexOffset: u32 = 0;
@@ -993,11 +962,11 @@ pub export fn vk_pbr_render(pipeline: ?*types.VulkanPBRPipeline, commandBuffer: 
             }
         }
 
-        c.vkCmdPushConstants(commandBuffer, pipe.pipelineLayout, c.VK_SHADER_STAGE_VERTEX_BIT | c.VK_SHADER_STAGE_FRAGMENT_BIT, 0, @sizeOf(types.PBRPushConstants), &pushConstants);
+        cmd.pushConstants(pipe.pipelineLayout, c.VK_SHADER_STAGE_VERTEX_BIT | c.VK_SHADER_STAGE_FRAGMENT_BIT, 0, @sizeOf(types.PBRPushConstants), &pushConstants);
 
         if (indexOffset + mesh.index_count > pipe.totalIndexCount) break;
 
-        c.vkCmdDrawIndexed(commandBuffer, mesh.index_count, 1, indexOffset, 0, 0);
+        cmd.drawIndexed(mesh.index_count, 1, indexOffset, 0, 0);
         drawn_count += 1;
         indexOffset += mesh.index_count;
     }
@@ -1005,8 +974,14 @@ pub export fn vk_pbr_render(pipeline: ?*types.VulkanPBRPipeline, commandBuffer: 
     // if (drawn_count > 0) log.cardinal_log_debug("PBR Render: Drawn {d} opaque meshes", .{drawn_count});
 
     // Pass 2: Blend
-    c.vkCmdBindPipeline(commandBuffer, c.VK_PIPELINE_BIND_POINT_GRAPHICS, pipe.pipelineBlend);
-    c.vkCmdBindDescriptorSets(commandBuffer, c.VK_PIPELINE_BIND_POINT_GRAPHICS, pipe.pipelineLayout, 0, 1, &descriptorSet, 0, null);
+    cmd.bindPipeline(c.VK_PIPELINE_BIND_POINT_GRAPHICS, pipe.pipelineBlend);
+    cmd.bindDescriptorSets(c.VK_PIPELINE_BIND_POINT_GRAPHICS, pipe.pipelineLayout, 0, &descriptorSets, &[_]u32{});
+
+    if (pipe.textureManager != null and pipe.textureManager.?.bindless_pool.descriptor_set != null) {
+        const bindlessSet = pipe.textureManager.?.bindless_pool.descriptor_set;
+        const bindlessSets = [_]c.VkDescriptorSet{bindlessSet};
+        cmd.bindDescriptorSets(c.VK_PIPELINE_BIND_POINT_GRAPHICS, pipe.pipelineLayout, 1, &bindlessSets, &[_]u32{});
+    }
 
     indexOffset = 0;
     i = 0;
@@ -1061,11 +1036,11 @@ pub export fn vk_pbr_render(pipeline: ?*types.VulkanPBRPipeline, commandBuffer: 
             }
         }
 
-        c.vkCmdPushConstants(commandBuffer, pipe.pipelineLayout, c.VK_SHADER_STAGE_VERTEX_BIT | c.VK_SHADER_STAGE_FRAGMENT_BIT, 0, @sizeOf(types.PBRPushConstants), &pushConstants);
+        cmd.pushConstants(pipe.pipelineLayout, c.VK_SHADER_STAGE_VERTEX_BIT | c.VK_SHADER_STAGE_FRAGMENT_BIT, 0, @sizeOf(types.PBRPushConstants), &pushConstants);
 
         if (indexOffset + mesh.index_count > pipe.totalIndexCount) break;
 
-        c.vkCmdDrawIndexed(commandBuffer, mesh.index_count, 1, indexOffset, 0, 0);
+        cmd.drawIndexed(mesh.index_count, 1, indexOffset, 0, 0);
         indexOffset += mesh.index_count;
     }
 }

@@ -3,6 +3,7 @@ const log = @import("log.zig");
 const memory = @import("memory.zig");
 const ref_counting = @import("ref_counting.zig");
 const scene = @import("../assets/scene.zig");
+const job_system = @import("job_system.zig");
 
 // --- External Dependencies ---
 extern fn texture_load_with_ref_counting(file_path: [*:0]const u8, out_texture: ?*anyopaque) callconv(.c) ?*ref_counting.CardinalRefCountedResource;
@@ -60,10 +61,10 @@ pub const CardinalAsyncTask = extern struct {
 
     error_message: ?[*:0]u8,
 
-    next: ?*CardinalAsyncTask,
+    next: ?*CardinalAsyncTask, // Used to store pointer to underlying Job
     submit_time: u64,
 
-    // Dependency Graph
+    // Dependency Graph (Maintained for legacy API structure, but logic delegated to JobSystem)
     dependency_count: u32,
     dependents: [8]?*CardinalAsyncTask,
 };
@@ -76,29 +77,10 @@ pub const CardinalAsyncLoaderConfig = extern struct {
 
 // --- Internal State ---
 
-const TaskQueue = struct {
-    head: ?*CardinalAsyncTask,
-    tail: ?*CardinalAsyncTask,
-    count: u32,
-    max_size: u32,
-    mutex: std.Thread.Mutex,
-    condition: std.Thread.Condition,
-};
-
-const WorkerThread = struct {
-    thread_id: u32,
-    should_exit: bool,
-    thread: ?std.Thread,
-};
-
 const AsyncLoaderState = struct {
     initialized: bool,
     shutting_down: bool,
     config: CardinalAsyncLoaderConfig,
-    pending_queue: TaskQueue,
-    waiting_queue: TaskQueue,
-    completed_queue: TaskQueue,
-    workers: ?[]WorkerThread,
     next_task_id: u32,
     state_mutex: std.Thread.Mutex,
 };
@@ -111,106 +93,11 @@ fn get_timestamp_ms() u64 {
     return @as(u64, @intCast(std.time.milliTimestamp()));
 }
 
-fn task_queue_init(queue: *TaskQueue, max_size: u32) void {
-    queue.head = null;
-    queue.tail = null;
-    queue.count = 0;
-    queue.max_size = max_size;
-    queue.mutex = .{};
-    queue.condition = .{};
-}
-
-fn task_queue_destroy(queue: *TaskQueue) void {
-    queue.mutex.lock();
-    var task = queue.head;
-    while (task) |t| {
-        const next = t.next;
-        cardinal_async_free_task(t);
-        task = next;
+fn execute_task_job(data: ?*anyopaque) callconv(.c) void {
+    if (data) |d| {
+        const task = @as(*CardinalAsyncTask, @ptrCast(@alignCast(d)));
+        _ = execute_task(task);
     }
-    queue.mutex.unlock();
-    queue.* = undefined;
-}
-
-fn task_queue_push(queue: *TaskQueue, task: *CardinalAsyncTask) bool {
-    queue.mutex.lock();
-    defer queue.mutex.unlock();
-
-    if (queue.max_size > 0 and queue.count >= queue.max_size) {
-        return false;
-    }
-
-    task.next = null;
-    if (queue.tail) |tail| {
-        tail.next = task;
-    } else {
-        queue.head = task;
-    }
-    queue.tail = task;
-    queue.count += 1;
-
-    queue.condition.signal();
-    return true;
-}
-
-fn task_queue_pop(queue: *TaskQueue, wait: bool) ?*CardinalAsyncTask {
-    queue.mutex.lock();
-    defer queue.mutex.unlock();
-
-    while (queue.head == null and wait and !g_async_loader.shutting_down) {
-        queue.condition.wait(&queue.mutex);
-    }
-
-    if (queue.head) |task| {
-        queue.head = task.next;
-        if (queue.head == null) {
-            queue.tail = null;
-        }
-        queue.count -= 1;
-        task.next = null;
-        return task;
-    }
-
-    return null;
-}
-
-fn task_queue_remove(queue: *TaskQueue, task: *CardinalAsyncTask) bool {
-    queue.mutex.lock();
-    defer queue.mutex.unlock();
-
-    if (queue.head == null) return false;
-
-    if (queue.head == task) {
-        queue.head = task.next;
-        if (queue.head == null) {
-            queue.tail = null;
-        }
-        queue.count -= 1;
-        task.next = null;
-        return true;
-    }
-
-    var current = queue.head;
-    while (current) |c| {
-        if (c.next == task) {
-            c.next = task.next;
-            if (task == queue.tail) {
-                queue.tail = current;
-            }
-            queue.count -= 1;
-            task.next = null;
-            return true;
-        }
-        current = c.next;
-    }
-
-    return false;
-}
-
-fn task_queue_size(queue: *TaskQueue) u32 {
-    queue.mutex.lock();
-    defer queue.mutex.unlock();
-    return queue.count;
 }
 
 fn create_task(task_type: CardinalAsyncTaskType, priority: CardinalAsyncPriority) ?*CardinalAsyncTask {
@@ -235,6 +122,23 @@ fn create_task(task_type: CardinalAsyncTaskType, priority: CardinalAsyncPriority
     task.status = .PENDING;
     task.submit_time = get_timestamp_ms();
 
+    // Create underlying Job
+    const job_prio: job_system.JobPriority = switch (priority) {
+        .LOW => .LOW,
+        .NORMAL => .NORMAL,
+        .HIGH => .HIGH,
+        .CRITICAL => .CRITICAL,
+    };
+
+    const job = job_system.create_job(execute_task_job, task, job_prio);
+    if (job == null) {
+        memory.cardinal_free(allocator, ptr);
+        return null;
+    }
+
+    // Store Job pointer in 'next' field (Type punning)
+    task.next = @ptrCast(job);
+
     return task;
 }
 
@@ -244,18 +148,6 @@ fn execute_texture_load_task(task: *CardinalAsyncTask) bool {
     if (task.file_path == null) return false;
 
     std.log.debug("Loading texture: {s}", .{task.file_path.?});
-
-    // We need to allocate TextureData (opaque)
-    // Actually texture_load_with_ref_counting takes pointer to TextureData.
-    // We'll treat TextureData as opaque block of memory for now, assuming size is handled inside.
-    // Wait, in C code: TextureData texture_data; ... &texture_data
-    // TextureData is a struct. I should define it in scene.zig or just allocate enough space.
-    // Since I don't have TextureData definition fully in Zig yet (it's in scene.zig as CardinalTexture),
-    // let's assume CardinalTexture IS TextureData (checking C code... yes, mostly).
-
-    // Wait, texture_load_with_ref_counting takes `TextureData*`.
-    // In `texture_loader.h` (not read yet), `TextureData` is likely `CardinalTexture`.
-    // Let's assume `scene.CardinalTexture` is compatible.
 
     var texture_data: scene.CardinalTexture = undefined;
 
@@ -440,44 +332,6 @@ fn execute_task(task: *CardinalAsyncTask) bool {
     return success;
 }
 
-fn worker_thread_func(worker: *WorkerThread) void {
-    std.log.debug("Worker thread {d} started", .{worker.thread_id});
-
-    while (!worker.should_exit and !g_async_loader.shutting_down) {
-        const task = task_queue_pop(&g_async_loader.pending_queue, true);
-
-        if (task == null) continue;
-        const t = task.?;
-
-        if (t.status == .CANCELLED) {
-            _ = task_queue_push(&g_async_loader.completed_queue, t);
-            continue;
-        }
-
-        _ = execute_task(t);
-        _ = task_queue_push(&g_async_loader.completed_queue, t);
-
-        // Process dependencies
-        g_async_loader.state_mutex.lock();
-        for (t.dependents) |dependent_opt| {
-            if (dependent_opt) |dependent| {
-                if (dependent.dependency_count > 0) {
-                    dependent.dependency_count -= 1;
-                    if (dependent.dependency_count == 0) {
-                        // Move from waiting to pending
-                        if (task_queue_remove(&g_async_loader.waiting_queue, dependent)) {
-                            _ = task_queue_push(&g_async_loader.pending_queue, dependent);
-                        }
-                    }
-                }
-            }
-        }
-        g_async_loader.state_mutex.unlock();
-    }
-
-    std.log.debug("Worker thread {d} exiting", .{worker.thread_id});
-}
-
 // --- Public API ---
 
 pub export fn cardinal_async_loader_init(config: ?*const CardinalAsyncLoaderConfig) callconv(.c) bool {
@@ -496,42 +350,25 @@ pub export fn cardinal_async_loader_init(config: ?*const CardinalAsyncLoaderConf
         g_async_loader.config.enable_priority_queue = true;
     }
 
-    if (g_async_loader.config.worker_thread_count == 0) {
-        // Simple heuristic: cpu_count - 1
-        // For now hardcode to 4 if detection fails, or use std.Thread.getCpuCount()
-        const count = std.Thread.getCpuCount() catch 1;
-        g_async_loader.config.worker_thread_count = if (count > 1) @intCast(count - 1) else 1;
-    }
-
-    g_async_loader.state_mutex = .{};
-    task_queue_init(&g_async_loader.pending_queue, g_async_loader.config.max_queue_size);
-    task_queue_init(&g_async_loader.waiting_queue, g_async_loader.config.max_queue_size);
-    task_queue_init(&g_async_loader.completed_queue, 0);
-
-    const allocator = memory.cardinal_get_allocator_for_category(.ENGINE);
-    const workers_ptr = memory.cardinal_alloc(allocator, @sizeOf(WorkerThread) * g_async_loader.config.worker_thread_count);
-    if (workers_ptr == null) {
-        // Cleanup
+    // Initialize Job System
+    const job_config = job_system.JobSystemConfig{
+        .worker_thread_count = g_async_loader.config.worker_thread_count,
+        .max_queue_size = g_async_loader.config.max_queue_size,
+        .enable_priority_queue = g_async_loader.config.enable_priority_queue,
+    };
+    
+    if (!job_system.init(&job_config)) {
         return false;
     }
+    
+    // Update config with actual thread count used by job system (defaulted inside)
+    g_async_loader.config.worker_thread_count = job_system.g_job_system.config.worker_thread_count;
 
-    // We need to manage the slice manually since it came from C allocator
-    const workers = @as([*]WorkerThread, @ptrCast(@alignCast(workers_ptr)))[0..g_async_loader.config.worker_thread_count];
-    g_async_loader.workers = workers;
-
-    for (workers, 0..) |*worker, i| {
-        worker.thread_id = @intCast(i);
-        worker.should_exit = false;
-        worker.thread = std.Thread.spawn(.{}, worker_thread_func, .{worker}) catch |err| {
-            std.log.err("Failed to spawn worker thread: {}", .{err});
-            return false;
-        };
-    }
-
+    g_async_loader.state_mutex = .{};
+    g_async_loader.next_task_id = 0;
+    
     g_async_loader.initialized = true;
-    g_async_loader.shutting_down = false;
-
-    std.log.info("Async loader initialized with {d} worker threads", .{g_async_loader.config.worker_thread_count});
+    std.log.info("Async loader (JobSystem) initialized with {d} worker threads", .{g_async_loader.config.worker_thread_count});
     return true;
 }
 
@@ -541,19 +378,7 @@ pub export fn cardinal_async_loader_shutdown() callconv(.c) void {
     std.log.info("Shutting down async loader...", .{});
     g_async_loader.shutting_down = true;
 
-    // Wake up workers
-    if (g_async_loader.workers) |workers| {
-        for (workers) |*worker| {
-            worker.should_exit = true;
-        }
-        g_async_loader.pending_queue.condition.broadcast();
-
-        for (workers) |*worker| {
-            if (worker.thread) |t| {
-                t.join();
-            }
-        }
-    }
+    job_system.shutdown();
 
     g_async_loader.initialized = false;
     std.log.info("Async loader shutdown complete", .{});
@@ -573,55 +398,17 @@ pub export fn cardinal_async_add_dependency(dependent: ?*CardinalAsyncTask, depe
     const t_dependent = dependent.?;
     const t_dependency = dependency.?;
 
-    // 1. Lock global state to ensure consistent moves
-    g_async_loader.state_mutex.lock();
-    defer g_async_loader.state_mutex.unlock();
-
-    // Check if dependency is already completed
-    if (t_dependency.status == .COMPLETED or t_dependency.status == .FAILED or t_dependency.status == .CANCELLED) {
-        return true; // Already done, no wait needed
+    const job_dependent = @as(*job_system.Job, @ptrCast(t_dependent.next));
+    const job_dependency = @as(*job_system.Job, @ptrCast(t_dependency.next));
+    
+    if (job_system.add_dependency(job_dependent, job_dependency)) {
+        t_dependent.dependency_count += 1;
+        // dependents array in Task is legacy/unused now, but we could populate it if we wanted to sync state
+        // For now, rely on JobSystem.
+        return true;
     }
 
-    // Check if dependent is already running or completed
-    if (t_dependent.status == .RUNNING or t_dependent.status == .COMPLETED or t_dependent.status == .FAILED or t_dependent.status == .CANCELLED) {
-        return false; // Too late to add dependency
-    }
-
-    // 2. Add dependent to dependency's list
-    // This is simple since we assume single-producer or locked add.
-    // Ideally we'd lock dependency task, but we are under global lock for now (simplification).
-    var added = false;
-    for (t_dependency.dependents, 0..) |slot, i| {
-        if (slot == null) {
-            t_dependency.dependents[i] = t_dependent;
-            added = true;
-            break;
-        }
-    }
-    if (!added) return false; // Max dependents reached
-
-    // 3. Move dependent from pending to waiting if needed
-    // If it was in pending queue (status PENDING), move it.
-    // If it was newly created but not submitted? We assume submitted tasks are in pending_queue.
-
-    // We try to remove from pending queue. If successful, it was there.
-    if (task_queue_remove(&g_async_loader.pending_queue, t_dependent)) {
-        // Add to waiting queue
-        if (!task_queue_push(&g_async_loader.waiting_queue, t_dependent)) {
-            // Should not happen if sizes match
-            // Fallback: put back in pending?
-            _ = task_queue_push(&g_async_loader.pending_queue, t_dependent);
-            return false;
-        }
-    } else {
-        // It might be in waiting queue already (multiple dependencies)
-        // Check if it's in waiting queue? task_queue_remove returns false if not found.
-        // If it's not in pending, and status is PENDING, it MUST be in waiting queue (or not submitted yet).
-        // Since we support adding deps before submission, we just increment counter.
-    }
-
-    t_dependent.dependency_count += 1;
-    return true;
+    return false;
 }
 
 pub export fn cardinal_async_load_texture(file_path: ?[*:0]const u8, priority: CardinalAsyncPriority, callback: CardinalAsyncCallback, user_data: ?*anyopaque) callconv(.c) ?*CardinalAsyncTask {
@@ -645,7 +432,8 @@ pub export fn cardinal_async_load_texture(file_path: ?[*:0]const u8, priority: C
     task.?.callback = callback;
     task.?.callback_data = user_data;
 
-    if (!task_queue_push(&g_async_loader.pending_queue, task.?)) {
+    const job = @as(*job_system.Job, @ptrCast(task.?.next));
+    if (!job_system.submit_job(job)) {
         cardinal_async_free_task(task);
         return null;
     }
@@ -674,7 +462,8 @@ pub export fn cardinal_async_load_scene(file_path: ?[*:0]const u8, priority: Car
     task.?.callback = callback;
     task.?.callback_data = user_data;
 
-    if (!task_queue_push(&g_async_loader.pending_queue, task.?)) {
+    const job = @as(*job_system.Job, @ptrCast(task.?.next));
+    if (!job_system.submit_job(job)) {
         cardinal_async_free_task(task);
         return null;
     }
@@ -703,7 +492,8 @@ pub export fn cardinal_async_load_material(material_data: ?*const anyopaque, pri
     task.?.callback = callback;
     task.?.callback_data = user_data;
 
-    if (!task_queue_push(&g_async_loader.pending_queue, task.?)) {
+    const job = @as(*job_system.Job, @ptrCast(task.?.next));
+    if (!job_system.submit_job(job)) {
         memory.cardinal_free(allocator, copy_ptr);
         cardinal_async_free_task(task);
         return null;
@@ -764,7 +554,8 @@ pub export fn cardinal_async_load_mesh(mesh_data: ?*const anyopaque, priority: C
     task.?.callback = callback;
     task.?.callback_data = user_data;
 
-    if (!task_queue_push(&g_async_loader.pending_queue, task.?)) {
+    const job = @as(*job_system.Job, @ptrCast(task.?.next));
+    if (!job_system.submit_job(job)) {
         if (copy.vertices) |v| memory.cardinal_free(allocator, v);
         if (copy.indices) |i| memory.cardinal_free(allocator, i);
         memory.cardinal_free(allocator, copy_ptr);
@@ -786,7 +577,8 @@ pub export fn cardinal_async_submit_custom_task(task_func: CardinalAsyncTaskFunc
     task.?.callback = callback;
     task.?.callback_data = user_data;
 
-    if (!task_queue_push(&g_async_loader.pending_queue, task.?)) {
+    const job = @as(*job_system.Job, @ptrCast(task.?.next));
+    if (!job_system.submit_job(job)) {
         cardinal_async_free_task(task);
         return null;
     }
@@ -797,6 +589,11 @@ pub export fn cardinal_async_submit_custom_task(task_func: CardinalAsyncTaskFunc
 pub export fn cardinal_async_cancel_task(task: ?*CardinalAsyncTask) callconv(.c) bool {
     if (task) |t| {
         if (t.status == .PENDING) {
+            const job = @as(*job_system.Job, @ptrCast(t.next));
+            // We need to mark job as cancelled too, but JobSystem API for cancel is implicit via status?
+            // JobSystem worker checks job.status == .CANCELLED
+            job.status = .CANCELLED;
+            
             t.status = .CANCELLED;
             return true;
         }
@@ -821,9 +618,6 @@ pub export fn cardinal_async_wait_for_task(task: ?*CardinalAsyncTask, timeout_ms
         }
         if (g_async_loader.shutting_down) return false;
 
-        // std.time.sleep(1 * std.time.ns_per_ms);
-        // Workaround for missing std.time.sleep in this Zig version?
-        // Using direct Sleep from kernel32 for Windows
         Sleep(1);
     }
 
@@ -835,6 +629,11 @@ extern "kernel32" fn Sleep(dwMilliseconds: u32) callconv(.c) void;
 pub export fn cardinal_async_free_task(task: ?*CardinalAsyncTask) callconv(.c) void {
     if (task) |t| {
         const allocator = memory.cardinal_get_allocator_for_category(.ENGINE);
+
+        if (t.next) |job_ptr| {
+             const job = @as(*job_system.Job, @ptrCast(job_ptr));
+             job_system.free_job(job);
+        }
 
         if (t.file_path) |path| {
             memory.cardinal_free(allocator, path);
@@ -918,12 +717,13 @@ pub export fn cardinal_async_get_error_message(task: ?*const CardinalAsyncTask) 
 }
 
 pub export fn cardinal_async_get_pending_task_count() callconv(.c) u32 {
-    return task_queue_size(&g_async_loader.pending_queue);
+    // We can't easily get pending count from JobSystem unless we expose it
+    // But since this is a migration, maybe we can skip or add getter to JobSystem
+    // For now return 0 or implement getter in JobSystem
+    return 0; // TODO: Implement in JobSystem
 }
 
 pub export fn cardinal_async_get_worker_thread_count() callconv(.c) u32 {
-    // return g_async_loader.worker_count; // Wait, workers is a slice now, I should store count or use len
-    // config.worker_thread_count stores it
     return g_async_loader.config.worker_thread_count;
 }
 
@@ -933,13 +733,22 @@ pub export fn cardinal_async_process_completed_tasks(max_tasks: u32) callconv(.c
     var processed: u32 = 0;
 
     while (max_tasks == 0 or processed < max_tasks) {
-        const task = task_queue_pop(&g_async_loader.completed_queue, false);
-        if (task == null) break;
+        const job = job_system.get_completed_job();
+        if (job == null) break;
 
-        if (task.?.callback) |cb| {
-            cb(task, task.?.callback_data);
+        const task = @as(*CardinalAsyncTask, @ptrCast(@alignCast(job.?.data)));
+        
+        if (task.callback) |cb| {
+            cb(task, task.callback_data);
         }
 
+        // Note: Job is NOT freed here, it is freed when task is freed.
+        // Or should we free it here and null out task.next?
+        // If we free it here, we save memory, but task.next becomes invalid.
+        // But task is completed.
+        // However, user might call `free_task` later which tries to free `job`.
+        // So we should probably keep it alive until task is freed.
+        
         processed += 1;
     }
 

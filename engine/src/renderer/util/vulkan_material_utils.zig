@@ -1,5 +1,6 @@
 const std = @import("std");
 const types = @import("../vulkan_types.zig");
+const handles = @import("../../core/handles.zig");
 
 const c = @cImport({
     @cDefine("CARDINAL_ZIG_BUILD", "1");
@@ -28,9 +29,7 @@ fn set_default_material_properties(pushConstants: *types.PBRPushConstants, hasTe
     pushConstants.aoTextureIndex = c.UINT32_MAX;
     pushConstants.emissiveTextureIndex = c.UINT32_MAX;
 
-    if (hasTextures) {
-        pushConstants.flags |= 8; // Set supportsDescriptorIndexing bit (bit 3)
-    }
+    _ = hasTextures;
 
     // Default texture transforms (identity)
     pushConstants.albedoTransform.scale.x = 1.0;
@@ -63,28 +62,33 @@ fn set_default_material_properties(pushConstants: *types.PBRPushConstants, hasTe
     pushConstants.emissiveTransform.rotation = 0.0;
 }
 
-fn resolve_texture_index(textureIndex: u32, hasTextures: bool, textureCount: u32, hasPlaceholder: bool) u32 {
-    if (textureIndex == c.UINT32_MAX) {
+fn resolve_texture_index(textureHandle: handles.TextureHandle, manager: ?*const types.VulkanTextureManager) u32 {
+    if (manager == null or !textureHandle.is_valid()) {
         return c.UINT32_MAX;
     }
 
+    const textureIndex = textureHandle.index;
+
     // Map GLTF index to Manager index
     // If we have a placeholder at index 0, real textures start at index 1
-    const mappedIndex = if (hasPlaceholder) (textureIndex + 1) else textureIndex;
+    const mappedIndex = if (manager.?.hasPlaceholder) (textureIndex + 1) else textureIndex;
 
-    if (hasTextures and mappedIndex < textureCount) {
-        return mappedIndex;
+    if (mappedIndex < manager.?.textureCount) {
+        const tex = &manager.?.textures.?[mappedIndex];
+        if (tex.bindless_index != c.UINT32_MAX) {
+            return tex.bindless_index;
+        }
     }
 
     return c.UINT32_MAX;
 }
 
-fn set_texture_indices(pushConstants: *types.PBRPushConstants, material: *const types.CardinalMaterial, hasTextures: bool, textureCount: u32, hasPlaceholder: bool) void {
-    pushConstants.albedoTextureIndex = resolve_texture_index(material.albedo_texture, hasTextures, textureCount, hasPlaceholder);
-    pushConstants.normalTextureIndex = resolve_texture_index(material.normal_texture, hasTextures, textureCount, hasPlaceholder);
-    pushConstants.metallicRoughnessTextureIndex = resolve_texture_index(material.metallic_roughness_texture, hasTextures, textureCount, hasPlaceholder);
-    pushConstants.aoTextureIndex = resolve_texture_index(material.ao_texture, hasTextures, textureCount, hasPlaceholder);
-    pushConstants.emissiveTextureIndex = resolve_texture_index(material.emissive_texture, hasTextures, textureCount, hasPlaceholder);
+fn set_texture_indices(pushConstants: *types.PBRPushConstants, material: *const types.CardinalMaterial, manager: ?*const types.VulkanTextureManager) void {
+    pushConstants.albedoTextureIndex = resolve_texture_index(material.albedo_texture, manager);
+    pushConstants.normalTextureIndex = resolve_texture_index(material.normal_texture, manager);
+    pushConstants.metallicRoughnessTextureIndex = resolve_texture_index(material.metallic_roughness_texture, manager);
+    pushConstants.aoTextureIndex = resolve_texture_index(material.ao_texture, manager);
+    pushConstants.emissiveTextureIndex = resolve_texture_index(material.emissive_texture, manager);
 }
 
 fn set_texture_transforms(pushConstants: *types.PBRPushConstants, material: *const types.CardinalMaterial) void {
@@ -155,15 +159,13 @@ pub export fn vk_material_setup_push_constants(pushConstants: ?*types.PBRPushCon
 
     // Determine if textures are available
     const hasTextures = (textureManager != null and textureManager.?.textureCount > 0);
-    const textureCount = if (hasTextures) textureManager.?.textureCount else 0;
-    const hasPlaceholder = (textureManager != null and textureManager.?.hasPlaceholder);
 
     // Set material properties for this mesh
     if (m.material_index < s.material_count) {
         const material = &s.materials.?[m.material_index];
 
         set_material_properties(pc, material);
-        set_texture_indices(pc, material, hasTextures, textureCount, hasPlaceholder);
+        set_texture_indices(pc, material, textureManager);
         set_texture_transforms(pc, material);
 
         // Set descriptor indexing flag

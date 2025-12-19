@@ -18,7 +18,7 @@ layout(binding = 4) uniform sampler2D aoMap;
 layout(binding = 5) uniform sampler2D emissiveMap;
 
 // Texture array for descriptor indexing (when available)
-layout(binding = 9) uniform sampler2D textures[];
+layout(set = 1, binding = 0) uniform sampler2D textures[];
 
 // Texture transform structure
 struct TextureTransform {

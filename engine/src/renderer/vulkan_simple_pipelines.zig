@@ -7,6 +7,7 @@ const vk_allocator = @import("vulkan_allocator.zig");
 const scene = @import("../assets/scene.zig");
 const shader_utils = @import("util/vulkan_shader_utils.zig");
 const material_utils = @import("util/vulkan_material_utils.zig");
+const wrappers = @import("vulkan_wrappers.zig");
 
 const c = @import("vulkan_c.zig").c;
 
@@ -17,6 +18,8 @@ const SimpleUniformBufferObject = extern struct {
 };
 
 fn create_simple_descriptor_layout(s: *types.VulkanState) bool {
+    const device = wrappers.Device.init(s.context.device);
+
     var uboLayoutBinding = std.mem.zeroes(c.VkDescriptorSetLayoutBinding);
     uboLayoutBinding.binding = 0;
     uboLayoutBinding.descriptorType = c.VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
@@ -24,15 +27,10 @@ fn create_simple_descriptor_layout(s: *types.VulkanState) bool {
     uboLayoutBinding.stageFlags = c.VK_SHADER_STAGE_VERTEX_BIT;
     uboLayoutBinding.pImmutableSamplers = null;
 
-    var layoutInfo = std.mem.zeroes(c.VkDescriptorSetLayoutCreateInfo);
-    layoutInfo.sType = c.VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO;
-    layoutInfo.bindingCount = 1;
-    layoutInfo.pBindings = &uboLayoutBinding;
-
-    if (c.vkCreateDescriptorSetLayout(s.context.device, &layoutInfo, null, &s.pipelines.simple_descriptor_layout) != c.VK_SUCCESS) {
-        log.cardinal_log_error("Failed to create simple descriptor set layout!", .{});
+    s.pipelines.simple_descriptor_layout = device.createDescriptorSetLayout(&.{uboLayoutBinding}) catch |err| {
+        log.cardinal_log_error("Failed to create simple descriptor set layout: {}", .{err});
         return false;
-    }
+    };
 
     return true;
 }
@@ -67,31 +65,25 @@ fn create_simple_uniform_buffer(s: *types.VulkanState) bool {
 }
 
 fn create_simple_descriptor_pool(s: *types.VulkanState) bool {
+    const device = wrappers.Device.init(s.context.device);
+
     var poolSize = std.mem.zeroes(c.VkDescriptorPoolSize);
     poolSize.type = c.VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
     poolSize.descriptorCount = 1;
 
-    var poolInfo = std.mem.zeroes(c.VkDescriptorPoolCreateInfo);
-    poolInfo.sType = c.VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO;
-    poolInfo.poolSizeCount = 1;
-    poolInfo.pPoolSizes = &poolSize;
-    poolInfo.maxSets = 1;
-
-    if (c.vkCreateDescriptorPool(s.context.device, &poolInfo, null, &s.pipelines.simple_descriptor_pool) != c.VK_SUCCESS) {
-        log.cardinal_log_error("Failed to create simple descriptor pool!", .{});
+    s.pipelines.simple_descriptor_pool = device.createDescriptorPool(&.{poolSize}, 1) catch |err| {
+        log.cardinal_log_error("Failed to create simple descriptor pool: {}", .{err});
         return false;
-    }
+    };
 
-    var allocInfo = std.mem.zeroes(c.VkDescriptorSetAllocateInfo);
-    allocInfo.sType = c.VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO;
-    allocInfo.descriptorPool = s.pipelines.simple_descriptor_pool;
-    allocInfo.descriptorSetCount = 1;
-    allocInfo.pSetLayouts = &s.pipelines.simple_descriptor_layout;
-
-    if (c.vkAllocateDescriptorSets(s.context.device, &allocInfo, &s.pipelines.simple_descriptor_set) != c.VK_SUCCESS) {
-        log.cardinal_log_error("Failed to allocate simple descriptor set!", .{});
+    var sets = [_]c.VkDescriptorSet{null};
+    var layouts = [_]c.VkDescriptorSetLayout{s.pipelines.simple_descriptor_layout};
+    
+    device.allocateDescriptorSets(s.pipelines.simple_descriptor_pool, &layouts, &sets) catch |err| {
+        log.cardinal_log_error("Failed to allocate simple descriptor set: {}", .{err});
         return false;
-    }
+    };
+    s.pipelines.simple_descriptor_set = sets[0];
 
     var bufferInfo = std.mem.zeroes(c.VkDescriptorBufferInfo);
     bufferInfo.buffer = s.pipelines.simple_uniform_buffer;
@@ -107,7 +99,7 @@ fn create_simple_descriptor_pool(s: *types.VulkanState) bool {
     descriptorWrite.descriptorCount = 1;
     descriptorWrite.pBufferInfo = &bufferInfo;
 
-    c.vkUpdateDescriptorSets(s.context.device, 1, &descriptorWrite, 0, null);
+    device.updateDescriptorSets(&.{descriptorWrite}, &.{});
 
     return true;
 }
@@ -389,7 +381,7 @@ pub export fn vk_update_simple_uniforms(s: ?*types.VulkanState, model: ?*const f
     @memcpy(@as([*]u8, @ptrCast(vs.pipelines.simple_uniform_buffer_mapped))[0..@sizeOf(SimpleUniformBufferObject)], @as([*]const u8, @ptrCast(&ubo))[0..@sizeOf(SimpleUniformBufferObject)]);
 }
 
-pub export fn vk_render_simple(s: ?*types.VulkanState, commandBuffer: c.VkCommandBuffer, pipeline: c.VkPipeline, pipelineLayout: c.VkPipelineLayout) callconv(.c) void {
+pub export fn vk_render_simple(s: ?*types.VulkanState, commandBufferHandle: c.VkCommandBuffer, pipeline: c.VkPipeline, pipelineLayout: c.VkPipelineLayout) callconv(.c) void {
     if (s == null) return;
     const vs = s.?;
     if (vs.current_scene == null) return;
@@ -401,13 +393,18 @@ pub export fn vk_render_simple(s: ?*types.VulkanState, commandBuffer: c.VkComman
 
     if (pipe.vertexBuffer == null or pipe.indexBuffer == null) return;
 
-    c.vkCmdBindPipeline(commandBuffer, c.VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline);
-    c.vkCmdBindDescriptorSets(commandBuffer, c.VK_PIPELINE_BIND_POINT_GRAPHICS, pipelineLayout, 0, 1, &vs.pipelines.simple_descriptor_set, 0, null);
+    const cmd = wrappers.CommandBuffer.init(commandBufferHandle);
 
-    const vertexBuffers = [_]c.VkBuffer{pipe.vertexBuffer};
-    const offsets = [_]c.VkDeviceSize{0};
-    c.vkCmdBindVertexBuffers(commandBuffer, 0, 1, &vertexBuffers, &offsets);
-    c.vkCmdBindIndexBuffer(commandBuffer, pipe.indexBuffer, 0, c.VK_INDEX_TYPE_UINT32);
+    cmd.bindPipeline(c.VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline);
+    
+    var descriptorSets = [_]c.VkDescriptorSet{vs.pipelines.simple_descriptor_set};
+    cmd.bindDescriptorSets(c.VK_PIPELINE_BIND_POINT_GRAPHICS, pipelineLayout, 0, &descriptorSets, &.{});
+
+    var vertexBuffers = [_]c.VkBuffer{pipe.vertexBuffer};
+    var offsets = [_]c.VkDeviceSize{0};
+    cmd.bindVertexBuffers(0, &vertexBuffers, &offsets);
+    
+    cmd.bindIndexBuffer(pipe.indexBuffer, 0, c.VK_INDEX_TYPE_UINT32);
 
     // Render each mesh using offsets
     var indexOffset: u32 = 0;
@@ -426,12 +423,12 @@ pub export fn vk_render_simple(s: ?*types.VulkanState, commandBuffer: c.VkComman
             // Cast to C types for the C function call
             material_utils.vk_material_setup_push_constants(@ptrCast(&pushConstants), @ptrCast(mesh), @ptrCast(scn), @ptrCast(vs.pipelines.pbr_pipeline.textureManager));
 
-            c.vkCmdPushConstants(commandBuffer, pipelineLayout, c.VK_SHADER_STAGE_VERTEX_BIT | c.VK_SHADER_STAGE_FRAGMENT_BIT, 0, @sizeOf(types.PBRPushConstants), &pushConstants);
+            cmd.pushConstants(pipelineLayout, c.VK_SHADER_STAGE_VERTEX_BIT | c.VK_SHADER_STAGE_FRAGMENT_BIT, 0, @sizeOf(types.PBRPushConstants), &pushConstants);
 
             if (mesh.index_count > 0) {
-                c.vkCmdDrawIndexed(commandBuffer, mesh.index_count, 1, indexOffset, 0, 0);
+                cmd.drawIndexed(mesh.index_count, 1, indexOffset, 0, 0);
             } else {
-                c.vkCmdDraw(commandBuffer, mesh.vertex_count, 1, 0, 0);
+                cmd.draw(mesh.vertex_count, 1, 0, 0);
             }
             indexOffset += mesh.index_count;
         }
