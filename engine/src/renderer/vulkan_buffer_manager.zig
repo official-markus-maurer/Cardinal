@@ -398,7 +398,7 @@ pub export fn vk_buffer_create_device_local(buffer_ptr: ?*VulkanBuffer, device: 
     // Create device local buffer
     var deviceBufferInfo = std.mem.zeroes(VulkanBufferCreateInfo);
     deviceBufferInfo.size = size;
-    deviceBufferInfo.usage = @bitCast(@as(u32, @bitCast(c.VK_BUFFER_USAGE_TRANSFER_DST_BIT)) | usage);
+    deviceBufferInfo.usage = @as(c.VkBufferUsageFlags, c.VK_BUFFER_USAGE_TRANSFER_DST_BIT) | usage;
     deviceBufferInfo.properties = c.VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT;
     deviceBufferInfo.persistentlyMapped = false;
 

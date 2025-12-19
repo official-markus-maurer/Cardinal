@@ -10,6 +10,7 @@ const vk_pbr = @import("vulkan_pbr.zig");
 const vk_mesh_shader = @import("vulkan_mesh_shader.zig");
 const vk_simple_pipelines = @import("vulkan_simple_pipelines.zig");
 const vk_sync_manager = @import("vulkan_sync_manager.zig");
+const render_graph = @import("render_graph.zig");
 
 const c = @import("vulkan_c.zig").c;
 
@@ -414,7 +415,13 @@ fn vk_record_scene_commands(s: *types.VulkanState, cmd: c.VkCommandBuffer) void 
                 @memcpy(@as([*]u8, @ptrCast(&lighting))[0..@sizeOf(types.PBRLightingData)], @as([*]u8, @ptrCast(s.pipelines.pbr_pipeline.lightingBufferMapped))[0..@sizeOf(types.PBRLightingData)]);
 
                 vk_pbr.vk_pbr_update_uniforms(&s.pipelines.pbr_pipeline, &ubo, &lighting);
-                vk_pbr.vk_pbr_render(&s.pipelines.pbr_pipeline, cmd, s.current_scene);
+                
+                if (s.render_graph) |rg_ptr| {
+                     const rg = @as(*render_graph.RenderGraph, @ptrCast(@alignCast(rg_ptr)));
+                     rg.execute(cmd, s);
+                } else {
+                    vk_pbr.vk_pbr_render(&s.pipelines.pbr_pipeline, cmd, s.current_scene);
+                }
             }
         },
         types.CardinalRenderingMode.UV => {

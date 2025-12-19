@@ -230,12 +230,12 @@ pub export fn vk_allocator_allocate_buffer(alloc: ?*types.VulkanAllocator, buffe
 }
 
 pub export fn vk_allocator_free_image(alloc: ?*types.VulkanAllocator, image: c.VkImage, allocation: c.VmaAllocation) callconv(.c) void {
-    if (alloc == null or image == null) return;
+    if (alloc == null or image == null or allocation == null) return;
     c.vmaDestroyImage(alloc.?.handle, image, allocation);
 }
 
 pub export fn vk_allocator_free_buffer(alloc: ?*types.VulkanAllocator, buffer: c.VkBuffer, allocation: c.VmaAllocation) callconv(.c) void {
-    if (alloc == null or buffer == null) return;
+    if (alloc == null or buffer == null or allocation == null) return;
     c.vmaDestroyBuffer(alloc.?.handle, buffer, allocation);
 }
 

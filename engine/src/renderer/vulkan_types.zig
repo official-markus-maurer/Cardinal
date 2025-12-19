@@ -790,6 +790,7 @@ pub const VulkanState = extern struct {
     pending_scene_upload: ?*anyopaque,
     scene_upload_pending: bool,
     ui_record_callback: ?*const fn (c.VkCommandBuffer) callconv(.c) void,
+    render_graph: ?*anyopaque,
 };
 
 // Secondary Command Context (from texture manager usage)

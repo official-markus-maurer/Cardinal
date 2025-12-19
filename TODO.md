@@ -26,7 +26,7 @@ This document outlines areas for improvement, refactoring, and future extensions
 
 ### Features
 - [x] **Bindless Textures**: The code hints at descriptor indexing (`descriptorCount = 5000` in `vulkan_pbr.zig`), but fully utilizing bindless resources would simplify material management.
-- [ ] **Render Graph**: Move from hardcoded pipeline steps to a Frame Graph / Render Graph to handle complex dependencies (Shadows -> GBuffer -> Lighting -> PostFX).
+- [x] **Render Graph**: Move from hardcoded pipeline steps to a Frame Graph / Render Graph to handle complex dependencies (Shadows -> GBuffer -> Lighting -> PostFX).
 - [ ] **Shader Hot-Reloading**: Implement file watchers to reload shaders at runtime without restarting the editor.
 
 ### Performance

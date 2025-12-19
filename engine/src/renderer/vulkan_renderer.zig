@@ -23,11 +23,18 @@ const vk_barrier_validation = @import("vulkan_barrier_validation.zig");
 const ref_counting = @import("../core/ref_counting.zig");
 const material_ref_counting = @import("../assets/material_ref_counting.zig");
 const transform = @import("../core/transform.zig");
+const render_graph = @import("render_graph.zig");
 
 // Helper to cast opaque pointer to VulkanState
 fn get_state(renderer: ?*types.CardinalRenderer) ?*types.VulkanState {
     if (renderer == null) return null;
     return @ptrCast(@alignCast(renderer.?._opaque));
+}
+
+fn pbr_pass_callback(cmd: c.VkCommandBuffer, state: *types.VulkanState) void {
+    if (state.current_rendering_mode == .NORMAL) {
+        vk_pbr.vk_pbr_render(@ptrCast(&state.pipelines.pbr_pipeline), cmd, state.current_scene);
+    }
 }
 
 // Window resize callback
@@ -228,6 +235,22 @@ pub export fn cardinal_renderer_create(out_renderer: ?*types.CardinalRenderer, w
 
     out_renderer.?._opaque = s;
 
+    // Initialize Render Graph
+    // const rg_ptr = memory.cardinal_alloc(mem_alloc, @sizeOf(render_graph.RenderGraph));
+    // if (rg_ptr != null) {
+    //     const rg = @as(*render_graph.RenderGraph, @ptrCast(@alignCast(rg_ptr)));
+    //     rg.* = render_graph.RenderGraph.init(std.heap.c_allocator);
+    //     
+    //     // Add PBR Pass
+    //     rg.add_pass(render_graph.RenderPass.init("PBR Pass", pbr_pass_callback)) catch {
+    //          log.cardinal_log_error("Failed to add PBR pass", .{});
+    //     };
+    //     s.render_graph = rg;
+    // } else {
+    //     log.cardinal_log_error("Failed to allocate render graph", .{});
+    //     return false;
+    // }
+
     // Initialize device loss recovery state
     s.recovery.device_lost = false;
     s.recovery.recovery_in_progress = false;
@@ -387,51 +410,38 @@ pub export fn cardinal_renderer_wait_idle(renderer: ?*types.CardinalRenderer) ca
 }
 
 pub fn destroy_scene_buffers(vs: *types.VulkanState) void {
-    log.cardinal_log_debug("[RENDERER] destroy_scene_buffers: start", .{});
+    log.cardinal_log_info("[RENDERER] destroy_scene_buffers: start", .{});
 
-    // Ensure GPU has finished using previous scene buffers before destroying them
-    // Skip wait if device is already lost, as semaphores might be invalid or device unresponsive
-    const sm = @as(?*types.VulkanSyncManager, @ptrCast(vs.sync_manager));
-    if (sm != null and sm.?.timeline_semaphore != null and !vs.recovery.device_lost) {
-        var sem_value: u64 = 0;
-        const get_res = vk_sync_manager.vulkan_sync_manager_get_timeline_value(@ptrCast(sm), &sem_value);
-        log.cardinal_log_info("[RENDERER] destroy_scene_buffers: waiting timeline to reach current_frame_value={d} (semaphore current={d}, get_res={d})", .{ vs.sync.current_frame_value, sem_value, get_res });
-
-        if (get_res != c.VK_SUCCESS or sem_value < vs.sync.current_frame_value) {
-            log.cardinal_log_warn("[RENDERER] Timeline behind or unavailable; using vkDeviceWaitIdle", .{});
-            if (vs.context.device != null) {
-                const idle_res = c.vkDeviceWaitIdle(vs.context.device);
-                log.cardinal_log_debug("[RENDERER] destroy_scene_buffers: vkDeviceWaitIdle result={d}", .{idle_res});
-            }
-        } else {
-            const wait_res = vk_sync_manager.vulkan_sync_manager_wait_timeline(@ptrCast(sm), vs.sync.current_frame_value, c.UINT64_MAX);
-            if (wait_res == c.VK_SUCCESS) {
-                log.cardinal_log_debug("[RENDERER] destroy_scene_buffers: timeline wait succeeded", .{});
-            } else {
-                log.cardinal_log_warn("[RENDERER] Timeline wait failed in destroy_scene_buffers: {d}; falling back to device wait idle", .{wait_res});
-                if (vs.context.device != null) {
-                    const idle_res = c.vkDeviceWaitIdle(vs.context.device);
-                    log.cardinal_log_debug("[RENDERER] destroy_scene_buffers: vkDeviceWaitIdle result={d}", .{idle_res});
-                }
-            }
+    // Ensure GPU has finished using previous scene buffers before destroying them.
+    // We force a device wait idle here to be absolutely safe against race conditions and GPU usage.
+    if (vs.context.device != null and !vs.recovery.device_lost) {
+        log.cardinal_log_info("[RENDERER] destroy_scene_buffers: Calling vkDeviceWaitIdle to ensure safety", .{});
+        const idle_res = c.vkDeviceWaitIdle(vs.context.device);
+        if (idle_res != c.VK_SUCCESS) {
+             log.cardinal_log_error("[RENDERER] destroy_scene_buffers: vkDeviceWaitIdle failed with {d}", .{idle_res});
+             // We proceed, but expect trouble if device is lost.
         }
-    } else if (vs.context.device != null and !vs.recovery.device_lost) {
-        log.cardinal_log_debug("[RENDERER] destroy_scene_buffers: no timeline; calling vkDeviceWaitIdle", .{});
-        _ = c.vkDeviceWaitIdle(vs.context.device);
     }
 
-    if (vs.scene_meshes == null) return;
+    if (vs.scene_meshes == null) {
+        log.cardinal_log_info("[RENDERER] destroy_scene_buffers: No meshes to destroy", .{});
+        return;
+    }
+
+    log.cardinal_log_info("[RENDERER] destroy_scene_buffers: Destroying {d} meshes", .{vs.scene_mesh_count});
 
     var i: u32 = 0;
     while (i < vs.scene_mesh_count) : (i += 1) {
         var m = &vs.scene_meshes.?[i];
         if (m.vbuf != null) {
+            log.cardinal_log_debug("[RENDERER] Destroying mesh {d} vbuf handle={any} alloc={any}", .{i, m.vbuf, m.v_allocation});
             vk_allocator.vk_allocator_free_buffer(@ptrCast(&vs.allocator), m.vbuf, m.v_allocation);
             m.vbuf = null;
             m.vmem = null;
             m.v_allocation = null;
         }
         if (m.ibuf != null) {
+            log.cardinal_log_debug("[RENDERER] Destroying mesh {d} ibuf handle={any} alloc={any}", .{i, m.ibuf, m.i_allocation});
             vk_allocator.vk_allocator_free_buffer(@ptrCast(&vs.allocator), m.ibuf, m.i_allocation);
             m.ibuf = null;
             m.imem = null;
@@ -442,7 +452,7 @@ pub fn destroy_scene_buffers(vs: *types.VulkanState) void {
     memory.cardinal_free(mem_alloc, vs.scene_meshes);
     vs.scene_meshes = null;
     vs.scene_mesh_count = 0;
-    log.cardinal_log_debug("[RENDERER] destroy_scene_buffers: completed", .{});
+    log.cardinal_log_info("[RENDERER] destroy_scene_buffers: completed", .{});
 }
 
 pub export fn cardinal_renderer_destroy(renderer: ?*types.CardinalRenderer) callconv(.c) void {
