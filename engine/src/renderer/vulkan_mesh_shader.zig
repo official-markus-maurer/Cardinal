@@ -8,6 +8,7 @@ const c = @import("vulkan_c.zig").c;
 const shader_utils = @import("util/vulkan_shader_utils.zig");
 const vk_texture_utils = @import("util/vulkan_texture_utils.zig");
 const scene = @import("../assets/scene.zig");
+const vk_allocator = @import("vulkan_allocator.zig");
 
 // Helper Functions
 
@@ -254,8 +255,12 @@ pub export fn vk_mesh_shader_create_pipeline(
                                       c.VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT, vs)) {
         pipe.default_material_buffer = defaultMatBuffer.handle;
         pipe.default_material_memory = defaultMatBuffer.memory;
+        pipe.default_material_allocation = defaultMatBuffer.allocation;
     } else {
         log.cardinal_log_error("Failed to create default material buffer", .{});
+        // Cleanup descriptor pool if buffer creation fails
+        c.vkDestroyDescriptorPool(vs.context.device, pipe.descriptor_pool, null);
+        return false;
     }
 
     var pushConstantRange = std.mem.zeroes(c.VkPushConstantRange);
@@ -405,12 +410,10 @@ pub export fn vk_mesh_shader_destroy_pipeline(s: ?*types.VulkanState, pipeline: 
     }
 
     if (pipe.default_material_buffer != null) {
-        c.vkDestroyBuffer(vs.context.device, pipe.default_material_buffer, null);
+        vk_allocator.vk_allocator_free_buffer(@ptrCast(&vs.allocator), pipe.default_material_buffer, pipe.default_material_allocation);
         pipe.default_material_buffer = null;
-    }
-    if (pipe.default_material_memory != null) {
-        c.vkFreeMemory(vs.context.device, pipe.default_material_memory, null);
         pipe.default_material_memory = null;
+        pipe.default_material_allocation = null;
     }
 }
 
@@ -460,48 +463,42 @@ pub export fn vk_mesh_shader_destroy_draw_data(s: ?*types.VulkanState, draw_data
     }
 
     if (data.vertex_buffer != null) {
-        c.vkDestroyBuffer(vs.context.device, data.vertex_buffer, null);
+        vk_allocator.vk_allocator_free_buffer(@ptrCast(&vs.allocator), data.vertex_buffer, data.vertex_allocation);
         data.vertex_buffer = null;
-    }
-    if (data.vertex_memory != null) {
-        c.vkFreeMemory(vs.context.device, data.vertex_memory, null);
         data.vertex_memory = null;
+        data.vertex_allocation = null;
     }
 
     if (data.meshlet_buffer != null) {
-        c.vkDestroyBuffer(vs.context.device, data.meshlet_buffer, null);
+        vk_allocator.vk_allocator_free_buffer(@ptrCast(&vs.allocator), data.meshlet_buffer, data.meshlet_allocation);
         data.meshlet_buffer = null;
-    }
-    if (data.meshlet_memory != null) {
-        c.vkFreeMemory(vs.context.device, data.meshlet_memory, null);
         data.meshlet_memory = null;
+        data.meshlet_allocation = null;
     }
 
     if (data.primitive_buffer != null) {
-        c.vkDestroyBuffer(vs.context.device, data.primitive_buffer, null);
+        vk_allocator.vk_allocator_free_buffer(@ptrCast(&vs.allocator), data.primitive_buffer, data.primitive_allocation);
         data.primitive_buffer = null;
-    }
-    if (data.primitive_memory != null) {
-        c.vkFreeMemory(vs.context.device, data.primitive_memory, null);
         data.primitive_memory = null;
+        data.primitive_allocation = null;
     }
 
     if (data.draw_command_buffer != null) {
-        c.vkDestroyBuffer(vs.context.device, data.draw_command_buffer, null);
+        vk_allocator.vk_allocator_free_buffer(@ptrCast(&vs.allocator), data.draw_command_buffer, data.draw_command_allocation);
         data.draw_command_buffer = null;
-    }
-    if (data.draw_command_memory != null) {
-        c.vkFreeMemory(vs.context.device, data.draw_command_memory, null);
         data.draw_command_memory = null;
+        data.draw_command_allocation = null;
     }
 
     if (data.uniform_buffer != null) {
-        c.vkDestroyBuffer(vs.context.device, data.uniform_buffer, null);
+        if (data.uniform_mapped != null) {
+            vk_allocator.vk_allocator_unmap_memory(@ptrCast(&vs.allocator), data.uniform_allocation);
+            data.uniform_mapped = null;
+        }
+        vk_allocator.vk_allocator_free_buffer(@ptrCast(&vs.allocator), data.uniform_buffer, data.uniform_allocation);
         data.uniform_buffer = null;
-    }
-    if (data.uniform_memory != null) {
-        c.vkFreeMemory(vs.context.device, data.uniform_memory, null);
         data.uniform_memory = null;
+        data.uniform_allocation = null;
     }
     data.uniform_mapped = null;
 
@@ -638,9 +635,10 @@ pub export fn vk_mesh_shader_create_draw_data(
     var meshletBuffer: buffer_mgr.VulkanBuffer = undefined;
     if (buffer_mgr.vk_buffer_create_device_local(&meshletBuffer, vs.context.device, &vs.allocator, vs.commands.pools.?[0],
                                       vs.context.graphics_queue, meshlets, meshletBufferSize,
-                                      c.VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | c.VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT, vs)) {
+                                      c.VK_BUFFER_USAGE_STORAGE_BUFFER_BIT, vs)) {
         data.meshlet_buffer = meshletBuffer.handle;
         data.meshlet_memory = meshletBuffer.memory;
+        data.meshlet_allocation = meshletBuffer.allocation;
     } else {
         log.cardinal_log_error("Failed to create meshlet buffer", .{});
         return false;
@@ -650,9 +648,10 @@ pub export fn vk_mesh_shader_create_draw_data(
     var vertexBuffer: buffer_mgr.VulkanBuffer = undefined;
     if (buffer_mgr.vk_buffer_create_device_local(&vertexBuffer, vs.context.device, &vs.allocator, vs.commands.pools.?[0],
                                       vs.context.graphics_queue, vertices, vertex_size,
-                                      c.VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | c.VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT, vs)) {
+                                      c.VK_BUFFER_USAGE_STORAGE_BUFFER_BIT, vs)) {
         data.vertex_buffer = vertexBuffer.handle;
         data.vertex_memory = vertexBuffer.memory;
+        data.vertex_allocation = vertexBuffer.allocation;
     } else {
         log.cardinal_log_error("Failed to create vertex buffer for mesh shader", .{});
         vk_mesh_shader_destroy_draw_data(vs, data);
@@ -664,9 +663,10 @@ pub export fn vk_mesh_shader_create_draw_data(
     var primitiveBuffer: buffer_mgr.VulkanBuffer = undefined;
     if (buffer_mgr.vk_buffer_create_device_local(&primitiveBuffer, vs.context.device, &vs.allocator, vs.commands.pools.?[0],
                                       vs.context.graphics_queue, primitives, primitiveBufferSize,
-                                      c.VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | c.VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT, vs)) {
+                                      c.VK_BUFFER_USAGE_STORAGE_BUFFER_BIT, vs)) {
         data.primitive_buffer = primitiveBuffer.handle;
         data.primitive_memory = primitiveBuffer.memory;
+        data.primitive_allocation = primitiveBuffer.allocation;
     } else {
         log.cardinal_log_error("Failed to create primitive buffer", .{});
         vk_mesh_shader_destroy_draw_data(vs, data);
@@ -691,9 +691,10 @@ pub export fn vk_mesh_shader_create_draw_data(
     var drawCmdBuffer: buffer_mgr.VulkanBuffer = undefined;
     if (buffer_mgr.vk_buffer_create_device_local(&drawCmdBuffer, vs.context.device, &vs.allocator, vs.commands.pools.?[0],
                                       vs.context.graphics_queue, &drawCmd, @sizeOf(GpuDrawCommand),
-                                      c.VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | c.VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT, vs)) {
+                                      c.VK_BUFFER_USAGE_STORAGE_BUFFER_BIT, vs)) {
         data.draw_command_buffer = drawCmdBuffer.handle;
         data.draw_command_memory = drawCmdBuffer.memory;
+        data.draw_command_allocation = drawCmdBuffer.allocation;
     } else {
         log.cardinal_log_error("Failed to create draw command buffer", .{});
         vk_mesh_shader_destroy_draw_data(vs, data);
@@ -712,6 +713,7 @@ pub export fn vk_mesh_shader_create_draw_data(
     if (buffer_mgr.vk_buffer_create(&ubo, vs.context.device, &vs.allocator, &uboInfo)) {
         data.uniform_buffer = ubo.handle;
         data.uniform_memory = ubo.memory;
+        data.uniform_allocation = ubo.allocation;
         data.uniform_mapped = ubo.mapped;
         
         // Initialize UBO with zeroes

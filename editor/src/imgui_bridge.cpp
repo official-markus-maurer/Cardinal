@@ -85,6 +85,9 @@ void imgui_bridge_impl_glfw_new_frame(void) {
 }
 
 bool imgui_bridge_impl_vulkan_init(ImGuiBridgeVulkanInitInfo* info) {
+    ImGuiIO& io = ImGui::GetIO();
+    printf("[BRIDGE] Init: io=%p, UserData=%p\n", &io, io.BackendRendererUserData);
+
     ImGui_ImplVulkan_InitInfo init_info = {};
     init_info.Instance = info->instance;
     init_info.PhysicalDevice = info->physical_device;
@@ -132,6 +135,13 @@ bool imgui_bridge_impl_vulkan_init(ImGuiBridgeVulkanInitInfo* info) {
 
 void imgui_bridge_impl_vulkan_shutdown(void) {
     ImGui_ImplVulkan_Shutdown();
+}
+
+void imgui_bridge_force_clear_backend_data(void) {
+    ImGuiIO& io = ImGui::GetIO();
+    printf("[BRIDGE] Clear: io=%p, UserData=%p\n", &io, io.BackendRendererUserData);
+    io.BackendRendererUserData = nullptr;
+    io.BackendRendererName = nullptr;
 }
 
 void imgui_bridge_impl_vulkan_new_frame(void) {

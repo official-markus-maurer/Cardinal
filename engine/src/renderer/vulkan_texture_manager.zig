@@ -22,6 +22,7 @@ const TextureUploadContext = struct {
     // Output
     staging_buffer: c.VkBuffer,
     staging_memory: c.VkDeviceMemory,
+    staging_allocation: c.VmaAllocation,
     secondary_context: types.CardinalSecondaryCommandContext,
     success: bool,
     finished: bool, // Simple flag, read/write should be atomic enough for bool on x86/x64, but better use atomic if possible. For now volatile is okayish or just careful.
@@ -73,15 +74,14 @@ fn upload_texture_task(data: ?*anyopaque) callconv(.c) void {
     ctx.secondary_context.is_recording = true;
 
     // Create staging buffer and copy data
-    if (!vk_texture_utils.create_staging_buffer_with_data(@ptrCast(ctx.allocator), ctx.device, ctx.texture, &ctx.staging_buffer, &ctx.staging_memory)) {
+    if (!vk_texture_utils.create_staging_buffer_with_data(@ptrCast(ctx.allocator), ctx.device, ctx.texture, &ctx.staging_buffer, &ctx.staging_memory, &ctx.staging_allocation)) {
         @atomicStore(bool, &ctx.finished, true, .release);
         return;
     }
 
     // Create image and memory
-    if (!vk_texture_utils.create_image_and_memory(@ptrCast(ctx.allocator), ctx.device, ctx.texture.width, ctx.texture.height, &ctx.managed_texture.image, &ctx.managed_texture.memory)) {
-        c.vkDestroyBuffer(ctx.device, ctx.staging_buffer, null);
-        c.vkFreeMemory(ctx.device, ctx.staging_memory, null);
+    if (!vk_texture_utils.create_image_and_memory(@ptrCast(ctx.allocator), ctx.device, ctx.texture.width, ctx.texture.height, &ctx.managed_texture.image, &ctx.managed_texture.memory, &ctx.managed_texture.allocation)) {
+        vk_allocator.vk_allocator_free_buffer(@ptrCast(ctx.allocator), ctx.staging_buffer, ctx.staging_allocation);
         @atomicStore(bool, &ctx.finished, true, .release);
         return;
     }
@@ -91,12 +91,11 @@ fn upload_texture_task(data: ?*anyopaque) callconv(.c) void {
 
     // Create image view
     if (!vk_texture_utils.create_texture_image_view(ctx.device, ctx.managed_texture.image, &ctx.managed_texture.view)) {
-        c.vkDestroyBuffer(ctx.device, ctx.staging_buffer, null);
-        c.vkFreeMemory(ctx.device, ctx.staging_memory, null);
-        c.vkDestroyImage(ctx.device, ctx.managed_texture.image, null);
-        c.vkFreeMemory(ctx.device, ctx.managed_texture.memory, null);
+        vk_allocator.vk_allocator_free_buffer(@ptrCast(ctx.allocator), ctx.staging_buffer, ctx.staging_allocation);
+        vk_allocator.vk_allocator_free_image(@ptrCast(ctx.allocator), ctx.managed_texture.image, ctx.managed_texture.allocation);
         ctx.managed_texture.image = null;
         ctx.managed_texture.memory = null;
+        ctx.managed_texture.allocation = null;
         @atomicStore(bool, &ctx.finished, true, .release);
         return;
     }
@@ -222,7 +221,7 @@ fn destroy_texture(manager: *types.VulkanTextureManager, index: u32) void {
     }
 
     if (texture.image != null and texture.memory != null) {
-        vk_allocator.vk_allocator_free_image(@ptrCast(manager.allocator), texture.image, texture.memory);
+        vk_allocator.vk_allocator_free_image(@ptrCast(manager.allocator), texture.image, texture.allocation);
         texture.image = null;
         texture.memory = null;
     }
@@ -527,25 +526,66 @@ pub fn vk_texture_manager_load_scene_textures(manager: *types.VulkanTextureManag
     
     if (c.vkQueueSubmit(manager.graphicsQueue, 1, &submit_info, fence) != c.VK_SUCCESS) {
         log.cardinal_log_error("Failed to submit texture upload commands", .{});
+        c.vkDestroyFence(manager.device, fence, null);
+        c.vkFreeCommandBuffers(manager.device, manager.commandPool, 1, &primary_cmd);
+        memory.cardinal_free(allocator, @as(?*anyopaque, @ptrCast(contexts)));
+        return false;
     } else {
-        _ = c.vkWaitForFences(manager.device, 1, &fence, c.VK_TRUE, c.UINT64_MAX);
+        const wait_result = c.vkWaitForFences(manager.device, 1, &fence, c.VK_TRUE, c.UINT64_MAX);
+        if (wait_result != c.VK_SUCCESS) {
+            log.cardinal_log_error("Failed to wait for texture upload fence: {d}", .{wait_result});
+            c.vkDestroyFence(manager.device, fence, null);
+            c.vkFreeCommandBuffers(manager.device, manager.commandPool, 1, &primary_cmd);
+            memory.cardinal_free(allocator, @as(?*anyopaque, @ptrCast(contexts)));
+            return false;
+        }
     }
     
     c.vkDestroyFence(manager.device, fence, null);
     c.vkFreeCommandBuffers(manager.device, manager.commandPool, 1, &primary_cmd);
     
     // Update manager count
-    manager.textureCount += success_count; // Approximation, actually it's sparse if some failed
-    // But we used fixed slots. 
-    // We should set manager.textureCount to max index + 1.
     manager.textureCount = scene_data.?.texture_count + 1;
     
+    // Check for failed textures and fill with placeholder
+    const placeholder = &manager.textures.?[0];
+    var k: u32 = 1;
+    while (k < manager.textureCount) : (k += 1) {
+        var tex = &manager.textures.?[k];
+        if (tex.view == null) {
+            log.cardinal_log_warn("Texture {d} failed to load or was skipped, using placeholder", .{k});
+            
+            // Create view for placeholder image
+            if (!vk_texture_utils.create_texture_image_view(manager.device, placeholder.image, &tex.view)) {
+                log.cardinal_log_error("Failed to create fallback view for texture {d}", .{k});
+                // Critical failure if we can't even create fallback view
+            }
+            
+            // Create sampler (copy of placeholder sampler)
+            var default_sampler_config = std.mem.zeroes(scene.CardinalSampler);
+            default_sampler_config.wrap_s = .REPEAT;
+            default_sampler_config.wrap_t = .REPEAT;
+            default_sampler_config.min_filter = .LINEAR;
+            default_sampler_config.mag_filter = .LINEAR;
+            tex.sampler = create_sampler_from_config(manager.device, &default_sampler_config);
+            
+            tex.image = null; // Do not own image
+            tex.memory = null;
+            tex.allocation = null;
+            tex.isPlaceholder = true;
+            tex.width = placeholder.width;
+             tex.height = placeholder.height;
+             tex.channels = placeholder.channels;
+             tex.path = null;
+        }
+    }
+    
     // Cleanup staging buffers
+
     j = 0;
     while (j < tasks_submitted) : (j += 1) {
         if (ctx_array[j].staging_buffer != null) {
-            c.vkDestroyBuffer(manager.device, ctx_array[j].staging_buffer, null);
-            c.vkFreeMemory(manager.device, ctx_array[j].staging_memory, null);
+            vk_allocator.vk_allocator_free_buffer(manager.allocator, ctx_array[j].staging_buffer, ctx_array[j].staging_allocation);
         }
     }
     
@@ -579,7 +619,7 @@ pub fn vk_texture_manager_load_texture(manager: *types.VulkanTextureManager, tex
     if (!vk_texture_utils.vk_texture_create_from_data(manager.allocator, manager.device, manager.commandPool,
                                      manager.graphicsQueue, manager.syncManager, @ptrCast(texture.?),
                                      &managed_texture.image, &managed_texture.memory,
-                                     &managed_texture.view, out_timeline_value)) {
+                                     &managed_texture.view, out_timeline_value, &managed_texture.allocation)) {
         log.cardinal_log_error("Failed to create texture from data", .{});
         return false;
     }
@@ -643,7 +683,7 @@ pub fn vk_texture_manager_create_placeholder(manager: *types.VulkanTextureManage
     // Use existing texture utility to create placeholder
     if (!vk_texture_utils.vk_texture_create_placeholder(manager.allocator, manager.device, manager.commandPool,
                                        manager.graphicsQueue, &managed_texture.image,
-                                       &managed_texture.memory, &managed_texture.view, null)) {
+                                       &managed_texture.memory, &managed_texture.view, null, &managed_texture.allocation)) {
         log.cardinal_log_error("Failed to create placeholder texture", .{});
         return false;
     }

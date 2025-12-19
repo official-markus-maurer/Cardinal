@@ -2,116 +2,46 @@ const std = @import("std");
 const builtin = @import("builtin");
 const log = @import("../core/log.zig");
 const types = @import("vulkan_types.zig");
-
 const c = @import("vulkan_c.zig").c;
 
-// Mutex helpers
-fn allocator_mutex_init(mutex: *?*anyopaque) bool {
-    if (builtin.os.tag == .windows) {
-        const cs = std.heap.c_allocator.create(c.CRITICAL_SECTION) catch return false;
-        c.InitializeCriticalSection(cs);
-        mutex.* = cs;
-        return true;
-    } else {
-        const m = std.heap.c_allocator.create(c.pthread_mutex_t) catch return false;
-        if (c.pthread_mutex_init(m, null) != 0) {
-            std.heap.c_allocator.destroy(m);
-            return false;
-        }
-        mutex.* = m;
-        return true;
-    }
-}
+// Global storage for VMA functions to ensure they remain valid
+// (VMA copies them, but just to be safe and avoid stack issues)
+var g_vulkan_functions: c.VmaVulkanFunctions = undefined;
 
-fn allocator_mutex_destroy(mutex: *?*anyopaque) void {
-    if (mutex.*) |m| {
-        if (builtin.os.tag == .windows) {
-            const cs: *c.CRITICAL_SECTION = @ptrCast(@alignCast(m));
-            c.DeleteCriticalSection(cs);
-            std.heap.c_allocator.destroy(cs);
+// Debug wrapper for vkAllocateMemory
+var real_vkAllocateMemory: c.PFN_vkAllocateMemory = null;
+var real_vkFreeMemory: c.PFN_vkFreeMemory = null;
+var real_vkBindBufferMemory: c.PFN_vkBindBufferMemory = null;
+
+fn debug_vkAllocateMemory(device: c.VkDevice, pAllocateInfo: ?*const c.VkMemoryAllocateInfo, pAllocator: ?*const c.VkAllocationCallbacks, pMemory: ?*c.VkDeviceMemory) callconv(.c) c.VkResult {
+    if (real_vkAllocateMemory) |func| {
+        const res = func(device, pAllocateInfo, pAllocator, pMemory);
+        if (res == c.VK_SUCCESS and pMemory != null) {
+            log.cardinal_log_warn("[VMA_DEBUG] vkAllocateMemory success, handle: {any}", .{pMemory.?.*});
         } else {
-            const pm: *c.pthread_mutex_t = @ptrCast(@alignCast(m));
-            _ = c.pthread_mutex_destroy(pm);
-            std.heap.c_allocator.destroy(pm);
+            log.cardinal_log_error("[VMA_DEBUG] vkAllocateMemory failed: {d}", .{res});
         }
-        mutex.* = null;
+        return res;
+    }
+    return c.VK_ERROR_INITIALIZATION_FAILED;
+}
+
+fn debug_vkFreeMemory(device: c.VkDevice, memory: c.VkDeviceMemory, pAllocator: ?*const c.VkAllocationCallbacks) callconv(.c) void {
+    if (real_vkFreeMemory) |func| {
+        log.cardinal_log_warn("[VMA_DEBUG] vkFreeMemory called, handle: {any}", .{memory});
+        func(device, memory, pAllocator);
     }
 }
 
-fn allocator_mutex_lock(mutex: ?*anyopaque) void {
-    if (mutex) |m| {
-        if (builtin.os.tag == .windows) {
-            c.EnterCriticalSection(@ptrCast(@alignCast(m)));
-        } else {
-            _ = c.pthread_mutex_lock(@ptrCast(@alignCast(m)));
-        }
+fn debug_vkBindBufferMemory(device: c.VkDevice, buffer: c.VkBuffer, memory: c.VkDeviceMemory, memoryOffset: c.VkDeviceSize) callconv(.c) c.VkResult {
+    if (real_vkBindBufferMemory) |func| {
+        log.cardinal_log_warn("[VMA_DEBUG] vkBindBufferMemory called. Buffer: {any}, Memory: {any}, Offset: {d}", .{buffer, memory, memoryOffset});
+        return func(device, buffer, memory, memoryOffset);
     }
+    return c.VK_ERROR_INITIALIZATION_FAILED;
 }
 
-fn allocator_mutex_unlock(mutex: ?*anyopaque) void {
-    if (mutex) |m| {
-        if (builtin.os.tag == .windows) {
-            c.LeaveCriticalSection(@ptrCast(@alignCast(m)));
-        } else {
-            _ = c.pthread_mutex_unlock(@ptrCast(@alignCast(m)));
-        }
-    }
-}
-
-// Helper for memory type finding
-fn find_memory_type(alloc: *types.VulkanAllocator, type_filter: u32, properties: c.VkMemoryPropertyFlags, out_type_index: *u32) bool {
-    var mem_props: c.VkPhysicalDeviceMemoryProperties = undefined;
-    c.vkGetPhysicalDeviceMemoryProperties(alloc.physical_device, &mem_props);
-
-    var i: u32 = 0;
-    while (i < mem_props.memoryTypeCount) : (i += 1) {
-        if ((type_filter & (@as(u32, 1) << @intCast(i))) != 0 and
-            (mem_props.memoryTypes[i].propertyFlags & properties) == properties) {
-            out_type_index.* = i;
-            return true;
-        }
-    }
-
-    return false;
-}
-
-// Helper for memory budget checking
-fn check_memory_budget(alloc: *types.VulkanAllocator, requested_size: c.VkDeviceSize, memory_type_index: u32) bool {
-    var mem_props: c.VkPhysicalDeviceMemoryProperties = undefined;
-    c.vkGetPhysicalDeviceMemoryProperties(alloc.physical_device, &mem_props);
-
-    if (memory_type_index >= mem_props.memoryTypeCount) {
-        log.cardinal_log_error("Invalid memory type index: {d}", .{memory_type_index});
-        return false;
-    }
-
-    const heap_index = mem_props.memoryTypes[memory_type_index].heapIndex;
-    const heap_size = mem_props.memoryHeaps[heap_index].size;
-
-    const current_allocated = alloc.total_device_mem_allocated;
-
-    // Safety threshold: reject allocation if it would use more than 85% of heap
-    const safe_limit = (heap_size * 85) / 100;
-    const projected_usage = current_allocated + requested_size;
-
-    if (projected_usage > safe_limit) {
-        log.cardinal_log_error("MEMORY PRESSURE DETECTED! Requested: {d} bytes, Current: {d} bytes, Heap size: {d} bytes, Safe limit: {d} bytes",
-            .{requested_size, current_allocated, heap_size, safe_limit});
-        return false;
-    }
-
-    // Warn if approaching 75% usage
-    const warning_limit = (heap_size * 75) / 100;
-    if (projected_usage > warning_limit) {
-        const usage_percent = @as(f64, @floatFromInt(projected_usage)) / @as(f64, @floatFromInt(heap_size)) * 100.0;
-        log.cardinal_log_warn("Memory usage approaching limit: {d}/{d} bytes ({d:.1}% of heap)",
-            .{projected_usage, heap_size, usage_percent});
-    }
-
-    return true;
-}
-
-pub export fn vk_allocator_init(alloc: ?*types.VulkanAllocator, phys: c.VkPhysicalDevice, dev: c.VkDevice,
+pub export fn vk_allocator_init(alloc: ?*types.VulkanAllocator, instance: c.VkInstance, phys: c.VkPhysicalDevice, dev: c.VkDevice,
                        bufReq: c.PFN_vkGetDeviceBufferMemoryRequirements,
                        imgReq: c.PFN_vkGetDeviceImageMemoryRequirements,
                        bufDevAddr: c.PFN_vkGetBufferDeviceAddress,
@@ -119,326 +49,214 @@ pub export fn vk_allocator_init(alloc: ?*types.VulkanAllocator, phys: c.VkPhysic
                        imgReqKHR: c.PFN_vkGetDeviceImageMemoryRequirementsKHR,
                        supports_maintenance8: bool) callconv(.c) bool {
     
-    if (alloc == null or phys == null or dev == null or bufReq == null or imgReq == null or bufDevAddr == null) {
+    if (alloc == null or phys == null or dev == null or instance == null) {
         log.cardinal_log_error("Invalid parameters for allocator init", .{});
         return false;
     }
 
-    // Initialize struct with zeroes
-    const allocator = alloc.?;
-    allocator.* = std.mem.zeroes(types.VulkanAllocator);
-    
-    allocator.device = dev;
-    allocator.physical_device = phys;
-    allocator.fpGetDeviceBufferMemReq = bufReq;
-    allocator.fpGetDeviceImageMemReq = imgReq;
-    allocator.fpGetBufferDeviceAddress = bufDevAddr;
-    allocator.fpGetDeviceBufferMemReqKHR = bufReqKHR;
-    allocator.fpGetDeviceImageMemReqKHR = imgReqKHR;
-    allocator.supports_maintenance8 = supports_maintenance8;
-    allocator.total_device_mem_allocated = 0;
-    allocator.total_device_mem_freed = 0;
+    _ = bufReqKHR;
+    _ = imgReqKHR;
+    _ = bufDevAddr;
 
-    // Initialize mutex
-    if (!allocator_mutex_init(&allocator.allocation_mutex)) {
-        log.cardinal_log_error("Failed to initialize allocation mutex", .{});
+    const allocator = alloc.?;
+    allocator.physical_device = phys;
+    allocator.device = dev;
+
+    // Use global storage to ensure persistence if VMA keeps the pointer (though it usually copies)
+    // and to avoid stack overflow for large structs
+    g_vulkan_functions = std.mem.zeroes(c.VmaVulkanFunctions);
+    
+    // Instance functions
+    g_vulkan_functions.vkGetPhysicalDeviceProperties = @ptrCast(c.vkGetInstanceProcAddr(instance, "vkGetPhysicalDeviceProperties"));
+    if (g_vulkan_functions.vkGetPhysicalDeviceProperties == null) log.cardinal_log_error("Failed to load vkGetPhysicalDeviceProperties", .{});
+
+    g_vulkan_functions.vkGetPhysicalDeviceMemoryProperties = @ptrCast(c.vkGetInstanceProcAddr(instance, "vkGetPhysicalDeviceMemoryProperties"));
+    if (g_vulkan_functions.vkGetPhysicalDeviceMemoryProperties == null) log.cardinal_log_error("Failed to load vkGetPhysicalDeviceMemoryProperties", .{});
+
+    g_vulkan_functions.vkGetPhysicalDeviceMemoryProperties2KHR = @ptrCast(c.vkGetInstanceProcAddr(instance, "vkGetPhysicalDeviceMemoryProperties2"));
+    if (g_vulkan_functions.vkGetPhysicalDeviceMemoryProperties2KHR == null) {
+        g_vulkan_functions.vkGetPhysicalDeviceMemoryProperties2KHR = @ptrCast(c.vkGetInstanceProcAddr(instance, "vkGetPhysicalDeviceMemoryProperties2KHR"));
+    }
+    if (g_vulkan_functions.vkGetPhysicalDeviceMemoryProperties2KHR == null) log.cardinal_log_error("Failed to load vkGetPhysicalDeviceMemoryProperties2", .{});
+
+    // Device functions
+    // real_vkAllocateMemory = @ptrCast(c.vkGetDeviceProcAddr(dev, "vkAllocateMemory"));
+    g_vulkan_functions.vkAllocateMemory = @ptrCast(c.vkGetDeviceProcAddr(dev, "vkAllocateMemory")); // debug_vkAllocateMemory;
+    
+    // real_vkFreeMemory = @ptrCast(c.vkGetDeviceProcAddr(dev, "vkFreeMemory"));
+    g_vulkan_functions.vkFreeMemory = @ptrCast(c.vkGetDeviceProcAddr(dev, "vkFreeMemory")); // debug_vkFreeMemory;
+
+    g_vulkan_functions.vkMapMemory = @ptrCast(c.vkGetDeviceProcAddr(dev, "vkMapMemory"));
+    g_vulkan_functions.vkUnmapMemory = @ptrCast(c.vkGetDeviceProcAddr(dev, "vkUnmapMemory"));
+    g_vulkan_functions.vkFlushMappedMemoryRanges = @ptrCast(c.vkGetDeviceProcAddr(dev, "vkFlushMappedMemoryRanges"));
+    g_vulkan_functions.vkInvalidateMappedMemoryRanges = @ptrCast(c.vkGetDeviceProcAddr(dev, "vkInvalidateMappedMemoryRanges"));
+    
+    // real_vkBindBufferMemory = @ptrCast(c.vkGetDeviceProcAddr(dev, "vkBindBufferMemory"));
+    g_vulkan_functions.vkBindBufferMemory = @ptrCast(c.vkGetDeviceProcAddr(dev, "vkBindBufferMemory")); // debug_vkBindBufferMemory;
+    
+    g_vulkan_functions.vkBindImageMemory = @ptrCast(c.vkGetDeviceProcAddr(dev, "vkBindImageMemory"));
+    g_vulkan_functions.vkGetBufferMemoryRequirements = @ptrCast(c.vkGetDeviceProcAddr(dev, "vkGetBufferMemoryRequirements"));
+    g_vulkan_functions.vkGetImageMemoryRequirements = @ptrCast(c.vkGetDeviceProcAddr(dev, "vkGetImageMemoryRequirements"));
+    g_vulkan_functions.vkCreateBuffer = @ptrCast(c.vkGetDeviceProcAddr(dev, "vkCreateBuffer"));
+    g_vulkan_functions.vkDestroyBuffer = @ptrCast(c.vkGetDeviceProcAddr(dev, "vkDestroyBuffer"));
+    g_vulkan_functions.vkCreateImage = @ptrCast(c.vkGetDeviceProcAddr(dev, "vkCreateImage"));
+    g_vulkan_functions.vkDestroyImage = @ptrCast(c.vkGetDeviceProcAddr(dev, "vkDestroyImage"));
+    g_vulkan_functions.vkCmdCopyBuffer = @ptrCast(c.vkGetDeviceProcAddr(dev, "vkCmdCopyBuffer"));
+    
+    g_vulkan_functions.vkGetBufferMemoryRequirements2KHR = @ptrCast(c.vkGetDeviceProcAddr(dev, "vkGetBufferMemoryRequirements2"));
+    if (g_vulkan_functions.vkGetBufferMemoryRequirements2KHR == null) g_vulkan_functions.vkGetBufferMemoryRequirements2KHR = @ptrCast(c.vkGetDeviceProcAddr(dev, "vkGetBufferMemoryRequirements2KHR"));
+    if (g_vulkan_functions.vkGetBufferMemoryRequirements2KHR == null) log.cardinal_log_error("Failed to load vkGetBufferMemoryRequirements2", .{});
+    
+    g_vulkan_functions.vkGetImageMemoryRequirements2KHR = @ptrCast(c.vkGetDeviceProcAddr(dev, "vkGetImageMemoryRequirements2"));
+    if (g_vulkan_functions.vkGetImageMemoryRequirements2KHR == null) g_vulkan_functions.vkGetImageMemoryRequirements2KHR = @ptrCast(c.vkGetDeviceProcAddr(dev, "vkGetImageMemoryRequirements2KHR"));
+    if (g_vulkan_functions.vkGetImageMemoryRequirements2KHR == null) log.cardinal_log_error("Failed to load vkGetImageMemoryRequirements2", .{});
+    
+    g_vulkan_functions.vkBindBufferMemory2KHR = @ptrCast(c.vkGetDeviceProcAddr(dev, "vkBindBufferMemory2"));
+    if (g_vulkan_functions.vkBindBufferMemory2KHR == null) g_vulkan_functions.vkBindBufferMemory2KHR = @ptrCast(c.vkGetDeviceProcAddr(dev, "vkBindBufferMemory2KHR"));
+    
+    g_vulkan_functions.vkBindImageMemory2KHR = @ptrCast(c.vkGetDeviceProcAddr(dev, "vkBindImageMemory2"));
+    if (g_vulkan_functions.vkBindImageMemory2KHR == null) g_vulkan_functions.vkBindImageMemory2KHR = @ptrCast(c.vkGetDeviceProcAddr(dev, "vkBindImageMemory2KHR"));
+    
+    g_vulkan_functions.vkGetDeviceBufferMemoryRequirements = bufReq;
+    g_vulkan_functions.vkGetDeviceImageMemoryRequirements = imgReq;
+
+    // Additional functions if available
+    // vulkanFunctions.vkGetBufferDeviceAddress = bufDevAddr;
+
+    var allocatorInfo = std.mem.zeroes(c.VmaAllocatorCreateInfo);
+    allocatorInfo.physicalDevice = phys;
+    allocatorInfo.device = dev;
+    allocatorInfo.instance = instance;
+    allocatorInfo.pVulkanFunctions = &g_vulkan_functions;
+    allocatorInfo.vulkanApiVersion = c.VK_API_VERSION_1_3;
+
+    if (supports_maintenance8) {
+        allocatorInfo.flags |= c.VMA_ALLOCATOR_CREATE_KHR_MAINTENANCE4_BIT;
+    }
+    
+    // if (bufDevAddr != null) {
+    //    allocatorInfo.flags |= c.VMA_ALLOCATOR_CREATE_BUFFER_DEVICE_ADDRESS_BIT;
+    // }
+
+    var vma_alloc: c.VmaAllocator = null;
+    const result = c.vmaCreateAllocator(&allocatorInfo, &vma_alloc);
+    
+    if (result != c.VK_SUCCESS) {
+        log.cardinal_log_error("Failed to create VMA allocator: {d}", .{result});
         return false;
     }
-
-    const maint8_str = if (supports_maintenance8) "enabled" else "not available";
-    log.cardinal_log_info("Initialized - maintenance4: required, maintenance8: {s}, buffer device address: enabled", .{maint8_str});
+    
+    allocator.handle = vma_alloc;
+    log.cardinal_log_info("VMA Allocator initialized", .{});
     return true;
 }
 
 pub export fn vk_allocator_shutdown(alloc: ?*types.VulkanAllocator) callconv(.c) void {
     if (alloc == null) return;
     const allocator = alloc.?;
-
-    // Fix integer overflow by checking bounds before subtraction
-    const net = if (allocator.total_device_mem_allocated >= allocator.total_device_mem_freed)
-        allocator.total_device_mem_allocated - allocator.total_device_mem_freed
-        else 0;
-    log.cardinal_log_info("Shutdown - Total allocated: {d} bytes, freed: {d} bytes, net: {d} bytes",
-        .{allocator.total_device_mem_allocated, allocator.total_device_mem_freed, net});
-
-    if (net > 0) {
-        log.cardinal_log_warn("Memory leak detected: {d} bytes not freed", .{net});
+    if (allocator.handle != null) {
+        c.vmaDestroyAllocator(allocator.handle);
+        allocator.handle = null;
     }
+}
 
-    allocator_mutex_destroy(&allocator.allocation_mutex);
-    allocator.* = std.mem.zeroes(types.VulkanAllocator);
+fn get_vma_usage(props: c.VkMemoryPropertyFlags) c.VmaMemoryUsage {
+    if ((props & c.VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT) != 0) {
+        return c.VMA_MEMORY_USAGE_AUTO_PREFER_DEVICE;
+    }
+    if ((props & (c.VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | c.VK_MEMORY_PROPERTY_HOST_COHERENT_BIT)) != 0) {
+        return c.VMA_MEMORY_USAGE_AUTO_PREFER_HOST;
+    }
+    return c.VMA_MEMORY_USAGE_AUTO;
+}
+
+fn get_vma_flags(props: c.VkMemoryPropertyFlags) c.VmaAllocationCreateFlags {
+    var flags: c.VmaAllocationCreateFlags = 0;
+    if ((props & c.VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT) != 0) {
+        if ((props & c.VK_MEMORY_PROPERTY_HOST_COHERENT_BIT) != 0) {
+             // VMA ensures coherence for mapped memory usually, or we flush manually
+             // VMA_ALLOCATION_CREATE_HOST_ACCESS_RANDOM_BIT might be better for coherent
+             flags |= c.VMA_ALLOCATION_CREATE_HOST_ACCESS_RANDOM_BIT;
+        } else {
+             flags |= c.VMA_ALLOCATION_CREATE_HOST_ACCESS_SEQUENTIAL_WRITE_BIT;
+        }
+    }
+    return flags;
 }
 
 pub export fn vk_allocator_allocate_image(alloc: ?*types.VulkanAllocator, image_ci: ?*const c.VkImageCreateInfo,
-                                 out_image: ?*c.VkImage, out_memory: ?*c.VkDeviceMemory,
+                                 out_image: ?*c.VkImage, out_memory: ?*c.VkDeviceMemory, out_allocation: ?*c.VmaAllocation,
                                  required_props: c.VkMemoryPropertyFlags) callconv(.c) bool {
-    if (alloc == null or image_ci == null or out_image == null or out_memory == null) {
-        log.cardinal_log_error("Invalid parameters for image allocation", .{});
-        return false;
-    }
-    const allocator = alloc.?;
-    const create_info = image_ci.?;
-
-    log.cardinal_log_info("allocate_image: extent={d}x{d} fmt={d} usage=0x{x} props=0x{x}",
-        .{create_info.extent.width, create_info.extent.height, create_info.format, create_info.usage, required_props});
-
-    allocator_mutex_lock(allocator.allocation_mutex);
-
-    // Create image
-    var result = c.vkCreateImage(allocator.device, create_info, null, out_image);
-    log.cardinal_log_info("vkCreateImage => {d}, handle={*}", .{result, out_image.?.*});
-    if (result != c.VK_SUCCESS) {
-        log.cardinal_log_error("Failed to create image: {d}", .{result});
-        allocator_mutex_unlock(allocator.allocation_mutex);
-        return false;
-    }
-
-    // Get memory requirements
-    var mem_requirements: c.VkMemoryRequirements = undefined;
-    var device_req = std.mem.zeroes(c.VkDeviceImageMemoryRequirements);
-    device_req.sType = c.VK_STRUCTURE_TYPE_DEVICE_IMAGE_MEMORY_REQUIREMENTS;
-    device_req.pNext = null;
-    device_req.pCreateInfo = create_info;
-
-    var mem_req2 = std.mem.zeroes(c.VkMemoryRequirements2);
-    mem_req2.sType = c.VK_STRUCTURE_TYPE_MEMORY_REQUIREMENTS_2;
-    mem_req2.pNext = null;
-
-    if (allocator.fpGetDeviceImageMemReqKHR != null) {
-        log.cardinal_log_debug("Using vkGetDeviceImageMemoryRequirements for image allocation", .{});
-        allocator.fpGetDeviceImageMemReqKHR.?(allocator.device, &device_req, &mem_req2);
-    } else {
-        allocator.fpGetDeviceImageMemReq.?(allocator.device, &device_req, &mem_req2);
-    }
-    mem_requirements = mem_req2.memoryRequirements;
+    if (alloc == null or image_ci == null or out_image == null or out_allocation == null) return false;
     
-    log.cardinal_log_info("Image mem reqs: size={d} align={d} types=0x{x}",
-        .{mem_requirements.size, mem_requirements.alignment, mem_requirements.memoryTypeBits});
-
-    if (mem_requirements.size == 0 or mem_requirements.memoryTypeBits == 0) {
-        log.cardinal_log_error("Invalid image memory requirements (size={d}, types=0x{x})",
-            .{mem_requirements.size, mem_requirements.memoryTypeBits});
-        c.vkDestroyImage(allocator.device, out_image.?.*, null);
-        out_image.?.* = null;
-        allocator_mutex_unlock(allocator.allocation_mutex);
-        return false;
-    }
-
-    var memory_type_index: u32 = 0;
-    if (!find_memory_type(allocator, mem_requirements.memoryTypeBits, required_props, &memory_type_index)) {
-        log.cardinal_log_error("Failed to find suitable memory type for image (required_props=0x{x})", .{required_props});
-        c.vkDestroyImage(allocator.device, out_image.?.*, null);
-        out_image.?.* = null;
-        allocator_mutex_unlock(allocator.allocation_mutex);
-        return false;
-    }
-    log.cardinal_log_info("Image memory type index: {d}", .{memory_type_index});
-
-    if (!check_memory_budget(allocator, mem_requirements.size, memory_type_index)) {
-        log.cardinal_log_error("Memory budget check failed for image allocation ({d} bytes)", .{mem_requirements.size});
-        c.vkDestroyImage(allocator.device, out_image.?.*, null);
-        out_image.?.* = null;
-        allocator_mutex_unlock(allocator.allocation_mutex);
-        return false;
-    }
-
-    var alloc_info = std.mem.zeroes(c.VkMemoryAllocateInfo);
-    alloc_info.sType = c.VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO;
-    alloc_info.allocationSize = mem_requirements.size;
-    alloc_info.memoryTypeIndex = memory_type_index;
-
-    result = c.vkAllocateMemory(allocator.device, &alloc_info, null, out_memory);
-    log.cardinal_log_info("vkAllocateMemory(Image) => {d}, mem={*} size={d}", .{result, out_memory.?.*, alloc_info.allocationSize});
+    var allocInfo = std.mem.zeroes(c.VmaAllocationCreateInfo);
+    allocInfo.usage = get_vma_usage(required_props);
+    allocInfo.flags = get_vma_flags(required_props);
     
-    if (result != c.VK_SUCCESS) {
-        if (result == c.VK_ERROR_OUT_OF_DEVICE_MEMORY) {
-            log.cardinal_log_error("OUT OF DEVICE MEMORY! Failed to allocate {d} bytes for image. Total allocated: {d} bytes",
-                .{alloc_info.allocationSize, allocator.total_device_mem_allocated});
-        } else if (result == c.VK_ERROR_OUT_OF_HOST_MEMORY) {
-            log.cardinal_log_error("OUT OF HOST MEMORY! Failed to allocate {d} bytes for image",
-                .{alloc_info.allocationSize});
-        } else {
-            log.cardinal_log_error("Failed to allocate image memory: {d}", .{result});
-        }
-        c.vkDestroyImage(allocator.device, out_image.?.*, null);
-        out_image.?.* = null;
-        allocator_mutex_unlock(allocator.allocation_mutex);
-        return false;
-    }
-
-    result = c.vkBindImageMemory(allocator.device, out_image.?.*, out_memory.?.*, 0);
-    log.cardinal_log_info("vkBindImageMemory => {d}", .{result});
-    if (result != c.VK_SUCCESS) {
-        log.cardinal_log_error("Failed to bind image memory: {d}", .{result});
-        c.vkFreeMemory(allocator.device, out_memory.?.*, null);
-        c.vkDestroyImage(allocator.device, out_image.?.*, null);
-        out_image.?.* = null;
-        out_memory.?.* = null;
-        allocator_mutex_unlock(allocator.allocation_mutex);
-        return false;
-    }
-
-    allocator.total_device_mem_allocated += mem_requirements.size;
+    var infoOut: c.VmaAllocationInfo = undefined;
     
-    log.cardinal_log_info("Allocated image memory: {d} bytes (type: {d}). Total GPU memory: {d} bytes",
-        .{mem_requirements.size, memory_type_index, allocator.total_device_mem_allocated});
-
-    allocator_mutex_unlock(allocator.allocation_mutex);
+    const result = c.vmaCreateImage(alloc.?.handle, image_ci, &allocInfo, out_image, out_allocation, &infoOut);
+    if (result != c.VK_SUCCESS) {
+        log.cardinal_log_error("vmaCreateImage failed: {d}", .{result});
+        return false;
+    }
+    
+    if (out_memory != null) {
+        out_memory.?.* = infoOut.deviceMemory;
+    }
+    
+    log.cardinal_log_info("vk_allocator_allocate_image success", .{});
     return true;
 }
 
 pub export fn vk_allocator_allocate_buffer(alloc: ?*types.VulkanAllocator, buffer_ci: ?*const c.VkBufferCreateInfo,
-                                  out_buffer: ?*c.VkBuffer, out_memory: ?*c.VkDeviceMemory,
+                                  out_buffer: ?*c.VkBuffer, out_memory: ?*c.VkDeviceMemory, out_allocation: ?*c.VmaAllocation,
                                   required_props: c.VkMemoryPropertyFlags) callconv(.c) bool {
-    if (alloc == null or buffer_ci == null or out_buffer == null or out_memory == null) {
-        log.cardinal_log_error("Invalid parameters for buffer allocation", .{});
-        return false;
-    }
-    const allocator = alloc.?;
-    const create_info = buffer_ci.?;
-
-    log.cardinal_log_info("allocate_buffer: size={d} usage=0x{x} sharingMode={d} props=0x{x}",
-        .{create_info.size, create_info.usage, create_info.sharingMode, required_props});
-
-    allocator_mutex_lock(allocator.allocation_mutex);
-
-    var result = c.vkCreateBuffer(allocator.device, create_info, null, out_buffer);
-    log.cardinal_log_info("vkCreateBuffer => {d}, handle={*}", .{result, out_buffer.?.*});
-    if (result != c.VK_SUCCESS) {
-        log.cardinal_log_error("Failed to create buffer: {d}", .{result});
-        allocator_mutex_unlock(allocator.allocation_mutex);
-        return false;
-    }
-
-    var mem_requirements: c.VkMemoryRequirements = undefined;
-    var device_req = std.mem.zeroes(c.VkDeviceBufferMemoryRequirements);
-    device_req.sType = c.VK_STRUCTURE_TYPE_DEVICE_BUFFER_MEMORY_REQUIREMENTS;
-    device_req.pNext = null;
-    device_req.pCreateInfo = create_info;
-
-    var mem_req2 = std.mem.zeroes(c.VkMemoryRequirements2);
-    mem_req2.sType = c.VK_STRUCTURE_TYPE_MEMORY_REQUIREMENTS_2;
-    mem_req2.pNext = null;
-
-    if (allocator.fpGetDeviceBufferMemReqKHR != null) {
-        log.cardinal_log_debug("Using vkGetDeviceBufferMemoryRequirements for buffer allocation", .{});
-        allocator.fpGetDeviceBufferMemReqKHR.?(allocator.device, &device_req, &mem_req2);
-    } else {
-        allocator.fpGetDeviceBufferMemReq.?(allocator.device, &device_req, &mem_req2);
-    }
-    mem_requirements = mem_req2.memoryRequirements;
+    if (alloc == null or buffer_ci == null or out_buffer == null or out_allocation == null) return false;
     
-    log.cardinal_log_info("Buffer mem reqs: size={d} align={d} types=0x{x}",
-        .{mem_requirements.size, mem_requirements.alignment, mem_requirements.memoryTypeBits});
-
-    if (mem_requirements.size == 0 or mem_requirements.memoryTypeBits == 0) {
-        log.cardinal_log_error("Invalid buffer memory requirements (size={d}, types=0x{x})",
-            .{mem_requirements.size, mem_requirements.memoryTypeBits});
-        c.vkDestroyBuffer(allocator.device, out_buffer.?.*, null);
-        out_buffer.?.* = null;
-        allocator_mutex_unlock(allocator.allocation_mutex);
-        return false;
+    var allocInfo = std.mem.zeroes(c.VmaAllocationCreateInfo);
+    allocInfo.usage = get_vma_usage(required_props);
+    allocInfo.flags = get_vma_flags(required_props);
+    if ((required_props & c.VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT) != 0) {
+        // allocInfo.flags |= c.VMA_ALLOCATION_CREATE_MAPPED_BIT;
     }
 
-    var memory_type_index: u32 = 0;
-    if (!find_memory_type(allocator, mem_requirements.memoryTypeBits, required_props, &memory_type_index)) {
-        log.cardinal_log_error("Failed to find suitable memory type for buffer (required_props=0x{x})", .{required_props});
-        c.vkDestroyBuffer(allocator.device, out_buffer.?.*, null);
-        out_buffer.?.* = null;
-        allocator_mutex_unlock(allocator.allocation_mutex);
-        return false;
-    }
+    var allocInfoOut: c.VmaAllocationInfo = undefined;
+    
+    log.cardinal_log_info("Calling vmaCreateBuffer: size={d}, usage={d}, flags={d}", .{buffer_ci.?.size, buffer_ci.?.usage, allocInfo.flags});
 
-    if (!check_memory_budget(allocator, mem_requirements.size, memory_type_index)) {
-        log.cardinal_log_error("Memory budget check failed for buffer allocation ({d} bytes)", .{mem_requirements.size});
-        c.vkDestroyBuffer(allocator.device, out_buffer.?.*, null);
-        out_buffer.?.* = null;
-        allocator_mutex_unlock(allocator.allocation_mutex);
-        return false;
-    }
-
-    var alloc_info = std.mem.zeroes(c.VkMemoryAllocateInfo);
-    alloc_info.sType = c.VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO;
-    alloc_info.allocationSize = mem_requirements.size;
-    alloc_info.memoryTypeIndex = memory_type_index;
-
-    // Add VK_MEMORY_ALLOCATE_DEVICE_ADDRESS_BIT if buffer usage includes shader device address
-    if ((create_info.usage & c.VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT) != 0) {
-        var alloc_flags = std.mem.zeroes(c.VkMemoryAllocateFlagsInfo);
-        alloc_flags.sType = c.VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_FLAGS_INFO;
-        alloc_flags.flags = c.VK_MEMORY_ALLOCATE_DEVICE_ADDRESS_BIT;
-        alloc_info.pNext = &alloc_flags;
-    }
-
-    result = c.vkAllocateMemory(allocator.device, &alloc_info, null, out_memory);
-    log.cardinal_log_info("vkAllocateMemory(Buffer) => {d}, mem={*} size={d}", .{result, out_memory.?.*, alloc_info.allocationSize});
-
+    const result = c.vmaCreateBuffer(alloc.?.handle, buffer_ci, &allocInfo, out_buffer, out_allocation, &allocInfoOut);
     if (result != c.VK_SUCCESS) {
-        log.cardinal_log_error("Failed to allocate buffer memory: {d}", .{result});
-        c.vkDestroyBuffer(allocator.device, out_buffer.?.*, null);
-        out_buffer.?.* = null;
-        allocator_mutex_unlock(allocator.allocation_mutex);
+        log.cardinal_log_error("vmaCreateBuffer failed: {d}", .{result});
         return false;
     }
-
-    result = c.vkBindBufferMemory(allocator.device, out_buffer.?.*, out_memory.?.*, 0);
-    log.cardinal_log_info("vkBindBufferMemory => {d}", .{result});
-    if (result != c.VK_SUCCESS) {
-        log.cardinal_log_error("Failed to bind buffer memory: {d}", .{result});
-        c.vkFreeMemory(allocator.device, out_memory.?.*, null);
-        c.vkDestroyBuffer(allocator.device, out_buffer.?.*, null);
-        out_buffer.?.* = null;
-        out_memory.?.* = null;
-        allocator_mutex_unlock(allocator.allocation_mutex);
-        return false;
+    
+    if (out_memory != null) {
+        out_memory.?.* = allocInfoOut.deviceMemory;
+        log.cardinal_log_debug("vmaCreateBuffer returned memory handle: {any}", .{allocInfoOut.deviceMemory});
     }
-
-    allocator.total_device_mem_allocated += mem_requirements.size;
-
-    allocator_mutex_unlock(allocator.allocation_mutex);
+    
+    log.cardinal_log_info("vk_allocator_allocate_buffer success", .{});
     return true;
 }
 
-pub export fn vk_allocator_free_image(alloc: ?*types.VulkanAllocator, image: c.VkImage, memory: c.VkDeviceMemory) callconv(.c) void {
-    if (alloc == null) return;
-    const allocator = alloc.?;
-
-    allocator_mutex_lock(allocator.allocation_mutex);
-
-    // Calculate size of freed memory for stats
-    // Note: We don't track size per allocation, so we can't accurately subtract from total_device_mem_allocated
-    // Ideally we would track this, but for now we just track freed amount if we could.
-    // But we don't have size here.
-    // We can't query size easily without keeping track.
-    // For now, we accept stats might drift or just track count.
-    
-    // Actually we can query memory commitment but it's slow.
-    // Let's just proceed.
-
-    if (image != null) {
-        c.vkDestroyImage(allocator.device, image, null);
-    }
-    if (memory != null) {
-        c.vkFreeMemory(allocator.device, memory, null);
-        // We can't update total_device_mem_allocated accurately without size.
-        // Assuming user cleans up properly.
-    }
-
-    allocator_mutex_unlock(allocator.allocation_mutex);
+pub export fn vk_allocator_free_image(alloc: ?*types.VulkanAllocator, image: c.VkImage, allocation: c.VmaAllocation) callconv(.c) void {
+    if (alloc == null or image == null) return;
+    c.vmaDestroyImage(alloc.?.handle, image, allocation);
 }
 
-pub export fn vk_allocator_free_buffer(alloc: ?*types.VulkanAllocator, buffer: c.VkBuffer, memory: c.VkDeviceMemory) callconv(.c) void {
+pub export fn vk_allocator_free_buffer(alloc: ?*types.VulkanAllocator, buffer: c.VkBuffer, allocation: c.VmaAllocation) callconv(.c) void {
+    if (alloc == null or buffer == null) return;
+    c.vmaDestroyBuffer(alloc.?.handle, buffer, allocation);
+}
+
+// Helpers for mapped memory
+pub export fn vk_allocator_map_memory(alloc: ?*types.VulkanAllocator, allocation: c.VmaAllocation, ppData: ?*?*anyopaque) callconv(.c) c.VkResult {
+    if (alloc == null) return c.VK_ERROR_INITIALIZATION_FAILED;
+    return c.vmaMapMemory(alloc.?.handle, allocation, ppData);
+}
+
+pub export fn vk_allocator_unmap_memory(alloc: ?*types.VulkanAllocator, allocation: c.VmaAllocation) callconv(.c) void {
     if (alloc == null) return;
-    const allocator = alloc.?;
-
-    allocator_mutex_lock(allocator.allocation_mutex);
-
-    if (buffer != null) {
-        c.vkDestroyBuffer(allocator.device, buffer, null);
-    }
-    if (memory != null) {
-        c.vkFreeMemory(allocator.device, memory, null);
-    }
-
-    allocator_mutex_unlock(allocator.allocation_mutex);
+    c.vmaUnmapMemory(alloc.?.handle, allocation);
 }

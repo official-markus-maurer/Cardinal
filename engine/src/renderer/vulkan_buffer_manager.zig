@@ -3,6 +3,7 @@ const builtin = @import("builtin");
 const log = @import("../core/log.zig");
 const types = @import("vulkan_types.zig");
 const vk_allocator = @import("vulkan_allocator.zig");
+const vk_sync_manager = @import("vulkan_sync_manager.zig");
 
 const c = @import("vulkan_c.zig").c;
 
@@ -49,128 +50,80 @@ fn end_single_time_commands(device: c.VkDevice, commandPool: c.VkCommandPool, qu
     log.cardinal_log_info("[BUFFER_MANAGER] CMD_END_SUCCESS: Command buffer {any} ended successfully",
         .{commandBuffer});
 
-    // Get current semaphore value first to ensure our value is always greater
-    var current_value: u64 = 0;
-    log.cardinal_log_info("[BUFFER_MANAGER] SEMAPHORE_QUERY: Getting timeline semaphore value for cmd {any}",
-        .{commandBuffer});
-    
-    // Note: accessing function pointer from context
-    const query_result = vulkan_state.context.vkGetSemaphoreCounterValue.?(
-        vulkan_state.context.device, vulkan_state.sync.timeline_semaphore, &current_value);
-        
-    if (query_result != c.VK_SUCCESS) {
-        log.cardinal_log_error("[BUFFER_MANAGER] SEMAPHORE_QUERY_FAILED: Failed to get timeline semaphore value for cmd {any}: {d}",
-            .{commandBuffer, query_result});
-        c.vkFreeCommandBuffers(device, commandPool, 1, &commandBuffer);
-        return;
-    }
-    log.cardinal_log_info("[BUFFER_MANAGER] SEMAPHORE_QUERY_SUCCESS: Current timeline value={d} for cmd {any}",
-        .{current_value, commandBuffer});
+    // Get next timeline value using the centralized manager
+    // This handles overflow protection and ensures uniqueness
+    const timeline_value = vk_sync_manager.vulkan_sync_manager_get_next_timeline_value(&vulkan_state.sync);
 
-    // Use atomic increment starting from current semaphore value + 1
-    // This ensures we always get a value greater than the current semaphore value
-    
-    // Zig static variable equivalent
-    const Static = struct {
-        // Using volatile to match C implementation behavior for thread safety across calls
-        // though standard Zig Atomic is preferred.
-        // However, the C code used a static volatile/atomic variable inside the function.
-        // We'll use a global atomic for this.
-        var buffer_timeline_counter: std.atomic.Value(u64) = std.atomic.Value(u64).init(0);
-    };
-
-    // Initialize counter if it's behind the current semaphore value
-    const counter_val = Static.buffer_timeline_counter.load(.seq_cst);
-    if (counter_val <= current_value) {
-        // Using cmpxchg to safely update if still behind, but simple store is what C code did roughly
-        // C code: if (val <= cur) store(cur + 1)
-        // We can just do a store, assuming this logic is safe enough as per original code
-        Static.buffer_timeline_counter.store(current_value + 1, .seq_cst);
-    }
-
-    var timeline_value = Static.buffer_timeline_counter.fetchAdd(1, .seq_cst) + 1;
-
-    // Handle overflow by resetting to current_value + 1
-    if (timeline_value >= (std.math.maxInt(u64) - 10000)) {
-        log.cardinal_log_warn("[BUFFER_MANAGER] Timeline counter near overflow, resetting", .{});
-        timeline_value = current_value + 1;
-        Static.buffer_timeline_counter.store(timeline_value + 1, .seq_cst);
-    }
-
-    // Validate timeline semaphore before use
-    if (vulkan_state.sync.timeline_semaphore == null) {
-        log.cardinal_log_error("[BUFFER_MANAGER] Timeline semaphore is NULL!", .{});
-        c.vkFreeCommandBuffers(device, commandPool, 1, &commandBuffer);
-        return;
-    }
-
-    // Ensure timeline value is never 0
     if (timeline_value == 0) {
-        log.cardinal_log_error("[BUFFER_MANAGER] Timeline value is 0! Forcing to 1", .{});
-        timeline_value = 1;
-    }
-
-    log.cardinal_log_debug("[BUFFER_MANAGER] Using timeline value: {d} (current: {d})",
-        .{timeline_value, current_value});
-
-    // Submit command buffer with timeline semaphore signaling
-    var cmd_buffer_info = std.mem.zeroes(c.VkCommandBufferSubmitInfo);
-    cmd_buffer_info.sType = c.VK_STRUCTURE_TYPE_COMMAND_BUFFER_SUBMIT_INFO;
-    cmd_buffer_info.commandBuffer = commandBuffer;
-
-    var signal_semaphore_info = std.mem.zeroes(c.VkSemaphoreSubmitInfo);
-    signal_semaphore_info.sType = c.VK_STRUCTURE_TYPE_SEMAPHORE_SUBMIT_INFO;
-    signal_semaphore_info.semaphore = vulkan_state.sync.timeline_semaphore;
-    signal_semaphore_info.value = timeline_value;
-    signal_semaphore_info.stageMask = c.VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT;
-
-    log.cardinal_log_debug("[BUFFER_MANAGER] About to submit with semaphore {any}, value {d}",
-        .{vulkan_state.sync.timeline_semaphore, timeline_value});
-
-    var submit_info = std.mem.zeroes(c.VkSubmitInfo2);
-    submit_info.sType = c.VK_STRUCTURE_TYPE_SUBMIT_INFO_2;
-    submit_info.commandBufferInfoCount = 1;
-    submit_info.pCommandBufferInfos = &cmd_buffer_info;
-    submit_info.signalSemaphoreInfoCount = 1;
-    submit_info.pSignalSemaphoreInfos = &signal_semaphore_info;
-
-    log.cardinal_log_info("[BUFFER_MANAGER] CMD_SUBMIT: Submitting command buffer {any} with timeline value {d}",
-        .{commandBuffer, timeline_value});
-    
-    const submit_result = vulkan_state.context.vkQueueSubmit2.?(queue, 1, &submit_info, null);
-    if (submit_result != c.VK_SUCCESS) {
-        log.cardinal_log_error("[BUFFER_MANAGER] CMD_SUBMIT_FAILED: Failed to submit command buffer {any}: {d}",
-            .{commandBuffer, submit_result});
-        log.cardinal_log_warn("[BUFFER_MANAGER] CMD_LEAK_WARNING: Command buffer {any} may leak due to submit failure - cannot free while potentially in pending state",
-            .{commandBuffer});
+        log.cardinal_log_error("[BUFFER_MANAGER] Failed to get valid timeline value (got 0)", .{});
+        c.vkFreeCommandBuffers(device, commandPool, 1, &commandBuffer);
         return;
     }
-    log.cardinal_log_info("[BUFFER_MANAGER] CMD_SUBMIT_SUCCESS: Command buffer {any} submitted with timeline value {d}",
-        .{commandBuffer, timeline_value});
+
+    {
+        // Lock for submission to ensure semaphore validity
+        vk_sync_manager.vulkan_sync_manager_lock_shared();
+        defer vk_sync_manager.vulkan_sync_manager_unlock_shared();
+
+        if (vulkan_state.sync.timeline_semaphore == null) {
+            log.cardinal_log_error("[BUFFER_MANAGER] Timeline semaphore is NULL!", .{});
+            c.vkFreeCommandBuffers(device, commandPool, 1, &commandBuffer);
+            return;
+        }
+
+        log.cardinal_log_debug("[BUFFER_MANAGER] Using timeline value: {d}", .{timeline_value});
+
+        // Submit command buffer with timeline semaphore signaling
+        var cmd_buffer_info = std.mem.zeroes(c.VkCommandBufferSubmitInfo);
+        cmd_buffer_info.sType = c.VK_STRUCTURE_TYPE_COMMAND_BUFFER_SUBMIT_INFO;
+        cmd_buffer_info.commandBuffer = commandBuffer;
+
+        var signal_semaphore_info = std.mem.zeroes(c.VkSemaphoreSubmitInfo);
+        signal_semaphore_info.sType = c.VK_STRUCTURE_TYPE_SEMAPHORE_SUBMIT_INFO;
+        signal_semaphore_info.semaphore = vulkan_state.sync.timeline_semaphore;
+        signal_semaphore_info.value = timeline_value;
+        signal_semaphore_info.stageMask = c.VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT;
+
+        log.cardinal_log_debug("[BUFFER_MANAGER] About to submit with semaphore {any}, value {d}",
+            .{vulkan_state.sync.timeline_semaphore, timeline_value});
+
+        var submit_info = std.mem.zeroes(c.VkSubmitInfo2);
+        submit_info.sType = c.VK_STRUCTURE_TYPE_SUBMIT_INFO_2;
+        submit_info.commandBufferInfoCount = 1;
+        submit_info.pCommandBufferInfos = &cmd_buffer_info;
+        submit_info.signalSemaphoreInfoCount = 1;
+        submit_info.pSignalSemaphoreInfos = &signal_semaphore_info;
+
+        log.cardinal_log_info("[BUFFER_MANAGER] CMD_SUBMIT: Submitting command buffer {any} with timeline value {d}",
+            .{commandBuffer, timeline_value});
+        
+        const submit_result = vulkan_state.context.vkQueueSubmit2.?(queue, 1, &submit_info, null);
+        if (submit_result != c.VK_SUCCESS) {
+            log.cardinal_log_error("[BUFFER_MANAGER] CMD_SUBMIT_FAILED: Failed to submit command buffer {any}: {d}",
+                .{commandBuffer, submit_result});
+            log.cardinal_log_warn("[BUFFER_MANAGER] CMD_LEAK_WARNING: Command buffer {any} may leak due to submit failure - cannot free while potentially in pending state",
+                .{commandBuffer});
+            return;
+        }
+        log.cardinal_log_info("[BUFFER_MANAGER] CMD_SUBMIT_SUCCESS: Command buffer {any} submitted with timeline value {d}",
+            .{commandBuffer, timeline_value});
+    }
 
     // Wait for completion using timeline semaphore with reasonable timeout
-    var wait_info = std.mem.zeroes(c.VkSemaphoreWaitInfo);
-    wait_info.sType = c.VK_STRUCTURE_TYPE_SEMAPHORE_WAIT_INFO;
-    wait_info.semaphoreCount = 1;
-    wait_info.pSemaphores = &vulkan_state.sync.timeline_semaphore;
-    wait_info.pValues = &timeline_value;
-
-    log.cardinal_log_info("[BUFFER_MANAGER] CMD_WAIT: Waiting for command buffer {any} completion (timeline value {d})",
-        .{commandBuffer, timeline_value});
-        
-    const wait_result = vulkan_state.context.vkWaitSemaphores.?(vulkan_state.context.device, &wait_info, 10000000000); // 10 second timeout
-    if (wait_result != c.VK_SUCCESS) {
-        log.cardinal_log_error("[BUFFER_MANAGER] CMD_WAIT_FAILED: Timeline semaphore wait failed for cmd {any} (timeline {d}): {d}",
-            .{commandBuffer, timeline_value, wait_result});
-        log.cardinal_log_warn("[BUFFER_MANAGER] CMD_LEAK_WARNING: Command buffer {any} may leak due to wait failure - cannot free while potentially in pending state",
-            .{commandBuffer});
+    // Using wait_timeline_safe to leverage centralized error handling
+    var error_info = std.mem.zeroes(types.VulkanTimelineErrorInfo);
+    const wait_error = vk_sync_manager.vulkan_sync_manager_wait_timeline_safe(&vulkan_state.sync, timeline_value, 10000000000, &error_info); // 10 second timeout
+    
+    if (wait_error != types.VulkanTimelineError.NONE) {
+        log.cardinal_log_error("[BUFFER_MANAGER] CMD_WAIT_FAILED: {s}", .{error_info.error_message});
+        log.cardinal_log_warn("[BUFFER_MANAGER] CMD_LEAK_WARNING: Command buffer {any} may leak due to wait failure", .{commandBuffer});
         return;
     }
+    
     log.cardinal_log_info("[BUFFER_MANAGER] CMD_WAIT_SUCCESS: Command buffer {any} completed (timeline value {d})",
         .{commandBuffer, timeline_value});
 
     // Update VulkanState timeline tracking to maintain coordination
-    // This ensures other systems know about the latest completed timeline value
     if (timeline_value > vulkan_state.sync.current_frame_value) {
         vulkan_state.sync.current_frame_value = timeline_value;
         log.cardinal_log_info("[BUFFER_MANAGER] TIMELINE_UPDATE: Updated current_frame_value to {d} for cmd {any}",
@@ -181,7 +134,6 @@ fn end_single_time_commands(device: c.VkDevice, commandPool: c.VkCommandPool, qu
     log.cardinal_log_info("[BUFFER_MANAGER] CMD_FREE: Freeing command buffer {any}", .{commandBuffer});
     c.vkFreeCommandBuffers(device, commandPool, 1, &commandBuffer);
     log.cardinal_log_info("[BUFFER_MANAGER] CMD_FREE_SUCCESS: Command buffer {any} freed", .{commandBuffer});
-
     log.cardinal_log_info("[BUFFER_MANAGER] CMD_COMPLETE: Buffer operation completed successfully with timeline value {d}",
         .{timeline_value});
 }
@@ -214,7 +166,7 @@ pub export fn vk_buffer_create(buffer_ptr: ?*VulkanBuffer, device: c.VkDevice, a
     bufferInfo.sharingMode = c.VK_SHARING_MODE_EXCLUSIVE;
 
     // Allocate buffer and memory using allocator
-    if (!vk_allocator.vk_allocator_allocate_buffer(allocator, &bufferInfo, &buffer.handle, &buffer.memory,
+    if (!vk_allocator.vk_allocator_allocate_buffer(allocator, &bufferInfo, &buffer.handle, &buffer.memory, &buffer.allocation,
                                       createInfo.properties)) {
         log.cardinal_log_error("Failed to create and allocate buffer", .{});
         return false;
@@ -227,7 +179,7 @@ pub export fn vk_buffer_create(buffer_ptr: ?*VulkanBuffer, device: c.VkDevice, a
 
     // Map memory if requested
     if (createInfo.persistentlyMapped) {
-        buffer.mapped = vk_buffer_map(buffer, device, 0, c.VK_WHOLE_SIZE);
+        buffer.mapped = vk_buffer_map(buffer, allocator, 0, c.VK_WHOLE_SIZE);
         if (buffer.mapped == null) {
             log.cardinal_log_warn("Failed to persistently map buffer memory", .{});
         }
@@ -239,53 +191,35 @@ pub export fn vk_buffer_create(buffer_ptr: ?*VulkanBuffer, device: c.VkDevice, a
 
 fn wait_for_buffer_idle(buffer: *VulkanBuffer, device: c.VkDevice, vulkan_state: ?*types.VulkanState) void {
     if (vulkan_state) |state| {
-        if (state.sync.timeline_semaphore != null) {
-            var current_value: u64 = 0;
-            log.cardinal_log_info("[BUFFER_MANAGER] SYNC_CHECK: Getting timeline semaphore value for buffer={any}",
-                .{buffer.handle});
-            
-            const result = state.context.vkGetSemaphoreCounterValue.?(
-                state.context.device, state.sync.timeline_semaphore, &current_value);
-            
-            log.cardinal_log_info("[BUFFER_MANAGER] SYNC_VALUE: buffer={any} semaphore_value={d} result={d}",
-                .{buffer.handle, current_value, result});
+        // Use thread-safe timeline value retrieval
+        var current_value: u64 = 0;
+        log.cardinal_log_info("[BUFFER_MANAGER] SYNC_CHECK: Getting timeline semaphore value for buffer={any}",
+            .{buffer.handle});
+        
+        const result = vk_sync_manager.vulkan_sync_manager_get_timeline_value(&state.sync, &current_value);
+        
+        log.cardinal_log_info("[BUFFER_MANAGER] SYNC_VALUE: buffer={any} semaphore_value={d} result={d}",
+            .{buffer.handle, current_value, result});
 
-            if (result == c.VK_SUCCESS and current_value > 0) {
-                // Wait for all submitted operations to complete
-                var wait_info = std.mem.zeroes(c.VkSemaphoreWaitInfo);
-                wait_info.sType = c.VK_STRUCTURE_TYPE_SEMAPHORE_WAIT_INFO;
-                wait_info.semaphoreCount = 1;
-                wait_info.pSemaphores = &state.sync.timeline_semaphore;
-                wait_info.pValues = &current_value;
-
-                log.cardinal_log_info("[BUFFER_MANAGER] SYNC_WAIT: Waiting for timeline semaphore value {d} for buffer={any}",
-                    .{current_value, buffer.handle});
-                    
-                const wait_result = state.context.vkWaitSemaphores.?(
-                    state.context.device, &wait_info, 5000000000); // 5 second timeout
-                    
-                if (wait_result != c.VK_SUCCESS) {
-                    log.cardinal_log_error("[BUFFER_MANAGER] SYNC_FAILED: Timeline semaphore wait failed for buffer={any}: {d}, falling back to device wait idle",
-                        .{buffer.handle, wait_result});
-                    const idle_result = c.vkDeviceWaitIdle(device);
-                    log.cardinal_log_info("[BUFFER_MANAGER] DEVICE_WAIT_IDLE: result={d} for buffer={any}",
-                        .{idle_result, buffer.handle});
-                } else {
-                    log.cardinal_log_info("[BUFFER_MANAGER] SYNC_SUCCESS: Timeline semaphore wait completed for buffer={any}",
-                        .{buffer.handle});
-                }
-            } else {
-                // Fallback to device wait idle if timeline semaphore query fails
-                log.cardinal_log_warn("[BUFFER_MANAGER] SYNC_FALLBACK: Failed to get timeline semaphore value (result={d}, value={d}), using device wait idle for buffer={any}",
-                    .{result, current_value, buffer.handle});
+        if (result == c.VK_SUCCESS and current_value > 0) {
+            // Wait for all submitted operations to complete
+            // We use the sync manager's wait functionality which handles locks internally
+            const wait_result = vk_sync_manager.vulkan_sync_manager_wait_timeline(&state.sync, current_value, 5000000000); // 5s
+            
+            if (wait_result != c.VK_SUCCESS) {
+                log.cardinal_log_error("[BUFFER_MANAGER] SYNC_FAILED: Timeline semaphore wait failed for buffer={any}: {d}, falling back to device wait idle",
+                    .{buffer.handle, wait_result});
                 const idle_result = c.vkDeviceWaitIdle(device);
                 log.cardinal_log_info("[BUFFER_MANAGER] DEVICE_WAIT_IDLE: result={d} for buffer={any}",
                     .{idle_result, buffer.handle});
+            } else {
+                log.cardinal_log_info("[BUFFER_MANAGER] SYNC_SUCCESS: Timeline semaphore wait completed for buffer={any}",
+                    .{buffer.handle});
             }
         } else {
-             // Fallback to device wait idle if no timeline semaphore available
-            log.cardinal_log_warn("[BUFFER_MANAGER] NO_TIMELINE_SEMAPHORE: Using device wait idle for buffer={any}",
-                .{buffer.handle});
+            // Fallback to device wait idle if timeline semaphore query fails
+            log.cardinal_log_warn("[BUFFER_MANAGER] SYNC_FALLBACK: Failed to get timeline semaphore value (result={d}, value={d}), using device wait idle for buffer={any}",
+                .{result, current_value, buffer.handle});
             const idle_result = c.vkDeviceWaitIdle(device);
             log.cardinal_log_info("[BUFFER_MANAGER] DEVICE_WAIT_IDLE: result={d} for buffer={any}",
                 .{idle_result, buffer.handle});
@@ -301,20 +235,21 @@ fn wait_for_buffer_idle(buffer: *VulkanBuffer, device: c.VkDevice, vulkan_state:
 }
 
 fn cleanup_buffer_resources(buffer: *VulkanBuffer, device: c.VkDevice, allocator: ?*types.VulkanAllocator) void {
+    _ = device;
     // Unmap if mapped
     if (buffer.mapped != null) {
         log.cardinal_log_info("[BUFFER_MANAGER] UNMAP: Unmapping buffer={any}", .{buffer.handle});
-        vk_buffer_unmap(buffer, device);
+        vk_buffer_unmap(buffer, allocator);
         log.cardinal_log_info("[BUFFER_MANAGER] UNMAPPED: buffer={any}", .{buffer.handle});
     }
 
     // Free buffer and memory
     if (allocator) |alloc| {
-        log.cardinal_log_info("[BUFFER_MANAGER] FREE_START: About to free buffer={any} memory={any}",
-            .{buffer.handle, buffer.memory});
-        vk_allocator.vk_allocator_free_buffer(alloc, buffer.handle, buffer.memory);
-        log.cardinal_log_info("[BUFFER_MANAGER] FREE_COMPLETE: Freed buffer={any} memory={any}",
-            .{buffer.handle, buffer.memory});
+        log.cardinal_log_info("[BUFFER_MANAGER] FREE_START: About to free buffer={any} allocation={any}",
+            .{buffer.handle, buffer.allocation});
+        vk_allocator.vk_allocator_free_buffer(alloc, buffer.handle, buffer.allocation);
+        log.cardinal_log_info("[BUFFER_MANAGER] FREE_COMPLETE: Freed buffer={any}",
+            .{buffer.handle});
     } else {
         log.cardinal_log_warn("Allocator is null, cannot free buffer memory", .{});
     }
@@ -348,7 +283,7 @@ pub export fn vk_buffer_destroy(buffer_ptr: ?*VulkanBuffer, device: c.VkDevice, 
     log.cardinal_log_info("[BUFFER_MANAGER] DESTROY_COMPLETE: Buffer structure cleared", .{});
 }
 
-pub export fn vk_buffer_upload_data(buffer_ptr: ?*VulkanBuffer, device: c.VkDevice, data: ?*const anyopaque,
+pub export fn vk_buffer_upload_data(buffer_ptr: ?*VulkanBuffer, device: c.VkDevice, allocator: ?*types.VulkanAllocator, data: ?*const anyopaque,
                                     size: c.VkDeviceSize, offset: c.VkDeviceSize) callconv(.c) bool {
     if (data == null or buffer_ptr == null) {
         log.cardinal_log_error("Invalid parameters for buffer data upload", .{});
@@ -380,32 +315,44 @@ pub export fn vk_buffer_upload_data(buffer_ptr: ?*VulkanBuffer, device: c.VkDevi
         mappedData = @ptrCast(mappedBytes + offset);
         @memcpy(@as([*]u8, @ptrCast(mappedData))[0..size], @as([*]const u8, @ptrCast(data))[0..size]);
     } else {
-        // Temporary mapping
-        if (c.vkMapMemory(device, buffer.memory, offset, size, 0, &mappedData) != c.VK_SUCCESS) {
-            log.cardinal_log_error("Failed to map buffer memory for data upload", .{});
+        if (allocator) |alloc| {
+            // Temporary mapping
+            if (vk_allocator.vk_allocator_map_memory(alloc, buffer.allocation, &mappedData) != c.VK_SUCCESS) {
+                log.cardinal_log_error("Failed to map buffer memory for data upload", .{});
+                return false;
+            }
+
+            const mappedBytes = @as([*]u8, @ptrCast(mappedData));
+            const offsetPtr = mappedBytes + offset;
+            @memcpy(@as([*]u8, @ptrCast(offsetPtr))[0..size], @as([*]const u8, @ptrCast(data))[0..size]);
+            vk_allocator.vk_allocator_unmap_memory(alloc, buffer.allocation);
+        } else {
+            log.cardinal_log_error("Allocator required for temporary mapping", .{});
             return false;
         }
-
-        @memcpy(@as([*]u8, @ptrCast(mappedData))[0..size], @as([*]const u8, @ptrCast(data))[0..size]);
-        c.vkUnmapMemory(device, buffer.memory);
     }
 
     // Flush if memory is not coherent
     if ((buffer.properties & c.VK_MEMORY_PROPERTY_HOST_COHERENT_BIT) == 0) {
-        var range = std.mem.zeroes(c.VkMappedMemoryRange);
-        range.sType = c.VK_STRUCTURE_TYPE_MAPPED_MEMORY_RANGE;
-        range.memory = buffer.memory;
-        range.offset = offset;
-        range.size = size;
-        _ = c.vkFlushMappedMemoryRanges(device, 1, &range);
+        if (allocator) |alloc| {
+            _ = c.vmaFlushAllocation(alloc.handle, buffer.allocation, offset, size);
+        } else {
+            var range = std.mem.zeroes(c.VkMappedMemoryRange);
+            range.sType = c.VK_STRUCTURE_TYPE_MAPPED_MEMORY_RANGE;
+            range.memory = buffer.memory;
+            range.offset = offset;
+            range.size = size;
+            _ = c.vkFlushMappedMemoryRanges(device, 1, &range);
+        }
     }
 
     return true;
 }
 
-pub export fn vk_buffer_map(buffer_ptr: ?*VulkanBuffer, device: c.VkDevice, offset: c.VkDeviceSize, size: c.VkDeviceSize) callconv(.c) ?*anyopaque {
-    if (buffer_ptr == null) {
-        log.cardinal_log_error("Invalid buffer pointer for mapping", .{});
+pub export fn vk_buffer_map(buffer_ptr: ?*VulkanBuffer, allocator: ?*types.VulkanAllocator, offset: c.VkDeviceSize, size: c.VkDeviceSize) callconv(.c) ?*anyopaque {
+    _ = offset;
+    if (buffer_ptr == null or allocator == null) {
+        log.cardinal_log_error("Invalid buffer pointer or allocator for mapping", .{});
         return null;
     }
     const buffer = buffer_ptr.?;
@@ -421,7 +368,7 @@ pub export fn vk_buffer_map(buffer_ptr: ?*VulkanBuffer, device: c.VkDevice, offs
     }
 
     var mappedData: ?*anyopaque = null;
-    if (c.vkMapMemory(device, buffer.memory, offset, size, 0, &mappedData) != c.VK_SUCCESS) {
+    if (vk_allocator.vk_allocator_map_memory(allocator, buffer.allocation, &mappedData) != c.VK_SUCCESS) {
         log.cardinal_log_error("Failed to map buffer memory", .{});
         return null;
     }
@@ -433,8 +380,8 @@ pub export fn vk_buffer_map(buffer_ptr: ?*VulkanBuffer, device: c.VkDevice, offs
     return mappedData;
 }
 
-pub export fn vk_buffer_unmap(buffer_ptr: ?*VulkanBuffer, device: c.VkDevice) callconv(.c) void {
-    if (buffer_ptr == null) {
+pub export fn vk_buffer_unmap(buffer_ptr: ?*VulkanBuffer, allocator: ?*types.VulkanAllocator) callconv(.c) void {
+    if (buffer_ptr == null or allocator == null) {
         return;
     }
     const buffer = buffer_ptr.?;
@@ -444,7 +391,7 @@ pub export fn vk_buffer_unmap(buffer_ptr: ?*VulkanBuffer, device: c.VkDevice) ca
     }
 
     if (buffer.mapped != null) {
-        c.vkUnmapMemory(device, buffer.memory);
+        vk_allocator.vk_allocator_unmap_memory(allocator, buffer.allocation);
         buffer.mapped = null;
     }
 }
@@ -473,7 +420,7 @@ pub export fn vk_buffer_create_device_local(buffer_ptr: ?*VulkanBuffer, device: 
     }
 
     // Upload data to staging buffer
-    if (!vk_buffer_upload_data(&stagingBuffer, device, data, size, 0)) {
+    if (!vk_buffer_upload_data(&stagingBuffer, device, allocator, data, size, 0)) {
         log.cardinal_log_error("Failed to upload data to staging buffer", .{});
         vk_buffer_destroy(&stagingBuffer, device, allocator, vulkan_state);
         return false;

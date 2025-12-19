@@ -190,11 +190,11 @@ fn setup_descriptor_buffer(manager: *types.VulkanDescriptorManager, maxSets: u32
     var bufferInfo = std.mem.zeroes(c.VkBufferCreateInfo);
     bufferInfo.sType = c.VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO;
     bufferInfo.size = manager.descriptorBufferSize;
-    bufferInfo.usage = c.VK_BUFFER_USAGE_RESOURCE_DESCRIPTOR_BUFFER_BIT_EXT | c.VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT;
+    bufferInfo.usage = c.VK_BUFFER_USAGE_RESOURCE_DESCRIPTOR_BUFFER_BIT_EXT; // | c.VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT;
     bufferInfo.sharingMode = c.VK_SHARING_MODE_EXCLUSIVE;
 
     if (!vk_allocator.vk_allocator_allocate_buffer(manager.allocator, &bufferInfo, &manager.descriptorBuffer.handle,
-                                      &manager.descriptorBuffer.memory,
+                                      &manager.descriptorBuffer.memory, &manager.descriptorBuffer.allocation,
                                       c.VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | c.VK_MEMORY_PROPERTY_HOST_COHERENT_BIT)) {
         log.cardinal_log_error("Failed to create and allocate descriptor buffer", .{});
         return false;
@@ -204,7 +204,7 @@ fn setup_descriptor_buffer(manager: *types.VulkanDescriptorManager, maxSets: u32
                     manager.descriptorBufferSize, 0,
                     &manager.descriptorBuffer.mapped) != c.VK_SUCCESS) {
         log.cardinal_log_error("Failed to map descriptor buffer memory", .{});
-        vk_allocator.vk_allocator_free_buffer(manager.allocator, manager.descriptorBuffer.handle, manager.descriptorBuffer.memory);
+        vk_allocator.vk_allocator_free_buffer(manager.allocator, manager.descriptorBuffer.handle, manager.descriptorBuffer.allocation);
         return false;
     }
 
@@ -223,7 +223,7 @@ fn setup_descriptor_buffer(manager: *types.VulkanDescriptorManager, maxSets: u32
     if (manager.bindingOffsets == null) {
         log.cardinal_log_error("Failed to allocate binding offsets array", .{});
         c.vkUnmapMemory(manager.device, manager.descriptorBuffer.memory);
-        vk_allocator.vk_allocator_free_buffer(@ptrCast(manager.allocator), manager.descriptorBuffer.handle, manager.descriptorBuffer.memory);
+        vk_allocator.vk_allocator_free_buffer(@ptrCast(manager.allocator), manager.descriptorBuffer.handle, manager.descriptorBuffer.allocation);
         manager.descriptorBuffer = std.mem.zeroes(types.VulkanBuffer);
         return false;
     }
@@ -331,7 +331,7 @@ pub export fn vk_descriptor_manager_destroy(manager: ?*types.VulkanDescriptorMan
             c.vkUnmapMemory(mgr.device, mgr.descriptorBuffer.memory);
         }
         if (mgr.descriptorBuffer.handle != null) {
-            vk_allocator.vk_allocator_free_buffer(mgr.allocator, mgr.descriptorBuffer.handle, mgr.descriptorBuffer.memory);
+            vk_allocator.vk_allocator_free_buffer(mgr.allocator, mgr.descriptorBuffer.handle, mgr.descriptorBuffer.allocation);
         }
         if (mgr.bindingOffsets != null) {
             const mem_alloc = memory.cardinal_get_allocator_for_category(.RENDERER);

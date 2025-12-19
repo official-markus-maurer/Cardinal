@@ -9,6 +9,7 @@ pub const vulkan_mt = @import("vulkan_mt.zig");
 const vk_pbr = @import("vulkan_pbr.zig");
 const vk_mesh_shader = @import("vulkan_mesh_shader.zig");
 const vk_simple_pipelines = @import("vulkan_simple_pipelines.zig");
+const vk_sync_manager = @import("vulkan_sync_manager.zig");
 
 const c = @import("vulkan_c.zig").c;
 
@@ -105,8 +106,10 @@ fn allocate_command_buffers(s: *types.VulkanState) bool {
 }
 
 fn create_sync_objects(s: *types.VulkanState) bool {
-    // Image acquired semaphores
+    // Cleanup existing resources if any
     const mem_alloc = memory.cardinal_get_allocator_for_category(.RENDERER);
+    
+    // Image acquired semaphores
     if (s.sync.image_acquired_semaphores != null) {
         var i: u32 = 0;
         while (i < s.sync.max_frames_in_flight) : (i += 1) {
@@ -117,26 +120,10 @@ fn create_sync_objects(s: *types.VulkanState) bool {
         memory.cardinal_free(mem_alloc, @as(?*anyopaque, @ptrCast(s.sync.image_acquired_semaphores)));
         s.sync.image_acquired_semaphores = null;
     }
-    
-    const sem_ptr = memory.cardinal_alloc(mem_alloc, s.sync.max_frames_in_flight * @sizeOf(c.VkSemaphore));
-    if (sem_ptr == null) return false;
-    @memset(@as([*]u8, @ptrCast(sem_ptr))[0..(s.sync.max_frames_in_flight * @sizeOf(c.VkSemaphore))], 0);
-    s.sync.image_acquired_semaphores = @as([*]c.VkSemaphore, @ptrCast(@alignCast(sem_ptr)));
-
-    var i: u32 = 0;
-    while (i < s.sync.max_frames_in_flight) : (i += 1) {
-        var sci = std.mem.zeroes(c.VkSemaphoreCreateInfo);
-        sci.sType = c.VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO;
-        if (c.vkCreateSemaphore(s.context.device, &sci, null, &s.sync.image_acquired_semaphores.?[i]) != c.VK_SUCCESS) {
-            log.cardinal_log_error("[INIT] Failed to create image acquired semaphore for frame {d}", .{i});
-            return false;
-        }
-    }
-    log.cardinal_log_warn("[INIT] Created {d} acquire semaphores", .{s.sync.max_frames_in_flight});
 
     // Render finished semaphores
     if (s.sync.render_finished_semaphores != null) {
-        i = 0;
+        var i: u32 = 0;
         while (i < s.sync.max_frames_in_flight) : (i += 1) {
             if (s.sync.render_finished_semaphores.?[i] != null) {
                 c.vkDestroySemaphore(s.context.device, s.sync.render_finished_semaphores.?[i], null);
@@ -145,26 +132,10 @@ fn create_sync_objects(s: *types.VulkanState) bool {
         memory.cardinal_free(mem_alloc, @as(?*anyopaque, @ptrCast(s.sync.render_finished_semaphores)));
         s.sync.render_finished_semaphores = null;
     }
-    
-    const rf_sem_ptr = memory.cardinal_alloc(mem_alloc, s.sync.max_frames_in_flight * @sizeOf(c.VkSemaphore));
-    if (rf_sem_ptr == null) return false;
-    @memset(@as([*]u8, @ptrCast(rf_sem_ptr))[0..(s.sync.max_frames_in_flight * @sizeOf(c.VkSemaphore))], 0);
-    s.sync.render_finished_semaphores = @as([*]c.VkSemaphore, @ptrCast(@alignCast(rf_sem_ptr)));
-
-    i = 0;
-    while (i < s.sync.max_frames_in_flight) : (i += 1) {
-        var sci = std.mem.zeroes(c.VkSemaphoreCreateInfo);
-        sci.sType = c.VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO;
-        if (c.vkCreateSemaphore(s.context.device, &sci, null, &s.sync.render_finished_semaphores.?[i]) != c.VK_SUCCESS) {
-            log.cardinal_log_error("[INIT] Failed to create render finished semaphore for frame {d}", .{i});
-            return false;
-        }
-    }
-    log.cardinal_log_warn("[INIT] Created {d} render finished semaphores", .{s.sync.max_frames_in_flight});
 
     // In-flight fences
     if (s.sync.in_flight_fences != null) {
-        i = 0;
+        var i: u32 = 0;
         while (i < s.sync.max_frames_in_flight) : (i += 1) {
             if (s.sync.in_flight_fences.?[i] != null) {
                 c.vkDestroyFence(s.context.device, s.sync.in_flight_fences.?[i], null);
@@ -173,39 +144,17 @@ fn create_sync_objects(s: *types.VulkanState) bool {
         memory.cardinal_free(mem_alloc, @as(?*anyopaque, @ptrCast(s.sync.in_flight_fences)));
         s.sync.in_flight_fences = null;
     }
-    
-    const fences_ptr = memory.cardinal_alloc(mem_alloc, s.sync.max_frames_in_flight * @sizeOf(c.VkFence));
-    if (fences_ptr == null) return false;
-    @memset(@as([*]u8, @ptrCast(fences_ptr))[0..(s.sync.max_frames_in_flight * @sizeOf(c.VkFence))], 0);
-    s.sync.in_flight_fences = @as([*]c.VkFence, @ptrCast(@alignCast(fences_ptr)));
-
-    i = 0;
-    while (i < s.sync.max_frames_in_flight) : (i += 1) {
-        if (!vk_utils.vk_utils_create_fence(s.context.device, &s.sync.in_flight_fences.?[i], true, "in-flight fence")) {
-            log.cardinal_log_error("[INIT] Failed to create in-flight fence for frame {d}", .{i});
-            return false;
-        }
-    }
-    log.cardinal_log_warn("[INIT] Created {d} in-flight fences", .{s.sync.max_frames_in_flight});
 
     // Timeline semaphore
-    var timelineTypeInfo = std.mem.zeroes(c.VkSemaphoreTypeCreateInfo);
-    timelineTypeInfo.sType = c.VK_STRUCTURE_TYPE_SEMAPHORE_TYPE_CREATE_INFO;
-    timelineTypeInfo.semaphoreType = c.VK_SEMAPHORE_TYPE_TIMELINE;
-    timelineTypeInfo.initialValue = 0;
-
-    var semCI = std.mem.zeroes(c.VkSemaphoreCreateInfo);
-    semCI.sType = c.VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO;
-    semCI.pNext = &timelineTypeInfo;
-
-    const result = c.vkCreateSemaphore(s.context.device, &semCI, null, &s.sync.timeline_semaphore);
-    if (result != c.VK_SUCCESS) {
-        log.cardinal_log_error("[INIT] Failed to create timeline semaphore: {d}", .{result});
-        return false;
+    if (s.sync.timeline_semaphore != null) {
+        c.vkDestroySemaphore(s.context.device, s.sync.timeline_semaphore, null);
+        s.sync.timeline_semaphore = null;
     }
-    log.cardinal_log_warn("[INIT] Timeline semaphore created: {any}", .{s.sync.timeline_semaphore});
 
-    return true;
+    // Initialize using centralized sync manager
+    // This ensures all counters, flags, and device handles are properly set
+    log.cardinal_log_info("[INIT] Initializing sync objects via centralized manager", .{});
+    return vk_sync_manager.vulkan_sync_manager_init(&s.sync, s.context.device, s.context.graphics_queue, s.sync.max_frames_in_flight);
 }
 
 fn select_command_buffer(s: *types.VulkanState) c.VkCommandBuffer {
@@ -671,6 +620,20 @@ pub export fn vk_destroy_commands_sync(s: ?*types.VulkanState) callconv(.c) void
     if (vs.sync.timeline_semaphore != null) {
         c.vkDestroySemaphore(vs.context.device, vs.sync.timeline_semaphore, null);
         vs.sync.timeline_semaphore = null;
+    }
+
+    // Since we are destroying the semaphore, we must also reset the sync manager state
+    // to prevent use of stale handles or mismatched counters
+    if (vs.sync_manager != null) {
+        const sm = @as(?*types.VulkanSyncManager, @ptrCast(vs.sync_manager));
+        if (sm != null) {
+            sm.?.timeline_semaphore = null;
+            sm.?.initialized = false;
+        }
+    } else {
+        // If sync_manager pointer is null but we are destroying s.sync (embedded),
+        // we should mark s.sync as uninitialized too.
+        vs.sync.initialized = false;
     }
 
     const mem_alloc = memory.cardinal_get_allocator_for_category(.RENDERER);

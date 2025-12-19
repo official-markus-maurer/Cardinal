@@ -387,17 +387,19 @@ pub export fn cardinal_model_manager_destroy(manager: ?*CardinalModelManager) ca
             const model = &models[i];
             
             if (model.name) |n| memory.cardinal_free(allocator, @ptrCast(n));
-        if (model.file_path) |p| memory.cardinal_free(allocator, @ptrCast(p));
-        scene.cardinal_scene_destroy(&model.scene);
-        
-        if (model.load_task) |task| {
+            if (model.file_path) |p| memory.cardinal_free(allocator, @ptrCast(p));
+            scene.cardinal_scene_destroy(&model.scene);
+            
+            if (model.load_task) |task| {
                 async_loader.cardinal_async_free_task(task);
             }
         }
         memory.cardinal_free(allocator, models);
     }
 
+    // Destroy combined scene to release references
     scene.cardinal_scene_destroy(&mgr.combined_scene);
+    
     @memset(@as([*]u8, @ptrCast(mgr))[0..@sizeOf(CardinalModelManager)], 0);
     log.cardinal_log_debug("Model manager destroyed", .{});
 }

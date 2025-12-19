@@ -254,24 +254,15 @@ pub const VkQueueFamilyOwnershipTransferInfo = extern struct {
 };
 
 pub const VulkanAllocator = extern struct {
+    handle: c.VmaAllocator,
     physical_device: c.VkPhysicalDevice,
     device: c.VkDevice,
-    total_device_mem_allocated: c.VkDeviceSize,
-    total_device_mem_freed: c.VkDeviceSize,
-    
-    fpGetDeviceBufferMemReq: c.PFN_vkGetDeviceBufferMemoryRequirements,
-    fpGetDeviceImageMemReq: c.PFN_vkGetDeviceImageMemoryRequirements,
-    fpGetBufferDeviceAddress: c.PFN_vkGetBufferDeviceAddress,
-    fpGetDeviceBufferMemReqKHR: c.PFN_vkGetDeviceBufferMemoryRequirementsKHR,
-    fpGetDeviceImageMemReqKHR: c.PFN_vkGetDeviceImageMemoryRequirementsKHR,
-    
-    supports_maintenance8: bool,
-    allocation_mutex: cardinal_mutex_t,
 };
 
 pub const VulkanBuffer = extern struct {
     handle: c.VkBuffer,
     memory: c.VkDeviceMemory,
+    allocation: c.VmaAllocation,
     size: c.VkDeviceSize,
     mapped: ?*anyopaque,
     usage: c.VkBufferUsageFlags,
@@ -289,6 +280,7 @@ pub const VulkanDescriptorBinding = extern struct {
 pub const VulkanBufferAlloc = extern struct {
     buffer: c.VkBuffer,
     memory: c.VkDeviceMemory,
+    allocation: c.VmaAllocation,
     mapped_data: ?*anyopaque,
     size: c.VkDeviceSize,
     alignment: c.VkDeviceSize,
@@ -411,6 +403,7 @@ pub const VulkanSwapchain = extern struct {
     
     depth_image: c.VkImage,
     depth_image_memory: c.VkDeviceMemory,
+    depth_image_allocation: c.VmaAllocation,
     pending_width: u32,
     pending_height: u32,
     consecutive_recreation_failures: u32,
@@ -427,6 +420,24 @@ pub const DeviceLossRecovery = extern struct {
     recovery_complete_callback: ?*const fn (?*anyopaque, bool) callconv(.c) void,
     callback_user_data: ?*anyopaque,
     window: ?*CardinalWindow,
+};
+
+pub const VulkanTimelineError = enum(c_int) {
+    NONE = 0,
+    TIMEOUT = 1,
+    DEVICE_LOST = 2,
+    OUT_OF_MEMORY = 3,
+    INVALID_VALUE = 4,
+    SEMAPHORE_INVALID = 5,
+    UNKNOWN = 6,
+};
+
+pub const VulkanTimelineErrorInfo = extern struct {
+    error_type: VulkanTimelineError,
+    vulkan_result: c.VkResult,
+    timeline_value: u64,
+    timeout_ns: u64,
+    error_message: [256]u8,
 };
 
 pub const TimelineValueStrategy = extern struct {
@@ -469,6 +480,7 @@ pub const VulkanManagedTexture = extern struct {
     image: c.VkImage,
     view: c.VkImageView,
     memory: c.VkDeviceMemory,
+    allocation: c.VmaAllocation,
     sampler: c.VkSampler,
     descriptor_set: c.VkDescriptorSet,
     width: u32,
@@ -556,6 +568,7 @@ pub const BindlessTexture = extern struct {
     image: c.VkImage,
     image_view: c.VkImageView,
     memory: c.VkDeviceMemory,
+    allocation: c.VmaAllocation,
     sampler: c.VkSampler,
     descriptor_index: u32,
     is_allocated: bool,
@@ -626,6 +639,7 @@ pub const MeshShaderPipeline = extern struct {
     set1_layout: c.VkDescriptorSetLayout,
     default_material_buffer: c.VkBuffer,
     default_material_memory: c.VkDeviceMemory,
+    default_material_allocation: c.VmaAllocation,
     global_descriptor_set: c.VkDescriptorSet,
     has_task_shader: bool,
     max_meshlets_per_workgroup: u32,
@@ -637,14 +651,19 @@ pub const MeshShaderDrawData = extern struct {
     descriptor_set: c.VkDescriptorSet,
     vertex_buffer: c.VkBuffer,
     vertex_memory: c.VkDeviceMemory,
+    vertex_allocation: c.VmaAllocation,
     meshlet_buffer: c.VkBuffer,
     meshlet_memory: c.VkDeviceMemory,
+    meshlet_allocation: c.VmaAllocation,
     primitive_buffer: c.VkBuffer,
     primitive_memory: c.VkDeviceMemory,
+    primitive_allocation: c.VmaAllocation,
     draw_command_buffer: c.VkBuffer,
     draw_command_memory: c.VkDeviceMemory,
+    draw_command_allocation: c.VmaAllocation,
     uniform_buffer: c.VkBuffer,
     uniform_memory: c.VkDeviceMemory, // Added likely missing memory field
+    uniform_allocation: c.VmaAllocation,
     meshlet_count: u32,
     uniform_mapped: ?*anyopaque,
     draw_command_count: u32,
@@ -671,6 +690,8 @@ pub const GpuMesh = extern struct {
     ibuf: c.VkBuffer,
     vmem: c.VkDeviceMemory,
     imem: c.VkDeviceMemory,
+    v_allocation: c.VmaAllocation,
+    i_allocation: c.VmaAllocation,
 };
 
 pub const VulkanPipelines = extern struct {
@@ -683,6 +704,7 @@ pub const VulkanPipelines = extern struct {
     compute_shader_initialized: bool,
     simple_uniform_buffer: c.VkBuffer,
     simple_uniform_buffer_memory: c.VkDeviceMemory,
+    simple_uniform_buffer_allocation: c.VmaAllocation,
     simple_descriptor_pool: c.VkDescriptorPool,
     simple_descriptor_set: c.VkDescriptorSet,
     uv_pipeline: c.VkPipeline,
@@ -706,10 +728,13 @@ pub const VulkanPBRPipeline = extern struct {
     
     vertexBuffer: c.VkBuffer,
     vertexBufferMemory: c.VkDeviceMemory,
+    vertexBufferAllocation: c.VmaAllocation,
     indexBuffer: c.VkBuffer,
     indexBufferMemory: c.VkDeviceMemory,
+    indexBufferAllocation: c.VmaAllocation,
     lightingBuffer: c.VkBuffer,
     lightingBufferMemory: c.VkDeviceMemory,
+    lightingBufferAllocation: c.VmaAllocation,
     
     textureManager: ?*VulkanTextureManager,
     descriptorManager: ?*VulkanDescriptorManager,
@@ -718,18 +743,21 @@ pub const VulkanPBRPipeline = extern struct {
     supportsDescriptorIndexing: bool,
     uniformBuffer: c.VkBuffer,
     uniformBufferMemory: c.VkDeviceMemory,
+    uniformBufferAllocation: c.VmaAllocation,
     uniformBufferMapped: ?*anyopaque,
     boneMatricesBufferMapped: ?*anyopaque,
     
     totalIndexCount: u32,
     materialBuffer: c.VkBuffer,
     materialBufferMemory: c.VkDeviceMemory,
+    materialBufferAllocation: c.VmaAllocation,
     lightingBufferMapped: ?*anyopaque,
     pipelineBlend: c.VkPipeline,
     
     materialBufferMapped: ?*anyopaque,
     boneMatricesBuffer: c.VkBuffer,
     boneMatricesBufferMemory: c.VkDeviceMemory,
+    boneMatricesBufferAllocation: c.VmaAllocation,
     maxBones: u32,
 };
 

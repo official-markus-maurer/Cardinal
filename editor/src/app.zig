@@ -136,6 +136,15 @@ pub const EditorApp = struct {
             self.window_initialized = false;
             return error.RendererCreateFailed;
         }
+        
+        // Set device loss callbacks
+        vulkan_renderer.cardinal_renderer_set_device_loss_callbacks(
+            &self.renderer, 
+            editor_layer.on_device_loss, 
+            editor_layer.on_device_restored, 
+            null
+        );
+        
         self.renderer_initialized = true;
     }
 
@@ -169,6 +178,20 @@ pub const EditorApp = struct {
     }
 
     fn deinit(self: *EditorApp) void {
+        // Shutdown async loader first to stop worker threads and release pending tasks
+        if (self.async_loader_initialized) {
+            async_loader.cardinal_async_loader_shutdown();
+            self.async_loader_initialized = false;
+        }
+
+        // Shutdown caches to release held references before renderer/ref-counting shutdown
+        if (self.caches_initialized) {
+            material_loader.material_cache_shutdown_system();
+            mesh_loader.mesh_cache_shutdown_system();
+            texture_loader.texture_cache_shutdown_system();
+            self.caches_initialized = false;
+        }
+
         if (self.editor_layer_initialized) {
             editor_layer.shutdown();
         }
@@ -179,16 +202,6 @@ pub const EditorApp = struct {
 
         if (self.window_initialized) {
             window.cardinal_window_destroy(self.window);
-        }
-
-        if (self.caches_initialized) {
-            material_loader.material_cache_shutdown_system();
-            mesh_loader.mesh_cache_shutdown_system();
-            texture_loader.texture_cache_shutdown_system();
-        }
-
-        if (self.async_loader_initialized) {
-            async_loader.cardinal_async_loader_shutdown();
         }
 
         if (self.resource_state_initialized) {

@@ -6,10 +6,22 @@ const types = @import("vulkan_types.zig");
 
 const c = @import("vulkan_c.zig").c;
 
+// Global lock to protect timeline semaphore operations
+// This is necessary because multiple threads (texture loading) access the sync manager
+// and the overflow reset logic modifies the semaphore handle, which is not thread-safe.
+var g_sync_lock = std.Thread.RwLock{};
 
 // Helper to cast u64/u32 to atomic value pointer
 fn atomic(ptr: anytype) *std.atomic.Value(@TypeOf(ptr.*)) {
     return @ptrCast(ptr);
+}
+
+pub fn vulkan_sync_manager_lock_shared() void {
+    g_sync_lock.lockShared();
+}
+
+pub fn vulkan_sync_manager_unlock_shared() void {
+    g_sync_lock.unlockShared();
 }
 
 pub fn vulkan_sync_manager_init(sync_manager: ?*types.VulkanSyncManager, device: c.VkDevice,
@@ -275,6 +287,14 @@ pub fn vulkan_sync_manager_wait_timeline(sync_manager: ?*types.VulkanSyncManager
     const mgr = sync_manager.?;
     if (!mgr.initialized) return c.VK_ERROR_INITIALIZATION_FAILED;
 
+    // Check for stale values (e.g. if timeline was reset)
+    // We use a loose check without lock to avoid overhead, as exact synchronization is handled by the semaphore
+    const current_atomic = atomic(&mgr.global_timeline_counter).load(.seq_cst);
+    if (value > current_atomic + 1000000) {
+        log.cardinal_log_warn("[SYNC_MANAGER] wait_timeline: value {d} is too far ahead of current {d}, ignoring wait", .{value, current_atomic});
+        return c.VK_SUCCESS; // Treat as if already signaled to avoid hang
+    }
+
     var wait_val = value;
     var wait_info = std.mem.zeroes(c.VkSemaphoreWaitInfo);
     wait_info.sType = c.VK_STRUCTURE_TYPE_SEMAPHORE_WAIT_INFO;
@@ -321,6 +341,8 @@ pub fn vulkan_sync_manager_get_timeline_value(sync_manager: ?*types.VulkanSyncMa
     const mgr = sync_manager.?;
     if (!mgr.initialized) return c.VK_ERROR_INITIALIZATION_FAILED;
 
+    g_sync_lock.lockShared();
+    defer g_sync_lock.unlockShared();
     return c.vkGetSemaphoreCounterValue(mgr.device, mgr.timeline_semaphore, value);
 }
 
@@ -329,9 +351,13 @@ pub fn vulkan_sync_manager_get_next_timeline_value(sync_manager: ?*types.VulkanS
     const mgr = sync_manager.?;
     if (!mgr.initialized) return 0;
 
+    // Acquire shared lock to protect against concurrent resets/recreation
+    g_sync_lock.lockShared();
+    defer g_sync_lock.unlockShared();
+
     // Get current value from device to ensure we are ahead
     var current_device_value: u64 = 0;
-    const result = c.vkGetSemaphoreCounterValue(mgr.device, mgr.timeline_semaphore, &current_device_value);
+    var result = c.vkGetSemaphoreCounterValue(mgr.device, mgr.timeline_semaphore, &current_device_value);
     
     const atom_ptr = atomic(&mgr.global_timeline_counter);
     
@@ -339,9 +365,47 @@ pub fn vulkan_sync_manager_get_next_timeline_value(sync_manager: ?*types.VulkanS
         const old_val = atom_ptr.load(.seq_cst);
         
         // Determine the next value: strictly greater than both current counter and device value
-        const target_val = if (result == c.VK_SUCCESS and current_device_value >= old_val) 
-                           current_device_value + 1 
-                           else old_val + 1;
+        var base_val = old_val;
+        if (result == c.VK_SUCCESS and current_device_value > base_val) {
+            base_val = current_device_value;
+        }
+
+        // Debug logging for huge values
+        if (base_val > 1000000000) {
+             log.cardinal_log_warn("[SYNC_MANAGER] Huge timeline value detected: base={d}, old={d}, dev={d}, res={d}", 
+                 .{base_val, old_val, current_device_value, result});
+        }
+
+        // Check for overflow risk (leaving some headroom)
+        if (base_val >= std.math.maxInt(u64) - 1000) {
+            log.cardinal_log_warn("[SYNC_MANAGER] Timeline value approaching overflow (val={d}), triggering reset", .{base_val});
+            
+            // Upgrade to write lock for reset
+            // We need to release shared lock first to avoid deadlock
+            g_sync_lock.unlockShared();
+            const reset_result = vulkan_sync_manager_reset_timeline_values(mgr);
+            g_sync_lock.lockShared(); // Re-acquire shared lock
+            
+            if (reset_result) {
+                // Reset successful, global counter is now 0.
+                // We MUST re-read the device value because the semaphore has been recreated!
+                // Otherwise we will loop forever using the old stale current_device_value (which was huge).
+                result = c.vkGetSemaphoreCounterValue(mgr.device, mgr.timeline_semaphore, &current_device_value);
+                if (result != c.VK_SUCCESS) {
+                     log.cardinal_log_error("[SYNC_MANAGER] Failed to get timeline value after reset: {d}", .{result});
+                     return 0;
+                }
+                
+                // The loop will retry and load the new 0 value from atomic, and use the new 0 value from device.
+                continue;
+            } else {
+                log.cardinal_log_error("[SYNC_MANAGER] Failed to reset timeline values during overflow check", .{});
+                // We can't safely increment, return 0 to indicate error
+                return 0;
+            }
+        }
+
+        const target_val = base_val + 1;
         
         // Attempt to atomically update the counter
         const cas_res = atom_ptr.cmpxchgWeak(old_val, target_val, .seq_cst, .seq_cst);
@@ -418,6 +482,9 @@ pub fn vulkan_sync_manager_signal_timeline_batch(sync_manager: ?*types.VulkanSyn
     const mgr = sync_manager.?;
     const vals = values.?;
     if (!mgr.initialized) return c.VK_ERROR_INITIALIZATION_FAILED;
+
+    g_sync_lock.lockShared();
+    defer g_sync_lock.unlockShared();
 
     var i: u32 = 0;
     while (i < count) : (i += 1) {
@@ -531,6 +598,10 @@ pub fn vulkan_sync_manager_signal_timeline_safe(sync_manager: ?*types.VulkanSync
                                                              error_info: ?*types.VulkanTimelineErrorInfo) types.VulkanTimelineError {
     if (sync_manager == null) return types.VulkanTimelineError.SEMAPHORE_INVALID;
     const mgr = sync_manager.?;
+
+    g_sync_lock.lockShared();
+    defer g_sync_lock.unlockShared();
+
     if (mgr.timeline_semaphore == null) {
         if (error_info) |info| {
             info.error_type = types.VulkanTimelineError.SEMAPHORE_INVALID;
@@ -629,6 +700,9 @@ pub fn vulkan_sync_manager_recover_timeline_semaphore(sync_manager: ?*types.Vulk
                                                     error_info: ?*types.VulkanTimelineErrorInfo) bool {
     if (sync_manager == null) return false;
     const mgr = sync_manager.?;
+
+    g_sync_lock.lock();
+    defer g_sync_lock.unlock();
 
     log.cardinal_log_warn("[SYNC_MANAGER] Attempting timeline semaphore recovery", .{});
 
@@ -735,30 +809,36 @@ pub fn vulkan_sync_manager_check_overflow_risk(sync_manager: ?*types.VulkanSyncM
 pub fn vulkan_sync_manager_reset_timeline_values(sync_manager: ?*types.VulkanSyncManager) bool {
     if (sync_manager == null) return false;
     const mgr = sync_manager.?;
+    
+    // Acquire write lock to ensure exclusive access during reset
+    g_sync_lock.lock();
+    defer g_sync_lock.unlock();
+
     if (mgr.timeline_semaphore == null) return false;
 
-    log.cardinal_log_info("[SYNC_MANAGER] Resetting timeline values to prevent overflow", .{});
-
-    var current_value: u64 = 0;
-    var result = c.vkGetSemaphoreCounterValue(mgr.device, mgr.timeline_semaphore, &current_value);
-    if (result != c.VK_SUCCESS) {
-        log.cardinal_log_error("[SYNC_MANAGER] Failed to get current timeline value for reset: {d}", .{result});
-        return false;
+    // Check if reset is still needed (another thread might have just done it)
+    const current_atomic = atomic(&mgr.global_timeline_counter).load(.seq_cst);
+    
+    // Also check device value if possible to ensure we don't skip reset if device is in bad state
+    var current_dev_val: u64 = 0;
+    const dev_res = c.vkGetSemaphoreCounterValue(mgr.device, mgr.timeline_semaphore, &current_dev_val);
+    
+    if (current_atomic < 1000000 and (dev_res == c.VK_SUCCESS and current_dev_val < 1000000)) {
+        // Already reset, return success
+        return true;
     }
 
-    var wait_info = std.mem.zeroes(c.VkSemaphoreWaitInfo);
-    wait_info.sType = c.VK_STRUCTURE_TYPE_SEMAPHORE_WAIT_INFO;
-    wait_info.semaphoreCount = 1;
-    wait_info.pSemaphores = &mgr.timeline_semaphore;
-    wait_info.pValues = &current_value;
+    log.cardinal_log_info("[SYNC_MANAGER] Resetting timeline values to prevent overflow (atomic={d}, device={d})", .{current_atomic, current_dev_val});
 
-    result = c.vkWaitSemaphores(mgr.device, &wait_info, std.math.maxInt(u64));
-    if (result != c.VK_SUCCESS) {
-        log.cardinal_log_error("[SYNC_MANAGER] Failed to wait for timeline completion before reset: {d}", .{result});
-        return false;
+    // Wait for device idle to ensure no commands are using the semaphore
+    // This is crucial because we are about to destroy it
+    // NOTE: vkDeviceWaitIdle might fail if the device is lost, but we proceed anyway to reset state
+    _ = c.vkDeviceWaitIdle(mgr.device);
+
+    if (mgr.timeline_semaphore != null) {
+        c.vkDestroySemaphore(mgr.device, mgr.timeline_semaphore, null);
+        mgr.timeline_semaphore = null;
     }
-
-    c.vkDestroySemaphore(mgr.device, mgr.timeline_semaphore, null);
 
     var timeline_type_info = std.mem.zeroes(c.VkSemaphoreTypeCreateInfo);
     timeline_type_info.sType = c.VK_STRUCTURE_TYPE_SEMAPHORE_TYPE_CREATE_INFO;
@@ -769,12 +849,13 @@ pub fn vulkan_sync_manager_reset_timeline_values(sync_manager: ?*types.VulkanSyn
     create_info.sType = c.VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO;
     create_info.pNext = &timeline_type_info;
 
-    result = c.vkCreateSemaphore(mgr.device, &create_info, null, &mgr.timeline_semaphore);
+    const result = c.vkCreateSemaphore(mgr.device, &create_info, null, &mgr.timeline_semaphore);
     if (result != c.VK_SUCCESS) {
         log.cardinal_log_error("[SYNC_MANAGER] Failed to recreate timeline semaphore after reset: {d}", .{result});
         return false;
     }
 
+    // Force atomic stores to 0 to align with new semaphore
     atomic(&mgr.global_timeline_counter).store(0, .seq_cst);
     atomic(&mgr.current_frame_value).store(0, .seq_cst);
     atomic(&mgr.image_available_value).store(0, .seq_cst);
@@ -823,6 +904,9 @@ pub fn vulkan_sync_manager_is_timeline_value_reached(sync_manager: ?*types.Vulka
     const mgr = sync_manager.?;
     if (!mgr.initialized) return c.VK_ERROR_INITIALIZATION_FAILED;
 
+    g_sync_lock.lockShared();
+    defer g_sync_lock.unlockShared();
+
     var current_value: u64 = 0;
     const result = c.vkGetSemaphoreCounterValue(mgr.device, mgr.timeline_semaphore, &current_value);
     if (result != c.VK_SUCCESS) return result;
@@ -845,7 +929,9 @@ pub fn vulkan_sync_manager_get_timeline_stats(sync_manager: ?*types.VulkanSyncMa
         sc.* = atomic(&mgr.timeline_signal_count).load(.seq_cst);
     }
     if (current_value) |cv| {
+        g_sync_lock.lockShared();
         const result = c.vkGetSemaphoreCounterValue(mgr.device, mgr.timeline_semaphore, cv);
+        g_sync_lock.unlockShared();
         if (result != c.VK_SUCCESS) return result;
     }
 

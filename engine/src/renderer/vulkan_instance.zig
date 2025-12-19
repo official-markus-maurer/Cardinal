@@ -119,13 +119,14 @@ fn select_debug_severity_from_log_level() c.VkDebugUtilsMessageSeverityFlagsEXT 
 }
 
 fn validation_enabled() bool {
-    if (builtin.mode == .Debug) return true;
+    return false;
+    // if (builtin.mode == .Debug) return true;
     // We can't easily check for CARDINAL_ENABLE_VK_VALIDATION define from Zig if it was a CMake define
     // But we can check if we want to enable it via some other mechanism or just assume Debug builds only
     // For now, let's assume Debug only unless we find a way to check the define.
     // However, the C code had #if defined(_DEBUG) || defined(CARDINAL_ENABLE_VK_VALIDATION)
     // We'll stick to builtin.mode == .Debug for now.
-    return true;
+    // return true;
 }
 
 pub export fn vk_get_validation_stats() callconv(.c) *const types.ValidationStats {
@@ -181,8 +182,8 @@ fn setup_app_info(ai: *c.VkApplicationInfo) void {
     ai.applicationVersion = c.VK_MAKE_VERSION(1, 0, 0);
     ai.pEngineName = "Cardinal";
     ai.engineVersion = c.VK_MAKE_VERSION(1, 0, 0);
-    ai.apiVersion = c.VK_MAKE_API_VERSION(0, 1, 4, 335);
-    log.cardinal_log_info("[INSTANCE] Using Vulkan API version 1.4.335", .{});
+    ai.apiVersion = c.VK_MAKE_API_VERSION(0, 1, 3, 0);
+    log.cardinal_log_info("[INSTANCE] Using Vulkan API version 1.3", .{});
 }
 
 fn get_instance_extensions(out_extensions: *[*c]const [*c]const u8, out_count: *u32, out_allocated: *bool) bool {
@@ -793,7 +794,7 @@ pub export fn vk_create_device(s: ?*types.VulkanState) callconv(.c) bool {
         vs.context.supports_descriptor_buffer = false;
     }
 
-    if (!vk_allocator.vk_allocator_init(&vs.allocator, vs.context.physical_device, vs.context.device,
+    if (!vk_allocator.vk_allocator_init(&vs.allocator, vs.context.instance, vs.context.physical_device, vs.context.device,
                            vs.context.vkGetDeviceBufferMemoryRequirements,
                            vs.context.vkGetDeviceImageMemoryRequirements,
                            vs.context.vkGetBufferDeviceAddress,

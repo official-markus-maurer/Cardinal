@@ -356,6 +356,7 @@ fn create_pbr_uniform_buffers(pipeline: *types.VulkanPBRPipeline, device: c.VkDe
     if (!buffer_mgr.vk_buffer_create(&uboBuffer, device, allocator, &uboInfo)) return false;
     pipeline.uniformBuffer = uboBuffer.handle;
     pipeline.uniformBufferMemory = uboBuffer.memory;
+    pipeline.uniformBufferAllocation = uboBuffer.allocation;
     pipeline.uniformBufferMapped = uboBuffer.mapped;
 
     // Material
@@ -369,6 +370,7 @@ fn create_pbr_uniform_buffers(pipeline: *types.VulkanPBRPipeline, device: c.VkDe
     if (!buffer_mgr.vk_buffer_create(&matBuffer, device, allocator, &matInfo)) return false;
     pipeline.materialBuffer = matBuffer.handle;
     pipeline.materialBufferMemory = matBuffer.memory;
+    pipeline.materialBufferAllocation = matBuffer.allocation;
     pipeline.materialBufferMapped = matBuffer.mapped;
 
     // Lighting
@@ -382,6 +384,7 @@ fn create_pbr_uniform_buffers(pipeline: *types.VulkanPBRPipeline, device: c.VkDe
     if (!buffer_mgr.vk_buffer_create(&lightBuffer, device, allocator, &lightInfo)) return false;
     pipeline.lightingBuffer = lightBuffer.handle;
     pipeline.lightingBufferMemory = lightBuffer.memory;
+    pipeline.lightingBufferAllocation = lightBuffer.allocation;
     pipeline.lightingBufferMapped = lightBuffer.mapped;
 
     // Bone matrices
@@ -396,6 +399,7 @@ fn create_pbr_uniform_buffers(pipeline: *types.VulkanPBRPipeline, device: c.VkDe
     if (!buffer_mgr.vk_buffer_create(&boneBuffer, device, allocator, &boneInfo)) return false;
     pipeline.boneMatricesBuffer = boneBuffer.handle;
     pipeline.boneMatricesBufferMemory = boneBuffer.memory;
+    pipeline.boneMatricesBufferAllocation = boneBuffer.allocation;
     pipeline.boneMatricesBufferMapped = boneBuffer.mapped;
 
     // Init bone matrices to identity
@@ -490,8 +494,8 @@ fn create_pbr_mesh_buffers(pipeline: *types.VulkanPBRPipeline, device: c.VkDevic
     // Create vertex buffer using staging buffer
     if (!buffer_utils.vk_buffer_create_with_staging(
             allocator, device, commandPool, graphicsQueue, vertexData, vertexBufferSize,
-            c.VK_BUFFER_USAGE_VERTEX_BUFFER_BIT | c.VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT,
-            &pipeline.vertexBuffer, &pipeline.vertexBufferMemory, vulkan_state)) {
+            c.VK_BUFFER_USAGE_VERTEX_BUFFER_BIT,
+            &pipeline.vertexBuffer, &pipeline.vertexBufferMemory, &pipeline.vertexBufferAllocation, vulkan_state)) {
         log.cardinal_log_error("Failed to create PBR vertex buffer with staging", .{});
         return false;
     }
@@ -529,8 +533,8 @@ fn create_pbr_mesh_buffers(pipeline: *types.VulkanPBRPipeline, device: c.VkDevic
         // Create index buffer using staging buffer
         if (!buffer_utils.vk_buffer_create_with_staging(
                 allocator, device, commandPool, graphicsQueue, indexData, indexBufferSize,
-                c.VK_BUFFER_USAGE_INDEX_BUFFER_BIT | c.VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT,
-                &pipeline.indexBuffer, &pipeline.indexBufferMemory, vulkan_state)) {
+                c.VK_BUFFER_USAGE_INDEX_BUFFER_BIT,
+                &pipeline.indexBuffer, &pipeline.indexBufferMemory, &pipeline.indexBufferAllocation, vulkan_state)) {
             log.cardinal_log_error("Failed to create PBR index buffer with staging", .{});
             return false;
         }
@@ -648,27 +652,24 @@ pub export fn vk_pbr_load_scene(pipeline: ?*types.VulkanPBRPipeline, device: c.V
 
     log.cardinal_log_info("Loading PBR scene: {d} meshes", .{scn.mesh_count});
 
-    // Clean up previous buffers if they exist (after ensuring GPU idle/timeline reached)
-    if (vulkan_state != null and vulkan_state.?.sync_manager != null and
-        vulkan_state.?.sync_manager.?.timeline_semaphore != null) {
-        const wait_res = vk_sync_mgr.vulkan_sync_manager_wait_timeline(
-            vulkan_state.?.sync_manager, vulkan_state.?.sync.current_frame_value, c.UINT64_MAX);
-        if (wait_res != c.VK_SUCCESS and vulkan_state.?.context.device != null) {
-            _ = c.vkDeviceWaitIdle(vulkan_state.?.context.device);
-        }
-    } else if (vulkan_state != null and vulkan_state.?.context.device != null) {
+    // Clean up previous buffers if they exist (after ensuring GPU idle)
+    // We use vkDeviceWaitIdle instead of timeline semaphore wait to avoid issues with 
+    // timeline resets/overflows during scene loading.
+    if (vulkan_state != null and vulkan_state.?.context.device != null) {
         _ = c.vkDeviceWaitIdle(vulkan_state.?.context.device);
     }
 
     if (pipe.vertexBuffer != null or pipe.vertexBufferMemory != null) {
-        vk_allocator.vk_allocator_free_buffer(alloc, pipe.vertexBuffer, pipe.vertexBufferMemory);
+        vk_allocator.vk_allocator_free_buffer(alloc, pipe.vertexBuffer, pipe.vertexBufferAllocation);
         pipe.vertexBuffer = null;
         pipe.vertexBufferMemory = null;
+        pipe.vertexBufferAllocation = null;
     }
     if (pipe.indexBuffer != null or pipe.indexBufferMemory != null) {
-        vk_allocator.vk_allocator_free_buffer(alloc, pipe.indexBuffer, pipe.indexBufferMemory);
+        vk_allocator.vk_allocator_free_buffer(alloc, pipe.indexBuffer, pipe.indexBufferAllocation);
         pipe.indexBuffer = null;
         pipe.indexBufferMemory = null;
+        pipe.indexBufferAllocation = null;
     }
 
     // Create vertex and index buffers
@@ -737,6 +738,7 @@ pub export fn vk_pbr_load_scene(pipeline: ?*types.VulkanPBRPipeline, device: c.V
     const result = c.vkQueueWaitIdle(graphicsQueue);
     if (result != c.VK_SUCCESS) {
         log.cardinal_log_warn("Graphics queue wait idle failed before descriptor update: {d}", .{result});
+        return false;
     }
 
     // Update descriptor sets
@@ -842,23 +844,42 @@ pub export fn vk_pbr_pipeline_destroy(pipeline: ?*types.VulkanPBRPipeline, devic
     }
 
     if (pipe.vertexBuffer != null or pipe.vertexBufferMemory != null) {
-        vk_allocator.vk_allocator_free_buffer(alloc, pipe.vertexBuffer, pipe.vertexBufferMemory);
+        vk_allocator.vk_allocator_free_buffer(alloc, pipe.vertexBuffer, pipe.vertexBufferAllocation);
     }
 
     if (pipe.indexBuffer != null or pipe.indexBufferMemory != null) {
-        vk_allocator.vk_allocator_free_buffer(alloc, pipe.indexBuffer, pipe.indexBufferMemory);
+        vk_allocator.vk_allocator_free_buffer(alloc, pipe.indexBuffer, pipe.indexBufferAllocation);
     }
 
     if (pipe.uniformBuffer != null or pipe.uniformBufferMemory != null) {
-        vk_allocator.vk_allocator_free_buffer(alloc, pipe.uniformBuffer, pipe.uniformBufferMemory);
+        if (pipe.uniformBufferMapped != null) {
+            vk_allocator.vk_allocator_unmap_memory(alloc, pipe.uniformBufferAllocation);
+            pipe.uniformBufferMapped = null;
+        }
+        vk_allocator.vk_allocator_free_buffer(alloc, pipe.uniformBuffer, pipe.uniformBufferAllocation);
     }
 
     if (pipe.materialBuffer != null or pipe.materialBufferMemory != null) {
-        vk_allocator.vk_allocator_free_buffer(alloc, pipe.materialBuffer, pipe.materialBufferMemory);
+        if (pipe.materialBufferMapped != null) {
+            vk_allocator.vk_allocator_unmap_memory(alloc, pipe.materialBufferAllocation);
+            pipe.materialBufferMapped = null;
+        }
+        vk_allocator.vk_allocator_free_buffer(alloc, pipe.materialBuffer, pipe.materialBufferAllocation);
     }
 
     if (pipe.lightingBuffer != null or pipe.lightingBufferMemory != null) {
-        vk_allocator.vk_allocator_free_buffer(alloc, pipe.lightingBuffer, pipe.lightingBufferMemory);
+        if (pipe.lightingBufferMapped != null) {
+            vk_allocator.vk_allocator_unmap_memory(alloc, pipe.lightingBufferAllocation);
+            pipe.lightingBufferMapped = null;
+        }
+        vk_allocator.vk_allocator_free_buffer(alloc, pipe.lightingBuffer, pipe.lightingBufferAllocation);
+    }
+
+    if (pipe.textureManager != null) {
+        vk_texture_mgr.vk_texture_manager_destroy(pipe.textureManager.?);
+        const mem_alloc = memory.cardinal_get_allocator_for_category(.RENDERER);
+        memory.cardinal_free(mem_alloc, pipe.textureManager);
+        pipe.textureManager = null;
     }
 
     if (pipe.descriptorManager != null) {
@@ -880,7 +901,11 @@ pub export fn vk_pbr_pipeline_destroy(pipeline: ?*types.VulkanPBRPipeline, devic
     }
 
     if (pipe.boneMatricesBuffer != null or pipe.boneMatricesBufferMemory != null) {
-        vk_allocator.vk_allocator_free_buffer(alloc, pipe.boneMatricesBuffer, pipe.boneMatricesBufferMemory);
+        if (pipe.boneMatricesBufferMapped != null) {
+            vk_allocator.vk_allocator_unmap_memory(alloc, pipe.boneMatricesBufferAllocation);
+            pipe.boneMatricesBufferMapped = null;
+        }
+        vk_allocator.vk_allocator_free_buffer(alloc, pipe.boneMatricesBuffer, pipe.boneMatricesBufferAllocation);
     }
 
     @memset(@as([*]u8, @ptrCast(pipe))[0..@sizeOf(types.VulkanPBRPipeline)], 0);

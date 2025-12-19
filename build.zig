@@ -162,6 +162,12 @@ pub fn build(b: *std.Build) void {
         .flags = &.{"-std=c17"},
     });
 
+    // Compile VMA implementation
+    engine.addCSourceFile(.{
+        .file = b.path("engine/src/renderer/vma_implementation.cpp"),
+        .flags = &.{"-std=c++20"},
+    });
+
     engine.root_module.root_source_file = b.path("engine/src/root.zig");
 
     engine.linkLibrary(glfw);

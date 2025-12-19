@@ -43,8 +43,8 @@ pub fn vk_buffer_create_with_staging(allocator: ?*types.VulkanAllocator, device:
                                             commandPool: c.VkCommandPool, graphicsQueue: c.VkQueue,
                                             data: ?*const anyopaque, size: c.VkDeviceSize,
                                             usage: c.VkBufferUsageFlags, buffer: ?*c.VkBuffer,
-                                            bufferMemory: ?*c.VkDeviceMemory, vulkan_state: ?*types.VulkanState) bool {
-    if (data == null or size == 0 or allocator == null or buffer == null or bufferMemory == null) {
+                                            bufferMemory: ?*c.VkDeviceMemory, bufferAllocation: ?*c.VmaAllocation, vulkan_state: ?*types.VulkanState) bool {
+    if (data == null or size == 0 or allocator == null or buffer == null or bufferAllocation == null) {
         log.cardinal_log_error("Invalid parameters for staging buffer creation", .{});
         return false;
     }
@@ -60,7 +60,10 @@ pub fn vk_buffer_create_with_staging(allocator: ?*types.VulkanAllocator, device:
 
     // Return raw handles for compatibility
     buffer.?.* = destBufferObj.handle;
-    bufferMemory.?.* = destBufferObj.memory;
+    if (bufferMemory != null) {
+        bufferMemory.?.* = destBufferObj.memory;
+    }
+    bufferAllocation.?.* = destBufferObj.allocation;
 
     log.cardinal_log_debug("Successfully created buffer with staging: size={d} bytes, usage=0x{X}", .{size, usage});
     return true;

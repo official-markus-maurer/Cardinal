@@ -56,6 +56,7 @@ fn create_simple_uniform_buffer(s: *types.VulkanState) bool {
     // Store buffer handles for compatibility with existing code
     s.pipelines.simple_uniform_buffer = simpleBuffer.handle;
     s.pipelines.simple_uniform_buffer_memory = simpleBuffer.memory;
+    s.pipelines.simple_uniform_buffer_allocation = simpleBuffer.allocation;
     s.pipelines.simple_uniform_buffer_mapped = simpleBuffer.mapped;
 
     if (s.pipelines.simple_uniform_buffer_mapped == null) {
@@ -328,12 +329,12 @@ pub export fn vk_destroy_simple_pipelines(s: ?*types.VulkanState) callconv(.c) v
     const vs = s.?;
 
     if (vs.pipelines.simple_uniform_buffer_mapped != null) {
-        c.vkUnmapMemory(vs.context.device, vs.pipelines.simple_uniform_buffer_memory);
+        vk_allocator.vk_allocator_unmap_memory(&vs.allocator, vs.pipelines.simple_uniform_buffer_allocation);
         vs.pipelines.simple_uniform_buffer_mapped = null;
     }
 
     if (vs.pipelines.simple_uniform_buffer != null or vs.pipelines.simple_uniform_buffer_memory != null) {
-        vk_allocator.vk_allocator_free_buffer(&vs.allocator, vs.pipelines.simple_uniform_buffer, vs.pipelines.simple_uniform_buffer_memory);
+        vk_allocator.vk_allocator_free_buffer(&vs.allocator, vs.pipelines.simple_uniform_buffer, vs.pipelines.simple_uniform_buffer_allocation);
         vs.pipelines.simple_uniform_buffer = null;
         vs.pipelines.simple_uniform_buffer_memory = null;
     }
@@ -392,45 +393,48 @@ pub export fn vk_update_simple_uniforms(s: ?*types.VulkanState, model: ?*const f
 pub export fn vk_render_simple(s: ?*types.VulkanState, commandBuffer: c.VkCommandBuffer, pipeline: c.VkPipeline, pipelineLayout: c.VkPipelineLayout) callconv(.c) void {
     if (s == null) return;
     const vs = s.?;
-    if (vs.current_scene == null or vs.scene_meshes == null) return;
+    if (vs.current_scene == null) return;
+    const scn = vs.current_scene.?;
+
+    // Use PBR buffers if available
+    if (!vs.pipelines.use_pbr_pipeline or !vs.pipelines.pbr_pipeline.initialized) return;
+    const pipe = &vs.pipelines.pbr_pipeline;
+    
+    if (pipe.vertexBuffer == null or pipe.indexBuffer == null) return;
 
     c.vkCmdBindPipeline(commandBuffer, c.VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline);
     c.vkCmdBindDescriptorSets(commandBuffer, c.VK_PIPELINE_BIND_POINT_GRAPHICS, pipelineLayout, 0, 1, &vs.pipelines.simple_descriptor_set, 0, null);
 
-    // Render each mesh
+    const vertexBuffers = [_]c.VkBuffer{ pipe.vertexBuffer };
+    const offsets = [_]c.VkDeviceSize{ 0 };
+    c.vkCmdBindVertexBuffers(commandBuffer, 0, 1, &vertexBuffers, &offsets);
+    c.vkCmdBindIndexBuffer(commandBuffer, pipe.indexBuffer, 0, c.VK_INDEX_TYPE_UINT32);
+
+    // Render each mesh using offsets
+    var indexOffset: u32 = 0;
     var i: u32 = 0;
-    while (i < vs.scene_mesh_count) : (i += 1) {
-        const mesh = &vs.scene_meshes.?[i];
-        if (mesh.vbuf == null) continue;
-
-        // Prepare push constants
-        if (vs.current_scene) |current_scene| {
-            if (i < current_scene.mesh_count) {
-                // Access meshes via pointer arithmetic if slice access is tricky with C pointers
-                // In Zig, if scene.meshes is [*]CardinalMesh, we can use slice syntax if we trust the count
-                if (current_scene.meshes) |meshes| {
-                    const sceneMesh = &meshes[i];
-
-                    if (!sceneMesh.visible) continue;
-
-                    var pushConstants = std.mem.zeroes(types.PBRPushConstants);
-                    // Cast to C types for the C function call
-                    material_utils.vk_material_setup_push_constants(@ptrCast(&pushConstants), @ptrCast(sceneMesh), @ptrCast(current_scene), @ptrCast(vs.pipelines.pbr_pipeline.textureManager));
-
-                    c.vkCmdPushConstants(commandBuffer, pipelineLayout, c.VK_SHADER_STAGE_VERTEX_BIT | c.VK_SHADER_STAGE_FRAGMENT_BIT, 0, @sizeOf(types.PBRPushConstants), &pushConstants);
-                }
+    while (i < scn.mesh_count) : (i += 1) {
+        if (scn.meshes) |meshes| {
+            const mesh = &meshes[i];
+            
+            if (!mesh.visible) {
+                indexOffset += mesh.index_count;
+                continue;
             }
-        }
 
-        const vertexBuffers = [_]c.VkBuffer{ mesh.vbuf };
-        const offsets = [_]c.VkDeviceSize{ 0 };
-        c.vkCmdBindVertexBuffers(commandBuffer, 0, 1, &vertexBuffers, &offsets);
+            // Prepare push constants
+            var pushConstants = std.mem.zeroes(types.PBRPushConstants);
+            // Cast to C types for the C function call
+            material_utils.vk_material_setup_push_constants(@ptrCast(&pushConstants), @ptrCast(mesh), @ptrCast(scn), @ptrCast(vs.pipelines.pbr_pipeline.textureManager));
 
-        if (mesh.ibuf != null and mesh.index_count > 0) {
-            c.vkCmdBindIndexBuffer(commandBuffer, mesh.ibuf, 0, c.VK_INDEX_TYPE_UINT32);
-            c.vkCmdDrawIndexed(commandBuffer, mesh.index_count, 1, 0, 0, 0);
-        } else {
-            c.vkCmdDraw(commandBuffer, mesh.vertex_count, 1, 0, 0);
+            c.vkCmdPushConstants(commandBuffer, pipelineLayout, c.VK_SHADER_STAGE_VERTEX_BIT | c.VK_SHADER_STAGE_FRAGMENT_BIT, 0, @sizeOf(types.PBRPushConstants), &pushConstants);
+
+            if (mesh.index_count > 0) {
+                c.vkCmdDrawIndexed(commandBuffer, mesh.index_count, 1, indexOffset, 0, 0);
+            } else {
+                c.vkCmdDraw(commandBuffer, mesh.vertex_count, 1, 0, 0);
+            }
+            indexOffset += mesh.index_count;
         }
     }
 }

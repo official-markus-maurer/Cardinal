@@ -84,11 +84,11 @@ pub export fn vulkan_resource_manager_destroy_scene(manager: ?*VulkanResourceMan
         while (i < s.scene_mesh_count) : (i += 1) {
             var m = &s.scene_meshes.?[i];
             if (m.vbuf != null) {
-                vulkan_resource_manager_destroy_buffer(mgr, m.vbuf, m.vmem);
+                vulkan_resource_manager_destroy_buffer(mgr, m.vbuf, m.v_allocation);
                 m.vbuf = null;
             }
             if (m.ibuf != null) {
-                vulkan_resource_manager_destroy_buffer(mgr, m.ibuf, m.imem);
+                vulkan_resource_manager_destroy_buffer(mgr, m.ibuf, m.i_allocation);
                 m.ibuf = null;
             }
         }
@@ -153,7 +153,7 @@ pub export fn vulkan_resource_manager_destroy_depth_resources(manager: ?*VulkanR
     }
 
     if (s.swapchain.depth_image != null) {
-        vulkan_resource_manager_destroy_image(mgr, s.swapchain.depth_image, s.swapchain.depth_image_memory);
+        vulkan_resource_manager_destroy_image(mgr, s.swapchain.depth_image, s.swapchain.depth_image_allocation);
         s.swapchain.depth_image = null;
         s.swapchain.depth_image_memory = null;
     }
@@ -175,23 +175,23 @@ pub export fn vulkan_resource_manager_destroy_textures(manager: ?*VulkanResource
     }
 }
 
-pub export fn vulkan_resource_manager_destroy_buffer(manager: ?*VulkanResourceManager, buffer: c.VkBuffer, memory: c.VkDeviceMemory) callconv(.c) void {
+pub export fn vulkan_resource_manager_destroy_buffer(manager: ?*VulkanResourceManager, buffer: c.VkBuffer, allocation: c.VmaAllocation) callconv(.c) void {
     if (manager == null) return;
     const mgr = manager.?;
     if (!mgr.initialized or mgr.vulkan_state == null) return;
 
     if (buffer != null) {
-        vk_allocator.vk_allocator_free_buffer(&mgr.vulkan_state.?.allocator, buffer, memory);
+        vk_allocator.vk_allocator_free_buffer(&mgr.vulkan_state.?.allocator, buffer, allocation);
     }
 }
 
-pub export fn vulkan_resource_manager_destroy_image(manager: ?*VulkanResourceManager, image: c.VkImage, memory: c.VkDeviceMemory) callconv(.c) void {
+pub export fn vulkan_resource_manager_destroy_image(manager: ?*VulkanResourceManager, image: c.VkImage, allocation: c.VmaAllocation) callconv(.c) void {
     if (manager == null) return;
     const mgr = manager.?;
     if (!mgr.initialized or mgr.vulkan_state == null) return;
 
     if (image != null) {
-        vk_allocator.vk_allocator_free_image(&mgr.vulkan_state.?.allocator, image, memory);
+        vk_allocator.vk_allocator_free_image(&mgr.vulkan_state.?.allocator, image, allocation);
     }
 }
 

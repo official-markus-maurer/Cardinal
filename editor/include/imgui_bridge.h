@@ -156,6 +156,7 @@ typedef struct ImGuiBridgeVulkanInitInfo {
 
 bool imgui_bridge_impl_vulkan_init(ImGuiBridgeVulkanInitInfo* info);
 void imgui_bridge_impl_vulkan_shutdown(void);
+void imgui_bridge_force_clear_backend_data(void);
 void imgui_bridge_impl_vulkan_new_frame(void);
 void imgui_bridge_impl_vulkan_render_draw_data(VkCommandBuffer command_buffer);
 

@@ -15,6 +15,7 @@ const vk_mesh_shader = @import("vulkan_mesh_shader.zig");
 const vk_simple_pipelines = @import("vulkan_simple_pipelines.zig");
 const vk_renderer = @import("vulkan_renderer.zig");
 const vk_buffer_utils = @import("util/vulkan_buffer_utils.zig");
+const vk_allocator = @import("vulkan_allocator.zig");
 const window = @import("../core/window.zig");
 
 // Helper to get time in ms
@@ -148,14 +149,23 @@ fn vk_recover_from_device_loss(s: *types.VulkanState) bool {
     // Recreate mesh shader pipeline if it was enabled and supported
     if (success and s.context.supports_mesh_shader) {
         var config = std.mem.zeroes(types.MeshShaderPipelineConfig);
+        var shaders_dir: []const u8 = "assets/shaders";
+        const env_dir_c = c.getenv("CARDINAL_SHADERS_DIR");
+        if (env_dir_c != null) {
+            shaders_dir = std.mem.span(env_dir_c);
+        }
+
         var task_path: [512]u8 = undefined;
         var mesh_path: [512]u8 = undefined;
-        // Use fixed path for now since base_path is missing in VulkanState
-        _ = std.fmt.bufPrintZ(&task_path, "./shaders/mesh_shader.task.spv", .{}) catch unreachable;
-        _ = std.fmt.bufPrintZ(&mesh_path, "./shaders/mesh_shader.mesh.spv", .{}) catch unreachable;
+        var frag_path: [512]u8 = undefined;
+        
+        _ = std.fmt.bufPrintZ(&task_path, "{s}/task.task.spv", .{shaders_dir}) catch unreachable;
+        _ = std.fmt.bufPrintZ(&mesh_path, "{s}/mesh.mesh.spv", .{shaders_dir}) catch unreachable;
+        _ = std.fmt.bufPrintZ(&frag_path, "{s}/mesh.frag.spv", .{shaders_dir}) catch unreachable;
         
         config.task_shader_path = @ptrCast(&task_path);
         config.mesh_shader_path = @ptrCast(&mesh_path);
+        config.fragment_shader_path = @ptrCast(&frag_path);
         config.max_vertices_per_meshlet = 64;
         config.max_primitives_per_meshlet = 126;
         config.cull_mode = c.VK_CULL_MODE_BACK_BIT;

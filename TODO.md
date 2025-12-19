@@ -30,7 +30,7 @@ This document outlines areas for improvement, refactoring, and future extensions
 - [ ] **Shader Hot-Reloading**: Implement file watchers to reload shaders at runtime without restarting the editor.
 
 ### Performance
-- [ ] **VMA Integration**: Replace custom `vulkan_allocator.zig` logic with Vulkan Memory Allocator (VMA) library for production-grade memory management.
+- [x] **VMA Integration**: Replace custom `vulkan_allocator.zig` logic with Vulkan Memory Allocator (VMA) library for production-grade memory management.
 - [ ] **Pipeline Caching**: Save/Load `VkPipelineCache` to disk to speed up startup times.
 
 ## 3. Asset Management

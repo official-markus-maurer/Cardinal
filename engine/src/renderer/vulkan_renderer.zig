@@ -94,33 +94,19 @@ fn setup_function_pointers(s: *types.VulkanState) void {
 }
 
 fn init_sync_manager(s: *types.VulkanState) bool {
-    // Initialize centralized sync manager
-    const mem_alloc = memory.cardinal_get_allocator_for_category(.RENDERER);
-    const sync_mgr_ptr = memory.cardinal_alloc(mem_alloc, @sizeOf(types.VulkanSyncManager));
-    if (sync_mgr_ptr == null) {
-        log.cardinal_log_error("Failed to allocate memory for VulkanSyncManager", .{});
-        return false;
-    }
-    s.sync_manager = @ptrCast(@alignCast(sync_mgr_ptr));
-
-    if (!vk_sync_manager.vulkan_sync_manager_init(@ptrCast(s.sync_manager), s.context.device, s.context.graphics_queue, s.sync.max_frames_in_flight)) {
-        log.cardinal_log_error("vulkan_sync_manager_init failed", .{});
-        memory.cardinal_free(mem_alloc, s.sync_manager);
-        s.sync_manager = null;
-        return false;
-    }
-    log.cardinal_log_info("renderer_create: sync_manager", .{});
-
-    // Ensure renderer and sync manager use the same timeline semaphore
-    const sm = @as(?*types.VulkanSyncManager, @ptrCast(s.sync_manager));
-    if (sm != null and sm.?.timeline_semaphore != null and
-        s.sync.timeline_semaphore != sm.?.timeline_semaphore) {
-        if (s.sync.timeline_semaphore != null) {
-            c.vkDestroySemaphore(s.context.device, s.sync.timeline_semaphore, null);
-            log.cardinal_log_info("[INIT] Replacing renderer timeline with sync_manager timeline", .{});
+    // Point sync_manager to the embedded sync instance
+    // This avoids dual-state issues where one manager resets the semaphore and the other holds a stale handle
+    s.sync_manager = &s.sync;
+    
+    // Check if initialized (it should be, by vk_create_commands which calls create_sync_objects)
+    if (!s.sync.initialized) {
+        log.cardinal_log_warn("Sync manager not initialized by commands, initializing now", .{});
+         if (!vk_sync_manager.vulkan_sync_manager_init(&s.sync, s.context.device, s.context.graphics_queue, s.sync.max_frames_in_flight)) {
+            return false;
         }
-        s.sync.timeline_semaphore = sm.?.timeline_semaphore;
     }
+    
+    log.cardinal_log_info("renderer_create: sync_manager (linked to embedded sync)", .{});
     return true;
 }
 
@@ -261,6 +247,21 @@ pub export fn cardinal_renderer_create(out_renderer: ?*types.CardinalRenderer, w
 
     if (!init_vulkan_core(s, win))
         return false;
+    
+    // Load vkGetBufferDeviceAddress for VMA
+    const vkGetBufferDeviceAddress = @as(c.PFN_vkGetBufferDeviceAddress, @ptrCast(c.vkGetDeviceProcAddr(s.context.device, "vkGetBufferDeviceAddress")));
+
+    // Initialize VMA allocator
+    // We pass null for the optional memory requirement functions to ensure VMA uses the standard core functions
+    // and to avoid potential issues with function pointer mismatches or version conflicts.
+    if (!vk_allocator.vk_allocator_init(&s.allocator, s.context.instance, s.context.physical_device, s.context.device,
+                               null, // vkGetDeviceBufferMemoryRequirements
+                               null, // vkGetDeviceImageMemoryRequirements
+                               vkGetBufferDeviceAddress, null, null, false)) {
+        log.cardinal_log_error("Failed to initialize VMA allocator", .{});
+        return false;
+    }
+    
     if (!init_ref_counting())
         return false;
 
@@ -428,15 +429,17 @@ pub fn destroy_scene_buffers(vs: *types.VulkanState) void {
     var i: u32 = 0;
     while (i < vs.scene_mesh_count) : (i += 1) {
         var m = &vs.scene_meshes.?[i];
-        if (m.vbuf != null or m.vmem != null) {
-            vk_allocator.vk_allocator_free_buffer(@ptrCast(&vs.allocator), @ptrCast(m.vbuf), @ptrCast(m.vmem));
+        if (m.vbuf != null) {
+            vk_allocator.vk_allocator_free_buffer(@ptrCast(&vs.allocator), m.vbuf, m.v_allocation);
             m.vbuf = null;
             m.vmem = null;
+            m.v_allocation = null;
         }
-        if (m.ibuf != null or m.imem != null) {
-            vk_allocator.vk_allocator_free_buffer(@ptrCast(&vs.allocator), @ptrCast(m.ibuf), @ptrCast(m.imem));
+        if (m.ibuf != null) {
+            vk_allocator.vk_allocator_free_buffer(@ptrCast(&vs.allocator), m.ibuf, m.i_allocation);
             m.ibuf = null;
             m.imem = null;
+            m.i_allocation = null;
         }
     }
     const mem_alloc = memory.cardinal_get_allocator_for_category(.RENDERER);
@@ -464,12 +467,11 @@ pub export fn cardinal_renderer_destroy(renderer: ?*types.CardinalRenderer) call
     vk_commands.vk_destroy_commands_sync(@ptrCast(s));
 
     // Cleanup VulkanSyncManager
+    // Since s.sync_manager points to s.sync (embedded), we don't need to free it.
+    // It will be cleaned up when VulkanState is freed.
+    // We just null the pointer.
     if (s.sync_manager != null) {
-        log.cardinal_log_debug("[DESTROY] Cleaning up sync manager", .{});
-        const sm = @as(?*types.VulkanSyncManager, @ptrCast(s.sync_manager));
-        vk_sync_manager.vulkan_sync_manager_destroy(@ptrCast(sm));
-        const mem_alloc = memory.cardinal_get_allocator_for_category(.RENDERER);
-        memory.cardinal_free(mem_alloc, s.sync_manager);
+        log.cardinal_log_debug("[DESTROY] Cleaning up sync manager pointer", .{});
         s.sync_manager = null;
     }
 
@@ -512,6 +514,10 @@ pub export fn cardinal_renderer_destroy(renderer: ?*types.CardinalRenderer) call
     log.cardinal_log_debug("[DESTROY] Destroying base pipeline resources", .{});
     vk_pipeline.vk_destroy_pipeline(@ptrCast(s));
     vk_swapchain.vk_destroy_swapchain(@ptrCast(s));
+    
+    // Shutdown VMA allocator before destroying device
+    vk_allocator.vk_allocator_shutdown(&s.allocator);
+    
     vk_instance.vk_destroy_device_objects(@ptrCast(s));
 
     log.cardinal_log_info("[DESTROY] Freeing renderer state", .{});
@@ -945,70 +951,33 @@ fn try_submit_secondary(s: *types.VulkanState, record: ?*const fn (c.VkCommandBu
     }
 
     // Set VK_RENDERING_CONTENTS_SECONDARY_COMMAND_BUFFERS_BIT when beginning rendering
-    // But here we are executing secondary command buffers in a primary buffer that is NOT inside a render pass yet?
-    // Wait, try_submit_secondary creates a primary command buffer and executes secondary commands in it.
-    // The validation error says: "VkRenderingInfo::flags must include VK_RENDERING_CONTENTS_SECONDARY_COMMAND_BUFFERS_BIT when calling vkCmdExecuteCommands() within a render pass instance begun with vkCmdBeginRendering()."
-    
-    // This implies that vkCmdExecuteCommands is being called INSIDE a dynamic rendering instance.
-    // However, in this function, we are just recording commands. 
-    // If the secondary buffer contains drawing commands, then the PRIMARY buffer must be inside a render pass to execute them?
-    // OR the secondary buffer ITSELF contains the render pass?
-    
-    // If we look at `vk_commands.vulkan_mt.cardinal_mt_execute_secondary_command_buffers`, it calls `vkCmdExecuteCommands`.
-    
-    // The issue is likely that the primary command buffer (primary_cmd) needs to start rendering before executing secondary commands if those secondary commands draw things.
-    // BUT secondary command buffers with inheritance info usually inherit the render pass.
-    
-    // In dynamic rendering, we must call vkCmdBeginRendering on the PRIMARY buffer with VK_RENDERING_CONTENTS_SECONDARY_COMMAND_BUFFERS_BIT
-    // BEFORE calling vkCmdExecuteCommands.
-    
-    // Let's add dynamic rendering begin/end here around execute_secondary_command_buffers.
-    
+    // This is required when executing secondary command buffers inside a dynamic rendering instance
     var rendering_info = std.mem.zeroes(c.VkRenderingInfo);
     rendering_info.sType = c.VK_STRUCTURE_TYPE_RENDERING_INFO;
     rendering_info.renderArea.extent = s.swapchain.extent;
     rendering_info.layerCount = 1;
     rendering_info.colorAttachmentCount = 1;
-    
+    rendering_info.flags = c.VK_RENDERING_CONTENTS_SECONDARY_COMMAND_BUFFERS_BIT;
+
     var color_attachment = std.mem.zeroes(c.VkRenderingAttachmentInfo);
     color_attachment.sType = c.VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO;
-    color_attachment.imageView = s.swapchain.image_views.?[s.sync.current_frame]; // We don't have current image index here!
-    // Actually immediate submit usually renders to something? 
-    // Wait, `try_submit_secondary` is used for "immediate submit". 
-    // Immediate submit is often used for UI or debug drawing which renders to the swapchain?
-    // But we don't know which swapchain image is active or if we even acquired one!
+    // Use the current frame's image view. Note: This assumes the image is available and in a compatible layout.
+    // Since try_submit_secondary is often used for immediate operations, we might need to be careful about layout.
+    // However, if the secondary buffer expects to draw, it needs a valid attachment.
+    color_attachment.imageView = s.swapchain.image_views.?[s.sync.current_frame];
+    color_attachment.imageLayout = c.VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
+    color_attachment.loadOp = c.VK_ATTACHMENT_LOAD_OP_LOAD;
+    color_attachment.storeOp = c.VK_ATTACHMENT_STORE_OP_STORE;
     
-    // If this is for UI, it probably expects to render to the current swapchain image.
-    // But `cardinal_renderer_immediate_submit_with_secondary` doesn't take an image index.
-    
-    // Let's look at `vk_record_scene_with_secondary_buffers` in `vulkan_commands.zig`.
-    // That function IS called within a render pass in the main loop.
-    // BUT `try_submit_secondary` here creates its own primary buffer.
-    
-    // If `try_submit_secondary` is intended to draw to the screen, it needs a render pass.
-    // But if it's just recording transfer commands, it doesn't.
-    // The validation error says "within a render pass instance begun with vkCmdBeginRendering".
-    // This implies that we ARE inside a render pass.
-    // But looking at the code above:
-    // _ = c.vkBeginCommandBuffer(primary_cmd, &bi);
-    // ...
-    // vk_commands.vulkan_mt.cardinal_mt_execute_secondary_command_buffers(primary_cmd, contexts);
-    // _ = c.vkEndCommandBuffer(primary_cmd);
-    
-    // We are NOT calling vkCmdBeginRendering here! 
-    // So why does validation think we are?
-    // Maybe `rec(secondary_context.command_buffer)` records commands that require a render pass?
-    // And `secondary_context` was begun with inheritance info.
-    
-    // Wait, the error `VUID-vkCmdExecuteCommands-flags-06024` applies "If this command is called within a render pass instance begun with vkCmdBeginRendering".
-    // This means `vkCmdExecuteCommands` is called inside `vkCmdBeginRendering`.
-    // But we don't see `vkCmdBeginRendering` here.
-    
-    // UNLESS `vk_record_scene_with_secondary_buffers` in `vulkan_commands.zig` is the culprit!
-    // The stack trace/logs don't specify the function name, but "vkCmdExecuteCommands" is likely called there.
+    rendering_info.pColorAttachments = &color_attachment;
+
+    c.vkCmdBeginRendering(primary_cmd, &rendering_info);
     
     const contexts = @as([*]types.CardinalSecondaryCommandContext, @ptrCast(&secondary_context))[0..1];
     vk_commands.vulkan_mt.cardinal_mt_execute_secondary_command_buffers(primary_cmd, contexts);
+    
+    c.vkCmdEndRendering(primary_cmd);
+    
     _ = c.vkEndCommandBuffer(primary_cmd);
 
     submit_and_wait(s, primary_cmd);
@@ -1051,7 +1020,7 @@ fn upload_single_mesh(s: *types.VulkanState, src: *const types.CardinalMesh, dst
     log.cardinal_log_debug("[UPLOAD] Mesh {d}: staging vertex buffer", .{mesh_index});
     if (!vk_buffer_utils.vk_buffer_create_with_staging(
             @ptrCast(&s.allocator), s.context.device, s.commands.pools.?[0], s.context.graphics_queue,
-            src.vertices, vsize, c.VK_BUFFER_USAGE_VERTEX_BUFFER_BIT, &dst.vbuf, &dst.vmem, s)) {
+            src.vertices, vsize, c.VK_BUFFER_USAGE_VERTEX_BUFFER_BIT, &dst.vbuf, &dst.vmem, &dst.v_allocation, s)) {
         log.cardinal_log_error("Failed to create vertex buffer for mesh {d}", .{mesh_index});
         return false;
     }
@@ -1060,7 +1029,7 @@ fn upload_single_mesh(s: *types.VulkanState, src: *const types.CardinalMesh, dst
         log.cardinal_log_debug("[UPLOAD] Mesh {d}: staging index buffer", .{mesh_index});
         if (vk_buffer_utils.vk_buffer_create_with_staging(
                 @ptrCast(&s.allocator), s.context.device, s.commands.pools.?[0], s.context.graphics_queue,
-                src.indices, index_size, c.VK_BUFFER_USAGE_INDEX_BUFFER_BIT, &dst.ibuf, &dst.imem, s)) {
+                src.indices, index_size, c.VK_BUFFER_USAGE_INDEX_BUFFER_BIT, &dst.ibuf, &dst.imem, &dst.i_allocation, s)) {
             dst.index_count = src.index_count;
         } else {
             log.cardinal_log_error("Failed to create index buffer for mesh {d}", .{mesh_index});

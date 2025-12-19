@@ -51,11 +51,11 @@ export fn vk_descriptor_buffer_create_manager(create_info: ?*const types.Descrip
     var buffer_info = std.mem.zeroes(c.VkBufferCreateInfo);
     buffer_info.sType = c.VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO;
     buffer_info.size = total_size;
-    buffer_info.usage = c.VK_BUFFER_USAGE_RESOURCE_DESCRIPTOR_BUFFER_BIT_EXT | c.VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT;
+    buffer_info.usage = c.VK_BUFFER_USAGE_RESOURCE_DESCRIPTOR_BUFFER_BIT_EXT; // | c.VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT;
     buffer_info.sharingMode = c.VK_SHARING_MODE_EXCLUSIVE;
     
     // Use project's VulkanAllocator instead of VMA
-    if (!vk_allocator.vk_allocator_allocate_buffer(@ptrCast(@alignCast(m.allocator)), &buffer_info, &m.buffer_alloc.buffer, &m.buffer_alloc.memory, c.VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | c.VK_MEMORY_PROPERTY_HOST_COHERENT_BIT)) {
+    if (!vk_allocator.vk_allocator_allocate_buffer(@ptrCast(@alignCast(m.allocator)), &buffer_info, &m.buffer_alloc.buffer, &m.buffer_alloc.memory, &m.buffer_alloc.allocation, c.VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | c.VK_MEMORY_PROPERTY_HOST_COHERENT_BIT)) {
         log.cardinal_log_error("Failed to create descriptor buffer", .{});
         return false;
     }
@@ -64,7 +64,7 @@ export fn vk_descriptor_buffer_create_manager(create_info: ?*const types.Descrip
     const result = c.vkMapMemory(m.device, m.buffer_alloc.memory, 0, total_size, 0, &m.buffer_alloc.mapped_data);
     if (result != c.VK_SUCCESS) {
         log.cardinal_log_error("Failed to map descriptor buffer memory: {d}", .{result});
-        vk_allocator.vk_allocator_free_buffer(@ptrCast(@alignCast(m.allocator)), m.buffer_alloc.buffer, m.buffer_alloc.memory);
+        vk_allocator.vk_allocator_free_buffer(@ptrCast(@alignCast(m.allocator)), m.buffer_alloc.buffer, m.buffer_alloc.allocation);
         return false;
     }
     
@@ -81,7 +81,7 @@ export fn vk_descriptor_buffer_create_manager(create_info: ?*const types.Descrip
     if (m.binding_offsets == null) {
         log.cardinal_log_error("Failed to allocate memory for binding offsets", .{});
         c.vkUnmapMemory(m.device, m.buffer_alloc.memory);
-        vk_allocator.vk_allocator_free_buffer(@ptrCast(@alignCast(m.allocator)), m.buffer_alloc.buffer, m.buffer_alloc.memory);
+        vk_allocator.vk_allocator_free_buffer(@ptrCast(@alignCast(m.allocator)), m.buffer_alloc.buffer, m.buffer_alloc.allocation);
         return false;
     }
     
@@ -105,7 +105,7 @@ export fn vk_descriptor_buffer_destroy_manager(manager: ?*types.DescriptorBuffer
         if (m.buffer_alloc.mapped_data != null) {
             c.vkUnmapMemory(m.device, m.buffer_alloc.memory);
         }
-        vk_allocator.vk_allocator_free_buffer(@ptrCast(@alignCast(m.allocator)), m.buffer_alloc.buffer, m.buffer_alloc.memory);
+        vk_allocator.vk_allocator_free_buffer(@ptrCast(@alignCast(m.allocator)), m.buffer_alloc.buffer, m.buffer_alloc.allocation);
     }
     
     c.free(m.binding_offsets);

@@ -178,11 +178,33 @@ fn draw_pbr_settings_panel() void {
             
             if (c.imgui_bridge_collapsing_header("Rendering Mode", c.ImGuiTreeNodeFlags_DefaultOpen)) {
                 const current_mode = renderer.cardinal_renderer_get_rendering_mode(state.renderer);
-                var current_item: i32 = @intFromEnum(current_mode);
+                
+                // Map enum to combo index
+                // 0: Normal (0)
+                // 1: UV (3)
+                // 2: Wireframe (4)
+                // 3: Mesh Shader (1)
+                var current_item: i32 = 0;
+                switch (current_mode) {
+                    .NORMAL => current_item = 0,
+                    .UV => current_item = 1,
+                    .WIREFRAME => current_item = 2,
+                    .MESH_SHADER => current_item = 3,
+                    else => current_item = 0,
+                }
+                
                 const items = [_][*:0]const u8{ "Normal", "UV Visualization", "Wireframe", "Mesh Shader" };
                 
                 if (c.imgui_bridge_combo("Mode", &current_item, &items, items.len, -1)) {
-                    renderer.cardinal_renderer_set_rendering_mode(state.renderer, @enumFromInt(current_item));
+                    // Map combo index to enum
+                    const new_mode: types.CardinalRenderingMode = switch (current_item) {
+                        0 => .NORMAL,
+                        1 => .UV,
+                        2 => .WIREFRAME,
+                        3 => .MESH_SHADER,
+                        else => .NORMAL,
+                    };
+                    renderer.cardinal_renderer_set_rendering_mode(state.renderer, new_mode);
                 }
             }
         }
@@ -309,6 +331,11 @@ fn ui_draw_callback(cmd: VkCommandBuffer) callconv(.c) void {
 // Public API
 
 pub fn init(win_ptr: *window.CardinalWindow, rnd_ptr: *types.CardinalRenderer) bool {
+    if (initialized) {
+        log.cardinal_log_warn("[EDITOR] Already initialized", .{});
+        return true;
+    }
+
     state = EditorState{
         .window = win_ptr,
         .renderer = rnd_ptr,
@@ -372,6 +399,9 @@ pub fn init(win_ptr: *window.CardinalWindow, rnd_ptr: *types.CardinalRenderer) b
     const device = @as(c.VkDevice, @ptrCast(renderer.cardinal_renderer_internal_device(rnd_ptr)));
     if (c.vkCreateDescriptorPool(device, &pool_info, null, &state.descriptor_pool) != c.VK_SUCCESS) return false;
 
+    // Hack: Ensure backend data is clear before init (fixes restart/reload issues)
+    c.imgui_bridge_force_clear_backend_data();
+
     var init_info = c.ImGuiBridgeVulkanInitInfo{
         .instance = @as(c.VkInstance, @ptrCast(renderer.cardinal_renderer_internal_instance(rnd_ptr))),
         .physical_device = @as(c.VkPhysicalDevice, @ptrCast(renderer.cardinal_renderer_internal_physical_device(rnd_ptr))),
@@ -399,6 +429,94 @@ pub fn init(win_ptr: *window.CardinalWindow, rnd_ptr: *types.CardinalRenderer) b
     return true;
 }
 
+pub fn on_device_loss(_: ?*anyopaque) callconv(.c) void {
+    log.cardinal_log_warn("[EDITOR_LAYER] Device loss detected, shutting down ImGui", .{});
+    
+    // Always attempt to shutdown the Vulkan backend if we were initialized
+    // We check if the context exists by checking if the descriptor pool was created (which happens during init)
+    // Even if it's null, calling shutdown might be safer if we are unsure, but ImGui backend asserts if not initialized.
+    // However, the "Already initialized" error comes from Init, not Shutdown.
+    // So we must ensure Shutdown is called.
+    
+    // We can use the global 'initialized' flag or check descriptor_pool.
+    // If descriptor_pool is set, we definitely initialized.
+    if (state.descriptor_pool != null or initialized) {
+        c.imgui_bridge_impl_vulkan_shutdown();
+        state.descriptor_pool = null;
+    }
+    
+    // Mark as uninitialized to prevent update loop from calling backend functions
+    initialized = false;
+}
+
+pub fn on_device_restored(user_data: ?*anyopaque, success: bool) callconv(.c) void {
+    _ = user_data;
+    if (!success) {
+        log.cardinal_log_error("[EDITOR_LAYER] Device recovery failed, cannot restore ImGui", .{});
+        return;
+    }
+
+    log.cardinal_log_info("[EDITOR_LAYER] Device restored, re-initializing ImGui", .{});
+    
+    // Re-create descriptor pool with NEW device
+    const rnd_ptr = state.renderer;
+    const device = @as(c.VkDevice, @ptrCast(renderer.cardinal_renderer_internal_device(rnd_ptr)));
+    
+    const pool_sizes = [_]c.VkDescriptorPoolSize{
+        .{ .type = c.VK_DESCRIPTOR_TYPE_SAMPLER, .descriptorCount = 1000 },
+        .{ .type = c.VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, .descriptorCount = 1000 },
+        .{ .type = c.VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE, .descriptorCount = 1000 },
+        .{ .type = c.VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, .descriptorCount = 1000 },
+        .{ .type = c.VK_DESCRIPTOR_TYPE_UNIFORM_TEXEL_BUFFER, .descriptorCount = 1000 },
+        .{ .type = c.VK_DESCRIPTOR_TYPE_STORAGE_TEXEL_BUFFER, .descriptorCount = 1000 },
+        .{ .type = c.VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, .descriptorCount = 1000 },
+        .{ .type = c.VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, .descriptorCount = 1000 },
+        .{ .type = c.VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER_DYNAMIC, .descriptorCount = 1000 },
+        .{ .type = c.VK_DESCRIPTOR_TYPE_STORAGE_BUFFER_DYNAMIC, .descriptorCount = 1000 },
+        .{ .type = c.VK_DESCRIPTOR_TYPE_INPUT_ATTACHMENT, .descriptorCount = 1000 },
+    };
+
+    var pool_info = c.VkDescriptorPoolCreateInfo{
+        .sType = c.VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO,
+        .pNext = null,
+        .flags = c.VK_DESCRIPTOR_POOL_CREATE_FREE_DESCRIPTOR_SET_BIT,
+        .maxSets = 1000 * 11,
+        .poolSizeCount = pool_sizes.len,
+        .pPoolSizes = &pool_sizes,
+    };
+
+    if (c.vkCreateDescriptorPool(device, &pool_info, null, &state.descriptor_pool) != c.VK_SUCCESS) {
+        log.cardinal_log_error("[EDITOR_LAYER] Failed to recreate descriptor pool", .{});
+        return;
+    }
+
+    // Ensure backend data is clear before re-init
+    c.imgui_bridge_force_clear_backend_data();
+
+    var init_info = c.ImGuiBridgeVulkanInitInfo{
+        .instance = @as(c.VkInstance, @ptrCast(renderer.cardinal_renderer_internal_instance(rnd_ptr))),
+        .physical_device = @as(c.VkPhysicalDevice, @ptrCast(renderer.cardinal_renderer_internal_physical_device(rnd_ptr))),
+        .device = device,
+        .queue_family = renderer.cardinal_renderer_internal_graphics_queue_family(rnd_ptr),
+        .queue = @as(c.VkQueue, @ptrCast(renderer.cardinal_renderer_internal_graphics_queue(rnd_ptr))),
+        .descriptor_pool = state.descriptor_pool,
+        .min_image_count = renderer.cardinal_renderer_internal_swapchain_image_count(rnd_ptr),
+        .image_count = renderer.cardinal_renderer_internal_swapchain_image_count(rnd_ptr),
+        .msaa_samples = c.VK_SAMPLE_COUNT_1_BIT,
+        .use_dynamic_rendering = true,
+        .color_attachment_format = renderer.cardinal_renderer_internal_swapchain_format(rnd_ptr),
+        .depth_attachment_format = renderer.cardinal_renderer_internal_depth_format(rnd_ptr),
+    };
+
+    if (!c.imgui_bridge_impl_vulkan_init(&init_info)) {
+        log.cardinal_log_error("[EDITOR_LAYER] Failed to re-initialize ImGui Vulkan backend", .{});
+        return;
+    }
+    
+    // Mark as initialized again to resume update loop
+    initialized = true;
+}
+
 pub fn shutdown() void {
     c.imgui_bridge_impl_vulkan_shutdown();
     c.imgui_bridge_impl_glfw_shutdown();
@@ -419,6 +537,8 @@ pub fn shutdown() void {
     allocator.free(state.assets.assets_dir[0 .. state.assets.assets_dir.len + 1]);
     allocator.free(state.assets.current_dir[0 .. state.assets.current_dir.len + 1]);
     allocator.free(state.assets.search_filter);
+    
+    initialized = false;
 }
 
 pub fn update() void {

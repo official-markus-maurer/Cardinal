@@ -6,7 +6,10 @@ pub const c = @cImport({
     @cInclude("stdlib.h");
     @cInclude("string.h");
     @cInclude("stdio.h");
+    @cDefine("VMA_STATIC_VULKAN_FUNCTIONS", "0");
+    @cDefine("VMA_DYNAMIC_VULKAN_FUNCTIONS", "0");
     @cInclude("vulkan/vulkan.h");
+    @cInclude("vma/vk_mem_alloc.h");
     @cInclude("GLFW/glfw3.h");
     
     if (builtin.os.tag == .windows) {

@@ -41,7 +41,7 @@ fn create_depth_resources(s: *types.VulkanState) bool {
 
     // Use VulkanAllocator to allocate and bind image + memory
     if (!vk_allocator.vk_allocator_allocate_image(&s.allocator, &imageInfo, &s.swapchain.depth_image,
-                                     &s.swapchain.depth_image_memory,
+                                     &s.swapchain.depth_image_memory, &s.swapchain.depth_image_allocation,
                                      c.VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT)) {
         log.cardinal_log_error("pipeline: allocator failed to create depth image", .{});
         return false;
@@ -62,7 +62,7 @@ fn create_depth_resources(s: *types.VulkanState) bool {
     if (c.vkCreateImageView(s.context.device, &viewInfo, null, &s.swapchain.depth_image_view) != c.VK_SUCCESS) {
         log.cardinal_log_error("pipeline: failed to create depth image view", .{});
         // Free image + memory via allocator on failure
-        vk_allocator.vk_allocator_free_image(&s.allocator, s.swapchain.depth_image, s.swapchain.depth_image_memory);
+        vk_allocator.vk_allocator_free_image(&s.allocator, s.swapchain.depth_image, s.swapchain.depth_image_allocation);
         s.swapchain.depth_image = null;
         s.swapchain.depth_image_memory = null;
         return false;
@@ -88,7 +88,7 @@ fn destroy_depth_resources(s: *types.VulkanState) void {
     if (s.swapchain.depth_image != null or s.swapchain.depth_image_memory != null) {
         // Ensure allocator is valid before freeing
         if (s.allocator.device != null) {
-            vk_allocator.vk_allocator_free_image(&s.allocator, s.swapchain.depth_image, s.swapchain.depth_image_memory);
+            vk_allocator.vk_allocator_free_image(&s.allocator, s.swapchain.depth_image, s.swapchain.depth_image_allocation);
         }
         s.swapchain.depth_image = null;
         s.swapchain.depth_image_memory = null;
