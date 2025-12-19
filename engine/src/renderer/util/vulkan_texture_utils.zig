@@ -64,11 +64,33 @@ pub fn process_staging_buffer_cleanups(sync_manager: ?*types.VulkanSyncManager, 
             vk_allocator.vk_allocator_free_buffer(allocator, cleanup.buffer, cleanup.allocation);
 
             current.* = cleanup.next;
-            c.free(cleanup);
+
+            const mem_alloc = @import("../../core/memory.zig").cardinal_get_allocator_for_category(.RENDERER);
+            const mem_utils = @import("../../core/memory.zig");
+            mem_utils.cardinal_free(mem_alloc, cleanup);
         } else {
             current = &cleanup.next;
         }
     }
+}
+
+pub fn shutdown_staging_buffer_cleanups(allocator: *types.VulkanAllocator) void {
+    if (!g_cleanup_system_initialized) return;
+
+    var current = g_pending_cleanups;
+    while (current) |cleanup| {
+        const next = cleanup.next;
+        log.cardinal_log_debug("[TEXTURE_UTILS] Force cleaning up staging buffer {any} on shutdown", .{cleanup.buffer});
+        vk_allocator.vk_allocator_free_buffer(allocator, cleanup.buffer, cleanup.allocation);
+
+        const mem_alloc = @import("../../core/memory.zig").cardinal_get_allocator_for_category(.RENDERER);
+        const mem_utils = @import("../../core/memory.zig");
+        mem_utils.cardinal_free(mem_alloc, cleanup);
+
+        current = next;
+    }
+    g_pending_cleanups = null;
+    g_cleanup_system_initialized = false;
 }
 
 pub fn create_staging_buffer_with_data(allocator: ?*types.VulkanAllocator, device: c.VkDevice, texture: *const scene.CardinalTexture, outBuffer: *c.VkBuffer, outMemory: *c.VkDeviceMemory, outAllocation: *c.VmaAllocation) bool {

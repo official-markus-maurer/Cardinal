@@ -122,6 +122,77 @@ typedef enum ImGuiDockNodeFlags_ {
   ImGuiDockNodeFlags_AutoHideTabBar = 1 << 6,
 } ImGuiDockNodeFlags_;
 
+typedef enum ImGuiTableFlags_ {
+  ImGuiTableFlags_None = 0,
+  ImGuiTableFlags_Resizable = 1 << 0,
+  ImGuiTableFlags_Reorderable = 1 << 1,
+  ImGuiTableFlags_Hideable = 1 << 2,
+  ImGuiTableFlags_Sortable = 1 << 3,
+  ImGuiTableFlags_NoSavedSettings = 1 << 4,
+  ImGuiTableFlags_ContextMenuInBody = 1 << 5,
+  ImGuiTableFlags_RowBg = 1 << 6,
+  ImGuiTableFlags_BordersInnerH = 1 << 7,
+  ImGuiTableFlags_BordersOuterH = 1 << 8,
+  ImGuiTableFlags_BordersInnerV = 1 << 9,
+  ImGuiTableFlags_BordersOuterV = 1 << 10,
+  ImGuiTableFlags_BordersH =
+      ImGuiTableFlags_BordersInnerH | ImGuiTableFlags_BordersOuterH,
+  ImGuiTableFlags_BordersV =
+      ImGuiTableFlags_BordersInnerV | ImGuiTableFlags_BordersOuterV,
+  ImGuiTableFlags_BordersInner =
+      ImGuiTableFlags_BordersInnerV | ImGuiTableFlags_BordersInnerH,
+  ImGuiTableFlags_BordersOuter =
+      ImGuiTableFlags_BordersOuterV | ImGuiTableFlags_BordersOuterH,
+  ImGuiTableFlags_Borders =
+      ImGuiTableFlags_BordersInner | ImGuiTableFlags_BordersOuter,
+  ImGuiTableFlags_NoBordersInBody = 1 << 11,
+  ImGuiTableFlags_NoBordersInBodyUntilResize = 1 << 12,
+  ImGuiTableFlags_SizingFixedFit = 1 << 13,
+  ImGuiTableFlags_SizingFixedSame = 2 << 13,
+  ImGuiTableFlags_SizingStretchProp = 3 << 13,
+  ImGuiTableFlags_SizingStretchSame = 4 << 13,
+  ImGuiTableFlags_NoHostExtendX = 1 << 16,
+  ImGuiTableFlags_NoHostExtendY = 1 << 17,
+  ImGuiTableFlags_NoKeepColumnsVisible = 1 << 18,
+  ImGuiTableFlags_PreciseWidths = 1 << 19,
+  ImGuiTableFlags_NoClip = 1 << 20,
+  ImGuiTableFlags_PadOuterX = 1 << 21,
+  ImGuiTableFlags_NoPadOuterX = 1 << 22,
+  ImGuiTableFlags_NoPadInnerX = 1 << 23,
+  ImGuiTableFlags_ScrollX = 1 << 24,
+  ImGuiTableFlags_ScrollY = 1 << 25,
+  ImGuiTableFlags_SortMulti = 1 << 26,
+  ImGuiTableFlags_SortTristate = 1 << 27,
+} ImGuiTableFlags_;
+
+typedef enum ImGuiTableColumnFlags_ {
+  ImGuiTableColumnFlags_None = 0,
+  ImGuiTableColumnFlags_Disabled = 1 << 0,
+  ImGuiTableColumnFlags_DefaultHide = 1 << 1,
+  ImGuiTableColumnFlags_DefaultSort = 1 << 2,
+  ImGuiTableColumnFlags_WidthStretch = 1 << 3,
+  ImGuiTableColumnFlags_WidthFixed = 1 << 4,
+  ImGuiTableColumnFlags_NoResize = 1 << 5,
+  ImGuiTableColumnFlags_NoReorder = 1 << 6,
+  ImGuiTableColumnFlags_NoHide = 1 << 7,
+  ImGuiTableColumnFlags_NoClip = 1 << 8,
+  ImGuiTableColumnFlags_NoSort = 1 << 9,
+  ImGuiTableColumnFlags_NoSortAscending = 1 << 10,
+  ImGuiTableColumnFlags_NoSortDescending = 1 << 11,
+  ImGuiTableColumnFlags_NoHeaderLabel = 1 << 12,
+  ImGuiTableColumnFlags_NoHeaderWidth = 1 << 13,
+  ImGuiTableColumnFlags_PreferSortAscending = 1 << 14,
+  ImGuiTableColumnFlags_PreferSortDescending = 1 << 15,
+  ImGuiTableColumnFlags_IndentEnable = 1 << 16,
+  ImGuiTableColumnFlags_IndentDisable = 1 << 17,
+  ImGuiTableColumnFlags_AngledHeader = 1 << 18,
+} ImGuiTableColumnFlags_;
+
+typedef enum ImGuiTableRowFlags_ {
+  ImGuiTableRowFlags_None = 0,
+  ImGuiTableRowFlags_Headers = 1 << 0,
+} ImGuiTableRowFlags_;
+
 #endif // __cplusplus
 
 // Main Viewport & Layout
@@ -190,6 +261,8 @@ bool imgui_bridge_begin_child(const char *str_id, float width, float height,
                               bool border, int flags);
 void imgui_bridge_end_child(void);
 bool imgui_bridge_selectable(const char *label, bool selected, int flags);
+bool imgui_bridge_selectable_size(const char *label, bool selected, int flags,
+                                  float width, float height);
 bool imgui_bridge_collapsing_header(const char *label, int flags);
 void imgui_bridge_set_next_item_width(float width);
 float imgui_bridge_get_content_region_avail_x(void);
@@ -215,6 +288,16 @@ void imgui_bridge_indent(float indent_w);
 void imgui_bridge_unindent(float indent_w);
 void imgui_bridge_push_id_int(int int_id);
 void imgui_bridge_pop_id(void);
+
+// Tables
+bool imgui_bridge_begin_table(const char *str_id, int column, int flags,
+                              const ImVec2 *outer_size, float inner_width);
+void imgui_bridge_end_table(void);
+void imgui_bridge_table_next_row(int row_flags, float min_row_height);
+void imgui_bridge_table_setup_column(const char *label, int flags,
+                                     float init_width_or_weight, int user_id);
+void imgui_bridge_table_headers_row(void);
+void imgui_bridge_table_set_column_index(int column_n);
 
 // Tooltips & Interaction
 void imgui_bridge_set_tooltip(const char *fmt, ...);

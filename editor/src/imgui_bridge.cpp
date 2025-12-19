@@ -212,6 +212,11 @@ bool imgui_bridge_selectable(const char *label, bool selected, int flags) {
   return ImGui::Selectable(label, selected, flags);
 }
 
+bool imgui_bridge_selectable_size(const char *label, bool selected, int flags,
+                                  float width, float height) {
+  return ImGui::Selectable(label, selected, flags, ImVec2(width, height));
+}
+
 bool imgui_bridge_collapsing_header(const char *label, int flags) {
   return ImGui::CollapsingHeader(label, flags);
 }
@@ -280,6 +285,29 @@ void imgui_bridge_unindent(float indent_w) { ImGui::Unindent(indent_w); }
 void imgui_bridge_push_id_int(int int_id) { ImGui::PushID(int_id); }
 
 void imgui_bridge_pop_id(void) { ImGui::PopID(); }
+
+// Tables
+bool imgui_bridge_begin_table(const char *str_id, int column, int flags,
+                              const ImVec2 *outer_size, float inner_width) {
+  return ImGui::BeginTable(str_id, column, flags, *outer_size, inner_width);
+}
+
+void imgui_bridge_end_table(void) { ImGui::EndTable(); }
+
+void imgui_bridge_table_next_row(int row_flags, float min_row_height) {
+  ImGui::TableNextRow(row_flags, min_row_height);
+}
+
+void imgui_bridge_table_setup_column(const char *label, int flags,
+                                     float init_width_or_weight, int user_id) {
+  ImGui::TableSetupColumn(label, flags, init_width_or_weight, user_id);
+}
+
+void imgui_bridge_table_headers_row(void) { ImGui::TableHeadersRow(); }
+
+void imgui_bridge_table_set_column_index(int column_n) {
+  ImGui::TableSetColumnIndex(column_n);
+}
 
 // Tooltips & Interaction
 void imgui_bridge_set_tooltip(const char *fmt, ...) {

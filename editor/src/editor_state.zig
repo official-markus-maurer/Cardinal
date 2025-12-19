@@ -74,6 +74,7 @@ pub const EditorState = struct {
     show_model_manager: bool = true,
     show_pbr_settings: bool = true,
     show_animation: bool = true,
+    show_memory_stats: bool = false,
 
     // Assets
     assets: AssetState = undefined,

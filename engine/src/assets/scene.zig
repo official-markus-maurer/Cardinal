@@ -2,7 +2,24 @@ const std = @import("std");
 const ref_counting = @import("../core/ref_counting.zig");
 const memory = @import("../core/memory.zig");
 const log = @import("../core/log.zig");
-const transform_math = @import("../core/transform.zig"); // Assuming transform math utils are here
+const transform_math = @import("../core/transform.zig");
+const pool_alloc = @import("../core/pool_allocator.zig");
+
+// --- Global Pool for Scene Nodes ---
+var g_node_pool: ?pool_alloc.PoolAllocator(CardinalSceneNode) = null;
+var g_pool_init_mutex: std.Thread.Mutex = .{};
+
+fn get_node_pool() *pool_alloc.PoolAllocator(CardinalSceneNode) {
+    if (g_node_pool) |*p| return p;
+
+    g_pool_init_mutex.lock();
+    defer g_pool_init_mutex.unlock();
+
+    if (g_node_pool == null) {
+        g_node_pool = pool_alloc.PoolAllocator(CardinalSceneNode).init(std.heap.c_allocator);
+    }
+    return &g_node_pool.?;
+}
 
 // --- Common Enums ---
 
@@ -147,11 +164,10 @@ pub const CardinalScene = extern struct {
 // --- Functions ---
 
 pub export fn cardinal_scene_node_create(name: ?[*:0]const u8) ?*CardinalSceneNode {
+    const pool = get_node_pool();
+    const node = pool.create() catch return null;
     const allocator = memory.cardinal_get_allocator_for_category(.ASSETS);
-    const ptr = memory.cardinal_alloc(allocator, @sizeOf(CardinalSceneNode));
-    if (ptr == null) return null;
 
-    const node: *CardinalSceneNode = @ptrCast(@alignCast(ptr));
     node.* = std.mem.zeroes(CardinalSceneNode);
 
     // Identity matrix
@@ -196,7 +212,7 @@ pub export fn cardinal_scene_node_destroy(node: ?*CardinalSceneNode) void {
         memory.cardinal_free(allocator, @ptrCast(name));
     }
 
-    memory.cardinal_free(allocator, n);
+    get_node_pool().destroy(n);
 }
 
 pub export fn cardinal_scene_node_add_child(parent: ?*CardinalSceneNode, child: ?*CardinalSceneNode) bool {

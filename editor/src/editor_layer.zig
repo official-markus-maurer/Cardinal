@@ -19,6 +19,7 @@ const AssetState = editor_state.AssetState;
 const scene_hierarchy = @import("panels/scene_hierarchy.zig");
 const content_browser = @import("panels/content_browser.zig");
 const inspector = @import("panels/inspector.zig");
+const memory_stats = @import("panels/memory_stats.zig");
 const input_system = @import("systems/input.zig");
 const camera_controller = @import("systems/camera_controller.zig");
 
@@ -620,6 +621,7 @@ pub fn update() void {
                 if (c.imgui_bridge_menu_item("Model Manager", null, state.show_model_manager, true)) state.show_model_manager = !state.show_model_manager;
                 if (c.imgui_bridge_menu_item("PBR Settings", null, state.show_pbr_settings, true)) state.show_pbr_settings = !state.show_pbr_settings;
                 if (c.imgui_bridge_menu_item("Animation", null, state.show_animation, true)) state.show_animation = !state.show_animation;
+                if (c.imgui_bridge_menu_item("Memory Stats", null, state.show_memory_stats, true)) state.show_memory_stats = !state.show_memory_stats;
                 c.imgui_bridge_end_menu();
             }
             c.imgui_bridge_end_main_menu_bar();
@@ -631,6 +633,18 @@ pub fn update() void {
         inspector.draw_inspector_panel(&state);
         draw_pbr_settings_panel();
         draw_animation_panel();
+        memory_stats.draw_memory_stats_panel(&state);
+
+        // Check for dirty model manager and update combined scene
+        if (state.model_manager.scene_dirty) {
+            const combined = model_manager.cardinal_model_manager_get_combined_scene(&state.model_manager);
+            if (combined) |comb_ptr| {
+                state.combined_scene = comb_ptr.*;
+                state.pending_scene = state.combined_scene;
+                state.scene_upload_pending = true;
+                log.cardinal_log_info("[EDITOR] Model manager dirty, updating combined scene", .{});
+            }
+        }
 
         // Status Bar (as a simple window for now, or part of dockspace)
         if (c.imgui_bridge_begin("Status", null, 0)) {

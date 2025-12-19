@@ -18,6 +18,7 @@ const vk_compute = @import("vulkan_compute.zig");
 const vk_simple_pipelines = @import("vulkan_simple_pipelines.zig");
 const vk_allocator = @import("vulkan_allocator.zig");
 const vk_buffer_utils = @import("util/vulkan_buffer_utils.zig");
+const vk_texture_utils = @import("util/vulkan_texture_utils.zig");
 const vk_barrier_validation = @import("vulkan_barrier_validation.zig");
 const ref_counting = @import("../core/ref_counting.zig");
 const material_ref_counting = @import("../assets/material_ref_counting.zig");
@@ -1048,7 +1049,7 @@ pub export fn cardinal_renderer_upload_scene(renderer: ?*types.CardinalRenderer,
     destroy_scene_buffers(s);
 
     if (scene == null or scene.?.mesh_count == 0) {
-        log.cardinal_log_warn("[UPLOAD] No scene or zero meshes; aborting upload", .{});
+        log.cardinal_log_info("[UPLOAD] Scene cleared (no meshes)", .{});
         return;
     }
 

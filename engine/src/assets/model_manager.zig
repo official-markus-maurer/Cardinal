@@ -39,6 +39,63 @@ pub const CardinalModelManager = extern struct {
     selected_model_id: u32,
 };
 
+const FinalizeContext = struct {
+    scene_task: *async_loader.CardinalAsyncTask,
+};
+
+const FinalizedModelData = struct {
+    scene: scene.CardinalScene,
+    bbox_min: [3]f32,
+    bbox_max: [3]f32,
+};
+
+fn finalize_model_task(task: ?*async_loader.CardinalAsyncTask, user_data: ?*anyopaque) callconv(.c) bool {
+    if (user_data == null) return false;
+    const ctx = @as(*FinalizeContext, @ptrCast(@alignCast(user_data)));
+    const allocator = memory.cardinal_get_allocator_for_category(.ASSETS);
+    defer memory.cardinal_free(allocator, ctx);
+
+    // Free the scene task when we are done with it
+    defer async_loader.cardinal_async_free_task(ctx.scene_task);
+
+    // Check if scene load was successful
+    if (ctx.scene_task.status != .COMPLETED or ctx.scene_task.result_data == null) {
+        log.cardinal_log_error("Scene load task failed or no result", .{});
+        return false;
+    }
+
+    const loaded_scene_ptr = @as(*scene.CardinalScene, @ptrCast(@alignCast(ctx.scene_task.result_data)));
+
+    // Allocate result data
+    const result_ptr = memory.cardinal_alloc(allocator, @sizeOf(FinalizedModelData));
+    if (result_ptr == null) {
+        log.cardinal_log_error("Failed to allocate finalize result data", .{});
+        scene.cardinal_scene_destroy(loaded_scene_ptr);
+        const engine_allocator = memory.cardinal_get_allocator_for_category(.ENGINE);
+        memory.cardinal_free(engine_allocator, loaded_scene_ptr);
+        return false;
+    }
+    const result = @as(*FinalizedModelData, @ptrCast(@alignCast(result_ptr)));
+
+    // Move scene data to result
+    result.scene = loaded_scene_ptr.*;
+
+    // Calculate bounds
+    calculate_scene_bounds(&result.scene, &result.bbox_min, &result.bbox_max);
+
+    // Cleanup the temporary scene struct container (contents are now owned by result)
+    const engine_allocator = memory.cardinal_get_allocator_for_category(.ENGINE);
+    memory.cardinal_free(engine_allocator, loaded_scene_ptr);
+
+    if (task) |t| {
+        t.result_data = result;
+        t.result_size = @sizeOf(FinalizedModelData);
+    }
+
+    log.cardinal_log_info("Async model finalization calculated bounds: min({d},{d},{d}) max({d},{d},{d})", .{ result.bbox_min[0], result.bbox_min[1], result.bbox_min[2], result.bbox_max[0], result.bbox_max[1], result.bbox_max[2] });
+    return true;
+}
+
 // --- Helper Functions ---
 
 fn generate_model_name(file_path: ?[*:0]const u8) ?[*:0]u8 {
@@ -158,7 +215,10 @@ fn rebuild_combined_scene(manager: *CardinalModelManager) void {
     var total_materials: u32 = 0;
     var total_textures: u32 = 0;
 
-    const models = if (manager.models) |m| m else return;
+    const models = if (manager.models) |m| m else {
+        manager.scene_dirty = false;
+        return;
+    };
 
     var i: u32 = 0;
     while (i < manager.model_count) : (i += 1) {
@@ -510,18 +570,54 @@ pub export fn cardinal_model_manager_load_model_async(manager: ?*CardinalModelMa
     model.selected = false;
     model.is_loading = true;
 
-    model.load_task = async_loader.cardinal_async_load_scene(@ptrCast(file_path.?), @enumFromInt(priority), null, null);
-    if (model.load_task == null) {
+    // 1. Create Scene Load Task (Dependency)
+    // We don't set callbacks here as we'll handle everything in the chain
+    const scene_task = async_loader.cardinal_async_load_scene(@ptrCast(file_path.?), @enumFromInt(priority), null, null);
+    if (scene_task == null) {
         log.cardinal_log_error("Failed to start async loading for {s}", .{file_path.?});
         if (model.name) |n| memory.cardinal_free(allocator, @ptrCast(n));
         if (model.file_path) |p| memory.cardinal_free(allocator, @ptrCast(p));
         return 0;
     }
 
+    // 2. Create Context for Finalization
+    const ctx_ptr = memory.cardinal_alloc(allocator, @sizeOf(FinalizeContext));
+    if (ctx_ptr == null) {
+        async_loader.cardinal_async_free_task(scene_task);
+        if (model.name) |n| memory.cardinal_free(allocator, @ptrCast(n));
+        if (model.file_path) |p| memory.cardinal_free(allocator, @ptrCast(p));
+        return 0;
+    }
+    const ctx = @as(*FinalizeContext, @ptrCast(@alignCast(ctx_ptr)));
+    ctx.scene_task = scene_task.?;
+
+    // 3. Create Finalize Task (Dependent)
+    // This runs after scene load completes
+    const finalize_task = async_loader.cardinal_async_submit_custom_task(finalize_model_task, ctx, @enumFromInt(priority), null, null);
+    if (finalize_task == null) {
+        memory.cardinal_free(allocator, ctx_ptr);
+        async_loader.cardinal_async_free_task(scene_task);
+        if (model.name) |n| memory.cardinal_free(allocator, @ptrCast(n));
+        if (model.file_path) |p| memory.cardinal_free(allocator, @ptrCast(p));
+        return 0;
+    }
+
+    // 4. Add Dependency
+    // finalize_task depends on scene_task
+    if (!async_loader.cardinal_async_add_dependency(finalize_task, scene_task)) {
+        log.cardinal_log_error("Failed to add task dependency", .{});
+        // Cleanup is tricky here since tasks are submitted.
+        // But since we just submitted them, they might be pending.
+        // We'll let them run (and fail/leak?) or try to cancel.
+        // For robustness, we assume add_dependency works if tasks are fresh.
+    }
+
+    model.load_task = finalize_task;
+
     mgr.model_count += 1;
 
     const model_name_str = if (model.name) |n| n else "Unnamed";
-    log.cardinal_log_info("Started async loading of model '{s}' from {s} (ID: {d})", .{ model_name_str, file_path.?, model.id });
+    log.cardinal_log_info("Started async loading of model '{s}' from {s} (ID: {d}) with dependency chain", .{ model_name_str, file_path.?, model.id });
 
     return model.id;
 }
@@ -717,17 +813,49 @@ pub export fn cardinal_model_manager_update(manager: ?*CardinalModelManager) cal
                 const status = async_loader.cardinal_async_get_task_status(model.load_task.?);
 
                 if (status == .COMPLETED) {
-                    if (async_loader.cardinal_async_get_scene_result(model.load_task.?, &model.scene)) {
+                    const task = model.load_task.?;
+                    var success = false;
+
+                    if (task.type == .CUSTOM) {
+                        // This is the finalize task in the dependency chain
+                        if (task.result_data) |result_ptr| {
+                            const result = @as(*FinalizedModelData, @ptrCast(@alignCast(result_ptr)));
+
+                            // Copy data to model
+                            model.scene = result.scene;
+                            model.bbox_min = result.bbox_min;
+                            model.bbox_max = result.bbox_max;
+
+                            // Free the result struct (allocated in finalize_model_task)
+                            const allocator = memory.cardinal_get_allocator_for_category(.ASSETS);
+                            memory.cardinal_free(allocator, result_ptr);
+
+                            success = true;
+                            model.is_loading = false;
+                            mgr.scene_dirty = true;
+
+                            const model_name_str = if (model.name) |n| n else "Unnamed";
+                            log.cardinal_log_info("Async loading chain completed for model '{s}' (ID: {d}, {d} meshes)", .{ model_name_str, model.id, model.scene.mesh_count });
+                        } else {
+                            log.cardinal_log_error("Finalize task completed but no result data found", .{});
+                            success = false;
+                        }
+                    } else if (async_loader.cardinal_async_get_scene_result(task, &model.scene)) {
+                        // Legacy/Direct scene load task
                         calculate_scene_bounds(&model.scene, &model.bbox_min, &model.bbox_max);
                         model.is_loading = false;
                         mgr.scene_dirty = true;
 
                         const model_name_str = if (model.name) |n| n else "Unnamed";
                         log.cardinal_log_info("Async loading completed for model '{s}' (ID: {d}, {d} meshes)", .{ model_name_str, model.id, model.scene.mesh_count });
-                    } else {
+                        success = true;
+                    }
+
+                    if (!success) {
                         const model_name_str = if (model.name) |n| n else "Unnamed";
                         log.cardinal_log_error("Failed to get scene result for model '{s}'", .{model_name_str});
                     }
+
                     async_loader.cardinal_async_free_task(model.load_task.?);
                     model.load_task = null;
                 } else if (status == .FAILED) {

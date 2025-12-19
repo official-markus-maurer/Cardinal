@@ -30,31 +30,35 @@ fn create_pbr_descriptor_manager(pipeline: *types.VulkanPBRPipeline, device: c.V
     }
     pipeline.descriptorManager = @as(*types.VulkanDescriptorManager, @ptrCast(@alignCast(ptr)));
 
-    var bindings = [_]types.VulkanDescriptorBinding{
-        .{ .binding = 0, .descriptorType = c.VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, .descriptorCount = 1, .stageFlags = c.VK_SHADER_STAGE_VERTEX_BIT | c.VK_SHADER_STAGE_FRAGMENT_BIT, .pImmutableSamplers = null },
-        .{ .binding = 1, .descriptorType = c.VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, .descriptorCount = 1, .stageFlags = c.VK_SHADER_STAGE_FRAGMENT_BIT, .pImmutableSamplers = null },
-        .{ .binding = 2, .descriptorType = c.VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, .descriptorCount = 1, .stageFlags = c.VK_SHADER_STAGE_FRAGMENT_BIT, .pImmutableSamplers = null },
-        .{ .binding = 3, .descriptorType = c.VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, .descriptorCount = 1, .stageFlags = c.VK_SHADER_STAGE_FRAGMENT_BIT, .pImmutableSamplers = null },
-        .{ .binding = 4, .descriptorType = c.VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, .descriptorCount = 1, .stageFlags = c.VK_SHADER_STAGE_FRAGMENT_BIT, .pImmutableSamplers = null },
-        .{ .binding = 5, .descriptorType = c.VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, .descriptorCount = 1, .stageFlags = c.VK_SHADER_STAGE_FRAGMENT_BIT, .pImmutableSamplers = null },
-        .{ .binding = 6, .descriptorType = c.VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, .descriptorCount = 1, .stageFlags = c.VK_SHADER_STAGE_VERTEX_BIT, .pImmutableSamplers = null },
+    // Use DescriptorBuilder to configure bindings
+    var builder = descriptor_mgr.DescriptorBuilder.init(std.heap.page_allocator);
+    defer builder.deinit();
+
+    const bindings_added = blk: {
+        builder.add_binding(0, c.VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, 1, c.VK_SHADER_STAGE_VERTEX_BIT | c.VK_SHADER_STAGE_FRAGMENT_BIT) catch break :blk false;
+        builder.add_binding(1, c.VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1, c.VK_SHADER_STAGE_FRAGMENT_BIT) catch break :blk false;
+        builder.add_binding(2, c.VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1, c.VK_SHADER_STAGE_FRAGMENT_BIT) catch break :blk false;
+        builder.add_binding(3, c.VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1, c.VK_SHADER_STAGE_FRAGMENT_BIT) catch break :blk false;
+        builder.add_binding(4, c.VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1, c.VK_SHADER_STAGE_FRAGMENT_BIT) catch break :blk false;
+        builder.add_binding(5, c.VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1, c.VK_SHADER_STAGE_FRAGMENT_BIT) catch break :blk false;
+        builder.add_binding(6, c.VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, 1, c.VK_SHADER_STAGE_VERTEX_BIT) catch break :blk false;
         // Binding 7 removed
-        .{ .binding = 8, .descriptorType = c.VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, .descriptorCount = 1, .stageFlags = c.VK_SHADER_STAGE_FRAGMENT_BIT, .pImmutableSamplers = null },
-        .{ .binding = 9, .descriptorType = c.VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, .descriptorCount = 5000, .stageFlags = c.VK_SHADER_STAGE_FRAGMENT_BIT, .pImmutableSamplers = null },
+        builder.add_binding(8, c.VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, 1, c.VK_SHADER_STAGE_FRAGMENT_BIT) catch break :blk false;
+        builder.add_binding(9, c.VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 5000, c.VK_SHADER_STAGE_FRAGMENT_BIT) catch break :blk false;
+        break :blk true;
     };
 
+    if (!bindings_added) {
+        log.cardinal_log_error("Failed to add bindings to descriptor builder", .{});
+        memory.cardinal_free(mem_alloc, pipeline.descriptorManager);
+        pipeline.descriptorManager = null;
+        return false;
+    }
+
     const prefer_descriptor_buffers = false;
+    log.cardinal_log_info("Creating PBR descriptor manager with {d} max sets (prefer buffers: {s})", .{ 1000, if (prefer_descriptor_buffers) "true" else "false" });
 
-    var createInfo = std.mem.zeroes(descriptor_mgr.VulkanDescriptorManagerCreateInfo);
-    createInfo.bindings = &bindings;
-    createInfo.bindingCount = 9;
-    createInfo.maxSets = 1000;
-    createInfo.preferDescriptorBuffers = prefer_descriptor_buffers;
-    createInfo.poolFlags = c.VK_DESCRIPTOR_POOL_CREATE_FREE_DESCRIPTOR_SET_BIT | c.VK_DESCRIPTOR_POOL_CREATE_UPDATE_AFTER_BIND_BIT;
-
-    log.cardinal_log_info("Creating PBR descriptor manager with {d} max sets (prefer buffers: {s})", .{ createInfo.maxSets, if (prefer_descriptor_buffers) "true" else "false" });
-
-    if (!descriptor_mgr.vk_descriptor_manager_create(@ptrCast(pipeline.descriptorManager), device, @ptrCast(allocator), &createInfo, @ptrCast(vulkan_state))) {
+    if (!builder.build(pipeline.descriptorManager.?, device, @ptrCast(allocator), @ptrCast(vulkan_state), 1000, prefer_descriptor_buffers)) {
         log.cardinal_log_error("Failed to create descriptor manager!", .{});
         memory.cardinal_free(mem_alloc, pipeline.descriptorManager);
         pipeline.descriptorManager = null;

@@ -6,8 +6,8 @@ This document outlines areas for improvement, refactoring, and future extensions
 
 ### Memory Management
 - [x] **Standardize Allocators**: Move away from raw `malloc`/`free` in C++-interop code (e.g., `vulkan_pbr.zig`, `vulkan_renderer.zig`). Use Zig's allocator interface passed down from `Core`.
-- [ ] **Allocator Stats**: Add a debug overlay to show memory usage per category (Renderer, Assets, Scripting, etc.).
-- [ ] **Pool Allocators**: Implement pool allocators for frequent small objects (e.g., `SceneNode`, `CommandBuffers`).
+- [x] **Allocator Stats**: Add a debug overlay to show memory usage per category (Renderer, Assets, Scripting, etc.).
+- [x] **Pool Allocators**: Implement pool allocators for frequent small objects (e.g., `SceneNode`, `CommandBuffers`).
 
 ### Logging
 - [ ] **Structured Logging**: Improve the logging system to support structured data (JSON) for external tools.
@@ -22,7 +22,7 @@ This document outlines areas for improvement, refactoring, and future extensions
 ### Abstraction & Safety
 - [ ] **Vulkan Wrappers**: Reduce raw C-style Vulkan calls in high-level logic. Create safe Zig wrappers for `VkDevice`, `VkQueue`, `VkCommandBuffer`.
 - [ ] **Handle Safety**: Use typed handles (e.g., `TextureHandle`, `MeshHandle`) instead of raw pointers to avoid use-after-free and dangling pointers.
-- [ ] **Descriptor Management**: The manual descriptor binding in `vulkan_pbr.zig` is fragile. Implement a reflection-based or data-driven descriptor set layout system.
+- [x] **Descriptor Management**: The manual descriptor binding in `vulkan_pbr.zig` is fragile. Implement a reflection-based or data-driven descriptor set layout system.
 
 ### Features
 - [ ] **Bindless Textures**: The code hints at descriptor indexing (`descriptorCount = 5000` in `vulkan_pbr.zig`), but fully utilizing bindless resources would simplify material management.

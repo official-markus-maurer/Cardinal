@@ -126,7 +126,7 @@ fn stats_on_free(cat: CardinalMemoryCategory, size: usize) void {
     g_stats.total.free_count += 1;
 }
 
-export fn cardinal_memory_get_stats(out_stats: ?*CardinalGlobalMemoryStats) void {
+pub export fn cardinal_memory_get_stats(out_stats: ?*CardinalGlobalMemoryStats) void {
     if (out_stats) |s| {
         s.* = g_stats;
     }

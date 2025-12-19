@@ -15,6 +15,45 @@ pub const VulkanDescriptorManagerCreateInfo = extern struct {
     poolFlags: c.VkDescriptorPoolCreateFlags,
 };
 
+// --- Zig Builder API ---
+
+pub const DescriptorBuilder = struct {
+    bindings: std.ArrayListUnmanaged(types.VulkanDescriptorBinding),
+    allocator: std.mem.Allocator,
+
+    pub fn init(allocator: std.mem.Allocator) DescriptorBuilder {
+        return .{
+            .bindings = .{},
+            .allocator = allocator,
+        };
+    }
+
+    pub fn deinit(self: *DescriptorBuilder) void {
+        self.bindings.deinit(self.allocator);
+    }
+
+    pub fn add_binding(self: *DescriptorBuilder, binding: u32, descriptor_type: c.VkDescriptorType, count: u32, stage_flags: c.VkShaderStageFlags) !void {
+        try self.bindings.append(self.allocator, .{
+            .binding = binding,
+            .descriptorType = descriptor_type,
+            .descriptorCount = count,
+            .stageFlags = stage_flags,
+            .pImmutableSamplers = null,
+        });
+    }
+
+    pub fn build(self: *const DescriptorBuilder, manager: *types.VulkanDescriptorManager, device: c.VkDevice, allocator: *types.VulkanAllocator, vulkan_state: ?*types.VulkanState, max_sets: u32, prefer_buffers: bool) bool {
+        var createInfo = std.mem.zeroes(VulkanDescriptorManagerCreateInfo);
+        createInfo.bindings = self.bindings.items.ptr;
+        createInfo.bindingCount = @intCast(self.bindings.items.len);
+        createInfo.maxSets = max_sets;
+        createInfo.preferDescriptorBuffers = prefer_buffers;
+        createInfo.poolFlags = c.VK_DESCRIPTOR_POOL_CREATE_FREE_DESCRIPTOR_SET_BIT | c.VK_DESCRIPTOR_POOL_CREATE_UPDATE_AFTER_BIND_BIT;
+
+        return vk_descriptor_manager_create(manager, device, allocator, &createInfo, vulkan_state);
+    }
+};
+
 // Helper functions
 fn get_binding_descriptor_type(manager: *const types.VulkanDescriptorManager, binding: u32) c.VkDescriptorType {
     if (manager.bindings == null or manager.bindingCount == 0) {

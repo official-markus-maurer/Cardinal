@@ -62,6 +62,10 @@ pub const CardinalAsyncTask = extern struct {
 
     next: ?*CardinalAsyncTask,
     submit_time: u64,
+
+    // Dependency Graph
+    dependency_count: u32,
+    dependents: [8]?*CardinalAsyncTask,
 };
 
 pub const CardinalAsyncLoaderConfig = extern struct {
@@ -92,6 +96,7 @@ const AsyncLoaderState = struct {
     shutting_down: bool,
     config: CardinalAsyncLoaderConfig,
     pending_queue: TaskQueue,
+    waiting_queue: TaskQueue,
     completed_queue: TaskQueue,
     workers: ?[]WorkerThread,
     next_task_id: u32,
@@ -167,6 +172,39 @@ fn task_queue_pop(queue: *TaskQueue, wait: bool) ?*CardinalAsyncTask {
     }
 
     return null;
+}
+
+fn task_queue_remove(queue: *TaskQueue, task: *CardinalAsyncTask) bool {
+    queue.mutex.lock();
+    defer queue.mutex.unlock();
+
+    if (queue.head == null) return false;
+
+    if (queue.head == task) {
+        queue.head = task.next;
+        if (queue.head == null) {
+            queue.tail = null;
+        }
+        queue.count -= 1;
+        task.next = null;
+        return true;
+    }
+
+    var current = queue.head;
+    while (current) |c| {
+        if (c.next == task) {
+            c.next = task.next;
+            if (task == queue.tail) {
+                queue.tail = current;
+            }
+            queue.count -= 1;
+            task.next = null;
+            return true;
+        }
+        current = c.next;
+    }
+
+    return false;
 }
 
 fn task_queue_size(queue: *TaskQueue) u32 {
@@ -418,6 +456,23 @@ fn worker_thread_func(worker: *WorkerThread) void {
 
         _ = execute_task(t);
         _ = task_queue_push(&g_async_loader.completed_queue, t);
+
+        // Process dependencies
+        g_async_loader.state_mutex.lock();
+        for (t.dependents) |dependent_opt| {
+            if (dependent_opt) |dependent| {
+                if (dependent.dependency_count > 0) {
+                    dependent.dependency_count -= 1;
+                    if (dependent.dependency_count == 0) {
+                        // Move from waiting to pending
+                        if (task_queue_remove(&g_async_loader.waiting_queue, dependent)) {
+                            _ = task_queue_push(&g_async_loader.pending_queue, dependent);
+                        }
+                    }
+                }
+            }
+        }
+        g_async_loader.state_mutex.unlock();
     }
 
     std.log.debug("Worker thread {d} exiting", .{worker.thread_id});
@@ -450,6 +505,7 @@ pub export fn cardinal_async_loader_init(config: ?*const CardinalAsyncLoaderConf
 
     g_async_loader.state_mutex = .{};
     task_queue_init(&g_async_loader.pending_queue, g_async_loader.config.max_queue_size);
+    task_queue_init(&g_async_loader.waiting_queue, g_async_loader.config.max_queue_size);
     task_queue_init(&g_async_loader.completed_queue, 0);
 
     const allocator = memory.cardinal_get_allocator_for_category(.ENGINE);
@@ -509,6 +565,63 @@ pub export fn cardinal_async_loader_shutdown_immediate() callconv(.c) void {
 
 pub export fn cardinal_async_loader_is_initialized() callconv(.c) bool {
     return g_async_loader.initialized;
+}
+
+pub export fn cardinal_async_add_dependency(dependent: ?*CardinalAsyncTask, dependency: ?*CardinalAsyncTask) callconv(.c) bool {
+    if (!g_async_loader.initialized or dependent == null or dependency == null) return false;
+
+    const t_dependent = dependent.?;
+    const t_dependency = dependency.?;
+
+    // 1. Lock global state to ensure consistent moves
+    g_async_loader.state_mutex.lock();
+    defer g_async_loader.state_mutex.unlock();
+
+    // Check if dependency is already completed
+    if (t_dependency.status == .COMPLETED or t_dependency.status == .FAILED or t_dependency.status == .CANCELLED) {
+        return true; // Already done, no wait needed
+    }
+
+    // Check if dependent is already running or completed
+    if (t_dependent.status == .RUNNING or t_dependent.status == .COMPLETED or t_dependent.status == .FAILED or t_dependent.status == .CANCELLED) {
+        return false; // Too late to add dependency
+    }
+
+    // 2. Add dependent to dependency's list
+    // This is simple since we assume single-producer or locked add.
+    // Ideally we'd lock dependency task, but we are under global lock for now (simplification).
+    var added = false;
+    for (t_dependency.dependents, 0..) |slot, i| {
+        if (slot == null) {
+            t_dependency.dependents[i] = t_dependent;
+            added = true;
+            break;
+        }
+    }
+    if (!added) return false; // Max dependents reached
+
+    // 3. Move dependent from pending to waiting if needed
+    // If it was in pending queue (status PENDING), move it.
+    // If it was newly created but not submitted? We assume submitted tasks are in pending_queue.
+
+    // We try to remove from pending queue. If successful, it was there.
+    if (task_queue_remove(&g_async_loader.pending_queue, t_dependent)) {
+        // Add to waiting queue
+        if (!task_queue_push(&g_async_loader.waiting_queue, t_dependent)) {
+            // Should not happen if sizes match
+            // Fallback: put back in pending?
+            _ = task_queue_push(&g_async_loader.pending_queue, t_dependent);
+            return false;
+        }
+    } else {
+        // It might be in waiting queue already (multiple dependencies)
+        // Check if it's in waiting queue? task_queue_remove returns false if not found.
+        // If it's not in pending, and status is PENDING, it MUST be in waiting queue (or not submitted yet).
+        // Since we support adding deps before submission, we just increment counter.
+    }
+
+    t_dependent.dependency_count += 1;
+    return true;
 }
 
 pub export fn cardinal_async_load_texture(file_path: ?[*:0]const u8, priority: CardinalAsyncPriority, callback: CardinalAsyncCallback, user_data: ?*anyopaque) callconv(.c) ?*CardinalAsyncTask {

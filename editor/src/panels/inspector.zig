@@ -17,7 +17,7 @@ pub fn draw_inspector_panel(state: *EditorState) void {
             } else {
                 if (c.imgui_bridge_begin_child("##model_list", 0, 300, true, 0)) {
                     var i: u32 = 0;
-                    while (i < model_count) : (i += 1) {
+                    while (i < state.model_manager.model_count) {
                         const model_ptr = model_manager.cardinal_model_manager_get_model_by_index(&state.model_manager, i);
                         if (model_ptr) |model| {
                             c.imgui_bridge_push_id_int(@intCast(model.id));
@@ -25,7 +25,11 @@ pub fn draw_inspector_panel(state: *EditorState) void {
                             const is_selected = (state.selected_model_id == model.id);
                             const name = if (model.name) |n| std.mem.span(n) else "Unnamed Model";
 
-                            if (c.imgui_bridge_selectable(name.ptr, is_selected, 0)) {
+                            const avail_w = c.imgui_bridge_get_content_region_avail_x();
+                            const controls_w: f32 = 120.0; // Checkbox + Remove button + Spacing
+                            const label_w = if (avail_w > controls_w) avail_w - controls_w else 10.0;
+
+                            if (c.imgui_bridge_selectable_size(name.ptr, is_selected, 0, label_w, 0)) {
                                 state.selected_model_id = model.id;
                                 model_manager.cardinal_model_manager_set_selected(&state.model_manager, model.id);
                             }
@@ -46,7 +50,7 @@ pub fn draw_inspector_panel(state: *EditorState) void {
                                     state.selected_model_id = 0;
                                 }
                                 c.imgui_bridge_pop_id();
-                                break; // Modified array
+                                continue;
                             }
 
                             if (is_selected) {
@@ -92,6 +96,7 @@ pub fn draw_inspector_panel(state: *EditorState) void {
 
                             c.imgui_bridge_pop_id();
                         }
+                        i += 1;
                     }
                 }
                 c.imgui_bridge_end_child();
