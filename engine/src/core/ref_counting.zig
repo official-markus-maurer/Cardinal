@@ -22,7 +22,7 @@ pub const CardinalRefCountedResource = extern struct {
 };
 
 const CardinalResourceRegistry = extern struct {
-    buckets: ?[*] ?*CardinalRefCountedResource,
+    buckets: ?[*]?*CardinalRefCountedResource,
     bucket_count: usize,
     total_resources: u32,
 };
@@ -122,12 +122,12 @@ pub export fn cardinal_ref_counting_init(bucket_count: usize) callconv(.c) bool 
 
     const allocator = memory.cardinal_get_allocator_for_category(.ENGINE);
     const buckets = memory.cardinal_alloc(allocator, count * @sizeOf(?*CardinalRefCountedResource));
-    
+
     if (buckets == null) {
         std.log.err("Failed to allocate memory for resource registry buckets", .{});
         return false;
     }
-    
+
     g_registry.buckets = @ptrCast(@alignCast(buckets));
     @memset(g_registry.buckets.?[0..count], null);
 

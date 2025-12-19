@@ -144,9 +144,7 @@ pub export fn vk_bindless_texture_pool_init(pool: ?*types.BindlessTexturePool, v
         },
     };
 
-    if (!vk_create_variable_descriptor_layout(p.device, 2, &bindings,
-                                              CARDINAL_BINDLESS_TEXTURE_BINDING, max_textures,
-                                              &p.descriptor_layout)) {
+    if (!vk_create_variable_descriptor_layout(p.device, 2, &bindings, CARDINAL_BINDLESS_TEXTURE_BINDING, max_textures, &p.descriptor_layout)) {
         c.vkDestroySampler(p.device, p.default_sampler, null);
         memory.cardinal_free(mem_alloc, p.textures);
         memory.cardinal_free(mem_alloc, p.free_indices);
@@ -165,9 +163,7 @@ pub export fn vk_bindless_texture_pool_init(pool: ?*types.BindlessTexturePool, v
     }
 
     // Allocate descriptor set
-    if (!vk_allocate_variable_descriptor_set(p.device, p.descriptor_pool,
-                                             p.descriptor_layout, max_textures,
-                                             &p.descriptor_set)) {
+    if (!vk_allocate_variable_descriptor_set(p.device, p.descriptor_pool, p.descriptor_layout, max_textures, &p.descriptor_set)) {
         c.vkDestroyDescriptorPool(p.device, p.descriptor_pool, null);
         c.vkDestroyDescriptorSetLayout(p.device, p.descriptor_layout, null);
         c.vkDestroySampler(p.device, p.default_sampler, null);
@@ -219,9 +215,7 @@ pub export fn vk_bindless_texture_pool_destroy(pool: ?*types.BindlessTexturePool
     log.cardinal_log_info("Bindless texture pool destroyed", .{});
 }
 
-pub export fn vk_bindless_texture_allocate(pool: ?*types.BindlessTexturePool,
-                                  create_info: ?*const types.BindlessTextureCreateInfo,
-                                  out_index: ?*u32) callconv(.c) bool {
+pub export fn vk_bindless_texture_allocate(pool: ?*types.BindlessTexturePool, create_info: ?*const types.BindlessTextureCreateInfo, out_index: ?*u32) callconv(.c) bool {
     if (pool == null or create_info == null or out_index == null) {
         log.cardinal_log_error("Invalid parameters for bindless texture allocation", .{});
         return false;
@@ -278,7 +272,8 @@ pub export fn vk_bindless_texture_allocate(pool: ?*types.BindlessTexturePool,
     var j: u32 = 0;
     while (j < mem_properties.memoryTypeCount) : (j += 1) {
         if ((mem_requirements.memoryTypeBits & (@as(u32, 1) << @intCast(j))) != 0 and
-            (mem_properties.memoryTypes[j].propertyFlags & c.VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT) != 0) {
+            (mem_properties.memoryTypes[j].propertyFlags & c.VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT) != 0)
+        {
             memory_type_index = j;
             break;
         }
@@ -392,9 +387,7 @@ pub export fn vk_bindless_texture_free(pool: ?*types.BindlessTexturePool, textur
     log.cardinal_log_debug("Freed bindless texture at index {d}", .{texture_index});
 }
 
-pub export fn vk_bindless_texture_update_data(pool: ?*types.BindlessTexturePool, texture_index: u32,
-                                     data: ?*const anyopaque, data_size: c.VkDeviceSize,
-                                     command_buffer: c.VkCommandBuffer) callconv(.c) bool {
+pub export fn vk_bindless_texture_update_data(pool: ?*types.BindlessTexturePool, texture_index: u32, data: ?*const anyopaque, data_size: c.VkDeviceSize, command_buffer: c.VkCommandBuffer) callconv(.c) bool {
     _ = pool;
     _ = texture_index;
     _ = data;
@@ -510,10 +503,10 @@ pub export fn vk_bindless_texture_flush_updates(pool: ?*types.BindlessTexturePoo
     return true;
 }
 
-pub export fn vk_bindless_texture_get(pool: ?*const types.BindlessTexturePool,
-                                               texture_index: u32) callconv(.c) ?*const types.BindlessTexture {
+pub export fn vk_bindless_texture_get(pool: ?*const types.BindlessTexturePool, texture_index: u32) callconv(.c) ?*const types.BindlessTexture {
     if (pool == null or texture_index >= pool.?.max_textures or
-        !pool.?.textures.?[texture_index].is_allocated) {
+        !pool.?.textures.?[texture_index].is_allocated)
+    {
         return null;
     }
     return &pool.?.textures.?[texture_index];
@@ -523,11 +516,7 @@ pub export fn vk_descriptor_indexing_supported(vulkan_state: ?*const types.Vulka
     return vulkan_state != null and vulkan_state.?.context.supports_descriptor_indexing;
 }
 
-pub export fn vk_create_variable_descriptor_layout(device: c.VkDevice, binding_count: u32,
-                                          bindings: [*c]const c.VkDescriptorSetLayoutBinding,
-                                          variable_binding_index: u32,
-                                          max_variable_count: u32,
-                                          out_layout: ?*c.VkDescriptorSetLayout) callconv(.c) bool {
+pub export fn vk_create_variable_descriptor_layout(device: c.VkDevice, binding_count: u32, bindings: [*c]const c.VkDescriptorSetLayoutBinding, variable_binding_index: u32, max_variable_count: u32, out_layout: ?*c.VkDescriptorSetLayout) callconv(.c) bool {
     _ = max_variable_count;
     if (device == null or bindings == null or out_layout == null) {
         log.cardinal_log_error("Invalid parameters for variable descriptor layout creation", .{});
@@ -546,8 +535,8 @@ pub export fn vk_create_variable_descriptor_layout(device: c.VkDevice, binding_c
 
     // Set flags for variable binding
     binding_flags[variable_binding_index] = c.VK_DESCRIPTOR_BINDING_VARIABLE_DESCRIPTOR_COUNT_BIT |
-                                            c.VK_DESCRIPTOR_BINDING_UPDATE_AFTER_BIND_BIT |
-                                            c.VK_DESCRIPTOR_BINDING_PARTIALLY_BOUND_BIT;
+        c.VK_DESCRIPTOR_BINDING_UPDATE_AFTER_BIND_BIT |
+        c.VK_DESCRIPTOR_BINDING_PARTIALLY_BOUND_BIT;
 
     // Set update-after-bind flag for other bindings if needed
     var i: u32 = 0;
@@ -581,9 +570,7 @@ pub export fn vk_create_variable_descriptor_layout(device: c.VkDevice, binding_c
     return true;
 }
 
-pub export fn vk_allocate_variable_descriptor_set(device: c.VkDevice, descriptor_pool: c.VkDescriptorPool,
-                                         layout: c.VkDescriptorSetLayout, variable_count: u32,
-                                         out_set: ?*c.VkDescriptorSet) callconv(.c) bool {
+pub export fn vk_allocate_variable_descriptor_set(device: c.VkDevice, descriptor_pool: c.VkDescriptorPool, layout: c.VkDescriptorSetLayout, variable_count: u32, out_set: ?*c.VkDescriptorSet) callconv(.c) bool {
     if (device == null or descriptor_pool == null or layout == null or out_set == null) {
         log.cardinal_log_error("Invalid parameters for variable descriptor set allocation", .{});
         return false;

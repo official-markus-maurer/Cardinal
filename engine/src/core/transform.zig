@@ -33,27 +33,27 @@ pub export fn cardinal_matrix_from_trs(translation: ?*const [3]f32, rotation: ?*
     const t = if (translation) |tr| Vec3.fromArray(tr.*) else Vec3.zero();
     const r = if (rotation) |rot| Quat.fromArray(rot.*) else Quat.identity();
     const s = if (scale) |sc| Vec3.fromArray(sc.*) else Vec3.one();
-    
+
     const m = Mat4.fromTRS(t, r, s);
     matrix.* = m.data;
 }
 
-pub export fn cardinal_matrix_decompose(matrix: *const [16]f32, translation: ?* [3]f32, rotation: ?* [4]f32, scale: ?* [3]f32) callconv(.c) bool {
+pub export fn cardinal_matrix_decompose(matrix: *const [16]f32, translation: ?*[3]f32, rotation: ?*[4]f32, scale: ?*[3]f32) callconv(.c) bool {
     const m = Mat4.fromArray(matrix.*);
     const result = m.decompose();
-    
+
     if (translation) |t| {
         t.* = result.t.toArray();
     }
-    
+
     if (scale) |s| {
         s.* = result.s.toArray();
     }
-    
+
     if (rotation) |r| {
         r.* = result.r.toArray();
     }
-    
+
     return true;
 }
 
@@ -77,7 +77,7 @@ pub export fn cardinal_matrix_transpose(matrix: *const [16]f32, result: *[16]f32
 pub export fn cardinal_transform_point(matrix: *const [16]f32, point: *const [3]f32, result: *[3]f32) callconv(.c) void {
     const m = Mat4.fromArray(matrix.*);
     const p = Vec3.fromArray(point.*);
-    
+
     // TODO: Temporary inline implementation
     const x = p.x;
     const y = p.y;
@@ -90,7 +90,7 @@ pub export fn cardinal_transform_point(matrix: *const [16]f32, point: *const [3]
 pub export fn cardinal_transform_vector(matrix: *const [16]f32, vector: *const [3]f32, result: *[3]f32) callconv(.c) void {
     const m = Mat4.fromArray(matrix.*);
     const v = Vec3.fromArray(vector.*);
-    
+
     const x = v.x;
     const y = v.y;
     const z = v.z;
@@ -100,17 +100,16 @@ pub export fn cardinal_transform_vector(matrix: *const [16]f32, vector: *const [
 }
 
 pub export fn cardinal_transform_normal(matrix: *const [16]f32, normal: *const [3]f32, result: *[3]f32) callconv(.c) void {
-    
     var inv_transpose: [9]f32 = undefined;
     const m = matrix.*;
 
     // Extract 3x3 upper-left matrix
-    const mat3 = [9]f32{m[0], m[1], m[2], m[4], m[5], m[6], m[8], m[9], m[10]};
+    const mat3 = [9]f32{ m[0], m[1], m[2], m[4], m[5], m[6], m[8], m[9], m[10] };
 
     // Calculate determinant
     const det = mat3[0] * (mat3[4] * mat3[8] - mat3[5] * mat3[7]) -
-                mat3[1] * (mat3[3] * mat3[8] - mat3[5] * mat3[6]) +
-                mat3[2] * (mat3[3] * mat3[7] - mat3[4] * mat3[6]);
+        mat3[1] * (mat3[3] * mat3[8] - mat3[5] * mat3[6]) +
+        mat3[2] * (mat3[3] * mat3[7] - mat3[4] * mat3[6]);
 
     if (@abs(det) < FLT_EPSILON) {
         cardinal_transform_vector(matrix, normal, result);
@@ -182,7 +181,7 @@ pub export fn cardinal_quaternion_normalize(quaternion: *[4]f32) callconv(.c) vo
 
 pub export fn cardinal_quaternion_to_matrix3(quaternion: *const [4]f32, matrix: *[9]f32) callconv(.c) void {
     const q = Quat.fromArray(quaternion.*);
-    
+
     // Same logic as Mat4.fromTRS but only 3x3
     const x = q.x;
     const y = q.y;

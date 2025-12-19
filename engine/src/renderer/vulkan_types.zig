@@ -180,7 +180,7 @@ pub const PBRMaterialProperties = extern struct {
     metallicFactor: f32,
     roughnessFactor: f32,
     emissiveFactor: [4]f32, // vec4 in shader (xyz + padding/roughness) - shader uses separate float for roughness but zig struct might pack it
-    
+
     normalScale: f32,
     aoStrength: f32,
     albedoTextureIndex: u32,
@@ -193,42 +193,42 @@ pub const PBRMaterialProperties = extern struct {
 
 pub const PBRPushConstants = extern struct {
     modelMatrix: math.Mat4,
-    
+
     // Material data (offset 64)
     // vec4 albedoAndMetallic;
     albedoFactor: [3]f32,
     metallicFactor: f32,
-    
+
     // vec4 emissiveAndRoughness;
     emissiveFactor: [3]f32,
     roughnessFactor: f32,
-    
+
     normalScale: f32,
     aoStrength: f32,
-    
+
     albedoTextureIndex: u32,
     normalTextureIndex: u32,
     metallicRoughnessTextureIndex: u32,
     aoTextureIndex: u32,
     emissiveTextureIndex: u32,
-    
+
     flags: u32,
     alphaCutoff: f32,
-    
+
     _pad3: u32,
-    
+
     albedoTransform: PBRTextureTransform,
     _padding1: f32,
-    
+
     normalTransform: PBRTextureTransform,
     _padding2: f32,
-    
+
     metallicRoughnessTransform: PBRTextureTransform,
     _padding3: f32,
-    
+
     aoTransform: PBRTextureTransform,
     _padding4: f32,
-    
+
     emissiveTransform: PBRTextureTransform,
     _padding5: f32,
 };
@@ -299,7 +299,7 @@ pub const VulkanDescriptorManager = extern struct {
     descriptorBufferSize: c.VkDeviceSize,
     descriptorBuffer: VulkanBuffer,
     allocator: ?*VulkanAllocator,
-    
+
     // Additional fields found in usage
     descriptorSets: ?[*]c.VkDescriptorSet,
     descriptorSetCount: u32,
@@ -335,7 +335,7 @@ pub const VulkanContext = extern struct {
     graphics_queue_family: u32,
     descriptor_buffer_uniform_buffer_size: c.VkDeviceSize,
     descriptor_buffer_combined_image_sampler_size: c.VkDeviceSize,
-    
+
     vkGetDescriptorSetLayoutSizeEXT: c.PFN_vkGetDescriptorSetLayoutSizeEXT,
     vkGetDescriptorSetLayoutBindingOffsetEXT: c.PFN_vkGetDescriptorSetLayoutBindingOffsetEXT,
     vkGetBufferDeviceAddress: c.PFN_vkGetBufferDeviceAddress,
@@ -348,19 +348,19 @@ pub const VulkanContext = extern struct {
     vkGetImageViewOpaqueCaptureDescriptorDataEXT: c.PFN_vkGetImageViewOpaqueCaptureDescriptorDataEXT,
     vkGetSamplerOpaqueCaptureDescriptorDataEXT: c.PFN_vkGetSamplerOpaqueCaptureDescriptorDataEXT,
     vkGetSemaphoreCounterValue: c.PFN_vkGetSemaphoreCounterValue,
-    
+
     supports_descriptor_indexing: bool,
     debug_messenger: c.VkDebugUtilsMessengerEXT,
     present_queue: c.VkQueue,
     vkCmdBeginRendering: c.PFN_vkCmdBeginRendering,
     vkCmdEndRendering: c.PFN_vkCmdEndRendering,
     vkWaitSemaphores: c.PFN_vkWaitSemaphores,
-    
+
     vkGetDeviceBufferMemoryRequirements: c.PFN_vkGetDeviceBufferMemoryRequirements,
     vkGetDeviceImageMemoryRequirements: c.PFN_vkGetDeviceImageMemoryRequirements,
     vkGetDeviceBufferMemoryRequirementsKHR: c.PFN_vkGetDeviceBufferMemoryRequirementsKHR,
     vkGetDeviceImageMemoryRequirementsKHR: c.PFN_vkGetDeviceImageMemoryRequirementsKHR,
-    
+
     supports_maintenance8: bool,
     supports_descriptor_buffer: bool,
     descriptor_buffer_extension_available: bool,
@@ -400,7 +400,7 @@ pub const VulkanSwapchain = extern struct {
     frame_pacing_enabled: bool,
     last_recreation_time: u64,
     depth_image_view: c.VkImageView,
-    
+
     depth_image: c.VkImage,
     depth_image_memory: c.VkDeviceMemory,
     depth_image_allocation: c.VmaAllocation,
@@ -509,14 +509,14 @@ pub const VulkanTextureManager = extern struct {
     commandPool: c.VkCommandPool,
     graphicsQueue: c.VkQueue,
     syncManager: ?*VulkanSyncManager,
-    
+
     textures: ?[*]VulkanManagedTexture,
     textureCount: u32,
     textureCapacity: u32,
-    
+
     defaultSampler: c.VkSampler,
     initialized: bool,
-    
+
     manager_mutex: cardinal_mutex_t,
     hasPlaceholder: bool,
 };
@@ -590,20 +590,20 @@ pub const BindlessTexturePool = extern struct {
     device: c.VkDevice,
     physical_device: c.VkPhysicalDevice,
     allocator: *VulkanAllocator,
-    
+
     textures: ?[*]BindlessTexture,
     max_textures: u32,
     allocated_count: u32,
-    
+
     free_indices: ?[*]u32,
     free_count: u32,
-    
+
     descriptor_pool: c.VkDescriptorPool,
     descriptor_layout: c.VkDescriptorSetLayout,
     descriptor_set: c.VkDescriptorSet,
-    
+
     default_sampler: c.VkSampler,
-    
+
     // Pending updates for flush
     pending_updates: ?[*]u32,
     pending_update_count: u32,
@@ -617,7 +617,7 @@ pub const MeshShaderPipelineConfig = extern struct {
     fragment_shader_path: ?[*:0]const u8, // Using 'fragment_' to match likely usage or just 'frag_'? Checked code: cfg.fragment_shader_path in vulkan_mesh_shader.zig:107
     max_vertices_per_meshlet: u32,
     max_primitives_per_meshlet: u32,
-    
+
     polygon_mode: c.VkPolygonMode,
     cull_mode: c.VkCullModeFlags,
     front_face: c.VkFrontFace,
@@ -699,7 +699,7 @@ pub const VulkanPipelines = extern struct {
     simple_descriptor_layout: c.VkDescriptorSetLayout,
     pbr_pipeline: VulkanPBRPipeline,
     use_pbr_pipeline: bool,
-    
+
     use_mesh_shader_pipeline: bool,
     compute_shader_initialized: bool,
     simple_uniform_buffer: c.VkBuffer,
@@ -713,7 +713,7 @@ pub const VulkanPipelines = extern struct {
 
     wireframe_pipeline: c.VkPipeline,
     wireframe_pipeline_layout: c.VkPipelineLayout,
-    
+
     compute_descriptor_pool: c.VkDescriptorPool,
     compute_command_pool: c.VkCommandPool,
     compute_command_buffer: c.VkCommandBuffer,
@@ -725,7 +725,7 @@ pub const VulkanPBRPipeline = extern struct {
     descriptorSetLayout: c.VkDescriptorSetLayout,
     descriptorPool: c.VkDescriptorPool,
     descriptorSet: c.VkDescriptorSet,
-    
+
     vertexBuffer: c.VkBuffer,
     vertexBufferMemory: c.VkDeviceMemory,
     vertexBufferAllocation: c.VmaAllocation,
@@ -735,10 +735,10 @@ pub const VulkanPBRPipeline = extern struct {
     lightingBuffer: c.VkBuffer,
     lightingBufferMemory: c.VkDeviceMemory,
     lightingBufferAllocation: c.VmaAllocation,
-    
+
     textureManager: ?*VulkanTextureManager,
     descriptorManager: ?*VulkanDescriptorManager,
-    
+
     initialized: bool,
     supportsDescriptorIndexing: bool,
     uniformBuffer: c.VkBuffer,
@@ -746,14 +746,14 @@ pub const VulkanPBRPipeline = extern struct {
     uniformBufferAllocation: c.VmaAllocation,
     uniformBufferMapped: ?*anyopaque,
     boneMatricesBufferMapped: ?*anyopaque,
-    
+
     totalIndexCount: u32,
     materialBuffer: c.VkBuffer,
     materialBufferMemory: c.VkDeviceMemory,
     materialBufferAllocation: c.VmaAllocation,
     lightingBufferMapped: ?*anyopaque,
     pipelineBlend: c.VkPipeline,
-    
+
     materialBufferMapped: ?*anyopaque,
     boneMatricesBuffer: c.VkBuffer,
     boneMatricesBufferMemory: c.VkDeviceMemory,
@@ -771,7 +771,7 @@ pub const VulkanState = extern struct {
     allocator: VulkanAllocator,
     descriptor_manager: VulkanDescriptorManager,
     pipelines: VulkanPipelines,
-    
+
     pending_cleanup_lists: ?[*]?[*]MeshShaderDrawData,
     pending_cleanup_counts: ?[*]u32,
     pending_cleanup_capacities: ?[*]u32,
@@ -781,10 +781,10 @@ pub const VulkanState = extern struct {
     current_scene: ?*CardinalScene,
     scene_meshes: ?[*]GpuMesh,
     scene_mesh_count: u32,
-    
+
     pending_scene_upload: ?*anyopaque,
     scene_upload_pending: bool,
-    ui_record_callback: ?*const fn(c.VkCommandBuffer) callconv(.c) void,
+    ui_record_callback: ?*const fn (c.VkCommandBuffer) callconv(.c) void,
 };
 
 // Secondary Command Context (from texture manager usage)

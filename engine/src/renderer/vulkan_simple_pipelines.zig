@@ -10,7 +10,6 @@ const material_utils = @import("util/vulkan_material_utils.zig");
 
 const c = @import("vulkan_c.zig").c;
 
-
 const SimpleUniformBufferObject = extern struct {
     model: [16]f32,
     view: [16]f32,
@@ -119,7 +118,8 @@ fn create_simple_pipeline(s: *types.VulkanState, vertShaderPath: [*c]const u8, f
     var fragShaderModule: c.VkShaderModule = null;
 
     if (!shader_utils.vk_shader_create_module(s.context.device, vertShaderPath, &vertShaderModule) or
-        !shader_utils.vk_shader_create_module(s.context.device, fragShaderPath, &fragShaderModule)) {
+        !shader_utils.vk_shader_create_module(s.context.device, fragShaderPath, &fragShaderModule))
+    {
         log.cardinal_log_error("Failed to load simple pipeline shaders", .{});
         if (vertShaderModule != null) c.vkDestroyShaderModule(s.context.device, vertShaderModule, null);
         if (fragShaderModule != null) c.vkDestroyShaderModule(s.context.device, fragShaderModule, null);
@@ -207,7 +207,7 @@ fn create_simple_pipeline(s: *types.VulkanState, vertShaderPath: [*c]const u8, f
 
     var colorBlendAttachment = std.mem.zeroes(c.VkPipelineColorBlendAttachmentState);
     colorBlendAttachment.colorWriteMask = c.VK_COLOR_COMPONENT_R_BIT | c.VK_COLOR_COMPONENT_G_BIT |
-                                          c.VK_COLOR_COMPONENT_B_BIT | c.VK_COLOR_COMPONENT_A_BIT;
+        c.VK_COLOR_COMPONENT_B_BIT | c.VK_COLOR_COMPONENT_A_BIT;
     colorBlendAttachment.blendEnable = c.VK_FALSE;
 
     var colorBlending = std.mem.zeroes(c.VkPipelineColorBlendStateCreateInfo);
@@ -386,8 +386,7 @@ pub export fn vk_update_simple_uniforms(s: ?*types.VulkanState, model: ?*const f
     @memcpy(ubo.view[0..16], @as([*]const f32, @ptrCast(view))[0..16]);
     @memcpy(ubo.proj[0..16], @as([*]const f32, @ptrCast(proj))[0..16]);
 
-    @memcpy(@as([*]u8, @ptrCast(vs.pipelines.simple_uniform_buffer_mapped))[0..@sizeOf(SimpleUniformBufferObject)], 
-            @as([*]const u8, @ptrCast(&ubo))[0..@sizeOf(SimpleUniformBufferObject)]);
+    @memcpy(@as([*]u8, @ptrCast(vs.pipelines.simple_uniform_buffer_mapped))[0..@sizeOf(SimpleUniformBufferObject)], @as([*]const u8, @ptrCast(&ubo))[0..@sizeOf(SimpleUniformBufferObject)]);
 }
 
 pub export fn vk_render_simple(s: ?*types.VulkanState, commandBuffer: c.VkCommandBuffer, pipeline: c.VkPipeline, pipelineLayout: c.VkPipelineLayout) callconv(.c) void {
@@ -399,14 +398,14 @@ pub export fn vk_render_simple(s: ?*types.VulkanState, commandBuffer: c.VkComman
     // Use PBR buffers if available
     if (!vs.pipelines.use_pbr_pipeline or !vs.pipelines.pbr_pipeline.initialized) return;
     const pipe = &vs.pipelines.pbr_pipeline;
-    
+
     if (pipe.vertexBuffer == null or pipe.indexBuffer == null) return;
 
     c.vkCmdBindPipeline(commandBuffer, c.VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline);
     c.vkCmdBindDescriptorSets(commandBuffer, c.VK_PIPELINE_BIND_POINT_GRAPHICS, pipelineLayout, 0, 1, &vs.pipelines.simple_descriptor_set, 0, null);
 
-    const vertexBuffers = [_]c.VkBuffer{ pipe.vertexBuffer };
-    const offsets = [_]c.VkDeviceSize{ 0 };
+    const vertexBuffers = [_]c.VkBuffer{pipe.vertexBuffer};
+    const offsets = [_]c.VkDeviceSize{0};
     c.vkCmdBindVertexBuffers(commandBuffer, 0, 1, &vertexBuffers, &offsets);
     c.vkCmdBindIndexBuffer(commandBuffer, pipe.indexBuffer, 0, c.VK_INDEX_TYPE_UINT32);
 
@@ -416,7 +415,7 @@ pub export fn vk_render_simple(s: ?*types.VulkanState, commandBuffer: c.VkComman
     while (i < scn.mesh_count) : (i += 1) {
         if (scn.meshes) |meshes| {
             const mesh = &meshes[i];
-            
+
             if (!mesh.visible) {
                 indexOffset += mesh.index_count;
                 continue;

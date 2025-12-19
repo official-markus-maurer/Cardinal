@@ -40,9 +40,7 @@ fn create_depth_resources(s: *types.VulkanState) bool {
     imageInfo.sharingMode = c.VK_SHARING_MODE_EXCLUSIVE;
 
     // Use VulkanAllocator to allocate and bind image + memory
-    if (!vk_allocator.vk_allocator_allocate_image(&s.allocator, &imageInfo, &s.swapchain.depth_image,
-                                     &s.swapchain.depth_image_memory, &s.swapchain.depth_image_allocation,
-                                     c.VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT)) {
+    if (!vk_allocator.vk_allocator_allocate_image(&s.allocator, &imageInfo, &s.swapchain.depth_image, &s.swapchain.depth_image_memory, &s.swapchain.depth_image_allocation, c.VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT)) {
         log.cardinal_log_error("pipeline: allocator failed to create depth image", .{});
         return false;
     }

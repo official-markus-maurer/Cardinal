@@ -219,8 +219,7 @@ pub export fn vulkan_timeline_debug_log_event(debug_ctx: *types.VulkanTimelineDe
     if (debug_ctx.verbose_logging) {
         const name_slice = if (name != null) std.mem.span(name) else "<unnamed>";
         const type_str = std.mem.span(vulkan_timeline_debug_event_type_to_string(type_enum));
-        log.cardinal_log_debug("[TIMELINE_DEBUG] {s}: value={d}, result={d}, thread={d}, name={s}", 
-            .{type_str, timeline_value, result, event.thread_id, name_slice});
+        log.cardinal_log_debug("[TIMELINE_DEBUG] {s}: value={d}, result={d}, thread={d}, name={s}", .{ type_str, timeline_value, result, event.thread_id, name_slice });
     }
 }
 
@@ -236,18 +235,19 @@ pub export fn vulkan_timeline_debug_log_wait_end(debug_ctx: *types.VulkanTimelin
 
     const current_index = @atomicLoad(u32, &debug_ctx.event_write_index, .seq_cst);
     const event_count = @atomicLoad(u32, &debug_ctx.event_count, .seq_cst);
-    
+
     var i: u32 = 0;
     while (i < types.VULKAN_TIMELINE_DEBUG_MAX_EVENTS and i < event_count) : (i += 1) {
         // Handle wrapping manually since % operator behavior on negative numbers in C vs Zig might differ or just be safe
-        // (current_index - 1 - i) can underflow u32, but wrapping arithmetic is fine for modulo if power of 2, 
+        // (current_index - 1 - i) can underflow u32, but wrapping arithmetic is fine for modulo if power of 2,
         // but MAX_EVENTS is 1000.
         // Let's do it safely:
         const check_index = (current_index + types.VULKAN_TIMELINE_DEBUG_MAX_EVENTS - 1 - i) % types.VULKAN_TIMELINE_DEBUG_MAX_EVENTS;
         const event = &debug_ctx.events[check_index];
 
         if (event.type == types.VULKAN_TIMELINE_EVENT_WAIT_START and event.timeline_value == value and
-            event.thread_id == vulkan_timeline_debug_get_thread_id() and event.duration_ns == 0) {
+            event.thread_id == vulkan_timeline_debug_get_thread_id() and event.duration_ns == 0)
+        {
             event.duration_ns = duration_ns;
             break;
         }
@@ -277,7 +277,8 @@ pub export fn vulkan_timeline_debug_log_signal_end(debug_ctx: *types.VulkanTimel
         const event = &debug_ctx.events[check_index];
 
         if (event.type == types.VULKAN_TIMELINE_EVENT_SIGNAL_START and event.timeline_value == value and
-            event.thread_id == vulkan_timeline_debug_get_thread_id() and event.duration_ns == 0) {
+            event.thread_id == vulkan_timeline_debug_get_thread_id() and event.duration_ns == 0)
+        {
             event.duration_ns = duration_ns;
             break;
         }
@@ -303,7 +304,7 @@ pub export fn vulkan_timeline_debug_update_wait_metrics(debug_ctx: *types.Vulkan
     var current_max = @atomicLoad(u64, &debug_ctx.metrics.max_wait_time_ns, .seq_cst);
     while (duration_ns > current_max) {
         if (@atomicRmw(u64, &debug_ctx.metrics.max_wait_time_ns, .Xchg, duration_ns, .seq_cst) == current_max) {
-             break;
+            break;
         }
         current_max = @atomicLoad(u64, &debug_ctx.metrics.max_wait_time_ns, .seq_cst);
     }
@@ -354,8 +355,7 @@ pub export fn vulkan_timeline_debug_take_snapshot(debug_ctx: *types.VulkanTimeli
     debug_mutex_unlock(debug_ctx.mutex);
 
     if (debug_ctx.verbose_logging) {
-        log.cardinal_log_debug("[TIMELINE_DEBUG] Snapshot taken: value={d}, valid={s}",
-            .{snapshot.current_value, if (snapshot.is_valid) "true" else "false"});
+        log.cardinal_log_debug("[TIMELINE_DEBUG] Snapshot taken: value={d}, valid={s}", .{ snapshot.current_value, if (snapshot.is_valid) "true" else "false" });
     }
 }
 
@@ -425,14 +425,14 @@ pub export fn vulkan_timeline_debug_print_performance_report(debug_ctx: *types.V
 
     if (metrics.total_waits > 0) {
         const avg_wait = metrics.total_wait_time_ns / metrics.total_waits;
-        log.cardinal_log_info("[TIMELINE_DEBUG] Average wait time: {d} ns ({d:.3} ms)", .{avg_wait, @as(f64, @floatFromInt(avg_wait)) / 1000000.0});
-        log.cardinal_log_info("[TIMELINE_DEBUG] Max wait time: {d} ns ({d:.3} ms)", .{metrics.max_wait_time_ns, @as(f64, @floatFromInt(metrics.max_wait_time_ns)) / 1000000.0});
+        log.cardinal_log_info("[TIMELINE_DEBUG] Average wait time: {d} ns ({d:.3} ms)", .{ avg_wait, @as(f64, @floatFromInt(avg_wait)) / 1000000.0 });
+        log.cardinal_log_info("[TIMELINE_DEBUG] Max wait time: {d} ns ({d:.3} ms)", .{ metrics.max_wait_time_ns, @as(f64, @floatFromInt(metrics.max_wait_time_ns)) / 1000000.0 });
     }
 
     if (metrics.total_signals > 0) {
         const avg_signal = metrics.total_signal_time_ns / metrics.total_signals;
-        log.cardinal_log_info("[TIMELINE_DEBUG] Average signal time: {d} ns ({d:.3} ms)", .{avg_signal, @as(f64, @floatFromInt(avg_signal)) / 1000000.0});
-        log.cardinal_log_info("[TIMELINE_DEBUG] Max signal time: {d} ns ({d:.3} ms)", .{metrics.max_signal_time_ns, @as(f64, @floatFromInt(metrics.max_signal_time_ns)) / 1000000.0});
+        log.cardinal_log_info("[TIMELINE_DEBUG] Average signal time: {d} ns ({d:.3} ms)", .{ avg_signal, @as(f64, @floatFromInt(avg_signal)) / 1000000.0 });
+        log.cardinal_log_info("[TIMELINE_DEBUG] Max signal time: {d} ns ({d:.3} ms)", .{ metrics.max_signal_time_ns, @as(f64, @floatFromInt(metrics.max_signal_time_ns)) / 1000000.0 });
     }
 
     log.cardinal_log_info("[TIMELINE_DEBUG] Timeouts: {d}", .{metrics.timeout_count});
@@ -447,7 +447,7 @@ pub export fn vulkan_timeline_debug_print_event_summary(debug_ctx: *types.Vulkan
     log.cardinal_log_info("[TIMELINE_DEBUG] Total events recorded: {d}", .{event_count});
 
     var type_counts: [9]u32 = std.mem.zeroes([9]u32);
-    
+
     // Allocate temp buffer
     const events = std.heap.c_allocator.alloc(types.VulkanTimelineDebugEvent, event_count) catch return;
     defer std.heap.c_allocator.free(events);
@@ -467,7 +467,7 @@ pub export fn vulkan_timeline_debug_print_event_summary(debug_ctx: *types.Vulkan
     while (i < 9) : (i += 1) {
         if (type_counts[i] > 0) {
             const type_str = std.mem.span(vulkan_timeline_debug_event_type_to_string(@as(types.VulkanTimelineEventType, @enumFromInt(i))));
-            log.cardinal_log_info("[TIMELINE_DEBUG] {s}: {d}", .{type_str, type_counts[i]});
+            log.cardinal_log_info("[TIMELINE_DEBUG] {s}: {d}", .{ type_str, type_counts[i] });
         }
     }
 
@@ -498,13 +498,13 @@ pub export fn vulkan_timeline_debug_export_events_csv(debug_ctx: *types.VulkanTi
         return false;
     }
     const fname = std.mem.span(filename);
-    
+
     const file = std.fs.cwd().createFile(fname, .{}) catch |err| {
-        log.cardinal_log_error("[TIMELINE_DEBUG] Failed to open file for CSV export: {s} (error: {any})", .{fname, err});
+        log.cardinal_log_error("[TIMELINE_DEBUG] Failed to open file for CSV export: {s} (error: {any})", .{ fname, err });
         return false;
     };
     defer file.close();
-    
+
     file.writeAll("timestamp_ns,type,timeline_value,duration_ns,result,thread_id,name,details\n") catch return false;
 
     const event_count = vulkan_timeline_debug_get_event_count(debug_ctx);
@@ -519,18 +519,9 @@ pub export fn vulkan_timeline_debug_export_events_csv(debug_ctx: *types.VulkanTi
             const ev = events[i];
             const name = std.mem.span(@as([*:0]const u8, @ptrCast(&ev.name)));
             const details = std.mem.span(@as([*:0]const u8, @ptrCast(&ev.details)));
-            
-            const line = std.fmt.bufPrint(&buf, "{d},{s},{d},{d},{d},{d},\"{s}\",\"{s}\"\n", .{
-                ev.timestamp_ns,
-                std.mem.span(vulkan_timeline_debug_event_type_to_string(ev.type)),
-                ev.timeline_value,
-                ev.duration_ns,
-                ev.result,
-                ev.thread_id,
-                name,
-                details
-            }) catch return false;
-            
+
+            const line = std.fmt.bufPrint(&buf, "{d},{s},{d},{d},{d},{d},\"{s}\",\"{s}\"\n", .{ ev.timestamp_ns, std.mem.span(vulkan_timeline_debug_event_type_to_string(ev.type)), ev.timeline_value, ev.duration_ns, ev.result, ev.thread_id, name, details }) catch return false;
+
             file.writeAll(line) catch return false;
         }
     }
@@ -548,16 +539,15 @@ pub export fn vulkan_timeline_debug_export_performance_json(debug_ctx: *types.Vu
         return false;
     }
     const fname = std.mem.span(filename);
-    
+
     const file = std.fs.cwd().createFile(fname, .{}) catch |err| {
-        log.cardinal_log_error("[TIMELINE_DEBUG] Failed to open file for JSON export: {s} (error: {any})", .{fname, err});
+        log.cardinal_log_error("[TIMELINE_DEBUG] Failed to open file for JSON export: {s} (error: {any})", .{ fname, err });
         return false;
     };
     defer file.close();
 
     var buf: [4096]u8 = undefined;
-    const json_str = std.fmt.bufPrint(&buf,
-        "{{\n" ++
+    const json_str = std.fmt.bufPrint(&buf, "{{\n" ++
         "  \"total_waits\": {d},\n" ++
         "  \"total_signals\": {d},\n" ++
         "  \"total_wait_time_ns\": {d},\n" ++
@@ -567,19 +557,7 @@ pub export fn vulkan_timeline_debug_export_performance_json(debug_ctx: *types.Vu
         "  \"timeout_count\": {d},\n" ++
         "  \"error_count\": {d},\n" ++
         "  \"recovery_count\": {d}\n" ++
-        "}}\n",
-        .{
-            metrics.total_waits,
-            metrics.total_signals,
-            metrics.total_wait_time_ns,
-            metrics.total_signal_time_ns,
-            metrics.max_wait_time_ns,
-            metrics.max_signal_time_ns,
-            metrics.timeout_count,
-            metrics.error_count,
-            metrics.recovery_count
-        }
-    ) catch return false;
+        "}}\n", .{ metrics.total_waits, metrics.total_signals, metrics.total_wait_time_ns, metrics.total_signal_time_ns, metrics.max_wait_time_ns, metrics.max_signal_time_ns, metrics.timeout_count, metrics.error_count, metrics.recovery_count }) catch return false;
 
     file.writeAll(json_str) catch return false;
 

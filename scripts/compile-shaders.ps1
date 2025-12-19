@@ -1,10 +1,11 @@
 # Compile all shaders script
 # This script compiles all GLSL shaders to SPIR-V format
 
+$projectRoot = Resolve-Path "$PSScriptRoot\.."
 Write-Host "Compiling shaders..."
 
 # Set working directory to assets/shaders
-Set-Location "assets\shaders"
+Set-Location "$projectRoot\assets\shaders"
 
 # Use project-relative output directory
 $outputDir = (Get-Location).Path
@@ -93,4 +94,4 @@ if ($LASTEXITCODE -eq 0) {
 Write-Host "Shader compilation complete!"
 
 # Return to original directory
-Set-Location "..\.."
+Set-Location $projectRoot

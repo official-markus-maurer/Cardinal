@@ -6,7 +6,7 @@ const c = @cImport({
     @cInclude("stdio.h");
     @cDefine("GLFW_INCLUDE_NONE", {});
     @cInclude("GLFW/glfw3.h");
-    
+
     if (builtin.os.tag == .windows) {
         @cInclude("windows.h");
         @cDefine("GLFW_EXPOSE_NATIVE_WIN32", {});
@@ -30,13 +30,13 @@ pub const CardinalWindow = extern struct {
     should_close: bool,
     // Mutex
     mutex: if (builtin.os.tag == .windows) c.CRITICAL_SECTION else c.pthread_mutex_t,
-    
+
     resize_pending: bool,
     new_width: u32,
     new_height: u32,
     is_minimized: bool,
     was_minimized: bool,
-    
+
     resize_callback: ?*const fn (u32, u32, ?*anyopaque) callconv(.c) void,
     resize_user_data: ?*anyopaque,
 };
@@ -67,7 +67,7 @@ fn window_iconify_callback(window: ?*c.GLFWwindow, iconified: c_int) callconv(.c
     if (win) |w| {
         w.was_minimized = w.is_minimized;
         w.is_minimized = (iconified == c.GLFW_TRUE);
-        
+
         if (w.was_minimized and !w.is_minimized) {
             var width: c_int = 0;
             var height: c_int = 0;
@@ -89,24 +89,24 @@ fn window_iconify_callback(window: ?*c.GLFWwindow, iconified: c_int) callconv(.c
 // Exported functions
 pub export fn cardinal_window_create(config: *const CardinalWindowConfig) callconv(.c) ?*CardinalWindow {
     std.log.info("cardinal_window_create: begin", .{});
-    
+
     if (c.glfwInit() == c.GLFW_FALSE) {
         std.log.err("GLFW init failed", .{});
         return null;
     }
-    
+
     _ = c.glfwSetErrorCallback(glfw_error_callback);
-    
+
     c.glfwWindowHint(c.GLFW_CLIENT_API, c.GLFW_NO_API);
     c.glfwWindowHint(c.GLFW_RESIZABLE, if (config.resizable) c.GLFW_TRUE else c.GLFW_FALSE);
-    
+
     const handle = c.glfwCreateWindow(@intCast(config.width), @intCast(config.height), config.title, null, null);
     if (handle == null) {
         std.log.err("GLFW create window failed", .{});
         c.glfwTerminate();
         return null;
     }
-    
+
     const win_ptr = c.malloc(@sizeOf(CardinalWindow));
     if (win_ptr == null) {
         c.glfwDestroyWindow(handle);
@@ -116,16 +116,16 @@ pub export fn cardinal_window_create(config: *const CardinalWindowConfig) callco
     const win = @as(*CardinalWindow, @ptrCast(@alignCast(win_ptr)));
     // Initialize struct to zero
     win.* = std.mem.zeroes(CardinalWindow);
-    
+
     win.handle = handle;
     win.width = config.width;
     win.height = config.height;
     win.should_close = false;
-    
+
     c.glfwSetWindowUserPointer(handle, win);
     _ = c.glfwSetFramebufferSizeCallback(handle, framebuffer_resize_callback);
     _ = c.glfwSetWindowIconifyCallback(handle, window_iconify_callback);
-    
+
     if (builtin.os.tag == .windows) {
         c.InitializeCriticalSection(&win.mutex);
     } else {
@@ -136,7 +136,7 @@ pub export fn cardinal_window_create(config: *const CardinalWindowConfig) callco
             return null;
         }
     }
-    
+
     std.log.info("cardinal_window_create: success", .{});
     return win;
 }
@@ -148,10 +148,10 @@ pub export fn cardinal_window_poll(window: ?*CardinalWindow) callconv(.c) void {
         } else {
             _ = c.pthread_mutex_lock(&win.mutex);
         }
-        
+
         c.glfwPollEvents();
         win.should_close = (c.glfwWindowShouldClose(win.handle) != 0);
-        
+
         if (builtin.os.tag == .windows) {
             c.LeaveCriticalSection(&win.mutex);
         } else {
@@ -174,13 +174,13 @@ pub export fn cardinal_window_destroy(window: ?*CardinalWindow) callconv(.c) voi
         } else {
             _ = c.pthread_mutex_lock(&win.mutex);
         }
-        
+
         if (win.handle) |h| {
             c.glfwDestroyWindow(h);
             win.handle = null;
         }
         c.glfwTerminate();
-        
+
         if (builtin.os.tag == .windows) {
             c.LeaveCriticalSection(&win.mutex);
             c.DeleteCriticalSection(&win.mutex);
@@ -188,7 +188,7 @@ pub export fn cardinal_window_destroy(window: ?*CardinalWindow) callconv(.c) voi
             _ = c.pthread_mutex_unlock(&win.mutex);
             _ = c.pthread_mutex_destroy(&win.mutex);
         }
-        
+
         c.free(win);
     }
 }

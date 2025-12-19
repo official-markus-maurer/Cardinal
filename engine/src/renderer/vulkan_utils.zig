@@ -67,7 +67,7 @@ fn check_result(result: c.VkResult, operation_name: ?[*:0]const u8) bool {
     if (result != c.VK_SUCCESS) {
         const op = if (operation_name) |name| std.mem.span(name) else "Unknown operation";
         const res_str = std.mem.span(vk_utils_result_string(result));
-        log.cardinal_log_error("Vulkan operation failed: {s} (Result: {s})", .{op, res_str});
+        log.cardinal_log_error("Vulkan operation failed: {s} (Result: {s})", .{ op, res_str });
         return false;
     }
     return true;
@@ -155,7 +155,7 @@ pub export fn vk_utils_allocate(size: usize, operation_name: ?[*:0]const u8) cal
 
     const ptr = c.malloc(size);
     if (ptr == null) {
-        log.cardinal_log_error("Failed to allocate {d} bytes for operation: {s}", .{size, if (operation_name) |op| std.mem.span(op) else "unknown"});
+        log.cardinal_log_error("Failed to allocate {d} bytes for operation: {s}", .{ size, if (operation_name) |op| std.mem.span(op) else "unknown" });
         return null;
     }
 
@@ -173,7 +173,7 @@ pub export fn vk_utils_reallocate(ptr: ?*anyopaque, size: usize, operation_name:
 
     const new_ptr = c.realloc(ptr, size);
     if (new_ptr == null) {
-        log.cardinal_log_error("Failed to reallocate to {d} bytes for operation: {s}", .{size, if (operation_name) |op| std.mem.span(op) else "unknown"});
+        log.cardinal_log_error("Failed to reallocate to {d} bytes for operation: {s}", .{ size, if (operation_name) |op| std.mem.span(op) else "unknown" });
         return null;
     }
 

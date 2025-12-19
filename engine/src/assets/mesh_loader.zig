@@ -93,21 +93,21 @@ fn mesh_cache_put(mesh_id: [:0]const u8, resource: *ref_counting.CardinalRefCoun
         // Remove tail (FIFO/LRU approximation)
         var prev: ?*MeshCacheEntry = null;
         var curr = g_mesh_cache.entries;
-        
+
         // Find tail
         while (curr) |c| {
             if (c.next == null) break;
             prev = c;
             curr = c.next;
         }
-        
+
         if (curr) |to_remove| {
             if (prev) |p| {
                 p.next = null;
             } else {
                 g_mesh_cache.entries = null;
             }
-            
+
             memory.cardinal_free(allocator, @ptrCast(@constCast(to_remove.mesh_id.ptr)));
             ref_counting.cardinal_ref_release(to_remove.resource);
             memory.cardinal_free(allocator, to_remove);
@@ -127,7 +127,7 @@ fn mesh_cache_put(mesh_id: [:0]const u8, resource: *ref_counting.CardinalRefCoun
         memory.cardinal_free(allocator, new_entry);
         return;
     }
-    
+
     @memcpy(@as([*]u8, @ptrCast(id_copy_ptr))[0..id_len], mesh_id);
     @as([*]u8, @ptrCast(id_copy_ptr))[id_len] = 0;
     new_entry.mesh_id = @as([*:0]const u8, @ptrCast(id_copy_ptr))[0..id_len :0];
@@ -188,7 +188,7 @@ fn generate_mesh_id(mesh: scene.CardinalMesh) ?[:0]const u8 {
         };
         // formatted includes the \x00 at the end.
         // Return slice excluding the \x00 but with sentinel
-        return @as([*:0]const u8, @ptrCast(b))[0..formatted.len-1 :0];
+        return @as([*:0]const u8, @ptrCast(b))[0 .. formatted.len - 1 :0];
     }
     return null;
 }
@@ -197,12 +197,12 @@ fn mesh_data_destructor(data: ?*anyopaque) callconv(.c) void {
     if (data) |d| {
         const mesh: *scene.CardinalMesh = @ptrCast(@alignCast(d));
         const allocator = memory.cardinal_get_allocator_for_category(.ASSETS);
-        
+
         if (mesh.vertices) |v| {
-             memory.cardinal_free(allocator, v);
+            memory.cardinal_free(allocator, v);
         }
         if (mesh.indices) |i| {
-             memory.cardinal_free(allocator, i);
+            memory.cardinal_free(allocator, i);
         }
         memory.cardinal_free(allocator, mesh);
     }
@@ -232,7 +232,7 @@ pub export fn mesh_load_with_ref_counting(mesh_data: ?*const scene.CardinalMesh,
     if (mesh_cache_get(mesh_id)) |ref_resource| {
         const existing_mesh: *scene.CardinalMesh = @ptrCast(@alignCast(ref_resource.resource.?));
         out_mesh.?.* = existing_mesh.*;
-        log.cardinal_log_debug("[MESH] Reusing cached mesh: {s} (ref_count={d})", .{mesh_id, ref_counting.cardinal_ref_get_count(ref_resource)});
+        log.cardinal_log_debug("[MESH] Reusing cached mesh: {s} (ref_count={d})", .{ mesh_id, ref_counting.cardinal_ref_get_count(ref_resource) });
         return ref_resource;
     }
 
@@ -241,7 +241,7 @@ pub export fn mesh_load_with_ref_counting(mesh_data: ?*const scene.CardinalMesh,
         const existing_mesh: *scene.CardinalMesh = @ptrCast(@alignCast(ref_resource.resource.?));
         out_mesh.?.* = existing_mesh.*;
         mesh_cache_put(mesh_id, ref_resource);
-        log.cardinal_log_debug("[MESH] Reusing registry mesh: {s} (ref_count={d})", .{mesh_id, ref_counting.cardinal_ref_get_count(ref_resource)});
+        log.cardinal_log_debug("[MESH] Reusing registry mesh: {s} (ref_count={d})", .{ mesh_id, ref_counting.cardinal_ref_get_count(ref_resource) });
         return ref_resource;
     }
 
@@ -289,8 +289,8 @@ pub export fn mesh_load_with_ref_counting(mesh_data: ?*const scene.CardinalMesh,
     const ref_resource = ref_counting.cardinal_ref_create(mesh_id.ptr, mesh_copy, @sizeOf(scene.CardinalMesh), mesh_data_destructor);
     if (ref_resource == null) {
         log.cardinal_log_error("Failed to register mesh: {s}", .{mesh_id});
-         if (mesh_copy.vertices) |v| memory.cardinal_free(allocator, v);
-         if (mesh_copy.indices) |i| memory.cardinal_free(allocator, i);
+        if (mesh_copy.vertices) |v| memory.cardinal_free(allocator, v);
+        if (mesh_copy.indices) |i| memory.cardinal_free(allocator, i);
         memory.cardinal_free(allocator, mesh_copy);
         return null;
     }
@@ -298,7 +298,7 @@ pub export fn mesh_load_with_ref_counting(mesh_data: ?*const scene.CardinalMesh,
     mesh_cache_put(mesh_id, ref_resource.?);
     out_mesh.?.* = mesh_copy.*;
 
-    log.cardinal_log_info("[MESH] Registered new mesh: vertices={d}, indices={d}", .{mesh_data.?.vertex_count, mesh_data.?.index_count});
+    log.cardinal_log_info("[MESH] Registered new mesh: vertices={d}, indices={d}", .{ mesh_data.?.vertex_count, mesh_data.?.index_count });
     return ref_resource;
 }
 
@@ -331,7 +331,7 @@ pub export fn mesh_load_async(mesh_data: ?*const scene.CardinalMesh, priority: a
     }
 
     log.cardinal_log_debug("[MESH] Starting async load for mesh", .{});
-    
+
     // In C: return cardinal_async_load_mesh(mesh_data, priority, callback, user_data);
     return async_loader.cardinal_async_load_mesh(mesh_data, priority, callback, user_data);
 }

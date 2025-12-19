@@ -18,13 +18,13 @@ pub fn build(b: *std.Build) void {
         }),
         .linkage = .static,
     });
-    
+
     glfw.linkLibC();
     glfw.addIncludePath(b.path("libs/glfw/include"));
     glfw.addIncludePath(b.path("libs/glfw/src")); // for internal headers
-    
+
     glfw.root_module.addCMacro("_GLFW_WIN32", "");
-    
+
     const glfw_sources = &[_][]const u8{
         "libs/glfw/src/context.c",
         "libs/glfw/src/init.c",
@@ -48,12 +48,12 @@ pub fn build(b: *std.Build) void {
         "libs/glfw/src/null_window.c",
         "libs/glfw/src/null_joystick.c",
     };
-    
+
     glfw.addCSourceFiles(.{
         .files = glfw_sources,
         .flags = &.{},
     });
-    
+
     glfw.linkSystemLibrary("gdi32");
     glfw.linkSystemLibrary("user32");
     glfw.linkSystemLibrary("shell32");
@@ -69,12 +69,12 @@ pub fn build(b: *std.Build) void {
         }),
         .linkage = .static,
     });
-    
+
     imgui.linkLibCpp();
     imgui.addIncludePath(b.path("libs/imgui"));
     imgui.addIncludePath(b.path("libs/imgui/backends"));
     imgui.addIncludePath(b.path("libs/glfw/include"));
-    
+
     if (vulkan_sdk) |sdk| {
         imgui.addIncludePath(.{ .cwd_relative = b.fmt("{s}/Include", .{sdk}) });
     }
@@ -88,12 +88,12 @@ pub fn build(b: *std.Build) void {
         "libs/imgui/backends/imgui_impl_glfw.cpp",
         "libs/imgui/backends/imgui_impl_vulkan.cpp",
     };
-    
+
     imgui.addCSourceFiles(.{
         .files = imgui_sources,
         .flags = &.{"-std=c++20"},
     });
-    
+
     imgui.root_module.addCMacro("IMGUI_DISABLE_OBSOLETE_FUNCTIONS", "");
     imgui.root_module.addCMacro("IMGUI_ENABLE_DOCKING", "");
 
@@ -108,17 +108,17 @@ pub fn build(b: *std.Build) void {
         }),
         .linkage = .static,
     });
-    
+
     engine.linkLibC();
-    engine.linkLibCpp(); 
-    
+    engine.linkLibCpp();
+
     engine.addIncludePath(b.path("engine/src"));
     engine.addIncludePath(b.path("engine/src/renderer"));
     engine.addIncludePath(b.path("libs/cgltf"));
     engine.addIncludePath(b.path("libs/stb"));
     engine.addIncludePath(b.path("libs/spdlog/include"));
     engine.addIncludePath(b.path("libs/glfw/include"));
-    
+
     if (vulkan_sdk) |sdk| {
         engine.addIncludePath(.{ .cwd_relative = b.fmt("{s}/Include", .{sdk}) });
     }
@@ -131,8 +131,8 @@ pub fn build(b: *std.Build) void {
 
     // Generate C implementation files
     const gen_c_files = b.addWriteFiles();
-    
-    const stb_impl_c = gen_c_files.add("stb_impl.c", 
+
+    const stb_impl_c = gen_c_files.add("stb_impl.c",
         \\#define STB_IMAGE_IMPLEMENTATION
         \\#define STBI_NO_HDR
         \\#define STBI_NO_PSD
@@ -145,7 +145,7 @@ pub fn build(b: *std.Build) void {
         \\#include "stb_image.h"
     );
 
-    const cgltf_impl_c = gen_c_files.add("cgltf_impl.c", 
+    const cgltf_impl_c = gen_c_files.add("cgltf_impl.c",
         \\#define CGLTF_IMPLEMENTATION
         \\#include "cgltf.h"
     );
@@ -187,7 +187,7 @@ pub fn build(b: *std.Build) void {
             .root_source_file = b.path("client/src/main.zig"),
         }),
     });
-    
+
     client.addIncludePath(b.path("libs/cgltf"));
     client.addIncludePath(b.path("libs/stb"));
 
@@ -205,7 +205,7 @@ pub fn build(b: *std.Build) void {
     //     .files = engine_sources,
     //     .flags = &.{"-std=c17"},
     // });
-    
+
     b.installArtifact(client);
 
     // =========================================================================
@@ -219,9 +219,9 @@ pub fn build(b: *std.Build) void {
             .root_source_file = b.path("editor/src/main.zig"),
         }),
     });
-    
+
     editor.root_module.addImport("cardinal_engine", engine.root_module);
-    
+
     editor.addCSourceFiles(.{
         .files = &.{"editor/src/imgui_bridge.cpp"},
         .flags = &.{"-std=c++20"},
@@ -233,11 +233,11 @@ pub fn build(b: *std.Build) void {
     editor.addIncludePath(b.path("libs/imgui"));
     editor.addIncludePath(b.path("libs/imgui/backends"));
     editor.addIncludePath(b.path("libs/glfw/include"));
-    
+
     editor.root_module.addCMacro("GLFW_INCLUDE_VULKAN", "");
     editor.root_module.addCMacro("IMGUI_DISABLE_OBSOLETE_FUNCTIONS", "");
     editor.root_module.addCMacro("IMGUI_ENABLE_DOCKING", "");
-    
+
     editor.linkLibCpp();
     // editor.linkLibrary(engine); // Use module import instead to avoid duplicate symbols
     editor.linkLibrary(imgui);
@@ -252,7 +252,7 @@ pub fn build(b: *std.Build) void {
     //     .files = engine_sources,
     //     .flags = &.{"-std=c17"},
     // });
-    
+
     b.installArtifact(editor);
 
     // =========================================================================

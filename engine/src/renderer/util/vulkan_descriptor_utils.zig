@@ -123,8 +123,7 @@ pub export fn vk_descriptor_create_pbr_layout(device: c.VkDevice, descriptorSetL
     return true;
 }
 
-pub export fn vk_descriptor_create_pool(device: c.VkDevice, maxSets: u32, maxTextures: u32,
-                               descriptorPool: ?*c.VkDescriptorPool) callconv(.c) bool {
+pub export fn vk_descriptor_create_pool(device: c.VkDevice, maxSets: u32, maxTextures: u32, descriptorPool: ?*c.VkDescriptorPool) callconv(.c) bool {
     if (device == null or descriptorPool == null) {
         log.cardinal_log_error("Invalid parameters for descriptor pool creation", .{});
         return false;
@@ -157,10 +156,7 @@ pub export fn vk_descriptor_create_pool(device: c.VkDevice, maxSets: u32, maxTex
     return true;
 }
 
-pub export fn vk_descriptor_allocate_sets(device: c.VkDevice, descriptorPool: c.VkDescriptorPool,
-                                 descriptorSetLayout: c.VkDescriptorSetLayout, setCount: u32,
-                                 variableDescriptorCount: u32,
-                                 descriptorSets: ?*c.VkDescriptorSet) callconv(.c) bool {
+pub export fn vk_descriptor_allocate_sets(device: c.VkDevice, descriptorPool: c.VkDescriptorPool, descriptorSetLayout: c.VkDescriptorSetLayout, setCount: u32, variableDescriptorCount: u32, descriptorSets: ?*c.VkDescriptorSet) callconv(.c) bool {
     if (device == null or descriptorPool == null or descriptorSetLayout == null or descriptorSets == null) {
         log.cardinal_log_error("Invalid parameters for descriptor set allocation", .{});
         return false;
@@ -214,10 +210,7 @@ pub export fn vk_descriptor_allocate_sets(device: c.VkDevice, descriptorPool: c.
     return true;
 }
 
-pub export fn vk_descriptor_update_sets(device: c.VkDevice, descriptorSet: c.VkDescriptorSet,
-                               uniformBuffer: c.VkBuffer, uniformBufferSize: c.VkDeviceSize,
-                               lightingBuffer: c.VkBuffer, lightingBufferSize: c.VkDeviceSize,
-                               imageViews: ?[*]c.VkImageView, sampler: c.VkSampler, imageCount: u32) callconv(.c) void {
+pub export fn vk_descriptor_update_sets(device: c.VkDevice, descriptorSet: c.VkDescriptorSet, uniformBuffer: c.VkBuffer, uniformBufferSize: c.VkDeviceSize, lightingBuffer: c.VkBuffer, lightingBufferSize: c.VkDeviceSize, imageViews: ?[*]c.VkImageView, sampler: c.VkSampler, imageCount: u32) callconv(.c) void {
     if (device == null or descriptorSet == null) {
         log.cardinal_log_error("Invalid parameters for descriptor set update", .{});
         return;

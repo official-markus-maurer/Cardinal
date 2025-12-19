@@ -47,7 +47,7 @@ fn vk_recover_from_device_loss(s: *types.VulkanState) bool {
     s.recovery.recovery_in_progress = true;
     s.recovery.attempt_count += 1;
 
-    log.cardinal_log_warn("[RECOVERY] Attempting device loss recovery (attempt {d}/{d})", .{s.recovery.attempt_count, s.recovery.max_attempts});
+    log.cardinal_log_warn("[RECOVERY] Attempting device loss recovery (attempt {d}/{d})", .{ s.recovery.attempt_count, s.recovery.max_attempts });
 
     // Notify application of device loss
     if (s.recovery.device_loss_callback) |callback| {
@@ -127,19 +127,14 @@ fn vk_recover_from_device_loss(s: *types.VulkanState) bool {
 
     // Recreate PBR pipeline if it was enabled
     if (success and stored_scene != null) {
-        if (!vk_pbr.vk_pbr_pipeline_create(&s.pipelines.pbr_pipeline, s.context.device,
-                                    s.context.physical_device, s.swapchain.format,
-                                    s.swapchain.depth_format, s.commands.pools.?[0],
-                                    s.context.graphics_queue, &s.allocator, s)) {
+        if (!vk_pbr.vk_pbr_pipeline_create(&s.pipelines.pbr_pipeline, s.context.device, s.context.physical_device, s.swapchain.format, s.swapchain.depth_format, s.commands.pools.?[0], s.context.graphics_queue, &s.allocator, s)) {
             failure_point = "PBR pipeline";
             success = false;
         } else {
             s.pipelines.use_pbr_pipeline = true;
 
             // Reload scene into PBR pipeline
-            if (!vk_pbr.vk_pbr_load_scene(&s.pipelines.pbr_pipeline, s.context.device,
-                                   s.context.physical_device, s.commands.pools.?[0],
-                                   s.context.graphics_queue, stored_scene, &s.allocator, s)) {
+            if (!vk_pbr.vk_pbr_load_scene(&s.pipelines.pbr_pipeline, s.context.device, s.context.physical_device, s.commands.pools.?[0], s.context.graphics_queue, stored_scene, &s.allocator, s)) {
                 failure_point = "PBR scene reload";
                 success = false;
             }
@@ -158,11 +153,11 @@ fn vk_recover_from_device_loss(s: *types.VulkanState) bool {
         var task_path: [512]u8 = undefined;
         var mesh_path: [512]u8 = undefined;
         var frag_path: [512]u8 = undefined;
-        
+
         _ = std.fmt.bufPrintZ(&task_path, "{s}/task.task.spv", .{shaders_dir}) catch unreachable;
         _ = std.fmt.bufPrintZ(&mesh_path, "{s}/mesh.mesh.spv", .{shaders_dir}) catch unreachable;
         _ = std.fmt.bufPrintZ(&frag_path, "{s}/mesh.frag.spv", .{shaders_dir}) catch unreachable;
-        
+
         config.task_shader_path = @ptrCast(&task_path);
         config.mesh_shader_path = @ptrCast(&mesh_path);
         config.fragment_shader_path = @ptrCast(&frag_path);
@@ -175,10 +170,8 @@ fn vk_recover_from_device_loss(s: *types.VulkanState) bool {
         config.depth_test_enable = true;
         config.depth_write_enable = true;
         config.depth_compare_op = c.VK_COMPARE_OP_LESS;
-        
-        if (!vk_mesh_shader.vk_mesh_shader_create_pipeline(s, &config,
-                                          s.swapchain.format, s.swapchain.depth_format,
-                                          &s.pipelines.mesh_shader_pipeline)) {
+
+        if (!vk_mesh_shader.vk_mesh_shader_create_pipeline(s, &config, s.swapchain.format, s.swapchain.depth_format, &s.pipelines.mesh_shader_pipeline)) {
             log.cardinal_log_error("Failed to initialize mesh shader pipeline", .{});
             failure_point = "mesh shader pipeline";
             success = false;
@@ -301,7 +294,7 @@ fn wait_for_fence(s: *types.VulkanState) bool {
                 if (s.recovery.attempt_count < s.recovery.max_attempts)
                     _ = vk_recover_from_device_loss(s);
             } else {
-                log.cardinal_log_error("[SYNC] Frame {d}: Fence wait failed: {d}", .{s.sync.current_frame, wait_res});
+                log.cardinal_log_error("[SYNC] Frame {d}: Fence wait failed: {d}", .{ s.sync.current_frame, wait_res });
             }
             return false;
         }
@@ -311,7 +304,7 @@ fn wait_for_fence(s: *types.VulkanState) bool {
             if (s.recovery.attempt_count < s.recovery.max_attempts)
                 _ = vk_recover_from_device_loss(s);
         } else {
-            log.cardinal_log_error("[SYNC] Frame {d}: Fence status check failed: {d}", .{s.sync.current_frame, fence_status});
+            log.cardinal_log_error("[SYNC] Frame {d}: Fence status check failed: {d}", .{ s.sync.current_frame, fence_status });
         }
         return false;
     }
@@ -366,7 +359,7 @@ fn render_frame_headless(s: *types.VulkanState, signal_value: u64) void {
     };
 
     var fence = s.sync.in_flight_fences.?[s.sync.current_frame];
-    
+
     // Check if vkQueueSubmit2 is available via function pointer
     var res: c.VkResult = c.VK_SUCCESS;
     if (s.context.vkQueueSubmit2 != null) {
@@ -418,24 +411,21 @@ fn submit_command_buffer(s: *types.VulkanState, cmd: c.VkCommandBuffer, acquire_
         .deviceIndex = 0,
     };
 
-    var signal_infos = [2]c.VkSemaphoreSubmitInfo{
-        .{
-            .sType = c.VK_STRUCTURE_TYPE_SEMAPHORE_SUBMIT_INFO,
-            .pNext = null,
-            .semaphore = s.sync.render_finished_semaphores.?[s.sync.current_frame],
-            .value = 0,
-            .stageMask = c.VK_PIPELINE_STAGE_2_ALL_GRAPHICS_BIT,
-            .deviceIndex = 0,
-        },
-        .{
-            .sType = c.VK_STRUCTURE_TYPE_SEMAPHORE_SUBMIT_INFO,
-            .pNext = null,
-            .semaphore = s.sync.timeline_semaphore,
-            .value = signal_value,
-            .stageMask = c.VK_PIPELINE_STAGE_2_ALL_GRAPHICS_BIT,
-            .deviceIndex = 0,
-        }
-    };
+    var signal_infos = [2]c.VkSemaphoreSubmitInfo{ .{
+        .sType = c.VK_STRUCTURE_TYPE_SEMAPHORE_SUBMIT_INFO,
+        .pNext = null,
+        .semaphore = s.sync.render_finished_semaphores.?[s.sync.current_frame],
+        .value = 0,
+        .stageMask = c.VK_PIPELINE_STAGE_2_ALL_GRAPHICS_BIT,
+        .deviceIndex = 0,
+    }, .{
+        .sType = c.VK_STRUCTURE_TYPE_SEMAPHORE_SUBMIT_INFO,
+        .pNext = null,
+        .semaphore = s.sync.timeline_semaphore,
+        .value = signal_value,
+        .stageMask = c.VK_PIPELINE_STAGE_2_ALL_GRAPHICS_BIT,
+        .deviceIndex = 0,
+    } };
 
     var cmd_info = c.VkCommandBufferSubmitInfo{
         .sType = c.VK_STRUCTURE_TYPE_COMMAND_BUFFER_SUBMIT_INFO,
@@ -547,7 +537,7 @@ pub export fn cardinal_renderer_draw_frame(renderer: ?*types.CardinalRenderer) c
 
     const frame_base = s.sync.current_frame_value;
     var signal_after_render: u64 = 0;
-    
+
     if (s.sync_manager != null) {
         const sm = s.sync_manager;
         signal_after_render = vk_sync_manager.vulkan_sync_manager_get_next_timeline_value(sm);

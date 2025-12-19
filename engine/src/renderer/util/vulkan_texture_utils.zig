@@ -38,7 +38,7 @@ pub fn add_staging_buffer_cleanup(buffer: c.VkBuffer, memory: c.VkDeviceMemory, 
         log.cardinal_log_error("[TEXTURE_UTILS] Failed to allocate cleanup tracking, immediate cleanup", .{});
         return;
     }
-    
+
     const ptr = @as(*StagingBufferCleanup, @ptrCast(@alignCast(cleanup)));
     ptr.buffer = buffer;
     ptr.memory = memory;
@@ -49,7 +49,7 @@ pub fn add_staging_buffer_cleanup(buffer: c.VkBuffer, memory: c.VkDeviceMemory, 
     g_pending_cleanups = ptr;
     g_cleanup_system_initialized = true;
 
-    log.cardinal_log_debug("[TEXTURE_UTILS] Added staging buffer {any} to deferred cleanup (timeline: {d})", .{buffer, timeline_value});
+    log.cardinal_log_debug("[TEXTURE_UTILS] Added staging buffer {any} to deferred cleanup (timeline: {d})", .{ buffer, timeline_value });
 }
 
 pub fn process_staging_buffer_cleanups(sync_manager: ?*types.VulkanSyncManager, allocator: ?*types.VulkanAllocator) void {
@@ -59,8 +59,8 @@ pub fn process_staging_buffer_cleanups(sync_manager: ?*types.VulkanSyncManager, 
     while (current.*) |cleanup| {
         var reached: bool = false;
         if (vk_sync_manager.vulkan_sync_manager_is_timeline_value_reached(@ptrCast(sync_manager), cleanup.timeline_value, &reached) == c.VK_SUCCESS and reached) {
-            log.cardinal_log_debug("[TEXTURE_UTILS] Cleaning up completed staging buffer {any} (timeline: {d})", .{cleanup.buffer, cleanup.timeline_value});
-            
+            log.cardinal_log_debug("[TEXTURE_UTILS] Cleaning up completed staging buffer {any} (timeline: {d})", .{ cleanup.buffer, cleanup.timeline_value });
+
             vk_allocator.vk_allocator_free_buffer(allocator, cleanup.buffer, cleanup.allocation);
 
             current.* = cleanup.next;
@@ -82,8 +82,7 @@ pub fn create_staging_buffer_with_data(allocator: ?*types.VulkanAllocator, devic
     bufferInfo.sharingMode = c.VK_SHARING_MODE_EXCLUSIVE;
 
     // Use VMA to allocate buffer
-    if (!vk_allocator.vk_allocator_allocate_buffer(allocator, &bufferInfo, outBuffer, outMemory, outAllocation, 
-                                          c.VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | c.VK_MEMORY_PROPERTY_HOST_COHERENT_BIT)) {
+    if (!vk_allocator.vk_allocator_allocate_buffer(allocator, &bufferInfo, outBuffer, outMemory, outAllocation, c.VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | c.VK_MEMORY_PROPERTY_HOST_COHERENT_BIT)) {
         log.cardinal_log_error("Failed to create staging buffer with VMA", .{});
         return false;
     }
@@ -135,26 +134,26 @@ pub fn record_texture_copy_commands(commandBuffer: c.VkCommandBuffer, stagingBuf
     // Wait, vk_texture_create_from_data calls this function, but it allocates a primary buffer itself.
     // However, upload_texture_task (in vulkan_texture_manager.zig) calls this function passing a secondary buffer that IS ALREADY in recording state.
     // vk_texture_create_from_data does NOT put the buffer in recording state before calling this!
-    
+
     // BUT looking at the code below, it calls vkBeginCommandBuffer!
     // This is WRONG if the buffer is already recording (like in upload_texture_task).
-    
+
     // Let's check if we are already recording or not? We can't easily check via API without tracking.
     // Better strategy: Remove vkBegin/End from here, and ensure callers handle it.
-    
+
     // However, vk_texture_create_from_data calls this function. Let's check vk_texture_create_from_data.
     // vk_texture_create_from_data allocates a buffer but doesn't begin it.
-    
+
     // So we should split this into "record_commands_internal" (no begin/end) and "record_commands" (with begin/end).
     // Or better, just remove begin/end from here and fix vk_texture_create_from_data.
-    
+
     // Wait, if I remove begin/end here, I must update vk_texture_create_from_data to begin/end.
     // And upload_texture_task is already beginning/ending.
-    
+
     // So the fix is:
     // 1. Remove vkBeginCommandBuffer/vkEndCommandBuffer from THIS function.
     // 2. Update vk_texture_create_from_data to begin/end the buffer.
-    
+
     var barrier = std.mem.zeroes(c.VkImageMemoryBarrier2);
     barrier.sType = c.VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2;
     barrier.srcStageMask = c.VK_PIPELINE_STAGE_2_TOP_OF_PIPE_BIT;
@@ -180,7 +179,7 @@ pub fn record_texture_copy_commands(commandBuffer: c.VkCommandBuffer, stagingBuf
     const thread_id = get_current_thread_id();
     const vk_barrier_validation = @import("../vulkan_barrier_validation.zig");
 
-// ...
+    // ...
 
     if (!vk_barrier_validation.cardinal_barrier_validation_validate_pipeline_barrier(&dependencyInfo, commandBuffer, thread_id)) {
         log.cardinal_log_warn("Pipeline barrier validation failed during texture upload", .{});
@@ -290,12 +289,7 @@ pub fn create_texture_image_view(device: c.VkDevice, image: c.VkImage, outImageV
     return true;
 }
 
-pub export fn vk_texture_create_from_data(allocator: ?*types.VulkanAllocator, device: c.VkDevice,
-                                          commandPool: c.VkCommandPool, graphicsQueue: c.VkQueue,
-                                          sync_manager: ?*types.VulkanSyncManager, texture: ?*const scene.CardinalTexture,
-                                          textureImage: ?*c.VkImage, textureImageMemory: ?*c.VkDeviceMemory,
-                                          textureImageView: ?*c.VkImageView, outTimelineValue: ?*u64,
-                                          textureAllocation: ?*c.VmaAllocation) callconv(.c) bool {
+pub export fn vk_texture_create_from_data(allocator: ?*types.VulkanAllocator, device: c.VkDevice, commandPool: c.VkCommandPool, graphicsQueue: c.VkQueue, sync_manager: ?*types.VulkanSyncManager, texture: ?*const scene.CardinalTexture, textureImage: ?*c.VkImage, textureImageMemory: ?*c.VkDeviceMemory, textureImageView: ?*c.VkImageView, outTimelineValue: ?*u64, textureAllocation: ?*c.VmaAllocation) callconv(.c) bool {
     if (texture == null or texture.?.data == null or textureImage == null or textureImageMemory == null or textureImageView == null or textureAllocation == null) {
         log.cardinal_log_error("Invalid parameters for texture creation", .{});
         return false;
@@ -357,11 +351,7 @@ pub export fn vk_texture_create_from_data(allocator: ?*types.VulkanAllocator, de
     return true;
 }
 
-pub export fn vk_texture_create_placeholder(allocator: ?*types.VulkanAllocator, device: c.VkDevice,
-                                            commandPool: c.VkCommandPool, graphicsQueue: c.VkQueue,
-                                            textureImage: ?*c.VkImage, textureImageMemory: ?*c.VkDeviceMemory,
-                                            textureImageView: ?*c.VkImageView, format: ?*const c.VkFormat,
-                                            textureAllocation: ?*c.VmaAllocation) callconv(.c) bool {
+pub export fn vk_texture_create_placeholder(allocator: ?*types.VulkanAllocator, device: c.VkDevice, commandPool: c.VkCommandPool, graphicsQueue: c.VkQueue, textureImage: ?*c.VkImage, textureImageMemory: ?*c.VkDeviceMemory, textureImageView: ?*c.VkImageView, format: ?*const c.VkFormat, textureAllocation: ?*c.VmaAllocation) callconv(.c) bool {
     _ = format;
     var whitePixel = [_]u8{ 255, 255, 255, 255 };
     var placeholderTexture = std.mem.zeroes(scene.CardinalTexture);
@@ -371,13 +361,10 @@ pub export fn vk_texture_create_placeholder(allocator: ?*types.VulkanAllocator, 
     placeholderTexture.channels = 4;
     placeholderTexture.path = @as([*c]u8, @constCast("placeholder"));
 
-    return vk_texture_create_from_data(allocator, device, commandPool, graphicsQueue, null,
-                                       @ptrCast(&placeholderTexture), textureImage, textureImageMemory,
-                                       textureImageView, null, textureAllocation);
+    return vk_texture_create_from_data(allocator, device, commandPool, graphicsQueue, null, @ptrCast(&placeholderTexture), textureImage, textureImageMemory, textureImageView, null, textureAllocation);
 }
 
-pub export fn vk_texture_create_sampler(device: c.VkDevice, physicalDevice: c.VkPhysicalDevice,
-                                        sampler: ?*c.VkSampler) callconv(.c) bool {
+pub export fn vk_texture_create_sampler(device: c.VkDevice, physicalDevice: c.VkPhysicalDevice, sampler: ?*c.VkSampler) callconv(.c) bool {
     var properties: c.VkPhysicalDeviceProperties = undefined;
     c.vkGetPhysicalDeviceProperties(physicalDevice, &properties);
 

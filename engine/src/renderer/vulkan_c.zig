@@ -11,7 +11,7 @@ pub const c = @cImport({
     @cInclude("vulkan/vulkan.h");
     @cInclude("vma/vk_mem_alloc.h");
     @cInclude("GLFW/glfw3.h");
-    
+
     if (builtin.os.tag == .windows) {
         @cInclude("windows.h");
     } else {

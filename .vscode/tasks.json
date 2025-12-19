@@ -7,7 +7,7 @@
             "command": "powershell",
             "args": [
                 "-ExecutionPolicy", "Bypass",
-                "-File", "${workspaceFolder}/compile-shaders.ps1"
+                "-File", "${workspaceFolder}/scripts/compile-shaders.ps1"
             ],
             "group": "build",
             "presentation": {
@@ -193,7 +193,7 @@
             "command": "powershell",
             "args": [
                 "-ExecutionPolicy", "Bypass",
-                "-File", "format-code.ps1"
+                "-File", "${workspaceFolder}/scripts/format-code.ps1"
             ],
             "group": "build",
             "presentation": {

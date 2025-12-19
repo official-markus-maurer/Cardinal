@@ -183,7 +183,7 @@ fn create_task(task_type: CardinalAsyncTaskType, priority: CardinalAsyncPriority
         return null;
     }
     const task = @as(*CardinalAsyncTask, @ptrCast(@alignCast(ptr)));
-    
+
     // Zero initialize
     @memset(@as([*]u8, @ptrCast(task))[0..@sizeOf(CardinalAsyncTask)], 0);
 
@@ -214,38 +214,38 @@ fn execute_texture_load_task(task: *CardinalAsyncTask) bool {
     // TextureData is a struct. I should define it in scene.zig or just allocate enough space.
     // Since I don't have TextureData definition fully in Zig yet (it's in scene.zig as CardinalTexture),
     // let's assume CardinalTexture IS TextureData (checking C code... yes, mostly).
-    
+
     // Wait, texture_load_with_ref_counting takes `TextureData*`.
     // In `texture_loader.h` (not read yet), `TextureData` is likely `CardinalTexture`.
     // Let's assume `scene.CardinalTexture` is compatible.
-    
+
     var texture_data: scene.CardinalTexture = undefined;
-    
+
     const ref_resource = texture_load_with_ref_counting(task.file_path.?, &texture_data);
-    
+
     if (ref_resource == null) {
-         const allocator = memory.cardinal_get_allocator_for_category(.ENGINE);
-         const msg = "Failed to load texture";
-         const msg_ptr = memory.cardinal_alloc(allocator, msg.len + 1);
-         if (msg_ptr) |ptr| {
-             const slice = @as([*]u8, @ptrCast(ptr))[0..msg.len];
-             @memcpy(slice, msg);
-             @as([*]u8, @ptrCast(ptr))[msg.len] = 0;
-             task.error_message = @ptrCast(ptr);
-         }
-         return false;
+        const allocator = memory.cardinal_get_allocator_for_category(.ENGINE);
+        const msg = "Failed to load texture";
+        const msg_ptr = memory.cardinal_alloc(allocator, msg.len + 1);
+        if (msg_ptr) |ptr| {
+            const slice = @as([*]u8, @ptrCast(ptr))[0..msg.len];
+            @memcpy(slice, msg);
+            @as([*]u8, @ptrCast(ptr))[msg.len] = 0;
+            task.error_message = @ptrCast(ptr);
+        }
+        return false;
     }
 
     task.result_data = ref_resource;
     task.result_size = @sizeOf(ref_counting.CardinalRefCountedResource);
-    
+
     std.log.debug("Successfully loaded texture: {s}", .{task.file_path.?});
     return true;
 }
 
 fn execute_scene_load_task(task: *CardinalAsyncTask) bool {
     if (task.file_path == null) return false;
-    
+
     std.log.debug("Loading scene: {s}", .{task.file_path.?});
 
     const allocator = memory.cardinal_get_allocator_for_category(.ENGINE);
@@ -255,7 +255,7 @@ fn execute_scene_load_task(task: *CardinalAsyncTask) bool {
         return false;
     }
     const scene_obj = @as(*scene.CardinalScene, @ptrCast(@alignCast(scene_ptr)));
-    
+
     if (!cardinal_scene_load(task.file_path.?, scene_obj)) {
         memory.cardinal_free(allocator, scene_ptr);
         return false;
@@ -263,58 +263,58 @@ fn execute_scene_load_task(task: *CardinalAsyncTask) bool {
 
     task.result_data = scene_ptr;
     task.result_size = @sizeOf(scene.CardinalScene);
-    
+
     std.log.debug("Successfully loaded scene: {s}", .{task.file_path.?});
     return true;
 }
 
 fn execute_material_load_task(task: *CardinalAsyncTask) bool {
     if (task.custom_data == null) return false;
-    
+
     std.log.debug("Loading material with reference counting", .{});
-    
+
     const source_material = @as(*const scene.CardinalMaterial, @ptrCast(@alignCast(task.custom_data)));
-    
+
     // Allocate memory for material copy (managed by C code usually, but here we do it)
     const allocator = memory.cardinal_get_allocator_for_category(.ASSETS);
     const material_ptr = memory.cardinal_alloc(allocator, @sizeOf(scene.CardinalMaterial));
     if (material_ptr == null) return false;
-    
+
     const material = @as(*scene.CardinalMaterial, @ptrCast(@alignCast(material_ptr)));
     material.* = source_material.*;
-    
+
     var out_material: scene.CardinalMaterial = undefined;
     const ref_resource = material_load_with_ref_counting(material, &out_material);
-    
+
     if (ref_resource == null) {
         memory.cardinal_free(allocator, material_ptr);
         return false;
     }
-    
+
     memory.cardinal_free(allocator, material_ptr);
-    
+
     task.result_data = ref_resource;
     task.result_size = @sizeOf(ref_counting.CardinalRefCountedResource);
-    
+
     std.log.debug("Successfully loaded material with reference counting", .{});
     return true;
 }
 
 fn execute_mesh_load_task(task: *CardinalAsyncTask) bool {
     if (task.custom_data == null) return false;
-    
+
     std.log.debug("Loading mesh with reference counting", .{});
-    
+
     const source_mesh = @as(*const scene.CardinalMesh, @ptrCast(@alignCast(task.custom_data)));
-    
+
     // Allocate memory for mesh copy
     const allocator = memory.cardinal_get_allocator_for_category(.ASSETS);
     const mesh_ptr = memory.cardinal_alloc(allocator, @sizeOf(scene.CardinalMesh));
     if (mesh_ptr == null) return false;
-    
+
     const mesh = @as(*scene.CardinalMesh, @ptrCast(@alignCast(mesh_ptr)));
     mesh.* = source_mesh.*;
-    
+
     // Deep copy vertex data
     if (source_mesh.vertex_count > 0 and source_mesh.vertices != null) {
         const vertex_size = source_mesh.vertex_count * @sizeOf(scene.CardinalVertex);
@@ -328,7 +328,7 @@ fn execute_mesh_load_task(task: *CardinalAsyncTask) bool {
     } else {
         mesh.vertices = null;
     }
-    
+
     // Deep copy index data
     if (source_mesh.index_count > 0 and source_mesh.indices != null) {
         const index_size = source_mesh.index_count * @sizeOf(u32);
@@ -343,28 +343,28 @@ fn execute_mesh_load_task(task: *CardinalAsyncTask) bool {
     } else {
         mesh.indices = null;
     }
-    
+
     // Generate ID
     var mesh_id: [128]u8 = undefined;
-    _ = std.fmt.bufPrintZ(&mesh_id, "mesh_{d}_{d}_{x}", .{mesh.vertex_count, mesh.index_count, @intFromPtr(mesh)}) catch {
+    _ = std.fmt.bufPrintZ(&mesh_id, "mesh_{d}_{d}_{x}", .{ mesh.vertex_count, mesh.index_count, @intFromPtr(mesh) }) catch {
         if (mesh.vertices) |v| memory.cardinal_free(allocator, v);
         if (mesh.indices) |i| memory.cardinal_free(allocator, i);
         memory.cardinal_free(allocator, mesh_ptr);
         return false;
     };
-    
+
     const ref_resource = ref_counting.cardinal_ref_create(@ptrCast(&mesh_id), mesh_ptr, @sizeOf(scene.CardinalMesh), mesh_destructor_wrapper);
-    
+
     if (ref_resource == null) {
         if (mesh.vertices) |v| memory.cardinal_free(allocator, v);
         if (mesh.indices) |i| memory.cardinal_free(allocator, i);
         memory.cardinal_free(allocator, mesh_ptr);
         return false;
     }
-    
+
     task.result_data = ref_resource;
     task.result_size = @sizeOf(ref_counting.CardinalRefCountedResource);
-    
+
     std.log.debug("Successfully loaded mesh with reference counting", .{});
     return true;
 }
@@ -373,10 +373,10 @@ fn mesh_destructor_wrapper(data: ?*anyopaque) callconv(.c) void {
     if (data) |d| {
         const mesh = @as(*scene.CardinalMesh, @ptrCast(@alignCast(d)));
         const allocator = memory.cardinal_get_allocator_for_category(.ASSETS);
-        
+
         if (mesh.vertices) |v| memory.cardinal_free(allocator, v);
         if (mesh.indices) |i| memory.cardinal_free(allocator, i);
-        
+
         memory.cardinal_free(allocator, d);
     }
 }
@@ -407,7 +407,7 @@ fn worker_thread_func(worker: *WorkerThread) void {
 
     while (!worker.should_exit and !g_async_loader.shutting_down) {
         const task = task_queue_pop(&g_async_loader.pending_queue, true);
-        
+
         if (task == null) continue;
         const t = task.?;
 
@@ -419,7 +419,7 @@ fn worker_thread_func(worker: *WorkerThread) void {
         _ = execute_task(t);
         _ = task_queue_push(&g_async_loader.completed_queue, t);
     }
-    
+
     std.log.debug("Worker thread {d} exiting", .{worker.thread_id});
 }
 
@@ -458,7 +458,7 @@ pub export fn cardinal_async_loader_init(config: ?*const CardinalAsyncLoaderConf
         // Cleanup
         return false;
     }
-    
+
     // We need to manage the slice manually since it came from C allocator
     const workers = @as([*]WorkerThread, @ptrCast(@alignCast(workers_ptr)))[0..g_async_loader.config.worker_thread_count];
     g_async_loader.workers = workers;
@@ -474,7 +474,7 @@ pub export fn cardinal_async_loader_init(config: ?*const CardinalAsyncLoaderConf
 
     g_async_loader.initialized = true;
     g_async_loader.shutting_down = false;
-    
+
     std.log.info("Async loader initialized with {d} worker threads", .{g_async_loader.config.worker_thread_count});
     return true;
 }
@@ -491,20 +491,14 @@ pub export fn cardinal_async_loader_shutdown() callconv(.c) void {
             worker.should_exit = true;
         }
         g_async_loader.pending_queue.condition.broadcast();
-        
+
         for (workers) |*worker| {
             if (worker.thread) |t| {
                 t.join();
             }
         }
-        
-        const allocator = memory.cardinal_get_allocator_for_category(.ENGINE);
-        memory.cardinal_free(allocator, workers.ptr);
     }
 
-    task_queue_destroy(&g_async_loader.pending_queue);
-    task_queue_destroy(&g_async_loader.completed_queue);
-    
     g_async_loader.initialized = false;
     std.log.info("Async loader shutdown complete", .{});
 }
@@ -577,51 +571,51 @@ pub export fn cardinal_async_load_scene(file_path: ?[*:0]const u8, priority: Car
 
 pub export fn cardinal_async_load_material(material_data: ?*const anyopaque, priority: CardinalAsyncPriority, callback: CardinalAsyncCallback, user_data: ?*anyopaque) callconv(.c) ?*CardinalAsyncTask {
     if (!g_async_loader.initialized or material_data == null) return null;
-    
+
     const task = create_task(.MATERIAL_LOAD, priority);
     if (task == null) return null;
-    
+
     const allocator = memory.cardinal_get_allocator_for_category(.ENGINE);
     const copy_ptr = memory.cardinal_alloc(allocator, @sizeOf(scene.CardinalMaterial));
     if (copy_ptr == null) {
         cardinal_async_free_task(task);
         return null;
     }
-    
+
     const copy = @as(*scene.CardinalMaterial, @ptrCast(@alignCast(copy_ptr)));
     const src = @as(*const scene.CardinalMaterial, @ptrCast(@alignCast(material_data)));
     copy.* = src.*;
-    
+
     task.?.custom_data = copy_ptr;
     task.?.callback = callback;
     task.?.callback_data = user_data;
-    
+
     if (!task_queue_push(&g_async_loader.pending_queue, task.?)) {
         memory.cardinal_free(allocator, copy_ptr);
         cardinal_async_free_task(task);
         return null;
     }
-    
+
     return task;
 }
 
 pub export fn cardinal_async_load_mesh(mesh_data: ?*const anyopaque, priority: CardinalAsyncPriority, callback: CardinalAsyncCallback, user_data: ?*anyopaque) callconv(.c) ?*CardinalAsyncTask {
     if (!g_async_loader.initialized or mesh_data == null) return null;
-    
+
     const task = create_task(.MESH_LOAD, priority);
     if (task == null) return null;
-    
+
     const allocator = memory.cardinal_get_allocator_for_category(.ENGINE);
     const copy_ptr = memory.cardinal_alloc(allocator, @sizeOf(scene.CardinalMesh));
     if (copy_ptr == null) {
         cardinal_async_free_task(task);
         return null;
     }
-    
+
     const copy = @as(*scene.CardinalMesh, @ptrCast(@alignCast(copy_ptr)));
     const src = @as(*const scene.CardinalMesh, @ptrCast(@alignCast(mesh_data)));
     copy.* = src.*;
-    
+
     // Deep copy vertex data
     if (src.vertex_count > 0 and src.vertices != null) {
         const vertex_size = src.vertex_count * @sizeOf(scene.CardinalVertex);
@@ -636,7 +630,7 @@ pub export fn cardinal_async_load_mesh(mesh_data: ?*const anyopaque, priority: C
     } else {
         copy.vertices = null;
     }
-    
+
     // Deep copy index data
     if (src.index_count > 0 and src.indices != null) {
         const index_size = src.index_count * @sizeOf(u32);
@@ -652,11 +646,11 @@ pub export fn cardinal_async_load_mesh(mesh_data: ?*const anyopaque, priority: C
     } else {
         copy.indices = null;
     }
-    
+
     task.?.custom_data = copy_ptr;
     task.?.callback = callback;
     task.?.callback_data = user_data;
-    
+
     if (!task_queue_push(&g_async_loader.pending_queue, task.?)) {
         if (copy.vertices) |v| memory.cardinal_free(allocator, v);
         if (copy.indices) |i| memory.cardinal_free(allocator, i);
@@ -664,26 +658,26 @@ pub export fn cardinal_async_load_mesh(mesh_data: ?*const anyopaque, priority: C
         cardinal_async_free_task(task);
         return null;
     }
-    
+
     return task;
 }
 
 pub export fn cardinal_async_submit_custom_task(task_func: CardinalAsyncTaskFunc, custom_data: ?*anyopaque, priority: CardinalAsyncPriority, callback: CardinalAsyncCallback, user_data: ?*anyopaque) callconv(.c) ?*CardinalAsyncTask {
     if (!g_async_loader.initialized or task_func == null) return null;
-    
+
     const task = create_task(.CUSTOM, priority);
     if (task == null) return null;
-    
+
     task.?.custom_func = task_func;
     task.?.custom_data = custom_data;
     task.?.callback = callback;
     task.?.callback_data = user_data;
-    
+
     if (!task_queue_push(&g_async_loader.pending_queue, task.?)) {
         cardinal_async_free_task(task);
         return null;
     }
-    
+
     return task;
 }
 
@@ -704,22 +698,22 @@ pub export fn cardinal_async_get_task_status(task: ?*const CardinalAsyncTask) ca
 pub export fn cardinal_async_wait_for_task(task: ?*CardinalAsyncTask, timeout_ms: u32) callconv(.c) bool {
     if (task == null) return false;
     const t = task.?;
-    
+
     const start_time = get_timestamp_ms();
-    
+
     while (t.status == .PENDING or t.status == .RUNNING) {
         if (timeout_ms > 0) {
             const elapsed = get_timestamp_ms() - start_time;
             if (elapsed >= timeout_ms) return false;
         }
         if (g_async_loader.shutting_down) return false;
-        
+
         // std.time.sleep(1 * std.time.ns_per_ms);
         // Workaround for missing std.time.sleep in this Zig version?
         // Using direct Sleep from kernel32 for Windows
         Sleep(1);
     }
-    
+
     return t.status == .COMPLETED;
 }
 
@@ -728,14 +722,14 @@ extern "kernel32" fn Sleep(dwMilliseconds: u32) callconv(.c) void;
 pub export fn cardinal_async_free_task(task: ?*CardinalAsyncTask) callconv(.c) void {
     if (task) |t| {
         const allocator = memory.cardinal_get_allocator_for_category(.ENGINE);
-        
+
         if (t.file_path) |path| {
             memory.cardinal_free(allocator, path);
         }
         if (t.error_message) |msg| {
             memory.cardinal_free(allocator, msg);
         }
-        
+
         memory.cardinal_free(allocator, t);
     }
 }
@@ -744,16 +738,16 @@ pub export fn cardinal_async_get_texture_result(task: ?*CardinalAsyncTask, out_t
     if (task == null or task.?.type != .TEXTURE_LOAD or task.?.status != .COMPLETED or out_texture == null) {
         return null;
     }
-    
+
     const ref_resource = @as(?*ref_counting.CardinalRefCountedResource, @ptrCast(@alignCast(task.?.result_data)));
     if (ref_resource == null) return null;
-    
+
     const texture = @as(?*scene.CardinalTexture, @ptrCast(@alignCast(ref_resource.?.resource)));
     if (texture) |tex| {
         const out = @as(*scene.CardinalTexture, @ptrCast(@alignCast(out_texture)));
         out.* = tex.*;
     }
-    
+
     return ref_resource;
 }
 
@@ -761,13 +755,13 @@ pub export fn cardinal_async_get_scene_result(task: ?*CardinalAsyncTask, out_sce
     if (task == null or task.?.type != .SCENE_LOAD or task.?.status != .COMPLETED or out_scene == null) {
         return false;
     }
-    
+
     const scene_res = @as(?*scene.CardinalScene, @ptrCast(@alignCast(task.?.result_data)));
     if (scene_res) |s| {
         out_scene.?.* = s.*;
         return true;
     }
-    
+
     return false;
 }
 
@@ -775,15 +769,15 @@ pub export fn cardinal_async_get_material_result(task: ?*CardinalAsyncTask, out_
     if (task == null or task.?.type != .MATERIAL_LOAD or task.?.status != .COMPLETED or out_material == null) {
         return null;
     }
-    
+
     const ref_resource = @as(?*ref_counting.CardinalRefCountedResource, @ptrCast(@alignCast(task.?.result_data)));
     if (ref_resource == null) return null;
-    
+
     const material = @as(?*scene.CardinalMaterial, @ptrCast(@alignCast(ref_resource.?.resource)));
     if (material) |mat| {
         out_material.?.* = mat.*;
     }
-    
+
     return ref_resource;
 }
 
@@ -791,15 +785,15 @@ pub export fn cardinal_async_get_mesh_result(task: ?*CardinalAsyncTask, out_mesh
     if (task == null or task.?.type != .MESH_LOAD or task.?.status != .COMPLETED or out_mesh == null) {
         return null;
     }
-    
+
     const ref_resource = @as(?*ref_counting.CardinalRefCountedResource, @ptrCast(@alignCast(task.?.result_data)));
     if (ref_resource == null) return null;
-    
+
     const mesh = @as(?*scene.CardinalMesh, @ptrCast(@alignCast(ref_resource.?.resource)));
     if (mesh) |m| {
         out_mesh.?.* = m.*;
     }
-    
+
     return ref_resource;
 }
 
@@ -822,19 +816,19 @@ pub export fn cardinal_async_get_worker_thread_count() callconv(.c) u32 {
 
 pub export fn cardinal_async_process_completed_tasks(max_tasks: u32) callconv(.c) u32 {
     if (!g_async_loader.initialized) return 0;
-    
+
     var processed: u32 = 0;
-    
+
     while (max_tasks == 0 or processed < max_tasks) {
         const task = task_queue_pop(&g_async_loader.completed_queue, false);
         if (task == null) break;
-        
+
         if (task.?.callback) |cb| {
             cb(task, task.?.callback_data);
         }
-        
+
         processed += 1;
     }
-    
+
     return processed;
 }

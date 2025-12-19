@@ -28,8 +28,12 @@ extern fn vsnprintf(s: [*]u8, n: usize, format: [*:0]const u8, arg: c.va_list) c
 // MSVC specific for stdout/stderr
 extern fn __acrt_iob_func(index: c_uint) *FILE;
 
-fn get_stdout() *FILE { return __acrt_iob_func(1); }
-fn get_stderr() *FILE { return __acrt_iob_func(2); }
+fn get_stdout() *FILE {
+    return __acrt_iob_func(1);
+}
+fn get_stderr() *FILE {
+    return __acrt_iob_func(2);
+}
 
 // Global state
 var min_log_level: CardinalLogLevel = .WARN;
@@ -108,7 +112,7 @@ pub export fn cardinal_log_output_v(level: CardinalLogLevel, file: [*:0]const u8
     var final_filename: [*:0]const u8 = file;
     const last_slash = c.strrchr(file, '/');
     const last_backslash = c.strrchr(file, '\\');
-    
+
     if (last_slash != null and last_backslash != null) {
         if (@intFromPtr(last_slash) > @intFromPtr(last_backslash)) {
             final_filename = last_slash + 1;
@@ -123,7 +127,7 @@ pub export fn cardinal_log_output_v(level: CardinalLogLevel, file: [*:0]const u8
 
     var final_buffer: [4096]u8 = undefined;
     const level_str = getLevelStr(level);
-    
+
     _ = snprintf(&final_buffer, final_buffer.len, "%s(%d): [%s] %s", final_filename, line, level_str.ptr, &buffer);
 
     const output_stream = if (@intFromEnum(level) >= @intFromEnum(CardinalLogLevel.ERROR)) get_stderr() else get_stdout();
@@ -171,7 +175,7 @@ fn log_internal(comptime level: CardinalLogLevel, comptime fmt: []const u8, args
     // Simple path extraction (std.fs.path.basename equivalent)
     var i = final_filename.len;
     while (i > 0) : (i -= 1) {
-        if (final_filename[i-1] == '/' or final_filename[i-1] == '\\') {
+        if (final_filename[i - 1] == '/' or final_filename[i - 1] == '\\') {
             final_filename = final_filename[i..];
             break;
         }
@@ -179,7 +183,7 @@ fn log_internal(comptime level: CardinalLogLevel, comptime fmt: []const u8, args
 
     var final_buffer: [4096]u8 = undefined;
     const level_str = getLevelStr(level);
-    const final_msg = std.fmt.bufPrintZ(&final_buffer, "{s}({d}): [{s}] {s}", .{final_filename, src.line, level_str, msg}) catch return;
+    const final_msg = std.fmt.bufPrintZ(&final_buffer, "{s}({d}): [{s}] {s}", .{ final_filename, src.line, level_str, msg }) catch return;
 
     const output_stream = if (@intFromEnum(level) >= @intFromEnum(CardinalLogLevel.ERROR)) get_stderr() else get_stdout();
     _ = fprintf(output_stream, "%s\n", final_msg.ptr);

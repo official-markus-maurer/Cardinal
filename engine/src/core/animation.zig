@@ -299,7 +299,7 @@ pub export fn cardinal_animation_system_create(max_animations: u32, max_skins: u
         system.bone_matrix_count = 0;
     }
 
-    std.log.info("Animation system created with capacity for {d} animations and {d} skins", .{max_animations, max_skins});
+    std.log.info("Animation system created with capacity for {d} animations and {d} skins", .{ max_animations, max_skins });
     return system;
 }
 
@@ -414,7 +414,7 @@ pub export fn cardinal_animation_system_add_animation(system: ?*CardinalAnimatio
     }
 
     system.?.animation_count += 1;
-    std.log.debug("Added animation '{s}' at index {d}", .{if (dest.name) |n| std.mem.span(n) else "Unnamed", index});
+    std.log.debug("Added animation '{s}' at index {d}", .{ if (dest.name) |n| std.mem.span(n) else "Unnamed", index });
     return index;
 }
 
@@ -474,7 +474,7 @@ pub export fn cardinal_animation_system_add_skin(system: ?*CardinalAnimationSyst
     }
 
     system.?.skin_count += 1;
-    std.log.debug("Added skin '{s}' with {d} bones at index {d}", .{if (dest.name) |n| std.mem.span(n) else "Unnamed", dest.bone_count, index});
+    std.log.debug("Added skin '{s}' with {d} bones at index {d}", .{ if (dest.name) |n| std.mem.span(n) else "Unnamed", dest.bone_count, index });
     return index;
 }
 
@@ -507,7 +507,7 @@ pub export fn cardinal_animation_play(system: ?*CardinalAnimationSystem, animati
     state.?.blend_weight = blend_weight;
     state.?.playback_speed = 1.0;
 
-    std.log.debug("Started animation {d} with blend weight {d:.2}", .{animation_index, blend_weight});
+    std.log.debug("Started animation {d} with blend weight {d:.2}", .{ animation_index, blend_weight });
     return true;
 }
 
@@ -549,7 +549,7 @@ pub export fn cardinal_animation_set_speed(system: ?*CardinalAnimationSystem, an
     while (i < system.?.state_count) : (i += 1) {
         if (system.?.states.?[i].animation_index == animation_index) {
             system.?.states.?[i].playback_speed = speed;
-            std.log.debug("Set animation {d} speed to {d:.2}", .{animation_index, speed});
+            std.log.debug("Set animation {d} speed to {d:.2}", .{ animation_index, speed });
             return true;
         }
     }
@@ -557,7 +557,7 @@ pub export fn cardinal_animation_set_speed(system: ?*CardinalAnimationSystem, an
     return false;
 }
 
-pub export fn cardinal_animation_system_update(system: ?*CardinalAnimationSystem, all_nodes: ?[*] ?*scene.CardinalSceneNode, all_node_count: u32, delta_time: f32) callconv(.c) void {
+pub export fn cardinal_animation_system_update(system: ?*CardinalAnimationSystem, all_nodes: ?[*]?*scene.CardinalSceneNode, all_node_count: u32, delta_time: f32) callconv(.c) void {
     if (system == null) return;
 
     var i: u32 = 0;
@@ -615,7 +615,7 @@ pub export fn cardinal_animation_system_update(system: ?*CardinalAnimationSystem
     }
 }
 
-pub export fn cardinal_skin_update_bone_matrices(skin: ?*const CardinalSkin, scene_nodes: ?[*] ?*const scene.CardinalSceneNode, bone_matrices: ?[*]f32) callconv(.c) bool {
+pub export fn cardinal_skin_update_bone_matrices(skin: ?*const CardinalSkin, scene_nodes: ?[*]?*const scene.CardinalSceneNode, bone_matrices: ?[*]f32) callconv(.c) bool {
     if (skin == null or scene_nodes == null or bone_matrices == null) return false;
 
     var i: u32 = 0;

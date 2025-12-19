@@ -43,10 +43,10 @@ pub const CardinalModelManager = extern struct {
 
 fn generate_model_name(file_path: ?[*:0]const u8) ?[*:0]u8 {
     if (file_path == null) return null;
-    
+
     const path_slice = std.mem.span(file_path.?);
     var filename_start: usize = 0;
-    
+
     // Find last slash/backslash
     var i: usize = 0;
     while (i < path_slice.len) : (i += 1) {
@@ -54,9 +54,9 @@ fn generate_model_name(file_path: ?[*:0]const u8) ?[*:0]u8 {
             filename_start = i + 1;
         }
     }
-    
+
     const filename = path_slice[filename_start..];
-    
+
     // Find last dot
     var ext_idx: usize = filename.len;
     i = 0;
@@ -65,27 +65,27 @@ fn generate_model_name(file_path: ?[*:0]const u8) ?[*:0]u8 {
             ext_idx = i;
         }
     }
-    
+
     const name_len = ext_idx;
     const allocator = memory.cardinal_get_allocator_for_category(.ASSETS);
     const name_ptr = memory.cardinal_alloc(allocator, name_len + 1);
     if (name_ptr == null) return null;
-    
+
     @memcpy(@as([*]u8, @ptrCast(name_ptr))[0..name_len], filename[0..name_len]);
     @as([*]u8, @ptrCast(name_ptr))[name_len] = 0;
-    
+
     return @as([*:0]u8, @ptrCast(name_ptr));
 }
 
 fn calculate_scene_bounds(scn: *const scene.CardinalScene, bbox_min: *[3]f32, bbox_max: *[3]f32) void {
     if (scn.mesh_count == 0) {
-        bbox_min.* = .{0, 0, 0};
-        bbox_max.* = .{0, 0, 0};
+        bbox_min.* = .{ 0, 0, 0 };
+        bbox_max.* = .{ 0, 0, 0 };
         return;
     }
 
     var first_vertex = true;
-    
+
     // Safety check for meshes pointer
     if (scn.meshes == null) return;
     const meshes = scn.meshes.?;
@@ -93,18 +93,21 @@ fn calculate_scene_bounds(scn: *const scene.CardinalScene, bbox_min: *[3]f32, bb
     var m: u32 = 0;
     while (m < scn.mesh_count) : (m += 1) {
         const mesh = meshes[m];
-        
+
         if (mesh.vertices == null) continue;
         const vertices = mesh.vertices.?;
 
         var v: u32 = 0;
         while (v < mesh.vertex_count) : (v += 1) {
             const vertex = vertices[v];
-            
+
             if (first_vertex) {
-                bbox_min[0] = vertex.px; bbox_max[0] = vertex.px;
-                bbox_min[1] = vertex.py; bbox_max[1] = vertex.py;
-                bbox_min[2] = vertex.pz; bbox_max[2] = vertex.pz;
+                bbox_min[0] = vertex.px;
+                bbox_max[0] = vertex.px;
+                bbox_min[1] = vertex.py;
+                bbox_max[1] = vertex.py;
+                bbox_min[2] = vertex.pz;
+                bbox_max[2] = vertex.pz;
                 first_vertex = false;
             } else {
                 if (vertex.px < bbox_min[0]) bbox_min[0] = vertex.px;
@@ -121,14 +124,14 @@ fn calculate_scene_bounds(scn: *const scene.CardinalScene, bbox_min: *[3]f32, bb
 fn expand_models_array(manager: *CardinalModelManager) bool {
     const new_capacity = if (manager.model_capacity == 0) INITIAL_MODEL_CAPACITY else manager.model_capacity * 2;
     const allocator = memory.cardinal_get_allocator_for_category(.ASSETS);
-    
+
     const new_models_ptr = memory.cardinal_realloc(allocator, manager.models, new_capacity * @sizeOf(CardinalModelInstance));
-    
+
     if (new_models_ptr == null) {
         log.cardinal_log_error("Failed to expand models array to capacity {d}", .{new_capacity});
         return false;
     }
-    
+
     manager.models = @ptrCast(@alignCast(new_models_ptr));
     manager.model_capacity = new_capacity;
     return true;
@@ -209,8 +212,9 @@ fn rebuild_combined_scene(manager: *CardinalModelManager) void {
                 const src_mesh = &src_meshes[m];
                 const dst_mesh = &manager.combined_scene.meshes.?[mesh_offset + m];
 
-                if (src_mesh.vertices == null or src_mesh.vertex_count == 0 or 
-                    src_mesh.indices == null or src_mesh.index_count == 0) {
+                if (src_mesh.vertices == null or src_mesh.vertex_count == 0 or
+                    src_mesh.indices == null or src_mesh.index_count == 0)
+                {
                     // Initialize empty
                     @memset(@as([*]u8, @ptrCast(dst_mesh))[0..@sizeOf(scene.CardinalMesh)], 0);
                     dst_mesh.visible = false;
@@ -225,25 +229,25 @@ fn rebuild_combined_scene(manager: *CardinalModelManager) void {
                 if (vertices_ptr) |vp| {
                     const dst_vertices: [*]scene.CardinalVertex = @ptrCast(@alignCast(vp));
                     dst_mesh.vertices = dst_vertices;
-                    
+
                     var v: u32 = 0;
                     while (v < src_mesh.vertex_count) : (v += 1) {
                         dst_vertices[v] = src_mesh.vertices.?[v];
 
                         // Transform position
-                        const pos = [3]f32{src_mesh.vertices.?[v].px, src_mesh.vertices.?[v].py, src_mesh.vertices.?[v].pz};
+                        const pos = [3]f32{ src_mesh.vertices.?[v].px, src_mesh.vertices.?[v].py, src_mesh.vertices.?[v].pz };
                         var transformed_pos: [3]f32 = undefined;
                         transform_math.cardinal_transform_point(&model.transform, &pos, &transformed_pos);
-                        
+
                         dst_vertices[v].px = transformed_pos[0];
                         dst_vertices[v].py = transformed_pos[1];
                         dst_vertices[v].pz = transformed_pos[2];
 
                         // Transform normal
-                        const normal = [3]f32{src_mesh.vertices.?[v].nx, src_mesh.vertices.?[v].ny, src_mesh.vertices.?[v].nz};
+                        const normal = [3]f32{ src_mesh.vertices.?[v].nx, src_mesh.vertices.?[v].ny, src_mesh.vertices.?[v].nz };
                         var transformed_normal: [3]f32 = undefined;
                         transform_math.cardinal_transform_normal(&model.transform, &normal, &transformed_normal);
-                        
+
                         dst_vertices[v].nx = transformed_normal[0];
                         dst_vertices[v].ny = transformed_normal[1];
                         dst_vertices[v].nz = transformed_normal[2];
@@ -279,7 +283,7 @@ fn rebuild_combined_scene(manager: *CardinalModelManager) void {
                 // Acquire reference
                 if (src_material.ref_resource) |res| {
                     if (res.identifier) |id| {
-                         dst_material.ref_resource = ref_counting.cardinal_ref_acquire(id);
+                        dst_material.ref_resource = ref_counting.cardinal_ref_acquire(id);
                     } else {
                         dst_material.ref_resource = null;
                     }
@@ -357,8 +361,8 @@ fn rebuild_combined_scene(manager: *CardinalModelManager) void {
     manager.combined_scene.material_count = total_materials;
     manager.combined_scene.texture_count = total_textures;
     manager.scene_dirty = false;
-    
-    log.cardinal_log_debug("Rebuilt combined scene: {d} meshes, {d} materials, {d} textures", .{total_meshes, total_materials, total_textures});
+
+    log.cardinal_log_debug("Rebuilt combined scene: {d} meshes, {d} materials, {d} textures", .{ total_meshes, total_materials, total_textures });
 }
 
 // --- Public API ---
@@ -370,7 +374,7 @@ pub export fn cardinal_model_manager_init(manager: ?*CardinalModelManager) callc
     @memset(@as([*]u8, @ptrCast(mgr))[0..@sizeOf(CardinalModelManager)], 0);
     mgr.next_id = 1;
     mgr.scene_dirty = true;
-    
+
     log.cardinal_log_debug("Model manager initialized", .{});
     return true;
 }
@@ -385,11 +389,11 @@ pub export fn cardinal_model_manager_destroy(manager: ?*CardinalModelManager) ca
         var i: u32 = 0;
         while (i < mgr.model_count) : (i += 1) {
             const model = &models[i];
-            
+
             if (model.name) |n| memory.cardinal_free(allocator, @ptrCast(n));
             if (model.file_path) |p| memory.cardinal_free(allocator, @ptrCast(p));
             scene.cardinal_scene_destroy(&model.scene);
-            
+
             if (model.load_task) |task| {
                 async_loader.cardinal_async_free_task(task);
             }
@@ -399,7 +403,7 @@ pub export fn cardinal_model_manager_destroy(manager: ?*CardinalModelManager) ca
 
     // Destroy combined scene to release references
     scene.cardinal_scene_destroy(&mgr.combined_scene);
-    
+
     @memset(@as([*]u8, @ptrCast(mgr))[0..@sizeOf(CardinalModelManager)], 0);
     log.cardinal_log_debug("Model manager destroyed", .{});
 }
@@ -420,7 +424,7 @@ pub export fn cardinal_model_manager_load_model(manager: ?*CardinalModelManager,
     mgr.next_id += 1;
 
     const allocator = memory.cardinal_get_allocator_for_category(.ASSETS);
-    
+
     const path_len = std.mem.len(file_path.?);
     const path_ptr = memory.cardinal_alloc(allocator, path_len + 1);
     if (path_ptr) |pp| {
@@ -457,9 +461,9 @@ pub export fn cardinal_model_manager_load_model(manager: ?*CardinalModelManager,
 
     mgr.model_count += 1;
     mgr.scene_dirty = true;
-    
+
     const model_name_str = if (model.name) |n| n else "Unnamed";
-    log.cardinal_log_info("Loaded model '{s}' from {s} (ID: {d}, {d} meshes)", .{model_name_str, file_path.?, model.id, model.scene.mesh_count});
+    log.cardinal_log_info("Loaded model '{s}' from {s} (ID: {d}, {d} meshes)", .{ model_name_str, file_path.?, model.id, model.scene.mesh_count });
 
     return model.id;
 }
@@ -480,7 +484,7 @@ pub export fn cardinal_model_manager_load_model_async(manager: ?*CardinalModelMa
     mgr.next_id += 1;
 
     const allocator = memory.cardinal_get_allocator_for_category(.ASSETS);
-    
+
     const path_len = std.mem.len(file_path.?);
     const path_ptr = memory.cardinal_alloc(allocator, path_len + 1);
     if (path_ptr) |pp| {
@@ -517,7 +521,7 @@ pub export fn cardinal_model_manager_load_model_async(manager: ?*CardinalModelMa
     mgr.model_count += 1;
 
     const model_name_str = if (model.name) |n| n else "Unnamed";
-    log.cardinal_log_info("Started async loading of model '{s}' from {s} (ID: {d})", .{model_name_str, file_path.?, model.id});
+    log.cardinal_log_info("Started async loading of model '{s}' from {s} (ID: {d})", .{ model_name_str, file_path.?, model.id });
 
     return model.id;
 }
@@ -581,7 +585,7 @@ pub export fn cardinal_model_manager_add_scene(manager: ?*CardinalModelManager, 
     mgr.scene_dirty = true;
 
     const model_name_str = if (model.name) |n| n else "Unnamed";
-    log.cardinal_log_info("Added scene '{s}' to model manager (ID: {d}, {d} meshes)", .{model_name_str, model.id, model.scene.mesh_count});
+    log.cardinal_log_info("Added scene '{s}' to model manager (ID: {d}, {d} meshes)", .{ model_name_str, model.id, model.scene.mesh_count });
 
     return model.id;
 }
@@ -598,7 +602,7 @@ pub export fn cardinal_model_manager_remove_model(manager: ?*CardinalModelManage
     const model = &models[idx];
 
     const model_name_str = if (model.name) |n| n else "Unnamed";
-    log.cardinal_log_info("Removing model '{s}' (ID: {d})", .{model_name_str, model_id});
+    log.cardinal_log_info("Removing model '{s}' (ID: {d})", .{ model_name_str, model_id });
 
     const allocator = memory.cardinal_get_allocator_for_category(.ASSETS);
     if (model.name) |n| memory.cardinal_free(allocator, @ptrCast(n));
@@ -708,18 +712,18 @@ pub export fn cardinal_model_manager_update(manager: ?*CardinalModelManager) cal
         var i: u32 = 0;
         while (i < mgr.model_count) : (i += 1) {
             const model = &models[i];
-            
+
             if (model.is_loading and model.load_task != null) {
                 const status = async_loader.cardinal_async_get_task_status(model.load_task.?);
-                
+
                 if (status == .COMPLETED) {
                     if (async_loader.cardinal_async_get_scene_result(model.load_task.?, &model.scene)) {
                         calculate_scene_bounds(&model.scene, &model.bbox_min, &model.bbox_max);
                         model.is_loading = false;
                         mgr.scene_dirty = true;
-                        
+
                         const model_name_str = if (model.name) |n| n else "Unnamed";
-                        log.cardinal_log_info("Async loading completed for model '{s}' (ID: {d}, {d} meshes)", .{model_name_str, model.id, model.scene.mesh_count});
+                        log.cardinal_log_info("Async loading completed for model '{s}' (ID: {d}, {d} meshes)", .{ model_name_str, model.id, model.scene.mesh_count });
                     } else {
                         const model_name_str = if (model.name) |n| n else "Unnamed";
                         log.cardinal_log_error("Failed to get scene result for model '{s}'", .{model_name_str});
@@ -730,8 +734,8 @@ pub export fn cardinal_model_manager_update(manager: ?*CardinalModelManager) cal
                     const error_msg = async_loader.cardinal_async_get_error_message(model.load_task.?);
                     const model_name_str = if (model.name) |n| n else "Unnamed";
                     const err_str = if (error_msg) |e| e else "Unknown error";
-                    log.cardinal_log_error("Async loading failed for model '{s}': {s}", .{model_name_str, err_str});
-                    
+                    log.cardinal_log_error("Async loading failed for model '{s}': {s}", .{ model_name_str, err_str });
+
                     async_loader.cardinal_async_free_task(model.load_task.?);
                     model.load_task = null;
                     model.is_loading = false;
@@ -745,7 +749,7 @@ pub export fn cardinal_model_manager_get_model_count(manager: ?*const CardinalMo
     if (manager == null) return 0;
     const mgr = manager.?;
     var count: u32 = 0;
-    
+
     if (mgr.models) |models| {
         var i: u32 = 0;
         while (i < mgr.model_count) : (i += 1) {
@@ -761,7 +765,7 @@ pub export fn cardinal_model_manager_get_total_mesh_count(manager: ?*const Cardi
     if (manager == null) return 0;
     const mgr = manager.?;
     var total: u32 = 0;
-    
+
     if (mgr.models) |models| {
         var i: u32 = 0;
         while (i < mgr.model_count) : (i += 1) {
@@ -785,11 +789,11 @@ pub export fn cardinal_model_manager_clear(manager: ?*CardinalModelManager) call
         var i: u32 = 0;
         while (i < mgr.model_count) : (i += 1) {
             const model = &models[i];
-            
+
             if (model.name) |n| memory.cardinal_free(allocator, @ptrCast(n));
             if (model.file_path) |p| memory.cardinal_free(allocator, @ptrCast(p));
             scene.cardinal_scene_destroy(&model.scene);
-            
+
             if (model.load_task) |task| {
                 async_loader.cardinal_async_free_task(task);
             }

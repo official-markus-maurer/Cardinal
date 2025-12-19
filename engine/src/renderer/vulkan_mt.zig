@@ -32,10 +32,10 @@ pub fn cardinal_mt_mutex_init(mutex: *types.cardinal_mutex_t) bool {
     const mem_alloc = memory.cardinal_get_allocator_for_category(.RENDERER);
     const m = memory.cardinal_alloc(mem_alloc, @sizeOf(std.Thread.Mutex));
     if (m == null) return false;
-    
+
     const mutex_ptr = @as(*std.Thread.Mutex, @ptrCast(@alignCast(m)));
     mutex_ptr.* = .{};
-    
+
     mutex.* = @ptrCast(mutex_ptr);
     return true;
 }
@@ -66,10 +66,10 @@ pub fn cardinal_mt_cond_init(cond: *types.cardinal_cond_t) bool {
     const mem_alloc = memory.cardinal_get_allocator_for_category(.RENDERER);
     const c_ptr = memory.cardinal_alloc(mem_alloc, @sizeOf(std.Thread.Condition));
     if (c_ptr == null) return false;
-    
+
     const cond_ptr = @as(*std.Thread.Condition, @ptrCast(@alignCast(c_ptr)));
     cond_ptr.* = .{};
-    
+
     cond.* = @ptrCast(cond_ptr);
     return true;
 }
@@ -138,7 +138,7 @@ fn cardinal_mt_worker_thread_func(arg: ?*anyopaque) void {
 
     while (g_cardinal_mt_subsystem.is_running) {
         const task = cardinal_mt_task_queue_pop(&g_cardinal_mt_subsystem.pending_queue);
-        
+
         if (task) |t| {
             if (t.execute_func) |exec| {
                 exec(t.data);
@@ -150,7 +150,7 @@ fn cardinal_mt_worker_thread_func(arg: ?*anyopaque) void {
                 // task->execute_func = record_func;
                 // So it is handled by execute_func.
             }
-            
+
             t.is_completed = true;
             cardinal_mt_task_queue_push(&g_cardinal_mt_subsystem.completed_queue, t);
         }
@@ -189,18 +189,18 @@ fn cardinal_mt_task_queue_init(queue: *types.CardinalMTTaskQueue) bool {
 
 fn cardinal_mt_task_queue_shutdown(queue: *types.CardinalMTTaskQueue) void {
     cardinal_mt_mutex_lock(&queue.queue_mutex);
-    
+
     // Free remaining tasks
     var current = queue.head;
     const allocator = memory.cardinal_get_allocator_for_category(.RENDERER);
-    
+
     while (current != null) {
         const curr = current;
         const next = curr.?.*.next;
-        
+
         // Free data if needed
         if (curr.?.*.data) |data| {
-             if (curr.?.*.type == types.CardinalMTTaskType.CARDINAL_MT_TASK_TEXTURE_LOAD) {
+            if (curr.?.*.type == types.CardinalMTTaskType.CARDINAL_MT_TASK_TEXTURE_LOAD) {
                 const ctx: *TextureLoadContext = @ptrCast(@alignCast(data));
                 memory.cardinal_free(allocator, ctx.file_path.ptr);
                 // Note: result_resource is ref counted, should be released if not picked up?
@@ -222,11 +222,11 @@ fn cardinal_mt_task_queue_shutdown(queue: *types.CardinalMTTaskQueue) void {
         memory.cardinal_free(allocator, curr);
         current = next;
     }
-    
+
     queue.head = null;
     queue.tail = null;
     queue.task_count = 0;
-    
+
     cardinal_mt_mutex_unlock(&queue.queue_mutex);
     cardinal_mt_mutex_destroy(&queue.queue_mutex);
     cardinal_mt_cond_destroy(&queue.queue_condition);
@@ -345,9 +345,9 @@ pub fn cardinal_mt_command_manager_shutdown(manager: *types.CardinalMTCommandMan
                 memory.cardinal_free(allocator, @ptrCast(pool.secondary_buffers));
                 pool.secondary_buffers = null;
             }
-            
+
             const vs = manager.vulkan_state.?;
-            
+
             if (pool.primary_pool != null) {
                 c.vkDestroyCommandPool(vs.context.device, pool.primary_pool, null);
                 pool.primary_pool = null;
@@ -359,7 +359,7 @@ pub fn cardinal_mt_command_manager_shutdown(manager: *types.CardinalMTCommandMan
             pool.is_active = false;
         }
     }
-    
+
     // Free thread pools array
     if (manager.thread_pools != null) {
         const allocator = memory.cardinal_get_allocator_for_category(.RENDERER);
@@ -407,11 +407,11 @@ pub fn cardinal_mt_get_thread_command_pool(manager: *types.CardinalMTCommandMana
 
     const pool = free_pool.?;
     pool.thread_id = thread_id;
-    
+
     // Create pools
     const vs = manager.vulkan_state.?;
     const queue_family_index = vs.context.graphics_queue_family;
-    
+
     var pool_info = c.VkCommandPoolCreateInfo{
         .sType = c.VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO,
         .pNext = null,
@@ -436,7 +436,7 @@ pub fn cardinal_mt_get_thread_command_pool(manager: *types.CardinalMTCommandMana
     pool.secondary_buffer_count = types.CARDINAL_MAX_SECONDARY_COMMAND_BUFFERS;
     const allocator = memory.cardinal_get_allocator_for_category(.RENDERER);
     pool.secondary_buffers = @ptrCast(@alignCast(memory.cardinal_alloc(allocator, @sizeOf(c.VkCommandBuffer) * pool.secondary_buffer_count)));
-    
+
     if (pool.secondary_buffers == null) {
         log.cardinal_log_error("[MT] Failed to allocate memory for secondary command buffers", .{});
         c.vkDestroyCommandPool(vs.context.device, pool.secondary_pool, null);
@@ -491,8 +491,8 @@ pub fn cardinal_mt_allocate_secondary_command_buffer(pool: *types.CardinalThread
 
     pool.next_secondary_index += 1;
     context.is_recording = false;
-    
-    context.thread_index = 0; 
+
+    context.thread_index = 0;
 
     return true;
 }
@@ -539,7 +539,7 @@ pub fn cardinal_mt_execute_secondary_command_buffers(primary_cmd: c.VkCommandBuf
     if (secondary_contexts.len == 0) return;
 
     const count = @as(u32, @intCast(secondary_contexts.len));
-    
+
     // Stack allocation for typical case
     var stack_buffers: [64]c.VkCommandBuffer = undefined;
     var buffers: [*]c.VkCommandBuffer = &stack_buffers;
@@ -578,15 +578,15 @@ pub fn cardinal_mt_reset_all_command_pools(manager: *types.CardinalMTCommandMana
     while (i < types.CARDINAL_MAX_MT_THREADS) : (i += 1) {
         var pool = &manager.thread_pools.?[i];
         if (pool.is_active) {
-             const device = manager.vulkan_state.?.context.device;
-             
-             // Reset secondary pool
-             if (pool.secondary_pool != null) {
-                 _ = c.vkResetCommandPool(device, pool.secondary_pool, 0);
-             }
-             
-             // Reset index
-             pool.next_secondary_index = 0;
+            const device = manager.vulkan_state.?.context.device;
+
+            // Reset secondary pool
+            if (pool.secondary_pool != null) {
+                _ = c.vkResetCommandPool(device, pool.secondary_pool, 0);
+            }
+
+            // Reset index
+            pool.next_secondary_index = 0;
         }
     }
 }
@@ -665,7 +665,7 @@ pub fn cardinal_mt_subsystem_init(vulkan_state: ?*types.VulkanState, worker_thre
         return false;
     }
     g_cardinal_mt_subsystem.worker_threads = @as([*]?types.cardinal_thread_handle_t, @ptrCast(@alignCast(threads_ptr)))[0..worker_thread_count];
-    
+
     // Initialize threads to null
     var k: u32 = 0;
     while (k < worker_thread_count) : (k += 1) {
@@ -676,7 +676,7 @@ pub fn cardinal_mt_subsystem_init(vulkan_state: ?*types.VulkanState, worker_thre
     while (i < worker_thread_count) : (i += 1) {
         if (!cardinal_mt_create_thread(&g_cardinal_mt_subsystem.worker_threads[i], null)) {
             log.cardinal_log_error("[MT] Failed to create worker thread {d}", .{i});
-            
+
             g_cardinal_mt_subsystem.is_running = false;
             cardinal_mt_cond_broadcast(&g_cardinal_mt_subsystem.pending_queue.queue_condition);
 
@@ -686,7 +686,7 @@ pub fn cardinal_mt_subsystem_init(vulkan_state: ?*types.VulkanState, worker_thre
                     cardinal_mt_join_thread(thread);
                 }
             }
-            
+
             memory.cardinal_free(allocator, threads_ptr);
             g_cardinal_mt_subsystem.worker_threads = &.{};
 
@@ -716,7 +716,7 @@ pub fn cardinal_mt_subsystem_shutdown() void {
             cardinal_mt_join_thread(thread);
         }
     }
-    
+
     // Free worker threads array
     if (g_cardinal_mt_subsystem.worker_threads.len > 0) {
         const allocator = memory.cardinal_get_allocator_for_category(.RENDERER);
@@ -794,11 +794,11 @@ pub fn cardinal_mt_process_completed_tasks(max_tasks: u32) void {
 fn execute_texture_load(data: ?*anyopaque) void {
     if (data == null) return;
     const ctx: *TextureLoadContext = @ptrCast(@alignCast(data));
-    
+
     // Use the existing texture loader
     var tex_data: texture_loader.TextureData = undefined;
     const ref_res = texture_loader.texture_load_with_ref_counting(ctx.file_path.ptr, &tex_data);
-    
+
     if (ref_res) |res| {
         ctx.result_resource = res;
     } else {
@@ -807,7 +807,7 @@ fn execute_texture_load(data: ?*anyopaque) void {
     }
 }
 
-pub fn cardinal_mt_create_texture_load_task(file_path: []const u8, callback: ?*const fn(?*anyopaque, bool) void) ?*types.CardinalMTTask {
+pub fn cardinal_mt_create_texture_load_task(file_path: []const u8, callback: ?*const fn (?*anyopaque, bool) void) ?*types.CardinalMTTask {
     if (file_path.len == 0) {
         log.cardinal_log_error("[MT] Invalid file path for texture load task", .{});
         return null;
@@ -828,7 +828,7 @@ pub fn cardinal_mt_create_texture_load_task(file_path: []const u8, callback: ?*c
         return null;
     }
     const ctx: *TextureLoadContext = @ptrCast(@alignCast(ctx_ptr));
-    
+
     // Copy string
     const path_copy_ptr = memory.cardinal_alloc(allocator, file_path.len + 1);
     if (path_copy_ptr == null) {
@@ -836,11 +836,11 @@ pub fn cardinal_mt_create_texture_load_task(file_path: []const u8, callback: ?*c
         memory.cardinal_free(allocator, task_ptr);
         return null;
     }
-    
+
     const path_slice = @as([*]u8, @ptrCast(path_copy_ptr))[0..file_path.len];
     @memcpy(path_slice, file_path);
     @as([*]u8, @ptrCast(path_copy_ptr))[file_path.len] = 0;
-    
+
     ctx.file_path = @as([*:0]u8, @ptrCast(path_copy_ptr))[0..file_path.len :0];
     ctx.result_resource = null;
 
@@ -858,13 +858,13 @@ pub fn cardinal_mt_create_texture_load_task(file_path: []const u8, callback: ?*c
 fn execute_mesh_load(data: ?*anyopaque) void {
     if (data == null) return;
     const ctx: *MeshLoadContext = @ptrCast(@alignCast(data));
-    
+
     const allocator = memory.cardinal_get_allocator_for_category(.RENDERER);
     const scene_ptr = memory.cardinal_alloc(allocator, @sizeOf(scene.CardinalScene));
     if (scene_ptr == null) return;
-    
+
     const s: *scene.CardinalScene = @ptrCast(@alignCast(scene_ptr));
-    
+
     if (gltf_loader.cardinal_gltf_load_scene(ctx.file_path.ptr, s)) {
         ctx.result_scene = s;
     } else {
@@ -874,7 +874,7 @@ fn execute_mesh_load(data: ?*anyopaque) void {
     }
 }
 
-pub fn cardinal_mt_create_mesh_load_task(file_path: []const u8, callback: ?*const fn(?*anyopaque, bool) void) ?*types.CardinalMTTask {
+pub fn cardinal_mt_create_mesh_load_task(file_path: []const u8, callback: ?*const fn (?*anyopaque, bool) void) ?*types.CardinalMTTask {
     if (file_path.len == 0) {
         log.cardinal_log_error("[MT] Invalid file path for mesh load task", .{});
         return null;
@@ -895,7 +895,7 @@ pub fn cardinal_mt_create_mesh_load_task(file_path: []const u8, callback: ?*cons
         return null;
     }
     const ctx: *MeshLoadContext = @ptrCast(@alignCast(ctx_ptr));
-    
+
     // Copy string
     const path_copy_ptr = memory.cardinal_alloc(allocator, file_path.len + 1);
     if (path_copy_ptr == null) {
@@ -903,11 +903,11 @@ pub fn cardinal_mt_create_mesh_load_task(file_path: []const u8, callback: ?*cons
         memory.cardinal_free(allocator, task_ptr);
         return null;
     }
-    
+
     const path_slice = @as([*]u8, @ptrCast(path_copy_ptr))[0..file_path.len];
     @memcpy(path_slice, file_path);
     @as([*]u8, @ptrCast(path_copy_ptr))[file_path.len] = 0;
-    
+
     ctx.file_path = @as([*:0]u8, @ptrCast(path_copy_ptr))[0..file_path.len :0];
     ctx.result_scene = null;
 
@@ -922,7 +922,7 @@ pub fn cardinal_mt_create_mesh_load_task(file_path: []const u8, callback: ?*cons
     return task;
 }
 
-pub fn cardinal_mt_create_command_record_task(record_func: ?*const fn(?*anyopaque) void, user_data: ?*anyopaque, callback: ?*const fn(?*anyopaque, bool) void) ?*types.CardinalMTTask {
+pub fn cardinal_mt_create_command_record_task(record_func: ?*const fn (?*anyopaque) void, user_data: ?*anyopaque, callback: ?*const fn (?*anyopaque, bool) void) ?*types.CardinalMTTask {
     const allocator = memory.cardinal_get_allocator_for_category(.RENDERER);
     const task_ptr = memory.cardinal_alloc(allocator, @sizeOf(types.CardinalMTTask));
     if (task_ptr == null) {

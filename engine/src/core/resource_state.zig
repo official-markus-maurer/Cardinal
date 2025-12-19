@@ -38,7 +38,7 @@ pub const CardinalResourceStateTracker = struct {
 };
 
 pub const CardinalResourceStateRegistry = struct {
-    buckets: ?[*] ?*CardinalResourceStateTracker,
+    buckets: ?[*]?*CardinalResourceStateTracker,
     bucket_count: usize,
     registry_mutex: types.cardinal_mutex_t,
     total_tracked_resources: u32,
@@ -71,10 +71,10 @@ fn get_timestamp_ms() u64 {
 
 fn find_state_tracker_unsafe(identifier: ?[*:0]const u8) ?*CardinalResourceStateTracker {
     if (!g_state_registry.initialized or identifier == null) return null;
-    
+
     const hash = hash_string(identifier.?);
     const bucket_index = hash % g_state_registry.bucket_count;
-    
+
     var current = g_state_registry.buckets.?[bucket_index];
     while (current) |curr| {
         if (c.strcmp(curr.identifier, identifier) == 0) {
@@ -97,7 +97,7 @@ pub export fn cardinal_resource_state_init(bucket_count: usize) callconv(.c) boo
 
     const size = count * @sizeOf(?*CardinalResourceStateTracker);
     const ptr = allocator.alloc(allocator, size, 0);
-    
+
     if (ptr) |p| {
         g_state_registry.buckets = @ptrCast(@alignCast(p));
         _ = c.memset(p, 0, size);
@@ -333,7 +333,7 @@ pub export fn cardinal_resource_state_set(identifier: ?[*:0]const u8, new_state:
     }
 
     if (!valid_transition) {
-        std.log.err("Invalid state transition for resource '{s}': {d} -> {d}", .{if (identifier) |id| std.mem.span(id) else "null", @intFromEnum(old_state), @intFromEnum(new_state)});
+        std.log.err("Invalid state transition for resource '{s}': {d} -> {d}", .{ if (identifier) |id| std.mem.span(id) else "null", @intFromEnum(old_state), @intFromEnum(new_state) });
         vulkan_mt.cardinal_mt_mutex_unlock(&tracker.?.state_mutex);
         return false;
     }
@@ -350,7 +350,7 @@ pub export fn cardinal_resource_state_set(identifier: ?[*:0]const u8, new_state:
     vulkan_mt.cardinal_mt_cond_broadcast(&tracker.?.state_changed);
     vulkan_mt.cardinal_mt_mutex_unlock(&tracker.?.state_mutex);
 
-    std.log.debug("Resource '{s}' state changed: {d} -> {d} (thread {d})", .{if (identifier) |id| std.mem.span(id) else "null", @intFromEnum(old_state), @intFromEnum(new_state), loading_thread_id});
+    std.log.debug("Resource '{s}' state changed: {d} -> {d} (thread {d})", .{ if (identifier) |id| std.mem.span(id) else "null", @intFromEnum(old_state), @intFromEnum(new_state), loading_thread_id });
     return true;
 }
 
@@ -376,7 +376,7 @@ pub export fn cardinal_resource_state_wait_for(identifier: ?[*:0]const u8, targe
             const elapsed = get_timestamp_ms() - start_time;
             if (elapsed >= timeout_ms) {
                 vulkan_mt.cardinal_mt_mutex_unlock(&tracker.?.state_mutex);
-                std.log.warn("Timeout waiting for resource '{s}' to reach state {d}", .{if (identifier) |id| std.mem.span(id) else "null", @intFromEnum(target_state)});
+                std.log.warn("Timeout waiting for resource '{s}' to reach state {d}", .{ if (identifier) |id| std.mem.span(id) else "null", @intFromEnum(target_state) });
                 return false;
             }
 
@@ -421,7 +421,7 @@ pub export fn cardinal_resource_state_try_acquire_loading(identifier: ?[*:0]cons
     vulkan_mt.cardinal_mt_mutex_unlock(&tracker.?.state_mutex);
 
     if (acquired) {
-        std.log.debug("Thread {d} acquired loading access for resource '{s}'", .{loading_thread_id, if (identifier) |id| std.mem.span(id) else "null"});
+        std.log.debug("Thread {d} acquired loading access for resource '{s}'", .{ loading_thread_id, if (identifier) |id| std.mem.span(id) else "null" });
     }
 
     return acquired;

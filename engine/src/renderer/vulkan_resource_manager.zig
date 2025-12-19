@@ -24,7 +24,7 @@ pub export fn vulkan_resource_manager_init(manager: ?*VulkanResourceManager, vul
         return c.VK_ERROR_INITIALIZATION_FAILED;
     }
     const mgr = manager.?;
-    
+
     @memset(@as([*]u8, @ptrCast(mgr))[0..@sizeOf(VulkanResourceManager)], 0);
     mgr.vulkan_state = vulkan_state.?;
     mgr.initialized = true;

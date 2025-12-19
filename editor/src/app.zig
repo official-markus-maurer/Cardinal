@@ -36,7 +36,7 @@ pub const EditorApp = struct {
     window: ?*window.CardinalWindow,
     renderer: types.CardinalRenderer,
     config: EditorConfig,
-    
+
     // Track initialization state to ensure proper cleanup order
     memory_initialized: bool = false,
     ref_counting_initialized: bool = false,
@@ -136,15 +136,10 @@ pub const EditorApp = struct {
             self.window_initialized = false;
             return error.RendererCreateFailed;
         }
-        
+
         // Set device loss callbacks
-        vulkan_renderer.cardinal_renderer_set_device_loss_callbacks(
-            &self.renderer, 
-            editor_layer.on_device_loss, 
-            editor_layer.on_device_restored, 
-            null
-        );
-        
+        vulkan_renderer.cardinal_renderer_set_device_loss_callbacks(&self.renderer, editor_layer.on_device_loss, editor_layer.on_device_restored, null);
+
         self.renderer_initialized = true;
     }
 
@@ -195,7 +190,7 @@ pub const EditorApp = struct {
         if (self.editor_layer_initialized) {
             editor_layer.shutdown();
         }
-        
+
         if (self.renderer_initialized) {
             vulkan_renderer.cardinal_renderer_destroy(&self.renderer);
         }

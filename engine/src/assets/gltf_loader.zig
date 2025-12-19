@@ -49,12 +49,12 @@ fn lookup_cached_path(original_uri: []const u8) ?[]const u8 {
 
     const index = texture_cache_hash(original_uri);
     const entry = &g_texture_path_cache[index];
-    
+
     if (entry.valid) {
         const cached_uri = std.mem.span(@as([*:0]const u8, @ptrCast(&entry.original_uri)));
         if (std.mem.eql(u8, cached_uri, original_uri)) {
             const resolved = std.mem.span(@as([*:0]const u8, @ptrCast(&entry.resolved_path)));
-            log.cardinal_log_debug("Cache hit for texture: {s} -> {s}", .{original_uri, resolved});
+            log.cardinal_log_debug("Cache hit for texture: {s} -> {s}", .{ original_uri, resolved });
             return resolved;
         }
     }
@@ -66,17 +66,17 @@ fn cache_texture_path(original_uri: []const u8, resolved_path: []const u8) void 
 
     const index = texture_cache_hash(original_uri);
     const entry = &g_texture_path_cache[index];
-    
+
     const uri_len = @min(original_uri.len, entry.original_uri.len - 1);
     @memcpy(entry.original_uri[0..uri_len], original_uri[0..uri_len]);
     entry.original_uri[uri_len] = 0;
-    
+
     const path_len = @min(resolved_path.len, entry.resolved_path.len - 1);
     @memcpy(entry.resolved_path[0..path_len], resolved_path[0..path_len]);
     entry.resolved_path[path_len] = 0;
-    
+
     entry.valid = true;
-    log.cardinal_log_debug("Cached texture path: {s} -> {s}", .{original_uri, resolved_path});
+    log.cardinal_log_debug("Cached texture path: {s} -> {s}", .{ original_uri, resolved_path });
 }
 
 fn try_texture_path(path: [:0]const u8, tex_data: *texture_loader.TextureData) ?*ref_counting.CardinalRefCountedResource {
@@ -90,11 +90,7 @@ fn has_common_texture_pattern(uri: []const u8) bool {
         return true;
     }
 
-    const patterns = [_][]const u8{
-        "diffuse", "albedo", "basecolor", "color", "normal", "bump",
-        "height", "roughness", "metallic", "metalness", "specular", "ao",
-        "ambient", "occlusion", "emission", "emissive"
-    };
+    const patterns = [_][]const u8{ "diffuse", "albedo", "basecolor", "color", "normal", "bump", "height", "roughness", "metallic", "metalness", "specular", "ao", "ambient", "occlusion", "emission", "emissive" };
 
     var lower_uri_buf: [256]u8 = undefined;
     const len = @min(uri.len, 255);
@@ -109,9 +105,9 @@ fn has_common_texture_pattern(uri: []const u8) bool {
 fn try_optimized_fallback_paths(original_uri: []const u8, base_path: []const u8, texture_path_buf: []u8, tex_data: *texture_loader.TextureData) ?*ref_counting.CardinalRefCountedResource {
     var filename_only = original_uri;
     if (std.mem.lastIndexOfScalar(u8, original_uri, '/')) |idx| {
-        filename_only = original_uri[idx+1..];
+        filename_only = original_uri[idx + 1 ..];
     } else if (std.mem.lastIndexOfScalar(u8, original_uri, '\\')) |idx| {
-        filename_only = original_uri[idx+1..];
+        filename_only = original_uri[idx + 1 ..];
     }
 
     var dir_end: ?usize = null;
@@ -124,12 +120,12 @@ fn try_optimized_fallback_paths(original_uri: []const u8, base_path: []const u8,
 
     // 1. Relative to glTF file
     if (dir_end) |end| {
-        const dir = base_path[0..end+1];
-        const path = std.fmt.bufPrintZ(texture_path_buf, "{s}{s}", .{dir, original_uri}) catch return null;
+        const dir = base_path[0 .. end + 1];
+        const path = std.fmt.bufPrintZ(texture_path_buf, "{s}{s}", .{ dir, original_uri }) catch return null;
         if (try_texture_path(path, tex_data)) |res| return res;
 
         if (!std.mem.eql(u8, filename_only, original_uri)) {
-            const path2 = std.fmt.bufPrintZ(texture_path_buf, "{s}{s}", .{dir, filename_only}) catch return null;
+            const path2 = std.fmt.bufPrintZ(texture_path_buf, "{s}{s}", .{ dir, filename_only }) catch return null;
             if (try_texture_path(path2, tex_data)) |res| return res;
         }
     } else {
@@ -138,22 +134,17 @@ fn try_optimized_fallback_paths(original_uri: []const u8, base_path: []const u8,
     }
 
     // 2. Common asset directories
-    const common_dirs = [_][]const u8{
-        "assets/textures/",
-        "assets/models/textures/",
-        "textures/",
-        "models/textures/"
-    };
+    const common_dirs = [_][]const u8{ "assets/textures/", "assets/models/textures/", "textures/", "models/textures/" };
 
     for (common_dirs) |dir| {
-        const path = std.fmt.bufPrintZ(texture_path_buf, "{s}{s}", .{dir, filename_only}) catch continue;
+        const path = std.fmt.bufPrintZ(texture_path_buf, "{s}{s}", .{ dir, filename_only }) catch continue;
         if (try_texture_path(path, tex_data)) |res| return res;
     }
 
     // 3. Parallel textures directory
     if (dir_end) |end| {
-        const dir = base_path[0..end+1];
-        const path = std.fmt.bufPrintZ(texture_path_buf, "{s}../textures/{s}", .{dir, filename_only}) catch return null;
+        const dir = base_path[0 .. end + 1];
+        const path = std.fmt.bufPrintZ(texture_path_buf, "{s}../textures/{s}", .{ dir, filename_only }) catch return null;
         if (try_texture_path(path, tex_data)) |res| return res;
     }
 
@@ -184,7 +175,7 @@ fn create_fallback_texture(out_texture: *scene.CardinalTexture) bool {
     } else {
         const data = c.malloc(16);
         if (data == null) return false;
-        
+
         const pixels: [*]u8 = @ptrCast(data);
         var i: usize = 0;
         while (i < 4) : (i += 1) {
@@ -205,7 +196,7 @@ fn create_fallback_texture(out_texture: *scene.CardinalTexture) bool {
 
     const path_ptr = c.malloc(fallback_id.len + 1);
     if (path_ptr) |ptr| {
-        const slice = @as([*]u8, @ptrCast(ptr))[0..fallback_id.len+1];
+        const slice = @as([*]u8, @ptrCast(ptr))[0 .. fallback_id.len + 1];
         @memcpy(slice[0..fallback_id.len], fallback_id);
         slice[fallback_id.len] = 0;
         out_texture.path = @ptrCast(ptr);
@@ -229,13 +220,13 @@ fn load_texture_with_fallback(original_uri: [*:0]const u8, base_path: [*:0]const
         var cached_path_z: [512]u8 = undefined;
         @memcpy(cached_path_z[0..cached_path.len], cached_path);
         cached_path_z[cached_path.len] = 0;
-        
+
         if (texture_loader.texture_load_with_ref_counting(&cached_path_z, &tex_data)) |ref| {
             out_texture.data = tex_data.data;
             out_texture.width = tex_data.width;
             out_texture.height = tex_data.height;
             out_texture.channels = tex_data.channels;
-            
+
             const path_ptr = c.malloc(cached_path.len + 1);
             if (path_ptr) |ptr| {
                 @memcpy(@as([*]u8, @ptrCast(ptr))[0..cached_path.len], cached_path);
@@ -292,14 +283,14 @@ fn load_texture_with_fallback(original_uri: [*:0]const u8, base_path: [*:0]const
             out_texture.path = @ptrCast(ptr);
         }
         out_texture.ref_resource = res;
-        log.cardinal_log_info("Loaded texture {s}: {d}x{d}, {d} channels", .{path, tex_data.width, tex_data.height, tex_data.channels});
+        log.cardinal_log_info("Loaded texture {s}: {d}x{d}, {d} channels", .{ path, tex_data.width, tex_data.height, tex_data.channels });
         return true;
     }
 
     // Advanced fallback logic omitted for brevity as it's complex and rarely hit if optimized paths work.
     // Implementing basic decomposition if needed.
     // For now, let's fallback to create_fallback_texture.
-    
+
     log.cardinal_log_warn("Failed to load texture '{s}' from all paths, using fallback", .{uri});
     return create_fallback_texture(out_texture);
 }
@@ -318,8 +309,7 @@ fn extract_texture_transform(texture_view: *const c.cgltf_texture_view, out_tran
         out_transform.scale[0] = transform.scale[0];
         out_transform.scale[1] = transform.scale[1];
         out_transform.rotation = transform.rotation;
-        log.cardinal_log_debug("Texture transform: offset=({d:.3},{d:.3}), scale=({d:.3},{d:.3}), rotation={d:.3}", 
-            .{out_transform.offset[0], out_transform.offset[1], out_transform.scale[0], out_transform.scale[1], out_transform.rotation});
+        log.cardinal_log_debug("Texture transform: offset=({d:.3},{d:.3}), scale=({d:.3},{d:.3}), rotation={d:.3}", .{ out_transform.offset[0], out_transform.offset[1], out_transform.scale[0], out_transform.scale[1], out_transform.rotation });
     }
 }
 
@@ -391,26 +381,33 @@ fn process_node(data: *const c.cgltf_data, node: *const c.cgltf_node, parent_tra
         const translation = if (node.has_translation != 0) &node.translation else null;
         const rotation = if (node.has_rotation != 0) &node.rotation else null;
         const scale = if (node.has_scale != 0) &node.scale else null;
-        
+
         // Convert to f32 arrays
         var t: [3]f32 = undefined;
         var r: [4]f32 = undefined;
         var s: [3]f32 = undefined;
-        
+
         var t_ptr: ?*const [3]f32 = null;
         var r_ptr: ?*const [4]f32 = null;
         var s_ptr: ?*const [3]f32 = null;
 
         if (translation) |src| {
-            t[0] = @floatCast(src[0]); t[1] = @floatCast(src[1]); t[2] = @floatCast(src[2]);
+            t[0] = @floatCast(src[0]);
+            t[1] = @floatCast(src[1]);
+            t[2] = @floatCast(src[2]);
             t_ptr = &t;
         }
         if (rotation) |src| {
-            r[0] = @floatCast(src[0]); r[1] = @floatCast(src[1]); r[2] = @floatCast(src[2]); r[3] = @floatCast(src[3]);
+            r[0] = @floatCast(src[0]);
+            r[1] = @floatCast(src[1]);
+            r[2] = @floatCast(src[2]);
+            r[3] = @floatCast(src[3]);
             r_ptr = &r;
         }
         if (scale) |src| {
-            s[0] = @floatCast(src[0]); s[1] = @floatCast(src[1]); s[2] = @floatCast(src[2]);
+            s[0] = @floatCast(src[0]);
+            s[1] = @floatCast(src[1]);
+            s[2] = @floatCast(src[2]);
             s_ptr = &s;
         }
 
@@ -426,7 +423,7 @@ fn process_node(data: *const c.cgltf_data, node: *const c.cgltf_node, parent_tra
 
     if (node.mesh) |mesh| {
         const mesh_index = (@intFromPtr(mesh) - @intFromPtr(data.meshes)) / @sizeOf(c.cgltf_mesh);
-        
+
         var cardinal_mesh_index: usize = 0;
         var mi: usize = 0;
         while (mi < mesh_index) : (mi += 1) {
@@ -470,10 +467,10 @@ fn build_scene_node(data: *const c.cgltf_data, gltf_node: *const c.cgltf_node, m
             local_transform[i] = @floatCast(gltf_node.matrix[i]);
         }
     } else {
-        var t: [3]f32 = .{0,0,0};
-        var r: [4]f32 = .{0,0,0,1};
-        var s: [3]f32 = .{1,1,1};
-        
+        var t: [3]f32 = .{ 0, 0, 0 };
+        var r: [4]f32 = .{ 0, 0, 0, 1 };
+        var s: [3]f32 = .{ 1, 1, 1 };
+
         if (gltf_node.has_translation != 0) {
             t[0] = @floatCast(gltf_node.translation[0]);
             t[1] = @floatCast(gltf_node.translation[1]);
@@ -497,7 +494,7 @@ fn build_scene_node(data: *const c.cgltf_data, gltf_node: *const c.cgltf_node, m
     if (gltf_node.mesh) |m| {
         const mesh_idx = (@intFromPtr(m) - @intFromPtr(data.meshes)) / @sizeOf(c.cgltf_mesh);
         const primitive_count = m.*.primitives_count;
-        
+
         if (primitive_count > 0) {
             node.mesh_indices = @ptrCast(@alignCast(c.malloc(primitive_count * @sizeOf(u32))));
             if (node.mesh_indices == null) {
@@ -565,7 +562,7 @@ fn load_skins_from_gltf(data: *const c.cgltf_data, out_skins: *?[*]animation.Car
             const name = std.fmt.bufPrintZ(&buf, "Skin_{d}", .{i}) catch "Skin";
             skin.name = @ptrCast(c.malloc(name.len + 1));
             if (skin.name) |ptr| {
-                 _ = c.strcpy(ptr, name);
+                _ = c.strcpy(ptr, name);
             }
         }
 
@@ -587,20 +584,20 @@ fn load_skins_from_gltf(data: *const c.cgltf_data, out_skins: *?[*]animation.Car
                 const joint_node_idx = (@intFromPtr(gltf_skin.joints[j]) - @intFromPtr(data.nodes)) / @sizeOf(c.cgltf_node);
                 skin.bones.?[j].node_index = @intCast(joint_node_idx);
                 skin.bones.?[j].parent_index = std.math.maxInt(u32);
-                
-                const identity = [16]f32{1,0,0,0, 0,1,0,0, 0,0,1,0, 0,0,0,1};
+
+                const identity = [16]f32{ 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1 };
                 @memcpy(&skin.bones.?[j].inverse_bind_matrix, &identity);
                 @memcpy(&skin.bones.?[j].current_matrix, &identity);
             }
         }
 
         if (gltf_skin.inverse_bind_matrices) |accessor| {
-             if (accessor.*.type == c.cgltf_type_mat4 and accessor.*.component_type == c.cgltf_component_type_r_32f) {
-                 var j: usize = 0;
-                 while (j < skin.bone_count) : (j += 1) {
-                     _ = c.cgltf_accessor_read_float(accessor, j, &skin.bones.?[j].inverse_bind_matrix[0], 16);
-                 }
-             }
+            if (accessor.*.type == c.cgltf_type_mat4 and accessor.*.component_type == c.cgltf_component_type_r_32f) {
+                var j: usize = 0;
+                while (j < skin.bone_count) : (j += 1) {
+                    _ = c.cgltf_accessor_read_float(accessor, j, &skin.bones.?[j].inverse_bind_matrix[0], 16);
+                }
+            }
         }
     }
 
@@ -621,9 +618,9 @@ fn load_animations_from_gltf(data: *const c.cgltf_data, anim_system: *animation.
         if (gltf_anim.name) |name| {
             anim.name = c.strdup(name);
         } else {
-             var buf: [32]u8 = undefined;
-             const name = std.fmt.bufPrintZ(&buf, "Animation_{d}", .{i}) catch "Animation";
-             anim.name = c.strdup(name.ptr);
+            var buf: [32]u8 = undefined;
+            const name = std.fmt.bufPrintZ(&buf, "Animation_{d}", .{i}) catch "Animation";
+            anim.name = c.strdup(name.ptr);
         }
 
         anim.sampler_count = @intCast(gltf_anim.samplers_count);
@@ -664,7 +661,7 @@ fn load_animations_from_gltf(data: *const c.cgltf_data, anim_system: *animation.
                             c.cgltf_type_vec4 => comp_count = 4,
                             else => comp_count = 1,
                         }
-                        
+
                         sampler.output = @ptrCast(@alignCast(c.malloc(sampler.output_count * comp_count * @sizeOf(f32))));
                         if (sampler.output) |ptr| {
                             _ = c.cgltf_accessor_read_float(acc, 0, ptr, sampler.output_count * comp_count);
@@ -681,8 +678,8 @@ fn load_animations_from_gltf(data: *const c.cgltf_data, anim_system: *animation.
                 if (anim.samplers) |samplers| {
                     var s: usize = 0;
                     while (s < anim.sampler_count) : (s += 1) {
-                         c.free(samplers[s].input);
-                         c.free(samplers[s].output);
+                        c.free(samplers[s].input);
+                        c.free(samplers[s].output);
                     }
                     c.free(anim.samplers);
                 }
@@ -724,8 +721,8 @@ fn load_animations_from_gltf(data: *const c.cgltf_data, anim_system: *animation.
         if (anim.samplers) |samplers| {
             var s: usize = 0;
             while (s < anim.sampler_count) : (s += 1) {
-                    c.free(samplers[s].input);
-                    c.free(samplers[s].output);
+                c.free(samplers[s].input);
+                c.free(samplers[s].output);
             }
             c.free(anim.samplers);
         }
@@ -733,7 +730,7 @@ fn load_animations_from_gltf(data: *const c.cgltf_data, anim_system: *animation.
             c.free(channels);
         }
     }
-    
+
     log.cardinal_log_info("Loaded {d} animations from GLTF", .{data.animations_count});
     return true;
 }
@@ -747,13 +744,13 @@ pub export fn cardinal_gltf_load_scene(path: [*:0]const u8, out_scene: *scene.Ca
 
     const result = c.cgltf_parse_file(&options, path, &data);
     if (result != c.cgltf_result_success) {
-        log.cardinal_log_error("cgltf_parse_file failed: {d} for {s}", .{result, path});
+        log.cardinal_log_error("cgltf_parse_file failed: {d} for {s}", .{ result, path });
         return false;
     }
 
     const load_result = c.cgltf_load_buffers(&options, data, path);
     if (load_result != c.cgltf_result_success) {
-        log.cardinal_log_error("cgltf_load_buffers failed: {d} for {s}", .{load_result, path});
+        log.cardinal_log_error("cgltf_load_buffers failed: {d} for {s}", .{ load_result, path });
         c.cgltf_free(data);
         return false;
     }
@@ -778,7 +775,7 @@ pub export fn cardinal_gltf_load_scene(path: [*:0]const u8, out_scene: *scene.Ca
             while (i < d.textures_count) : (i += 1) {
                 const tex = &d.textures[i];
                 var success = false;
-                
+
                 if (tex.image != null) {
                     const img_idx = (@intFromPtr(tex.image) - @intFromPtr(d.images)) / @sizeOf(c.cgltf_image);
                     if (load_texture_from_gltf(d, img_idx, path, &textures.?[texture_count])) {
@@ -834,10 +831,10 @@ pub export fn cardinal_gltf_load_scene(path: [*:0]const u8, out_scene: *scene.Ca
             card_mat.ao_texture = std.math.maxInt(u32);
             card_mat.emissive_texture = std.math.maxInt(u32);
 
-            card_mat.albedo_factor = .{1,1,1};
+            card_mat.albedo_factor = .{ 1, 1, 1 };
             card_mat.metallic_factor = 0.0;
             card_mat.roughness_factor = 0.5;
-            card_mat.emissive_factor = .{0,0,0};
+            card_mat.emissive_factor = .{ 0, 0, 0 };
             card_mat.normal_scale = 1.0;
             card_mat.ao_strength = 1.0;
 
@@ -852,9 +849,7 @@ pub export fn cardinal_gltf_load_scene(path: [*:0]const u8, out_scene: *scene.Ca
                 card_mat.alpha_mode = .BLEND;
             }
 
-            const identity = scene.CardinalTextureTransform{
-                .offset = .{0,0}, .scale = .{1,1}, .rotation = 0
-            };
+            const identity = scene.CardinalTextureTransform{ .offset = .{ 0, 0 }, .scale = .{ 1, 1 }, .rotation = 0 };
             card_mat.albedo_transform = identity;
             card_mat.normal_transform = identity;
             card_mat.metallic_roughness_transform = identity;
@@ -969,11 +964,11 @@ pub export fn cardinal_gltf_load_scene(path: [*:0]const u8, out_scene: *scene.Ca
     mi = 0;
     while (mi < d.meshes_count) : (mi += 1) {
         const m = &d.meshes[mi];
-        
+
         var pi: usize = 0;
         while (pi < m.primitives_count) : (pi += 1) {
             const p = &m.primitives[pi];
-            
+
             // Attributes
             var pos_acc: ?*const c.cgltf_accessor = null;
             var nrm_acc: ?*const c.cgltf_accessor = null;
@@ -990,43 +985,49 @@ pub export fn cardinal_gltf_load_scene(path: [*:0]const u8, out_scene: *scene.Ca
                     c.cgltf_attribute_type_texcoord => uv_acc = a.data,
                     c.cgltf_attribute_type_joints => joints_acc = a.data,
                     c.cgltf_attribute_type_weights => weights_acc = a.data,
-                    else => {}
+                    else => {},
                 }
             }
 
             if (pos_acc == null) continue;
             const vcount = pos_acc.?.count;
-            
+
             const vertices = @as([*]scene.CardinalVertex, @ptrCast(@alignCast(c.calloc(vcount, @sizeOf(scene.CardinalVertex)))));
-            
+
             var vi: usize = 0;
             while (vi < vcount) : (vi += 1) {
-                var v: [3]f32 = .{0,0,0};
+                var v: [3]f32 = .{ 0, 0, 0 };
                 _ = c.cgltf_accessor_read_float(pos_acc, vi, &v[0], 3);
-                vertices[vi].px = v[0]; vertices[vi].py = v[1]; vertices[vi].pz = v[2];
-                
+                vertices[vi].px = v[0];
+                vertices[vi].py = v[1];
+                vertices[vi].pz = v[2];
+
                 if (nrm_acc) |acc| {
                     _ = c.cgltf_accessor_read_float(acc, vi, &v[0], 3);
-                    vertices[vi].nx = v[0]; vertices[vi].ny = v[1]; vertices[vi].nz = v[2];
+                    vertices[vi].nx = v[0];
+                    vertices[vi].ny = v[1];
+                    vertices[vi].nz = v[2];
                 } else {
-                    vertices[vi].nx = 0; vertices[vi].ny = 1; vertices[vi].nz = 0;
+                    vertices[vi].nx = 0;
+                    vertices[vi].ny = 1;
+                    vertices[vi].nz = 0;
                 }
 
                 if (uv_acc) |acc| {
-                    var uv: [2]f32 = .{0,0};
+                    var uv: [2]f32 = .{ 0, 0 };
                     _ = c.cgltf_accessor_read_float(acc, vi, &uv[0], 2);
                     vertices[vi].u = uv[0];
                     vertices[vi].v = 1.0 - uv[1];
                 }
 
                 if (joints_acc) |acc| {
-                    var j: [4]u32 = .{0,0,0,0};
+                    var j: [4]u32 = .{ 0, 0, 0, 0 };
                     _ = c.cgltf_accessor_read_uint(acc, vi, &j[0], 4);
                     vertices[vi].bone_indices = j;
                 }
 
                 if (weights_acc) |acc| {
-                    var w: [4]f32 = .{0,0,0,0};
+                    var w: [4]f32 = .{ 0, 0, 0, 0 };
                     _ = c.cgltf_accessor_read_float(acc, vi, &w[0], 4);
                     vertices[vi].bone_weights = w;
                 }
@@ -1059,7 +1060,7 @@ pub export fn cardinal_gltf_load_scene(path: [*:0]const u8, out_scene: *scene.Ca
             dst.vertex_count = @intCast(vcount);
             dst.indices = indices;
             dst.index_count = index_count;
-            
+
             if (p.material) |mat| {
                 const mat_idx = (@intFromPtr(mat) - @intFromPtr(d.materials)) / @sizeOf(c.cgltf_material);
                 if (mat_idx < material_count) {
@@ -1072,7 +1073,10 @@ pub export fn cardinal_gltf_load_scene(path: [*:0]const u8, out_scene: *scene.Ca
             }
 
             dst.transform = std.mem.zeroes([16]f32);
-            dst.transform[0] = 1; dst.transform[5] = 1; dst.transform[10] = 1; dst.transform[15] = 1;
+            dst.transform[0] = 1;
+            dst.transform[5] = 1;
+            dst.transform[10] = 1;
+            dst.transform[15] = 1;
             dst.visible = true;
         }
     }
@@ -1160,25 +1164,25 @@ pub export fn cardinal_gltf_load_scene(path: [*:0]const u8, out_scene: *scene.Ca
                 if (all[ni]) |node| {
                     const gltf_node = &d.nodes[ni];
                     if (gltf_node.skin != null) {
-                         const skin_idx = (@intFromPtr(gltf_node.skin) - @intFromPtr(d.skins)) / @sizeOf(c.cgltf_skin);
-                         node.skin_index = @intCast(skin_idx);
-                         
-                         if (skin_idx < skin_count) {
-                             const skin = &skins.?[skin_idx];
-                             // Add meshes to skin
-                             if (node.mesh_count > 0) {
-                                 const new_count = skin.mesh_count + node.mesh_count;
-                                 const new_indices = c.realloc(skin.mesh_indices, new_count * @sizeOf(u32));
-                                 if (new_indices != null) {
-                                     skin.mesh_indices = @ptrCast(@alignCast(new_indices));
-                                     var m: usize = 0;
-                                     while (m < node.mesh_count) : (m += 1) {
-                                         skin.mesh_indices.?[skin.mesh_count + m] = node.mesh_indices.?[m];
-                                     }
-                                     skin.mesh_count = new_count;
-                                 }
-                             }
-                         }
+                        const skin_idx = (@intFromPtr(gltf_node.skin) - @intFromPtr(d.skins)) / @sizeOf(c.cgltf_skin);
+                        node.skin_index = @intCast(skin_idx);
+
+                        if (skin_idx < skin_count) {
+                            const skin = &skins.?[skin_idx];
+                            // Add meshes to skin
+                            if (node.mesh_count > 0) {
+                                const new_count = skin.mesh_count + node.mesh_count;
+                                const new_indices = c.realloc(skin.mesh_indices, new_count * @sizeOf(u32));
+                                if (new_indices != null) {
+                                    skin.mesh_indices = @ptrCast(@alignCast(new_indices));
+                                    var m: usize = 0;
+                                    while (m < node.mesh_count) : (m += 1) {
+                                        skin.mesh_indices.?[skin.mesh_count + m] = node.mesh_indices.?[m];
+                                    }
+                                    skin.mesh_count = new_count;
+                                }
+                            }
+                        }
                     } else {
                         node.skin_index = std.math.maxInt(u32);
                     }
@@ -1202,11 +1206,11 @@ pub export fn cardinal_gltf_load_scene(path: [*:0]const u8, out_scene: *scene.Ca
         while (j < skin.bone_count) : (j += 1) {
             const joint_node_index = skin.bones.?[j].node_index;
             if (joint_node_index < out_scene.all_node_count) {
-                 if (out_scene.all_nodes.?[joint_node_index]) |node| {
-                     node.is_bone = true;
-                     node.bone_index = @intCast(j);
-                     node.skin_index = @intCast(s);
-                 }
+                if (out_scene.all_nodes.?[joint_node_index]) |node| {
+                    node.is_bone = true;
+                    node.bone_index = @intCast(j);
+                    node.skin_index = @intCast(s);
+                }
             }
         }
     }

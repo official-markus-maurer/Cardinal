@@ -131,19 +131,17 @@ fn set_material_properties(pushConstants: *types.PBRPushConstants, material: *co
     pushConstants.roughnessFactor = material.roughness_factor;
     pushConstants.normalScale = material.normal_scale;
     pushConstants.aoStrength = material.ao_strength;
-    
+
     // Pack flags
     pushConstants.flags = 0;
     pushConstants.flags |= (@as(u32, @intCast(@intFromEnum(material.alpha_mode))) & 3); // Bits 0-1: Alpha Mode
     // Skeleton bit (bit 2) will be set in vk_pbr_render
     // Descriptor indexing bit (bit 3) is set below
-    
+
     pushConstants.alphaCutoff = material.alpha_cutoff;
 }
 
-pub export fn vk_material_setup_push_constants(pushConstants: ?*types.PBRPushConstants, mesh: ?*const types.CardinalMesh,
-                                      scene: ?*const types.CardinalScene,
-                                      textureManager: ?*const types.VulkanTextureManager) callconv(.c) void {
+pub export fn vk_material_setup_push_constants(pushConstants: ?*types.PBRPushConstants, mesh: ?*const types.CardinalMesh, scene: ?*const types.CardinalScene, textureManager: ?*const types.VulkanTextureManager) callconv(.c) void {
     if (pushConstants == null or mesh == null or scene == null) {
         return;
     }

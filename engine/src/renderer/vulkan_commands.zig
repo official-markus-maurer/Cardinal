@@ -28,14 +28,12 @@ fn create_command_pools(s: *types.VulkanState) bool {
     const mem_alloc = memory.cardinal_get_allocator_for_category(.RENDERER);
     const pools_ptr = memory.cardinal_alloc(mem_alloc, s.sync.max_frames_in_flight * @sizeOf(c.VkCommandPool));
     if (pools_ptr == null) return false;
-    
+
     s.commands.pools = @as([*]c.VkCommandPool, @ptrCast(@alignCast(pools_ptr)));
-    
+
     var i: u32 = 0;
     while (i < s.sync.max_frames_in_flight) : (i += 1) {
-        if (!vk_utils.vk_utils_create_command_pool(s.context.device, s.context.graphics_queue_family,
-                                          c.VK_COMMAND_POOL_CREATE_RESET_COMMAND_BUFFER_BIT,
-                                          &s.commands.pools.?[i], "graphics command pool")) {
+        if (!vk_utils.vk_utils_create_command_pool(s.context.device, s.context.graphics_queue_family, c.VK_COMMAND_POOL_CREATE_RESET_COMMAND_BUFFER_BIT, &s.commands.pools.?[i], "graphics command pool")) {
             return false;
         }
     }
@@ -57,7 +55,7 @@ fn allocate_command_buffers(s: *types.VulkanState) bool {
         ai.commandPool = s.commands.pools.?[i];
         ai.level = c.VK_COMMAND_BUFFER_LEVEL_PRIMARY;
         ai.commandBufferCount = 1;
-        
+
         if (c.vkAllocateCommandBuffers(s.context.device, &ai, &s.commands.buffers.?[i]) != c.VK_SUCCESS) {
             return false;
         }
@@ -108,7 +106,7 @@ fn allocate_command_buffers(s: *types.VulkanState) bool {
 fn create_sync_objects(s: *types.VulkanState) bool {
     // Cleanup existing resources if any
     const mem_alloc = memory.cardinal_get_allocator_for_category(.RENDERER);
-    
+
     // Image acquired semaphores
     if (s.sync.image_acquired_semaphores != null) {
         var i: u32 = 0;
@@ -175,7 +173,7 @@ fn select_command_buffer(s: *types.VulkanState) c.VkCommandBuffer {
 
 fn validate_swapchain_image(s: *types.VulkanState, image_index: u32) bool {
     if (s.swapchain.image_count == 0 or image_index >= s.swapchain.image_count) {
-        log.cardinal_log_error("[CMD] Frame {d}: Invalid image index {d} (count {d})", .{s.sync.current_frame, image_index, s.swapchain.image_count});
+        log.cardinal_log_error("[CMD] Frame {d}: Invalid image index {d} (count {d})", .{ s.sync.current_frame, image_index, s.swapchain.image_count });
         return false;
     }
     if (s.swapchain.images == null or s.swapchain.image_views == null) {
@@ -187,28 +185,28 @@ fn validate_swapchain_image(s: *types.VulkanState, image_index: u32) bool {
         return false;
     }
     if (s.swapchain.extent.width == 0 or s.swapchain.extent.height == 0) {
-        log.cardinal_log_error("[CMD] Frame {d}: Invalid swapchain extent {d}x{d}", .{s.sync.current_frame, s.swapchain.extent.width, s.swapchain.extent.height});
+        log.cardinal_log_error("[CMD] Frame {d}: Invalid swapchain extent {d}x{d}", .{ s.sync.current_frame, s.swapchain.extent.width, s.swapchain.extent.height });
         return false;
     }
     return true;
 }
 
 fn begin_command_buffer(s: *types.VulkanState, cmd: c.VkCommandBuffer) bool {
-    log.cardinal_log_info("[CMD] Frame {d}: Resetting command buffer {any}", .{s.sync.current_frame, cmd});
+    log.cardinal_log_info("[CMD] Frame {d}: Resetting command buffer {any}", .{ s.sync.current_frame, cmd });
     const reset_result = c.vkResetCommandBuffer(cmd, 0);
     if (reset_result != c.VK_SUCCESS) {
-        log.cardinal_log_error("[CMD] Frame {d}: Failed to reset command buffer: {d}", .{s.sync.current_frame, reset_result});
+        log.cardinal_log_error("[CMD] Frame {d}: Failed to reset command buffer: {d}", .{ s.sync.current_frame, reset_result });
         return false;
     }
 
     var bi = std.mem.zeroes(c.VkCommandBufferBeginInfo);
     bi.sType = c.VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
     bi.flags = c.VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
-    
-    log.cardinal_log_info("[CMD] Frame {d}: Beginning command buffer {any} with flags {d}", .{s.sync.current_frame, cmd, bi.flags});
+
+    log.cardinal_log_info("[CMD] Frame {d}: Beginning command buffer {any} with flags {d}", .{ s.sync.current_frame, cmd, bi.flags });
     const begin_result = c.vkBeginCommandBuffer(cmd, &bi);
     if (begin_result != c.VK_SUCCESS) {
-        log.cardinal_log_error("[CMD] Frame {d}: Failed to begin command buffer: {d}", .{s.sync.current_frame, begin_result});
+        log.cardinal_log_error("[CMD] Frame {d}: Failed to begin command buffer: {d}", .{ s.sync.current_frame, begin_result });
         return false;
     }
     return true;
@@ -329,10 +327,10 @@ fn begin_dynamic_rendering(s: *types.VulkanState, cmd: c.VkCommandBuffer, image_
 
     s.context.vkCmdBeginRendering.?(cmd, &renderingInfo);
 
-    // Set viewport/scissor only if not using secondary buffers (as they usually set their own or inherit? 
+    // Set viewport/scissor only if not using secondary buffers (as they usually set their own or inherit?
     // Actually, dynamic rendering with secondary buffers might expect viewport to be set in secondary buffers or inherited.
     // But vkCmdSetViewport is not allowed in Secondary buffer if it inherits?
-    // Secondary buffers record their own commands. 
+    // Secondary buffers record their own commands.
     // If we use secondary buffers, we don't need to set viewport in primary buffer UNLESS we are using it for inheritance?
     // But let's keep it simple: always set it if flags == 0 (Inline).
     // If flags != 0, we are just executing secondary buffers, so no inline commands allowed.
@@ -396,43 +394,41 @@ fn end_recording(s: *types.VulkanState, cmd: c.VkCommandBuffer, image_index: u32
         s.context.vkCmdPipelineBarrier2.?(cmd, &dep);
     }
 
-    log.cardinal_log_info("[CMD] Frame {d}: Ending command buffer {any}", .{s.sync.current_frame, cmd});
+    log.cardinal_log_info("[CMD] Frame {d}: Ending command buffer {any}", .{ s.sync.current_frame, cmd });
     const end_result = c.vkEndCommandBuffer(cmd);
-    log.cardinal_log_info("[CMD] Frame {d}: End result: {d}", .{s.sync.current_frame, end_result});
+    log.cardinal_log_info("[CMD] Frame {d}: End result: {d}", .{ s.sync.current_frame, end_result });
 
     if (end_result != c.VK_SUCCESS) {
-        log.cardinal_log_error("[CMD] Frame {d}: Failed to end command buffer: {d}", .{s.sync.current_frame, end_result});
+        log.cardinal_log_error("[CMD] Frame {d}: Failed to end command buffer: {d}", .{ s.sync.current_frame, end_result });
     }
 }
 
 fn vk_record_scene_commands(s: *types.VulkanState, cmd: c.VkCommandBuffer) void {
     switch (s.current_rendering_mode) {
         types.CardinalRenderingMode.NORMAL => {
-             if (s.pipelines.use_pbr_pipeline and s.pipelines.pbr_pipeline.initialized) {
-                 var ubo: types.PBRUniformBufferObject = undefined;
-                 @memcpy(@as([*]u8, @ptrCast(&ubo))[0..@sizeOf(types.PBRUniformBufferObject)], 
-                        @as([*]u8, @ptrCast(s.pipelines.pbr_pipeline.uniformBufferMapped))[0..@sizeOf(types.PBRUniformBufferObject)]);
-                 
-                 var lighting: types.PBRLightingData = undefined;
-                 @memcpy(@as([*]u8, @ptrCast(&lighting))[0..@sizeOf(types.PBRLightingData)],
-                        @as([*]u8, @ptrCast(s.pipelines.pbr_pipeline.lightingBufferMapped))[0..@sizeOf(types.PBRLightingData)]);
-                 
-                 vk_pbr.vk_pbr_update_uniforms(&s.pipelines.pbr_pipeline, &ubo, &lighting);
-                 vk_pbr.vk_pbr_render(&s.pipelines.pbr_pipeline, cmd, s.current_scene);
-             }
+            if (s.pipelines.use_pbr_pipeline and s.pipelines.pbr_pipeline.initialized) {
+                var ubo: types.PBRUniformBufferObject = undefined;
+                @memcpy(@as([*]u8, @ptrCast(&ubo))[0..@sizeOf(types.PBRUniformBufferObject)], @as([*]u8, @ptrCast(s.pipelines.pbr_pipeline.uniformBufferMapped))[0..@sizeOf(types.PBRUniformBufferObject)]);
+
+                var lighting: types.PBRLightingData = undefined;
+                @memcpy(@as([*]u8, @ptrCast(&lighting))[0..@sizeOf(types.PBRLightingData)], @as([*]u8, @ptrCast(s.pipelines.pbr_pipeline.lightingBufferMapped))[0..@sizeOf(types.PBRLightingData)]);
+
+                vk_pbr.vk_pbr_update_uniforms(&s.pipelines.pbr_pipeline, &ubo, &lighting);
+                vk_pbr.vk_pbr_render(&s.pipelines.pbr_pipeline, cmd, s.current_scene);
+            }
         },
         types.CardinalRenderingMode.UV => {
             if (s.pipelines.uv_pipeline != null and s.pipelines.use_pbr_pipeline and s.pipelines.pbr_pipeline.initialized) {
-                 const pbr_ubo: *types.PBRUniformBufferObject = @ptrCast(@alignCast(s.pipelines.pbr_pipeline.uniformBufferMapped));
-                 vk_simple_pipelines.vk_update_simple_uniforms(s, @ptrCast(&pbr_ubo.model), @ptrCast(&pbr_ubo.view), @ptrCast(&pbr_ubo.proj));
-                 vk_simple_pipelines.vk_render_simple(s, cmd, s.pipelines.uv_pipeline, s.pipelines.uv_pipeline_layout);
+                const pbr_ubo: *types.PBRUniformBufferObject = @ptrCast(@alignCast(s.pipelines.pbr_pipeline.uniformBufferMapped));
+                vk_simple_pipelines.vk_update_simple_uniforms(s, @ptrCast(&pbr_ubo.model), @ptrCast(&pbr_ubo.view), @ptrCast(&pbr_ubo.proj));
+                vk_simple_pipelines.vk_render_simple(s, cmd, s.pipelines.uv_pipeline, s.pipelines.uv_pipeline_layout);
             }
         },
         types.CardinalRenderingMode.WIREFRAME => {
             if (s.pipelines.wireframe_pipeline != null and s.pipelines.use_pbr_pipeline and s.pipelines.pbr_pipeline.initialized) {
-                 const pbr_ubo: *types.PBRUniformBufferObject = @ptrCast(@alignCast(s.pipelines.pbr_pipeline.uniformBufferMapped));
-                 vk_simple_pipelines.vk_update_simple_uniforms(s, @ptrCast(&pbr_ubo.model), @ptrCast(&pbr_ubo.view), @ptrCast(&pbr_ubo.proj));
-                 vk_simple_pipelines.vk_render_simple(s, cmd, s.pipelines.wireframe_pipeline, s.pipelines.wireframe_pipeline_layout);
+                const pbr_ubo: *types.PBRUniformBufferObject = @ptrCast(@alignCast(s.pipelines.pbr_pipeline.uniformBufferMapped));
+                vk_simple_pipelines.vk_update_simple_uniforms(s, @ptrCast(&pbr_ubo.model), @ptrCast(&pbr_ubo.view), @ptrCast(&pbr_ubo.proj));
+                vk_simple_pipelines.vk_render_simple(s, cmd, s.pipelines.wireframe_pipeline, s.pipelines.wireframe_pipeline_layout);
             }
         },
         types.CardinalRenderingMode.DEBUG => {
@@ -440,7 +436,7 @@ fn vk_record_scene_commands(s: *types.VulkanState, cmd: c.VkCommandBuffer) void 
             // Or leave empty if not implemented
         },
         types.CardinalRenderingMode.MESH_SHADER => {
-             vk_mesh_shader.vk_mesh_shader_record_frame(s, cmd);
+            vk_mesh_shader.vk_mesh_shader_record_frame(s, cmd);
         },
     }
 }
@@ -452,7 +448,7 @@ fn vk_record_scene_direct(s: *types.VulkanState, cmd: c.VkCommandBuffer) void {
 fn vk_record_scene_with_secondary_buffers(s: *types.VulkanState, primary_cmd: c.VkCommandBuffer, image_index: u32, use_depth: bool, clears: [*]c.VkClearValue) void {
     // Use dedicated secondary command buffer for the main thread
     // This avoids using the MT subsystem's thread pools which are prone to exhaustion/race conditions if not managed per-frame.
-    
+
     if (s.commands.scene_secondary_buffers == null) {
         // Fallback if not allocated
         if (begin_dynamic_rendering(s, primary_cmd, image_index, use_depth, clears, true, 0)) {
@@ -528,13 +524,13 @@ fn vk_record_scene_with_secondary_buffers(s: *types.VulkanState, primary_cmd: c.
 
     // Pass slice of 1 context
     const cmd_buffers = @as([*]c.VkCommandBuffer, @ptrCast(&secondary_cmd))[0..1];
-    
+
     // Execute with Secondary Bit
     if (begin_dynamic_rendering(s, primary_cmd, image_index, use_depth, clears, true, c.VK_RENDERING_CONTENTS_SECONDARY_COMMAND_BUFFERS_BIT)) {
         c.vkCmdExecuteCommands(primary_cmd, 1, cmd_buffers.ptr);
         end_dynamic_rendering(s, primary_cmd);
     }
-    
+
     log.cardinal_log_debug("[CMD] Scene rendered using dedicated secondary command buffer", .{});
 }
 
@@ -558,7 +554,7 @@ pub export fn vk_create_commands_sync(s: ?*types.VulkanState) callconv(.c) bool 
         memory.cardinal_free(mem_alloc, vs.swapchain.image_layout_initialized);
         vs.swapchain.image_layout_initialized = null;
     }
-    
+
     const layout_ptr = memory.cardinal_alloc(mem_alloc, vs.swapchain.image_count * @sizeOf(bool));
     if (layout_ptr == null) return false;
     @memset(@as([*]u8, @ptrCast(layout_ptr))[0..(vs.swapchain.image_count * @sizeOf(bool))], 0);
@@ -593,7 +589,7 @@ pub export fn vk_recreate_images_in_flight(s: ?*types.VulkanState) callconv(.c) 
         memory.cardinal_free(mem_alloc, vs.swapchain.image_layout_initialized);
         vs.swapchain.image_layout_initialized = null;
     }
-    
+
     log.cardinal_log_info("[INIT] Recreating swapchain_image_layout_initialized for {d} swapchain images", .{vs.swapchain.image_count});
     const mem_alloc = memory.cardinal_get_allocator_for_category(.RENDERER);
     const layout_ptr = memory.cardinal_alloc(mem_alloc, vs.swapchain.image_count * @sizeOf(bool));
@@ -675,7 +671,7 @@ pub export fn vk_destroy_commands_sync(s: ?*types.VulkanState) callconv(.c) void
         memory.cardinal_free(mem_alloc, @as(?*anyopaque, @ptrCast(vs.swapchain.image_layout_initialized)));
         vs.swapchain.image_layout_initialized = null;
     }
-    
+
     if (vs.commands.buffers != null) {
         memory.cardinal_free(mem_alloc, @as(?*anyopaque, @ptrCast(vs.commands.buffers)));
         vs.commands.buffers = null;
@@ -710,8 +706,7 @@ pub export fn vk_record_cmd(s: ?*types.VulkanState, image_index: u32) callconv(.
     const cmd = select_command_buffer(vs);
     if (cmd == null) return;
 
-    log.cardinal_log_info("[CMD] Frame {d}: Recording command buffer {any} (buffer {d}) for image {d}", 
-                         .{vs.sync.current_frame, cmd, vs.commands.current_buffer_index, image_index});
+    log.cardinal_log_info("[CMD] Frame {d}: Recording command buffer {any} (buffer {d}) for image {d}", .{ vs.sync.current_frame, cmd, vs.commands.current_buffer_index, image_index });
 
     if (!validate_swapchain_image(vs, image_index)) return;
     if (!begin_command_buffer(vs, cmd)) return;
@@ -764,9 +759,10 @@ pub export fn vk_prepare_mesh_shader_rendering(s: ?*types.VulkanState) callconv(
     if (s == null) return;
     const vs = s.?;
 
-    if (!vs.pipelines.use_mesh_shader_pipeline or 
-        vs.pipelines.mesh_shader_pipeline.pipeline == null or 
-        vs.current_scene == null) {
+    if (!vs.pipelines.use_mesh_shader_pipeline or
+        vs.pipelines.mesh_shader_pipeline.pipeline == null or
+        vs.current_scene == null)
+    {
         return;
     }
 
@@ -778,14 +774,14 @@ pub export fn vk_prepare_mesh_shader_rendering(s: ?*types.VulkanState) callconv(
     var texture_count: u32 = 0;
 
     if (vs.pipelines.use_pbr_pipeline and vs.pipelines.pbr_pipeline.textureManager != null and
-        vs.pipelines.pbr_pipeline.textureManager.?.textureCount > 0) {
-        
+        vs.pipelines.pbr_pipeline.textureManager.?.textureCount > 0)
+    {
         texture_count = vs.pipelines.pbr_pipeline.textureManager.?.textureCount;
-        
+
         const mem_alloc = memory.cardinal_get_allocator_for_category(.RENDERER);
         const views_ptr = memory.cardinal_alloc(mem_alloc, @sizeOf(c.VkImageView) * texture_count);
         const samplers_ptr = memory.cardinal_alloc(mem_alloc, @sizeOf(c.VkSampler) * texture_count);
-        
+
         texture_views = if (views_ptr) |p| @as([*]c.VkImageView, @ptrCast(@alignCast(p))) else null;
         samplers = if (samplers_ptr) |p| @as([*]c.VkSampler, @ptrCast(@alignCast(p))) else null;
 
@@ -805,9 +801,7 @@ pub export fn vk_prepare_mesh_shader_rendering(s: ?*types.VulkanState) callconv(
         }
     }
 
-    if (!vk_mesh_shader.vk_mesh_shader_update_descriptor_buffers(@ptrCast(vs), &vs.pipelines.mesh_shader_pipeline, null,
-                                                  material_buffer, lighting_buffer, texture_views,
-                                                  samplers, texture_count)) {
+    if (!vk_mesh_shader.vk_mesh_shader_update_descriptor_buffers(@ptrCast(vs), &vs.pipelines.mesh_shader_pipeline, null, material_buffer, lighting_buffer, texture_views, samplers, texture_count)) {
         log.cardinal_log_error("[MESH_SHADER] Failed to update descriptor buffers during preparation", .{});
     } else {
         log.cardinal_log_debug("[MESH_SHADER] Updated descriptor buffers during preparation (bindless textures: {d})", .{texture_count});
@@ -825,7 +819,7 @@ pub export fn vk_prepare_mesh_shader_rendering(s: ?*types.VulkanState) callconv(
 
 pub fn vk_get_mt_command_manager() ?*types.CardinalMTCommandManager {
     // Note: accessing global g_cardinal_mt_subsystem from vulkan_mt.zig
-    
+
     if (!vulkan_mt.g_cardinal_mt_subsystem.is_running) {
         log.cardinal_log_warn("[MT] Multi-threading subsystem not initialized", .{});
         return null;
@@ -838,7 +832,7 @@ pub fn vk_get_mt_command_manager() ?*types.CardinalMTCommandManager {
 //         log.cardinal_log_error("[MT] Invalid record function for command task", .{});
 //         return false;
 //     }
-// 
+//
 //     if (!vulkan_mt.g_cardinal_mt_subsystem.is_running) {
 //         log.cardinal_log_warn("[MT] Multi-threading subsystem not running, executing task synchronously", .{});
 //         record_func.?(user_data);
@@ -847,12 +841,12 @@ pub fn vk_get_mt_command_manager() ?*types.CardinalMTCommandManager {
 //         }
 //         return true;
 //     }
-// 
+//
 //     const task = vulkan_mt.cardinal_mt_create_command_record_task(record_func, user_data, callback);
 //     if (task == null) {
 //         log.cardinal_log_error("[MT] Failed to create command record task", .{});
 //         return false;
 //     }
-// 
+//
 //     return vulkan_mt.cardinal_mt_submit_task(task.?);
 // }

@@ -11,7 +11,7 @@ extern fn cardinal_gltf_load_scene(path: [*:0]const u8, scene: *scene.CardinalSc
 fn find_ext(path: ?[*:0]const u8) ?[*:0]const u8 {
     if (path == null) return null;
     const p = std.mem.span(path.?);
-    
+
     // Find last dot
     var last_dot: ?usize = null;
     var i: usize = 0;
@@ -20,7 +20,7 @@ fn find_ext(path: ?[*:0]const u8) ?[*:0]const u8 {
             last_dot = i;
         }
     }
-    
+
     if (last_dot) |idx| {
         // Return slice from after dot
         // We need to return a sentinel-terminated pointer.
@@ -29,7 +29,7 @@ fn find_ext(path: ?[*:0]const u8) ?[*:0]const u8 {
         // We can just return pointer to char after dot.
         return @as([*:0]const u8, @ptrCast(path.?)) + idx + 1;
     }
-    
+
     return null;
 }
 
@@ -65,11 +65,11 @@ pub export fn cardinal_scene_load(path: ?[*:0]const u8, out_scene: ?*scene.Cardi
         log.cardinal_log_error("Extension too long", .{});
         return false;
     }
-    
+
     @memcpy(ext_buf[0..ext_len], std.mem.span(ext.?));
     ext_buf[ext_len] = 0;
     const ext_slice = ext_buf[0..ext_len :0];
-    
+
     // In-place lower case
     for (ext_slice) |*c| {
         c.* = std.ascii.toLower(c.*);
@@ -82,7 +82,7 @@ pub export fn cardinal_scene_load(path: ?[*:0]const u8, out_scene: ?*scene.Cardi
         return cardinal_gltf_load_scene(path.?, out_scene.?);
     }
 
-    log.cardinal_log_error("Unsupported file format: {s} (extension: {s})", .{path.?, ext_slice});
+    log.cardinal_log_error("Unsupported file format: {s} (extension: {s})", .{ path.?, ext_slice });
     return false;
 }
 
@@ -111,17 +111,17 @@ pub export fn cardinal_scene_load_async(path: ?[*:0]const u8, priority: async_lo
         log.cardinal_log_error("Extension too long", .{});
         return null;
     }
-    
+
     @memcpy(ext_buf[0..ext_len], std.mem.span(ext.?));
     ext_buf[ext_len] = 0;
     const ext_slice = ext_buf[0..ext_len :0];
-    
+
     for (ext_slice) |*c| {
         c.* = std.ascii.toLower(c.*);
     }
 
     if (!std.mem.eql(u8, ext_slice, "gltf") and !std.mem.eql(u8, ext_slice, "glb")) {
-        log.cardinal_log_error("Unsupported file format for async loading: {s} (extension: {s})", .{path.?, ext_slice});
+        log.cardinal_log_error("Unsupported file format for async loading: {s} (extension: {s})", .{ path.?, ext_slice });
         return null;
     }
 

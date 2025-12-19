@@ -6,14 +6,14 @@ pub const c = @cImport({
     @cInclude("string.h");
     @cInclude("stdint.h");
     @cInclude("stdio.h");
-    
+
     // Skip stdatomic.h and define types manually to avoid C import errors
     @cDefine("__STDATOMIC_H", "1");
     @cDefine("_STDATOMIC_H", "1");
     @cDefine("__CLANG_STDATOMIC_H", "1");
     @cDefine("__zig_translate_c__", "1");
     @cDefine("CARDINAL_ZIG_BUILD", "1");
-    
+
     @cDefine("memory_order", "int");
     @cDefine("memory_order_relaxed", "0");
     @cDefine("memory_order_consume", "1");
@@ -21,9 +21,9 @@ pub const c = @cImport({
     @cDefine("memory_order_release", "3");
     @cDefine("memory_order_acq_rel", "4");
     @cDefine("memory_order_seq_cst", "5");
-    
+
     @cInclude("vulkan/vulkan.h");
-    
+
     if (builtin.os.tag == .windows) {
         @cInclude("windows.h");
         @cInclude("processthreadsapi.h");

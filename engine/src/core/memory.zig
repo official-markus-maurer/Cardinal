@@ -16,27 +16,9 @@ const MAX_ALLOCS = 8192;
 const HASH_MULTIPLIER = 0x9e3779b9;
 
 // Enums and Structs matching C header
-pub const CardinalMemoryCategory = enum(c_int) {
-    UNKNOWN = 0,
-    ENGINE,
-    RENDERER,
-    VULKAN_BUFFERS,
-    VULKAN_DEVICE,
-    TEXTURES,
-    MESHES,
-    ASSETS,
-    SHADERS,
-    WINDOW,
-    LOGGING,
-    TEMPORARY,
-    MAX
-};
+pub const CardinalMemoryCategory = enum(c_int) { UNKNOWN = 0, ENGINE, RENDERER, VULKAN_BUFFERS, VULKAN_DEVICE, TEXTURES, MESHES, ASSETS, SHADERS, WINDOW, LOGGING, TEMPORARY, MAX };
 
-pub const CardinalAllocatorType = enum(c_int) {
-    DYNAMIC = 0,
-    LINEAR = 1,
-    TRACKED = 2
-};
+pub const CardinalAllocatorType = enum(c_int) { DYNAMIC = 0, LINEAR = 1, TRACKED = 2 };
 
 pub const CardinalMemoryStats = extern struct {
     total_allocated: usize,
@@ -105,7 +87,7 @@ fn stats_on_alloc(cat: CardinalMemoryCategory, size: usize) void {
     if (@intFromEnum(category) >= @intFromEnum(CardinalMemoryCategory.MAX)) {
         category = .UNKNOWN;
     }
-    
+
     const cat_idx = @as(usize, @intCast(@intFromEnum(category)));
     g_stats.categories[cat_idx].total_allocated += size;
     g_stats.categories[cat_idx].current_usage += size;
@@ -210,7 +192,7 @@ fn untrack_alloc(ptr: ?*anyopaque, out_size: ?*usize, out_is_aligned: ?*bool) bo
     if (find_alloc(ptr)) |info| {
         if (out_size) |s| s.* = info.size;
         if (out_is_aligned) |a| a.* = info.is_aligned;
-        
+
         info.ptr = null;
         info.size = 0;
         info.is_aligned = false;
@@ -225,7 +207,7 @@ fn untrack_alloc(ptr: ?*anyopaque, out_size: ?*usize, out_is_aligned: ?*bool) bo
 fn dyn_alloc(_: *CardinalAllocator, size: usize, alignment: usize) callconv(.c) ?*anyopaque {
     var ptr: ?*anyopaque = null;
     var is_aligned = false;
-    
+
     // max_align_t is usually 16 bytes on 64-bit systems
     const max_align = @alignOf(c_longdouble);
 
@@ -268,7 +250,7 @@ fn dyn_realloc(self: *CardinalAllocator, ptr: ?*anyopaque, old_size: usize, new_
             const copy_size = if (actual_old_size < new_size) actual_old_size else new_size;
             _ = c.memcpy(new_ptr, ptr, copy_size);
         }
-        
+
         if (is_aligned) {
             if (builtin.os.tag == .windows) {
                 _aligned_free(ptr);
@@ -311,13 +293,13 @@ fn lin_alloc(self: *CardinalAllocator, size: usize, alignment: usize) callconv(.
     const st: *LinearState = @ptrCast(@alignCast(self.state));
     const current = st.offset;
     const align_val = if (alignment > 0) alignment else @sizeOf(?*anyopaque);
-    
+
     const ptr_int = @intFromPtr(st.buffer) + current;
     const mis = ptr_int % align_val;
     const pad = if (mis > 0) align_val - mis else 0;
-    
+
     if (current + pad + size > st.capacity) return null;
-    
+
     const at = current + pad;
     st.offset = at + size;
     return @ptrFromInt(@intFromPtr(st.buffer) + at);
@@ -325,10 +307,10 @@ fn lin_alloc(self: *CardinalAllocator, size: usize, alignment: usize) callconv(.
 
 fn lin_realloc(self: *CardinalAllocator, ptr: ?*anyopaque, old_size: usize, new_size: usize, alignment: usize) callconv(.c) ?*anyopaque {
     if (ptr == null) return lin_alloc(self, new_size, alignment);
-    
+
     const n = lin_alloc(self, new_size, alignment);
     if (n == null) return null;
-    
+
     const copy = if (old_size < new_size) old_size else new_size;
     _ = c.memcpy(n, ptr, copy);
     return n;
@@ -348,7 +330,7 @@ fn tracked_alloc(self: *CardinalAllocator, size: usize, alignment: usize) callco
     const ts: *TrackedState = @ptrCast(@alignCast(self.state));
     const backing = ts.backing;
     const p = backing.alloc(backing, size, alignment);
-    
+
     if (p != null and size > 0) {
         stats_on_alloc(ts.category, size);
         const max_align = @alignOf(c_longdouble);
@@ -359,7 +341,7 @@ fn tracked_alloc(self: *CardinalAllocator, size: usize, alignment: usize) callco
 
 fn tracked_realloc(self: *CardinalAllocator, ptr: ?*anyopaque, old_size: usize, new_size: usize, alignment: usize) callconv(.c) ?*anyopaque {
     const ts: *TrackedState = @ptrCast(@alignCast(self.state));
-    
+
     var actual_old_size = old_size;
     if (ptr != null) {
         if (find_alloc(ptr)) |info| {
@@ -369,14 +351,14 @@ fn tracked_realloc(self: *CardinalAllocator, ptr: ?*anyopaque, old_size: usize, 
 
     const backing = ts.backing;
     const p = backing.realloc(backing, ptr, actual_old_size, new_size, alignment);
-    
+
     if (p != null) {
         if (new_size > actual_old_size) {
             stats_on_alloc(ts.category, new_size - actual_old_size);
         } else if (actual_old_size > new_size) {
             stats_on_free(ts.category, actual_old_size - new_size);
         }
-        
+
         const max_align = @alignOf(c_longdouble);
         track_alloc(p, new_size, alignment > 0 and alignment > max_align);
     }
@@ -556,7 +538,7 @@ export fn cardinal_linear_allocator_create(capacity: usize) ?*CardinalAllocator 
 pub export fn cardinal_linear_allocator_destroy(allocator: ?*CardinalAllocator) void {
     if (allocator) |a| {
         if (a.type != .LINEAR) return;
-        
+
         const st: *LinearState = @ptrCast(@alignCast(a.state));
         if (st.buffer) |b| {
             c.free(@ptrCast(b));

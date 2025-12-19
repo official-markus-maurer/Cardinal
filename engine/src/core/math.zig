@@ -23,7 +23,7 @@ pub const Vec2 = extern struct {
     pub fn scale(self: Vec2, s: f32) Vec2 {
         return .{ .x = self.x * s, .y = self.y * s };
     }
-    
+
     pub fn toArray(self: Vec2) [2]f32 {
         return .{ self.x, self.y };
     }
@@ -81,11 +81,11 @@ pub const Vec3 = extern struct {
         }
         return self;
     }
-    
+
     pub fn toArray(self: Vec3) [3]f32 {
         return .{ self.x, self.y, self.z };
     }
-    
+
     pub fn fromArray(arr: [3]f32) Vec3 {
         return .{ .x = arr[0], .y = arr[1], .z = arr[2] };
     }
@@ -100,11 +100,11 @@ pub const Vec4 = extern struct {
     pub fn zero() Vec4 {
         return .{ .x = 0, .y = 0, .z = 0, .w = 0 };
     }
-    
+
     pub fn fromVec3(v: Vec3, w: f32) Vec4 {
         return .{ .x = v.x, .y = v.y, .z = v.z, .w = w };
     }
-    
+
     pub fn toArray(self: Vec4) [4]f32 {
         return .{ self.x, self.y, self.z, self.w };
     }
@@ -119,11 +119,11 @@ pub const Quat = extern struct {
     pub fn identity() Quat {
         return .{ .x = 0, .y = 0, .z = 0, .w = 1 };
     }
-    
+
     pub fn fromArray(arr: [4]f32) Quat {
         return .{ .x = arr[0], .y = arr[1], .z = arr[2], .w = arr[3] };
     }
-    
+
     pub fn toArray(self: Quat) [4]f32 {
         return .{ self.x, self.y, self.z, self.w };
     }
@@ -162,7 +162,7 @@ pub const Mat4 = extern struct {
         }
         return result;
     }
-    
+
     pub fn fromArray(arr: [16]f32) Mat4 {
         return .{ .data = arr };
     }
@@ -223,15 +223,15 @@ pub const Mat4 = extern struct {
         m.data[12] += t.x;
         m.data[13] += t.y;
         m.data[14] += t.z;
-        
+
         return m;
     }
-    
+
     pub fn decompose(self: Mat4) struct { t: Vec3, r: Quat, s: Vec3 } {
         var t: Vec3 = undefined;
         var r: Quat = undefined;
         var s: Vec3 = undefined;
-        
+
         // Extract translation
         t.x = self.data[12];
         t.y = self.data[13];
@@ -244,8 +244,8 @@ pub const Mat4 = extern struct {
 
         // Check for negative determinant
         const det = self.data[0] * (self.data[5] * self.data[10] - self.data[6] * self.data[9]) -
-                    self.data[1] * (self.data[4] * self.data[10] - self.data[6] * self.data[8]) +
-                    self.data[2] * (self.data[4] * self.data[9] - self.data[5] * self.data[8]);
+            self.data[1] * (self.data[4] * self.data[10] - self.data[6] * self.data[8]) +
+            self.data[2] * (self.data[4] * self.data[9] - self.data[5] * self.data[8]);
         if (det < 0) {
             sx = -sx;
         }
@@ -292,7 +292,7 @@ pub const Mat4 = extern struct {
             r.y = (rot_matrix[5] + rot_matrix[7]) / val;
             r.z = 0.25 * val;
         }
-        
+
         return .{ .t = t, .r = r, .s = s };
     }
 
@@ -301,68 +301,68 @@ pub const Mat4 = extern struct {
         const matrix = self.data;
 
         inv[0] = matrix[5] * matrix[10] * matrix[15] - matrix[5] * matrix[11] * matrix[14] -
-                 matrix[9] * matrix[6] * matrix[15] + matrix[9] * matrix[7] * matrix[14] +
-                 matrix[13] * matrix[6] * matrix[11] - matrix[13] * matrix[7] * matrix[10];
+            matrix[9] * matrix[6] * matrix[15] + matrix[9] * matrix[7] * matrix[14] +
+            matrix[13] * matrix[6] * matrix[11] - matrix[13] * matrix[7] * matrix[10];
 
         inv[4] = -matrix[4] * matrix[10] * matrix[15] + matrix[4] * matrix[11] * matrix[14] +
-                 matrix[8] * matrix[6] * matrix[15] - matrix[8] * matrix[7] * matrix[14] -
-                 matrix[12] * matrix[6] * matrix[11] + matrix[12] * matrix[7] * matrix[10];
+            matrix[8] * matrix[6] * matrix[15] - matrix[8] * matrix[7] * matrix[14] -
+            matrix[12] * matrix[6] * matrix[11] + matrix[12] * matrix[7] * matrix[10];
 
         inv[8] = matrix[4] * matrix[9] * matrix[15] - matrix[4] * matrix[11] * matrix[13] -
-                 matrix[8] * matrix[5] * matrix[15] + matrix[8] * matrix[7] * matrix[13] +
-                 matrix[12] * matrix[5] * matrix[11] - matrix[12] * matrix[7] * matrix[9];
+            matrix[8] * matrix[5] * matrix[15] + matrix[8] * matrix[7] * matrix[13] +
+            matrix[12] * matrix[5] * matrix[11] - matrix[12] * matrix[7] * matrix[9];
 
         inv[12] = -matrix[4] * matrix[9] * matrix[14] + matrix[4] * matrix[10] * matrix[13] +
-                  matrix[8] * matrix[5] * matrix[14] - matrix[8] * matrix[6] * matrix[13] -
-                  matrix[12] * matrix[5] * matrix[10] + matrix[12] * matrix[6] * matrix[9];
+            matrix[8] * matrix[5] * matrix[14] - matrix[8] * matrix[6] * matrix[13] -
+            matrix[12] * matrix[5] * matrix[10] + matrix[12] * matrix[6] * matrix[9];
 
         inv[1] = -matrix[1] * matrix[10] * matrix[15] + matrix[1] * matrix[11] * matrix[14] +
-                 matrix[9] * matrix[2] * matrix[15] - matrix[9] * matrix[3] * matrix[14] -
-                 matrix[13] * matrix[2] * matrix[11] + matrix[13] * matrix[3] * matrix[10];
+            matrix[9] * matrix[2] * matrix[15] - matrix[9] * matrix[3] * matrix[14] -
+            matrix[13] * matrix[2] * matrix[11] + matrix[13] * matrix[3] * matrix[10];
 
         inv[5] = matrix[0] * matrix[10] * matrix[15] - matrix[0] * matrix[11] * matrix[14] -
-                 matrix[8] * matrix[2] * matrix[15] + matrix[8] * matrix[3] * matrix[14] +
-                 matrix[12] * matrix[2] * matrix[11] - matrix[12] * matrix[3] * matrix[10];
+            matrix[8] * matrix[2] * matrix[15] + matrix[8] * matrix[3] * matrix[14] +
+            matrix[12] * matrix[2] * matrix[11] - matrix[12] * matrix[3] * matrix[10];
 
         inv[9] = -matrix[0] * matrix[9] * matrix[15] + matrix[0] * matrix[11] * matrix[13] +
-                 matrix[8] * matrix[1] * matrix[15] - matrix[8] * matrix[3] * matrix[13] -
-                 matrix[12] * matrix[1] * matrix[11] + matrix[12] * matrix[3] * matrix[9];
+            matrix[8] * matrix[1] * matrix[15] - matrix[8] * matrix[3] * matrix[13] -
+            matrix[12] * matrix[1] * matrix[11] + matrix[12] * matrix[3] * matrix[9];
 
         inv[13] = matrix[0] * matrix[9] * matrix[14] - matrix[0] * matrix[10] * matrix[13] -
-                  matrix[8] * matrix[1] * matrix[14] + matrix[8] * matrix[2] * matrix[13] +
-                  matrix[12] * matrix[1] * matrix[10] - matrix[12] * matrix[2] * matrix[9];
+            matrix[8] * matrix[1] * matrix[14] + matrix[8] * matrix[2] * matrix[13] +
+            matrix[12] * matrix[1] * matrix[10] - matrix[12] * matrix[2] * matrix[9];
 
         inv[2] = matrix[1] * matrix[6] * matrix[15] - matrix[1] * matrix[7] * matrix[14] -
-                 matrix[5] * matrix[2] * matrix[15] + matrix[5] * matrix[3] * matrix[14] +
-                 matrix[13] * matrix[2] * matrix[7] - matrix[13] * matrix[3] * matrix[6];
+            matrix[5] * matrix[2] * matrix[15] + matrix[5] * matrix[3] * matrix[14] +
+            matrix[13] * matrix[2] * matrix[7] - matrix[13] * matrix[3] * matrix[6];
 
         inv[6] = -matrix[0] * matrix[6] * matrix[15] + matrix[0] * matrix[7] * matrix[14] +
-                 matrix[4] * matrix[2] * matrix[15] - matrix[4] * matrix[3] * matrix[14] -
-                 matrix[12] * matrix[2] * matrix[7] + matrix[12] * matrix[3] * matrix[6];
+            matrix[4] * matrix[2] * matrix[15] - matrix[4] * matrix[3] * matrix[14] -
+            matrix[12] * matrix[2] * matrix[7] + matrix[12] * matrix[3] * matrix[6];
 
         inv[10] = matrix[0] * matrix[5] * matrix[15] - matrix[0] * matrix[7] * matrix[13] -
-                  matrix[4] * matrix[1] * matrix[15] + matrix[4] * matrix[3] * matrix[13] +
-                  matrix[12] * matrix[1] * matrix[7] - matrix[12] * matrix[3] * matrix[5];
+            matrix[4] * matrix[1] * matrix[15] + matrix[4] * matrix[3] * matrix[13] +
+            matrix[12] * matrix[1] * matrix[7] - matrix[12] * matrix[3] * matrix[5];
 
         inv[14] = -matrix[0] * matrix[5] * matrix[14] + matrix[0] * matrix[6] * matrix[13] +
-                  matrix[4] * matrix[1] * matrix[14] - matrix[4] * matrix[2] * matrix[13] -
-                  matrix[12] * matrix[1] * matrix[6] + matrix[12] * matrix[2] * matrix[5];
+            matrix[4] * matrix[1] * matrix[14] - matrix[4] * matrix[2] * matrix[13] -
+            matrix[12] * matrix[1] * matrix[6] + matrix[12] * matrix[2] * matrix[5];
 
         inv[3] = -matrix[1] * matrix[6] * matrix[11] + matrix[1] * matrix[7] * matrix[10] +
-                 matrix[5] * matrix[2] * matrix[11] - matrix[5] * matrix[3] * matrix[10] -
-                 matrix[9] * matrix[2] * matrix[7] + matrix[9] * matrix[3] * matrix[6];
+            matrix[5] * matrix[2] * matrix[11] - matrix[5] * matrix[3] * matrix[10] -
+            matrix[9] * matrix[2] * matrix[7] + matrix[9] * matrix[3] * matrix[6];
 
         inv[7] = matrix[0] * matrix[6] * matrix[11] - matrix[0] * matrix[7] * matrix[10] -
-                 matrix[4] * matrix[2] * matrix[11] + matrix[4] * matrix[3] * matrix[10] +
-                 matrix[8] * matrix[2] * matrix[7] - matrix[8] * matrix[3] * matrix[6];
+            matrix[4] * matrix[2] * matrix[11] + matrix[4] * matrix[3] * matrix[10] +
+            matrix[8] * matrix[2] * matrix[7] - matrix[8] * matrix[3] * matrix[6];
 
         inv[11] = -matrix[0] * matrix[5] * matrix[11] + matrix[0] * matrix[7] * matrix[9] +
-                  matrix[4] * matrix[1] * matrix[11] - matrix[4] * matrix[3] * matrix[9] -
-                  matrix[8] * matrix[1] * matrix[7] + matrix[8] * matrix[3] * matrix[5];
+            matrix[4] * matrix[1] * matrix[11] - matrix[4] * matrix[3] * matrix[9] -
+            matrix[8] * matrix[1] * matrix[7] + matrix[8] * matrix[3] * matrix[5];
 
         inv[15] = matrix[0] * matrix[5] * matrix[10] - matrix[0] * matrix[6] * matrix[9] -
-                  matrix[4] * matrix[1] * matrix[10] + matrix[4] * matrix[2] * matrix[9] +
-                  matrix[8] * matrix[1] * matrix[6] - matrix[8] * matrix[2] * matrix[5];
+            matrix[4] * matrix[1] * matrix[10] + matrix[4] * matrix[2] * matrix[9] +
+            matrix[8] * matrix[1] * matrix[6] - matrix[8] * matrix[2] * matrix[5];
 
         var det = matrix[0] * inv[0] + matrix[1] * inv[4] + matrix[2] * inv[8] + matrix[3] * inv[12];
         const FLT_EPSILON = 1.19209290e-07;

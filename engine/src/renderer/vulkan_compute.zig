@@ -49,26 +49,22 @@ pub export fn vk_compute_validate_config(vulkan_state: ?*types.VulkanState, conf
 
     if (cfg.local_size_x > properties.limits.maxComputeWorkGroupSize[0] or
         cfg.local_size_y > properties.limits.maxComputeWorkGroupSize[1] or
-        cfg.local_size_z > properties.limits.maxComputeWorkGroupSize[2]) {
+        cfg.local_size_z > properties.limits.maxComputeWorkGroupSize[2])
+    {
         log.cardinal_log_error("[COMPUTE] Local workgroup sizes exceed device limits", .{});
         return false;
     }
 
     const total_invocations = cfg.local_size_x * cfg.local_size_y * cfg.local_size_z;
     if (total_invocations > properties.limits.maxComputeWorkGroupInvocations) {
-        log.cardinal_log_error("[COMPUTE] Total workgroup invocations ({d}) exceed device limit ({d})", .{total_invocations, properties.limits.maxComputeWorkGroupInvocations});
+        log.cardinal_log_error("[COMPUTE] Total workgroup invocations ({d}) exceed device limit ({d})", .{ total_invocations, properties.limits.maxComputeWorkGroupInvocations });
         return false;
     }
 
     return true;
 }
 
-pub export fn vk_compute_create_descriptor_layout(
-    vulkan_state: ?*types.VulkanState,
-    bindings: ?*const c.VkDescriptorSetLayoutBinding,
-    binding_count: u32,
-    layout: ?*c.VkDescriptorSetLayout
-) callconv(.c) bool {
+pub export fn vk_compute_create_descriptor_layout(vulkan_state: ?*types.VulkanState, bindings: ?*const c.VkDescriptorSetLayoutBinding, binding_count: u32, layout: ?*c.VkDescriptorSetLayout) callconv(.c) bool {
     if (vulkan_state == null or bindings == null or binding_count == 0 or layout == null) {
         log.cardinal_log_error("[COMPUTE] Invalid parameters for descriptor layout creation", .{});
         return false;
@@ -89,11 +85,7 @@ pub export fn vk_compute_create_descriptor_layout(
     return true;
 }
 
-pub export fn vk_compute_create_pipeline(
-    vulkan_state: ?*types.VulkanState,
-    config: ?*const types.ComputePipelineConfig,
-    pipeline: ?*types.ComputePipeline
-) callconv(.c) bool {
+pub export fn vk_compute_create_pipeline(vulkan_state: ?*types.VulkanState, config: ?*const types.ComputePipelineConfig, pipeline: ?*types.ComputePipeline) callconv(.c) bool {
     if (vulkan_state == null or config == null or pipeline == null) {
         log.cardinal_log_error("[COMPUTE] Invalid parameters for compute pipeline creation", .{});
         return false;
@@ -183,12 +175,11 @@ pub export fn vk_compute_create_pipeline(
         const layouts = memory.cardinal_alloc(mem_alloc, cfg.descriptor_set_count * @sizeOf(c.VkDescriptorSetLayout));
         if (layouts != null) {
             pipe.descriptor_layouts = @as([*]c.VkDescriptorSetLayout, @ptrCast(@alignCast(layouts)));
-            @memcpy(@as([*]u8, @ptrCast(pipe.descriptor_layouts))[0..(cfg.descriptor_set_count * @sizeOf(c.VkDescriptorSetLayout))],
-                    @as([*]const u8, @ptrCast(cfg.descriptor_layouts))[0..(cfg.descriptor_set_count * @sizeOf(c.VkDescriptorSetLayout))]);
+            @memcpy(@as([*]u8, @ptrCast(pipe.descriptor_layouts))[0..(cfg.descriptor_set_count * @sizeOf(c.VkDescriptorSetLayout))], @as([*]const u8, @ptrCast(cfg.descriptor_layouts))[0..(cfg.descriptor_set_count * @sizeOf(c.VkDescriptorSetLayout))]);
         }
     }
 
-    log.cardinal_log_info("[COMPUTE] Created compute pipeline with local size ({d}, {d}, {d})", .{cfg.local_size_x, cfg.local_size_y, cfg.local_size_z});
+    log.cardinal_log_info("[COMPUTE] Created compute pipeline with local size ({d}, {d}, {d})", .{ cfg.local_size_x, cfg.local_size_y, cfg.local_size_z });
 
     return true;
 }
@@ -221,11 +212,7 @@ pub export fn vk_compute_destroy_pipeline(vulkan_state: ?*types.VulkanState, pip
     log.cardinal_log_debug("[COMPUTE] Destroyed compute pipeline", .{});
 }
 
-pub export fn vk_compute_dispatch(
-    cmd_buffer: c.VkCommandBuffer,
-    pipeline: ?*const types.ComputePipeline,
-    dispatch_info: ?*const types.ComputeDispatchInfo
-) callconv(.c) void {
+pub export fn vk_compute_dispatch(cmd_buffer: c.VkCommandBuffer, pipeline: ?*const types.ComputePipeline, dispatch_info: ?*const types.ComputeDispatchInfo) callconv(.c) void {
     if (cmd_buffer == null or pipeline == null or dispatch_info == null or !pipeline.?.initialized) {
         log.cardinal_log_error("[COMPUTE] Invalid parameters for compute dispatch", .{});
         return;
@@ -238,15 +225,12 @@ pub export fn vk_compute_dispatch(
 
     // Bind descriptor sets if provided
     if (info.descriptor_sets != null and info.descriptor_set_count > 0) {
-        c.vkCmdBindDescriptorSets(cmd_buffer, c.VK_PIPELINE_BIND_POINT_COMPUTE,
-                                pipe.pipeline_layout, 0, info.descriptor_set_count,
-                                info.descriptor_sets, 0, null);
+        c.vkCmdBindDescriptorSets(cmd_buffer, c.VK_PIPELINE_BIND_POINT_COMPUTE, pipe.pipeline_layout, 0, info.descriptor_set_count, info.descriptor_sets, 0, null);
     }
 
     // Push constants if provided
     if (info.push_constants != null and info.push_constant_size > 0) {
-        c.vkCmdPushConstants(cmd_buffer, pipe.pipeline_layout, pipe.push_constant_stages, 0,
-                           info.push_constant_size, info.push_constants);
+        c.vkCmdPushConstants(cmd_buffer, pipe.pipeline_layout, pipe.push_constant_stages, 0, info.push_constant_size, info.push_constants);
     }
 
     // Dispatch compute work

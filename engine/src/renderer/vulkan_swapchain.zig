@@ -10,7 +10,6 @@ const vk_mesh_shader = @import("vulkan_mesh_shader.zig");
 
 const c = @import("vulkan_c.zig").c;
 
-
 // Helper functions
 
 fn get_current_time_ms() u64 {
@@ -87,7 +86,8 @@ fn choose_surface_format(formats: [*]const c.VkSurfaceFormatKHR, count: u32) c.V
         if (prefer_hdr) {
             if (f.colorSpace == c.VK_COLOR_SPACE_HDR10_ST2084_EXT or
                 f.colorSpace == c.VK_COLOR_SPACE_EXTENDED_SRGB_LINEAR_EXT or
-                f.colorSpace == c.VK_COLOR_SPACE_BT2020_LINEAR_EXT) {
+                f.colorSpace == c.VK_COLOR_SPACE_BT2020_LINEAR_EXT)
+            {
                 score += 50;
             }
         }
@@ -167,7 +167,7 @@ fn get_surface_details(s: *types.VulkanState, caps: *c.VkSurfaceCapabilitiesKHR,
         log.cardinal_log_error("[SWAPCHAIN] Failed to get surface formats", .{});
         return false;
     }
-    
+
     const mem_alloc = memory.cardinal_get_allocator_for_category(.RENDERER);
     const fmts_ptr = memory.cardinal_alloc(mem_alloc, @sizeOf(c.VkSurfaceFormatKHR) * count);
     if (fmts_ptr == null) return false;
@@ -184,7 +184,7 @@ fn get_surface_details(s: *types.VulkanState, caps: *c.VkSurfaceCapabilitiesKHR,
         log.cardinal_log_error("[SWAPCHAIN] Failed to get present modes", .{});
         return false;
     }
-    
+
     const modes_ptr = memory.cardinal_alloc(mem_alloc, @sizeOf(c.VkPresentModeKHR) * count);
     if (modes_ptr == null) return false;
     const modes = @as([*]c.VkPresentModeKHR, @ptrCast(@alignCast(modes_ptr)));
@@ -233,7 +233,7 @@ fn create_swapchain_object(s: *types.VulkanState, caps: *const c.VkSurfaceCapabi
         image_count = caps.maxImageCount;
     }
 
-    log.cardinal_log_info("[SWAPCHAIN] Creating swapchain: {d}x{d}, {d} images, format {d}", .{extent.width, extent.height, image_count, fmt.format});
+    log.cardinal_log_info("[SWAPCHAIN] Creating swapchain: {d}x{d}, {d} images, format {d}", .{ extent.width, extent.height, image_count, fmt.format });
 
     var sci = std.mem.zeroes(c.VkSwapchainCreateInfoKHR);
     sci.sType = c.VK_STRUCTURE_TYPE_SWAPCHAIN_CREATE_INFO_KHR;
@@ -469,7 +469,7 @@ pub export fn vk_create_swapchain(s: ?*types.VulkanState) callconv(.c) bool {
 
     const extent = select_swapchain_extent(vs, &caps);
     if (extent.width == 0 or extent.height == 0) {
-        log.cardinal_log_warn("[SWAPCHAIN] Invalid swapchain extent: {d}x{d} (minimized?), skipping creation", .{extent.width, extent.height});
+        log.cardinal_log_warn("[SWAPCHAIN] Invalid swapchain extent: {d}x{d} (minimized?), skipping creation", .{ extent.width, extent.height });
         return false;
     }
 
@@ -495,7 +495,7 @@ pub export fn vk_create_swapchain(s: ?*types.VulkanState) callconv(.c) bool {
     vs.swapchain.consecutive_recreation_failures = 0;
     vs.swapchain.frame_pacing_enabled = true;
 
-    log.cardinal_log_info("[SWAPCHAIN] Successfully created swapchain with {d} images ({d}x{d})", .{vs.swapchain.image_count, vs.swapchain.extent.width, vs.swapchain.extent.height});
+    log.cardinal_log_info("[SWAPCHAIN] Successfully created swapchain with {d} images ({d}x{d})", .{ vs.swapchain.image_count, vs.swapchain.extent.width, vs.swapchain.extent.height });
     return true;
 }
 
@@ -600,7 +600,7 @@ pub export fn vk_recreate_swapchain(s: ?*types.VulkanState) callconv(.c) bool {
 
     vs.swapchain.consecutive_recreation_failures = 0;
 
-    log.cardinal_log_info("[SWAPCHAIN] Successfully recreated swapchain: {d}x{d} -> {d}x{d}", .{backup.extent.width, backup.extent.height, vs.swapchain.extent.width, vs.swapchain.extent.height});
+    log.cardinal_log_info("[SWAPCHAIN] Successfully recreated swapchain: {d}x{d} -> {d}x{d}", .{ backup.extent.width, backup.extent.height, vs.swapchain.extent.width, vs.swapchain.extent.height });
 
     if (vs.recovery.recovery_complete_callback) |cb| {
         cb(vs.recovery.callback_user_data, true);

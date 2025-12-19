@@ -139,20 +139,17 @@ fn create_swapchain_internal(manager: *VulkanSwapchainManager, createInfo: *cons
     defer vk_swapchain_free_surface_support(&support);
 
     // Choose surface format
-    const surfaceFormat = vk_swapchain_choose_surface_format(
-        support.formats, support.formatCount, createInfo.preferredFormat,
-        createInfo.preferredColorSpace);
+    const surfaceFormat = vk_swapchain_choose_surface_format(support.formats, support.formatCount, createInfo.preferredFormat, createInfo.preferredColorSpace);
 
     // Choose present mode
-    const presentMode = vk_swapchain_choose_present_mode(
-        support.presentModes, support.presentModeCount, createInfo.preferredPresentMode);
+    const presentMode = vk_swapchain_choose_present_mode(support.presentModes, support.presentModeCount, createInfo.preferredPresentMode);
 
     // Choose extent
     const extent = vk_swapchain_choose_extent(&support.capabilities, createInfo.windowExtent);
 
     // Validate extent
     if (extent.width == 0 or extent.height == 0) {
-        log.cardinal_log_error("[SWAPCHAIN] Invalid swapchain extent: {d}x{d}", .{extent.width, extent.height});
+        log.cardinal_log_error("[SWAPCHAIN] Invalid swapchain extent: {d}x{d}", .{ extent.width, extent.height });
         return false;
     }
 
@@ -161,7 +158,8 @@ fn create_swapchain_internal(manager: *VulkanSwapchainManager, createInfo: *cons
     if (imageCount == 0) {
         imageCount = support.capabilities.minImageCount + 1;
         if (support.capabilities.maxImageCount > 0 and
-            imageCount > support.capabilities.maxImageCount) {
+            imageCount > support.capabilities.maxImageCount)
+        {
             imageCount = support.capabilities.maxImageCount;
         }
     }
@@ -174,7 +172,7 @@ fn create_swapchain_internal(manager: *VulkanSwapchainManager, createInfo: *cons
         imageCount = support.capabilities.maxImageCount;
     }
 
-    log.cardinal_log_info("[SWAPCHAIN] Creating swapchain: {d}x{d}, {d} images, format {d}", .{extent.width, extent.height, imageCount, surfaceFormat.format});
+    log.cardinal_log_info("[SWAPCHAIN] Creating swapchain: {d}x{d}, {d} images, format {d}", .{ extent.width, extent.height, imageCount, surfaceFormat.format });
 
     // Create swapchain
     var swapchainCreateInfo = std.mem.zeroes(c.VkSwapchainCreateInfoKHR);
@@ -258,15 +256,13 @@ fn create_swapchain_internal(manager: *VulkanSwapchainManager, createInfo: *cons
     manager.lastRecreationTime = get_current_time_ms();
     manager.recreationCount += 1;
 
-    log.cardinal_log_info("[SWAPCHAIN] Successfully created swapchain with {d} images ({d}x{d})",
-                      .{manager.imageCount, manager.extent.width, manager.extent.height});
+    log.cardinal_log_info("[SWAPCHAIN] Successfully created swapchain with {d} images ({d}x{d})", .{ manager.imageCount, manager.extent.width, manager.extent.height });
     return true;
 }
 
 // Exported functions
 
-pub export fn vk_swapchain_manager_create(manager: ?*VulkanSwapchainManager,
-                                 createInfo: ?*const VulkanSwapchainCreateInfo) callconv(.c) bool {
+pub export fn vk_swapchain_manager_create(manager: ?*VulkanSwapchainManager, createInfo: ?*const VulkanSwapchainCreateInfo) callconv(.c) bool {
     if (manager == null or createInfo == null) {
         log.cardinal_log_error("[SWAPCHAIN] Invalid parameters for swapchain manager creation", .{});
         return false;
@@ -408,14 +404,11 @@ pub export fn vk_swapchain_manager_recreate(manager: ?*VulkanSwapchainManager, n
         c.vkDestroySwapchainKHR(mgr.device, oldSwapchain, null);
     }
 
-    log.cardinal_log_info("[SWAPCHAIN] Successfully recreated swapchain: {d}x{d} -> {d}x{d}",
-                      .{oldExtent.width, oldExtent.height, mgr.extent.width, mgr.extent.height});
+    log.cardinal_log_info("[SWAPCHAIN] Successfully recreated swapchain: {d}x{d} -> {d}x{d}", .{ oldExtent.width, oldExtent.height, mgr.extent.width, mgr.extent.height });
     return true;
 }
 
-pub export fn vk_swapchain_manager_acquire_image(manager: ?*VulkanSwapchainManager, timeout: u64,
-                                            semaphore: c.VkSemaphore, fence: c.VkFence,
-                                            imageIndex: ?*u32) callconv(.c) c.VkResult {
+pub export fn vk_swapchain_manager_acquire_image(manager: ?*VulkanSwapchainManager, timeout: u64, semaphore: c.VkSemaphore, fence: c.VkFence, imageIndex: ?*u32) callconv(.c) c.VkResult {
     if (manager == null or imageIndex == null) {
         return c.VK_ERROR_INITIALIZATION_FAILED;
     }
@@ -429,9 +422,7 @@ pub export fn vk_swapchain_manager_acquire_image(manager: ?*VulkanSwapchainManag
     return c.vkAcquireNextImageKHR(mgr.device, mgr.swapchain, timeout, semaphore, fence, imageIndex);
 }
 
-pub export fn vk_swapchain_manager_present(manager: ?*VulkanSwapchainManager, presentQueue: c.VkQueue,
-                                      imageIndex: u32, waitSemaphoreCount: u32,
-                                      waitSemaphores: ?[*]const c.VkSemaphore) callconv(.c) c.VkResult {
+pub export fn vk_swapchain_manager_present(manager: ?*VulkanSwapchainManager, presentQueue: c.VkQueue, imageIndex: u32, waitSemaphoreCount: u32, waitSemaphores: ?[*]const c.VkSemaphore) callconv(.c) c.VkResult {
     if (manager == null or presentQueue == null) {
         return c.VK_ERROR_INITIALIZATION_FAILED;
     }
@@ -454,8 +445,7 @@ pub export fn vk_swapchain_manager_present(manager: ?*VulkanSwapchainManager, pr
     return c.vkQueuePresentKHR(presentQueue, &presentInfo);
 }
 
-pub export fn vk_swapchain_query_surface_support(physicalDevice: c.VkPhysicalDevice, surface: c.VkSurfaceKHR,
-                                        support: ?*VulkanSurfaceSupport) callconv(.c) bool {
+pub export fn vk_swapchain_query_surface_support(physicalDevice: c.VkPhysicalDevice, surface: c.VkSurfaceKHR, support: ?*VulkanSurfaceSupport) callconv(.c) bool {
     if (physicalDevice == null or surface == null or support == null) {
         return false;
     }
@@ -541,10 +531,7 @@ pub export fn vk_swapchain_free_surface_support(support: ?*VulkanSurfaceSupport)
     supp.presentModeCount = 0;
 }
 
-pub export fn vk_swapchain_choose_surface_format(availableFormats: ?[*]const c.VkSurfaceFormatKHR,
-                                                      formatCount: u32,
-                                                      preferredFormat: c.VkFormat,
-                                                      preferredColorSpace: c.VkColorSpaceKHR) callconv(.c) c.VkSurfaceFormatKHR {
+pub export fn vk_swapchain_choose_surface_format(availableFormats: ?[*]const c.VkSurfaceFormatKHR, formatCount: u32, preferredFormat: c.VkFormat, preferredColorSpace: c.VkColorSpaceKHR) callconv(.c) c.VkSurfaceFormatKHR {
     if (availableFormats == null) {
         var defaultFormat = std.mem.zeroes(c.VkSurfaceFormatKHR);
         defaultFormat.format = c.VK_FORMAT_B8G8R8A8_SRGB;
@@ -561,21 +548,22 @@ pub export fn vk_swapchain_choose_surface_format(availableFormats: ?[*]const c.V
         var i: u32 = 0;
         while (i < formatCount) : (i += 1) {
             if (formats[i].format == preferredFormat and
-                formats[i].colorSpace == preferredColorSpace) {
+                formats[i].colorSpace == preferredColorSpace)
+            {
                 return formats[i];
             }
         }
     }
 
     // Look for preferred formats
-    const preferredFormats = [_]c.VkFormat{c.VK_FORMAT_R8G8B8A8_UNORM, c.VK_FORMAT_B8G8R8A8_UNORM,
-                                   c.VK_FORMAT_R8G8B8A8_SRGB, c.VK_FORMAT_B8G8R8A8_SRGB};
+    const preferredFormats = [_]c.VkFormat{ c.VK_FORMAT_R8G8B8A8_UNORM, c.VK_FORMAT_B8G8R8A8_UNORM, c.VK_FORMAT_R8G8B8A8_SRGB, c.VK_FORMAT_B8G8R8A8_SRGB };
 
     for (preferredFormats) |pf| {
         var j: u32 = 0;
         while (j < formatCount) : (j += 1) {
             if (formats[j].format == pf and
-                formats[j].colorSpace == c.VK_COLOR_SPACE_SRGB_NONLINEAR_KHR) {
+                formats[j].colorSpace == c.VK_COLOR_SPACE_SRGB_NONLINEAR_KHR)
+            {
                 return formats[j];
             }
         }
@@ -585,9 +573,7 @@ pub export fn vk_swapchain_choose_surface_format(availableFormats: ?[*]const c.V
     return formats[0];
 }
 
-pub export fn vk_swapchain_choose_present_mode(availableModes: ?[*]const c.VkPresentModeKHR,
-                                                  modeCount: u32,
-                                                  preferredMode: c.VkPresentModeKHR) callconv(.c) c.VkPresentModeKHR {
+pub export fn vk_swapchain_choose_present_mode(availableModes: ?[*]const c.VkPresentModeKHR, modeCount: u32, preferredMode: c.VkPresentModeKHR) callconv(.c) c.VkPresentModeKHR {
     if (availableModes == null or modeCount == 0) {
         return c.VK_PRESENT_MODE_FIFO_KHR; // Always available
     }
@@ -604,9 +590,7 @@ pub export fn vk_swapchain_choose_present_mode(availableModes: ?[*]const c.VkPre
     }
 
     // Look for preferred modes in order
-    const preferredModes = [_]c.VkPresentModeKHR{c.VK_PRESENT_MODE_MAILBOX_KHR, c.VK_PRESENT_MODE_IMMEDIATE_KHR,
-                                         c.VK_PRESENT_MODE_FIFO_RELAXED_KHR,
-                                         c.VK_PRESENT_MODE_FIFO_KHR};
+    const preferredModes = [_]c.VkPresentModeKHR{ c.VK_PRESENT_MODE_MAILBOX_KHR, c.VK_PRESENT_MODE_IMMEDIATE_KHR, c.VK_PRESENT_MODE_FIFO_RELAXED_KHR, c.VK_PRESENT_MODE_FIFO_KHR };
 
     for (preferredModes) |pm| {
         var j: u32 = 0;
@@ -621,8 +605,7 @@ pub export fn vk_swapchain_choose_present_mode(availableModes: ?[*]const c.VkPre
     return c.VK_PRESENT_MODE_FIFO_KHR;
 }
 
-pub export fn vk_swapchain_choose_extent(capabilities: ?*const c.VkSurfaceCapabilitiesKHR,
-                                      windowExtent: c.VkExtent2D) callconv(.c) c.VkExtent2D {
+pub export fn vk_swapchain_choose_extent(capabilities: ?*const c.VkSurfaceCapabilitiesKHR, windowExtent: c.VkExtent2D) callconv(.c) c.VkExtent2D {
     if (capabilities == null) {
         return windowExtent;
     }
@@ -693,9 +676,7 @@ pub export fn vk_swapchain_manager_get_image_views(manager: ?*const VulkanSwapch
     return if (manager) |mgr| (if (mgr.initialized) mgr.imageViews else null) else null;
 }
 
-pub export fn vk_swapchain_manager_get_recreation_stats(manager: ?*const VulkanSwapchainManager,
-                                               recreationCount: ?*u32,
-                                               lastRecreationTime: ?*u64) callconv(.c) void {
+pub export fn vk_swapchain_manager_get_recreation_stats(manager: ?*const VulkanSwapchainManager, recreationCount: ?*u32, lastRecreationTime: ?*u64) callconv(.c) void {
     if (manager == null or !manager.?.initialized) {
         if (recreationCount) |rc| rc.* = 0;
         if (lastRecreationTime) |lrt| lrt.* = 0;

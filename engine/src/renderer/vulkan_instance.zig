@@ -50,12 +50,7 @@ fn get_severity_string(message_severity: c.VkDebugUtilsMessageSeverityFlagBitsEX
     return "UNKNOWN";
 }
 
-fn debug_callback(
-    message_severity: c.VkDebugUtilsMessageSeverityFlagBitsEXT,
-    message_type: c.VkDebugUtilsMessageTypeFlagsEXT,
-    callback_data: ?*const c.VkDebugUtilsMessengerCallbackDataEXT,
-    user_data: ?*anyopaque
-) callconv(.c) c.VkBool32 {
+fn debug_callback(message_severity: c.VkDebugUtilsMessageSeverityFlagBitsEXT, message_type: c.VkDebugUtilsMessageTypeFlagsEXT, callback_data: ?*const c.VkDebugUtilsMessengerCallbackDataEXT, user_data: ?*anyopaque) callconv(.c) c.VkBool32 {
     _ = user_data;
 
     g_validation_stats.total_messages += 1;
@@ -145,8 +140,8 @@ pub export fn vk_log_validation_stats() callconv(.c) void {
 
     log.cardinal_log_info("[VALIDATION] Statistics Summary:", .{});
     log.cardinal_log_info("[VALIDATION]   Total messages: {d}", .{g_validation_stats.total_messages});
-    log.cardinal_log_info("[VALIDATION]   Errors: {d}, Warnings: {d}, Info: {d}", .{g_validation_stats.error_count, g_validation_stats.warning_count, g_validation_stats.info_count});
-    log.cardinal_log_info("[VALIDATION]   By type - Validation: {d}, Performance: {d}, General: {d}", .{g_validation_stats.validation_count, g_validation_stats.performance_count, g_validation_stats.general_count});
+    log.cardinal_log_info("[VALIDATION]   Errors: {d}, Warnings: {d}, Info: {d}", .{ g_validation_stats.error_count, g_validation_stats.warning_count, g_validation_stats.info_count });
+    log.cardinal_log_info("[VALIDATION]   By type - Validation: {d}, Performance: {d}, General: {d}", .{ g_validation_stats.validation_count, g_validation_stats.performance_count, g_validation_stats.general_count });
     log.cardinal_log_info("[VALIDATION]   Filtered messages: {d}", .{g_validation_stats.filtered_count});
 }
 
@@ -202,7 +197,7 @@ fn get_instance_extensions(out_extensions: *[*c]const [*c]const u8, out_count: *
     log.cardinal_log_info("[INSTANCE] GLFW requires {d} extensions", .{glfw_count});
     var i: u32 = 0;
     while (i < glfw_count) : (i += 1) {
-        log.cardinal_log_info("[INSTANCE] GLFW extension {d}: {s}", .{i, std.mem.span(glfw_exts[i])});
+        log.cardinal_log_info("[INSTANCE] GLFW extension {d}: {s}", .{ i, std.mem.span(glfw_exts[i]) });
     }
 
     if (!validation_enabled()) {
@@ -318,10 +313,10 @@ pub export fn vk_create_instance(s: ?*types.VulkanState) callconv(.c) bool {
     log.cardinal_log_info("[INSTANCE] Final extension count: {d}", .{extension_count});
     var i: u32 = 0;
     while (i < extension_count) : (i += 1) {
-        log.cardinal_log_info("[INSTANCE] Extension {d}: {s}", .{i, if (extensions[i] != null) std.mem.span(extensions[i]) else "(null)"});
+        log.cardinal_log_info("[INSTANCE] Extension {d}: {s}", .{ i, if (extensions[i] != null) std.mem.span(extensions[i]) else "(null)" });
     }
 
-    const layers = [_][*c]const u8{ "VK_LAYER_KHRONOS_validation" };
+    const layers = [_][*c]const u8{"VK_LAYER_KHRONOS_validation"};
     var ci = std.mem.zeroes(c.VkInstanceCreateInfo);
     ci.sType = c.VK_STRUCTURE_TYPE_INSTANCE_CREATE_INFO;
     ci.pApplicationInfo = &ai;
@@ -366,8 +361,8 @@ pub export fn vk_pick_physical_device(s: ?*types.VulkanState) callconv(.c) bool 
 
     var count: u32 = 0;
     var result = c.vkEnumeratePhysicalDevices(vs.context.instance, &count, null);
-    log.cardinal_log_info("[DEVICE] Found {d} physical devices, enumerate result: {d}", .{count, result});
-    
+    log.cardinal_log_info("[DEVICE] Found {d} physical devices, enumerate result: {d}", .{ count, result });
+
     if (count == 0) {
         log.cardinal_log_error("[DEVICE] No physical devices found!", .{});
         return false;
@@ -381,17 +376,13 @@ pub export fn vk_pick_physical_device(s: ?*types.VulkanState) callconv(.c) bool 
 
     result = c.vkEnumeratePhysicalDevices(vs.context.instance, &count, devices_ptr);
     log.cardinal_log_info("[DEVICE] Enumerate devices result: {d}", .{result});
-    
+
     vs.context.physical_device = devices_ptr[0];
 
     var props: c.VkPhysicalDeviceProperties = undefined;
     c.vkGetPhysicalDeviceProperties(vs.context.physical_device, &props);
-    
-    log.cardinal_log_info("[DEVICE] Selected device: {s} (API {d}.{d}.{d}, Driver {d}.{d}.{d})", .{
-        std.mem.sliceTo(&props.deviceName, 0),
-        c.VK_VERSION_MAJOR(props.apiVersion), c.VK_VERSION_MINOR(props.apiVersion), c.VK_VERSION_PATCH(props.apiVersion),
-        c.VK_VERSION_MAJOR(props.driverVersion), c.VK_VERSION_MINOR(props.driverVersion), c.VK_VERSION_PATCH(props.driverVersion)
-    });
+
+    log.cardinal_log_info("[DEVICE] Selected device: {s} (API {d}.{d}.{d}, Driver {d}.{d}.{d})", .{ std.mem.sliceTo(&props.deviceName, 0), c.VK_VERSION_MAJOR(props.apiVersion), c.VK_VERSION_MINOR(props.apiVersion), c.VK_VERSION_PATCH(props.apiVersion), c.VK_VERSION_MAJOR(props.driverVersion), c.VK_VERSION_MINOR(props.driverVersion), c.VK_VERSION_PATCH(props.driverVersion) });
 
     return vs.context.physical_device != null;
 }
@@ -410,7 +401,7 @@ pub export fn vk_create_device(s: ?*types.VulkanState) callconv(.c) bool {
     if (qfp == null) return false;
     const qfp_ptr = @as([*]c.VkQueueFamilyProperties, @ptrCast(@alignCast(qfp)));
     defer memory.cardinal_free(mem_alloc, qfp);
-    
+
     c.vkGetPhysicalDeviceQueueFamilyProperties(vs.context.physical_device, &qf_count, qfp_ptr);
 
     vs.context.graphics_queue_family = 0;
@@ -435,13 +426,13 @@ pub export fn vk_create_device(s: ?*types.VulkanState) callconv(.c) bool {
     const apiVersion = physicalDeviceProperties.apiVersion;
     const majorVersion = c.VK_VERSION_MAJOR(apiVersion);
     const minorVersion = c.VK_VERSION_MINOR(apiVersion);
-    log.cardinal_log_info("[DEVICE] Physical device supports Vulkan {d}.{d}.{d}", .{majorVersion, minorVersion, c.VK_VERSION_PATCH(apiVersion)});
+    log.cardinal_log_info("[DEVICE] Physical device supports Vulkan {d}.{d}.{d}", .{ majorVersion, minorVersion, c.VK_VERSION_PATCH(apiVersion) });
 
     const vulkan_14_supported = (majorVersion > 1) or (majorVersion == 1 and minorVersion >= 4);
     const vulkan_12_supported = (majorVersion > 1) or (majorVersion == 1 and minorVersion >= 2);
 
     if (!vulkan_14_supported) {
-        log.cardinal_log_error("[DEVICE] Vulkan 1.4 core is required but not supported (found {d}.{d})", .{majorVersion, minorVersion});
+        log.cardinal_log_error("[DEVICE] Vulkan 1.4 core is required but not supported (found {d}.{d})", .{ majorVersion, minorVersion });
         return false;
     }
     log.cardinal_log_info("[DEVICE] Vulkan 1.4 core support confirmed", .{});
@@ -554,7 +545,7 @@ pub export fn vk_create_device(s: ?*types.VulkanState) callconv(.c) bool {
 
     var shaderQuadControlFeatures = std.mem.zeroes(c.VkPhysicalDeviceShaderQuadControlFeaturesKHR);
     shaderQuadControlFeatures.sType = c.VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SHADER_QUAD_CONTROL_FEATURES_KHR;
-    
+
     var shaderMaximalReconvergenceFeatures = std.mem.zeroes(c.VkPhysicalDeviceShaderMaximalReconvergenceFeaturesKHR);
     shaderMaximalReconvergenceFeatures.sType = c.VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SHADER_MAXIMAL_RECONVERGENCE_FEATURES_KHR;
     shaderMaximalReconvergenceFeatures.pNext = if (shader_quad_control_available) &shaderQuadControlFeatures else null;
@@ -614,7 +605,7 @@ pub export fn vk_create_device(s: ?*types.VulkanState) callconv(.c) bool {
 
     var subgroupProperties = std.mem.zeroes(c.VkPhysicalDeviceSubgroupProperties);
     subgroupProperties.sType = c.VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SUBGROUP_PROPERTIES;
-    
+
     var props2 = std.mem.zeroes(c.VkPhysicalDeviceProperties2);
     props2.sType = c.VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PROPERTIES_2;
     props2.pNext = &subgroupProperties;
@@ -710,7 +701,7 @@ pub export fn vk_create_device(s: ?*types.VulkanState) callconv(.c) bool {
     log.cardinal_log_info("[DEVICE] Enabling {d} device extension(s)", .{dci.enabledExtensionCount});
     i = 0;
     while (i < dci.enabledExtensionCount) : (i += 1) {
-        log.cardinal_log_info("[DEVICE] Device extension {d}: {s}", .{i, std.mem.span(device_extensions[i])});
+        log.cardinal_log_info("[DEVICE] Device extension {d}: {s}", .{ i, std.mem.span(device_extensions[i]) });
     }
 
     const result = c.vkCreateDevice(vs.context.physical_device, &dci, null, &vs.context.device);
@@ -742,7 +733,7 @@ pub export fn vk_create_device(s: ?*types.VulkanState) callconv(.c) bool {
     vs.context.vkCmdBeginRendering = @ptrCast(c.vkGetDeviceProcAddr(vs.context.device, "vkCmdBeginRendering"));
     vs.context.vkCmdEndRendering = @ptrCast(c.vkGetDeviceProcAddr(vs.context.device, "vkCmdEndRendering"));
     vs.context.vkCmdPipelineBarrier2 = @ptrCast(c.vkGetDeviceProcAddr(vs.context.device, "vkCmdPipelineBarrier2"));
-    
+
     vs.context.vkGetDeviceBufferMemoryRequirements = @ptrCast(c.vkGetDeviceProcAddr(vs.context.device, "vkGetDeviceBufferMemoryRequirements"));
     vs.context.vkGetDeviceImageMemoryRequirements = @ptrCast(c.vkGetDeviceProcAddr(vs.context.device, "vkGetDeviceImageMemoryRequirements"));
 
@@ -779,7 +770,7 @@ pub export fn vk_create_device(s: ?*types.VulkanState) callconv(.c) bool {
 
             var desc_buffer_props = std.mem.zeroes(c.VkPhysicalDeviceDescriptorBufferPropertiesEXT);
             desc_buffer_props.sType = c.VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_DESCRIPTOR_BUFFER_PROPERTIES_EXT;
-            
+
             var descriptorBufferProps2 = std.mem.zeroes(c.VkPhysicalDeviceProperties2);
             descriptorBufferProps2.sType = c.VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PROPERTIES_2;
             descriptorBufferProps2.pNext = &desc_buffer_props;
@@ -794,13 +785,7 @@ pub export fn vk_create_device(s: ?*types.VulkanState) callconv(.c) bool {
         vs.context.supports_descriptor_buffer = false;
     }
 
-    if (!vk_allocator.vk_allocator_init(&vs.allocator, vs.context.instance, vs.context.physical_device, vs.context.device,
-                           vs.context.vkGetDeviceBufferMemoryRequirements,
-                           vs.context.vkGetDeviceImageMemoryRequirements,
-                           vs.context.vkGetBufferDeviceAddress,
-                           vs.context.vkGetDeviceBufferMemoryRequirementsKHR,
-                           vs.context.vkGetDeviceImageMemoryRequirementsKHR,
-                           vs.context.supports_maintenance8)) {
+    if (!vk_allocator.vk_allocator_init(&vs.allocator, vs.context.instance, vs.context.physical_device, vs.context.device, vs.context.vkGetDeviceBufferMemoryRequirements, vs.context.vkGetDeviceImageMemoryRequirements, vs.context.vkGetBufferDeviceAddress, vs.context.vkGetDeviceBufferMemoryRequirementsKHR, vs.context.vkGetDeviceImageMemoryRequirementsKHR, vs.context.supports_maintenance8)) {
         log.cardinal_log_error("[DEVICE] Failed to initialize VulkanAllocator", .{});
         return false;
     }
@@ -819,7 +804,7 @@ pub export fn vk_create_surface(s: ?*types.VulkanState, win: ?*window.CardinalWi
     sci.hinstance = c.GetModuleHandleA(null);
     const native_handle = window.cardinal_window_get_native_handle(win);
     if (native_handle == null) return false;
-    
+
     // Hack: HWND might be an odd value (not aligned), but Zig's pointer types expect alignment.
     // We write the handle value directly into the struct memory to bypass alignment checks.
     const hwnd_ptr = @as(*usize, @ptrCast(&sci.hwnd));

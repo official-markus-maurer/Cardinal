@@ -147,8 +147,7 @@ pub export fn vulkan_timeline_pool_init(pool: *types.VulkanTimelinePool, device:
     }
 
     pool.initialized = true;
-    log.cardinal_log_info("[TIMELINE_POOL] Initialized with {d}/{d} semaphores (max: {d})",
-        .{pool.pool_size, initial_size, pool.max_pool_size});
+    log.cardinal_log_info("[TIMELINE_POOL] Initialized with {d}/{d} semaphores (max: {d})", .{ pool.pool_size, initial_size, pool.max_pool_size });
 
     return true;
 }
@@ -172,9 +171,9 @@ pub export fn vulkan_timeline_pool_destroy(pool: *types.VulkanTimelinePool) call
 
     // Cleanup resources
     pool_mutex_destroy(&pool.mutex);
-    
+
     // Free entries
-    // We allocated as u8 slice, but stored as pointer. 
+    // We allocated as u8 slice, but stored as pointer.
     // Need to reconstruct slice or use free on pointer if allocator supports it (c_allocator uses free)
     // std.heap.c_allocator.free expects slice.
     const entries_slice = @as([*]u8, @ptrCast(pool.entries))[0..(@sizeOf(types.VulkanTimelinePoolEntry) * pool.max_pool_size)];
@@ -269,7 +268,8 @@ pub export fn vulkan_timeline_pool_cleanup_idle(pool: *types.VulkanTimelinePool,
         var i: u32 = 0;
         while (i < pool.pool_size) : (i += 1) {
             if (!pool.entries[i].in_use and pool.entries[i].semaphore != null and
-                (current_time_ns - pool.entries[i].creation_time) > pool.max_idle_time_ns) {
+                (current_time_ns - pool.entries[i].creation_time) > pool.max_idle_time_ns)
+            {
                 c.vkDestroySemaphore(pool.device, pool.entries[i].semaphore, null);
                 pool.entries[i].semaphore = null;
                 cleaned_up += 1;
@@ -318,8 +318,7 @@ pub export fn vulkan_timeline_pool_configure_cleanup(pool: *types.VulkanTimeline
     pool.max_idle_time_ns = max_idle_time_ns;
     pool_mutex_unlock(pool.mutex);
 
-    log.cardinal_log_info("[TIMELINE_POOL] Auto-cleanup {s}, max idle time: {d} ns",
-        .{if (enabled) "enabled" else "disabled", max_idle_time_ns});
+    log.cardinal_log_info("[TIMELINE_POOL] Auto-cleanup {s}, max idle time: {d} ns", .{ if (enabled) "enabled" else "disabled", max_idle_time_ns });
 }
 
 pub export fn vulkan_timeline_pool_reset_stats(pool: *types.VulkanTimelinePool) callconv(.c) void {
