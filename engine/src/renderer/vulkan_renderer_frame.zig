@@ -15,6 +15,7 @@ const vk_mesh_shader = @import("vulkan_mesh_shader.zig");
 const vk_simple_pipelines = @import("vulkan_simple_pipelines.zig");
 const vk_renderer = @import("vulkan_renderer.zig");
 const vk_buffer_utils = @import("util/vulkan_buffer_utils.zig");
+const vk_texture_utils = @import("util/vulkan_texture_utils.zig");
 const vk_allocator = @import("vulkan_allocator.zig");
 const window = @import("../core/window.zig");
 
@@ -529,6 +530,7 @@ pub export fn cardinal_renderer_draw_frame(renderer: ?*types.CardinalRenderer) c
 
     // Clean up resources from the previous execution of this frame slot
     vk_mesh_shader.vk_mesh_shader_process_pending_cleanup(s);
+    vk_texture_utils.process_staging_buffer_cleanups(@ptrCast(s.sync_manager), @ptrCast(&s.allocator));
 
     // Prepare mesh shader rendering
     if (s.current_rendering_mode == .MESH_SHADER) {

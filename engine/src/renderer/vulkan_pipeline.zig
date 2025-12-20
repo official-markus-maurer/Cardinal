@@ -4,6 +4,8 @@ const types = @import("vulkan_types.zig");
 const vk_allocator = @import("vulkan_allocator.zig");
 const c = @import("vulkan_c.zig").c;
 
+const pipe_log = log.ScopedLogger("PIPELINE");
+
 fn create_depth_resources(s: *types.VulkanState) bool {
     // Find a suitable depth format
     const candidates = [_]c.VkFormat{ c.VK_FORMAT_D32_SFLOAT, c.VK_FORMAT_D32_SFLOAT_S8_UINT, c.VK_FORMAT_D24_UNORM_S8_UINT };
@@ -19,7 +21,7 @@ fn create_depth_resources(s: *types.VulkanState) bool {
     }
 
     if (s.swapchain.depth_format == c.VK_FORMAT_UNDEFINED) {
-        log.cardinal_log_error("pipeline: failed to find suitable depth format", .{});
+        pipe_log.err("failed to find suitable depth format", .{});
         return false;
     }
 
@@ -41,7 +43,7 @@ fn create_depth_resources(s: *types.VulkanState) bool {
 
     // Use VulkanAllocator to allocate and bind image + memory
     if (!vk_allocator.vk_allocator_allocate_image(&s.allocator, &imageInfo, &s.swapchain.depth_image, &s.swapchain.depth_image_memory, &s.swapchain.depth_image_allocation, c.VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT)) {
-        log.cardinal_log_error("pipeline: allocator failed to create depth image", .{});
+        pipe_log.err("allocator failed to create depth image", .{});
         return false;
     }
 
@@ -58,7 +60,7 @@ fn create_depth_resources(s: *types.VulkanState) bool {
     viewInfo.subresourceRange.layerCount = 1;
 
     if (c.vkCreateImageView(s.context.device, &viewInfo, null, &s.swapchain.depth_image_view) != c.VK_SUCCESS) {
-        log.cardinal_log_error("pipeline: failed to create depth image view", .{});
+        pipe_log.err("failed to create depth image view", .{});
         // Free image + memory via allocator on failure
         vk_allocator.vk_allocator_free_image(&s.allocator, s.swapchain.depth_image, s.swapchain.depth_image_allocation);
         s.swapchain.depth_image = null;
@@ -69,7 +71,7 @@ fn create_depth_resources(s: *types.VulkanState) bool {
     // Initialize layout tracking
     s.swapchain.depth_layout_initialized = false;
 
-    log.cardinal_log_info("pipeline: depth resources created", .{});
+    pipe_log.info("depth resources created", .{});
     return true;
 }
 

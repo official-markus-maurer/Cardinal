@@ -36,7 +36,10 @@ fn format_size(size: usize, buf: *[32]u8) [*:0]const u8 {
 pub fn draw_memory_stats_panel(state: *EditorState) void {
     if (!state.show_memory_stats) return;
 
-    if (c.imgui_bridge_begin("Memory Stats", &state.show_memory_stats, 0)) {
+    const open = c.imgui_bridge_begin("Memory Stats", &state.show_memory_stats, 0);
+    defer c.imgui_bridge_end();
+
+    if (open) {
         var stats: memory.CardinalGlobalMemoryStats = undefined;
         memory.cardinal_memory_get_stats(&stats);
 
@@ -88,5 +91,4 @@ pub fn draw_memory_stats_panel(state: *EditorState) void {
             c.imgui_bridge_end_table();
         }
     }
-    c.imgui_bridge_end();
 }

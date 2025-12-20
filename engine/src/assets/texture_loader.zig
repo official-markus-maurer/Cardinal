@@ -4,6 +4,8 @@ const log = @import("../core/log.zig");
 const ref_counting = @import("../core/ref_counting.zig");
 const async_loader = @import("../core/async_loader.zig");
 
+const texture_log = log.ScopedLogger("TEXTURE");
+
 // Import C functions from resource_state.h (not yet ported)
 const CardinalResourceState = enum(c_int) {
     UNKNOWN = 0,
@@ -95,7 +97,7 @@ pub export fn texture_cache_initialize(max_entries: u32) bool {
     g_texture_cache.evictions = 0;
     g_texture_cache.initialized = true;
 
-    log.cardinal_log_info("[TEXTURE] LRU texture cache initialized (max_entries={d}, max_memory={d} MB)", .{ max_entries, g_texture_cache.max_memory_usage / (1024 * 1024) });
+    texture_log.info("LRU texture cache initialized (max_entries={d}, max_memory={d} MB)", .{ max_entries, g_texture_cache.max_memory_usage / (1024 * 1024) });
     return true;
 }
 
@@ -129,7 +131,7 @@ pub export fn texture_cache_shutdown_system() void {
     g_texture_cache.total_memory_usage = 0;
     g_texture_cache.initialized = false;
 
-    log.cardinal_log_info("[TEXTURE] Thread-safe texture cache shutdown", .{});
+    texture_log.info("Thread-safe texture cache shutdown", .{});
 }
 
 pub export fn texture_cache_get_stats() TextureCacheStats {
@@ -168,7 +170,7 @@ pub export fn texture_cache_clear() void {
     g_texture_cache.entry_count = 0;
     g_texture_cache.total_memory_usage = 0;
 
-    log.cardinal_log_info("[TEXTURE] Cache cleared", .{});
+    texture_log.info("Cache cleared", .{});
 }
 
 // Internal cache helpers
@@ -488,6 +490,11 @@ pub export fn texture_load_with_ref_counting(filepath: ?[*]const u8, out_texture
             temp_ref.ref_count = 1;
 
             if (cardinal_resource_state_register(temp_ref) == null) {
+                memory.cardinal_free(allocator, ip);
+                memory.cardinal_free(allocator, ptr);
+            } else {
+                // Free temporary resource wrapper after registration
+                // cardinal_resource_state_register makes its own copy of the identifier
                 memory.cardinal_free(allocator, ip);
                 memory.cardinal_free(allocator, ptr);
             }

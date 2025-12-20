@@ -1,6 +1,8 @@
 const std = @import("std");
 const log = @import("../core/log.zig");
 
+const vk_utils_log = log.ScopedLogger("VK_UTILS");
+
 const c = @import("vulkan_c.zig").c;
 
 // =============================================================================
@@ -13,7 +15,7 @@ pub export fn vk_utils_check_result(result: c.VkResult, operation: ?[*:0]const u
     }
 
     const result_string = vk_utils_result_string(result);
-    log.cardinal_log_error("Vulkan operation failed: {s}\n  Result: {s} ({d})\n  Location: {s}:{d}", .{
+    vk_utils_log.err("Vulkan operation failed: {s}\n  Result: {s} ({d})\n  Location: {s}:{d}", .{
         if (operation) |op| std.mem.span(op) else "Unknown operation",
         std.mem.span(result_string),
         result,
@@ -67,7 +69,7 @@ fn check_result(result: c.VkResult, operation_name: ?[*:0]const u8) bool {
     if (result != c.VK_SUCCESS) {
         const op = if (operation_name) |name| std.mem.span(name) else "Unknown operation";
         const res_str = std.mem.span(vk_utils_result_string(result));
-        log.cardinal_log_error("Vulkan operation failed: {s} (Result: {s})", .{ op, res_str });
+        vk_utils_log.err("Vulkan operation failed: {s} (Result: {s})", .{ op, res_str });
         return false;
     }
     return true;
@@ -149,13 +151,13 @@ pub export fn vk_utils_create_sampler(device: c.VkDevice, sampler_info: ?*const 
 
 pub export fn vk_utils_allocate(size: usize, operation_name: ?[*:0]const u8) callconv(.c) ?*anyopaque {
     if (size == 0) {
-        log.cardinal_log_warn("Attempted to allocate 0 bytes for operation: {s}", .{if (operation_name) |op| std.mem.span(op) else "unknown"});
+        vk_utils_log.warn("Attempted to allocate 0 bytes for operation: {s}", .{if (operation_name) |op| std.mem.span(op) else "unknown"});
         return null;
     }
 
     const ptr = c.malloc(size);
     if (ptr == null) {
-        log.cardinal_log_error("Failed to allocate {d} bytes for operation: {s}", .{ size, if (operation_name) |op| std.mem.span(op) else "unknown" });
+        vk_utils_log.err("Failed to allocate {d} bytes for operation: {s}", .{ size, if (operation_name) |op| std.mem.span(op) else "unknown" });
         return null;
     }
 
@@ -166,14 +168,14 @@ pub export fn vk_utils_allocate(size: usize, operation_name: ?[*:0]const u8) cal
 
 pub export fn vk_utils_reallocate(ptr: ?*anyopaque, size: usize, operation_name: ?[*:0]const u8) callconv(.c) ?*anyopaque {
     if (size == 0) {
-        log.cardinal_log_warn("Attempted to reallocate to 0 bytes for operation: {s}", .{if (operation_name) |op| std.mem.span(op) else "unknown"});
+        vk_utils_log.warn("Attempted to reallocate to 0 bytes for operation: {s}", .{if (operation_name) |op| std.mem.span(op) else "unknown"});
         if (ptr != null) c.free(ptr);
         return null;
     }
 
     const new_ptr = c.realloc(ptr, size);
     if (new_ptr == null) {
-        log.cardinal_log_error("Failed to reallocate to {d} bytes for operation: {s}", .{ size, if (operation_name) |op| std.mem.span(op) else "unknown" });
+        vk_utils_log.err("Failed to reallocate to {d} bytes for operation: {s}", .{ size, if (operation_name) |op| std.mem.span(op) else "unknown" });
         return null;
     }
 
@@ -186,7 +188,7 @@ pub export fn vk_utils_reallocate(ptr: ?*anyopaque, size: usize, operation_name:
 
 pub export fn vk_utils_validate_pointer(ptr: ?*const anyopaque, name: ?[*:0]const u8) callconv(.c) bool {
     if (ptr == null) {
-        log.cardinal_log_error("Null pointer validation failed: {s}", .{if (name) |n| std.mem.span(n) else "unknown"});
+        vk_utils_log.err("Null pointer validation failed: {s}", .{if (name) |n| std.mem.span(n) else "unknown"});
         return false;
     }
     return true;
@@ -194,7 +196,7 @@ pub export fn vk_utils_validate_pointer(ptr: ?*const anyopaque, name: ?[*:0]cons
 
 pub export fn vk_utils_validate_handle(handle: ?*const anyopaque, name: ?[*:0]const u8) callconv(.c) bool {
     if (handle == null) {
-        log.cardinal_log_error("Null handle validation failed: {s}", .{if (name) |n| std.mem.span(n) else "unknown"});
+        vk_utils_log.err("Null handle validation failed: {s}", .{if (name) |n| std.mem.span(n) else "unknown"});
         return false;
     }
     return true;

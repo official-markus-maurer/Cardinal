@@ -143,7 +143,10 @@ pub fn load_scene(state: *EditorState, allocator: std.mem.Allocator, path: []con
 
 pub fn draw_asset_browser_panel(state: *EditorState, allocator: std.mem.Allocator) void {
     if (state.show_assets) {
-        if (c.imgui_bridge_begin("Assets", &state.show_assets, 0)) {
+        const open = c.imgui_bridge_begin("Assets", &state.show_assets, 0);
+        defer c.imgui_bridge_end();
+        
+        if (open) {
             c.imgui_bridge_text("Project Assets");
             c.imgui_bridge_separator();
 
@@ -247,6 +250,5 @@ pub fn draw_asset_browser_panel(state: *EditorState, allocator: std.mem.Allocato
             }
             c.imgui_bridge_end_child();
         }
-        c.imgui_bridge_end();
     }
 }

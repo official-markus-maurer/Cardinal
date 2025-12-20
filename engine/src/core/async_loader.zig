@@ -1,6 +1,9 @@
 const std = @import("std");
 const log = @import("log.zig");
 const memory = @import("memory.zig");
+
+const async_log = log.ScopedLogger("ASYNC");
+
 const ref_counting = @import("ref_counting.zig");
 const scene = @import("../assets/scene.zig");
 const job_system = @import("job_system.zig");
@@ -104,7 +107,7 @@ fn create_task(task_type: CardinalAsyncTaskType, priority: CardinalAsyncPriority
     const allocator = memory.cardinal_get_allocator_for_category(.ENGINE);
     const ptr = memory.cardinal_alloc(allocator, @sizeOf(CardinalAsyncTask));
     if (ptr == null) {
-        std.log.err("Failed to allocate memory for async task", .{});
+        async_log.err("Failed to allocate memory for async task", .{});
         return null;
     }
     const task = @as(*CardinalAsyncTask, @ptrCast(@alignCast(ptr)));
@@ -147,7 +150,7 @@ fn create_task(task_type: CardinalAsyncTaskType, priority: CardinalAsyncPriority
 fn execute_texture_load_task(task: *CardinalAsyncTask) bool {
     if (task.file_path == null) return false;
 
-    std.log.debug("Loading texture: {s}", .{task.file_path.?});
+    async_log.debug("Loading texture: {s}", .{task.file_path.?});
 
     var texture_data: scene.CardinalTexture = undefined;
 
@@ -169,14 +172,14 @@ fn execute_texture_load_task(task: *CardinalAsyncTask) bool {
     task.result_data = ref_resource;
     task.result_size = @sizeOf(ref_counting.CardinalRefCountedResource);
 
-    std.log.debug("Successfully loaded texture: {s}", .{task.file_path.?});
+    async_log.debug("Successfully loaded texture: {s}", .{task.file_path.?});
     return true;
 }
 
 fn execute_scene_load_task(task: *CardinalAsyncTask) bool {
     if (task.file_path == null) return false;
 
-    std.log.debug("Loading scene: {s}", .{task.file_path.?});
+    async_log.debug("Loading scene: {s}", .{task.file_path.?});
 
     const allocator = memory.cardinal_get_allocator_for_category(.ENGINE);
     const scene_ptr = memory.cardinal_alloc(allocator, @sizeOf(scene.CardinalScene));
@@ -194,14 +197,14 @@ fn execute_scene_load_task(task: *CardinalAsyncTask) bool {
     task.result_data = scene_ptr;
     task.result_size = @sizeOf(scene.CardinalScene);
 
-    std.log.debug("Successfully loaded scene: {s}", .{task.file_path.?});
+    async_log.debug("Successfully loaded scene: {s}", .{task.file_path.?});
     return true;
 }
 
 fn execute_material_load_task(task: *CardinalAsyncTask) bool {
     if (task.custom_data == null) return false;
 
-    std.log.debug("Loading material with reference counting", .{});
+    async_log.debug("Loading material with reference counting", .{});
 
     const source_material = @as(*const scene.CardinalMaterial, @ptrCast(@alignCast(task.custom_data)));
 
@@ -226,14 +229,14 @@ fn execute_material_load_task(task: *CardinalAsyncTask) bool {
     task.result_data = ref_resource;
     task.result_size = @sizeOf(ref_counting.CardinalRefCountedResource);
 
-    std.log.debug("Successfully loaded material with reference counting", .{});
+    async_log.debug("Successfully loaded material with reference counting", .{});
     return true;
 }
 
 fn execute_mesh_load_task(task: *CardinalAsyncTask) bool {
     if (task.custom_data == null) return false;
 
-    std.log.debug("Loading mesh with reference counting", .{});
+    async_log.debug("Loading mesh with reference counting", .{});
 
     const source_mesh = @as(*const scene.CardinalMesh, @ptrCast(@alignCast(task.custom_data)));
 
@@ -295,7 +298,7 @@ fn execute_mesh_load_task(task: *CardinalAsyncTask) bool {
     task.result_data = ref_resource;
     task.result_size = @sizeOf(ref_counting.CardinalRefCountedResource);
 
-    std.log.debug("Successfully loaded mesh with reference counting", .{});
+    async_log.debug("Successfully loaded mesh with reference counting", .{});
     return true;
 }
 

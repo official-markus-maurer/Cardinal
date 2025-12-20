@@ -12,6 +12,8 @@ const vk_simple_pipelines = @import("vulkan_simple_pipelines.zig");
 const vk_sync_manager = @import("vulkan_sync_manager.zig");
 const render_graph = @import("render_graph.zig");
 
+const cmd_log = log.ScopedLogger("COMMANDS");
+
 const c = @import("vulkan_c.zig").c;
 
 // Helper to get current thread ID
@@ -38,7 +40,7 @@ fn create_command_pools(s: *types.VulkanState) bool {
             return false;
         }
     }
-    log.cardinal_log_warn("[INIT] Created {d} command pools", .{s.sync.max_frames_in_flight});
+    cmd_log.warn("Created {d} command pools", .{s.sync.max_frames_in_flight});
     return true;
 }
 
@@ -61,7 +63,7 @@ fn allocate_command_buffers(s: *types.VulkanState) bool {
             return false;
         }
     }
-    log.cardinal_log_warn("[INIT] Allocated {d} primary command buffers", .{s.sync.max_frames_in_flight});
+    cmd_log.warn("Allocated {d} primary command buffers", .{s.sync.max_frames_in_flight});
 
     // Secondary buffers
     const sec_buffers_ptr = memory.cardinal_alloc(mem_alloc, s.sync.max_frames_in_flight * @sizeOf(c.VkCommandBuffer));
@@ -80,7 +82,7 @@ fn allocate_command_buffers(s: *types.VulkanState) bool {
             return false;
         }
     }
-    log.cardinal_log_warn("[INIT] Allocated {d} secondary command buffers", .{s.sync.max_frames_in_flight});
+    cmd_log.warn("Allocated {d} secondary command buffers", .{s.sync.max_frames_in_flight});
 
     // Scene secondary buffers (real secondary level)
     const scene_sec_ptr = memory.cardinal_alloc(mem_alloc, s.sync.max_frames_in_flight * @sizeOf(c.VkCommandBuffer));
@@ -411,8 +413,8 @@ fn vk_record_scene_commands(s: *types.VulkanState, cmd: c.VkCommandBuffer) void 
                 var ubo: types.PBRUniformBufferObject = undefined;
                 @memcpy(@as([*]u8, @ptrCast(&ubo))[0..@sizeOf(types.PBRUniformBufferObject)], @as([*]u8, @ptrCast(s.pipelines.pbr_pipeline.uniformBufferMapped))[0..@sizeOf(types.PBRUniformBufferObject)]);
 
-                var lighting: types.PBRLightingData = undefined;
-                @memcpy(@as([*]u8, @ptrCast(&lighting))[0..@sizeOf(types.PBRLightingData)], @as([*]u8, @ptrCast(s.pipelines.pbr_pipeline.lightingBufferMapped))[0..@sizeOf(types.PBRLightingData)]);
+                var lighting: types.PBRLightingBuffer = undefined;
+                @memcpy(@as([*]u8, @ptrCast(&lighting))[0..@sizeOf(types.PBRLightingBuffer)], @as([*]u8, @ptrCast(s.pipelines.pbr_pipeline.lightingBufferMapped))[0..@sizeOf(types.PBRLightingBuffer)]);
 
                 vk_pbr.vk_pbr_update_uniforms(&s.pipelines.pbr_pipeline, &ubo, &lighting);
                 

@@ -5,6 +5,9 @@ const async_loader = @import("../core/async_loader.zig");
 const log = @import("../core/log.zig");
 const memory = @import("../core/memory.zig");
 
+// Use scoped logger
+const mesh_log = log.ScopedLogger("MESH");
+
 // Thread-safe mesh cache
 const MeshCacheEntry = struct {
     mesh_id: [:0]const u8,
@@ -48,7 +51,7 @@ fn mesh_cache_init(max_entries: u32) bool {
     g_mesh_cache.cache_misses = 0;
     g_mesh_cache.initialized = true;
 
-    log.cardinal_log_info("[MESH] Cache initialized with max_entries={d}", .{max_entries});
+    mesh_log.info_s(.{ .max_entries = max_entries }, "Cache initialized", .{});
     return true;
 }
 
@@ -195,6 +198,7 @@ fn generate_mesh_id(mesh: scene.CardinalMesh) ?[:0]const u8 {
 
 fn mesh_data_destructor(data: ?*anyopaque) callconv(.c) void {
     if (data) |d| {
+        mesh_log.debug("Freeing mesh at {any}", .{d});
         const mesh: *scene.CardinalMesh = @ptrCast(@alignCast(d));
         const allocator = memory.cardinal_get_allocator_for_category(.ASSETS);
 
@@ -210,7 +214,7 @@ fn mesh_data_destructor(data: ?*anyopaque) callconv(.c) void {
 
 pub export fn mesh_load_with_ref_counting(mesh_data: ?*const scene.CardinalMesh, out_mesh: ?*scene.CardinalMesh) callconv(.c) ?*ref_counting.CardinalRefCountedResource {
     if (mesh_data == null or out_mesh == null) {
-        log.cardinal_log_error("mesh_load_with_ref_counting: invalid args", .{});
+        mesh_log.err("mesh_load_with_ref_counting: invalid args", .{});
         return null;
     }
 
@@ -221,7 +225,7 @@ pub export fn mesh_load_with_ref_counting(mesh_data: ?*const scene.CardinalMesh,
 
     const mesh_id_slice = generate_mesh_id(mesh_data.?.*);
     if (mesh_id_slice == null) {
-        log.cardinal_log_error("Failed to generate mesh ID", .{});
+        mesh_log.err("Failed to generate mesh ID", .{});
         return null;
     }
     const mesh_id = mesh_id_slice.?;
@@ -232,7 +236,7 @@ pub export fn mesh_load_with_ref_counting(mesh_data: ?*const scene.CardinalMesh,
     if (mesh_cache_get(mesh_id)) |ref_resource| {
         const existing_mesh: *scene.CardinalMesh = @ptrCast(@alignCast(ref_resource.resource.?));
         out_mesh.?.* = existing_mesh.*;
-        log.cardinal_log_debug("[MESH] Reusing cached mesh: {s} (ref_count={d})", .{ mesh_id, ref_counting.cardinal_ref_get_count(ref_resource) });
+        mesh_log.debug_s(.{ .mesh_id = mesh_id, .ref_count = ref_counting.cardinal_ref_get_count(ref_resource) }, "Reusing cached mesh", .{});
         return ref_resource;
     }
 
@@ -241,14 +245,14 @@ pub export fn mesh_load_with_ref_counting(mesh_data: ?*const scene.CardinalMesh,
         const existing_mesh: *scene.CardinalMesh = @ptrCast(@alignCast(ref_resource.resource.?));
         out_mesh.?.* = existing_mesh.*;
         mesh_cache_put(mesh_id, ref_resource);
-        log.cardinal_log_debug("[MESH] Reusing registry mesh: {s} (ref_count={d})", .{ mesh_id, ref_counting.cardinal_ref_get_count(ref_resource) });
+        mesh_log.debug_s(.{ .mesh_id = mesh_id, .ref_count = ref_counting.cardinal_ref_get_count(ref_resource) }, "Reusing registry mesh", .{});
         return ref_resource;
     }
 
     // Create deep copy
     const mesh_copy_ptr = memory.cardinal_alloc(allocator, @sizeOf(scene.CardinalMesh));
     if (mesh_copy_ptr == null) {
-        log.cardinal_log_error("Failed to allocate memory for mesh copy", .{});
+        mesh_log.err("Failed to allocate memory for mesh copy", .{});
         return null;
     }
     const mesh_copy: *scene.CardinalMesh = @ptrCast(@alignCast(mesh_copy_ptr));
@@ -261,7 +265,7 @@ pub export fn mesh_load_with_ref_counting(mesh_data: ?*const scene.CardinalMesh,
             const v_ptr = memory.cardinal_alloc(allocator, vertex_size);
             if (v_ptr == null) {
                 memory.cardinal_free(allocator, mesh_copy);
-                log.cardinal_log_error("Failed to allocate memory for vertex data", .{});
+                mesh_log.err("Failed to allocate memory for vertex data", .{});
                 return null;
             }
             @memcpy(@as([*]u8, @ptrCast(v_ptr))[0..vertex_size], @as([*]const u8, @ptrCast(vertices))[0..vertex_size]);
@@ -277,7 +281,7 @@ pub export fn mesh_load_with_ref_counting(mesh_data: ?*const scene.CardinalMesh,
             if (i_ptr == null) {
                 if (mesh_copy.vertices) |v| memory.cardinal_free(allocator, v);
                 memory.cardinal_free(allocator, mesh_copy);
-                log.cardinal_log_error("Failed to allocate memory for index data", .{});
+                mesh_log.err("Failed to allocate memory for index data", .{});
                 return null;
             }
             @memcpy(@as([*]u8, @ptrCast(i_ptr))[0..index_size], @as([*]const u8, @ptrCast(indices))[0..index_size]);
@@ -288,7 +292,7 @@ pub export fn mesh_load_with_ref_counting(mesh_data: ?*const scene.CardinalMesh,
     // Register
     const ref_resource = ref_counting.cardinal_ref_create(mesh_id.ptr, mesh_copy, @sizeOf(scene.CardinalMesh), mesh_data_destructor);
     if (ref_resource == null) {
-        log.cardinal_log_error("Failed to register mesh: {s}", .{mesh_id});
+        mesh_log.err("Failed to register mesh: {s}", .{mesh_id});
         if (mesh_copy.vertices) |v| memory.cardinal_free(allocator, v);
         if (mesh_copy.indices) |i| memory.cardinal_free(allocator, i);
         memory.cardinal_free(allocator, mesh_copy);
@@ -298,7 +302,7 @@ pub export fn mesh_load_with_ref_counting(mesh_data: ?*const scene.CardinalMesh,
     mesh_cache_put(mesh_id, ref_resource.?);
     out_mesh.?.* = mesh_copy.*;
 
-    log.cardinal_log_info("[MESH] Registered new mesh: vertices={d}, indices={d}", .{ mesh_data.?.vertex_count, mesh_data.?.index_count });
+    mesh_log.info_s(.{ .vertices = mesh_data.?.vertex_count, .indices = mesh_data.?.index_count }, "Registered new mesh", .{});
     return ref_resource;
 }
 
@@ -326,11 +330,11 @@ pub export fn mesh_data_free(mesh: ?*scene.CardinalMesh) callconv(.c) void {
 
 pub export fn mesh_load_async(mesh_data: ?*const scene.CardinalMesh, priority: async_loader.CardinalAsyncPriority, callback: async_loader.CardinalAsyncCallback, user_data: ?*anyopaque) callconv(.c) ?*async_loader.CardinalAsyncTask {
     if (mesh_data == null) {
-        log.cardinal_log_error("mesh_load_async: mesh_data is NULL", .{});
+        mesh_log.err("mesh_load_async: mesh_data is NULL", .{});
         return null;
     }
 
-    log.cardinal_log_debug("[MESH] Starting async load for mesh", .{});
+    mesh_log.debug("Starting async load for mesh", .{});
 
     // In C: return cardinal_async_load_mesh(mesh_data, priority, callback, user_data);
     return async_loader.cardinal_async_load_mesh(mesh_data, priority, callback, user_data);
@@ -359,7 +363,7 @@ pub export fn mesh_cache_shutdown_system() callconv(.c) void {
     g_mesh_cache.entries = null;
     g_mesh_cache.entry_count = 0;
     g_mesh_cache.initialized = false;
-    log.cardinal_log_info("[MESH] Cache shutdown complete", .{});
+    mesh_log.info("Cache shutdown complete", .{});
 }
 
 pub const MeshCacheStats = extern struct {
@@ -401,5 +405,5 @@ pub export fn mesh_cache_clear() callconv(.c) void {
 
     g_mesh_cache.entries = null;
     g_mesh_cache.entry_count = 0;
-    log.cardinal_log_info("[MESH] Cache cleared", .{});
+    mesh_log.info("Cache cleared", .{});
 }

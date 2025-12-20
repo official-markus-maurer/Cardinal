@@ -5,6 +5,8 @@ const memory = @import("../core/memory.zig");
 const types = @import("vulkan_types.zig");
 const window = @import("../core/window.zig");
 
+const renderer_log = log.ScopedLogger("RENDERER");
+
 const c = @import("vulkan_c.zig").c;
 
 const vk_instance = @import("vulkan_instance.zig");
@@ -44,31 +46,31 @@ fn vk_handle_window_resize(width: u32, height: u32, user_data: ?*anyopaque) call
     s.swapchain.pending_width = width;
     s.swapchain.pending_height = height;
     s.swapchain.recreation_pending = true;
-    log.cardinal_log_info("[SWAPCHAIN] Resize event: {d}x{d}, marking recreation pending", .{ width, height });
+    renderer_log.info("Resize event: {d}x{d}, marking recreation pending", .{ width, height });
 }
 
 fn init_vulkan_core(s: *types.VulkanState, win: ?*window.CardinalWindow) bool {
-    log.cardinal_log_warn("renderer_create: begin", .{});
+    renderer_log.warn("renderer_create: begin", .{});
     if (!vk_instance.vk_create_instance(@ptrCast(s))) {
-        log.cardinal_log_error("vk_create_instance failed", .{});
+        renderer_log.err("vk_create_instance failed", .{});
         return false;
     }
-    log.cardinal_log_info("renderer_create: instance", .{});
+    renderer_log.info("renderer_create: instance", .{});
     if (!vk_instance.vk_create_surface(@ptrCast(s), @ptrCast(win))) {
-        log.cardinal_log_error("vk_create_surface failed", .{});
+        renderer_log.err("vk_create_surface failed", .{});
         return false;
     }
-    log.cardinal_log_info("renderer_create: surface", .{});
+    renderer_log.info("renderer_create: surface", .{});
     if (!vk_instance.vk_pick_physical_device(@ptrCast(s))) {
-        log.cardinal_log_error("vk_pick_physical_device failed", .{});
+        renderer_log.err("vk_pick_physical_device failed", .{});
         return false;
     }
-    log.cardinal_log_info("renderer_create: physical_device", .{});
+    renderer_log.info("renderer_create: physical_device", .{});
     if (!vk_instance.vk_create_device(@ptrCast(s))) {
-        log.cardinal_log_error("vk_create_device failed", .{});
+        renderer_log.err("vk_create_device failed", .{});
         return false;
     }
-    log.cardinal_log_info("renderer_create: device", .{});
+    renderer_log.info("renderer_create: device", .{});
     return true;
 }
 
@@ -76,17 +78,17 @@ fn init_ref_counting() bool {
     // Initialize reference counting system (if not already initialized)
     if (!ref_counting.cardinal_ref_counting_init(256)) {
         // This is expected if already initialized by the application
-        log.cardinal_log_debug("Reference counting system already initialized or failed to initialize", .{});
+        renderer_log.debug("Reference counting system already initialized or failed to initialize", .{});
     }
-    log.cardinal_log_info("renderer_create: ref_counting", .{});
+    renderer_log.info("renderer_create: ref_counting", .{});
 
     // Initialize material reference counting
     if (!material_ref_counting.cardinal_material_ref_init()) {
-        log.cardinal_log_error("cardinal_material_ref_counting_init failed", .{});
+        renderer_log.err("cardinal_material_ref_counting_init failed", .{});
         ref_counting.cardinal_ref_counting_shutdown();
         return false;
     }
-    log.cardinal_log_info("renderer_create: material_ref_counting", .{});
+    renderer_log.info("renderer_create: material_ref_counting", .{});
     return true;
 }
 
@@ -489,7 +491,6 @@ pub export fn cardinal_renderer_destroy(renderer: ?*types.CardinalRenderer) call
 
     // Shutdown reference counting systems
     material_ref_counting.cardinal_material_ref_shutdown();
-    ref_counting.cardinal_ref_counting_shutdown();
 
     // Shutdown barrier validation system
     vk_barrier_validation.cardinal_barrier_validation_shutdown();
@@ -522,6 +523,7 @@ pub export fn cardinal_renderer_destroy(renderer: ?*types.CardinalRenderer) call
     vk_swapchain.vk_destroy_swapchain(@ptrCast(s));
 
     // Shutdown VMA allocator before destroying device
+    vk_texture_utils.shutdown_staging_buffer_cleanups(&s.allocator);
     vk_allocator.vk_allocator_shutdown(&s.allocator);
 
     vk_instance.vk_destroy_device_objects(@ptrCast(s));
@@ -623,9 +625,30 @@ pub export fn cardinal_renderer_set_camera(renderer: ?*types.CardinalRenderer, c
     @memcpy(@as([*]u8, @ptrCast(s.pipelines.pbr_pipeline.uniformBufferMapped))[0..@sizeOf(types.PBRUniformBufferObject)], @as([*]const u8, @ptrCast(&ubo))[0..@sizeOf(types.PBRUniformBufferObject)]);
 
     // Also invoke the centralized PBR uniform updater
-    var lighting: types.PBRLightingData = undefined;
-    @memcpy(@as([*]u8, @ptrCast(&lighting))[0..@sizeOf(types.PBRLightingData)], @as([*]const u8, @ptrCast(s.pipelines.pbr_pipeline.lightingBufferMapped))[0..@sizeOf(types.PBRLightingData)]);
-    vk_pbr.vk_pbr_update_uniforms(@ptrCast(&s.pipelines.pbr_pipeline), @ptrCast(&ubo), @ptrCast(&lighting));
+    // Pass null for lighting as we are only updating camera (UBO)
+    vk_pbr.vk_pbr_update_uniforms(@ptrCast(&s.pipelines.pbr_pipeline), @ptrCast(&ubo), null);
+}
+
+pub export fn cardinal_renderer_set_lights(renderer: ?*types.CardinalRenderer, lights: ?[*]const types.PBRLight, count: u32) callconv(.c) void {
+    if (renderer == null) return;
+    const s = get_state(renderer) orelse return;
+    
+    if (!s.pipelines.use_pbr_pipeline) return;
+
+    var lighting = std.mem.zeroes(types.PBRLightingBuffer);
+    lighting.count = if (count > types.MAX_LIGHTS) types.MAX_LIGHTS else count;
+    
+    if (lights != null and count > 0) {
+        var i: u32 = 0;
+        while (i < lighting.count) : (i += 1) {
+            lighting.lights[i] = lights.?[i];
+        }
+    }
+    
+    // Update buffer
+    @memcpy(@as([*]u8, @ptrCast(s.pipelines.pbr_pipeline.lightingBufferMapped))[0..@sizeOf(types.PBRLightingBuffer)], @as([*]const u8, @ptrCast(&lighting))[0..@sizeOf(types.PBRLightingBuffer)]);
+    
+    vk_pbr.vk_pbr_update_uniforms(@ptrCast(&s.pipelines.pbr_pipeline), null, @ptrCast(&lighting));
 }
 
 pub export fn cardinal_renderer_set_lighting(renderer: ?*types.CardinalRenderer, light: ?*const types.CardinalLight) callconv(.c) void {
@@ -635,26 +658,35 @@ pub export fn cardinal_renderer_set_lighting(renderer: ?*types.CardinalRenderer,
 
     if (!s.pipelines.use_pbr_pipeline) return;
 
-    var lighting = std.mem.zeroes(types.PBRLightingData);
+    var lighting = std.mem.zeroes(types.PBRLightingBuffer);
+    lighting.count = 1;
 
     // Set light direction
-    lighting.lightDirection[0] = l.direction.x;
-    lighting.lightDirection[1] = l.direction.y;
-    lighting.lightDirection[2] = l.direction.z;
+    lighting.lights[0].lightDirection[0] = l.direction.x;
+    lighting.lights[0].lightDirection[1] = l.direction.y;
+    lighting.lights[0].lightDirection[2] = l.direction.z;
+    lighting.lights[0].lightDirection[3] = @floatFromInt(l.type);
+
+    // Set light position
+    lighting.lights[0].lightPosition[0] = l.position.x;
+    lighting.lights[0].lightPosition[1] = l.position.y;
+    lighting.lights[0].lightPosition[2] = l.position.z;
+    lighting.lights[0].lightPosition[3] = 0.0;
 
     // Set light color and intensity
-    lighting.lightColor[0] = l.color.x;
-    lighting.lightColor[1] = l.color.y;
-    lighting.lightColor[2] = l.color.z;
-    lighting.lightIntensity = l.intensity;
+    lighting.lights[0].lightColor[0] = l.color.x;
+    lighting.lights[0].lightColor[1] = l.color.y;
+    lighting.lights[0].lightColor[2] = l.color.z;
+    lighting.lights[0].lightColor[3] = l.intensity;
 
-    // Set ambient color
-    lighting.ambientColor[0] = l.ambient.x;
-    lighting.ambientColor[1] = l.ambient.y;
-    lighting.ambientColor[2] = l.ambient.z;
+    // Set ambient color and range
+    lighting.lights[0].ambientColor[0] = l.ambient.x;
+    lighting.lights[0].ambientColor[1] = l.ambient.y;
+    lighting.lights[0].ambientColor[2] = l.ambient.z;
+    lighting.lights[0].ambientColor[3] = l.range;
 
     // Update the lighting buffer
-    @memcpy(@as([*]u8, @ptrCast(s.pipelines.pbr_pipeline.lightingBufferMapped))[0..@sizeOf(types.PBRLightingData)], @as([*]const u8, @ptrCast(&lighting))[0..@sizeOf(types.PBRLightingData)]);
+    @memcpy(@as([*]u8, @ptrCast(s.pipelines.pbr_pipeline.lightingBufferMapped))[0..@sizeOf(types.PBRLightingBuffer)], @as([*]const u8, @ptrCast(&lighting))[0..@sizeOf(types.PBRLightingBuffer)]);
 
     // Also invoke the centralized PBR uniform updater
     var ubo: types.PBRUniformBufferObject = undefined;

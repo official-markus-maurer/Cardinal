@@ -6,6 +6,7 @@ layout(location = 0) in vec3 fragWorldPos;
 layout(location = 1) in vec3 fragNormal;
 layout(location = 2) in vec2 fragTexCoord;
 layout(location = 3) in vec3 fragViewPos;
+layout(location = 4) in vec2 fragTexCoord1;
 
 // Output color
 layout(location = 0) out vec4 outColor;
@@ -40,7 +41,7 @@ struct Material {
     uint emissiveTextureIndex;
     uint flags; // Packed flags: 0-1=alphaMode, 2=hasSkeleton, 3=supportsDescriptorIndexing
     float alphaCutoff;
-    uint _pad3; // Padding to align TextureTransform
+    uint uvSetIndices; // Packed UV indices (3 bits each)
     TextureTransform albedoTransform;
     float _padding1;
     TextureTransform normalTransform;
@@ -57,12 +58,18 @@ layout(push_constant, std430) uniform PushConstants {
     layout(offset = 64) Material material;
 };
 
-// Lighting uniform buffer
-layout(binding = 8) uniform LightingData {
-    vec3 lightDirection;  // Directional light
-    vec3 lightColor;
-    float lightIntensity;
-    vec3 ambientColor;
+// Lighting buffer (SSBO)
+struct Light {
+    vec4 lightDirection; // w = type (0=Directional, 1=Point, 2=Spot)
+    vec4 lightColor;     // w = intensity
+    vec4 ambientColor;   // w = range
+    vec4 lightPosition;  // w = unused
+};
+
+layout(std430, binding = 8) readonly buffer LightingBuffer {
+    uint lightCount;
+    uint _padding[3];
+    Light lights[];
 } lighting;
 
 // Function to apply texture transform (scale, offset, rotation)
@@ -99,6 +106,20 @@ const float PI = 3.14159265359;
 // Utility: checks if an index means "no texture"
 bool isNoTex(uint idx) {
     return idx == 0xFFFFFFFFu; // UINT32_MAX means no texture provided
+}
+
+// Utility: get UV coordinate based on UV set index
+vec2 getUV(uint uvIndex) {
+    if (uvIndex == 1) {
+        return fragTexCoord1;
+    }
+    return fragTexCoord;
+}
+
+// Utility: unpack UV index from packed uint
+uint getUVIndex(uint textureSlot) {
+    // textureSlot: 0=Albedo, 1=Normal, 2=MR, 3=AO, 4=Emissive
+    return (material.uvSetIndices >> (textureSlot * 3)) & 0x7;
 }
 
 // Utility: sample from descriptor array with non-uniform index
@@ -147,8 +168,11 @@ vec3 getNormalFromMap(vec2 uv) {
     // Enhanced derivative calculations with quad control
     vec3 Q1 = dFdxFine(fragWorldPos);
     vec3 Q2 = dFdyFine(fragWorldPos);
-    vec2 st1 = dFdxFine(fragTexCoord);
-    vec2 st2 = dFdyFine(fragTexCoord);
+    
+    // Use the UV set assigned to normal map for TBN calculation
+    vec2 baseUV = getUV(getUVIndex(1));
+    vec2 st1 = dFdxFine(baseUV);
+    vec2 st2 = dFdyFine(baseUV);
     
     vec3 T = normalize(Q1 * st2.t - Q2 * st1.t);
     vec3 B = normalize(-Q1 * st2.s + Q2 * st1.s);
@@ -198,11 +222,11 @@ vec3 fresnelSchlick(float cosTheta, vec3 F0) {
 
 void main() {
     // Apply texture transforms to UV coordinates
-    vec2 albedoUV = applyTextureTransform(fragTexCoord, material.albedoTransform);
-    vec2 normalUV = applyTextureTransform(fragTexCoord, material.normalTransform);
-    vec2 metallicRoughnessUV = applyTextureTransform(fragTexCoord, material.metallicRoughnessTransform);
-    vec2 aoUV = applyTextureTransform(fragTexCoord, material.aoTransform);
-    vec2 emissiveUV = applyTextureTransform(fragTexCoord, material.emissiveTransform);
+    vec2 albedoUV = applyTextureTransform(getUV(getUVIndex(0)), material.albedoTransform);
+    vec2 normalUV = applyTextureTransform(getUV(getUVIndex(1)), material.normalTransform);
+    vec2 metallicRoughnessUV = applyTextureTransform(getUV(getUVIndex(2)), material.metallicRoughnessTransform);
+    vec2 aoUV = applyTextureTransform(getUV(getUVIndex(3)), material.aoTransform);
+    vec2 emissiveUV = applyTextureTransform(getUV(getUVIndex(4)), material.emissiveTransform);
     
     // Enhanced material property sampling with quad control
     vec4 albedoSample = vec4(1.0);
@@ -296,30 +320,64 @@ void main() {
     
     // Reflectance equation
     vec3 Lo = vec3(0.0);
+    vec3 totalAmbient = vec3(0.0);
     
-    // Directional light calculation
-    vec3 L = normalize(-lighting.lightDirection);
-    vec3 H = normalize(V + L);
-    vec3 radiance = lighting.lightColor * lighting.lightIntensity;
-    
-    // Cook-Torrance BRDF
-    float NDF = DistributionGGX(N, H, roughness);
-    float G = GeometrySmith(N, V, L, roughness);
-    vec3 F = fresnelSchlick(max(dot(H, V), 0.0), F0);
-    
-    vec3 kS = F;
-    vec3 kD = vec3(1.0) - kS;
-    kD *= 1.0 - metallic;
-    
-    vec3 numerator = NDF * G * F;
-    float denominator = 4.0 * max(dot(N, V), 0.0) * max(dot(N, L), 0.0) + 0.0001;
-    vec3 specular = numerator / denominator;
-    
-    float NdotL = max(dot(N, L), 0.0);
-    Lo += (kD * albedo / PI + specular) * radiance * NdotL;
+    for (uint i = 0; i < lighting.lightCount; i++) {
+        Light light = lighting.lights[i];
+
+        // Directional light calculation
+        vec3 L;
+        float attenuation = 1.0;
+        int type = int(light.lightDirection.w);
+
+        if (type == 1) { // Point Light
+            vec3 L_unnormalized = light.lightPosition.xyz - fragWorldPos;
+            float dist = length(L_unnormalized);
+            L = normalize(L_unnormalized);
+            
+            float range = light.ambientColor.w;
+            if (range > 0.0) {
+                float distSq = dist * dist;
+                // Standard inverse square falloff
+                attenuation = 1.0 / max(distSq, 0.01);
+                
+                // Windowing function to zero out at range
+                float rangeSq = range * range;
+                float factor = clamp(1.0 - (distSq * distSq) / (rangeSq * rangeSq), 0.0, 1.0);
+                attenuation *= factor * factor;
+            } else {
+                 // If range is 0 or infinite, just inverse square
+                 attenuation = 1.0 / max(dist * dist, 0.01);
+            }
+        } else { // Directional (default)
+            L = normalize(-light.lightDirection.xyz);
+        }
+
+        vec3 H = normalize(V + L);
+        vec3 radiance = light.lightColor.rgb * light.lightColor.w * attenuation;
+        
+        // Cook-Torrance BRDF
+        float NDF = DistributionGGX(N, H, roughness);
+        float G = GeometrySmith(N, V, L, roughness);
+        vec3 F = fresnelSchlick(max(dot(H, V), 0.0), F0);
+        
+        vec3 kS = F;
+        vec3 kD = vec3(1.0) - kS;
+        kD *= 1.0 - metallic;
+        
+        vec3 numerator = NDF * G * F;
+        float denominator = 4.0 * max(dot(N, V), 0.0) * max(dot(N, L), 0.0) + 0.0001;
+        vec3 specular = numerator / denominator;
+        
+        float NdotL = max(dot(N, L), 0.0);
+        Lo += (kD * albedo / PI + specular) * radiance * NdotL;
+        
+        // Accumulate ambient
+        totalAmbient += light.ambientColor.rgb;
+    }
     
     // Ambient lighting
-    vec3 ambient = lighting.ambientColor * albedo * ao;
+    vec3 ambient = totalAmbient * albedo * ao;
     
     // Combine lighting components
     vec3 color = ambient + Lo;
@@ -329,7 +387,7 @@ void main() {
     color = color / (color + vec3(1.0));
     
     // Add emissive after tone mapping to ensure it remains bright
-    color += emissive * 0.5; // Scale emissive to prevent over-saturation
+    color += emissive * 5.0; // Boost emissive to make it glow
     
     // Apply gamma correction
     color = pow(color, vec3(1.0/2.2));

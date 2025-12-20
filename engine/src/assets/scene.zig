@@ -43,6 +43,12 @@ pub const CardinalAlphaMode = enum(c_int) {
     BLEND = 2,
 };
 
+pub const CardinalLightType = enum(c_int) {
+    DIRECTIONAL = 0,
+    POINT = 1,
+    SPOT = 2,
+};
+
 // --- Struct Definitions ---
 
 pub const CardinalVertex = extern struct {
@@ -54,6 +60,8 @@ pub const CardinalVertex = extern struct {
     nz: f32,
     u: f32,
     v: f32,
+    u1: f32,
+    v1: f32,
     bone_weights: [4]f32,
     bone_indices: [4]u32,
 };
@@ -88,6 +96,7 @@ pub const CardinalMaterial = extern struct {
     alpha_mode: CardinalAlphaMode,
     alpha_cutoff: f32,
     double_sided: bool,
+    uv_indices: [5]u8, // Albedo, Normal, MR, AO, Emissive
 
     albedo_transform: CardinalTextureTransform,
     normal_transform: CardinalTextureTransform,
@@ -96,6 +105,17 @@ pub const CardinalMaterial = extern struct {
     emissive_transform: CardinalTextureTransform,
 
     ref_resource: ?*ref_counting.CardinalRefCountedResource,
+};
+
+pub const CardinalLight = extern struct {
+    color: [3]f32,
+    intensity: f32,
+    type: CardinalLightType,
+    range: f32,
+    inner_cone_angle: f32,
+    outer_cone_angle: f32,
+    node_index: u32, // Index of the node this light is attached to (for transform)
+    _padding: u32,
 };
 
 pub const CardinalTexture = extern struct {
@@ -108,6 +128,12 @@ pub const CardinalTexture = extern struct {
     ref_resource: ?*ref_counting.CardinalRefCountedResource,
 };
 
+pub const CardinalMorphTarget = extern struct {
+    positions: ?[*]f32, // vec3 * vertex_count
+    normals: ?[*]f32,   // vec3 * vertex_count
+    tangents: ?[*]f32,  // vec3 * vertex_count
+};
+
 pub const CardinalMesh = extern struct {
     vertices: ?[*]CardinalVertex,
     vertex_count: u32,
@@ -116,6 +142,8 @@ pub const CardinalMesh = extern struct {
     material_index: u32,
     transform: [16]f32,
     visible: bool,
+    morph_targets: ?[*]CardinalMorphTarget,
+    morph_target_count: u32,
 };
 
 pub const CardinalSceneNode = extern struct {
@@ -135,6 +163,8 @@ pub const CardinalSceneNode = extern struct {
     is_bone: bool,
     bone_index: u32,
     skin_index: u32,
+    
+    light_index: i32, // -1 if no light
 };
 
 // Forward declaration for AnimationSystem and Skin (opaque for now)
@@ -150,6 +180,9 @@ pub const CardinalScene = extern struct {
 
     textures: ?[*]CardinalTexture,
     texture_count: u32,
+
+    lights: ?[*]CardinalLight,
+    light_count: u32,
 
     root_nodes: ?[*]?*CardinalSceneNode,
     root_node_count: u32,
@@ -176,6 +209,7 @@ pub export fn cardinal_scene_node_create(name: ?[*:0]const u8) ?*CardinalSceneNo
     @memcpy(&node.local_transform, &identity);
     @memcpy(&node.world_transform, &identity);
     node.world_transform_dirty = false;
+    node.light_index = -1;
 
     if (name) |n| {
         const len = std.mem.len(n);

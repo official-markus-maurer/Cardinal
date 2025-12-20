@@ -2,6 +2,8 @@ const std = @import("std");
 const builtin = @import("builtin");
 const log = @import("../../core/log.zig");
 
+const desc_utils_log = log.ScopedLogger("DESC_UTILS");
+
 const c = @cImport({
     @cDefine("CARDINAL_ZIG_BUILD", "1");
     @cInclude("stdlib.h");
@@ -10,7 +12,7 @@ const c = @cImport({
 
 pub export fn vk_descriptor_create_pbr_layout(device: c.VkDevice, descriptorSetLayout: ?*c.VkDescriptorSetLayout) callconv(.c) bool {
     if (device == null or descriptorSetLayout == null) {
-        log.cardinal_log_error("Invalid parameters for descriptor set layout creation", .{});
+        desc_utils_log.err("Invalid parameters for descriptor set layout creation", .{});
         return false;
     }
 
@@ -116,7 +118,7 @@ pub export fn vk_descriptor_create_pbr_layout(device: c.VkDevice, descriptorSetL
 
     const result = c.vkCreateDescriptorSetLayout(device, &layoutInfo, null, descriptorSetLayout.?);
     if (result != c.VK_SUCCESS) {
-        log.cardinal_log_error("Failed to create descriptor set layout: {d}", .{result});
+        desc_utils_log.err("Failed to create descriptor set layout: {d}", .{result});
         return false;
     }
 
@@ -125,7 +127,7 @@ pub export fn vk_descriptor_create_pbr_layout(device: c.VkDevice, descriptorSetL
 
 pub export fn vk_descriptor_create_pool(device: c.VkDevice, maxSets: u32, maxTextures: u32, descriptorPool: ?*c.VkDescriptorPool) callconv(.c) bool {
     if (device == null or descriptorPool == null) {
-        log.cardinal_log_error("Invalid parameters for descriptor pool creation", .{});
+        desc_utils_log.err("Invalid parameters for descriptor pool creation", .{});
         return false;
     }
 
@@ -149,7 +151,7 @@ pub export fn vk_descriptor_create_pool(device: c.VkDevice, maxSets: u32, maxTex
 
     const result = c.vkCreateDescriptorPool(device, &poolInfo, null, descriptorPool.?);
     if (result != c.VK_SUCCESS) {
-        log.cardinal_log_error("Failed to create descriptor pool: {d}", .{result});
+        desc_utils_log.err("Failed to create descriptor pool: {d}", .{result});
         return false;
     }
 
@@ -158,13 +160,13 @@ pub export fn vk_descriptor_create_pool(device: c.VkDevice, maxSets: u32, maxTex
 
 pub export fn vk_descriptor_allocate_sets(device: c.VkDevice, descriptorPool: c.VkDescriptorPool, descriptorSetLayout: c.VkDescriptorSetLayout, setCount: u32, variableDescriptorCount: u32, descriptorSets: ?*c.VkDescriptorSet) callconv(.c) bool {
     if (device == null or descriptorPool == null or descriptorSetLayout == null or descriptorSets == null) {
-        log.cardinal_log_error("Invalid parameters for descriptor set allocation", .{});
+        desc_utils_log.err("Invalid parameters for descriptor set allocation", .{});
         return false;
     }
 
     const layouts = c.malloc(setCount * @sizeOf(c.VkDescriptorSetLayout));
     if (layouts == null) {
-        log.cardinal_log_error("Failed to allocate memory for descriptor set layouts", .{});
+        desc_utils_log.err("Failed to allocate memory for descriptor set layouts", .{});
         return false;
     }
     defer c.free(layouts);
@@ -177,7 +179,7 @@ pub export fn vk_descriptor_allocate_sets(device: c.VkDevice, descriptorPool: c.
 
     const variableCounts = c.malloc(setCount * @sizeOf(u32));
     if (variableCounts == null) {
-        log.cardinal_log_error("Failed to allocate memory for variable descriptor counts", .{});
+        desc_utils_log.err("Failed to allocate memory for variable descriptor counts", .{});
         return false;
     }
     defer c.free(variableCounts);
@@ -203,7 +205,7 @@ pub export fn vk_descriptor_allocate_sets(device: c.VkDevice, descriptorPool: c.
     const result = c.vkAllocateDescriptorSets(device, &allocInfo, descriptorSets.?);
 
     if (result != c.VK_SUCCESS) {
-        log.cardinal_log_error("Failed to allocate descriptor sets: {d}", .{result});
+        desc_utils_log.err("Failed to allocate descriptor sets: {d}", .{result});
         return false;
     }
 
@@ -212,7 +214,7 @@ pub export fn vk_descriptor_allocate_sets(device: c.VkDevice, descriptorPool: c.
 
 pub export fn vk_descriptor_update_sets(device: c.VkDevice, descriptorSet: c.VkDescriptorSet, uniformBuffer: c.VkBuffer, uniformBufferSize: c.VkDeviceSize, lightingBuffer: c.VkBuffer, lightingBufferSize: c.VkDeviceSize, imageViews: ?[*]c.VkImageView, sampler: c.VkSampler, imageCount: u32) callconv(.c) void {
     if (device == null or descriptorSet == null) {
-        log.cardinal_log_error("Invalid parameters for descriptor set update", .{});
+        desc_utils_log.err("Invalid parameters for descriptor set update", .{});
         return;
     }
 
@@ -224,7 +226,7 @@ pub export fn vk_descriptor_update_sets(device: c.VkDevice, descriptorSet: c.VkD
     const imageInfosPtr = memory.cardinal_alloc(mem_alloc, imageCount * @sizeOf(c.VkDescriptorImageInfo));
 
     if (writesPtr == null or bufferInfosPtr == null or imageInfosPtr == null) {
-        log.cardinal_log_error("Failed to allocate memory for descriptor updates", .{});
+        desc_utils_log.err("Failed to allocate memory for descriptor updates", .{});
         if (writesPtr != null) memory.cardinal_free(mem_alloc, writesPtr);
         if (bufferInfosPtr != null) memory.cardinal_free(mem_alloc, bufferInfosPtr);
         if (imageInfosPtr != null) memory.cardinal_free(mem_alloc, imageInfosPtr);

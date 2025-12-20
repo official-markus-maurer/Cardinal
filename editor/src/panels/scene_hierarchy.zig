@@ -62,7 +62,10 @@ fn draw_scene_node(state: *EditorState, node: *scene.CardinalSceneNode, depth: i
 
 pub fn draw_scene_graph_panel(state: *EditorState) void {
     if (state.show_scene_graph) {
-        if (c.imgui_bridge_begin("Scene Graph", &state.show_scene_graph, 0)) {
+        const open = c.imgui_bridge_begin("Scene Graph", &state.show_scene_graph, 0);
+        defer c.imgui_bridge_end();
+        
+        if (open) {
             if (c.imgui_bridge_tree_node("Scene")) {
                 c.imgui_bridge_bullet_text("Camera");
                 c.imgui_bridge_bullet_text("Directional Light");
@@ -156,6 +159,5 @@ pub fn draw_scene_graph_panel(state: *EditorState) void {
                 c.imgui_bridge_tree_pop();
             }
         }
-        c.imgui_bridge_end();
     }
 }

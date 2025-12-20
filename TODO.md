@@ -1,85 +1,85 @@
-# Cardinal Engine Improvements
+# Cardinal Engine Roadmap
 
-This document outlines areas for improvement, refactoring, and future extensions for the Cardinal Engine.
+This document outlines the roadmap for the Cardinal Engine, focusing on robustness, extensibility, and future feature implementation.
 
-## 1. Engine Core & Architecture
+## 1. Core Architecture (Robustness & Extensibility)
 
 ### Memory Management
-- [x] **Standardize Allocators**: Move away from raw `malloc`/`free` in C++-interop code (e.g., `vulkan_pbr.zig`, `vulkan_renderer.zig`). Use Zig's allocator interface passed down from `Core`.
-- [x] **Allocator Stats**: Add a debug overlay to show memory usage per category (Renderer, Assets, Scripting, etc.).
-- [x] **Pool Allocators**: Implement pool allocators for frequent small objects (e.g., `SceneNode`, `CommandBuffers`).
+- [x] **Dynamic Memory Tracking**: Replace the fixed-size allocation table (`MAX_ALLOCS`) with a dynamic hash map to support unlimited tracking in debug mode.
+- [x] **Memory Arenas/Zones**: Implement memory arenas (linear allocators) for subsystems (e.g., "Level Heap", "Frame Heap") to improve cache locality and reduce fragmentation.
+- [x] **Leak Detection**: Enhance the leak detector to provide stack traces for leaked allocations.
 
-### Logging
-- [ ] **Structured Logging**: Improve the logging system to support structured data (JSON) for external tools.
-- [ ] **Log Categories**: Define clear categories (Render, Asset, Input, System) to filter logs effectively in the Editor.
+### System Architecture
+- [ ] **Event Bus**: Implement a publish/subscribe event system to decouple subsystems (e.g., Input triggers an Event, which the PlayerController consumes).
+- [ ] **Module System**: Define a clear lifecycle (Init, Update, Shutdown) for all engine subsystems to ensure correct startup/shutdown order.
+- [ ] **Error Handling**: Standardize error handling across the engine (unify Zig error sets and C-style return codes where boundary crossing happens).
 
-### Async Systems
-- [x] **Task Dependencies**: `CardinalAsyncTask` currently links via `next` pointer, but true dependency graph support (Task A waits for Task B) would be beneficial.
-- [x] **Job System**: Migrated `CardinalAsyncLoader` to a more generic Job System (`job_system.zig`).
+### Math Library (Optimization)
+- [ ] **SIMD Implementation**: Rewrite `Vec3`, `Vec4`, `Quat` using Zig's `@Vector(4, f32)` to leverage hardware intrinsics (SSE/AVX/NEON).
+- [ ] **Matrix Optimization**: Optimize `Mat4` multiplication to use SIMD or unrolled loops, replacing the current slow scalar loops.
+- [ ] **Missing Types**: Implement `Mat3` (for normal matrices) and `Ray` structs.
 
-## 2. Rendering (Vulkan)
+### Logging & Diagnostics
+- [x] **Log Categories**: Implement granular logging channels (e.g., `[RENDER]`, `[ASSET]`, `[PHYSICS]`, `[SCRIPT]`) to allow filtering.
+- [x] **Log Sinks**: Create an interface for log outputs to support multiple targets simultaneously (Console, File, Editor Panel, Network).
+- [x] **Structured Logging**: Support structured data (JSON) for easy parsing by external tools.
 
-### Abstraction & Safety
-- [x] **Vulkan Wrappers**: Reduce raw C-style Vulkan calls in high-level logic. Create safe Zig wrappers for `VkDevice`, `VkQueue`, `VkCommandBuffer`.
-- [x] **Handle Safety**: Use typed handles (e.g., `TextureHandle`, `MeshHandle`) instead of raw pointers to avoid use-after-free and dangling pointers.
-- [x] **Descriptor Management**: The manual descriptor binding in `vulkan_pbr.zig` is fragile. Implement a reflection-based or data-driven descriptor set layout system.
+## 2. Data & Assets
 
-### Features
-- [x] **Bindless Textures**: The code hints at descriptor indexing (`descriptorCount = 5000` in `vulkan_pbr.zig`), but fully utilizing bindless resources would simplify material management.
-- [x] **Render Graph**: Move from hardcoded pipeline steps to a Frame Graph / Render Graph to handle complex dependencies (Shadows -> GBuffer -> Lighting -> PostFX).
-- [ ] **Shader Hot-Reloading**: Implement file watchers to reload shaders at runtime without restarting the editor.
-
-### Performance
-- [x] **VMA Integration**: Replace custom `vulkan_allocator.zig` logic with Vulkan Memory Allocator (VMA) library for production-grade memory management.
-- [ ] **Pipeline Caching**: Save/Load `VkPipelineCache` to disk to speed up startup times.
-
-## 3. Asset Management
-
-### glTF Loader
-- [ ] **Robustness**: The current `gltf_loader.zig` (inferred) likely handles basics. Ensure support for:
-    - Sparse accessors.
-    - Morph targets.
-    - Multiple UV sets.
-    - Draco compression (extension).
-- [ ] **Streaming**: Implement texture streaming to load low-res mips first, then high-res.
+### Asset System
+- [ ] **Unified Asset Manager**: Create a central system to manage all asset types (Textures, Meshes, Shaders, Sounds) with consistent reference counting and handle-based access.
+- [ ] **Asset Database**: Implement a metadata system (`.meta` files) to store import settings and GUIDs for assets, decoupling file paths from asset identity.
+- [ ] **Hot-Reloading**: Generic hot-reloading support for all asset types, not just shaders.
 
 ### Scene System
-- [ ] **ECS Migration**: The current `CardinalSceneNode` hierarchy is an Object-Oriented approach. Migrating to an Entity Component System (ECS) (like `Zig-ECS` or custom) would improve performance and flexibility for game logic.
-- [ ] **Scene Serialization**: Implement saving scenes to a custom binary format or JSON, not just importing glTF.
+- [ ] **ECS Architecture**: Design and implement a Sparse-Set based Entity Component System (ECS) to replace the current Object-Oriented hierarchy.
+    - *Components*: Transform, MeshRenderer, Light, Camera, Script.
+    - *Systems*: RenderSystem, PhysicsSystem, ScriptSystem.
+- [ ] **Scene Serialization**: Robust save/load system using a schema-based format (JSON/Binary) that supports versioning.
 
-## 4. Editor
+## 3. Rendering (Vulkan)
 
 ### Architecture
-- [x] **Componentization**: Refactor `editor_layer.zig` (currently monolithic) into separate systems/panels:
-    - `panels/scene_hierarchy.zig`
-    - `panels/inspector.zig`
-    - `panels/content_browser.zig`
-    - `systems/input.zig`
-    - `systems/camera_controller.zig`
-- [ ] **Command Pattern**: Implement an `EditorCommand` system for Undo/Redo support.
+- [ ] **RHI (Render Hardware Interface)**: Abstract raw Vulkan calls behind a high-level API (`CommandList`, `Texture`, `Buffer`) to simplify renderer code and potentially support other backends in the future.
+- [ ] **Frame Graph / Render Graph**: Implement a dependency graph for render passes to automatically manage barriers and resource transitions.
+    - *Current State*: `RenderGraph` is just a list of function pointers. It needs to track resource usage (READ/WRITE) to insert barriers automatically.
 
-### Usability
-- [ ] **Gizmos**: Add translation/rotation/scale gizmos in the viewport (using `ImGuizmo` or custom).
-- [ ] **Grid & Axes**: Render a reference grid and coordinate axes.
-- [ ] **Asset Preview**: Generate thumbnails for assets in the browser.
+### Features
+- [ ] **Shader Hot-Reloading**: Watch shader files and recompile/reload pipelines at runtime.
+- [ ] **Pipeline Caching**: Save/Load `VkPipelineCache` to disk.
+- [ ] **Shadow Mapping**: Cascaded Shadow Maps (CSM) for directional lights, Cube Maps for point lights.
+- [ ] **IBL (Image-Based Lighting)**: Environment Maps, Irradiance Maps, Prefiltered Specular.
+- [ ] **Post-Processing**: Bloom, Tone Mapping (ACES/Filmic), Gamma Correction.
+- [ ] **Ambient Occlusion**: SSAO or HBAO.
+- [ ] **Emissive Strength**: Support `KHR_materials_emissive_strength`.
+
+## 4. Editor & Tools
+
+### Editor Core
+- [ ] **Command Pattern**: Implement Undo/Redo system for all editor actions.
+- [ ] **Selection System**: Robust raycasting/picking system for selecting entities in the viewport.
+- [ ] **Gizmos**: Manipulation gizmos (Translate, Rotate, Scale) and debug drawing (Lines, Boxes, Spheres).
+
+### UI/UX
+- [ ] **Asset Browser**: Thumbnail generation and drag-and-drop support.
+- [ ] **Inspector**: Generic reflection-based property editing for components.
+- [ ] **Multiple Windows**: Support for detaching editor panels (ImGui Viewports).
+- [ ] **Grid & Axes**: Visual reference guides in the viewport.
 
 ## 5. Platform & Input
 
-### Input
-- [ ] **Input Action System**: Abstract raw keys (`GLFW_KEY_W`) into Actions (`MoveForward`). This allows remapping and gamepad support.
-- [ ] **Gamepad Support**: Add GLFW gamepad state polling.
+### Input System
+- [ ] **Core Input Integration**: Move input polling from the Editor layer (`editor/systems/input.zig`) to the Engine core (`engine/core/input.zig`).
+    - *Current Issue*: The Engine has no native input handling; the Editor manually polls GLFW.
+- [ ] **Window Callbacks**: Update `CardinalWindow` to support Key, MouseButton, and CursorPos callbacks.
+- [ ] **Input Action Mapping**: Abstract physical keys to logical actions (`MoveForward`, `Jump`) with remapping support.
+- [ ] **Gamepad Support**: Full gamepad polling and vibration support.
+- [ ] **Input Layers**: Support for input context stacks (e.g., UI takes input over Game).
 
-### Windowing
-- [ ] **High DPI**: Verify High DPI support on Windows/Linux/macOS.
-- [ ] **Multiple Windows**: Support separating Editor panels into native OS windows (ImGui Viewports).
+### OS Integration
+- [ ] **High DPI**: Proper scaling support for high-resolution displays.
+- [ ] **File System**: Abstract file system operations to support virtual paths (`asset://textures/logo.png`).
 
-## 6. Build System
-
-- [ ] **Zig Build**: Ensure `build.zig` supports:
-    - Shader compilation (glslc/dxc) as a build step.
-    - Asset copying/processing.
-    - Cross-compilation setup.
-
-## 7. Math
-
-- [x] **Math Library**: Consolidate math types. Currently using arrays `[16]f32`. Create/Use a struct-based library (e.g., `zmath` or internal structs) with methods (`vec3.add()`, `mat4.mul()`) for better readability.
+## 6. Build & CI
+- [ ] **Zig Build**: Polish `build.zig` for cross-compilation and asset processing steps.
+- [ ] **Tests**: Add unit tests for core systems (Math, Memory, Containers).

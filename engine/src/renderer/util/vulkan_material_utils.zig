@@ -143,6 +143,16 @@ fn set_material_properties(pushConstants: *types.PBRPushConstants, material: *co
     // Descriptor indexing bit (bit 3) is set below
 
     pushConstants.alphaCutoff = material.alpha_cutoff;
+
+    // Pack UV indices (3 bits each)
+    // 0: Albedo, 1: Normal, 2: MR, 3: AO, 4: Emissive
+    var packedUVs: u32 = 0;
+    packedUVs |= @as(u32, material.uv_indices[0]) & 0x7;
+    packedUVs |= (@as(u32, material.uv_indices[1]) & 0x7) << 3;
+    packedUVs |= (@as(u32, material.uv_indices[2]) & 0x7) << 6;
+    packedUVs |= (@as(u32, material.uv_indices[3]) & 0x7) << 9;
+    packedUVs |= (@as(u32, material.uv_indices[4]) & 0x7) << 12;
+    pushConstants.uvSetIndices = packedUVs;
 }
 
 pub export fn vk_material_setup_push_constants(pushConstants: ?*types.PBRPushConstants, mesh: ?*const types.CardinalMesh, scene: ?*const types.CardinalScene, textureManager: ?*const types.VulkanTextureManager) callconv(.c) void {

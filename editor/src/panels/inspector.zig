@@ -6,7 +6,10 @@ const EditorState = @import("../editor_state.zig").EditorState;
 
 pub fn draw_inspector_panel(state: *EditorState) void {
     if (state.show_model_manager) {
-        if (c.imgui_bridge_begin("Model Manager", &state.show_model_manager, 0)) {
+        const open = c.imgui_bridge_begin("Model Manager", &state.show_model_manager, 0);
+        defer c.imgui_bridge_end();
+        
+        if (open) {
             c.imgui_bridge_text("Loaded Models:");
             c.imgui_bridge_separator();
 
@@ -15,7 +18,10 @@ pub fn draw_inspector_panel(state: *EditorState) void {
                 c.imgui_bridge_text("No models loaded");
                 c.imgui_bridge_text_wrapped("Load models from the Assets panel to see them here.");
             } else {
-                if (c.imgui_bridge_begin_child("##model_list", 0, 300, true, 0)) {
+                const child_visible = c.imgui_bridge_begin_child("##model_list", 0, 300, true, 0);
+                defer c.imgui_bridge_end_child();
+                
+                if (child_visible) {
                     var i: u32 = 0;
                     while (i < state.model_manager.model_count) {
                         const model_ptr = model_manager.cardinal_model_manager_get_model_by_index(&state.model_manager, i);
@@ -99,9 +105,7 @@ pub fn draw_inspector_panel(state: *EditorState) void {
                         i += 1;
                     }
                 }
-                c.imgui_bridge_end_child();
             }
         }
-        c.imgui_bridge_end();
     }
 }

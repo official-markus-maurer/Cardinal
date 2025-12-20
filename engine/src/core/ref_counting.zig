@@ -2,6 +2,8 @@ const std = @import("std");
 const log = @import("log.zig");
 const memory = @import("memory.zig");
 
+const ref_log = log.ScopedLogger("REF_COUNT");
+
 const c = @cImport({
     @cInclude("stdlib.h");
     @cInclude("string.h");
@@ -81,7 +83,7 @@ fn remove_resource(identifier: ?[*:0]const u8) void {
             // Check if resource was resurrected by another thread acquiring it
             // while we were waiting for the lock
             if (@atomicLoad(u32, &curr.ref_count, .seq_cst) > 0) {
-                std.log.debug("Resource '{s}' resurrected (ref_count={d}), cancelling removal", .{ identifier.?, curr.ref_count });
+                ref_log.debug("Resource '{s}' resurrected (ref_count={d}), cancelling removal", .{ identifier.?, curr.ref_count });
                 return;
             }
 
@@ -105,16 +107,18 @@ fn remove_resource(identifier: ?[*:0]const u8) void {
             memory.cardinal_free(allocator, curr);
 
             _ = @atomicRmw(u32, &g_registry.total_resources, .Sub, 1, .seq_cst);
+            ref_log.debug("Successfully removed and freed resource '{s}'", .{identifier.?});
             return;
         }
         prev = curr;
         current = curr.next;
     }
+    ref_log.warn("Failed to find resource '{s}' in registry for removal!", .{identifier.?});
 }
 
 pub export fn cardinal_ref_counting_init(bucket_count: usize) callconv(.c) bool {
     if (g_registry_initialized) {
-        std.log.warn("Reference counting system already initialized", .{});
+        ref_log.warn("Reference counting system already initialized", .{});
         return true;
     }
 
@@ -124,7 +128,7 @@ pub export fn cardinal_ref_counting_init(bucket_count: usize) callconv(.c) bool 
     const buckets = memory.cardinal_alloc(allocator, count * @sizeOf(?*CardinalRefCountedResource));
 
     if (buckets == null) {
-        std.log.err("Failed to allocate memory for resource registry buckets", .{});
+        ref_log.err("Failed to allocate memory for resource registry buckets", .{});
         return false;
     }
 
@@ -136,20 +140,22 @@ pub export fn cardinal_ref_counting_init(bucket_count: usize) callconv(.c) bool 
 
     g_registry_initialized = true;
 
-    std.log.info("Reference counting system initialized with {d} buckets", .{count});
+    ref_log.info("Reference counting system initialized with {d} buckets", .{count});
     return true;
 }
 
 pub export fn cardinal_ref_counting_shutdown() callconv(.c) void {
     if (!g_registry_initialized) {
+        ref_log.info("Ref counting shutdown called but not initialized", .{});
         return;
     }
 
-    std.log.info("Shutting down reference counting system...", .{});
+    ref_log.info("Shutting down reference counting system...", .{});
 
     g_registry_mutex.lock();
 
     const allocator = memory.cardinal_get_allocator_for_category(.ENGINE);
+    var count: u32 = 0;
 
     // Clean up all remaining resources
     var i: usize = 0;
@@ -157,8 +163,10 @@ pub export fn cardinal_ref_counting_shutdown() callconv(.c) void {
         var current = g_registry.buckets.?[i];
         while (current) |curr| {
             const next = curr.next;
+            count += 1;
 
-            std.log.warn("Resource '{s}' still has {d} references during shutdown", .{ curr.identifier.?, @atomicLoad(u32, &curr.ref_count, .seq_cst) });
+            const id_str = if (curr.identifier) |id| id else "null";
+            ref_log.warn("Resource '{s}' still has {d} references during shutdown", .{ id_str, @atomicLoad(u32, &curr.ref_count, .seq_cst) });
 
             // Force cleanup
             if (curr.destructor) |destructor| {
@@ -166,12 +174,15 @@ pub export fn cardinal_ref_counting_shutdown() callconv(.c) void {
                     destructor(res);
                 }
             }
-            memory.cardinal_free(allocator, curr.identifier);
+            if (curr.identifier) |id| {
+                 memory.cardinal_free(allocator, id);
+            }
             memory.cardinal_free(allocator, curr);
 
             current = next;
         }
     }
+    ref_log.info("Ref counting shutdown: freed {d} resources", .{count});
 
     memory.cardinal_free(allocator, @ptrCast(g_registry.buckets));
     g_registry = std.mem.zeroes(CardinalResourceRegistry);
@@ -179,17 +190,17 @@ pub export fn cardinal_ref_counting_shutdown() callconv(.c) void {
     g_registry_mutex.unlock();
     g_registry_initialized = false;
 
-    std.log.info("Reference counting system shutdown complete", .{});
+    ref_log.info("Reference counting system shutdown complete", .{});
 }
 
 pub export fn cardinal_ref_create(identifier: ?[*:0]const u8, resource: ?*anyopaque, resource_size: usize, destructor: ?*const fn (?*anyopaque) callconv(.c) void) callconv(.c) ?*CardinalRefCountedResource {
     if (!g_registry_initialized) {
-        std.log.err("Reference counting system not initialized", .{});
+        ref_log.err("Reference counting system not initialized", .{});
         return null;
     }
 
     if (identifier == null or resource == null) {
-        std.log.err("Invalid parameters for ref_create: identifier={?s}, resource={?*}", .{ identifier, resource });
+        ref_log.err("Invalid parameters for ref_create: identifier={?s}, resource={?*}", .{ identifier, resource });
         return null;
     }
 
@@ -199,7 +210,7 @@ pub export fn cardinal_ref_create(identifier: ?[*:0]const u8, resource: ?*anyopa
     // Check if resource already exists
     if (find_resource_locked(identifier)) |existing| {
         _ = @atomicRmw(u32, &existing.ref_count, .Add, 1, .seq_cst);
-        std.log.debug("Acquired existing resource '{s}', ref_count={d}", .{ identifier.?, existing.ref_count });
+        ref_log.debug("Acquired existing resource '{s}', ref_count={d}", .{ identifier.?, existing.ref_count });
         return existing;
     }
 
@@ -208,7 +219,7 @@ pub export fn cardinal_ref_create(identifier: ?[*:0]const u8, resource: ?*anyopa
     // Create new resource
     const ref_resource_ptr = memory.cardinal_alloc(allocator, @sizeOf(CardinalRefCountedResource));
     if (ref_resource_ptr == null) {
-        std.log.err("Failed to allocate memory for reference counted resource", .{});
+        ref_log.err("Failed to allocate memory for reference counted resource", .{});
         return null;
     }
     const ref_resource: *CardinalRefCountedResource = @ptrCast(@alignCast(ref_resource_ptr));
@@ -223,7 +234,7 @@ pub export fn cardinal_ref_create(identifier: ?[*:0]const u8, resource: ?*anyopa
     const id_len = std.mem.len(identifier.?) + 1;
     const id_ptr = memory.cardinal_alloc(allocator, id_len);
     if (id_ptr == null) {
-        std.log.err("Failed to allocate memory for resource identifier", .{});
+        ref_log.err("Failed to allocate memory for resource identifier", .{});
         memory.cardinal_free(allocator, ref_resource);
         return null;
     }
@@ -240,7 +251,7 @@ pub export fn cardinal_ref_create(identifier: ?[*:0]const u8, resource: ?*anyopa
 
     _ = @atomicRmw(u32, &g_registry.total_resources, .Add, 1, .seq_cst);
 
-    std.log.debug("Created new resource '{s}', ref_count=1, total_resources={d}", .{ identifier.?, g_registry.total_resources });
+    ref_log.debug("Created new resource '{s}', ref_count=1, total_resources={d}", .{ identifier.?, g_registry.total_resources });
 
     return ref_resource;
 }
@@ -255,7 +266,7 @@ pub export fn cardinal_ref_acquire(identifier: ?[*:0]const u8) callconv(.c) ?*Ca
 
     if (find_resource_locked(identifier)) |resource| {
         _ = @atomicRmw(u32, &resource.ref_count, .Add, 1, .seq_cst);
-        std.log.debug("Acquired resource '{s}', ref_count={d}", .{ identifier.?, resource.ref_count });
+        ref_log.debug("Acquired resource '{s}', ref_count={d}", .{ identifier.?, resource.ref_count });
         return resource;
     }
 
@@ -271,10 +282,10 @@ pub export fn cardinal_ref_release(ref_resource: ?*CardinalRefCountedResource) c
     const old_count = @atomicRmw(u32, &res.ref_count, .Sub, 1, .seq_cst);
     const new_count = old_count - 1;
 
-    std.log.debug("Released resource '{s}', ref_count={d}", .{ res.identifier.?, new_count });
+    ref_log.debug("Released resource '{s}', ref_count={d}", .{ res.identifier.?, new_count });
 
     if (new_count == 0) {
-        std.log.debug("Resource '{s}' ref_count reached 0, cleaning up", .{res.identifier.?});
+        ref_log.debug("Resource '{s}' ref_count reached 0, cleaning up", .{res.identifier.?});
         remove_resource(res.identifier);
     }
 }

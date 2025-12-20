@@ -8,6 +8,8 @@ const vk_commands = @import("vulkan_commands.zig");
 const vk_pipeline = @import("vulkan_pipeline.zig");
 const vk_mesh_shader = @import("vulkan_mesh_shader.zig");
 
+const swap_log = log.ScopedLogger("SWAPCHAIN");
+
 const c = @import("vulkan_c.zig").c;
 
 // Helper functions
@@ -42,7 +44,7 @@ fn should_throttle_recreation(s: *types.VulkanState) bool {
             var last_throttle_log: u64 = 0;
         };
         if (current_time - static.last_throttle_log > 1000) {
-            log.cardinal_log_warn("[SWAPCHAIN] Aggressive throttling: {d} consecutive failures", .{s.swapchain.consecutive_recreation_failures});
+            swap_log.warn("Aggressive throttling: {d} consecutive failures", .{s.swapchain.consecutive_recreation_failures});
             static.last_throttle_log = current_time;
         }
         return true;

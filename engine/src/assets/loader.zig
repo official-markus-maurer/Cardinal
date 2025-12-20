@@ -3,6 +3,8 @@ const scene = @import("scene.zig");
 const async_loader = @import("../core/async_loader.zig");
 const log = @import("../core/log.zig");
 
+const loader_log = log.ScopedLogger("LOADER");
+
 // --- Externs from gltf_loader.c ---
 extern fn cardinal_gltf_load_scene(path: [*:0]const u8, scene: *scene.CardinalScene) callconv(.c) bool;
 
@@ -45,24 +47,24 @@ fn tolower_str(s: ?[*:0]u8) void {
 
 pub export fn cardinal_scene_load(path: ?[*:0]const u8, out_scene: ?*scene.CardinalScene) callconv(.c) bool {
     if (path == null or out_scene == null) {
-        log.cardinal_log_error("Invalid parameters: path=null or out_scene=null", .{});
+        loader_log.err("Invalid parameters: path=null or out_scene=null", .{});
         return false;
     }
 
-    log.cardinal_log_info("Scene loading requested: {s}", .{path.?});
+    loader_log.info("Scene loading requested: {s}", .{path.?});
 
     const ext = find_ext(path);
     if (ext == null) {
-        log.cardinal_log_error("No file extension found in path: {s}", .{path.?});
+        loader_log.err("No file extension found in path: {s}", .{path.?});
         return false;
     }
 
-    log.cardinal_log_debug("Detected file extension: {s}", .{ext.?});
+    loader_log.debug("Detected file extension: {s}", .{ext.?});
 
     var ext_buf: [16]u8 = undefined;
     const ext_len = std.mem.len(ext.?);
     if (ext_len >= 16) {
-        log.cardinal_log_error("Extension too long", .{});
+        loader_log.err("Extension too long", .{});
         return false;
     }
 
@@ -75,29 +77,29 @@ pub export fn cardinal_scene_load(path: ?[*:0]const u8, out_scene: ?*scene.Cardi
         c.* = std.ascii.toLower(c.*);
     }
 
-    log.cardinal_log_debug("Normalized extension: {s}", .{ext_slice});
+    loader_log.debug("Normalized extension: {s}", .{ext_slice});
 
     if (std.mem.eql(u8, ext_slice, "gltf") or std.mem.eql(u8, ext_slice, "glb")) {
-        log.cardinal_log_debug("Routing to GLTF loader", .{});
+        loader_log.debug("Routing to GLTF loader", .{});
         return cardinal_gltf_load_scene(path.?, out_scene.?);
     }
 
-    log.cardinal_log_error("Unsupported file format: {s} (extension: {s})", .{ path.?, ext_slice });
+    loader_log.err("Unsupported file format: {s} (extension: {s})", .{ path.?, ext_slice });
     return false;
 }
 
 pub export fn cardinal_scene_load_async(path: ?[*:0]const u8, priority: async_loader.CardinalAsyncPriority, callback: async_loader.CardinalAsyncCallback, user_data: ?*anyopaque) callconv(.c) ?*async_loader.CardinalAsyncTask {
     if (path == null) {
-        log.cardinal_log_error("Invalid path parameter", .{});
+        loader_log.err("Invalid path parameter", .{});
         return null;
     }
 
     if (!async_loader.cardinal_async_loader_is_initialized()) {
-        log.cardinal_log_error("Async loader not initialized", .{});
+        loader_log.err("Async loader not initialized", .{});
         return null;
     }
 
-    log.cardinal_log_info("Async scene loading requested: {s}", .{path.?});
+    loader_log.info("Async scene loading requested: {s}", .{path.?});
 
     const ext = find_ext(path);
     if (ext == null) {

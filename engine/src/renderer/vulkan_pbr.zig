@@ -45,7 +45,7 @@ fn create_pbr_descriptor_manager(pipeline: *types.VulkanPBRPipeline, device: c.V
         builder.add_binding(5, c.VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1, c.VK_SHADER_STAGE_FRAGMENT_BIT) catch break :blk false;
         builder.add_binding(6, c.VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, 1, c.VK_SHADER_STAGE_VERTEX_BIT) catch break :blk false;
         // Binding 7 removed
-        builder.add_binding(8, c.VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, 1, c.VK_SHADER_STAGE_FRAGMENT_BIT) catch break :blk false;
+        builder.add_binding(8, c.VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 1, c.VK_SHADER_STAGE_FRAGMENT_BIT) catch break :blk false;
         break :blk true;
     };
 
@@ -188,11 +188,12 @@ fn configure_vertex_input(info: *c.VkPipelineVertexInputStateCreateInfo, binding
     attributes[2] = .{ .binding = 0, .location = 2, .format = c.VK_FORMAT_R32G32_SFLOAT, .offset = @sizeOf(f32) * 6 };
     attributes[3] = .{ .binding = 0, .location = 3, .format = c.VK_FORMAT_R32G32B32A32_SFLOAT, .offset = @offsetOf(scene.CardinalVertex, "bone_weights") };
     attributes[4] = .{ .binding = 0, .location = 4, .format = c.VK_FORMAT_R32G32B32A32_UINT, .offset = @offsetOf(scene.CardinalVertex, "bone_indices") };
+    attributes[5] = .{ .binding = 0, .location = 5, .format = c.VK_FORMAT_R32G32_SFLOAT, .offset = @offsetOf(scene.CardinalVertex, "u1") };
 
     info.sType = c.VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO;
     info.vertexBindingDescriptionCount = 1;
     info.pVertexBindingDescriptions = binding;
-    info.vertexAttributeDescriptionCount = 5;
+    info.vertexAttributeDescriptionCount = 6;
     info.pVertexAttributeDescriptions = attributes.ptr;
     info.pNext = null;
     info.flags = 0;
@@ -243,7 +244,7 @@ fn configure_depth_stencil(info: *c.VkPipelineDepthStencilStateCreateInfo, depth
     info.sType = c.VK_STRUCTURE_TYPE_PIPELINE_DEPTH_STENCIL_STATE_CREATE_INFO;
     info.depthTestEnable = c.VK_TRUE;
     info.depthWriteEnable = if (depthWriteEnable) c.VK_TRUE else c.VK_FALSE;
-    info.depthCompareOp = c.VK_COMPARE_OP_LESS;
+    info.depthCompareOp = c.VK_COMPARE_OP_LESS_OR_EQUAL;
     info.depthBoundsTestEnable = c.VK_FALSE;
     info.stencilTestEnable = c.VK_FALSE;
     info.pNext = null;
@@ -303,7 +304,7 @@ fn create_pbr_graphics_pipeline(pipeline: *types.VulkanPBRPipeline, device: c.Vk
     configure_shader_stages(&shaderStages, vertShader, fragShader);
 
     var bindingDescription: c.VkVertexInputBindingDescription = undefined;
-    var attributeDescriptions: [5]c.VkVertexInputAttributeDescription = undefined;
+    var attributeDescriptions: [6]c.VkVertexInputAttributeDescription = undefined;
     var vertexInputInfo: c.VkPipelineVertexInputStateCreateInfo = undefined;
     configure_vertex_input(&vertexInputInfo, &bindingDescription, &attributeDescriptions);
 
@@ -391,8 +392,8 @@ fn create_pbr_uniform_buffers(pipeline: *types.VulkanPBRPipeline, device: c.VkDe
 
     // Lighting
     var lightInfo = std.mem.zeroes(buffer_mgr.VulkanBufferCreateInfo);
-    lightInfo.size = @sizeOf(types.PBRLightingData);
-    lightInfo.usage = c.VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT;
+    lightInfo.size = @sizeOf(types.PBRLightingBuffer);
+    lightInfo.usage = c.VK_BUFFER_USAGE_STORAGE_BUFFER_BIT;
     lightInfo.properties = c.VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | c.VK_MEMORY_PROPERTY_HOST_COHERENT_BIT;
     lightInfo.persistentlyMapped = true;
 
@@ -453,19 +454,22 @@ fn initialize_pbr_defaults(pipeline: *types.VulkanPBRPipeline) void {
 
     @memcpy(@as([*]u8, @ptrCast(pipeline.materialBufferMapped))[0..@sizeOf(types.PBRMaterialProperties)], @as([*]const u8, @ptrCast(&defaultMaterial))[0..@sizeOf(types.PBRMaterialProperties)]);
 
-    var defaultLighting = std.mem.zeroes(types.PBRLightingData);
-    defaultLighting.lightDirection[0] = -0.5;
-    defaultLighting.lightDirection[1] = -1.0;
-    defaultLighting.lightDirection[2] = -0.3;
-    defaultLighting.lightColor[0] = 1.0;
-    defaultLighting.lightColor[1] = 1.0;
-    defaultLighting.lightColor[2] = 1.0;
-    defaultLighting.lightIntensity = 2.5;
-    defaultLighting.ambientColor[0] = 0.2;
-    defaultLighting.ambientColor[1] = 0.2;
-    defaultLighting.ambientColor[2] = 0.2;
+    var defaultLighting = std.mem.zeroes(types.PBRLightingBuffer);
+    defaultLighting.count = 1;
+    defaultLighting.lights[0].lightDirection[0] = -0.5;
+    defaultLighting.lights[0].lightDirection[1] = -1.0;
+    defaultLighting.lights[0].lightDirection[2] = -0.3;
+    defaultLighting.lights[0].lightDirection[3] = 0.0; // Directional
+    defaultLighting.lights[0].lightColor[0] = 1.0;
+    defaultLighting.lights[0].lightColor[1] = 1.0;
+    defaultLighting.lights[0].lightColor[2] = 1.0;
+    defaultLighting.lights[0].lightColor[3] = 2.5; // Intensity
+    defaultLighting.lights[0].ambientColor[0] = 0.2;
+    defaultLighting.lights[0].ambientColor[1] = 0.2;
+    defaultLighting.lights[0].ambientColor[2] = 0.2;
+    defaultLighting.lights[0].ambientColor[3] = 100.0; // Range
 
-    @memcpy(@as([*]u8, @ptrCast(pipeline.lightingBufferMapped))[0..@sizeOf(types.PBRLightingData)], @as([*]const u8, @ptrCast(&defaultLighting))[0..@sizeOf(types.PBRLightingData)]);
+    @memcpy(@as([*]u8, @ptrCast(pipeline.lightingBufferMapped))[0..@sizeOf(types.PBRLightingBuffer)], @as([*]const u8, @ptrCast(&defaultLighting))[0..@sizeOf(types.PBRLightingBuffer)]);
 }
 
 fn create_pbr_mesh_buffers(pipeline: *types.VulkanPBRPipeline, device: c.VkDevice, allocator: *types.VulkanAllocator, commandPool: c.VkCommandPool, graphicsQueue: c.VkQueue, scene_data: *const scene.CardinalScene, vulkan_state: ?*types.VulkanState) bool {
@@ -595,7 +599,7 @@ fn update_pbr_descriptor_sets(pipeline: *types.VulkanPBRPipeline) bool {
     // Binding 9 (Texture Array) is now handled via bindless descriptor set (Set 1), managed by BindlessTexturePool.
 
     // Update lighting buffer (binding 8)
-    if (!descriptor_mgr.vk_descriptor_manager_update_buffer(dm, setIndex, 8, pipeline.lightingBuffer, 0, @sizeOf(types.PBRLightingData))) {
+    if (!descriptor_mgr.vk_descriptor_manager_update_buffer(dm, setIndex, 8, pipeline.lightingBuffer, 0, @sizeOf(types.PBRLightingBuffer))) {
         log.cardinal_log_error("Failed to update lighting buffer descriptor", .{});
         return false;
     }
@@ -850,7 +854,7 @@ pub export fn vk_pbr_pipeline_destroy(pipeline: ?*types.VulkanPBRPipeline, devic
     log.cardinal_log_info("PBR pipeline destroyed", .{});
 }
 
-pub export fn vk_pbr_update_uniforms(pipeline: ?*types.VulkanPBRPipeline, ubo: ?*const types.PBRUniformBufferObject, lighting: ?*const types.PBRLightingData) callconv(.c) void {
+pub export fn vk_pbr_update_uniforms(pipeline: ?*types.VulkanPBRPipeline, ubo: ?*const types.PBRUniformBufferObject, lighting: ?*const types.PBRLightingBuffer) callconv(.c) void {
     if (pipeline == null or !pipeline.?.initialized) return;
     const pipe = pipeline.?;
 
@@ -859,7 +863,7 @@ pub export fn vk_pbr_update_uniforms(pipeline: ?*types.VulkanPBRPipeline, ubo: ?
     }
 
     if (lighting != null) {
-        @memcpy(@as([*]u8, @ptrCast(pipe.lightingBufferMapped))[0..@sizeOf(types.PBRLightingData)], @as([*]const u8, @ptrCast(lighting))[0..@sizeOf(types.PBRLightingData)]);
+        @memcpy(@as([*]u8, @ptrCast(pipe.lightingBufferMapped))[0..@sizeOf(types.PBRLightingBuffer)], @as([*]const u8, @ptrCast(lighting))[0..@sizeOf(types.PBRLightingBuffer)]);
     }
 }
 
@@ -916,17 +920,27 @@ pub export fn vk_pbr_render(pipeline: ?*types.VulkanPBRPipeline, commandBuffer: 
     while (i < scn.mesh_count) : (i += 1) {
         const mesh = &scn.meshes.?[i];
         var is_blend = false;
+        var is_mask = false;
 
         if (mesh.material_index < scn.material_count) {
             const mat = &scn.materials.?[mesh.material_index];
             if (mat.alpha_mode == scene.CardinalAlphaMode.BLEND) {
                 is_blend = true;
+            } else if (mat.alpha_mode == scene.CardinalAlphaMode.MASK) {
+                is_mask = true;
             }
         }
 
         if (is_blend) {
             indexOffset += mesh.index_count;
             continue;
+        }
+
+        // Apply depth bias for MASK materials (e.g. decals) to prevent Z-fighting
+        if (is_mask) {
+            c.vkCmdSetDepthBias(commandBuffer, -16.0, 0.0, -8.0);
+        } else {
+            c.vkCmdSetDepthBias(commandBuffer, 0.0, 0.0, 0.0);
         }
 
         if (mesh.vertices == null or mesh.vertex_count == 0 or mesh.indices == null or mesh.index_count == 0 or mesh.index_count > 1000000000) {
@@ -983,6 +997,9 @@ pub export fn vk_pbr_render(pipeline: ?*types.VulkanPBRPipeline, commandBuffer: 
         cmd.bindDescriptorSets(c.VK_PIPELINE_BIND_POINT_GRAPHICS, pipe.pipelineLayout, 1, &bindlessSets, &[_]u32{});
     }
 
+    // Apply depth bias for transparent materials too (to prevent z-fighting with coplanar opaque surfaces)
+    c.vkCmdSetDepthBias(commandBuffer, -16.0, 0.0, -8.0);
+
     indexOffset = 0;
     i = 0;
     while (i < scn.mesh_count) : (i += 1) {
@@ -991,7 +1008,7 @@ pub export fn vk_pbr_render(pipeline: ?*types.VulkanPBRPipeline, commandBuffer: 
 
         if (mesh.material_index < scn.material_count) {
             const mat = &scn.materials.?[mesh.material_index];
-            if (mat.alpha_mode == .BLEND) {
+            if (mat.alpha_mode == scene.CardinalAlphaMode.BLEND) {
                 is_blend = true;
             }
         }
@@ -1000,8 +1017,6 @@ pub export fn vk_pbr_render(pipeline: ?*types.VulkanPBRPipeline, commandBuffer: 
             indexOffset += mesh.index_count;
             continue;
         }
-
-        c.vkCmdSetDepthBias(commandBuffer, -2.0, 0.0, -2.0);
 
         if (mesh.vertices == null or mesh.vertex_count == 0 or mesh.indices == null or mesh.index_count == 0 or mesh.index_count > 1000000000) {
             continue;

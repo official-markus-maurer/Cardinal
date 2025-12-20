@@ -92,7 +92,10 @@ fn check_loading_status() void {
 
 fn draw_pbr_settings_panel() void {
     if (state.show_pbr_settings) {
-        if (c.imgui_bridge_begin("PBR Settings", &state.show_pbr_settings, 0)) {
+        const open = c.imgui_bridge_begin("PBR Settings", &state.show_pbr_settings, 0);
+        defer c.imgui_bridge_end();
+
+        if (open) {
             if (c.imgui_bridge_checkbox("Enable PBR Rendering", &state.pbr_enabled)) {
                 renderer.cardinal_renderer_enable_pbr(state.renderer, state.pbr_enabled);
                 if (state.pbr_enabled) {
@@ -118,9 +121,27 @@ fn draw_pbr_settings_panel() void {
 
             if (c.imgui_bridge_collapsing_header("Lighting", c.ImGuiTreeNodeFlags_DefaultOpen)) {
                 var light_changed = false;
-                if (c.imgui_bridge_drag_float3("Direction", @ptrCast(&state.light.direction), 0.01, -1.0, 1.0, "%.3f", 0)) light_changed = true;
+                
+                var light_type = state.light.type;
+                var items: [3][*c]const u8 = undefined;
+                items[0] = "Directional";
+                items[1] = "Point";
+                items[2] = "Spot";
+                
+                if (c.imgui_bridge_combo("Type", &light_type, &items, 3, -1)) {
+                    state.light.type = light_type;
+                    light_changed = true;
+                }
+
+                if (state.light.type == 0) { // Directional
+                    if (c.imgui_bridge_drag_float3("Direction", @ptrCast(&state.light.direction), 0.01, -1.0, 1.0, "%.3f", 0)) light_changed = true;
+                } else { // Point or Spot
+                    if (c.imgui_bridge_drag_float3("Position", @ptrCast(&state.light.position), 0.1, 0.0, 0.0, "%.3f", 0)) light_changed = true;
+                    if (c.imgui_bridge_drag_float("Range", &state.light.range, 0.5, 0.0, 1000.0, "%.1f", 0)) light_changed = true;
+                }
+
                 if (c.imgui_bridge_color_edit3("Color", @ptrCast(&state.light.color), 0)) light_changed = true;
-                if (c.imgui_bridge_slider_float("Intensity", &state.light.intensity, 0.0, 10.0, "%.2f")) light_changed = true;
+                if (c.imgui_bridge_slider_float("Intensity", &state.light.intensity, 0.0, 5000.0, "%.2f")) light_changed = true;
                 if (c.imgui_bridge_color_edit3("Ambient", @ptrCast(&state.light.ambient), 0)) light_changed = true;
 
                 if (light_changed and state.pbr_enabled) {
@@ -190,7 +211,7 @@ fn draw_pbr_settings_panel() void {
 
                 const items = [_][*:0]const u8{ "Normal", "UV Visualization", "Wireframe", "Mesh Shader" };
 
-                if (c.imgui_bridge_combo("Mode", &current_item, &items, items.len, -1)) {
+                if (c.imgui_bridge_combo("Mode", &current_item, &items[0], @intCast(items.len), -1)) {
                     // Map combo index to enum
                     const new_mode: types.CardinalRenderingMode = switch (current_item) {
                         0 => .NORMAL,
@@ -203,13 +224,15 @@ fn draw_pbr_settings_panel() void {
                 }
             }
         }
-        c.imgui_bridge_end();
     }
 }
 
 fn draw_animation_panel() void {
     if (state.show_animation) {
-        if (c.imgui_bridge_begin("Animation", &state.show_animation, 0)) {
+        const open = c.imgui_bridge_begin("Animation", &state.show_animation, 0);
+        defer c.imgui_bridge_end();
+
+        if (open) {
             if (state.scene_loaded and state.combined_scene.animation_system != null) {
                 const anim_sys_opaque = state.combined_scene.animation_system.?;
                 const anim_sys = @as(*animation.CardinalAnimationSystem, @ptrCast(@alignCast(anim_sys_opaque)));
@@ -313,7 +336,6 @@ fn draw_animation_panel() void {
                 c.imgui_bridge_text_wrapped("Load a scene with animations to see animation controls.");
             }
         }
-        c.imgui_bridge_end();
     }
 }
 
@@ -345,9 +367,12 @@ pub fn init(win_ptr: *window.CardinalWindow, rnd_ptr: *types.CardinalRenderer) b
         },
         .light = .{
             .direction = .{ .x = -0.3, .y = -0.7, .z = -0.5 },
+            .position = .{ .x = 0.0, .y = 0.0, .z = 0.0 },
             .color = .{ .x = 1.0, .y = 1.0, .z = 0.95 },
             .intensity = 8.0,
             .ambient = .{ .x = 0.3, .y = 0.3, .z = 0.35 },
+            .range = 100.0,
+            .type = 0, // Directional
         },
     };
 
@@ -596,9 +621,11 @@ pub fn update() void {
     c.imgui_bridge_set_next_window_size(&work_size, 0);
     c.imgui_bridge_push_style_var_vec2(c.ImGuiStyleVar_WindowPadding, &zero_vec);
 
-    if (c.imgui_bridge_begin("DockSpace", null, window_flags)) {
-        c.imgui_bridge_pop_style_var(1);
+    const dockspace_open = c.imgui_bridge_begin("DockSpace", null, window_flags);
+    c.imgui_bridge_pop_style_var(1);
+    defer c.imgui_bridge_end(); // Ensure End() is always called
 
+    if (dockspace_open) {
         // DockSpace
         const dock_id = c.imgui_bridge_get_id("EditorDockSpace");
         const dock_flags = c.ImGuiDockNodeFlags_PassthruCentralNode;
@@ -648,12 +675,12 @@ pub fn update() void {
 
         // Status Bar (as a simple window for now, or part of dockspace)
         if (c.imgui_bridge_begin("Status", null, 0)) {
+            defer c.imgui_bridge_end();
             c.imgui_bridge_text("FPS: %.1f", 1.0 / dt);
             c.imgui_bridge_text("Status: %s", &state.status_msg);
-            c.imgui_bridge_end();
         }
     }
-    c.imgui_bridge_end(); // End DockSpace window
+    // c.imgui_bridge_end(); // End DockSpace window (handled by defer)
 }
 
 pub fn render() void {
@@ -671,9 +698,79 @@ pub fn process_pending_uploads() void {
         state.combined_scene = state.pending_scene;
         state.scene_upload_pending = false;
 
+        if (state.combined_scene.light_count > 0 and state.combined_scene.lights != null) {
+            const sl = &state.combined_scene.lights.?[0];
+            state.light.color = .{ .x = sl.color[0], .y = sl.color[1], .z = sl.color[2] };
+            state.light.intensity = sl.intensity;
+            state.light.range = sl.range;
+            state.light.type = @intFromEnum(sl.type);
+
+            if (sl.node_index < state.combined_scene.all_node_count and state.combined_scene.all_nodes != null) {
+                if (state.combined_scene.all_nodes.?[sl.node_index]) |node| {
+                    // Extract direction from world transform (assuming -Z is forward)
+                    const m = node.world_transform;
+                    // Column 2 is Z axis: m[8], m[9], m[10]
+                    // Direction = -Z
+                    state.light.direction = .{ .x = -m[8], .y = -m[9], .z = -m[10] };
+                    // Position is column 3: m[12], m[13], m[14]
+                    state.light.position = .{ .x = m[12], .y = m[13], .z = m[14] };
+                    log.cardinal_log_info("Updated light transform from node {d}: Pos=({d:.2},{d:.2},{d:.2})", .{sl.node_index, state.light.position.x, state.light.position.y, state.light.position.z});
+                }
+            }
+            
+            // Boost intensity if it looks like a raw unit (e.g. < 100) to make it visible in PBR
+            if (state.light.intensity < 100.0) {
+                state.light.intensity *= 100.0;
+                log.cardinal_log_info("Auto-boosted light intensity to {d:.2}", .{state.light.intensity});
+            }
+            
+            log.cardinal_log_info("Updated editor light from scene: Type={d}, Intensity={d}, Range={d}", .{state.light.type, state.light.intensity, state.light.range});
+        }
+
         if (state.pbr_enabled) {
             renderer.cardinal_renderer_set_camera(state.renderer, &state.camera);
-            renderer.cardinal_renderer_set_lighting(state.renderer, &state.light);
+            
+            if (state.combined_scene.light_count > 0 and state.combined_scene.lights != null) {
+                var pbr_lights: [types.MAX_LIGHTS]types.PBRLight = undefined;
+                var light_count: u32 = 0;
+                var i: u32 = 0;
+                
+                while (i < state.combined_scene.light_count and light_count < types.MAX_LIGHTS) : (i += 1) {
+                    const sl = &state.combined_scene.lights.?[i];
+                    var pos = math.Vec3{ .x = 0, .y = 0, .z = 0 };
+                    var dir = math.Vec3{ .x = 0, .y = -1, .z = 0 }; // Default direction down
+                    
+                    if (sl.node_index < state.combined_scene.all_node_count and state.combined_scene.all_nodes != null) {
+                        if (state.combined_scene.all_nodes.?[sl.node_index]) |node| {
+                            const m = node.world_transform;
+                            // Extract direction from world transform (assuming -Z is forward)
+                            dir = .{ .x = -m[8], .y = -m[9], .z = -m[10] };
+                            // Position is column 3: m[12], m[13], m[14]
+                            pos = .{ .x = m[12], .y = m[13], .z = m[14] };
+                        }
+                    }
+                    
+                    var intensity = sl.intensity;
+                    if (intensity < 100.0) intensity *= 100.0;
+                    
+                    pbr_lights[light_count] = std.mem.zeroes(types.PBRLight);
+                    pbr_lights[light_count].lightDirection = .{ dir.x, dir.y, dir.z, @floatFromInt(@intFromEnum(sl.type)) };
+                    pbr_lights[light_count].lightPosition = .{ pos.x, pos.y, pos.z, 0.0 };
+                    pbr_lights[light_count].lightColor = .{ sl.color[0], sl.color[1], sl.color[2], intensity };
+                    
+                    // Add small ambient to first light only
+                    if (light_count == 0) {
+                        pbr_lights[light_count].ambientColor = .{ 0.05, 0.05, 0.05, sl.range };
+                    } else {
+                        pbr_lights[light_count].ambientColor = .{ 0.0, 0.0, 0.0, sl.range };
+                    }
+                    
+                    light_count += 1;
+                }
+                renderer.cardinal_renderer_set_lights(state.renderer, &pbr_lights, light_count);
+            } else {
+                renderer.cardinal_renderer_set_lighting(state.renderer, &state.light);
+            }
         }
     }
 }

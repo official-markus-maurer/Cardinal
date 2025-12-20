@@ -6,6 +6,8 @@ const window = @import("../core/window.zig");
 const types = @import("vulkan_types.zig");
 const vk_allocator = @import("vulkan_allocator.zig");
 
+const vk_log = log.ScopedLogger("VULKAN");
+
 const c = @import("vulkan_c.zig").c;
 
 // Validation statistics
@@ -86,16 +88,16 @@ fn debug_callback(message_severity: c.VkDebugUtilsMessageSeverityFlagBitsEXT, me
     const log_msg = std.mem.span(@as([*:0]u8, @ptrCast(&buffer)));
 
     if ((message_severity & c.VK_DEBUG_UTILS_MESSAGE_SEVERITY_ERROR_BIT_EXT) != 0) {
-        log.cardinal_log_error("{s}", .{log_msg});
+        vk_log.err("{s}", .{log_msg});
         if ((message_type & c.VK_DEBUG_UTILS_MESSAGE_TYPE_VALIDATION_BIT_EXT) != 0) {
-            log.cardinal_log_error("[VALIDATION] This error indicates a Vulkan specification violation", .{});
+            vk_log.err("[VALIDATION] This error indicates a Vulkan specification violation", .{});
         }
     } else if ((message_severity & c.VK_DEBUG_UTILS_MESSAGE_SEVERITY_WARNING_BIT_EXT) != 0) {
-        log.cardinal_log_warn("{s}", .{log_msg});
+        vk_log.warn("{s}", .{log_msg});
     } else if ((message_severity & c.VK_DEBUG_UTILS_MESSAGE_SEVERITY_INFO_BIT_EXT) != 0) {
-        log.cardinal_log_info("{s}", .{log_msg});
+        vk_log.info("{s}", .{log_msg});
     } else {
-        log.cardinal_log_debug("{s}", .{log_msg});
+        vk_log.debug("{s}", .{log_msg});
     }
 
     return c.VK_FALSE;

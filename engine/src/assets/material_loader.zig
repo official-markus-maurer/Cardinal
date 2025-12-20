@@ -8,6 +8,8 @@ const material_ref_counting = @import("material_ref_counting.zig");
 const scene = @import("scene.zig");
 const builtin = @import("builtin");
 
+const mat_log = log.ScopedLogger("MATERIAL");
+
 // --- Struct Definitions ---
 
 pub const MaterialCacheStats = extern struct {
@@ -84,7 +86,7 @@ fn material_cache_init(max_entries: u32) bool {
     g_material_cache.cache_misses = 0;
     g_material_cache.initialized = true;
 
-    log.cardinal_log_info("[MATERIAL] Cache initialized with max_entries={d}", .{max_entries});
+    mat_log.info("Cache initialized with max_entries={d}", .{max_entries});
     return true;
 }
 
@@ -109,7 +111,7 @@ fn material_cache_shutdown() void {
     g_material_cache.entry_count = 0;
     g_material_cache.initialized = false;
 
-    log.cardinal_log_info("[MATERIAL] Cache shutdown complete", .{});
+    mat_log.info("Cache shutdown complete", .{});
 }
 
 fn material_cache_get(material_id: []const u8) ?*ref_counting.CardinalRefCountedResource {

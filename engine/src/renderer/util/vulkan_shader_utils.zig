@@ -1,29 +1,31 @@
 const std = @import("std");
 const log = @import("../../core/log.zig");
 
+const shader_utils_log = log.ScopedLogger("SHADER_UTILS");
+
 const c = @import("../vulkan_c.zig").c;
 
 pub export fn vk_shader_create_module(device: c.VkDevice, filename: ?[*:0]const u8, shader_module: ?*c.VkShaderModule) callconv(.c) bool {
     if (filename == null or shader_module == null) {
-        log.cardinal_log_error("Invalid parameters for shader module creation", .{});
+        shader_utils_log.err("Invalid parameters for shader module creation", .{});
         return false;
     }
 
     const fname = std.mem.span(filename.?);
 
     const file = std.fs.cwd().openFile(fname, .{}) catch |err| {
-        log.cardinal_log_error("Failed to open shader file: {s} ({s})", .{ fname, @errorName(err) });
+        shader_utils_log.err("Failed to open shader file: {s} ({s})", .{ fname, @errorName(err) });
         return false;
     };
     defer file.close();
 
     const stat = file.stat() catch |err| {
-        log.cardinal_log_error("Failed to stat shader file: {s} ({s})", .{ fname, @errorName(err) });
+        shader_utils_log.err("Failed to stat shader file: {s} ({s})", .{ fname, @errorName(err) });
         return false;
     };
 
     if (stat.size == 0) {
-        log.cardinal_log_error("Invalid shader file size: 0", .{});
+        shader_utils_log.err("Invalid shader file size: 0", .{});
         return false;
     }
 
@@ -33,18 +35,18 @@ pub export fn vk_shader_create_module(device: c.VkDevice, filename: ?[*:0]const 
     const allocator = std.heap.c_allocator;
 
     const code = allocator.alloc(u8, stat.size) catch {
-        log.cardinal_log_error("Failed to allocate memory for shader code", .{});
+        shader_utils_log.err("Failed to allocate memory for shader code", .{});
         return false;
     };
     defer allocator.free(code);
 
     const bytes_read = file.readAll(code) catch |err| {
-        log.cardinal_log_error("Failed to read shader file: {s} ({s})", .{ fname, @errorName(err) });
+        shader_utils_log.err("Failed to read shader file: {s} ({s})", .{ fname, @errorName(err) });
         return false;
     };
 
     if (bytes_read != stat.size) {
-        log.cardinal_log_error("Failed to read complete shader file", .{});
+        shader_utils_log.err("Failed to read complete shader file", .{});
         return false;
     }
 
@@ -57,7 +59,7 @@ pub export fn vk_shader_create_module(device: c.VkDevice, filename: ?[*:0]const 
 
 pub export fn vk_shader_create_module_from_code(device: c.VkDevice, code: ?[*]const u32, code_size: usize, shader_module: ?*c.VkShaderModule) callconv(.c) bool {
     if (device == null or code == null or code_size == 0 or shader_module == null) {
-        log.cardinal_log_error("Invalid parameters for shader module creation from code", .{});
+        shader_utils_log.err("Invalid parameters for shader module creation from code", .{});
         return false;
     }
 
@@ -68,7 +70,7 @@ pub export fn vk_shader_create_module_from_code(device: c.VkDevice, code: ?[*]co
 
     const result = c.vkCreateShaderModule(device, &create_info, null, shader_module);
     if (result != c.VK_SUCCESS) {
-        log.cardinal_log_error("Failed to create shader module: {d}", .{result});
+        shader_utils_log.err("Failed to create shader module: {d}", .{result});
         return false;
     }
 

@@ -10,6 +10,8 @@ const memory = @import("../core/memory.zig");
 const builtin = @import("builtin");
 const handles = @import("../core/handles.zig");
 
+const gltf_log = log.ScopedLogger("GLTF");
+
 const c = @cImport({
     @cInclude("cgltf.h");
     @cInclude("string.h");
@@ -42,7 +44,7 @@ fn init_texture_cache() void {
     if (!g_cache_initialized) {
         g_texture_path_cache = std.mem.zeroes(@TypeOf(g_texture_path_cache));
         g_cache_initialized = true;
-        log.cardinal_log_debug("Texture path cache initialized", .{});
+        gltf_log.debug("Texture path cache initialized", .{});
     }
 }
 
@@ -56,7 +58,7 @@ fn lookup_cached_path(original_uri: []const u8) ?[]const u8 {
         const cached_uri = std.mem.span(@as([*:0]const u8, @ptrCast(&entry.original_uri)));
         if (std.mem.eql(u8, cached_uri, original_uri)) {
             const resolved = std.mem.span(@as([*:0]const u8, @ptrCast(&entry.resolved_path)));
-            log.cardinal_log_debug("Cache hit for texture: {s} -> {s}", .{ original_uri, resolved });
+            gltf_log.debug("Cache hit for texture: {s} -> {s}", .{ original_uri, resolved });
             return resolved;
         }
     }
@@ -78,11 +80,11 @@ fn cache_texture_path(original_uri: []const u8, resolved_path: []const u8) void 
     entry.resolved_path[path_len] = 0;
 
     entry.valid = true;
-    log.cardinal_log_debug("Cached texture path: {s} -> {s}", .{ original_uri, resolved_path });
+    gltf_log.debug("Cached texture path: {s} -> {s}", .{ original_uri, resolved_path });
 }
 
 fn try_texture_path(path: [:0]const u8, tex_data: *texture_loader.TextureData) ?*ref_counting.CardinalRefCountedResource {
-    log.cardinal_log_debug("Trying texture path: {s}", .{path});
+    gltf_log.debug("Trying texture path: {s}", .{path});
     return texture_loader.texture_load_with_ref_counting(path.ptr, tex_data);
 }
 
@@ -317,6 +319,7 @@ fn extract_texture_transform(texture_view: *const c.cgltf_texture_view, out_tran
 
 fn convert_sampler(gltf_sampler: ?*const c.cgltf_sampler, out_sampler: *scene.CardinalSampler) void {
     if (gltf_sampler == null) {
+        log.cardinal_log_debug("Sampler is NULL, defaulting to CLAMP_TO_EDGE", .{});
         // Default to CLAMP_TO_EDGE instead of REPEAT to prevent tiling artifacts
         // on models that don't explicitly define samplers.
         out_sampler.wrap_s = c.VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
@@ -326,6 +329,7 @@ fn convert_sampler(gltf_sampler: ?*const c.cgltf_sampler, out_sampler: *scene.Ca
         return;
     }
     const s = gltf_sampler.?;
+    log.cardinal_log_debug("Sampler defined: wrapS={d}, wrapT={d}", .{s.wrap_s, s.wrap_t});
 
     if (s.wrap_s == 33071 or s.wrap_s == 33069 or s.wrap_s == 10496) {
         out_sampler.wrap_s = c.VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
@@ -737,6 +741,47 @@ fn load_animations_from_gltf(data: *const c.cgltf_data, anim_system: *animation.
     return true;
 }
 
+fn load_lights_from_gltf(data: *const c.cgltf_data, out_lights: *?[*]scene.CardinalLight, out_light_count: *u32) bool {
+    out_lights.* = null;
+    out_light_count.* = 0;
+
+    if (data.lights_count == 0) return true;
+
+    const lights_ptr = c.calloc(data.lights_count, @sizeOf(scene.CardinalLight));
+    if (lights_ptr == null) {
+        log.cardinal_log_error("Failed to allocate memory for lights", .{});
+        return false;
+    }
+    const lights: [*]scene.CardinalLight = @ptrCast(@alignCast(lights_ptr));
+
+    var i: usize = 0;
+    while (i < data.lights_count) : (i += 1) {
+        const gltf_light = &data.lights[i];
+        const light = &lights[i];
+
+        light.color[0] = gltf_light.color[0];
+        light.color[1] = gltf_light.color[1];
+        light.color[2] = gltf_light.color[2];
+        light.intensity = gltf_light.intensity;
+        light.range = gltf_light.range;
+        light.inner_cone_angle = gltf_light.spot_inner_cone_angle;
+        light.outer_cone_angle = gltf_light.spot_outer_cone_angle;
+        light.node_index = std.math.maxInt(u32); // Will be set later
+
+        switch (gltf_light.type) {
+            c.cgltf_light_type_directional => light.type = .DIRECTIONAL,
+            c.cgltf_light_type_point => light.type = .POINT,
+            c.cgltf_light_type_spot => light.type = .SPOT,
+            else => light.type = .POINT, // Fallback
+        }
+    }
+
+    out_lights.* = lights;
+    out_light_count.* = @intCast(data.lights_count);
+    log.cardinal_log_info("Loaded {d} lights from GLTF", .{out_light_count.*});
+    return true;
+}
+
 pub export fn cardinal_gltf_load_scene(path: [*:0]const u8, out_scene: *scene.CardinalScene) callconv(.c) bool {
     log.cardinal_log_info("Starting GLTF scene loading: {s}", .{path});
     @memset(@as([*]u8, @ptrCast(out_scene))[0..@sizeOf(scene.CardinalScene)], 0);
@@ -851,6 +896,30 @@ pub export fn cardinal_gltf_load_scene(path: [*:0]const u8, out_scene: *scene.Ca
                 card_mat.alpha_mode = .BLEND;
             }
 
+            if (mat.name) |name| {
+                const name_slice = std.mem.span(name);
+                var buf: [128]u8 = undefined;
+                const len = @min(name_slice.len, 128);
+                const lower = std.ascii.lowerString(&buf, name_slice[0..len]);
+                
+                // Log material name and mode for debugging
+                log.cardinal_log_debug("Material '{s}': alpha_mode={any}", .{name_slice, card_mat.alpha_mode});
+
+                if (std.mem.indexOf(u8, lower, "dirt") != null or 
+                    std.mem.indexOf(u8, lower, "decal") != null or
+                    std.mem.indexOf(u8, lower, "stain") != null or
+                    std.mem.indexOf(u8, lower, "leak") != null or
+                    std.mem.indexOf(u8, lower, "ivy") != null or
+                    std.mem.indexOf(u8, lower, "leaf") != null or
+                    std.mem.indexOf(u8, lower, "plant") != null) {
+                    
+                    if (card_mat.alpha_mode == .OPAQUE or card_mat.alpha_mode == .MASK) {
+                        card_mat.alpha_mode = .BLEND;
+                        log.cardinal_log_info("Forcing BLEND mode for material '{s}' (suspected decal/foliage)", .{name_slice});
+                    }
+                }
+            }
+
             const identity = scene.CardinalTextureTransform{ .offset = .{ 0, 0 }, .scale = .{ 1, 1 }, .rotation = 0 };
             card_mat.albedo_transform = identity;
             card_mat.normal_transform = identity;
@@ -874,6 +943,7 @@ pub export fn cardinal_gltf_load_scene(path: [*:0]const u8, out_scene: *scene.Ca
                         tex_idx = @intCast((@intFromPtr(pbr.base_color_texture.texture.*.image) - @intFromPtr(d.images)) / @sizeOf(c.cgltf_image));
                     }
                     if (tex_idx < texture_count) card_mat.albedo_texture = .{ .index = tex_idx, .generation = 1 };
+                    card_mat.uv_indices[0] = @intCast(pbr.base_color_texture.texcoord);
                     extract_texture_transform(&pbr.base_color_texture, &card_mat.albedo_transform);
                 }
 
@@ -885,6 +955,7 @@ pub export fn cardinal_gltf_load_scene(path: [*:0]const u8, out_scene: *scene.Ca
                         tex_idx = @intCast((@intFromPtr(pbr.metallic_roughness_texture.texture.*.image) - @intFromPtr(d.images)) / @sizeOf(c.cgltf_image));
                     }
                     if (tex_idx < texture_count) card_mat.metallic_roughness_texture = .{ .index = tex_idx, .generation = 1 };
+                    card_mat.uv_indices[2] = @intCast(pbr.metallic_roughness_texture.texcoord);
                     extract_texture_transform(&pbr.metallic_roughness_texture, &card_mat.metallic_roughness_transform);
                 }
             }
@@ -897,6 +968,7 @@ pub export fn cardinal_gltf_load_scene(path: [*:0]const u8, out_scene: *scene.Ca
                     tex_idx = @intCast((@intFromPtr(mat.normal_texture.texture.*.image) - @intFromPtr(d.images)) / @sizeOf(c.cgltf_image));
                 }
                 if (tex_idx < texture_count) card_mat.normal_texture = .{ .index = tex_idx, .generation = 1 };
+                card_mat.uv_indices[1] = @intCast(mat.normal_texture.texcoord);
                 card_mat.normal_scale = mat.normal_texture.scale;
                 extract_texture_transform(&mat.normal_texture, &card_mat.normal_transform);
             }
@@ -909,6 +981,7 @@ pub export fn cardinal_gltf_load_scene(path: [*:0]const u8, out_scene: *scene.Ca
                     tex_idx = @intCast((@intFromPtr(mat.occlusion_texture.texture.*.image) - @intFromPtr(d.images)) / @sizeOf(c.cgltf_image));
                 }
                 if (tex_idx < texture_count) card_mat.ao_texture = .{ .index = tex_idx, .generation = 1 };
+                card_mat.uv_indices[3] = @intCast(mat.occlusion_texture.texcoord);
                 card_mat.ao_strength = mat.occlusion_texture.scale;
                 extract_texture_transform(&mat.occlusion_texture, &card_mat.ao_transform);
             }
@@ -921,6 +994,7 @@ pub export fn cardinal_gltf_load_scene(path: [*:0]const u8, out_scene: *scene.Ca
                     tex_idx = @intCast((@intFromPtr(mat.emissive_texture.texture.*.image) - @intFromPtr(d.images)) / @sizeOf(c.cgltf_image));
                 }
                 if (tex_idx < texture_count) card_mat.emissive_texture = .{ .index = tex_idx, .generation = 1 };
+                card_mat.uv_indices[4] = @intCast(mat.emissive_texture.texcoord);
                 extract_texture_transform(&mat.emissive_texture, &card_mat.emissive_transform);
             }
 
@@ -971,10 +1045,16 @@ pub export fn cardinal_gltf_load_scene(path: [*:0]const u8, out_scene: *scene.Ca
         while (pi < m.primitives_count) : (pi += 1) {
             const p = &m.primitives[pi];
 
+            // Check for Draco compression
+            if (p.has_draco_mesh_compression != 0) {
+                log.cardinal_log_warn("Draco compression detected for primitive {d}. Draco is not yet supported; mesh may be incomplete.", .{pi});
+            }
+
             // Attributes
             var pos_acc: ?*const c.cgltf_accessor = null;
             var nrm_acc: ?*const c.cgltf_accessor = null;
-            var uv_acc: ?*const c.cgltf_accessor = null;
+            var uv0_acc: ?*const c.cgltf_accessor = null;
+            var uv1_acc: ?*const c.cgltf_accessor = null;
             var joints_acc: ?*const c.cgltf_accessor = null;
             var weights_acc: ?*const c.cgltf_accessor = null;
 
@@ -984,7 +1064,10 @@ pub export fn cardinal_gltf_load_scene(path: [*:0]const u8, out_scene: *scene.Ca
                 switch (a.type) {
                     c.cgltf_attribute_type_position => pos_acc = a.data,
                     c.cgltf_attribute_type_normal => nrm_acc = a.data,
-                    c.cgltf_attribute_type_texcoord => uv_acc = a.data,
+                    c.cgltf_attribute_type_texcoord => {
+                        if (a.index == 0) uv0_acc = a.data;
+                        if (a.index == 1) uv1_acc = a.data;
+                    },
                     c.cgltf_attribute_type_joints => joints_acc = a.data,
                     c.cgltf_attribute_type_weights => weights_acc = a.data,
                     else => {},
@@ -999,13 +1082,19 @@ pub export fn cardinal_gltf_load_scene(path: [*:0]const u8, out_scene: *scene.Ca
             var vi: usize = 0;
             while (vi < vcount) : (vi += 1) {
                 var v: [3]f32 = .{ 0, 0, 0 };
-                _ = c.cgltf_accessor_read_float(pos_acc, vi, &v[0], 3);
+                // Check return value for robust sparse accessor handling
+                if (c.cgltf_accessor_read_float(pos_acc, vi, &v[0], 3) == 0) {
+                    log.cardinal_log_warn("Failed to read position for vertex {d}", .{vi});
+                }
                 vertices[vi].px = v[0];
                 vertices[vi].py = v[1];
                 vertices[vi].pz = v[2];
 
                 if (nrm_acc) |acc| {
-                    _ = c.cgltf_accessor_read_float(acc, vi, &v[0], 3);
+                    if (c.cgltf_accessor_read_float(acc, vi, &v[0], 3) == 0) {
+                         // Default normal if missing/failed
+                         v = .{ 0, 1, 0 };
+                    }
                     vertices[vi].nx = v[0];
                     vertices[vi].ny = v[1];
                     vertices[vi].nz = v[2];
@@ -1015,11 +1104,18 @@ pub export fn cardinal_gltf_load_scene(path: [*:0]const u8, out_scene: *scene.Ca
                     vertices[vi].nz = 0;
                 }
 
-                if (uv_acc) |acc| {
+                if (uv0_acc) |acc| {
                     var uv: [2]f32 = .{ 0, 0 };
                     _ = c.cgltf_accessor_read_float(acc, vi, &uv[0], 2);
                     vertices[vi].u = uv[0];
-                    vertices[vi].v = 1.0 - uv[1];
+                    vertices[vi].v = uv[1];
+                }
+
+                if (uv1_acc) |acc| {
+                    var uv: [2]f32 = .{ 0, 0 };
+                    _ = c.cgltf_accessor_read_float(acc, vi, &uv[0], 2);
+                    vertices[vi].u1 = uv[0];
+                    vertices[vi].v1 = uv[1];
                 }
 
                 if (joints_acc) |acc| {
@@ -1032,6 +1128,52 @@ pub export fn cardinal_gltf_load_scene(path: [*:0]const u8, out_scene: *scene.Ca
                     var w: [4]f32 = .{ 0, 0, 0, 0 };
                     _ = c.cgltf_accessor_read_float(acc, vi, &w[0], 4);
                     vertices[vi].bone_weights = w;
+                }
+            }
+
+            // Load Morph Targets
+            var morph_targets: ?[*]scene.CardinalMorphTarget = null;
+            const morph_target_count = p.targets_count;
+
+            if (morph_target_count > 0) {
+                const mt_ptr = c.calloc(morph_target_count, @sizeOf(scene.CardinalMorphTarget));
+                if (mt_ptr != null) {
+                    morph_targets = @ptrCast(@alignCast(mt_ptr));
+                    var ti: usize = 0;
+                    while (ti < morph_target_count) : (ti += 1) {
+                        const target = &p.targets[ti];
+                        const mt = &morph_targets.?[ti];
+
+                        var tai: usize = 0;
+                        while (tai < target.attributes_count) : (tai += 1) {
+                            const ta = &target.attributes[tai];
+                            const count = ta.data.*.count;
+
+                            if (count != vcount) {
+                                log.cardinal_log_warn("Morph target attribute count mismatch: {d} vs {d}", .{count, vcount});
+                                continue;
+                            }
+
+                            const data_size = count * 3 * @sizeOf(f32);
+                            const data_ptr = c.malloc(data_size);
+                            if (data_ptr == null) continue;
+                            const float_ptr = @as([*]f32, @ptrCast(@alignCast(data_ptr)));
+
+                            // Read all floats
+                            var k: usize = 0;
+                            while (k < count) : (k += 1) {
+                                _ = c.cgltf_accessor_read_float(ta.data, k, &float_ptr[k * 3], 3);
+                            }
+
+                            switch (ta.type) {
+                                c.cgltf_attribute_type_position => mt.positions = float_ptr,
+                                c.cgltf_attribute_type_normal => mt.normals = float_ptr,
+                                c.cgltf_attribute_type_tangent => mt.tangents = float_ptr,
+                                else => c.free(data_ptr),
+                            }
+                        }
+                    }
+                    log.cardinal_log_info("Loaded {d} morph targets for primitive", .{morph_target_count});
                 }
             }
 
@@ -1062,11 +1204,28 @@ pub export fn cardinal_gltf_load_scene(path: [*:0]const u8, out_scene: *scene.Ca
             dst.vertex_count = @intCast(vcount);
             dst.indices = indices;
             dst.index_count = index_count;
+            dst.morph_targets = morph_targets;
+            dst.morph_target_count = @intCast(morph_target_count);
 
             if (p.material) |mat| {
                 const mat_idx = (@intFromPtr(mat) - @intFromPtr(d.materials)) / @sizeOf(c.cgltf_material);
                 if (mat_idx < material_count) {
                     dst.material_index = @intCast(mat_idx);
+                    
+                    // Debug logging for material and UVs
+                    const has_uv1 = (uv1_acc != null);
+                    const mat_def = &d.materials[mat_idx];
+                    const tex_coord = if (mat_def.pbr_metallic_roughness.base_color_texture.texture != null) 
+                        mat_def.pbr_metallic_roughness.base_color_texture.texcoord 
+                    else 0;
+                    
+                    if (has_uv1 or tex_coord > 0) {
+                        const mat_name = if (mat_def.name) |n| std.mem.span(n) else "unnamed";
+                        log.cardinal_log_info("Primitive {d}: Material {d} ({s}), Has UV1: {any}, BaseColor TexCoord: {d}", .{pi, mat_idx, mat_name, has_uv1, tex_coord});
+                    } else {
+                        const mat_name = if (mat_def.name) |n| std.mem.span(n) else "unnamed";
+                        log.cardinal_log_info("Primitive {d}: Material {d} ({s})", .{pi, mat_idx, mat_name});
+                    }
                 } else {
                     dst.material_index = std.math.maxInt(u32);
                 }
@@ -1217,6 +1376,32 @@ pub export fn cardinal_gltf_load_scene(path: [*:0]const u8, out_scene: *scene.Ca
         }
     }
 
+    // Load Lights
+    var lights: ?[*]scene.CardinalLight = null;
+    var light_count: u32 = 0;
+    if (!load_lights_from_gltf(d, &lights, &light_count)) {
+        log.cardinal_log_error("Failed to load lights", .{});
+    }
+    out_scene.lights = lights;
+    out_scene.light_count = light_count;
+
+    // Map lights to nodes
+    if (d.lights_count > 0 and out_scene.all_nodes != null) {
+        var ni: usize = 0;
+        while (ni < out_scene.all_node_count) : (ni += 1) {
+            if (out_scene.all_nodes.?[ni]) |node| {
+                const gltf_node = &d.nodes[ni];
+                if (gltf_node.light != null) {
+                    const light_idx = (@intFromPtr(gltf_node.light) - @intFromPtr(d.lights)) / @sizeOf(c.cgltf_light);
+                    node.light_index = @intCast(light_idx);
+                    if (light_idx < light_count) {
+                        lights.?[light_idx].node_index = @intCast(ni);
+                    }
+                }
+            }
+        }
+    }
+
     c.cgltf_free(data);
 
     out_scene.meshes = meshes_safe;
@@ -1227,6 +1412,8 @@ pub export fn cardinal_gltf_load_scene(path: [*:0]const u8, out_scene: *scene.Ca
     out_scene.texture_count = texture_count;
     out_scene.root_nodes = root_nodes;
     out_scene.root_node_count = root_node_count;
+    out_scene.lights = lights;
+    out_scene.light_count = light_count;
 
     return true;
 }

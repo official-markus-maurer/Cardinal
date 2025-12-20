@@ -64,9 +64,12 @@ pub const CardinalCamera = extern struct {
 
 pub const CardinalLight = extern struct {
     direction: math.Vec3,
+    position: math.Vec3,
     color: math.Vec3,
     intensity: f32,
     ambient: math.Vec3,
+    range: f32,
+    type: i32, // 0=Directional, 1=Point, 2=Spot
 };
 
 pub const CardinalMTTaskType = enum(c_int) {
@@ -166,13 +169,19 @@ pub const PBRUniformBufferObject = extern struct {
     _padding1: f32,
 };
 
-pub const PBRLightingData = extern struct {
-    lightDirection: [3]f32,
-    _padding1: f32,
-    lightColor: [3]f32,
-    lightIntensity: f32,
-    ambientColor: [3]f32,
-    _padding2: f32,
+pub const PBRLight = extern struct {
+    lightDirection: [4]f32, // w = type (0=Directional, 1=Point, 2=Spot)
+    lightColor: [4]f32,     // w = intensity
+    ambientColor: [4]f32,   // w = range
+    lightPosition: [4]f32,  // xyz = position, w = unused
+};
+
+pub const MAX_LIGHTS = 128;
+
+pub const PBRLightingBuffer = extern struct {
+    count: u32,
+    _padding: [3]u32,
+    lights: [MAX_LIGHTS]PBRLight,
 };
 
 pub const PBRMaterialProperties = extern struct {
@@ -215,7 +224,7 @@ pub const PBRPushConstants = extern struct {
     flags: u32,
     alphaCutoff: f32,
 
-    _pad3: u32,
+    uvSetIndices: u32, // Packed UV indices (3 bits per texture)
 
     albedoTransform: PBRTextureTransform,
     _padding1: f32,

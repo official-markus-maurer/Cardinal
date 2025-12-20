@@ -5,6 +5,9 @@ const memory = @import("../core/memory.zig");
 const log = @import("../core/log.zig");
 const ref_counting = @import("../core/ref_counting.zig");
 const async_loader = @import("../core/async_loader.zig");
+
+const model_log = log.ScopedLogger("MODEL");
+
 const builtin = @import("builtin");
 
 // --- Externs from loader.c ---
@@ -60,7 +63,7 @@ fn finalize_model_task(task: ?*async_loader.CardinalAsyncTask, user_data: ?*anyo
 
     // Check if scene load was successful
     if (ctx.scene_task.status != .COMPLETED or ctx.scene_task.result_data == null) {
-        log.cardinal_log_error("Scene load task failed or no result", .{});
+        model_log.err("Scene load task failed or no result", .{});
         return false;
     }
 
@@ -69,7 +72,7 @@ fn finalize_model_task(task: ?*async_loader.CardinalAsyncTask, user_data: ?*anyo
     // Allocate result data
     const result_ptr = memory.cardinal_alloc(allocator, @sizeOf(FinalizedModelData));
     if (result_ptr == null) {
-        log.cardinal_log_error("Failed to allocate finalize result data", .{});
+        model_log.err("Failed to allocate finalize result data", .{});
         scene.cardinal_scene_destroy(loaded_scene_ptr);
         const engine_allocator = memory.cardinal_get_allocator_for_category(.ENGINE);
         memory.cardinal_free(engine_allocator, loaded_scene_ptr);
@@ -92,7 +95,7 @@ fn finalize_model_task(task: ?*async_loader.CardinalAsyncTask, user_data: ?*anyo
         t.result_size = @sizeOf(FinalizedModelData);
     }
 
-    log.cardinal_log_info("Async model finalization calculated bounds: min({d},{d},{d}) max({d},{d},{d})", .{ result.bbox_min[0], result.bbox_min[1], result.bbox_min[2], result.bbox_max[0], result.bbox_max[1], result.bbox_max[2] });
+    model_log.info("Async model finalization calculated bounds: min({d},{d},{d}) max({d},{d},{d})", .{ result.bbox_min[0], result.bbox_min[1], result.bbox_min[2], result.bbox_max[0], result.bbox_max[1], result.bbox_max[2] });
     return true;
 }
 
@@ -185,7 +188,7 @@ fn expand_models_array(manager: *CardinalModelManager) bool {
     const new_models_ptr = memory.cardinal_realloc(allocator, manager.models, new_capacity * @sizeOf(CardinalModelInstance));
 
     if (new_models_ptr == null) {
-        log.cardinal_log_error("Failed to expand models array to capacity {d}", .{new_capacity});
+        model_log.err("Failed to expand models array to capacity {d}", .{new_capacity});
         return false;
     }
 
@@ -239,6 +242,9 @@ fn rebuild_combined_scene(manager: *CardinalModelManager) void {
 
     // Allocate arrays
     const meshes_ptr = memory.cardinal_calloc(allocator, total_meshes, @sizeOf(scene.CardinalMesh));
+    if (meshes_ptr) |ptr| {
+        log.cardinal_log_debug("[MODEL_MGR] Allocated combined meshes: {any} size {d}", .{ ptr, total_meshes * @sizeOf(scene.CardinalMesh) });
+    }
     const materials_ptr = memory.cardinal_calloc(allocator, total_materials, @sizeOf(scene.CardinalMaterial));
     const textures_ptr = memory.cardinal_calloc(allocator, total_textures, @sizeOf(scene.CardinalTexture));
 

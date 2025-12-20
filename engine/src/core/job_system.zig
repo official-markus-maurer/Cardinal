@@ -2,6 +2,8 @@ const std = @import("std");
 const log = @import("log.zig");
 const memory = @import("memory.zig");
 
+const job_log = log.ScopedLogger("JOB_SYSTEM");
+
 // --- Types ---
 
 pub const JobPriority = enum(c_int) {
@@ -161,7 +163,7 @@ fn job_queue_remove(queue: *JobQueue, job: *Job) bool {
 }
 
 fn worker_thread_func(worker: *WorkerThread) void {
-    // std.log.debug("Job worker thread {d} started", .{worker.thread_id});
+    // job_log.debug("Job worker thread {d} started", .{worker.thread_id});
 
     while (!worker.should_exit and !g_job_system.shutting_down) {
         const job_opt = job_queue_pop(&g_job_system.pending_queue, true);
@@ -242,14 +244,14 @@ pub fn init(config: ?*const JobSystemConfig) bool {
     }
 
     g_job_system.initialized = true;
-    log.cardinal_log_info("Job System initialized with {d} threads", .{g_job_system.config.worker_thread_count});
+    job_log.info("Job System initialized with {d} threads", .{g_job_system.config.worker_thread_count});
     return true;
 }
 
 pub fn shutdown() void {
     if (!g_job_system.initialized) return;
 
-    log.cardinal_log_info("Shutting down Job System...", .{});
+    job_log.info("Shutting down Job System...", .{});
     g_job_system.shutting_down = true;
 
     if (g_job_system.workers) |workers| {

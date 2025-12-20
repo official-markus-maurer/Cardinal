@@ -86,9 +86,12 @@ pub fn main() !u8 {
         return 255;
     }
 
+    var frames: u32 = 0;
     while (!window.cardinal_window_should_close(win)) {
         window.cardinal_window_poll(win);
         vulkan_renderer_frame.cardinal_renderer_draw_frame(&renderer);
+        frames += 1;
+        if (frames > 10) break;
     }
 
     vulkan_renderer.cardinal_renderer_wait_idle(&renderer);

@@ -116,7 +116,6 @@ pub fn build(b: *std.Build) void {
     engine.addIncludePath(b.path("engine/src/renderer"));
     engine.addIncludePath(b.path("libs/cgltf"));
     engine.addIncludePath(b.path("libs/stb"));
-    engine.addIncludePath(b.path("libs/spdlog/include"));
     engine.addIncludePath(b.path("libs/glfw/include"));
 
     if (vulkan_sdk) |sdk| {
@@ -126,7 +125,6 @@ pub fn build(b: *std.Build) void {
     engine.root_module.addCMacro("GLFW_INCLUDE_VULKAN", "");
     engine.root_module.addCMacro("VK_USE_PLATFORM_WIN32_KHR", "");
     engine.root_module.addCMacro("CARDINAL_ENGINE_INTERNAL", "");
-    engine.root_module.addCMacro("CARDINAL_USE_SPDLOG", "1");
     engine.root_module.addCMacro("_CRT_SECURE_NO_WARNINGS", "");
 
     // Generate C implementation files
