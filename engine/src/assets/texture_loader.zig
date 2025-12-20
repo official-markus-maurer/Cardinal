@@ -222,6 +222,12 @@ fn remove_from_list(entry: *TextureCacheEntry) void {
     entry.next = null;
 }
 
+const asset_manager = @import("asset_manager.zig");
+
+// TODO: This function now delegates to AssetManager for caching if possible, 
+// but since AssetManager returns a Handle and this returns a raw resource pointer, 
+// we keep the legacy cache for now to support existing C API consumers without breaking them immediately.
+// Ideally, C API consumers should migrate to handles too.
 fn texture_cache_get(filepath: []const u8) ?*ref_counting.CardinalRefCountedResource {
     if (!g_texture_cache.initialized) return null;
 

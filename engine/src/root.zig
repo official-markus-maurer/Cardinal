@@ -11,6 +11,7 @@ pub const material_ref_counting = @import("assets/material_ref_counting.zig");
 pub const async_loader = @import("core/async_loader.zig");
 pub const texture_loader = @import("assets/texture_loader.zig");
 pub const material_loader = @import("assets/material_loader.zig");
+pub const asset_manager = @import("assets/asset_manager.zig");
 pub const loader = @import("assets/loader.zig");
 pub const mesh_loader = @import("assets/mesh_loader.zig");
 pub const model_manager = @import("assets/model_manager.zig");
@@ -48,6 +49,7 @@ pub const vulkan_material_utils = @import("renderer/util/vulkan_material_utils.z
 pub const vulkan_renderer = @import("renderer/vulkan_renderer.zig");
 pub const vulkan_renderer_frame = @import("renderer/vulkan_renderer_frame.zig");
 pub const vulkan_pipeline_manager = @import("renderer/vulkan_pipeline_manager.zig");
+pub const rhi = @import("rhi/rhi.zig");
 
 comptime {
     _ = log;
@@ -61,6 +63,7 @@ comptime {
     _ = async_loader;
     _ = texture_loader;
     _ = material_loader;
+    _ = asset_manager;
     _ = loader;
     _ = mesh_loader;
     _ = model_manager;
@@ -98,6 +101,7 @@ comptime {
     _ = vulkan_renderer;
     _ = vulkan_renderer_frame;
     _ = vulkan_pipeline_manager;
+    _ = rhi;
 }
 
 test {

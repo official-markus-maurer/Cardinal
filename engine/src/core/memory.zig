@@ -180,13 +180,13 @@ fn track_alloc(ptr: ?*anyopaque, size: usize, is_aligned: bool) void {
     if (builtin.mode == .Debug) {
         // Try to capture stack trace
         // Passing null, null lets Zig figure out the current frame
-        var it = std.debug.StackIterator.init(null, null);
-        var idx: usize = 0;
-        while (it.next()) |return_address| : (idx += 1) {
-            if (idx >= 16) break;
-            info.stack_addresses[idx] = return_address;
-        }
-        info.stack_depth = idx;
+        // var it = std.debug.StackIterator.init(null, null);
+        // var idx: usize = 0;
+        // while (it.next()) |return_address| : (idx += 1) {
+        //     if (idx >= 16) break;
+        //     info.stack_addresses[idx] = return_address;
+        // }
+        // info.stack_depth = idx;
 
         // Fallback: If stack iterator failed to find anything, at least grab the immediate caller
         if (info.stack_depth == 0) {

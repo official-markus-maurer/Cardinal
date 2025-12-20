@@ -24,6 +24,7 @@ const vk_texture_utils = @import("util/vulkan_texture_utils.zig");
 const vk_barrier_validation = @import("vulkan_barrier_validation.zig");
 const ref_counting = @import("../core/ref_counting.zig");
 const material_ref_counting = @import("../assets/material_ref_counting.zig");
+const asset_manager = @import("../assets/asset_manager.zig");
 const transform = @import("../core/transform.zig");
 const render_graph = @import("render_graph.zig");
 
@@ -89,6 +90,14 @@ fn init_ref_counting() bool {
         return false;
     }
     renderer_log.info("renderer_create: material_ref_counting", .{});
+
+    // Initialize unified asset manager
+    asset_manager.init() catch {
+        renderer_log.err("asset_manager.init() failed", .{});
+        return false;
+    };
+    renderer_log.info("renderer_create: asset_manager", .{});
+
     return true;
 }
 
@@ -238,20 +247,28 @@ pub export fn cardinal_renderer_create(out_renderer: ?*types.CardinalRenderer, w
     out_renderer.?._opaque = s;
 
     // Initialize Render Graph
-    // const rg_ptr = memory.cardinal_alloc(mem_alloc, @sizeOf(render_graph.RenderGraph));
-    // if (rg_ptr != null) {
-    //     const rg = @as(*render_graph.RenderGraph, @ptrCast(@alignCast(rg_ptr)));
-    //     rg.* = render_graph.RenderGraph.init(std.heap.c_allocator);
-    //     
-    //     // Add PBR Pass
-    //     rg.add_pass(render_graph.RenderPass.init("PBR Pass", pbr_pass_callback)) catch {
-    //          log.cardinal_log_error("Failed to add PBR pass", .{});
-    //     };
-    //     s.render_graph = rg;
-    // } else {
-    //     log.cardinal_log_error("Failed to allocate render graph", .{});
-    //     return false;
-    // }
+    const rg_ptr = memory.cardinal_alloc(mem_alloc, @sizeOf(render_graph.RenderGraph));
+    if (rg_ptr != null) {
+        const rg = @as(*render_graph.RenderGraph, @ptrCast(@alignCast(rg_ptr)));
+        rg.* = render_graph.RenderGraph.init(std.heap.c_allocator);
+        
+        // Add PBR Pass
+        // Note: The RenderGraph implementation has changed to use an allocator in init
+        // and add_pass now takes a RenderPass struct, not just a callback.
+        
+        const pass = render_graph.RenderPass.init(std.heap.c_allocator, "PBR Pass", pbr_pass_callback);
+        // Define inputs/outputs for automatic barriers if needed
+        // For now, we keep it simple as the legacy PBR pass handles its own layout transitions mostly,
+        // but integrating it properly allows us to remove those manual transitions later.
+        
+        rg.add_pass(pass) catch {
+             log.cardinal_log_error("Failed to add PBR pass", .{});
+        };
+        s.render_graph = rg;
+    } else {
+        log.cardinal_log_error("Failed to allocate render graph", .{});
+        return false;
+    }
 
     // Initialize device loss recovery state
     s.recovery.device_lost = false;

@@ -27,7 +27,7 @@ This document outlines the roadmap for the Cardinal Engine, focusing on robustne
 ## 2. Data & Assets
 
 ### Asset System
-- [ ] **Unified Asset Manager**: Create a central system to manage all asset types (Textures, Meshes, Shaders, Sounds) with consistent reference counting and handle-based access.
+- [x] **Unified Asset Manager**: Create a central system to manage all asset types (Textures, Meshes, Shaders, Sounds) with consistent reference counting and handle-based access.
 - [ ] **Asset Database**: Implement a metadata system (`.meta` files) to store import settings and GUIDs for assets, decoupling file paths from asset identity.
 - [ ] **Hot-Reloading**: Generic hot-reloading support for all asset types, not just shaders.
 
@@ -40,8 +40,8 @@ This document outlines the roadmap for the Cardinal Engine, focusing on robustne
 ## 3. Rendering (Vulkan)
 
 ### Architecture
-- [ ] **RHI (Render Hardware Interface)**: Abstract raw Vulkan calls behind a high-level API (`CommandList`, `Texture`, `Buffer`) to simplify renderer code and potentially support other backends in the future.
-- [ ] **Frame Graph / Render Graph**: Implement a dependency graph for render passes to automatically manage barriers and resource transitions.
+- [x] **RHI (Render Hardware Interface)**: Abstract raw Vulkan calls behind a high-level API (`CommandList`, `Texture`, `Buffer`) to simplify renderer code and potentially support other backends in the future.
+- [x] **Frame Graph / Render Graph**: Implement a dependency graph for render passes to automatically manage barriers and resource transitions.
     - *Current State*: `RenderGraph` is just a list of function pointers. It needs to track resource usage (READ/WRITE) to insert barriers automatically.
 
 ### Features
