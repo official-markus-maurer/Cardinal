@@ -296,6 +296,12 @@ pub const VulkanBufferAlloc = extern struct {
     usage: c.VkBufferUsageFlags,
 };
 
+pub const RenderGraph = @import("render_graph.zig").RenderGraph;
+
+// Resource IDs for RenderGraph
+pub const RESOURCE_ID_BACKBUFFER: u64 = 1;
+pub const RESOURCE_ID_DEPTHBUFFER: u64 = 2;
+
 pub const VulkanDescriptorManager = extern struct {
     bindings: ?[*]const VulkanDescriptorBinding,
     bindingCount: u32,
@@ -800,6 +806,7 @@ pub const VulkanState = extern struct {
     scene_upload_pending: bool,
     ui_record_callback: ?*const fn (c.VkCommandBuffer) callconv(.c) void,
     render_graph: ?*anyopaque,
+    current_image_index: u32,
 };
 
 // Secondary Command Context (from texture manager usage)

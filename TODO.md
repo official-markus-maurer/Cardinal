@@ -43,6 +43,7 @@ This document outlines the roadmap for the Cardinal Engine, focusing on robustne
 - [x] **RHI (Render Hardware Interface)**: Abstract raw Vulkan calls behind a high-level API (`CommandList`, `Texture`, `Buffer`) to simplify renderer code and potentially support other backends in the future.
 - [x] **Frame Graph / Render Graph**: Implement a dependency graph for render passes to automatically manage barriers and resource transitions.
     - *Current State*: `RenderGraph` is just a list of function pointers. It needs to track resource usage (READ/WRITE) to insert barriers automatically.
+- [x] *Task*: Define inputs/outputs for automatic barriers in `RenderGraph` (`vulkan_renderer.zig`). Currently PBR pass handles its own transitions.
 
 ### Features
 - [ ] **Shader Hot-Reloading**: Watch shader files and recompile/reload pipelines at runtime.

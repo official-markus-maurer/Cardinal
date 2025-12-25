@@ -142,29 +142,11 @@ fn material_cache_put(material_id: [:0]const u8, resource: *ref_counting.Cardina
 
     // Check if we're at capacity
     if (g_material_cache.entry_count >= g_material_cache.max_entries) {
-        // Remove oldest entry (simple FIFO eviction)
+        // Remove oldest entry
         if (g_material_cache.entries) |head| {
-            // Wait, this list is LIFO (new entries at head). So oldest is at tail.
-            // But implementation in C was removing head?
-            // C code:
-            // MaterialCacheEntry* to_remove = g_material_cache.entries;
-            // g_material_cache.entries = to_remove->next;
-            // Yes, it was removing the newest entry if it was prepending.
-            // Or maybe it treated it as a stack?
-            // "Remove oldest entry (simple FIFO eviction)" comment says FIFO.
-            // But code removes head. If we add to head, head is newest.
-            // So it was evicting the NEWEST entry? That seems wrong for a cache.
-            // Unless it was adding to tail?
-            // C code: new_entry->next = g_material_cache.entries; g_material_cache.entries = new_entry;
-            // This is adding to head.
-            // So eviction was removing head (newest).
-            // That's weird. It's LIFO eviction (stack).
-
-            // I'll stick to C behavior for now to avoid behavioral changes,
-            // but maybe I should fix it to be LRU or FIFO?
-            // The comment says "FIFO eviction", but the code does LIFO eviction.
-            // Let's implement LRU or FIFO properly?
-            // Or just do what C code did: remove head.
+            // TODO: Implement proper LRU eviction.
+            // Current implementation removes the head (which is the most recently added if we prepend).
+            // This behaves as a Stack (LIFO eviction), not a Cache (LRU/FIFO).
 
             const to_remove = head;
             g_material_cache.entries = to_remove.next;
@@ -291,11 +273,6 @@ pub export fn material_load_with_ref_counting(material_data: ?*const scene.Cardi
     log.cardinal_log_debug("[MATERIAL] Starting material load: {s}", .{material_id});
 
     // Try to use the existing material reference counting system first
-    // Note: material_ref_counting.zig's load function does its own ref_acquire logic,
-    // but we've already done that above. It's fine, it will just increment count again.
-    // However, we want to control the state.
-    // If we call cardinal_material_load_with_ref_counting, it will create the resource if not exists.
-
     const ref_resource = material_ref_counting.cardinal_material_load_with_ref_counting(material_data, out_material);
 
     if (ref_resource) |res| {

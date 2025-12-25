@@ -153,31 +153,7 @@ pub fn create_image_and_memory(allocator: ?*types.VulkanAllocator, device: c.VkD
 }
 
 pub fn record_texture_copy_commands(commandBuffer: c.VkCommandBuffer, stagingBuffer: c.VkBuffer, textureImage: c.VkImage, width: u32, height: u32) void {
-    // Note: We don't call vkBeginCommandBuffer/vkEndCommandBuffer here because:
-    // 1. When called from upload_texture_task, the secondary buffer is already in recording state
-    // 2. When called from vk_texture_create_from_data, it's called with a primary buffer that should be managed by caller?
-    // Wait, vk_texture_create_from_data calls this function, but it allocates a primary buffer itself.
-    // However, upload_texture_task (in vulkan_texture_manager.zig) calls this function passing a secondary buffer that IS ALREADY in recording state.
-    // vk_texture_create_from_data does NOT put the buffer in recording state before calling this!
-
-    // BUT looking at the code below, it calls vkBeginCommandBuffer!
-    // This is WRONG if the buffer is already recording (like in upload_texture_task).
-
-    // Let's check if we are already recording or not? We can't easily check via API without tracking.
-    // Better strategy: Remove vkBegin/End from here, and ensure callers handle it.
-
-    // However, vk_texture_create_from_data calls this function. Let's check vk_texture_create_from_data.
-    // vk_texture_create_from_data allocates a buffer but doesn't begin it.
-
-    // So we should split this into "record_commands_internal" (no begin/end) and "record_commands" (with begin/end).
-    // Or better, just remove begin/end from here and fix vk_texture_create_from_data.
-
-    // Wait, if I remove begin/end here, I must update vk_texture_create_from_data to begin/end.
-    // And upload_texture_task is already beginning/ending.
-
-    // So the fix is:
-    // 1. Remove vkBeginCommandBuffer/vkEndCommandBuffer from THIS function.
-    // 2. Update vk_texture_create_from_data to begin/end the buffer.
+    // The command buffer must be in recording state before calling this function.
 
     var barrier = std.mem.zeroes(c.VkImageMemoryBarrier2);
     barrier.sType = c.VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2;

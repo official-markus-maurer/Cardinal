@@ -119,6 +119,10 @@ pub const RenderGraph = struct {
         }
     }
 
+    pub fn set_resource_state(self: *RenderGraph, id: ResourceId, state: ResourceState) !void {
+        try self.resource_states.put(self.allocator, id, state);
+    }
+
     pub fn add_pass(self: *RenderGraph, pass: RenderPass) !void {
         try self.passes.append(self.allocator, pass);
     }

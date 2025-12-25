@@ -847,7 +847,7 @@ pub export fn cardinal_model_manager_update(manager: ?*CardinalModelManager) cal
                             success = false;
                         }
                     } else if (async_loader.cardinal_async_get_scene_result(task, &model.scene)) {
-                        // Legacy/Direct scene load task
+                        // Direct scene load task
                         calculate_scene_bounds(&model.scene, &model.bbox_min, &model.bbox_max);
                         model.is_loading = false;
                         mgr.scene_dirty = true;

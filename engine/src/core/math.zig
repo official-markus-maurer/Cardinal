@@ -206,20 +206,11 @@ pub const Mat4 = extern struct {
         rot_matrix.data[10] = 1.0 - (xx + yy);
 
         // Apply rotation
-        // Legacy code: cardinal_matrix_multiply(&temp, &rot_matrix, matrix);
-        // temp was scaled identity. rot_matrix is rotation.
-        // Result = Scale * Rotation ??
-        // Legacy: multiply(A, B) -> A * B (Row Major)
-        // temp (Scale) * rot_matrix (Rotation).
-        // Standard TRS is T * R * S.
-        // If row major (v * M), then v * S * R * T.
-        // So S * R is correct first step.
+        // Row major: v * S * R * T.
+        // m is currently S. Multiply by R.
         m = m.mul(rot_matrix);
 
-        // Translation
-        // Legacy: matrix[12] += t[0]...
-        // In Row Major, 12,13,14 is bottom row.
-        // This effectively adds translation.
+        // Apply translation
         m.data[12] += t.x;
         m.data[13] += t.y;
         m.data[14] += t.z;

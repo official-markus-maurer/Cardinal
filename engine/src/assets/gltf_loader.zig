@@ -291,10 +291,7 @@ fn load_texture_with_fallback(original_uri: [*:0]const u8, base_path: [*:0]const
         return true;
     }
 
-    // Advanced fallback logic omitted for brevity as it's complex and rarely hit if optimized paths work.
-    // Implementing basic decomposition if needed.
-    // For now, let's fallback to create_fallback_texture.
-
+    // Fallback to create_fallback_texture if no paths match
     log.cardinal_log_warn("Failed to load texture '{s}' from all paths, using fallback", .{uri});
     return create_fallback_texture(out_texture);
 }

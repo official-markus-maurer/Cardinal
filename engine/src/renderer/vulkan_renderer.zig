@@ -35,8 +35,19 @@ fn get_state(renderer: ?*types.CardinalRenderer) ?*types.VulkanState {
 }
 
 fn pbr_pass_callback(cmd: c.VkCommandBuffer, state: *types.VulkanState) void {
-    if (state.current_rendering_mode == .NORMAL) {
-        vk_pbr.vk_pbr_render(@ptrCast(&state.pipelines.pbr_pipeline), cmd, state.current_scene);
+    var clears: [2]c.VkClearValue = undefined;
+    clears[0].color.float32[0] = 0.05;
+    clears[0].color.float32[1] = 0.05;
+    clears[0].color.float32[2] = 0.08;
+    clears[0].color.float32[3] = 1.0;
+    clears[1].depthStencil.depth = 1.0;
+    clears[1].depthStencil.stencil = 0;
+
+    const use_depth = state.swapchain.depth_image_view != null and state.swapchain.depth_image != null;
+
+    if (vk_commands.begin_dynamic_rendering(state, cmd, state.current_image_index, use_depth, &clears, true, 0)) {
+        vk_commands.vk_record_scene_content(state, cmd);
+        vk_commands.end_dynamic_rendering(state, cmd);
     }
 }
 
@@ -253,13 +264,28 @@ pub export fn cardinal_renderer_create(out_renderer: ?*types.CardinalRenderer, w
         rg.* = render_graph.RenderGraph.init(std.heap.c_allocator);
         
         // Add PBR Pass
-        // Note: The RenderGraph implementation has changed to use an allocator in init
-        // and add_pass now takes a RenderPass struct, not just a callback.
+        var pass = render_graph.RenderPass.init(std.heap.c_allocator, "PBR Pass", pbr_pass_callback);
         
-        const pass = render_graph.RenderPass.init(std.heap.c_allocator, "PBR Pass", pbr_pass_callback);
-        // Define inputs/outputs for automatic barriers if needed
-        // For now, we keep it simple as the legacy PBR pass handles its own layout transitions mostly,
-        // but integrating it properly allows us to remove those manual transitions later.
+        // Define outputs for automatic barriers
+        // Backbuffer (Color Attachment)
+        pass.add_output(std.heap.c_allocator, .{
+            .id = types.RESOURCE_ID_BACKBUFFER,
+            .type = .Image,
+            .access_mask = c.VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT | c.VK_ACCESS_2_COLOR_ATTACHMENT_READ_BIT,
+            .stage_mask = c.VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT,
+            .layout = c.VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
+            .aspect_mask = c.VK_IMAGE_ASPECT_COLOR_BIT,
+        }) catch {};
+
+        // Depthbuffer (Depth Attachment)
+        pass.add_output(std.heap.c_allocator, .{
+            .id = types.RESOURCE_ID_DEPTHBUFFER,
+            .type = .Image,
+            .access_mask = c.VK_ACCESS_2_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT | c.VK_ACCESS_2_DEPTH_STENCIL_ATTACHMENT_READ_BIT,
+            .stage_mask = c.VK_PIPELINE_STAGE_2_EARLY_FRAGMENT_TESTS_BIT | c.VK_PIPELINE_STAGE_2_LATE_FRAGMENT_TESTS_BIT,
+            .layout = c.VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL,
+            .aspect_mask = c.VK_IMAGE_ASPECT_DEPTH_BIT,
+        }) catch {};
         
         rg.add_pass(pass) catch {
              log.cardinal_log_error("Failed to add PBR pass", .{});

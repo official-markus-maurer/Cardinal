@@ -75,7 +75,7 @@ fn allocate_command_buffers(s: *types.VulkanState) bool {
         var ai = std.mem.zeroes(c.VkCommandBufferAllocateInfo);
         ai.sType = c.VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO;
         ai.commandPool = s.commands.pools.?[i];
-        ai.level = c.VK_COMMAND_BUFFER_LEVEL_PRIMARY; // Allocated as PRIMARY as per C code comments
+        ai.level = c.VK_COMMAND_BUFFER_LEVEL_PRIMARY; // Allocated as PRIMARY
         ai.commandBufferCount = 1;
 
         if (c.vkAllocateCommandBuffers(s.context.device, &ai, &s.commands.secondary_buffers.?[i]) != c.VK_SUCCESS) {
@@ -153,7 +153,6 @@ fn create_sync_objects(s: *types.VulkanState) bool {
     }
 
     // Initialize using centralized sync manager
-    // This ensures all counters, flags, and device handles are properly set
     log.cardinal_log_info("[INIT] Initializing sync objects via centralized manager", .{});
     return vk_sync_manager.vulkan_sync_manager_init(&s.sync, s.context.device, s.context.graphics_queue, s.sync.max_frames_in_flight);
 }
@@ -293,7 +292,7 @@ fn transition_images(s: *types.VulkanState, cmd: c.VkCommandBuffer, image_index:
     }
 }
 
-fn begin_dynamic_rendering(s: *types.VulkanState, cmd: c.VkCommandBuffer, image_index: u32, use_depth: bool, clears: [*]c.VkClearValue, should_clear: bool, flags: c.VkRenderingFlags) bool {
+pub fn begin_dynamic_rendering(s: *types.VulkanState, cmd: c.VkCommandBuffer, image_index: u32, use_depth: bool, clears: [*]c.VkClearValue, should_clear: bool, flags: c.VkRenderingFlags) bool {
     if (s.context.vkCmdBeginRendering == null or s.context.vkCmdEndRendering == null or s.context.vkCmdPipelineBarrier2 == null) {
         log.cardinal_log_error("[CMD] Frame {d}: Dynamic rendering functions not loaded", .{s.sync.current_frame});
         return false;
@@ -357,7 +356,7 @@ fn begin_dynamic_rendering(s: *types.VulkanState, cmd: c.VkCommandBuffer, image_
     return true;
 }
 
-fn end_dynamic_rendering(s: *types.VulkanState, cmd: c.VkCommandBuffer) void {
+pub fn end_dynamic_rendering(s: *types.VulkanState, cmd: c.VkCommandBuffer) void {
     if (s.context.vkCmdEndRendering != null) {
         s.context.vkCmdEndRendering.?(cmd);
     }
@@ -406,52 +405,47 @@ fn end_recording(s: *types.VulkanState, cmd: c.VkCommandBuffer, image_index: u32
     }
 }
 
-fn vk_record_scene_commands(s: *types.VulkanState, cmd: c.VkCommandBuffer) void {
+fn vk_update_frame_uniforms(s: *types.VulkanState) void {
+    if (s.pipelines.use_pbr_pipeline and s.pipelines.pbr_pipeline.initialized) {
+        var ubo: types.PBRUniformBufferObject = undefined;
+        @memcpy(@as([*]u8, @ptrCast(&ubo))[0..@sizeOf(types.PBRUniformBufferObject)], @as([*]u8, @ptrCast(s.pipelines.pbr_pipeline.uniformBufferMapped))[0..@sizeOf(types.PBRUniformBufferObject)]);
+
+        var lighting: types.PBRLightingBuffer = undefined;
+        @memcpy(@as([*]u8, @ptrCast(&lighting))[0..@sizeOf(types.PBRLightingBuffer)], @as([*]u8, @ptrCast(s.pipelines.pbr_pipeline.lightingBufferMapped))[0..@sizeOf(types.PBRLightingBuffer)]);
+
+        vk_pbr.vk_pbr_update_uniforms(&s.pipelines.pbr_pipeline, &ubo, &lighting);
+
+        // Update simple uniforms using PBR data if in UV/Wireframe mode
+        if (s.current_rendering_mode == .UV or s.current_rendering_mode == .WIREFRAME) {
+             vk_simple_pipelines.vk_update_simple_uniforms(s, @ptrCast(&ubo.model), @ptrCast(&ubo.view), @ptrCast(&ubo.proj));
+        }
+    }
+}
+
+pub fn vk_record_scene_content(s: *types.VulkanState, cmd: c.VkCommandBuffer) void {
     switch (s.current_rendering_mode) {
         types.CardinalRenderingMode.NORMAL => {
             if (s.pipelines.use_pbr_pipeline and s.pipelines.pbr_pipeline.initialized) {
-                var ubo: types.PBRUniformBufferObject = undefined;
-                @memcpy(@as([*]u8, @ptrCast(&ubo))[0..@sizeOf(types.PBRUniformBufferObject)], @as([*]u8, @ptrCast(s.pipelines.pbr_pipeline.uniformBufferMapped))[0..@sizeOf(types.PBRUniformBufferObject)]);
-
-                var lighting: types.PBRLightingBuffer = undefined;
-                @memcpy(@as([*]u8, @ptrCast(&lighting))[0..@sizeOf(types.PBRLightingBuffer)], @as([*]u8, @ptrCast(s.pipelines.pbr_pipeline.lightingBufferMapped))[0..@sizeOf(types.PBRLightingBuffer)]);
-
-                vk_pbr.vk_pbr_update_uniforms(&s.pipelines.pbr_pipeline, &ubo, &lighting);
-                
-                if (s.render_graph) |rg_ptr| {
-                     const rg = @as(*render_graph.RenderGraph, @ptrCast(@alignCast(rg_ptr)));
-                     rg.execute(cmd, s);
-                } else {
-                    vk_pbr.vk_pbr_render(&s.pipelines.pbr_pipeline, cmd, s.current_scene);
-                }
+                vk_pbr.vk_pbr_render(&s.pipelines.pbr_pipeline, cmd, s.current_scene);
             }
         },
         types.CardinalRenderingMode.UV => {
             if (s.pipelines.uv_pipeline != null and s.pipelines.use_pbr_pipeline and s.pipelines.pbr_pipeline.initialized) {
-                const pbr_ubo: *types.PBRUniformBufferObject = @ptrCast(@alignCast(s.pipelines.pbr_pipeline.uniformBufferMapped));
-                vk_simple_pipelines.vk_update_simple_uniforms(s, @ptrCast(&pbr_ubo.model), @ptrCast(&pbr_ubo.view), @ptrCast(&pbr_ubo.proj));
                 vk_simple_pipelines.vk_render_simple(s, cmd, s.pipelines.uv_pipeline, s.pipelines.uv_pipeline_layout);
             }
         },
         types.CardinalRenderingMode.WIREFRAME => {
             if (s.pipelines.wireframe_pipeline != null and s.pipelines.use_pbr_pipeline and s.pipelines.pbr_pipeline.initialized) {
-                const pbr_ubo: *types.PBRUniformBufferObject = @ptrCast(@alignCast(s.pipelines.pbr_pipeline.uniformBufferMapped));
-                vk_simple_pipelines.vk_update_simple_uniforms(s, @ptrCast(&pbr_ubo.model), @ptrCast(&pbr_ubo.view), @ptrCast(&pbr_ubo.proj));
                 vk_simple_pipelines.vk_render_simple(s, cmd, s.pipelines.wireframe_pipeline, s.pipelines.wireframe_pipeline_layout);
             }
         },
         types.CardinalRenderingMode.DEBUG => {
-            // Debug rendering (e.g. normals, bounds) - for now just use normal PBR or wireframe if available
-            // Or leave empty if not implemented
+            // Debug rendering
         },
         types.CardinalRenderingMode.MESH_SHADER => {
             vk_mesh_shader.vk_mesh_shader_record_frame(s, cmd);
         },
     }
-}
-
-fn vk_record_scene_direct(s: *types.VulkanState, cmd: c.VkCommandBuffer) void {
-    vk_record_scene_commands(s, cmd);
 }
 
 fn vk_record_scene_with_secondary_buffers(s: *types.VulkanState, primary_cmd: c.VkCommandBuffer, image_index: u32, use_depth: bool, clears: [*]c.VkClearValue) void {
@@ -461,7 +455,7 @@ fn vk_record_scene_with_secondary_buffers(s: *types.VulkanState, primary_cmd: c.
     if (s.commands.scene_secondary_buffers == null) {
         // Fallback if not allocated
         if (begin_dynamic_rendering(s, primary_cmd, image_index, use_depth, clears, true, 0)) {
-            vk_record_scene_direct(s, primary_cmd);
+            vk_record_scene_content(s, primary_cmd);
             end_dynamic_rendering(s, primary_cmd);
         }
         return;
@@ -475,7 +469,7 @@ fn vk_record_scene_with_secondary_buffers(s: *types.VulkanState, primary_cmd: c.
         log.cardinal_log_error("[CMD] Failed to reset scene secondary command buffer", .{});
         // Fallback
         if (begin_dynamic_rendering(s, primary_cmd, image_index, use_depth, clears, true, 0)) {
-            vk_record_scene_direct(s, primary_cmd);
+            vk_record_scene_content(s, primary_cmd);
             end_dynamic_rendering(s, primary_cmd);
         }
         return;
@@ -524,7 +518,7 @@ fn vk_record_scene_with_secondary_buffers(s: *types.VulkanState, primary_cmd: c.
     sc.extent = s.swapchain.extent;
     c.vkCmdSetScissor(secondary_cmd, 0, 1, &sc);
 
-    vk_record_scene_commands(s, secondary_cmd);
+    vk_record_scene_content(s, secondary_cmd);
 
     if (c.vkEndCommandBuffer(secondary_cmd) != c.VK_SUCCESS) {
         log.cardinal_log_error("[CMD] Failed to end scene secondary command buffer", .{});
@@ -712,6 +706,11 @@ pub export fn vk_record_cmd(s: ?*types.VulkanState, image_index: u32) callconv(.
     if (s == null) return;
     const vs = s.?;
 
+    vs.current_image_index = image_index;
+
+    // Update frame uniforms before any recording
+    vk_update_frame_uniforms(vs);
+
     const cmd = select_command_buffer(vs);
     if (cmd == null) return;
 
@@ -730,26 +729,71 @@ pub export fn vk_record_cmd(s: ?*types.VulkanState, image_index: u32) callconv(.
 
     const use_depth = vs.swapchain.depth_image_view != null and vs.swapchain.depth_image != null;
 
-    transition_images(vs, cmd, image_index, use_depth);
+    // Use RenderGraph if available
+    if (vs.render_graph) |rg_ptr| {
+        const rg = @as(*render_graph.RenderGraph, @ptrCast(@alignCast(rg_ptr)));
+        
+        // Register/Update resources
+        rg.register_image(types.RESOURCE_ID_BACKBUFFER, vs.swapchain.images.?[image_index]) catch {};
+        if (use_depth) {
+            rg.register_image(types.RESOURCE_ID_DEPTHBUFFER, vs.swapchain.depth_image) catch {};
+        }
 
-    var scene_drawn = false;
-
-    if (vs.current_scene != null) {
-        if (vs.commands.scene_secondary_buffers != null) {
-            vk_record_scene_with_secondary_buffers(vs, cmd, image_index, use_depth, &clears);
-            scene_drawn = true;
+        // Update Initial States
+        var bb_state = render_graph.ResourceState{
+            .access_mask = 0,
+            .stage_mask = c.VK_PIPELINE_STAGE_2_TOP_OF_PIPE_BIT,
+            .layout = c.VK_IMAGE_LAYOUT_UNDEFINED,
+        };
+        if (vs.swapchain.image_layout_initialized != null and vs.swapchain.image_layout_initialized.?[image_index]) {
+            bb_state.layout = c.VK_IMAGE_LAYOUT_PRESENT_SRC_KHR;
+            bb_state.stage_mask = c.VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT;
         } else {
+            vs.swapchain.image_layout_initialized.?[image_index] = true;
+        }
+        rg.set_resource_state(types.RESOURCE_ID_BACKBUFFER, bb_state) catch {};
+
+        if (use_depth) {
+            var db_state = render_graph.ResourceState{
+                .access_mask = 0,
+                .stage_mask = c.VK_PIPELINE_STAGE_2_TOP_OF_PIPE_BIT,
+                .layout = c.VK_IMAGE_LAYOUT_UNDEFINED,
+            };
+            if (vs.swapchain.depth_layout_initialized) {
+                db_state.layout = c.VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
+                db_state.stage_mask = c.VK_PIPELINE_STAGE_2_LATE_FRAGMENT_TESTS_BIT;
+                db_state.access_mask = c.VK_ACCESS_2_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT;
+            } else {
+                vs.swapchain.depth_layout_initialized = true;
+            }
+            rg.set_resource_state(types.RESOURCE_ID_DEPTHBUFFER, db_state) catch {};
+        }
+
+        // Execute Graph (This inserts barriers and calls pass callback)
+        rg.execute(cmd, vs);
+
+    } else {
+        transition_images(vs, cmd, image_index, use_depth);
+
+        var scene_drawn = false;
+
+        if (vs.current_scene != null) {
+            if (vs.commands.scene_secondary_buffers != null) {
+                vk_record_scene_with_secondary_buffers(vs, cmd, image_index, use_depth, &clears);
+                scene_drawn = true;
+            } else {
+                if (begin_dynamic_rendering(vs, cmd, image_index, use_depth, &clears, true, 0)) {
+                    vk_record_scene_content(vs, cmd);
+                    end_dynamic_rendering(vs, cmd);
+                    scene_drawn = true;
+                }
+            }
+        } else {
+            // Clear screen if no scene
             if (begin_dynamic_rendering(vs, cmd, image_index, use_depth, &clears, true, 0)) {
-                vk_record_scene_direct(vs, cmd);
                 end_dynamic_rendering(vs, cmd);
                 scene_drawn = true;
             }
-        }
-    } else {
-        // Clear screen if no scene
-        if (begin_dynamic_rendering(vs, cmd, image_index, use_depth, &clears, true, 0)) {
-            end_dynamic_rendering(vs, cmd);
-            scene_drawn = true;
         }
     }
 
@@ -827,35 +871,10 @@ pub export fn vk_prepare_mesh_shader_rendering(s: ?*types.VulkanState) callconv(
 }
 
 pub fn vk_get_mt_command_manager() ?*types.CardinalMTCommandManager {
-    // Note: accessing global g_cardinal_mt_subsystem from vulkan_mt.zig
-
+    // Accessing global g_cardinal_mt_subsystem from vulkan_mt.zig
     if (!vulkan_mt.g_cardinal_mt_subsystem.is_running) {
         log.cardinal_log_warn("[MT] Multi-threading subsystem not initialized", .{});
         return null;
     }
     return &vulkan_mt.g_cardinal_mt_subsystem.command_manager;
 }
-
-// pub export fn vk_submit_mt_command_task(record_func: ?*const fn(?*anyopaque) callconv(.c) void, user_data: ?*anyopaque, callback: ?*const fn(?*anyopaque, bool) callconv(.c) void) callconv(.c) bool {
-//     if (record_func == null) {
-//         log.cardinal_log_error("[MT] Invalid record function for command task", .{});
-//         return false;
-//     }
-//
-//     if (!vulkan_mt.g_cardinal_mt_subsystem.is_running) {
-//         log.cardinal_log_warn("[MT] Multi-threading subsystem not running, executing task synchronously", .{});
-//         record_func.?(user_data);
-//         if (callback) |cb| {
-//             cb(user_data, true);
-//         }
-//         return true;
-//     }
-//
-//     const task = vulkan_mt.cardinal_mt_create_command_record_task(record_func, user_data, callback);
-//     if (task == null) {
-//         log.cardinal_log_error("[MT] Failed to create command record task", .{});
-//         return false;
-//     }
-//
-//     return vulkan_mt.cardinal_mt_submit_task(task.?);
-// }

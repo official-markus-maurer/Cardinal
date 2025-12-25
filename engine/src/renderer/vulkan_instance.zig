@@ -116,14 +116,7 @@ fn select_debug_severity_from_log_level() c.VkDebugUtilsMessageSeverityFlagsEXT 
 }
 
 fn validation_enabled() bool {
-    return false;
-    // if (builtin.mode == .Debug) return true;
-    // We can't easily check for CARDINAL_ENABLE_VK_VALIDATION define from Zig if it was a CMake define
-    // But we can check if we want to enable it via some other mechanism or just assume Debug builds only
-    // For now, let's assume Debug only unless we find a way to check the define.
-    // However, the C code had #if defined(_DEBUG) || defined(CARDINAL_ENABLE_VK_VALIDATION)
-    // We'll stick to builtin.mode == .Debug for now.
-    // return true;
+    return builtin.mode == .Debug;
 }
 
 pub export fn vk_get_validation_stats() callconv(.c) *const types.ValidationStats {
@@ -281,13 +274,6 @@ fn configure_validation(ci: *c.VkInstanceCreateInfo, layers: [*]const [*c]const 
     settings.type = .BOOL32_EXT;
     settings.valueCount = 1;
     settings.pValues = &static.legacy_detection;
-
-    // Use constant for VK_STRUCTURE_TYPE_LAYER_SETTINGS_CREATE_INFO_EXT if not defined
-    // const VK_STRUCTURE_TYPE_LAYER_SETTINGS_CREATE_INFO_EXT: c.VkStructureType = 1000396000;
-    // layer_settings_ci.sType = VK_STRUCTURE_TYPE_LAYER_SETTINGS_CREATE_INFO_EXT;
-    // layer_settings_ci.pNext = debug_ci;
-    // layer_settings_ci.settingCount = 1;
-    // layer_settings_ci.pSettings = @as([*]const VkLayerSettingEXT, @ptrCast(settings));
 
     // Temporarily disable layer settings to avoid validation error VK_STRUCTURE_TYPE_MICROMAP_BUILD_INFO_EXT collision
     ci.pNext = debug_ci;

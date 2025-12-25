@@ -124,9 +124,7 @@ pub const AssetManager = struct {
     meshes: AssetStorage(scene.CardinalMesh, handles.MeshHandle),
     materials: AssetStorage(scene.CardinalMaterial, handles.MaterialHandle),
     
-    // Map path to handle (packed as u64: 32-bit type, 32-bit index? No, Handle is 64 bit usually)
-    // Actually Handle is struct { index: u32, generation: u32 }.
-    // We can store the handle directly.
+    // Map path to handle
     texture_path_map: std.StringHashMapUnmanaged(handles.TextureHandle),
     
     pub fn init(allocator: std.mem.Allocator) AssetManager {
@@ -176,12 +174,9 @@ pub const AssetManager = struct {
     
     pub fn releaseTexture(self: *AssetManager, handle: handles.TextureHandle) void {
         if (self.textures.release(handle)) {
-             // If returned true, it was destroyed.
-             // We should also remove from path map if we knew the path.
-             // But the storage freed the path string. 
-             // We need to handle map removal. 
-             // Ideally storage gives us back the path or we lookup before delete.
-             // For now, simpler implementation.
+             // TODO: Remove from path map.
+             // Currently the path string is freed by AssetStorage so we can't easily lookup the key to remove it.
+             // Need a way to retrieve the path before deletion or store a reverse mapping.
         }
     }
 };
