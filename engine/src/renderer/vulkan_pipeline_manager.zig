@@ -85,6 +85,30 @@ fn create_pipeline_cache(manager: *VulkanPipelineManager) bool {
     cache_info.sType = c.VK_STRUCTURE_TYPE_PIPELINE_CACHE_CREATE_INFO;
 
     const s = get_state(manager);
+
+    // Try to load cache
+    var file_buffer: []u8 = &[_]u8{};
+    const file = std.fs.cwd().openFile("pipeline_cache.bin", .{}) catch null;
+    if (file) |f| {
+        defer f.close();
+        if (f.stat()) |stat| {
+            if (stat.size > 0) {
+                const alloc = std.heap.c_allocator;
+                if (alloc.alloc(u8, stat.size)) |buf| {
+                    if (f.readAll(buf)) |read_bytes| {
+                        if (read_bytes == stat.size) {
+                            cache_info.initialDataSize = stat.size;
+                            cache_info.pInitialData = buf.ptr;
+                            file_buffer = buf;
+                            log.cardinal_log_info("[PIPELINE_MANAGER] Loading pipeline cache ({d} bytes)", .{stat.size});
+                        }
+                    } else |_| {}
+                } else |_| {}
+            }
+        } else |_| {}
+    }
+    defer if (file_buffer.len > 0) std.heap.c_allocator.free(file_buffer);
+
     if (c.vkCreatePipelineCache(s.context.device, &cache_info, null, &manager.pipeline_cache) != c.VK_SUCCESS) {
         log.cardinal_log_error("[PIPELINE_MANAGER] Failed to create pipeline cache", .{});
         return false;
@@ -95,6 +119,27 @@ fn create_pipeline_cache(manager: *VulkanPipelineManager) bool {
 fn destroy_pipeline_cache(manager: *VulkanPipelineManager) void {
     if (manager.pipeline_cache != null) {
         const s = get_state(manager);
+
+        // Save cache
+        var size: usize = 0;
+        if (c.vkGetPipelineCacheData(s.context.device, manager.pipeline_cache, &size, null) == c.VK_SUCCESS) {
+             if (size > 0) {
+                 const alloc = std.heap.c_allocator;
+                 if (alloc.alloc(u8, size)) |buf| {
+                     defer alloc.free(buf);
+                     if (c.vkGetPipelineCacheData(s.context.device, manager.pipeline_cache, &size, buf.ptr) == c.VK_SUCCESS) {
+                         if (std.fs.cwd().createFile("pipeline_cache.bin", .{})) |file| {
+                             defer file.close();
+                             _ = file.writeAll(buf) catch {};
+                             log.cardinal_log_info("[PIPELINE_MANAGER] Saved pipeline cache ({d} bytes)", .{size});
+                         } else |_| {
+                             log.cardinal_log_warn("[PIPELINE_MANAGER] Failed to create cache file", .{});
+                         }
+                     }
+                 } else |_| {}
+             }
+        }
+
         c.vkDestroyPipelineCache(s.context.device, manager.pipeline_cache, null);
         manager.pipeline_cache = null;
     }
@@ -540,7 +585,7 @@ export fn vulkan_pipeline_manager_enable_pbr(manager: ?*VulkanPipelineManager, c
 
     const s = get_state(m);
 
-    if (!vk_pbr.vk_pbr_pipeline_create(&s.pipelines.pbr_pipeline, s.context.device, s.context.physical_device, color_format, depth_format, s.commands.pools.?[0], s.context.graphics_queue, &s.allocator, s)) {
+    if (!vk_pbr.vk_pbr_pipeline_create(&s.pipelines.pbr_pipeline, s.context.device, s.context.physical_device, color_format, depth_format, s.commands.pools.?[0], s.context.graphics_queue, &s.allocator, s, m.pipeline_cache)) {
         log.cardinal_log_error("[PIPELINE_MANAGER] Failed to create PBR pipeline", .{});
         return false;
     }
@@ -587,7 +632,7 @@ export fn vulkan_pipeline_manager_enable_mesh_shader(manager: ?*VulkanPipelineMa
         return true;
     }
 
-    if (!vk_mesh_shader.vk_mesh_shader_create_pipeline(s, config, color_format, depth_format, &s.pipelines.mesh_shader_pipeline)) {
+    if (!vk_mesh_shader.vk_mesh_shader_create_pipeline(s, config, color_format, depth_format, &s.pipelines.mesh_shader_pipeline, m.pipeline_cache)) {
         log.cardinal_log_error("[PIPELINE_MANAGER] Failed to create mesh shader pipeline", .{});
         return false;
     }
@@ -629,7 +674,7 @@ export fn vulkan_pipeline_manager_create_simple_pipelines(manager: ?*VulkanPipel
 
     const s = get_state(m);
 
-    if (!vk_simple_pipelines.vk_create_simple_pipelines(s)) {
+    if (!vk_simple_pipelines.vk_create_simple_pipelines(s, m.pipeline_cache)) {
         log.cardinal_log_error("[PIPELINE_MANAGER] Failed to create simple pipelines", .{});
         return false;
     }

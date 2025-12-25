@@ -49,8 +49,6 @@ pub fn update(state: *EditorState, dt: f32) void {
         };
         front = front.normalize();
 
-        state.camera.target = state.camera.position.add(front);
-
         // Keyboard
         var speed = state.camera_speed * dt;
         if (c.glfwGetKey(win, c.GLFW_KEY_LEFT_CONTROL) == c.GLFW_PRESS) {
@@ -79,6 +77,9 @@ pub fn update(state: *EditorState, dt: f32) void {
         if (c.glfwGetKey(win, c.GLFW_KEY_LEFT_SHIFT) == c.GLFW_PRESS) {
             state.camera.position.y -= speed;
         }
+
+        // Update target based on new position
+        state.camera.target = state.camera.position.add(front);
 
         if (state.pbr_enabled) {
             renderer.cardinal_renderer_set_camera(state.renderer, &state.camera);

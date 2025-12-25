@@ -104,7 +104,7 @@ fn create_simple_descriptor_pool(s: *types.VulkanState) bool {
     return true;
 }
 
-fn create_simple_pipeline(s: *types.VulkanState, vertShaderPath: [*c]const u8, fragShaderPath: [*c]const u8, pipeline: *c.VkPipeline, pipelineLayout: *c.VkPipelineLayout, wireframe: bool) bool {
+fn create_simple_pipeline(s: *types.VulkanState, vertShaderPath: [*c]const u8, fragShaderPath: [*c]const u8, pipeline: *c.VkPipeline, pipelineLayout: *c.VkPipelineLayout, wireframe: bool, pipelineCache: c.VkPipelineCache) bool {
     // Load shaders
     var vertShaderModule: c.VkShaderModule = null;
     var fragShaderModule: c.VkShaderModule = null;
@@ -258,7 +258,7 @@ fn create_simple_pipeline(s: *types.VulkanState, vertShaderPath: [*c]const u8, f
     pipelineInfo.renderPass = null;
     pipelineInfo.subpass = 0;
 
-    if (c.vkCreateGraphicsPipelines(s.context.device, null, 1, &pipelineInfo, null, pipeline) != c.VK_SUCCESS) {
+    if (c.vkCreateGraphicsPipelines(s.context.device, pipelineCache, 1, &pipelineInfo, null, pipeline) != c.VK_SUCCESS) {
         log.cardinal_log_error("Failed to create simple graphics pipeline!", .{});
         c.vkDestroyPipelineLayout(s.context.device, pipelineLayout.*, null);
         return false;
@@ -267,7 +267,7 @@ fn create_simple_pipeline(s: *types.VulkanState, vertShaderPath: [*c]const u8, f
     return true;
 }
 
-pub export fn vk_create_simple_pipelines(s: ?*types.VulkanState) callconv(.c) bool {
+pub export fn vk_create_simple_pipelines(s: ?*types.VulkanState, pipelineCache: c.VkPipelineCache) callconv(.c) bool {
     if (s == null) return false;
     const vs = s.?;
 
@@ -296,7 +296,7 @@ pub export fn vk_create_simple_pipelines(s: ?*types.VulkanState) callconv(.c) bo
     _ = c.snprintf(&uv_vert_path, 512, "%s/uv.vert.spv", shaders_dir);
     _ = c.snprintf(&uv_frag_path, 512, "%s/uv.frag.spv", shaders_dir);
 
-    if (!create_simple_pipeline(vs, &uv_vert_path, &uv_frag_path, &vs.pipelines.uv_pipeline, &vs.pipelines.uv_pipeline_layout, false)) {
+    if (!create_simple_pipeline(vs, &uv_vert_path, &uv_frag_path, &vs.pipelines.uv_pipeline, &vs.pipelines.uv_pipeline_layout, false, pipelineCache)) {
         log.cardinal_log_error("Failed to create UV pipeline", .{});
         return false;
     }
@@ -307,7 +307,7 @@ pub export fn vk_create_simple_pipelines(s: ?*types.VulkanState) callconv(.c) bo
     _ = c.snprintf(&wireframe_vert_path, 512, "%s/wireframe.vert.spv", shaders_dir);
     _ = c.snprintf(&wireframe_frag_path, 512, "%s/wireframe.frag.spv", shaders_dir);
 
-    if (!create_simple_pipeline(vs, &wireframe_vert_path, &wireframe_frag_path, &vs.pipelines.wireframe_pipeline, &vs.pipelines.wireframe_pipeline_layout, true)) {
+    if (!create_simple_pipeline(vs, &wireframe_vert_path, &wireframe_frag_path, &vs.pipelines.wireframe_pipeline, &vs.pipelines.wireframe_pipeline_layout, true, pipelineCache)) {
         log.cardinal_log_error("Failed to create wireframe pipeline", .{});
         return false;
     }

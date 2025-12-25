@@ -898,26 +898,9 @@ pub export fn cardinal_gltf_load_scene(path: [*:0]const u8, out_scene: *scene.Ca
 
             if (mat.name) |name| {
                 const name_slice = std.mem.span(name);
-                var buf: [128]u8 = undefined;
-                const len = @min(name_slice.len, 128);
-                const lower = std.ascii.lowerString(&buf, name_slice[0..len]);
                 
                 // Log material name and mode for debugging
                 log.cardinal_log_debug("Material '{s}': alpha_mode={any}", .{name_slice, card_mat.alpha_mode});
-
-                if (std.mem.indexOf(u8, lower, "dirt") != null or 
-                    std.mem.indexOf(u8, lower, "decal") != null or
-                    std.mem.indexOf(u8, lower, "stain") != null or
-                    std.mem.indexOf(u8, lower, "leak") != null or
-                    std.mem.indexOf(u8, lower, "ivy") != null or
-                    std.mem.indexOf(u8, lower, "leaf") != null or
-                    std.mem.indexOf(u8, lower, "plant") != null) {
-                    
-                    if (card_mat.alpha_mode == .OPAQUE or card_mat.alpha_mode == .MASK) {
-                        card_mat.alpha_mode = .BLEND;
-                        log.cardinal_log_info("Forcing BLEND mode for material '{s}' (suspected decal/foliage)", .{name_slice});
-                    }
-                }
             }
 
             const identity = scene.CardinalTextureTransform{ .offset = .{ 0, 0 }, .scale = .{ 1, 1 }, .rotation = 0 };

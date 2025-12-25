@@ -1,5 +1,6 @@
 const std = @import("std");
 const log = @import("../../core/log.zig");
+pub const reflection = @import("vulkan_shader_reflection.zig");
 
 const shader_utils_log = log.ScopedLogger("SHADER_UTILS");
 
@@ -75,6 +76,26 @@ pub export fn vk_shader_create_module_from_code(device: c.VkDevice, code: ?[*]co
     }
 
     return true;
+}
+
+pub fn vk_shader_read_file(allocator: std.mem.Allocator, filename: []const u8) ![]u32 {
+    const file = try std.fs.cwd().openFile(filename, .{});
+    defer file.close();
+
+    const stat = try file.stat();
+    if (stat.size == 0) return error.EmptyFile;
+
+    // Ensure size is multiple of 4
+    if (stat.size % 4 != 0) return error.InvalidSpirvSize;
+
+    const buffer = try allocator.alloc(u32, stat.size / 4);
+    errdefer allocator.free(buffer);
+
+    const bytes = std.mem.sliceAsBytes(buffer);
+    const read = try file.readAll(bytes);
+    if (read != stat.size) return error.IncompleteRead;
+
+    return buffer;
 }
 
 pub export fn vk_shader_destroy_module(device: c.VkDevice, shader_module: c.VkShaderModule) callconv(.c) void {

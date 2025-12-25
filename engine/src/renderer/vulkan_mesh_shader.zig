@@ -74,7 +74,7 @@ pub export fn vk_mesh_shader_cleanup(s: ?*types.VulkanState) callconv(.c) void {
     }
 }
 
-pub export fn vk_mesh_shader_create_pipeline(s: ?*types.VulkanState, config: ?*const types.MeshShaderPipelineConfig, swapchain_format: c.VkFormat, depth_format: c.VkFormat, pipeline: ?*types.MeshShaderPipeline) callconv(.c) bool {
+pub export fn vk_mesh_shader_create_pipeline(s: ?*types.VulkanState, config: ?*const types.MeshShaderPipelineConfig, swapchain_format: c.VkFormat, depth_format: c.VkFormat, pipeline: ?*types.MeshShaderPipeline, pipeline_cache: c.VkPipelineCache) callconv(.c) bool {
     if (s == null or config == null or pipeline == null) return false;
     const vs = s.?;
     const cfg = config.?;
@@ -84,47 +84,114 @@ pub export fn vk_mesh_shader_create_pipeline(s: ?*types.VulkanState, config: ?*c
     pipe.max_vertices_per_meshlet = cfg.max_vertices_per_meshlet;
     // pipe.max_primitives_per_meshlet = cfg.max_primitives_per_meshlet; // Struct definition might differ, check if field exists
 
-    // Load Shaders
+    // Allocator for reflection data
+    var arena = std.heap.ArenaAllocator.init(std.heap.c_allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
+
+    // Helper map for merging bindings: binding_index -> BindingInfo
+    const BindingInfo = struct {
+        binding: c.VkDescriptorSetLayoutBinding,
+        is_runtime_array: bool,
+    };
+    var set0_bindings = std.AutoHashMap(u32, BindingInfo).init(allocator);
+    var set1_bindings = std.AutoHashMap(u32, BindingInfo).init(allocator);
+
+    var pushConstantRange = std.mem.zeroes(c.VkPushConstantRange);
+    pushConstantRange.offset = 0;
+    pushConstantRange.size = 0;
+
     var meshShaderModule: c.VkShaderModule = null;
     var fragShaderModule: c.VkShaderModule = null;
     var taskShaderModule: c.VkShaderModule = null;
 
-    if (cfg.mesh_shader_path) |path| {
-        if (!load_shader_module(vs.context.device, path, &meshShaderModule)) {
-            log.cardinal_log_error("Failed to load mesh shader: {s}", .{std.mem.span(path)});
-            return false;
+    // Load Shaders and Reflect
+    const process_shader = struct {
+        fn func(device: c.VkDevice, path_c: ?[*:0]const u8, stage: c.VkShaderStageFlags, module_out: *c.VkShaderModule,
+               s0: *std.AutoHashMap(u32, BindingInfo), s1: *std.AutoHashMap(u32, BindingInfo), pc: *c.VkPushConstantRange, alloc: std.mem.Allocator) !bool {
+             if (path_c == null) return false;
+             const path = std.mem.span(path_c.?);
+             
+             const code = shader_utils.vk_shader_read_file(alloc, path) catch |err| {
+                 log.cardinal_log_error("Failed to read shader {s}: {s}", .{path, @errorName(err)});
+                 return false;
+             };
+             
+             if (!shader_utils.vk_shader_create_module_from_code(device, code.ptr, code.len * 4, module_out)) {
+                 log.cardinal_log_error("Failed to create shader module for {s}", .{path});
+                 return false;
+             }
+             
+             const reflect = shader_utils.reflection.reflect_shader(alloc, code, stage) catch |err| {
+                 log.cardinal_log_error("Failed to reflect shader {s}: {s}", .{path, @errorName(err)});
+                 return false;
+             };
+             // defer reflect.deinit(); // Allocated in arena
+             
+             if (reflect.push_constant_size > 0) {
+                 pc.stageFlags |= reflect.push_constant_stages;
+                 if (reflect.push_constant_size > pc.size) pc.size = reflect.push_constant_size;
+             }
+             
+             for (reflect.resources.items) |res| {
+                 var target_map: *std.AutoHashMap(u32, BindingInfo) = undefined;
+                 if (res.set == 0) {
+                     target_map = s0;
+                 } else if (res.set == 1) {
+                     target_map = s1;
+                 } else {
+                     continue;
+                 }
+                 
+                 const entry = try target_map.getOrPut(res.binding);
+                 if (entry.found_existing) {
+                     entry.value_ptr.binding.stageFlags |= res.stage_flags;
+                 } else {
+                     entry.value_ptr.* = BindingInfo{
+                         .binding = .{
+                             .binding = res.binding,
+                             .descriptorType = res.type,
+                             .descriptorCount = res.count,
+                             .stageFlags = res.stage_flags,
+                             .pImmutableSamplers = null,
+                         },
+                         .is_runtime_array = res.is_runtime_array,
+                     };
+                 }
+             }
+             return true;
         }
+    }.func;
+
+    if (process_shader(vs.context.device, cfg.mesh_shader_path, c.VK_SHADER_STAGE_MESH_BIT_EXT, &meshShaderModule, &set0_bindings, &set1_bindings, &pushConstantRange, allocator) catch false) {
+        // OK
     } else {
-        log.cardinal_log_error("Mesh shader path is null", .{});
         return false;
     }
-
-    if (cfg.fragment_shader_path) |path| {
-        if (!load_shader_module(vs.context.device, path, &fragShaderModule)) {
-            log.cardinal_log_error("Failed to load fragment shader: {s}", .{std.mem.span(path)});
-            c.vkDestroyShaderModule(vs.context.device, meshShaderModule, null);
-            return false;
-        }
+    
+    if (process_shader(vs.context.device, cfg.fragment_shader_path, c.VK_SHADER_STAGE_FRAGMENT_BIT, &fragShaderModule, &set0_bindings, &set1_bindings, &pushConstantRange, allocator) catch false) {
+        // OK
     } else {
-        log.cardinal_log_error("Fragment shader path is null", .{});
         c.vkDestroyShaderModule(vs.context.device, meshShaderModule, null);
         return false;
     }
-
-    if (cfg.task_shader_path) |path| {
-        if (!load_shader_module(vs.context.device, path, &taskShaderModule)) {
-            log.cardinal_log_warn("Failed to load task shader: {s}", .{std.mem.span(path)});
-        } else {
+    
+    if (cfg.task_shader_path != null) {
+        if (process_shader(vs.context.device, cfg.task_shader_path, c.VK_SHADER_STAGE_TASK_BIT_EXT, &taskShaderModule, &set0_bindings, &set1_bindings, &pushConstantRange, allocator) catch false) {
             pipe.has_task_shader = true;
+        } else {
+             c.vkDestroyShaderModule(vs.context.device, meshShaderModule, null);
+             c.vkDestroyShaderModule(vs.context.device, fragShaderModule, null);
+             return false;
         }
     } else {
         pipe.has_task_shader = false;
     }
 
+    // Build ShaderStages array
     var shaderStages: [3]c.VkPipelineShaderStageCreateInfo = undefined;
     var stageCount: u32 = 0;
-
-    // Task Shader
+    
     if (pipe.has_task_shader) {
         shaderStages[stageCount] = std.mem.zeroes(c.VkPipelineShaderStageCreateInfo);
         shaderStages[stageCount].sType = c.VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
@@ -133,16 +200,14 @@ pub export fn vk_mesh_shader_create_pipeline(s: ?*types.VulkanState, config: ?*c
         shaderStages[stageCount].pName = "main";
         stageCount += 1;
     }
-
-    // Mesh Shader
+    
     shaderStages[stageCount] = std.mem.zeroes(c.VkPipelineShaderStageCreateInfo);
     shaderStages[stageCount].sType = c.VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
     shaderStages[stageCount].stage = c.VK_SHADER_STAGE_MESH_BIT_EXT;
     shaderStages[stageCount].module = meshShaderModule;
     shaderStages[stageCount].pName = "main";
     stageCount += 1;
-
-    // Fragment Shader
+    
     shaderStages[stageCount] = std.mem.zeroes(c.VkPipelineShaderStageCreateInfo);
     shaderStages[stageCount].sType = c.VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
     shaderStages[stageCount].stage = c.VK_SHADER_STAGE_FRAGMENT_BIT;
@@ -150,49 +215,51 @@ pub export fn vk_mesh_shader_create_pipeline(s: ?*types.VulkanState, config: ?*c
     shaderStages[stageCount].pName = "main";
     stageCount += 1;
 
-    // Descriptor Set Layouts
-    const set0Bindings = [_]c.VkDescriptorSetLayoutBinding{
-        .{ .binding = 0, .descriptorType = c.VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, .descriptorCount = 1, .stageFlags = c.VK_SHADER_STAGE_TASK_BIT_EXT, .pImmutableSamplers = null },
-        .{ .binding = 1, .descriptorType = c.VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, .descriptorCount = 1, .stageFlags = c.VK_SHADER_STAGE_TASK_BIT_EXT | c.VK_SHADER_STAGE_MESH_BIT_EXT, .pImmutableSamplers = null },
-        .{ .binding = 2, .descriptorType = c.VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, .descriptorCount = 1, .stageFlags = c.VK_SHADER_STAGE_TASK_BIT_EXT, .pImmutableSamplers = null },
-        .{ .binding = 3, .descriptorType = c.VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, .descriptorCount = 1, .stageFlags = c.VK_SHADER_STAGE_MESH_BIT_EXT, .pImmutableSamplers = null },
-        .{ .binding = 4, .descriptorType = c.VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, .descriptorCount = 1, .stageFlags = c.VK_SHADER_STAGE_MESH_BIT_EXT, .pImmutableSamplers = null },
-        .{ .binding = 5, .descriptorType = c.VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, .descriptorCount = 1, .stageFlags = c.VK_SHADER_STAGE_MESH_BIT_EXT, .pImmutableSamplers = null },
-    };
-
-    const set1Bindings = [_]c.VkDescriptorSetLayoutBinding{
-        .{ .binding = 0, .descriptorType = c.VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, .descriptorCount = 1, .stageFlags = c.VK_SHADER_STAGE_FRAGMENT_BIT, .pImmutableSamplers = null },
-        .{ .binding = 1, .descriptorType = c.VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, .descriptorCount = 1, .stageFlags = c.VK_SHADER_STAGE_FRAGMENT_BIT, .pImmutableSamplers = null },
-        .{ .binding = 2, .descriptorType = c.VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, .descriptorCount = 1, .stageFlags = c.VK_SHADER_STAGE_FRAGMENT_BIT, .pImmutableSamplers = null },
-        .{ .binding = 3, .descriptorType = c.VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, .descriptorCount = 4096, .stageFlags = c.VK_SHADER_STAGE_FRAGMENT_BIT, .pImmutableSamplers = null },
-    };
-
-    const set1Flags = [_]c.VkDescriptorBindingFlags{ 0, 0, 0, c.VK_DESCRIPTOR_BINDING_PARTIALLY_BOUND_BIT | c.VK_DESCRIPTOR_BINDING_UPDATE_AFTER_BIND_BIT };
-
-    var set1FlagsInfo = std.mem.zeroes(c.VkDescriptorSetLayoutBindingFlagsCreateInfo);
-    set1FlagsInfo.sType = c.VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_BINDING_FLAGS_CREATE_INFO;
-    set1FlagsInfo.bindingCount = 4;
-    set1FlagsInfo.pBindingFlags = &set1Flags;
-
-    var set0Info = std.mem.zeroes(c.VkDescriptorSetLayoutCreateInfo);
-    set0Info.sType = c.VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO;
-    set0Info.bindingCount = 6;
-    set0Info.pBindings = &set0Bindings;
-
-    var set1Info = std.mem.zeroes(c.VkDescriptorSetLayoutCreateInfo);
-    set1Info.sType = c.VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO;
-    set1Info.pNext = &set1FlagsInfo;
-    set1Info.flags = c.VK_DESCRIPTOR_SET_LAYOUT_CREATE_UPDATE_AFTER_BIND_POOL_BIT;
-    set1Info.bindingCount = 4;
-    set1Info.pBindings = &set1Bindings;
+    // Create Layouts
+    const create_layout = struct {
+        fn f(dev: c.VkDevice, map: *std.AutoHashMap(u32, BindingInfo), out_layout: *c.VkDescriptorSetLayout, alloc: std.mem.Allocator) bool {
+             var bindings = std.ArrayListUnmanaged(c.VkDescriptorSetLayoutBinding){};
+             var flags = std.ArrayListUnmanaged(c.VkDescriptorBindingFlags){};
+             var has_flags = false;
+             
+             // Sort bindings by index
+             var keys = std.ArrayListUnmanaged(u32){};
+             var kit = map.keyIterator();
+             while (kit.next()) |k| keys.append(alloc, k.*) catch return false;
+             std.mem.sort(u32, keys.items, {}, std.sort.asc(u32));
+             
+             for (keys.items) |k| {
+                 const entry = map.get(k).?;
+                 bindings.append(alloc, entry.binding) catch return false;
+                 if (entry.is_runtime_array) {
+                     flags.append(alloc, c.VK_DESCRIPTOR_BINDING_PARTIALLY_BOUND_BIT | c.VK_DESCRIPTOR_BINDING_UPDATE_AFTER_BIND_BIT) catch return false;
+                     has_flags = true;
+                 } else {
+                     flags.append(alloc, 0) catch return false;
+                 }
+             }
+             
+             var layoutInfo = std.mem.zeroes(c.VkDescriptorSetLayoutCreateInfo);
+             layoutInfo.sType = c.VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO;
+             layoutInfo.bindingCount = @intCast(bindings.items.len);
+             layoutInfo.pBindings = bindings.items.ptr;
+             
+             var flagsInfo = std.mem.zeroes(c.VkDescriptorSetLayoutBindingFlagsCreateInfo);
+             if (has_flags) {
+                 layoutInfo.flags = c.VK_DESCRIPTOR_SET_LAYOUT_CREATE_UPDATE_AFTER_BIND_POOL_BIT;
+                 flagsInfo.sType = c.VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_BINDING_FLAGS_CREATE_INFO;
+                 flagsInfo.bindingCount = @intCast(flags.items.len);
+                 flagsInfo.pBindingFlags = flags.items.ptr;
+                 layoutInfo.pNext = &flagsInfo;
+             }
+             
+             return c.vkCreateDescriptorSetLayout(dev, &layoutInfo, null, out_layout) == c.VK_SUCCESS;
+        }
+    }.f;
 
     var setLayouts: [2]c.VkDescriptorSetLayout = undefined;
-    if (c.vkCreateDescriptorSetLayout(vs.context.device, &set0Info, null, &setLayouts[0]) != c.VK_SUCCESS or
-        c.vkCreateDescriptorSetLayout(vs.context.device, &set1Info, null, &setLayouts[1]) != c.VK_SUCCESS)
-    {
-        log.cardinal_log_error("Failed to create descriptor set layouts", .{});
-        return false;
-    }
+    if (!create_layout(vs.context.device, &set0_bindings, &setLayouts[0], allocator)) return false;
+    if (!create_layout(vs.context.device, &set1_bindings, &setLayouts[1], allocator)) return false;
 
     pipe.set0_layout = setLayouts[0];
     pipe.set1_layout = setLayouts[1];
@@ -256,20 +323,14 @@ pub export fn vk_mesh_shader_create_pipeline(s: ?*types.VulkanState, config: ?*c
         return false;
     }
 
-    var pushConstantRange = std.mem.zeroes(c.VkPushConstantRange);
-    pushConstantRange.stageFlags = c.VK_SHADER_STAGE_MESH_BIT_EXT | c.VK_SHADER_STAGE_FRAGMENT_BIT;
-    if (pipe.has_task_shader) {
-        pushConstantRange.stageFlags |= c.VK_SHADER_STAGE_TASK_BIT_EXT;
-    }
-    pushConstantRange.offset = 0;
-    pushConstantRange.size = 256;
-
     var pipelineLayoutInfo = std.mem.zeroes(c.VkPipelineLayoutCreateInfo);
     pipelineLayoutInfo.sType = c.VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO;
     pipelineLayoutInfo.setLayoutCount = 2;
     pipelineLayoutInfo.pSetLayouts = &setLayouts;
-    pipelineLayoutInfo.pushConstantRangeCount = 1;
-    pipelineLayoutInfo.pPushConstantRanges = &pushConstantRange;
+    if (pushConstantRange.size > 0) {
+        pipelineLayoutInfo.pushConstantRangeCount = 1;
+        pipelineLayoutInfo.pPushConstantRanges = &pushConstantRange;
+    }
 
     if (c.vkCreatePipelineLayout(vs.context.device, &pipelineLayoutInfo, null, &pipe.pipeline_layout) != c.VK_SUCCESS) {
         log.cardinal_log_error("Failed to create mesh shader pipeline layout!", .{});
@@ -356,7 +417,7 @@ pub export fn vk_mesh_shader_create_pipeline(s: ?*types.VulkanState, config: ?*c
     pipelineInfo.subpass = 0;
     pipelineInfo.basePipelineHandle = null;
 
-    if (c.vkCreateGraphicsPipelines(vs.context.device, null, 1, &pipelineInfo, null, &pipe.pipeline) != c.VK_SUCCESS) {
+    if (c.vkCreateGraphicsPipelines(vs.context.device, pipeline_cache, 1, &pipelineInfo, null, &pipe.pipeline) != c.VK_SUCCESS) {
         log.cardinal_log_error("Failed to create mesh shader graphics pipeline!", .{});
         c.vkDestroyPipelineLayout(vs.context.device, pipe.pipeline_layout, null);
         c.vkDestroyShaderModule(vs.context.device, meshShaderModule, null);

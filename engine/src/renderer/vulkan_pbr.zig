@@ -23,7 +23,7 @@ const c = @import("vulkan_c.zig").c;
 
 // Helper functions
 
-fn create_pbr_descriptor_manager(pipeline: *types.VulkanPBRPipeline, device: c.VkDevice, allocator: *types.VulkanAllocator, vulkan_state: ?*types.VulkanState) bool {
+fn create_pbr_descriptor_manager(pipeline: *types.VulkanPBRPipeline, device: c.VkDevice, allocator: *types.VulkanAllocator, vulkan_state: ?*types.VulkanState, bindings_map: *std.AutoHashMap(u32, c.VkDescriptorSetLayoutBinding)) bool {
     const mem_alloc = memory.cardinal_get_allocator_for_category(.RENDERER);
     const ptr = memory.cardinal_alloc(mem_alloc, @sizeOf(types.VulkanDescriptorManager));
     if (ptr == null) {
@@ -36,18 +36,15 @@ fn create_pbr_descriptor_manager(pipeline: *types.VulkanPBRPipeline, device: c.V
     var builder = descriptor_mgr.DescriptorBuilder.init(std.heap.page_allocator);
     defer builder.deinit();
 
-    const bindings_added = blk: {
-        builder.add_binding(0, c.VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, 1, c.VK_SHADER_STAGE_VERTEX_BIT | c.VK_SHADER_STAGE_FRAGMENT_BIT) catch break :blk false;
-        builder.add_binding(1, c.VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1, c.VK_SHADER_STAGE_FRAGMENT_BIT) catch break :blk false;
-        builder.add_binding(2, c.VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1, c.VK_SHADER_STAGE_FRAGMENT_BIT) catch break :blk false;
-        builder.add_binding(3, c.VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1, c.VK_SHADER_STAGE_FRAGMENT_BIT) catch break :blk false;
-        builder.add_binding(4, c.VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1, c.VK_SHADER_STAGE_FRAGMENT_BIT) catch break :blk false;
-        builder.add_binding(5, c.VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1, c.VK_SHADER_STAGE_FRAGMENT_BIT) catch break :blk false;
-        builder.add_binding(6, c.VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, 1, c.VK_SHADER_STAGE_VERTEX_BIT) catch break :blk false;
-        // Binding 7 removed
-        builder.add_binding(8, c.VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 1, c.VK_SHADER_STAGE_FRAGMENT_BIT) catch break :blk false;
-        break :blk true;
-    };
+    var bindings_added = true;
+    var it = bindings_map.iterator();
+    while (it.next()) |entry| {
+        const b = entry.value_ptr.*;
+        builder.add_binding(b.binding, b.descriptorType, b.descriptorCount, b.stageFlags) catch {
+            bindings_added = false;
+            break;
+        };
+    }
 
     if (!bindings_added) {
         log.cardinal_log_error("Failed to add bindings to descriptor builder", .{});
@@ -102,13 +99,7 @@ fn create_pbr_texture_manager(pipeline: *types.VulkanPBRPipeline, device: c.VkDe
     return true;
 }
 
-fn create_pbr_pipeline_layout(pipeline: *types.VulkanPBRPipeline, device: c.VkDevice) bool {
-    const pushConstantRange = c.VkPushConstantRange{
-        .stageFlags = c.VK_SHADER_STAGE_VERTEX_BIT | c.VK_SHADER_STAGE_FRAGMENT_BIT,
-        .offset = 0,
-        .size = @sizeOf(types.PBRPushConstants),
-    };
-
+fn create_pbr_pipeline_layout(pipeline: *types.VulkanPBRPipeline, device: c.VkDevice, pushConstantRange: *const c.VkPushConstantRange) bool {
     var descriptorLayouts: [2]c.VkDescriptorSetLayout = undefined;
     descriptorLayouts[0] = descriptor_mgr.vk_descriptor_manager_get_layout(@ptrCast(pipeline.descriptorManager));
     var layoutCount: u32 = 1;
@@ -123,7 +114,7 @@ fn create_pbr_pipeline_layout(pipeline: *types.VulkanPBRPipeline, device: c.VkDe
 
     const device_wrapper = wrappers.Device.init(device);
     const setLayouts = descriptorLayouts[0..layoutCount];
-    const pushConstantRanges = [_]c.VkPushConstantRange{pushConstantRange};
+    const pushConstantRanges = [_]c.VkPushConstantRange{pushConstantRange.*};
 
     pipeline.pipelineLayout = device_wrapper.createPipelineLayout(setLayouts, &pushConstantRanges) catch |err| {
         log.cardinal_log_error("Failed to create PBR pipeline layout: {s}", .{@errorName(err)});
@@ -299,7 +290,7 @@ fn configure_rendering_info(info: *c.VkPipelineRenderingCreateInfo, colorFormat:
     info.pNext = null;
 }
 
-fn create_pbr_graphics_pipeline(pipeline: *types.VulkanPBRPipeline, device: c.VkDevice, vertShader: c.VkShaderModule, fragShader: c.VkShaderModule, swapchainFormat: c.VkFormat, depthFormat: c.VkFormat, enableBlending: bool, enableDepthWrite: bool, outPipeline: *c.VkPipeline) bool {
+fn create_pbr_graphics_pipeline(pipeline: *types.VulkanPBRPipeline, device: c.VkDevice, vertShader: c.VkShaderModule, fragShader: c.VkShaderModule, swapchainFormat: c.VkFormat, depthFormat: c.VkFormat, enableBlending: bool, enableDepthWrite: bool, outPipeline: *c.VkPipeline, pipelineCache: c.VkPipelineCache) bool {
     var shaderStages: [2]c.VkPipelineShaderStageCreateInfo = undefined;
     configure_shader_stages(&shaderStages, vertShader, fragShader);
 
@@ -353,7 +344,7 @@ fn create_pbr_graphics_pipeline(pipeline: *types.VulkanPBRPipeline, device: c.Vk
     configure_rendering_info(&pipelineRenderingInfo, &colorFmt, depthFormat);
     pipelineInfo.pNext = &pipelineRenderingInfo;
 
-    const result = c.vkCreateGraphicsPipelines(device, null, 1, &pipelineInfo, null, outPipeline);
+    const result = c.vkCreateGraphicsPipelines(device, pipelineCache, 1, &pipelineInfo, null, outPipeline);
     if (result != c.VK_SUCCESS) {
         log.cardinal_log_error("Failed to create PBR graphics pipeline: {d}", .{result});
         return false;
@@ -693,7 +684,7 @@ pub export fn vk_pbr_load_scene(pipeline: ?*types.VulkanPBRPipeline, device: c.V
     return true;
 }
 
-pub export fn vk_pbr_pipeline_create(pipeline: ?*types.VulkanPBRPipeline, device: c.VkDevice, physicalDevice: c.VkPhysicalDevice, swapchainFormat: c.VkFormat, depthFormat: c.VkFormat, commandPool: c.VkCommandPool, graphicsQueue: c.VkQueue, allocator: ?*types.VulkanAllocator, vulkan_state: ?*types.VulkanState) callconv(.c) bool {
+pub export fn vk_pbr_pipeline_create(pipeline: ?*types.VulkanPBRPipeline, device: c.VkDevice, physicalDevice: c.VkPhysicalDevice, swapchainFormat: c.VkFormat, depthFormat: c.VkFormat, commandPool: c.VkCommandPool, graphicsQueue: c.VkQueue, allocator: ?*types.VulkanAllocator, vulkan_state: ?*types.VulkanState, pipelineCache: c.VkPipelineCache) callconv(.c) bool {
     _ = physicalDevice;
     if (pipeline == null or allocator == null) return false;
     const pipe = pipeline.?;
@@ -708,7 +699,97 @@ pub export fn vk_pbr_pipeline_create(pipeline: ?*types.VulkanPBRPipeline, device
 
     log.cardinal_log_info("[PBR] Descriptor indexing support: enabled", .{});
 
-    if (!create_pbr_descriptor_manager(pipe, device, alloc, vulkan_state)) {
+    // Allocator for reflection data
+    var arena = std.heap.ArenaAllocator.init(std.heap.c_allocator);
+    defer arena.deinit();
+    const allocator_arena = arena.allocator();
+
+    var set0_bindings = std.AutoHashMap(u32, c.VkDescriptorSetLayoutBinding).init(allocator_arena);
+    
+    var pushConstantRange = c.VkPushConstantRange{
+        .stageFlags = 0,
+        .offset = 0,
+        .size = 0,
+    };
+
+    var vertShader: c.VkShaderModule = null;
+    var fragShader: c.VkShaderModule = null;
+
+    // Load Shaders and Reflect
+    const process_shader = struct {
+        fn func(dev: c.VkDevice, name: []const u8, stage: c.VkShaderStageFlags, module_out: *c.VkShaderModule,
+               map: *std.AutoHashMap(u32, c.VkDescriptorSetLayoutBinding), pc: *c.VkPushConstantRange, allocator_ref: std.mem.Allocator) !bool {
+             
+             var path: [512]u8 = undefined;
+             var shaders_dir: [*c]const u8 = @ptrCast(c.getenv("CARDINAL_SHADERS_DIR"));
+             if (shaders_dir == null or shaders_dir[0] == 0) {
+                 shaders_dir = "assets/shaders";
+             }
+             _ = c.snprintf(&path, 512, "%s/%s", shaders_dir, name.ptr);
+             const path_slice = std.mem.span(@as([*:0]const u8, @ptrCast(&path)));
+             
+             const code = shader_utils.vk_shader_read_file(allocator_ref, path_slice) catch |err| {
+                 log.cardinal_log_error("Failed to read shader {s}: {s}", .{path_slice, @errorName(err)});
+                 return false;
+             };
+             
+             if (!shader_utils.vk_shader_create_module_from_code(dev, code.ptr, code.len * 4, module_out)) {
+                 log.cardinal_log_error("Failed to create shader module for {s}", .{path_slice});
+                 return false;
+             }
+             
+             const reflect = shader_utils.reflection.reflect_shader(allocator_ref, code, stage) catch |err| {
+                 log.cardinal_log_error("Failed to reflect shader {s}: {s}", .{path_slice, @errorName(err)});
+                 return false;
+             };
+             
+             if (reflect.push_constant_size > 0) {
+                 pc.stageFlags |= reflect.push_constant_stages;
+                 if (reflect.push_constant_size > pc.size) pc.size = reflect.push_constant_size;
+             }
+             
+             for (reflect.resources.items) |res| {
+                 if (res.set != 0) continue; // Only process Set 0 for descriptor manager
+                 
+                 const entry = try map.getOrPut(res.binding);
+                 if (entry.found_existing) {
+                     entry.value_ptr.stageFlags |= res.stage_flags;
+                 } else {
+                     entry.value_ptr.* = .{
+                         .binding = res.binding,
+                         .descriptorType = res.type,
+                         .descriptorCount = res.count,
+                         .stageFlags = res.stage_flags,
+                         .pImmutableSamplers = null,
+                     };
+                 }
+             }
+             return true;
+        }
+    }.func;
+
+    if (process_shader(device, "pbr.vert.spv", c.VK_SHADER_STAGE_VERTEX_BIT, &vertShader, &set0_bindings, &pushConstantRange, allocator_arena) catch false) {
+        // OK
+    } else {
+        return false;
+    }
+
+    if (process_shader(device, "pbr.frag.spv", c.VK_SHADER_STAGE_FRAGMENT_BIT, &fragShader, &set0_bindings, &pushConstantRange, allocator_arena) catch false) {
+        // OK
+    } else {
+        c.vkDestroyShaderModule(device, vertShader, null);
+        return false;
+    }
+    
+    // Ensure push constant size is at least what struct expects (safety check)
+    if (pushConstantRange.size < @sizeOf(types.PBRPushConstants)) {
+        pushConstantRange.size = @sizeOf(types.PBRPushConstants);
+    }
+    if (pushConstantRange.stageFlags == 0) {
+        pushConstantRange.stageFlags = c.VK_SHADER_STAGE_VERTEX_BIT | c.VK_SHADER_STAGE_FRAGMENT_BIT;
+    }
+
+    if (!create_pbr_descriptor_manager(pipe, device, alloc, vulkan_state, &set0_bindings)) {
         return false;
     }
     log.cardinal_log_debug("Descriptor manager created successfully", .{});
@@ -720,7 +801,7 @@ pub export fn vk_pbr_pipeline_create(pipeline: ?*types.VulkanPBRPipeline, device
     }
     log.cardinal_log_debug("Texture manager initialized successfully", .{});
 
-    if (!create_pbr_pipeline_layout(pipe, device)) {
+    if (!create_pbr_pipeline_layout(pipe, device, &pushConstantRange)) {
         vk_texture_mgr.vk_texture_manager_destroy(pipe.textureManager.?);
         c.free(@as(?*anyopaque, @ptrCast(pipe.textureManager)));
         descriptor_mgr.vk_descriptor_manager_destroy(@ptrCast(pipe.descriptorManager));
@@ -728,21 +809,15 @@ pub export fn vk_pbr_pipeline_create(pipeline: ?*types.VulkanPBRPipeline, device
         return false;
     }
 
-    var vertShader: c.VkShaderModule = null;
-    var fragShader: c.VkShaderModule = null;
-    if (!load_pbr_shaders(device, &vertShader, &fragShader)) {
-        return false;
-    }
-
     const dev = wrappers.Device.init(device);
 
-    if (!create_pbr_graphics_pipeline(pipe, device, vertShader, fragShader, swapchainFormat, depthFormat, false, true, &pipe.pipeline)) {
+    if (!create_pbr_graphics_pipeline(pipe, device, vertShader, fragShader, swapchainFormat, depthFormat, false, true, &pipe.pipeline, pipelineCache)) {
         dev.destroyShaderModule(vertShader);
         dev.destroyShaderModule(fragShader);
         return false;
     }
 
-    if (!create_pbr_graphics_pipeline(pipe, device, vertShader, fragShader, swapchainFormat, depthFormat, true, false, &pipe.pipelineBlend)) {
+    if (!create_pbr_graphics_pipeline(pipe, device, vertShader, fragShader, swapchainFormat, depthFormat, true, false, &pipe.pipelineBlend, pipelineCache)) {
         dev.destroyShaderModule(vertShader);
         dev.destroyShaderModule(fragShader);
         return false;

@@ -444,7 +444,7 @@ fn recreate_mesh_shader_pipeline_logic(s: *types.VulkanState) bool {
     config.max_vertices_per_meshlet = 64;
     config.max_primitives_per_meshlet = 126;
 
-    if (!vk_mesh_shader.vk_mesh_shader_create_pipeline(@ptrCast(s), &config, s.swapchain.format, s.swapchain.depth_format, @ptrCast(&s.pipelines.mesh_shader_pipeline))) {
+    if (!vk_mesh_shader.vk_mesh_shader_create_pipeline(@ptrCast(s), &config, s.swapchain.format, s.swapchain.depth_format, @ptrCast(&s.pipelines.mesh_shader_pipeline), null)) {
         log.cardinal_log_error("[SWAPCHAIN] Failed to recreate mesh shader pipeline", .{});
         return false;
     }
@@ -590,7 +590,7 @@ pub export fn vk_recreate_swapchain(s: ?*types.VulkanState) callconv(.c) bool {
 
     vs.swapchain.depth_layout_initialized = false;
 
-    if (!vk_simple_pipelines.vk_create_simple_pipelines(vs)) {
+    if (!vk_simple_pipelines.vk_create_simple_pipelines(vs, null)) {
         return handle_recreation_failure(vs, &backup);
     }
 

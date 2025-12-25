@@ -121,14 +121,14 @@ fn vk_recover_from_device_loss(s: *types.VulkanState) bool {
     }
 
     // Recreate simple pipelines
-    if (success and !vk_simple_pipelines.vk_create_simple_pipelines(s)) {
+    if (success and !vk_simple_pipelines.vk_create_simple_pipelines(s, null)) {
         failure_point = "simple pipelines";
         success = false;
     }
 
     // Recreate PBR pipeline if it was enabled
     if (success and stored_scene != null) {
-        if (!vk_pbr.vk_pbr_pipeline_create(&s.pipelines.pbr_pipeline, s.context.device, s.context.physical_device, s.swapchain.format, s.swapchain.depth_format, s.commands.pools.?[0], s.context.graphics_queue, &s.allocator, s)) {
+        if (!vk_pbr.vk_pbr_pipeline_create(&s.pipelines.pbr_pipeline, s.context.device, s.context.physical_device, s.swapchain.format, s.swapchain.depth_format, s.commands.pools.?[0], s.context.graphics_queue, &s.allocator, s, null)) {
             failure_point = "PBR pipeline";
             success = false;
         } else {
@@ -172,7 +172,7 @@ fn vk_recover_from_device_loss(s: *types.VulkanState) bool {
         config.depth_write_enable = true;
         config.depth_compare_op = c.VK_COMPARE_OP_LESS;
 
-        if (!vk_mesh_shader.vk_mesh_shader_create_pipeline(s, &config, s.swapchain.format, s.swapchain.depth_format, &s.pipelines.mesh_shader_pipeline)) {
+        if (!vk_mesh_shader.vk_mesh_shader_create_pipeline(s, &config, s.swapchain.format, s.swapchain.depth_format, &s.pipelines.mesh_shader_pipeline, null)) {
             log.cardinal_log_error("Failed to initialize mesh shader pipeline", .{});
             failure_point = "mesh shader pipeline";
             success = false;

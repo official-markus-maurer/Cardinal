@@ -102,30 +102,149 @@ pub export fn vk_compute_create_pipeline(vulkan_state: ?*types.VulkanState, conf
     // Initialize pipeline structure
     @memset(@as([*]u8, @ptrCast(pipe))[0..@sizeOf(types.ComputePipeline)], 0);
 
-    // Load compute shader
+    // Load compute shader and reflect
     var compute_shader: c.VkShaderModule = null;
-    if (!shader_utils.vk_shader_create_module(vs.context.device, cfg.compute_shader_path, &compute_shader)) {
-        log.cardinal_log_error("[COMPUTE] Failed to load compute shader: {s}", .{if (cfg.compute_shader_path) |p| std.mem.span(p) else "null"});
-        return false;
+    var reflected_layouts: ?[*]c.VkDescriptorSetLayout = null;
+    var reflected_layout_count: u32 = 0;
+    var push_constant_range = std.mem.zeroes(c.VkPushConstantRange);
+
+    {
+        const alloc = std.heap.c_allocator;
+        const path_ptr = cfg.compute_shader_path orelse {
+             log.cardinal_log_error("[COMPUTE] Compute shader path is null", .{});
+             return false;
+        };
+        const code = shader_utils.vk_shader_read_file(alloc, std.mem.span(path_ptr)) catch |err| {
+             log.cardinal_log_error("[COMPUTE] Failed to read shader file: {s}", .{@errorName(err)});
+             return false;
+        };
+        defer alloc.free(code);
+
+        if (!shader_utils.vk_shader_create_module_from_code(vs.context.device, code.ptr, code.len * 4, &compute_shader)) {
+            log.cardinal_log_error("[COMPUTE] Failed to create shader module", .{});
+            return false;
+        }
+
+        const reflect = shader_utils.reflection.reflect_shader(alloc, code, c.VK_SHADER_STAGE_COMPUTE_BIT) catch |err| {
+             log.cardinal_log_error("[COMPUTE] Failed to reflect shader: {s}", .{@errorName(err)});
+             c.vkDestroyShaderModule(vs.context.device, compute_shader, null);
+             return false;
+        };
+        // reflect.deinit() called later or use arena? reflect_shader uses alloc.
+        // Wait, reflect_shader returns struct with resources ArrayList. I need to deinit it.
+        var r = reflect; // Mutable copy to deinit
+        defer r.deinit();
+
+        // Handle Push Constants
+        if (r.push_constant_size > 0) {
+            push_constant_range.stageFlags = r.push_constant_stages;
+            push_constant_range.size = r.push_constant_size;
+            // Override config if reflection found constants
+            if (cfg.push_constant_size > 0 and cfg.push_constant_size > r.push_constant_size) {
+                 push_constant_range.size = cfg.push_constant_size;
+            }
+        } else if (cfg.push_constant_size > 0) {
+            push_constant_range.stageFlags = cfg.push_constant_stages;
+            push_constant_range.size = cfg.push_constant_size;
+        }
+
+        // Handle Descriptor Sets
+        if (cfg.descriptor_set_count == 0) {
+            // Generate from reflection
+            var sets = std.AutoHashMap(u32, std.ArrayListUnmanaged(c.VkDescriptorSetLayoutBinding)).init(alloc);
+            defer {
+                var it = sets.iterator();
+                while (it.next()) |entry| entry.value_ptr.deinit(alloc);
+                sets.deinit();
+            }
+
+            for (r.resources.items) |res| {
+                const entry = sets.getOrPut(res.set) catch {
+                    log.cardinal_log_error("[COMPUTE] Failed to allocate memory for set reflection", .{});
+                    return false;
+                };
+                if (!entry.found_existing) {
+                    entry.value_ptr.* = std.ArrayListUnmanaged(c.VkDescriptorSetLayoutBinding){};
+                }
+                entry.value_ptr.append(alloc, .{
+                    .binding = res.binding,
+                    .descriptorType = res.type,
+                    .descriptorCount = res.count,
+                    .stageFlags = res.stage_flags,
+                    .pImmutableSamplers = null,
+                }) catch {
+                    log.cardinal_log_error("[COMPUTE] Failed to append binding from reflection", .{});
+                    return false;
+                };
+            }
+
+            if (sets.count() > 0) {
+                // Find max set index
+                var max_set: u32 = 0;
+                var it = sets.keyIterator();
+                while (it.next()) |k| {
+                    if (k.* > max_set) max_set = k.*;
+                }
+                
+                reflected_layout_count = max_set + 1;
+                const layouts_ptr = memory.cardinal_alloc(memory.cardinal_get_allocator_for_category(.RENDERER), reflected_layout_count * @sizeOf(c.VkDescriptorSetLayout));
+                if (layouts_ptr == null) return false;
+                reflected_layouts = @as([*]c.VkDescriptorSetLayout, @ptrCast(@alignCast(layouts_ptr)));
+                @memset(reflected_layouts.?[0..reflected_layout_count], null);
+
+                var sit = sets.iterator();
+                while (sit.next()) |entry| {
+                    const set_idx = entry.key_ptr.*;
+                    const bindings = entry.value_ptr.*;
+                    
+                    var layout_info = std.mem.zeroes(c.VkDescriptorSetLayoutCreateInfo);
+                    layout_info.sType = c.VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO;
+                    layout_info.bindingCount = @intCast(bindings.items.len);
+                    layout_info.pBindings = bindings.items.ptr;
+                    
+                    if (c.vkCreateDescriptorSetLayout(vs.context.device, &layout_info, null, &reflected_layouts.?[set_idx]) != c.VK_SUCCESS) {
+                         log.cardinal_log_error("[COMPUTE] Failed to create descriptor set layout for set {d}", .{set_idx});
+                         return false;
+                    }
+                }
+            }
+        }
     }
 
     // Create pipeline layout
-    var push_constant_range = std.mem.zeroes(c.VkPushConstantRange);
     var pipeline_layout_info = std.mem.zeroes(c.VkPipelineLayoutCreateInfo);
     pipeline_layout_info.sType = c.VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO;
-    pipeline_layout_info.setLayoutCount = cfg.descriptor_set_count;
-    pipeline_layout_info.pSetLayouts = cfg.descriptor_layouts;
+    
+    if (reflected_layouts != null) {
+        pipeline_layout_info.setLayoutCount = reflected_layout_count;
+        pipeline_layout_info.pSetLayouts = reflected_layouts;
+        pipe.descriptor_layouts = reflected_layouts;
+        pipe.descriptor_set_count = reflected_layout_count;
+    } else {
+        pipeline_layout_info.setLayoutCount = cfg.descriptor_set_count;
+        pipeline_layout_info.pSetLayouts = cfg.descriptor_layouts;
+        
+        // Copy config layouts to pipe
+        if (cfg.descriptor_set_count > 0 and cfg.descriptor_layouts != null) {
+             const mem_alloc = memory.cardinal_get_allocator_for_category(.RENDERER);
+             const layouts = memory.cardinal_alloc(mem_alloc, cfg.descriptor_set_count * @sizeOf(c.VkDescriptorSetLayout));
+             if (layouts != null) {
+                 pipe.descriptor_layouts = @as([*]c.VkDescriptorSetLayout, @ptrCast(@alignCast(layouts)));
+                 @memcpy(pipe.descriptor_layouts.?[0..cfg.descriptor_set_count], cfg.descriptor_layouts.?[0..cfg.descriptor_set_count]);
+                 pipe.descriptor_set_count = cfg.descriptor_set_count;
+             }
+        }
+    }
+
     pipeline_layout_info.pushConstantRangeCount = 0;
     pipeline_layout_info.pPushConstantRanges = null;
 
-    // Add push constants if specified
-    if (cfg.push_constant_size > 0) {
-        push_constant_range.stageFlags = cfg.push_constant_stages;
-        push_constant_range.offset = 0;
-        push_constant_range.size = cfg.push_constant_size;
-
+    // Add push constants if specified (or reflected)
+    if (push_constant_range.size > 0) {
         pipeline_layout_info.pushConstantRangeCount = 1;
         pipeline_layout_info.pPushConstantRanges = &push_constant_range;
+        pipe.push_constant_size = push_constant_range.size;
+        pipe.push_constant_stages = push_constant_range.stageFlags;
     }
 
     var result = c.vkCreatePipelineLayout(vs.context.device, &pipeline_layout_info, null, &pipe.pipeline_layout);
@@ -170,14 +289,14 @@ pub export fn vk_compute_create_pipeline(vulkan_state: ?*types.VulkanState, conf
     pipe.initialized = true;
 
     // Copy descriptor layouts if provided
-    if (cfg.descriptor_set_count > 0 and cfg.descriptor_layouts != null) {
-        const mem_alloc = memory.cardinal_get_allocator_for_category(.RENDERER);
-        const layouts = memory.cardinal_alloc(mem_alloc, cfg.descriptor_set_count * @sizeOf(c.VkDescriptorSetLayout));
-        if (layouts != null) {
-            pipe.descriptor_layouts = @as([*]c.VkDescriptorSetLayout, @ptrCast(@alignCast(layouts)));
-            @memcpy(@as([*]u8, @ptrCast(pipe.descriptor_layouts))[0..(cfg.descriptor_set_count * @sizeOf(c.VkDescriptorSetLayout))], @as([*]const u8, @ptrCast(cfg.descriptor_layouts))[0..(cfg.descriptor_set_count * @sizeOf(c.VkDescriptorSetLayout))]);
-        }
-    }
+    // if (cfg.descriptor_set_count > 0 and cfg.descriptor_layouts != null) {
+    //    const mem_alloc = memory.cardinal_get_allocator_for_category(.RENDERER);
+    //    const layouts = memory.cardinal_alloc(mem_alloc, cfg.descriptor_set_count * @sizeOf(c.VkDescriptorSetLayout));
+    //    if (layouts != null) {
+    //        pipe.descriptor_layouts = @as([*]c.VkDescriptorSetLayout, @ptrCast(@alignCast(layouts)));
+    //        @memcpy(@as([*]u8, @ptrCast(pipe.descriptor_layouts))[0..(cfg.descriptor_set_count * @sizeOf(c.VkDescriptorSetLayout))], @as([*]const u8, @ptrCast(cfg.descriptor_layouts))[0..(cfg.descriptor_set_count * @sizeOf(c.VkDescriptorSetLayout))]);
+    //    }
+    // }
 
     log.cardinal_log_info("[COMPUTE] Created compute pipeline with local size ({d}, {d}, {d})", .{ cfg.local_size_x, cfg.local_size_y, cfg.local_size_z });
 

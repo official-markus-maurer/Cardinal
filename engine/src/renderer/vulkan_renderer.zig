@@ -131,7 +131,7 @@ fn init_sync_manager(s: *types.VulkanState) bool {
 
 fn init_pbr_pipeline_helper(s: *types.VulkanState) void {
     s.pipelines.use_pbr_pipeline = false;
-    if (vk_pbr.vk_pbr_pipeline_create(@ptrCast(&s.pipelines.pbr_pipeline), s.context.device, s.context.physical_device, s.swapchain.format, s.swapchain.depth_format, s.commands.pools.?[0], s.context.graphics_queue, @ptrCast(&s.allocator), @ptrCast(s))) {
+    if (vk_pbr.vk_pbr_pipeline_create(@ptrCast(&s.pipelines.pbr_pipeline), s.context.device, s.context.physical_device, s.swapchain.format, s.swapchain.depth_format, s.commands.pools.?[0], s.context.graphics_queue, @ptrCast(&s.allocator), @ptrCast(s), null)) {
         s.pipelines.use_pbr_pipeline = true;
         log.cardinal_log_info("renderer_create: PBR pipeline", .{});
     } else {
@@ -181,7 +181,7 @@ fn init_mesh_shader_pipeline_helper(s: *types.VulkanState) void {
     config.depth_write_enable = true;
     config.depth_compare_op = c.VK_COMPARE_OP_LESS;
 
-    if (vk_mesh_shader.vk_mesh_shader_create_pipeline(@ptrCast(s), @ptrCast(&config), s.swapchain.format, s.swapchain.depth_format, @ptrCast(&s.pipelines.mesh_shader_pipeline))) {
+    if (vk_mesh_shader.vk_mesh_shader_create_pipeline(@ptrCast(s), @ptrCast(&config), s.swapchain.format, s.swapchain.depth_format, @ptrCast(&s.pipelines.mesh_shader_pipeline), null)) {
         s.pipelines.use_mesh_shader_pipeline = true;
         log.cardinal_log_info("renderer_create: Mesh shader pipeline", .{});
     } else {
@@ -215,7 +215,7 @@ fn init_simple_pipelines_helper(s: *types.VulkanState) void {
     s.pipelines.simple_uniform_buffer_memory = null;
     s.pipelines.simple_uniform_buffer_mapped = null;
 
-    if (!vk_simple_pipelines.vk_create_simple_pipelines(@ptrCast(s))) {
+    if (!vk_simple_pipelines.vk_create_simple_pipelines(@ptrCast(s), null)) {
         log.cardinal_log_error("vk_create_simple_pipelines failed", .{});
     } else {
         log.cardinal_log_info("renderer_create: simple pipelines", .{});
@@ -720,7 +720,7 @@ pub export fn cardinal_renderer_enable_pbr(renderer: ?*types.CardinalRenderer, e
             vk_pbr.vk_pbr_pipeline_destroy(@ptrCast(&s.pipelines.pbr_pipeline), @ptrCast(s.context.device), @ptrCast(&s.allocator));
         }
 
-        if (vk_pbr.vk_pbr_pipeline_create(@ptrCast(&s.pipelines.pbr_pipeline), s.context.device, s.context.physical_device, s.swapchain.format, s.swapchain.depth_format, s.commands.pools.?[0], s.context.graphics_queue, @ptrCast(&s.allocator), @ptrCast(s))) {
+        if (vk_pbr.vk_pbr_pipeline_create(@ptrCast(&s.pipelines.pbr_pipeline), s.context.device, s.context.physical_device, s.swapchain.format, s.swapchain.depth_format, s.commands.pools.?[0], s.context.graphics_queue, @ptrCast(&s.allocator), @ptrCast(s), null)) {
             s.pipelines.use_pbr_pipeline = true;
 
             if (s.current_scene != null) {
@@ -781,7 +781,7 @@ pub export fn cardinal_renderer_enable_mesh_shader(renderer: ?*types.CardinalRen
         config.depth_write_enable = true;
         config.depth_compare_op = c.VK_COMPARE_OP_LESS;
 
-        if (vk_mesh_shader.vk_mesh_shader_create_pipeline(@ptrCast(@alignCast(s)), @ptrCast(&config), s.swapchain.format, s.swapchain.depth_format, @ptrCast(&s.pipelines.mesh_shader_pipeline))) {
+        if (vk_mesh_shader.vk_mesh_shader_create_pipeline(@ptrCast(@alignCast(s)), @ptrCast(&config), s.swapchain.format, s.swapchain.depth_format, @ptrCast(&s.pipelines.mesh_shader_pipeline), null)) {
             s.pipelines.use_mesh_shader_pipeline = true;
             log.cardinal_log_info("Mesh shader pipeline enabled", .{});
         } else {
