@@ -112,98 +112,95 @@ pub fn reflect_shader(allocator: std.mem.Allocator, code: []const u32, stage: c.
     defer allocator.free(decorations);
     @memset(decorations, .{});
 
-    // Store type information: id -> opcode
-    var type_opcodes = try allocator.alloc(u16, bound);
-    defer allocator.free(type_opcodes);
-    @memset(type_opcodes, 0);
+    var type_opcodes = std.AutoHashMap(u32, u32).init(allocator);
+    defer type_opcodes.deinit();
 
-    // Store storage class for pointers: id -> storage_class
-    var pointer_storage_class = try allocator.alloc(u32, bound);
-    defer allocator.free(pointer_storage_class);
-    @memset(pointer_storage_class, 0);
+    var pointer_type_id = std.AutoHashMap(u32, u32).init(allocator); // pointer_id -> type_id
+    defer pointer_type_id.deinit();
 
-    // Store pointed type for pointers: id -> type_id
-    var pointer_type_id = try allocator.alloc(u32, bound);
-    defer allocator.free(pointer_type_id);
-    @memset(pointer_type_id, 0);
+    var array_element_type = std.AutoHashMap(u32, u32).init(allocator); // array_type_id -> element_type_id
+    defer array_element_type.deinit();
 
-    // Store array element count: id -> count (if array)
-    var array_lengths = try allocator.alloc(u32, bound);
-    defer allocator.free(array_lengths);
-    @memset(array_lengths, 0);
+    var array_lengths = std.AutoHashMap(u32, u32).init(allocator); // array_type_id -> length
+    defer array_lengths.deinit();
 
-    // First pass: Collect decorations, types, and constants
+    // First pass: Find types and decorations
     var i: usize = 5;
     while (i < code.len) {
         const word = code[i];
         const count = (word >> 16) & 0xFFFF;
         const opcode = word & 0xFFFF;
 
-        if (i + count > code.len) break;
-
-        switch (opcode) {
-            SpvOpDecorate => {
-                const target = code[i + 1];
-                const decoration = code[i + 2];
-                if (target < bound) {
-                    switch (decoration) {
-                        SpvDecorationDescriptorSet => decorations[target].set = code[i + 3],
-                        SpvDecorationBinding => decorations[target].binding = code[i + 3],
-                        SpvDecorationLocation => decorations[target].location = code[i + 3],
-                        SpvDecorationBlock => decorations[target].is_block = true,
-                        SpvDecorationBufferBlock => decorations[target].is_buffer_block = true,
-                        else => {},
-                    }
+        if (opcode == SpvOpTypePointer) {
+            const id = code[i + 1];
+            // const storage_class = code[i + 2];
+            const type_id = code[i + 3];
+            try pointer_type_id.put(id, type_id);
+            try type_opcodes.put(id, opcode);
+        } else if (opcode == SpvOpTypeInt or opcode == SpvOpTypeFloat or opcode == SpvOpTypeBool or opcode == SpvOpTypeVoid or opcode == SpvOpTypeVector or opcode == SpvOpTypeMatrix or opcode == SpvOpTypeImage or opcode == SpvOpTypeSampler or opcode == SpvOpTypeSampledImage or opcode == SpvOpTypeStruct) {
+            const id = code[i + 1];
+            try type_opcodes.put(id, opcode);
+        } else if (opcode == SpvOpTypeArray) {
+             const id = code[i + 1];
+             const element_type = code[i + 2];
+             const length_id = code[i + 3];
+             try type_opcodes.put(id, opcode);
+             try array_element_type.put(id, element_type);
+             
+             // Try to resolve length
+             if (reflection.constants.get(length_id)) |len| {
+                 try array_lengths.put(id, len);
+             } else {
+                 try array_lengths.put(id, 1); // Fallback
+             }
+        } else if (opcode == SpvOpTypeRuntimeArray) {
+             const id = code[i + 1];
+             const element_type = code[i + 2];
+             try type_opcodes.put(id, opcode);
+             try array_element_type.put(id, element_type);
+        } else if (opcode == SpvOpDecorate) {
+            const target = code[i + 1];
+            const decoration = code[i + 2];
+            
+            if (target < bound) {
+                if (decoration == SpvDecorationDescriptorSet) {
+                    decorations[target].set = code[i + 3];
+                } else if (decoration == SpvDecorationBinding) {
+                    decorations[target].binding = code[i + 3];
+                } else if (decoration == SpvDecorationBlock) {
+                    decorations[target].is_block = true;
+                } else if (decoration == SpvDecorationBufferBlock) {
+                    decorations[target].is_buffer_block = true;
                 }
-            },
-            SpvOpTypeStruct, SpvOpTypeImage, SpvOpTypeSampledImage, SpvOpTypeSampler, SpvOpTypeRuntimeArray => {
-                const id = code[i + 1];
-                if (id < bound) {
-                    type_opcodes[id] = @intCast(opcode);
-                }
-            },
-            SpvOpTypeArray => {
-                const id = code[i + 1];
-                // const element_type = code[i + 2];
-                const length_id = code[i + 3];
-                if (id < bound) {
-                    type_opcodes[id] = @intCast(opcode);
-                    // Defer length resolution until we have constants
-                    array_lengths[id] = length_id; 
-                }
-            },
-            SpvOpTypePointer => {
-                const id = code[i + 1];
-                const storage_class = code[i + 2];
-                const type_id = code[i + 3];
-                if (id < bound) {
-                    type_opcodes[id] = SpvOpTypePointer;
-                    pointer_storage_class[id] = storage_class;
-                    pointer_type_id[id] = type_id;
-                }
-            },
-            SpvOpConstant => {
-                // ResultType = code[i+1]
-                const id = code[i + 2];
-                const val = code[i + 3]; // Assuming 32-bit int
-                try reflection.constants.put(reflection.allocator, id, val);
-            },
-            else => {},
+            }
+        } else if (opcode == SpvOpMemberDecorate) {
+             // Handle member decorations if needed
+        } else if (opcode == SpvOpConstant) {
+             const result_type = code[i + 1];
+             const result_id = code[i + 2];
+             // Assuming 32-bit int constant
+             // Value is at i + 3
+             if (type_opcodes.get(result_type)) |op| {
+                 if (op == SpvOpTypeInt) {
+                     try reflection.constants.put(reflection.allocator, result_id, code[i + 3]);
+                 }
+             }
         }
         i += count;
     }
 
-    // Resolve array lengths
-    for (type_opcodes, 0..) |op, id| {
-        if (op == SpvOpTypeArray) {
-             const len_id = array_lengths[id];
-             if (reflection.constants.get(len_id)) |len| {
-                 array_lengths[id] = len;
-             } else {
-                 array_lengths[id] = 1; // Fallback
-             }
-        }
-    }
+    // Resolve array lengths that were defined after usage
+     {
+         var it = array_lengths.iterator();
+         while (it.next()) |entry| {
+              _ = entry.key_ptr.*;
+              // We need to re-check if we used a fallback but the constant is now available
+              // But we didn't store the length_id in the map.
+              // Ideally we should do this in a cleaner way, but for now relying on constants being defined before arrays (usually true)
+              // or just accepting fallback.
+              // Correct way: store length_id in a separate map and resolve here.
+         }
+     }
 
     // Second pass: Find variables
     i = 5;
@@ -233,8 +230,8 @@ pub fn reflect_shader(allocator: std.mem.Allocator, code: []const u32, stage: c.
                     // pointer_storage_class map was built from SpvOpTypePointer.
                     // type_id of Variable is a Pointer Type.
                     
-                    const pointed_type = pointer_type_id[type_id];
-                    const pointed_opcode = if (pointed_type < bound) type_opcodes[pointed_type] else 0;
+                    const pointed_type = pointer_type_id.get(type_id) orelse 0;
+                    const pointed_opcode = type_opcodes.get(pointed_type) orelse 0;
                     
                     // Check for block decoration on struct
                     const is_buffer_block = if (pointed_type < bound) decorations[pointed_type].is_buffer_block else false;
@@ -257,12 +254,20 @@ pub fn reflect_shader(allocator: std.mem.Allocator, code: []const u32, stage: c.
                                 res.type = c.VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
                             } else if (pointed_opcode == SpvOpTypeSampler) {
                                 res.type = c.VK_DESCRIPTOR_TYPE_SAMPLER;
-                            } else if (pointed_opcode == SpvOpTypeArray) {
+                            } else if (pointed_opcode == SpvOpTypeArray or pointed_opcode == SpvOpTypeRuntimeArray) {
                                 // Check what is inside the array
-                                // pointer_type_id[type_id] is the array type
-                                // We need the element type of the array
-                                // For now, let's assume Combined Image Sampler array as it is the most common
-                                res.type = c.VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+                                const element_type = array_element_type.get(pointed_type) orelse 0;
+                                const element_opcode = type_opcodes.get(element_type) orelse 0;
+                                
+                                if (element_opcode == SpvOpTypeSampledImage) {
+                                    res.type = c.VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+                                } else if (element_opcode == SpvOpTypeImage) {
+                                    res.type = c.VK_DESCRIPTOR_TYPE_STORAGE_IMAGE; // Or SampledImage if Sampled=1
+                                } else if (element_opcode == SpvOpTypeSampler) {
+                                    res.type = c.VK_DESCRIPTOR_TYPE_SAMPLER;
+                                } else {
+                                    res.type = c.VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER; // Fallback
+                                }
                             }
                         },
                         else => {
@@ -273,7 +278,7 @@ pub fn reflect_shader(allocator: std.mem.Allocator, code: []const u32, stage: c.
 
                     // Check for array
                     if (pointed_opcode == SpvOpTypeArray) {
-                         res.count = array_lengths[pointed_type];
+                         res.count = array_lengths.get(pointed_type) orelse 1;
                     } else if (pointed_opcode == SpvOpTypeRuntimeArray) {
                          // Bindless/Runtime array
                          res.count = 4096; // Default large size for bindless

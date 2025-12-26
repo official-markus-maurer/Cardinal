@@ -166,7 +166,7 @@ pub const PBRUniformBufferObject = extern struct {
     view: [16]f32,
     proj: [16]f32,
     viewPos: [3]f32,
-    _padding1: f32,
+    debugFlags: f32,
 };
 
 pub const PBRLight = extern struct {
@@ -742,43 +742,63 @@ pub const VulkanPipelines = extern struct {
 pub const VulkanPBRPipeline = extern struct {
     pipeline: c.VkPipeline,
     pipelineLayout: c.VkPipelineLayout,
-    descriptorSetLayout: c.VkDescriptorSetLayout,
-    descriptorPool: c.VkDescriptorPool,
-    descriptorSet: c.VkDescriptorSet,
-
-    vertexBuffer: c.VkBuffer,
-    vertexBufferMemory: c.VkDeviceMemory,
-    vertexBufferAllocation: c.VmaAllocation,
-    indexBuffer: c.VkBuffer,
-    indexBufferMemory: c.VkDeviceMemory,
-    indexBufferAllocation: c.VmaAllocation,
-    lightingBuffer: c.VkBuffer,
-    lightingBufferMemory: c.VkDeviceMemory,
-    lightingBufferAllocation: c.VmaAllocation,
-
-    textureManager: ?*VulkanTextureManager,
     descriptorManager: ?*VulkanDescriptorManager,
+    textureManager: ?*VulkanTextureManager,
 
-    initialized: bool,
-    supportsDescriptorIndexing: bool,
+    // Buffers
     uniformBuffer: c.VkBuffer,
     uniformBufferMemory: c.VkDeviceMemory,
     uniformBufferAllocation: c.VmaAllocation,
     uniformBufferMapped: ?*anyopaque,
-    boneMatricesBufferMapped: ?*anyopaque,
 
-    totalIndexCount: u32,
     materialBuffer: c.VkBuffer,
     materialBufferMemory: c.VkDeviceMemory,
     materialBufferAllocation: c.VmaAllocation,
-    lightingBufferMapped: ?*anyopaque,
-    pipelineBlend: c.VkPipeline,
-
     materialBufferMapped: ?*anyopaque,
+
+    lightingBuffer: c.VkBuffer,
+    lightingBufferMemory: c.VkDeviceMemory,
+    lightingBufferAllocation: c.VmaAllocation,
+    lightingBufferMapped: ?*anyopaque,
+    
+    // Shadow Mapping
+    shadowPipeline: c.VkPipeline,
+    shadowPipelineLayout: c.VkPipelineLayout,
+    shadowDescriptorSetLayout: c.VkDescriptorSetLayout,
+    shadowDescriptorPool: c.VkDescriptorPool,
+    shadowDescriptorSet: c.VkDescriptorSet,
+    shadowMapImage: c.VkImage,
+    shadowMapMemory: c.VkDeviceMemory,
+    shadowMapAllocation: c.VmaAllocation,
+    shadowMapView: c.VkImageView,
+    shadowCascadeViews: [4]c.VkImageView, // SHADOW_CASCADE_COUNT
+    shadowMapSampler: c.VkSampler,
+    shadowUBO: c.VkBuffer,
+    shadowUBOMemory: c.VkDeviceMemory,
+    shadowUBOAllocation: c.VmaAllocation,
+    shadowUBOMapped: ?*anyopaque,
+
+    // Bone Matrices
     boneMatricesBuffer: c.VkBuffer,
     boneMatricesBufferMemory: c.VkDeviceMemory,
     boneMatricesBufferAllocation: c.VmaAllocation,
+    boneMatricesBufferMapped: ?*anyopaque,
     maxBones: u32,
+
+    // Common
+    vertexBuffer: c.VkBuffer,
+    indexBuffer: c.VkBuffer,
+    vertexBufferMemory: c.VkDeviceMemory,
+    indexBufferMemory: c.VkDeviceMemory,
+    vertexBufferAllocation: c.VmaAllocation,
+    indexBufferAllocation: c.VmaAllocation,
+    
+    totalIndexCount: u32,
+    initialized: bool,
+    supportsDescriptorIndexing: bool,
+    pipelineBlend: c.VkPipeline,
+
+    debug_flags: f32,
 };
 
 // Main State

@@ -91,6 +91,23 @@ if ($LASTEXITCODE -eq 0) {
     Write-Host "[ERROR] Failed to compile mesh fragment shader"
 }
 
+# Compile Shadow shaders
+Write-Host "Compiling shadow vertex shader..."
+glslc --target-env=vulkan1.1 shadow.vert -o "$outputDir\shadow.vert.spv"
+if ($LASTEXITCODE -eq 0) {
+    Write-Host "[OK] Shadow vertex shader compiled successfully"
+} else {
+    Write-Host "[ERROR] Failed to compile shadow vertex shader"
+}
+
+Write-Host "Compiling shadow fragment shader..."
+glslc --target-env=vulkan1.1 shadow.frag -o "$outputDir\shadow.frag.spv"
+if ($LASTEXITCODE -eq 0) {
+    Write-Host "[OK] Shadow fragment shader compiled successfully"
+} else {
+    Write-Host "[ERROR] Failed to compile shadow fragment shader"
+}
+
 Write-Host "Shader compilation complete!"
 
 # Return to original directory

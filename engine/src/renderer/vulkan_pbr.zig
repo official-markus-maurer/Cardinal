@@ -1,6 +1,7 @@
 const std = @import("std");
 const builtin = @import("builtin");
 const log = @import("../core/log.zig");
+const math = @import("../core/math.zig");
 const memory = @import("../core/memory.zig");
 const buffer_mgr = @import("vulkan_buffer_manager.zig");
 const descriptor_mgr = @import("vulkan_descriptor_manager.zig");
@@ -595,6 +596,23 @@ fn update_pbr_descriptor_sets(pipeline: *types.VulkanPBRPipeline) bool {
         return false;
     }
 
+    // Update Shadow Map (Binding 7)
+    if (pipeline.shadowMapView != null) {
+        if (!descriptor_mgr.vk_descriptor_manager_update_image(dm, setIndex, 7, pipeline.shadowMapView, pipeline.shadowMapSampler, c.VK_IMAGE_LAYOUT_DEPTH_STENCIL_READ_ONLY_OPTIMAL)) {
+             log.cardinal_log_error("Failed to update shadow map descriptor", .{});
+             return false;
+        }
+    }
+
+    // Update Shadow UBO (Binding 9)
+    if (pipeline.shadowUBO != null) {
+        const shadowUBOSize = @sizeOf(math.Mat4) * SHADOW_CASCADE_COUNT + @sizeOf(f32) * 4;
+        if (!descriptor_mgr.vk_descriptor_manager_update_buffer(dm, setIndex, 9, pipeline.shadowUBO, 0, shadowUBOSize)) {
+             log.cardinal_log_error("Failed to update shadow UBO descriptor", .{});
+             return false;
+        }
+    }
+
     return true;
 }
 
@@ -681,6 +699,303 @@ pub export fn vk_pbr_load_scene(pipeline: ?*types.VulkanPBRPipeline, device: c.V
     }
 
     log.cardinal_log_info("PBR scene loaded successfully", .{});
+    return true;
+}
+
+const SHADOW_MAP_SIZE: u32 = 2048;
+const SHADOW_CASCADE_COUNT: u32 = 4;
+const SHADOW_FORMAT = c.VK_FORMAT_D32_SFLOAT;
+
+fn create_shadow_resources(pipeline: *types.VulkanPBRPipeline, device: c.VkDevice, allocator: *types.VulkanAllocator) bool {
+    // Create Shadow Image (2D Array)
+    var imageInfo = std.mem.zeroes(c.VkImageCreateInfo);
+    imageInfo.sType = c.VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO;
+    imageInfo.imageType = c.VK_IMAGE_TYPE_2D;
+    imageInfo.extent.width = SHADOW_MAP_SIZE;
+    imageInfo.extent.height = SHADOW_MAP_SIZE;
+    imageInfo.extent.depth = 1;
+    imageInfo.mipLevels = 1;
+    imageInfo.arrayLayers = SHADOW_CASCADE_COUNT;
+    imageInfo.format = SHADOW_FORMAT;
+    imageInfo.tiling = c.VK_IMAGE_TILING_OPTIMAL;
+    imageInfo.initialLayout = c.VK_IMAGE_LAYOUT_UNDEFINED;
+    imageInfo.usage = c.VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT | c.VK_IMAGE_USAGE_SAMPLED_BIT;
+    imageInfo.samples = c.VK_SAMPLE_COUNT_1_BIT;
+    imageInfo.sharingMode = c.VK_SHARING_MODE_EXCLUSIVE;
+    
+    var allocInfo = std.mem.zeroes(c.VmaAllocationCreateInfo);
+    allocInfo.usage = c.VMA_MEMORY_USAGE_AUTO;
+    allocInfo.flags = c.VMA_ALLOCATION_CREATE_DEDICATED_MEMORY_BIT;
+    
+    if (c.vmaCreateImage(allocator.handle, &imageInfo, &allocInfo, &pipeline.shadowMapImage, &pipeline.shadowMapAllocation, null) != c.VK_SUCCESS) {
+        log.cardinal_log_error("Failed to create shadow map image", .{});
+        return false;
+    }
+    
+    // Create View
+    var viewInfo = std.mem.zeroes(c.VkImageViewCreateInfo);
+    viewInfo.sType = c.VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO;
+    viewInfo.image = pipeline.shadowMapImage;
+    viewInfo.viewType = c.VK_IMAGE_VIEW_TYPE_2D_ARRAY;
+    viewInfo.format = SHADOW_FORMAT;
+    viewInfo.subresourceRange.aspectMask = c.VK_IMAGE_ASPECT_DEPTH_BIT;
+    viewInfo.subresourceRange.baseMipLevel = 0;
+    viewInfo.subresourceRange.levelCount = 1;
+    viewInfo.subresourceRange.baseArrayLayer = 0;
+    viewInfo.subresourceRange.layerCount = SHADOW_CASCADE_COUNT;
+    
+    if (c.vkCreateImageView(device, &viewInfo, null, &pipeline.shadowMapView) != c.VK_SUCCESS) {
+        log.cardinal_log_error("Failed to create shadow map view", .{});
+        return false;
+    }
+
+    // Create Per-Cascade Views
+    var i: u32 = 0;
+    while (i < SHADOW_CASCADE_COUNT) : (i += 1) {
+        viewInfo.subresourceRange.baseArrayLayer = i;
+        viewInfo.subresourceRange.layerCount = 1;
+        if (c.vkCreateImageView(device, &viewInfo, null, &pipeline.shadowCascadeViews[i]) != c.VK_SUCCESS) {
+             log.cardinal_log_error("Failed to create shadow cascade view {d}", .{i});
+             return false;
+        }
+    }
+    
+    // Create Sampler (PCF compatible)
+    var samplerInfo = std.mem.zeroes(c.VkSamplerCreateInfo);
+    samplerInfo.sType = c.VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO;
+    samplerInfo.magFilter = c.VK_FILTER_LINEAR;
+    samplerInfo.minFilter = c.VK_FILTER_LINEAR;
+    samplerInfo.mipmapMode = c.VK_SAMPLER_MIPMAP_MODE_LINEAR;
+    samplerInfo.addressModeU = c.VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_BORDER;
+    samplerInfo.addressModeV = c.VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_BORDER;
+    samplerInfo.addressModeW = c.VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_BORDER;
+    samplerInfo.borderColor = c.VK_BORDER_COLOR_FLOAT_OPAQUE_WHITE;
+    samplerInfo.compareEnable = c.VK_TRUE;
+    samplerInfo.compareOp = c.VK_COMPARE_OP_LESS;
+    
+    if (c.vkCreateSampler(device, &samplerInfo, null, &pipeline.shadowMapSampler) != c.VK_SUCCESS) {
+        log.cardinal_log_error("Failed to create shadow map sampler", .{});
+        return false;
+    }
+    
+    // Create Shadow UBO
+    var bufferInfo = std.mem.zeroes(buffer_mgr.VulkanBufferCreateInfo);
+    bufferInfo.size = @sizeOf(math.Mat4) * SHADOW_CASCADE_COUNT + @sizeOf(f32) * 4; // Matrices + Splits
+    bufferInfo.usage = c.VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT;
+    bufferInfo.properties = c.VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | c.VK_MEMORY_PROPERTY_HOST_COHERENT_BIT;
+    bufferInfo.persistentlyMapped = true;
+    
+    var shadowBuffer: buffer_mgr.VulkanBuffer = undefined;
+    if (!buffer_mgr.vk_buffer_create(&shadowBuffer, device, allocator, &bufferInfo)) return false;
+    
+    pipeline.shadowUBO = shadowBuffer.handle;
+    pipeline.shadowUBOMemory = shadowBuffer.memory;
+    pipeline.shadowUBOAllocation = shadowBuffer.allocation;
+    pipeline.shadowUBOMapped = shadowBuffer.mapped;
+    
+    return true;
+}
+
+fn create_shadow_pipeline(pipeline: *types.VulkanPBRPipeline, device: c.VkDevice, allocator: *types.VulkanAllocator) bool {
+    _ = allocator;
+    // Descriptor Set Layout
+    var bindings = [_]c.VkDescriptorSetLayoutBinding{
+        .{
+            .binding = 0,
+            .descriptorType = c.VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER,
+            .descriptorCount = 1,
+            .stageFlags = c.VK_SHADER_STAGE_VERTEX_BIT,
+            .pImmutableSamplers = null,
+        },
+        .{
+            .binding = 6,
+            .descriptorType = c.VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER,
+            .descriptorCount = 1,
+            .stageFlags = c.VK_SHADER_STAGE_VERTEX_BIT,
+            .pImmutableSamplers = null,
+        }
+    };
+    
+    var layoutInfo = std.mem.zeroes(c.VkDescriptorSetLayoutCreateInfo);
+    layoutInfo.sType = c.VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO;
+    layoutInfo.bindingCount = bindings.len;
+    layoutInfo.pBindings = &bindings;
+    
+    if (c.vkCreateDescriptorSetLayout(device, &layoutInfo, null, &pipeline.shadowDescriptorSetLayout) != c.VK_SUCCESS) {
+        log.cardinal_log_error("Failed to create shadow descriptor set layout", .{});
+        return false;
+    }
+    
+    // Create Descriptor Pool
+    var poolSizes = [_]c.VkDescriptorPoolSize{
+        .{ .type = c.VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, .descriptorCount = 2 },
+    };
+    
+    var poolInfo = std.mem.zeroes(c.VkDescriptorPoolCreateInfo);
+    poolInfo.sType = c.VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO;
+    poolInfo.poolSizeCount = poolSizes.len;
+    poolInfo.pPoolSizes = &poolSizes;
+    poolInfo.maxSets = 1;
+    
+    if (c.vkCreateDescriptorPool(device, &poolInfo, null, &pipeline.shadowDescriptorPool) != c.VK_SUCCESS) {
+        log.cardinal_log_error("Failed to create shadow descriptor pool", .{});
+        return false;
+    }
+    
+    // Allocate Set
+    var allocInfo = std.mem.zeroes(c.VkDescriptorSetAllocateInfo);
+    allocInfo.sType = c.VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO;
+    allocInfo.descriptorPool = pipeline.shadowDescriptorPool;
+    allocInfo.descriptorSetCount = 1;
+    allocInfo.pSetLayouts = &pipeline.shadowDescriptorSetLayout;
+    
+    if (c.vkAllocateDescriptorSets(device, &allocInfo, &pipeline.shadowDescriptorSet) != c.VK_SUCCESS) {
+        log.cardinal_log_error("Failed to allocate shadow descriptor set", .{});
+        return false;
+    }
+    
+    // Update Set
+    var bufferInfo0 = std.mem.zeroes(c.VkDescriptorBufferInfo);
+    bufferInfo0.buffer = pipeline.shadowUBO;
+    bufferInfo0.offset = 0;
+    bufferInfo0.range = c.VK_WHOLE_SIZE;
+    
+    var write0 = std.mem.zeroes(c.VkWriteDescriptorSet);
+    write0.sType = c.VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+    write0.dstSet = pipeline.shadowDescriptorSet;
+    write0.dstBinding = 0;
+    write0.descriptorType = c.VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
+    write0.descriptorCount = 1;
+    write0.pBufferInfo = &bufferInfo0;
+    
+    var bufferInfo6 = std.mem.zeroes(c.VkDescriptorBufferInfo);
+    bufferInfo6.buffer = pipeline.boneMatricesBuffer;
+    bufferInfo6.offset = 0;
+    bufferInfo6.range = c.VK_WHOLE_SIZE;
+    
+    var write6 = std.mem.zeroes(c.VkWriteDescriptorSet);
+    write6.sType = c.VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+    write6.dstSet = pipeline.shadowDescriptorSet;
+    write6.dstBinding = 6;
+    write6.descriptorType = c.VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
+    write6.descriptorCount = 1;
+    write6.pBufferInfo = &bufferInfo6;
+    
+    const writes = [_]c.VkWriteDescriptorSet{write0, write6};
+    c.vkUpdateDescriptorSets(device, writes.len, &writes, 0, null);
+    
+    // Push Constant Range
+    var pushConstantRange = std.mem.zeroes(c.VkPushConstantRange);
+    pushConstantRange.stageFlags = c.VK_SHADER_STAGE_VERTEX_BIT;
+    pushConstantRange.offset = 0;
+    pushConstantRange.size = 156; // model(64) + padding + hasSkeleton(4) + cascadeIndex(4) -> 156
+    
+    // Pipeline Layout
+    var pipelineLayoutInfo = std.mem.zeroes(c.VkPipelineLayoutCreateInfo);
+    pipelineLayoutInfo.sType = c.VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO;
+    pipelineLayoutInfo.setLayoutCount = 1;
+    pipelineLayoutInfo.pSetLayouts = &pipeline.shadowDescriptorSetLayout;
+    pipelineLayoutInfo.pushConstantRangeCount = 1;
+    pipelineLayoutInfo.pPushConstantRanges = &pushConstantRange;
+    
+    if (c.vkCreatePipelineLayout(device, &pipelineLayoutInfo, null, &pipeline.shadowPipelineLayout) != c.VK_SUCCESS) {
+        log.cardinal_log_error("Failed to create shadow pipeline layout", .{});
+        return false;
+    }
+    
+    // Load Shaders
+    var vertShader: c.VkShaderModule = null;
+    var fragShader: c.VkShaderModule = null;
+    
+    var vert_path: [512]u8 = undefined;
+    var frag_path: [512]u8 = undefined;
+    var shaders_dir: [*c]const u8 = @ptrCast(c.getenv("CARDINAL_SHADERS_DIR"));
+    if (shaders_dir == null or shaders_dir[0] == 0) {
+        shaders_dir = "assets/shaders";
+    }
+    
+    _ = c.snprintf(&vert_path, 512, "%s/shadow.vert.spv", shaders_dir);
+    _ = c.snprintf(&frag_path, 512, "%s/shadow.frag.spv", shaders_dir);
+    
+    if (!shader_utils.vk_shader_create_module(device, @as([*:0]const u8, @ptrCast(&vert_path)), &vertShader)) {
+        log.cardinal_log_error("Failed to create shadow vertex shader", .{});
+        return false;
+    }
+    if (!shader_utils.vk_shader_create_module(device, @as([*:0]const u8, @ptrCast(&frag_path)), &fragShader)) {
+        log.cardinal_log_error("Failed to create shadow fragment shader", .{});
+        c.vkDestroyShaderModule(device, vertShader, null);
+        return false;
+    }
+    defer c.vkDestroyShaderModule(device, vertShader, null);
+    defer c.vkDestroyShaderModule(device, fragShader, null);
+    
+    // Shader Stages
+    var shaderStages: [2]c.VkPipelineShaderStageCreateInfo = undefined;
+    configure_shader_stages(&shaderStages, vertShader, fragShader);
+    
+    // Vertex Input
+    var bindingDescription: c.VkVertexInputBindingDescription = undefined;
+    var attributeDescriptions: [6]c.VkVertexInputAttributeDescription = undefined;
+    var vertexInputInfo: c.VkPipelineVertexInputStateCreateInfo = undefined;
+    configure_vertex_input(&vertexInputInfo, &bindingDescription, &attributeDescriptions);
+    
+    // Assembly, Viewport, Rasterizer, Multisample
+    var inputAssembly: c.VkPipelineInputAssemblyStateCreateInfo = undefined;
+    configure_input_assembly(&inputAssembly);
+    
+    var viewportState: c.VkPipelineViewportStateCreateInfo = undefined;
+    configure_viewport_state(&viewportState);
+    
+    var rasterizer: c.VkPipelineRasterizationStateCreateInfo = undefined;
+    configure_rasterization(&rasterizer);
+    rasterizer.cullMode = c.VK_CULL_MODE_NONE; // Disable culling for shadows to be safe
+    rasterizer.depthBiasEnable = c.VK_TRUE; // Important for shadows
+    
+    var multisampling: c.VkPipelineMultisampleStateCreateInfo = undefined;
+    configure_multisampling(&multisampling);
+    
+    // Depth Stencil
+    var depthStencil: c.VkPipelineDepthStencilStateCreateInfo = undefined;
+    configure_depth_stencil(&depthStencil, true);
+    
+    // Color Blend (Disabled)
+    var colorBlendAttachment: c.VkPipelineColorBlendAttachmentState = undefined;
+    var colorBlending: c.VkPipelineColorBlendStateCreateInfo = undefined;
+    configure_color_blending(&colorBlending, &colorBlendAttachment, false);
+    colorBlending.attachmentCount = 0; // No color attachment
+    
+    // Dynamic State
+    var dynamicStates: [3]c.VkDynamicState = undefined;
+    var dynamicState: c.VkPipelineDynamicStateCreateInfo = undefined;
+    configure_dynamic_state(&dynamicState, &dynamicStates);
+    
+    // Pipeline Info
+    var pipelineInfo = std.mem.zeroes(c.VkGraphicsPipelineCreateInfo);
+    pipelineInfo.sType = c.VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO;
+    pipelineInfo.stageCount = 2;
+    pipelineInfo.pStages = &shaderStages;
+    pipelineInfo.pVertexInputState = &vertexInputInfo;
+    pipelineInfo.pInputAssemblyState = &inputAssembly;
+    pipelineInfo.pViewportState = &viewportState;
+    pipelineInfo.pRasterizationState = &rasterizer;
+    pipelineInfo.pMultisampleState = &multisampling;
+    pipelineInfo.pDepthStencilState = &depthStencil;
+    pipelineInfo.pColorBlendState = &colorBlending;
+    pipelineInfo.pDynamicState = &dynamicState;
+    pipelineInfo.layout = pipeline.shadowPipelineLayout;
+    
+    // Dynamic Rendering
+    var pipelineRenderingInfo = std.mem.zeroes(c.VkPipelineRenderingCreateInfo);
+    pipelineRenderingInfo.sType = c.VK_STRUCTURE_TYPE_PIPELINE_RENDERING_CREATE_INFO;
+    pipelineRenderingInfo.depthAttachmentFormat = SHADOW_FORMAT;
+    pipelineRenderingInfo.colorAttachmentCount = 0;
+    pipelineInfo.pNext = &pipelineRenderingInfo;
+    
+    if (c.vkCreateGraphicsPipelines(device, null, 1, &pipelineInfo, null, &pipeline.shadowPipeline) != c.VK_SUCCESS) {
+        log.cardinal_log_error("Failed to create shadow pipeline", .{});
+        return false;
+    }
+    
     return true;
 }
 
@@ -832,6 +1147,17 @@ pub export fn vk_pbr_pipeline_create(pipeline: ?*types.VulkanPBRPipeline, device
         return false;
     }
 
+    // Initialize Shadow Maps
+    if (!create_shadow_resources(pipe, device, alloc)) {
+        log.cardinal_log_error("Failed to create shadow resources", .{});
+        return false;
+    }
+
+    if (!create_shadow_pipeline(pipe, device, alloc)) {
+        log.cardinal_log_error("Failed to create shadow pipeline", .{});
+        return false;
+    }
+
     initialize_pbr_defaults(pipe);
 
     pipe.initialized = true;
@@ -915,6 +1241,44 @@ pub export fn vk_pbr_pipeline_destroy(pipeline: ?*types.VulkanPBRPipeline, devic
 
     if (pipe.pipelineLayout != null) {
         wrappers.Device.init(device).destroyPipelineLayout(pipe.pipelineLayout);
+    }
+
+    if (pipe.shadowPipeline != null) {
+        c.vkDestroyPipeline(device, pipe.shadowPipeline, null);
+    }
+    if (pipe.shadowPipelineLayout != null) {
+        c.vkDestroyPipelineLayout(device, pipe.shadowPipelineLayout, null);
+    }
+    if (pipe.shadowDescriptorPool != null) {
+        c.vkDestroyDescriptorPool(device, pipe.shadowDescriptorPool, null);
+    }
+    if (pipe.shadowDescriptorSetLayout != null) {
+        c.vkDestroyDescriptorSetLayout(device, pipe.shadowDescriptorSetLayout, null);
+    }
+    
+    var i: u32 = 0;
+    while (i < SHADOW_CASCADE_COUNT) : (i += 1) {
+        if (pipe.shadowCascadeViews[i] != null) {
+            c.vkDestroyImageView(device, pipe.shadowCascadeViews[i], null);
+        }
+    }
+    
+    if (pipe.shadowMapView != null) {
+        c.vkDestroyImageView(device, pipe.shadowMapView, null);
+    }
+    if (pipe.shadowMapImage != null) {
+        vk_allocator.vk_allocator_free_image(alloc, pipe.shadowMapImage, pipe.shadowMapAllocation);
+    }
+    if (pipe.shadowMapSampler != null) {
+        c.vkDestroySampler(device, pipe.shadowMapSampler, null);
+    }
+    
+    if (pipe.shadowUBO != null or pipe.shadowUBOMemory != null) {
+        if (pipe.shadowUBOMapped != null) {
+            vk_allocator.vk_allocator_unmap_memory(alloc, pipe.shadowUBOAllocation);
+            pipe.shadowUBOMapped = null;
+        }
+        vk_allocator.vk_allocator_free_buffer(alloc, pipe.shadowUBO, pipe.shadowUBOAllocation);
     }
 
     if (pipe.boneMatricesBuffer != null or pipe.boneMatricesBufferMemory != null) {

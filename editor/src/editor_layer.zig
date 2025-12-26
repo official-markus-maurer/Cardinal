@@ -122,15 +122,30 @@ fn draw_pbr_settings_panel() void {
             if (c.imgui_bridge_collapsing_header("Lighting", c.ImGuiTreeNodeFlags_DefaultOpen)) {
                 var light_changed = false;
                 
+                // Add Directional Light Toggle
+                if (c.imgui_bridge_checkbox("Enable Directional Light", &state.enable_directional_light)) {
+                    light_changed = true;
+                }
+                
+                // Add Debug Cascade Viz Toggle
+                if (c.imgui_bridge_checkbox("Debug Cascade Viz", &state.debug_cascade_viz)) {
+                    renderer.cardinal_renderer_set_debug_flags(state.renderer, if (state.debug_cascade_viz) 1.0 else 0.0);
+                }
+
                 var light_type = state.light.type;
                 var items: [3][*c]const u8 = undefined;
                 items[0] = "Directional";
                 items[1] = "Point";
                 items[2] = "Spot";
                 
-                if (c.imgui_bridge_combo("Type", &light_type, &items, 3, -1)) {
-                    state.light.type = light_type;
-                    light_changed = true;
+                if (state.enable_directional_light) {
+                    c.imgui_bridge_text_disabled("Type locked to Directional");
+                    state.light.type = 0;
+                } else {
+                    if (c.imgui_bridge_combo("Type", &light_type, &items, 3, -1)) {
+                        state.light.type = light_type;
+                        light_changed = true;
+                    }
                 }
 
                 if (state.light.type == 0) { // Directional
@@ -730,46 +745,60 @@ pub fn process_pending_uploads() void {
         if (state.pbr_enabled) {
             renderer.cardinal_renderer_set_camera(state.renderer, &state.camera);
             
+            var pbr_lights: [types.MAX_LIGHTS]types.PBRLight = undefined;
+            var light_count: u32 = 0;
+
+            // 1. Add Manual Directional Light (if enabled)
+            if (state.enable_directional_light) {
+                pbr_lights[light_count] = std.mem.zeroes(types.PBRLight);
+                // Ensure type is Directional (0)
+                pbr_lights[light_count].lightDirection = .{ state.light.direction.x, state.light.direction.y, state.light.direction.z, 0.0 };
+                pbr_lights[light_count].lightPosition = .{ state.light.position.x, state.light.position.y, state.light.position.z, 0.0 };
+                pbr_lights[light_count].lightColor = .{ state.light.color.x, state.light.color.y, state.light.color.z, state.light.intensity };
+                pbr_lights[light_count].ambientColor = .{ state.light.ambient.x, state.light.ambient.y, state.light.ambient.z, state.light.range };
+                light_count += 1;
+            }
+            
+            // 2. Add Scene Lights (Point/Spot)
             if (state.combined_scene.light_count > 0 and state.combined_scene.lights != null) {
-                var pbr_lights: [types.MAX_LIGHTS]types.PBRLight = undefined;
-                var light_count: u32 = 0;
                 var i: u32 = 0;
-                
                 while (i < state.combined_scene.light_count and light_count < types.MAX_LIGHTS) : (i += 1) {
                     const sl = &state.combined_scene.lights.?[i];
+                    
+                    // Skip Directional lights from scene if manual is enabled (or just prioritize manual)
+                    // The user requested "point and spotlights should be used by the models"
+                    // If the scene has a directional light, we'll include it, but manual one is already added as #0 (shadow caster)
+                    
                     var pos = math.Vec3{ .x = 0, .y = 0, .z = 0 };
-                    var dir = math.Vec3{ .x = 0, .y = -1, .z = 0 }; // Default direction down
+                    var dir = math.Vec3{ .x = 0, .y = -1, .z = 0 };
                     
                     if (sl.node_index < state.combined_scene.all_node_count and state.combined_scene.all_nodes != null) {
                         if (state.combined_scene.all_nodes.?[sl.node_index]) |node| {
                             const m = node.world_transform;
-                            // Extract direction from world transform (assuming -Z is forward)
                             dir = .{ .x = -m[8], .y = -m[9], .z = -m[10] };
-                            // Position is column 3: m[12], m[13], m[14]
                             pos = .{ .x = m[12], .y = m[13], .z = m[14] };
                         }
                     }
                     
                     var intensity = sl.intensity;
-                    if (intensity < 100.0) intensity *= 100.0;
+                    if (intensity < 100.0) intensity *= 100.0; // Auto-boost
                     
                     pbr_lights[light_count] = std.mem.zeroes(types.PBRLight);
                     pbr_lights[light_count].lightDirection = .{ dir.x, dir.y, dir.z, @floatFromInt(@intFromEnum(sl.type)) };
                     pbr_lights[light_count].lightPosition = .{ pos.x, pos.y, pos.z, 0.0 };
                     pbr_lights[light_count].lightColor = .{ sl.color[0], sl.color[1], sl.color[2], intensity };
-                    
-                    // Add small ambient to first light only
-                    if (light_count == 0) {
-                        pbr_lights[light_count].ambientColor = .{ 0.05, 0.05, 0.05, sl.range };
-                    } else {
-                        pbr_lights[light_count].ambientColor = .{ 0.0, 0.0, 0.0, sl.range };
-                    }
+                    pbr_lights[light_count].ambientColor = .{ 0.0, 0.0, 0.0, sl.range }; // No ambient for additional lights
                     
                     light_count += 1;
                 }
+            }
+
+            if (light_count > 0) {
                 renderer.cardinal_renderer_set_lights(state.renderer, &pbr_lights, light_count);
             } else {
-                renderer.cardinal_renderer_set_lighting(state.renderer, &state.light);
+                 // Fallback if no lights enabled (prevent crash or undefined state)
+                 // Just send 0 lights
+                 renderer.cardinal_renderer_set_lights(state.renderer, null, 0);
             }
         }
     }

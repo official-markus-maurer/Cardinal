@@ -351,6 +351,11 @@ pub fn vulkan_sync_manager_get_next_timeline_value(sync_manager: ?*types.VulkanS
     g_sync_lock.lockShared();
     defer g_sync_lock.unlockShared();
 
+    if (mgr.timeline_semaphore == null) {
+        log.cardinal_log_error("[SYNC_MANAGER] Timeline semaphore is null in get_next_timeline_value", .{});
+        return 0;
+    }
+
     // Get current value from device to ensure we are ahead
     var current_device_value: u64 = 0;
     var result = c.vkGetSemaphoreCounterValue(mgr.device, mgr.timeline_semaphore, &current_device_value);

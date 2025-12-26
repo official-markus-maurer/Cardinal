@@ -227,12 +227,18 @@ pub export fn vk_allocator_allocate_buffer(alloc: ?*types.VulkanAllocator, buffe
         return false;
     }
 
+    // Verify buffer handle
+    if (out_buffer.?.* == null) {
+        log.cardinal_log_error("vmaCreateBuffer returned success but buffer handle is null", .{});
+        return false;
+    }
+
     if (out_memory != null) {
         out_memory.?.* = allocInfoOut.deviceMemory;
         log.cardinal_log_debug("vmaCreateBuffer returned memory handle: {any}", .{allocInfoOut.deviceMemory});
     }
 
-    log.cardinal_log_info("vk_allocator_allocate_buffer success", .{});
+    log.cardinal_log_info("vk_allocator_allocate_buffer success, buffer: {any}", .{out_buffer.?.*});
     return true;
 }
 

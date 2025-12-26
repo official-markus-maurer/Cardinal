@@ -13,7 +13,7 @@ layout(binding = 0) uniform UniformBufferObject {
     mat4 model;
     mat4 view;
     mat4 proj;
-    vec3 viewPos;
+    vec4 viewPosAndDebug; // xyz = viewPos, w = debugFlags
 } ubo;
 
 // Bone matrices uniform buffer for skeletal animation
@@ -75,7 +75,7 @@ void main() {
     fragTexCoord1 = inTexCoord1;
     
     // Pass view position for lighting calculations
-    fragViewPos = ubo.viewPos;
+    fragViewPos = ubo.viewPosAndDebug.xyz;
     
     // Final position in clip space
     gl_Position = ubo.proj * ubo.view * worldPos;

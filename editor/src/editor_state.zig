@@ -83,6 +83,8 @@ pub const EditorState = struct {
     camera: types.CardinalCamera = undefined,
     light: types.CardinalLight = undefined,
     pbr_enabled: bool = true,
+    enable_directional_light: bool = true,
+    debug_cascade_viz: bool = false,
 
     // Camera Control
     mouse_captured: bool = false,

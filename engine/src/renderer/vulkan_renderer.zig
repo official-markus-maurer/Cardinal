@@ -510,10 +510,12 @@ pub export fn cardinal_renderer_destroy(renderer: ?*types.CardinalRenderer) call
     destroy_scene_buffers(s);
 
     // Check if timeline semaphore is shared with sync manager to avoid double free
-    const sm_check = @as(?*types.VulkanSyncManager, @ptrCast(s.sync_manager));
-    if (sm_check != null and s.sync.timeline_semaphore == sm_check.?.timeline_semaphore) {
-        s.sync.timeline_semaphore = null;
-    }
+    // Since s.sync IS the sync manager storage (s.sync_manager points to it), 
+    // we MUST NOT clear the handle here, otherwise vk_destroy_commands_sync won't destroy it.
+    // const sm_check = @as(?*types.VulkanSyncManager, @ptrCast(s.sync_manager));
+    // if (sm_check != null and s.sync.timeline_semaphore == sm_check.?.timeline_semaphore) {
+    //     s.sync.timeline_semaphore = null;
+    // }
 
     vk_commands.vk_destroy_commands_sync(@ptrCast(s));
 
@@ -663,6 +665,9 @@ pub export fn cardinal_renderer_set_camera(renderer: ?*types.CardinalRenderer, c
     ubo.viewPos[0] = cam.position.x;
     ubo.viewPos[1] = cam.position.y;
     ubo.viewPos[2] = cam.position.z;
+    
+    // Set debug flags from pipeline state
+    ubo.debugFlags = s.pipelines.pbr_pipeline.debug_flags;
 
     // Update the uniform buffer
     @memcpy(@as([*]u8, @ptrCast(s.pipelines.pbr_pipeline.uniformBufferMapped))[0..@sizeOf(types.PBRUniformBufferObject)], @as([*]const u8, @ptrCast(&ubo))[0..@sizeOf(types.PBRUniformBufferObject)]);
@@ -672,10 +677,35 @@ pub export fn cardinal_renderer_set_camera(renderer: ?*types.CardinalRenderer, c
     vk_pbr.vk_pbr_update_uniforms(@ptrCast(&s.pipelines.pbr_pipeline), @ptrCast(&ubo), null);
 }
 
+pub export fn cardinal_renderer_set_debug_flags(renderer: ?*types.CardinalRenderer, flags: f32) callconv(.c) void {
+    if (renderer == null) return;
+    const s = get_state(renderer) orelse return;
+    
+    if (!s.pipelines.use_pbr_pipeline) return;
+    
+    // Update stored state
+    s.pipelines.pbr_pipeline.debug_flags = flags;
+    
+    // Update UBO immediately
+    if (s.pipelines.pbr_pipeline.uniformBufferMapped != null) {
+        var ubo: types.PBRUniformBufferObject = undefined;
+        @memcpy(@as([*]u8, @ptrCast(&ubo))[0..@sizeOf(types.PBRUniformBufferObject)], @as([*]const u8, @ptrCast(s.pipelines.pbr_pipeline.uniformBufferMapped))[0..@sizeOf(types.PBRUniformBufferObject)]);
+        
+        ubo.debugFlags = flags;
+        
+        @memcpy(@as([*]u8, @ptrCast(s.pipelines.pbr_pipeline.uniformBufferMapped))[0..@sizeOf(types.PBRUniformBufferObject)], @as([*]const u8, @ptrCast(&ubo))[0..@sizeOf(types.PBRUniformBufferObject)]);
+        
+        // Propagate to centralized updater
+        vk_pbr.vk_pbr_update_uniforms(@ptrCast(&s.pipelines.pbr_pipeline), @ptrCast(&ubo), null);
+    }
+}
+
 pub export fn cardinal_renderer_set_lights(renderer: ?*types.CardinalRenderer, lights: ?[*]const types.PBRLight, count: u32) callconv(.c) void {
     if (renderer == null) return;
     const s = get_state(renderer) orelse return;
     
+    log.cardinal_log_info("Setting lights: count={d}", .{count});
+
     if (!s.pipelines.use_pbr_pipeline) return;
 
     var lighting = std.mem.zeroes(types.PBRLightingBuffer);

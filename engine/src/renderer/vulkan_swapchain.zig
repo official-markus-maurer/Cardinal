@@ -484,7 +484,8 @@ pub export fn vk_create_swapchain(s: ?*types.VulkanState) callconv(.c) bool {
     }
 
     if (!create_swapchain_image_views(vs)) {
-        c.free(@as(?*anyopaque, @ptrCast(vs.swapchain.images)));
+        const mem_alloc = memory.cardinal_get_allocator_for_category(.RENDERER);
+        memory.cardinal_free(mem_alloc, @as(?*anyopaque, @ptrCast(vs.swapchain.images)));
         vs.swapchain.images = null;
         c.vkDestroySwapchainKHR(vs.context.device, vs.swapchain.handle, null);
         vs.swapchain.handle = null;

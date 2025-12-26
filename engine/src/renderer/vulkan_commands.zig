@@ -11,6 +11,7 @@ const vk_mesh_shader = @import("vulkan_mesh_shader.zig");
 const vk_simple_pipelines = @import("vulkan_simple_pipelines.zig");
 const vk_sync_manager = @import("vulkan_sync_manager.zig");
 const render_graph = @import("render_graph.zig");
+const vk_shadows = @import("vulkan_shadows.zig");
 
 const cmd_log = log.ScopedLogger("COMMANDS");
 
@@ -718,6 +719,11 @@ pub export fn vk_record_cmd(s: ?*types.VulkanState, image_index: u32) callconv(.
 
     if (!validate_swapchain_image(vs, image_index)) return;
     if (!begin_command_buffer(vs, cmd)) return;
+
+    // Shadow Pass
+    if (vs.pipelines.use_pbr_pipeline and vs.current_rendering_mode == types.CardinalRenderingMode.NORMAL) {
+        vk_shadows.vk_shadow_render(vs, cmd);
+    }
 
     var clears: [2]c.VkClearValue = undefined;
     clears[0].color.float32[0] = 0.05;
