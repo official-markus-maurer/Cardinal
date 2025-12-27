@@ -15,8 +15,10 @@ const vk_pipeline = @import("vulkan_pipeline.zig");
 const vk_commands = @import("vulkan_commands.zig");
 const vk_sync_manager = @import("vulkan_sync_manager.zig");
 const vk_pbr = @import("vulkan_pbr.zig");
+const vk_skybox = @import("vulkan_skybox.zig");
 const vk_mesh_shader = @import("vulkan_mesh_shader.zig");
 const vk_compute = @import("vulkan_compute.zig");
+const texture_loader = @import("../assets/texture_loader.zig");
 const vk_simple_pipelines = @import("vulkan_simple_pipelines.zig");
 const vk_allocator = @import("vulkan_allocator.zig");
 const vk_buffer_utils = @import("util/vulkan_buffer_utils.zig");
@@ -233,10 +235,21 @@ fn init_simple_pipelines_helper(s: *types.VulkanState) void {
     }
 }
 
+fn init_skybox_pipeline_helper(s: *types.VulkanState) void {
+    s.pipelines.use_skybox_pipeline = false;
+    if (vk_skybox.vk_skybox_pipeline_init(@ptrCast(&s.pipelines.skybox_pipeline), s.context.device, s.swapchain.format, s.swapchain.depth_format, @ptrCast(&s.allocator))) {
+        s.pipelines.use_skybox_pipeline = true;
+        log.cardinal_log_info("renderer_create: Skybox pipeline", .{});
+    } else {
+        log.cardinal_log_error("vk_skybox_pipeline_init failed", .{});
+    }
+}
+
 fn init_pipelines(s: *types.VulkanState) bool {
     init_pbr_pipeline_helper(s);
     init_mesh_shader_pipeline_helper(s);
     init_compute_pipeline_helper(s);
+    init_skybox_pipeline_helper(s);
 
     // Initialize rendering mode
     s.current_rendering_mode = types.CardinalRenderingMode.NORMAL;
@@ -556,6 +569,13 @@ pub export fn cardinal_renderer_destroy(renderer: ?*types.CardinalRenderer) call
         s.pipelines.use_pbr_pipeline = false;
     }
 
+    // Destroy Skybox pipeline
+    if (s.pipelines.use_skybox_pipeline) {
+        log.cardinal_log_debug("[DESTROY] Destroying Skybox pipeline", .{});
+        vk_skybox.vk_skybox_pipeline_destroy(@ptrCast(&s.pipelines.skybox_pipeline), s.context.device, @ptrCast(&s.allocator));
+        s.pipelines.use_skybox_pipeline = false;
+    }
+
     // Destroy mesh shader pipeline BEFORE destroying allocator
     if (s.pipelines.use_mesh_shader_pipeline) {
         log.cardinal_log_debug("[DESTROY] Destroying mesh shader pipeline", .{});
@@ -765,6 +785,45 @@ pub export fn cardinal_renderer_set_lighting(renderer: ?*types.CardinalRenderer,
     var ubo: types.PBRUniformBufferObject = undefined;
     @memcpy(@as([*]u8, @ptrCast(&ubo))[0..@sizeOf(types.PBRUniformBufferObject)], @as([*]const u8, @ptrCast(s.pipelines.pbr_pipeline.uniformBufferMapped))[0..@sizeOf(types.PBRUniformBufferObject)]);
     vk_pbr.vk_pbr_update_uniforms(@ptrCast(&s.pipelines.pbr_pipeline), @ptrCast(&ubo), @ptrCast(&lighting));
+}
+
+pub export fn cardinal_renderer_set_skybox_from_data(renderer: ?*types.CardinalRenderer, data: ?*texture_loader.TextureData) callconv(.c) bool {
+    if (renderer == null or data == null) return false;
+    const s = get_state(renderer) orelse return false;
+
+    if (!s.pipelines.use_skybox_pipeline) {
+        log.cardinal_log_warn("Skybox pipeline not enabled", .{});
+        return false;
+    }
+
+    return vk_skybox.vk_skybox_load_from_data(
+        @ptrCast(&s.pipelines.skybox_pipeline),
+        s.context.device,
+        @ptrCast(&s.allocator),
+        s.commands.pools.?[0],
+        s.context.graphics_queue,
+        data.?.*
+    );
+}
+
+pub export fn cardinal_renderer_set_skybox(renderer: ?*types.CardinalRenderer, path: ?[*:0]const u8) callconv(.c) bool {
+    if (renderer == null or path == null) return false;
+    const s = get_state(renderer) orelse return false;
+
+    if (!s.pipelines.use_skybox_pipeline) {
+        log.cardinal_log_warn("Skybox pipeline not enabled", .{});
+        return false;
+    }
+
+    const path_slice = std.mem.span(path.?);
+    return vk_skybox.vk_skybox_load(
+        @ptrCast(&s.pipelines.skybox_pipeline),
+        s.context.device,
+        @ptrCast(&s.allocator),
+        s.commands.pools.?[0],
+        s.context.graphics_queue,
+        path_slice
+    );
 }
 
 pub export fn cardinal_renderer_enable_pbr(renderer: ?*types.CardinalRenderer, enable: bool) callconv(.c) void {

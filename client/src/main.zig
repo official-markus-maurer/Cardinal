@@ -86,6 +86,16 @@ pub fn main() !u8 {
         return 255;
     }
 
+    // Enable PBR to ensure pipelines are set up (skybox might depend on some shared state or just to be safe)
+    vulkan_renderer.cardinal_renderer_enable_pbr(&renderer, true);
+
+    // Load Skybox
+    // Note: STB Image does not support .exr files. Please use .hdr files for skyboxes.
+    // const skybox_path = "C:\\Users\\admin\\Documents\\Cardinal\\assets\\skybox\\kloofendal_48d_partly_cloudy_puresky_16k.exr";
+    // if (!vulkan_renderer.cardinal_renderer_set_skybox(&renderer, skybox_path)) {
+    //    log.cardinal_log_error("Failed to set skybox: {s}", .{skybox_path});
+    // }
+
     var frames: u32 = 0;
     while (!window.cardinal_window_should_close(win)) {
         window.cardinal_window_poll(win);

@@ -63,6 +63,12 @@ pub const EditorState = struct {
     scene_upload_pending: bool = false,
     pending_scene: scene.CardinalScene = undefined,
 
+    // Skybox Loading
+    skybox_load_pending: bool = false,
+    skybox_loading_thread: ?std.Thread = null,
+    skybox_data: ?*engine.texture_loader.TextureData = null,
+    skybox_path: ?[:0]u8 = null,
+
     // UI State
     status_msg: [256]u8 = [_]u8{0} ** 256,
     scene_path: [512]u8 = [_]u8{0} ** 512,
@@ -84,7 +90,6 @@ pub const EditorState = struct {
     light: types.CardinalLight = undefined,
     pbr_enabled: bool = true,
     enable_directional_light: bool = true,
-    debug_cascade_viz: bool = false,
 
     // Camera Control
     mouse_captured: bool = false,

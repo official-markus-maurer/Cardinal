@@ -149,158 +149,136 @@ pub fn vk_shadow_render(s: *types.VulkanState, cmd: c.VkCommandBuffer) void {
         // Let's implement Stable CSM (Fit to scene).
         // For simplicity: Fit to frustum slice.
         
-        // 1. Calculate corners of sub-frustum in World Space
-        //    NDC Z range: 0..1 (Vulkan)
-        //    Split distances are linear 0..1? No, d is linear depth.
-        //    Need to map d to NDC Z.
-        //    Or just compute corners using trigonometry if we knew FOV/Aspect.
-        //    Since we only have ViewProj, we can use Inverse ViewProj.
-        //    NDC Z for a given linear depth z:
-        //    z_ndc = P[2][2] + P[3][2]/z_view ? (Depends on projection matrix construction)
+        // 1. Calculate corners of sub-frustum in World Space directly
+        // This avoids dependency on invView matrix which might be problematic
         
-        //    Let's use the camera view frustum corners approach.
-        //    (Assuming we can get FOV/Aspect from somewhere or derive from Proj)
-        //    proj[1][1] = 1 / tan(fov/2).
-        
-        //    Alternative: Use computed 'd' (linear depth) to define sub-frustum.
-        //    Center of sub-frustum in View Space:
-        //    (0, 0, -(lastSplitDist + d)/2)
-        
-        //    Let's compute center of sub-frustum in World Space.
-        //    CamPos + CamForward * ((lastSplitDist + d)/2).
-        
-        //    Need CamPos and CamForward.
-        //    CamPos = ubo.viewPos (Vec3)
-        //    CamForward = -View[2][0..2] (Row 2 of View Matrix)
+        // Calculate World Space Frustum Corners
+        // Center = camPos + camForward * dist
+        // Width = dist * tanHalfFov * aspect * 2
+        // Height = dist * tanHalfFov * 2
         
         const camPos = math.Vec3.fromArray(ubo.viewPos);
-        const camForwardRaw = math.Vec3{ .x = -view.data[2], .y = -view.data[6], .z = -view.data[10] };
-        const camForward = camForwardRaw.normalize();
+        // Extract Camera Basis from View Matrix (Column-Major)
+        // Col 0: Right, Col 1: Up, Col 2: -Forward
+        const camRight = math.Vec3{ .x = view.data[0], .y = view.data[4], .z = view.data[8] };
+        const camUp = math.Vec3{ .x = view.data[1], .y = view.data[5], .z = view.data[9] };
+        const camForward = math.Vec3{ .x = -view.data[2], .y = -view.data[6], .z = -view.data[10] };
         
-        const splitCenterDist = (lastSplitDist + d) * 0.5;
-        const center = camPos.add(camForward.mul(splitCenterDist));
+        // Calculate Light View Matrix (Initial - only used to define split center if we wanted, but we use cam properties)
+         // Actually we don't need this lightView anymore if we use the stabilized one.
+         // But let's keep it for now if needed, or remove it.
+         // const lightView_unused = mat4_lookAt(lightEye, center, up); // Unused now
+         
+         const tanHalfFov = 1.0 / proj.data[5]; // Can be negative if Y is flipped
+         const aspect = proj.data[5] / proj.data[0];
+         
+         // Helper to get corners at a specific distance
+         const getCornersAtDist = struct {
+             fn call(dist: f32, cPos: math.Vec3, cFwd: math.Vec3, cRight: math.Vec3, cUp: math.Vec3, thf: f32, asp: f32) [4]math.Vec3 {
+                const height = dist * thf * 2.0;
+                const width = height * asp;
+                
+                const center_slice = cPos.add(cFwd.mul(dist));
+                const up_vec = cUp.mul(height * 0.5);
+                const right_vec = cRight.mul(width * 0.5);
+                
+                return [4]math.Vec3{
+                    center_slice.sub(right_vec).add(up_vec),    // TL
+                    center_slice.add(right_vec).add(up_vec),    // TR
+                    center_slice.sub(right_vec).sub(up_vec),    // BL
+                    center_slice.add(right_vec).sub(up_vec),    // BR
+                };
+            }
+        }.call;
         
-        // Calculate Light View Matrix
-        // Eye = Center - LightDir * distance
-        // Distance should be large enough to cover scene
-        const lightDist = farClip; // Or computed
-        const lightEye = center.sub(lightDir.mul(lightDist));
+        const cornersNear = getCornersAtDist(lastSplitDist, camPos, camForward, camRight, camUp, tanHalfFov, aspect);
+        const cornersFar = getCornersAtDist(d, camPos, camForward, camRight, camUp, tanHalfFov, aspect);
+        
+        const worldCorners = [8]math.Vec3{
+            cornersNear[0], cornersNear[1], cornersNear[2], cornersNear[3],
+            cornersFar[0], cornersFar[1], cornersFar[2], cornersFar[3]
+        };
+
+        // Calculate Centroid and Radius
+        var center = math.Vec3.zero();
+        for (worldCorners) |wc| {
+            center = center.add(wc);
+        }
+        center = center.mul(1.0 / 8.0);
+        
+        var radius: f32 = 0.0;
+        for (worldCorners) |wc| {
+            const d2 = wc.sub(center).lengthSq();
+            radius = @max(radius, d2);
+        }
+        radius = std.math.sqrt(radius);
+        // Round radius to stabilize scale (optional, but good for consistency)
+        radius = std.math.ceil(radius * 16.0) / 16.0;
+        
+        // Construct Light View Matrix (Rotation Only + Center Offset)
+        // We want to stabilize the shadow map by snapping to texels.
+        // 1. Create a base LightView looking at Origin from LightDir.
+        // 2. Project 'center' into this space.
+        // 3. Snap the projected center to texel grid.
+        // 4. Build Ortho projection around snapped center.
         
         var up = math.Vec3{ .x = 0, .y = 1, .z = 0 };
         if (std.math.approxEqAbs(f32, @abs(lightDir.dot(up)), 1.0, 0.001)) {
             up = math.Vec3{ .x = 0, .y = 0, .z = 1 };
         }
-        const lightView = mat4_lookAt(lightEye, center, up);
         
-        // Calculate Ortho Proj
-        // Project frustum corners to Light View Space to find min/max
-        // We need 8 corners of the sub-frustum in World Space.
+        // LightView looking at Origin (0,0,0) from Direction
+        // eye = -lightDir (normalized direction vector as position? No, just direction matters for rotation)
+        // Actually mat4_lookAt(eye, center, up)
+        // We want a view matrix that aligns world with light.
+        // Center = (0,0,0), Eye = -lightDir (so it looks towards 0 along lightDir).
+        // This creates a view matrix with no large translation offset (except related to 0).
+        const baseLightView = mat4_lookAt(lightDir.mul(-1.0), math.Vec3.zero(), up);
         
-        // To get corners:
-        // H = tan(fov/2) * z
-        // W = H * aspect
-        // We need tan(fov/2) and aspect.
-        // tan(fov/2) = 1.0 / proj[1][1] (data[5])
-        // aspect = proj[1][1] / proj[0][0] (data[5] / data[0])
-        
-        const tanHalfFov = 1.0 / proj.data[5]; // Abs?
-        const aspect = proj.data[5] / proj.data[0];
-        
-        const xn = lastSplitDist * tanHalfFov * aspect;
-        const xf = d * tanHalfFov * aspect;
-        const yn = lastSplitDist * tanHalfFov;
-        const yf = d * tanHalfFov;
-        
-        // Corners in View Space
-        // Near plane (z = -lastSplitDist)
-        const v_n_tl = math.Vec3{ .x = -xn, .y = yn, .z = -lastSplitDist };
-        const v_n_tr = math.Vec3{ .x = xn, .y = yn, .z = -lastSplitDist };
-        const v_n_bl = math.Vec3{ .x = -xn, .y = -yn, .z = -lastSplitDist };
-        const v_n_br = math.Vec3{ .x = xn, .y = -yn, .z = -lastSplitDist };
-        
-        // Far plane (z = -d)
-        const v_f_tl = math.Vec3{ .x = -xf, .y = yf, .z = -d };
-        const v_f_tr = math.Vec3{ .x = xf, .y = yf, .z = -d };
-        const v_f_bl = math.Vec3{ .x = -xf, .y = -yf, .z = -d };
-        const v_f_br = math.Vec3{ .x = xf, .y = -yf, .z = -d };
-        
-        const viewCorners = [8]math.Vec3{ v_n_tl, v_n_tr, v_n_bl, v_n_br, v_f_tl, v_f_tr, v_f_bl, v_f_br };
-        
-        // Transform to Light Space
-        // World = InvView * ViewCorner
-        // Light = LightView * World
-        // Light = LightView * InvView * ViewCorner
-        
-        const invView = view.invert() orelse mat4_identity(); // Should not fail
-        const toLight = lightView.mul(invView);
-        
-        var minX: f32 = std.math.floatMax(f32);
-        var maxX: f32 = std.math.floatMin(f32);
-        var minY: f32 = std.math.floatMax(f32);
-        var maxY: f32 = std.math.floatMin(f32);
-        var minZ_ls: f32 = std.math.floatMax(f32);
-        var maxZ_ls: f32 = std.math.floatMin(f32);
-        
-        for (viewCorners) |vc| {
-            const v4 = math.Vec4.fromVec3(vc, 1.0);
-            // Manually multiply vec4
-            var lc = math.Vec4.zero();
-            var ki: usize = 0;
-            while(ki < 4) : (ki += 1) {
-                lc.x += toLight.data[0 * 4 + ki] * v4.toArray()[ki];
-                lc.y += toLight.data[1 * 4 + ki] * v4.toArray()[ki];
-                lc.z += toLight.data[2 * 4 + ki] * v4.toArray()[ki];
-                lc.w += toLight.data[3 * 4 + ki] * v4.toArray()[ki];
+        // Helper to multiply Mat4 * Vec3 (assuming Col-Major matrix)
+        const mulMat4Vec3 = struct {
+            fn call(m: math.Mat4, v: math.Vec3) math.Vec3 {
+                const x = m.data[0] * v.x + m.data[4] * v.y + m.data[8] * v.z + m.data[12];
+                const y = m.data[1] * v.x + m.data[5] * v.y + m.data[9] * v.z + m.data[13];
+                const z = m.data[2] * v.x + m.data[6] * v.y + m.data[10] * v.z + m.data[14];
+                return math.Vec3{ .x = x, .y = y, .z = z };
             }
-            
-            minX = @min(minX, lc.x);
-            maxX = @max(maxX, lc.x);
-            minY = @min(minY, lc.y);
-            maxY = @max(maxY, lc.y);
-            minZ_ls = @min(minZ_ls, lc.z);
-            maxZ_ls = @max(maxZ_ls, lc.z);
-        }
+        }.call;
         
-        // Snap to texels to reduce shimmering
-        // TODO: ... (skip for brevity, can add later)
+        // Project center to Light Space
+        var centerLS = mulMat4Vec3(baseLightView, center);
         
-        // Z margin
-        const zMult = 10.0;
-        if (minZ_ls < 0) minZ_ls *= zMult else minZ_ls /= zMult;
-        if (maxZ_ls < 0) maxZ_ls /= zMult else maxZ_ls *= zMult;
+        // Calculate Shadow Map Resolution
+        const shadowMapWidth = @as(f32, @floatFromInt(SHADOW_MAP_SIZE));
         
-        // Note: minZ_ls is more negative (farther), maxZ_ls is less negative (closer)
-        // mat4_ortho takes zNear, zFar. 
-        // We want closest objects to map to 0, farthest to 1.
-        // So zNear should be close to maxZ_ls, zFar close to minZ_ls.
-        // However, we need to ensure we capture objects in front of the camera slice (casters).
-        // So we extend zNear (positive direction) and zFar (negative direction).
+        // World units per texel
+        // The projection width is 2 * radius
+        const worldUnitsPerTexel = (2.0 * radius) / shadowMapWidth;
         
-        // Since we are in Light View Space (looking down -Z):
-        // Objects are at negative Z.
-        // maxZ_ls is e.g. -10. minZ_ls is -100.
-        // We want -10 to be near (0), -100 to be far (1).
+        // Snap centerLS to texel grid
+        centerLS.x = @floor(centerLS.x / worldUnitsPerTexel) * worldUnitsPerTexel;
+        centerLS.y = @floor(centerLS.y / worldUnitsPerTexel) * worldUnitsPerTexel;
         
-        // mat4_ortho implementation maps zNear -> 0, zFar -> 1.
-        // m.data[10] = 1.0 / (zFar - zNear);
-        // m.data[14] = -zNear / (zFar - zNear);
-        // z' = (z - zNear) / (zFar - zNear)
+        // Update LightView to look at the SNAPPED center?
+        // Or just define Ortho bounds relative to the Base LightView.
+        // If we use Base LightView as the View Matrix, then 'centerLS' is the center of our projection volume in View Space.
         
-        // If zNear = 100 (positive, behind light), zFar = -500.
-        // z = -10: (-10 - 100) / (-500 - 100) = -110 / -600 = ~0.18 (Visible)
+        const lightView = baseLightView;
         
-        const lightProj = mat4_ortho(minX, maxX, minY, maxY, maxZ_ls + 200.0, minZ_ls - 200.0);
+        const minX = centerLS.x - radius;
+        const maxX = centerLS.x + radius;
+        const minY = centerLS.y - radius;
+        const maxY = centerLS.y + radius;
         
-        // DEBUG: Force simple projection for Cascade 0
-        // if (j == 0) {
-             // ... (Static Debug Logic Removed) ...
-        // } else {
-             // Swap multiplication order here too
-             lightSpaceMatrices[j] = lightView.mul(lightProj);
-        // }
+        // Z-Bounds: Need to cover all potential blockers.
+        const zRange = 4000.0; // Large enough margin
+        const minZ_ortho = centerLS.z - zRange;
+        const maxZ_ortho = centerLS.z + zRange;
         
-        log.cardinal_log_info("Shadow Cascade {d}: Split={d:.2}, minZ={d:.2}, maxZ={d:.2}", .{j, d, minZ_ls, maxZ_ls});
+        const lightProjFinal = mat4_ortho(minX, maxX, minY, maxY, maxZ_ortho, minZ_ortho);
         
+        lightSpaceMatrices[j] = lightView.mul(lightProjFinal);
+                
         lastSplitDist = d;
     }
     

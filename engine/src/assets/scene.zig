@@ -126,6 +126,7 @@ pub const CardinalTexture = extern struct {
     sampler: CardinalSampler,
     path: ?[*:0]u8,
     ref_resource: ?*ref_counting.CardinalRefCountedResource,
+    is_hdr: bool,
 };
 
 pub const CardinalMorphTarget = extern struct {

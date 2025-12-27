@@ -48,7 +48,7 @@ This document outlines the roadmap for the Cardinal Engine, focusing on robustne
 ### Features
 - [ ] **Shader Hot-Reloading**: Watch shader files and recompile/reload pipelines at runtime.
 - [x] **Pipeline Caching**: Save/Load `VkPipelineCache` to disk.
-- [ ] **Shadow Mapping**: Cascaded Shadow Maps (CSM) for directional lights, Cube Maps for point lights.
+- [x] **Shadow Mapping**: Cascaded Shadow Maps (CSM) for directional lights, Cube Maps for point lights.
 - [ ] **IBL (Image-Based Lighting)**: Environment Maps, Irradiance Maps, Prefiltered Specular.
 - [ ] **Post-Processing**: Bloom, Tone Mapping (ACES/Filmic), Gamma Correction.
 - [ ] **Ambient Occlusion**: SSAO or HBAO.

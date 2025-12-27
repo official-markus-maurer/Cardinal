@@ -28,6 +28,13 @@ extern fn stbi_load(filename: [*]const u8, x: *c_int, y: *c_int, channels_in_fil
 extern fn stbi_image_free(retval_from_stbi_load: ?*anyopaque) void;
 extern fn stbi_failure_reason() ?[*]const u8;
 extern fn stbi_set_flip_vertically_on_load(flag_true_if_should_flip: c_int) void;
+extern fn stbi_is_hdr(filename: [*]const u8) c_int;
+extern fn stbi_loadf(filename: [*]const u8, x: *c_int, y: *c_int, channels_in_file: *c_int, desired_channels: c_int) ?[*]f32;
+
+// TinyEXR functions
+extern fn LoadEXR(out_rgba: *?[*]f32, width: *c_int, height: *c_int, filename: [*]const u8, err: *?[*]const u8) c_int;
+extern fn IsEXR(filename: [*]const u8) c_int;
+extern fn FreeEXRErrorMessage(msg: [*]const u8) void;
 
 // System calls for thread ID
 const builtin = @import("builtin");
@@ -47,6 +54,7 @@ pub const TextureData = extern struct {
     width: u32,
     height: u32,
     channels: u32,
+    is_hdr: bool,
 };
 
 pub const TextureCacheStats = extern struct {
@@ -396,14 +404,55 @@ pub export fn texture_load_from_file(filepath: ?[*]const u8, out_texture: ?*Text
     };
     file.close();
 
+    // Try EXR first
+    if (IsEXR(filename_c) == 0) {
+        var width: c_int = 0;
+        var height: c_int = 0;
+        var out_rgba: ?[*]f32 = null;
+        var err: ?[*]const u8 = null;
+
+        if (LoadEXR(&out_rgba, &width, &height, filename_c, &err) == 0) {
+            texture.data = @ptrCast(out_rgba);
+            texture.width = @as(u32, @intCast(width));
+            texture.height = @as(u32, @intCast(height));
+            texture.channels = 4;
+            texture.is_hdr = true;
+
+            const size = @as(usize, @intCast(width)) * @as(usize, @intCast(height)) * 16;
+            log.cardinal_log_info("[TEXTURE] Successfully loaded EXR texture {s} ({d}x{d}, 4 channels, HDR=true, {d} bytes)", .{ path, texture.width, texture.height, size });
+            return true;
+        } else {
+            if (err) |e| {
+                const e_c: [*:0]const u8 = @ptrCast(e);
+                log.cardinal_log_error("[TEXTURE] Failed to load EXR texture {s}: {s}", .{ path, std.mem.span(e_c) });
+                FreeEXRErrorMessage(e);
+            } else {
+                log.cardinal_log_error("[TEXTURE] Failed to load EXR texture {s}: unknown error", .{ path });
+            }
+            return false;
+        }
+    }
+
     stbi_set_flip_vertically_on_load(0);
 
     var w: c_int = 0;
     var h: c_int = 0;
     var c: c_int = 0;
 
-    // Cast to [*:0]const u8 for stbi_load
-    const data = stbi_load(filename_c, &w, &h, &c, 4);
+    // Check if HDR
+    const is_hdr = stbi_is_hdr(filename_c) != 0;
+    var data: ?[*]u8 = null;
+
+    if (is_hdr) {
+        // Force 4 channels for alignment
+        const float_data = stbi_loadf(filename_c, &w, &h, &c, 4);
+        if (float_data) |ptr| {
+             data = @ptrCast(ptr);
+        }
+    } else {
+        data = stbi_load(filename_c, &w, &h, &c, 4);
+    }
+
     if (data == null) {
         const reason = stbi_failure_reason();
         log.cardinal_log_error("[CRITICAL] Failed to load image: {s}", .{path});
@@ -424,9 +473,11 @@ pub export fn texture_load_from_file(filepath: ?[*]const u8, out_texture: ?*Text
     texture.width = @intCast(w);
     texture.height = @intCast(h);
     texture.channels = 4;
+    texture.is_hdr = is_hdr;
 
-    const size = @as(usize, @intCast(w)) * @as(usize, @intCast(h)) * 4;
-    log.cardinal_log_info("[TEXTURE] Successfully loaded texture {s} ({d}x{d}, 4 channels, original: {d}, {d} bytes)", .{ path, texture.width, texture.height, c, size });
+    const pixel_size: usize = if (is_hdr) 16 else 4;
+    const size = @as(usize, @intCast(w)) * @as(usize, @intCast(h)) * pixel_size;
+    log.cardinal_log_info("[TEXTURE] Successfully loaded texture {s} ({d}x{d}, 4 channels, HDR={any}, {d} bytes)", .{ path, texture.width, texture.height, is_hdr, size });
 
     return true;
 }

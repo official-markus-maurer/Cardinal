@@ -1,12 +1,14 @@
 const std = @import("std");
 const builtin = @import("builtin");
 const log = @import("../core/log.zig");
+const math = @import("../core/math.zig");
 const memory = @import("../core/memory.zig");
 const types = @import("vulkan_types.zig");
 const vk_utils = @import("vulkan_utils.zig");
 const vk_barrier_validation = @import("vulkan_barrier_validation.zig");
 pub const vulkan_mt = @import("vulkan_mt.zig");
 const vk_pbr = @import("vulkan_pbr.zig");
+const vk_skybox = @import("vulkan_skybox.zig");
 const vk_mesh_shader = @import("vulkan_mesh_shader.zig");
 const vk_simple_pipelines = @import("vulkan_simple_pipelines.zig");
 const vk_sync_manager = @import("vulkan_sync_manager.zig");
@@ -799,6 +801,23 @@ pub export fn vk_record_cmd(s: ?*types.VulkanState, image_index: u32) callconv(.
             if (begin_dynamic_rendering(vs, cmd, image_index, use_depth, &clears, true, 0)) {
                 end_dynamic_rendering(vs, cmd);
                 scene_drawn = true;
+            }
+        }
+
+    }
+
+    // Skybox Rendering
+    if (vs.pipelines.use_skybox_pipeline and vs.pipelines.skybox_pipeline.initialized and vs.pipelines.skybox_pipeline.texture.is_allocated) {
+        if (vs.pipelines.use_pbr_pipeline and vs.pipelines.pbr_pipeline.uniformBufferMapped != null) {
+            const ubo = @as(*types.PBRUniformBufferObject, @ptrCast(@alignCast(vs.pipelines.pbr_pipeline.uniformBufferMapped)));
+            
+            if (begin_dynamic_rendering(vs, cmd, image_index, use_depth, &clears, false, 0)) {
+                var view: math.Mat4 = undefined;
+                var proj: math.Mat4 = undefined;
+                view.data = ubo.view;
+                proj.data = ubo.proj;
+                vk_skybox.render(&vs.pipelines.skybox_pipeline, cmd, view, proj);
+                end_dynamic_rendering(vs, cmd);
             }
         }
     }

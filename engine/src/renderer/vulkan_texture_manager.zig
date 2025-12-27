@@ -83,8 +83,11 @@ fn upload_texture_task(data: ?*anyopaque) callconv(.c) void {
         return;
     }
 
+    const format: c.VkFormat = if (ctx.texture.is_hdr) c.VK_FORMAT_R32G32B32A32_SFLOAT else c.VK_FORMAT_R8G8B8A8_SRGB;
+    ctx.managed_texture.format = format;
+
     // Create image and memory
-    if (!vk_texture_utils.create_image_and_memory(@ptrCast(ctx.allocator), ctx.device, ctx.texture.width, ctx.texture.height, &ctx.managed_texture.image, &ctx.managed_texture.memory, &ctx.managed_texture.allocation)) {
+    if (!vk_texture_utils.create_image_and_memory(@ptrCast(ctx.allocator), ctx.device, ctx.texture.width, ctx.texture.height, format, &ctx.managed_texture.image, &ctx.managed_texture.memory, &ctx.managed_texture.allocation)) {
         vk_allocator.vk_allocator_free_buffer(@ptrCast(ctx.allocator), ctx.staging_buffer, ctx.staging_allocation);
         @atomicStore(bool, &ctx.finished, true, .release);
         return;
@@ -94,7 +97,7 @@ fn upload_texture_task(data: ?*anyopaque) callconv(.c) void {
     vk_texture_utils.record_texture_copy_commands(ctx.secondary_context.command_buffer, ctx.staging_buffer, ctx.managed_texture.image, ctx.texture.width, ctx.texture.height);
 
     // Create image view
-    if (!vk_texture_utils.create_texture_image_view(ctx.device, ctx.managed_texture.image, &ctx.managed_texture.view)) {
+    if (!vk_texture_utils.create_texture_image_view(ctx.device, ctx.managed_texture.image, &ctx.managed_texture.view, format)) {
         vk_allocator.vk_allocator_free_buffer(@ptrCast(ctx.allocator), ctx.staging_buffer, ctx.staging_allocation);
         vk_allocator.vk_allocator_free_image(@ptrCast(ctx.allocator), ctx.managed_texture.image, ctx.managed_texture.allocation);
         ctx.managed_texture.image = null;
@@ -109,6 +112,7 @@ fn upload_texture_task(data: ?*anyopaque) callconv(.c) void {
     ctx.managed_texture.height = ctx.texture.height;
     ctx.managed_texture.channels = ctx.texture.channels;
     ctx.managed_texture.isPlaceholder = false;
+    ctx.managed_texture.is_hdr = ctx.texture.is_hdr;
 
     ctx.managed_texture.sampler = create_sampler_from_config(ctx.device, &ctx.texture.sampler);
     if (ctx.managed_texture.sampler == null) {
@@ -588,7 +592,7 @@ pub fn vk_texture_manager_load_scene_textures(manager: *types.VulkanTextureManag
             log.cardinal_log_warn("Texture {d} failed to load or was skipped, using placeholder", .{k});
 
             // Create view for placeholder image
-            if (!vk_texture_utils.create_texture_image_view(manager.device, placeholder.image, &tex.view)) {
+            if (!vk_texture_utils.create_texture_image_view(manager.device, placeholder.image, &tex.view, c.VK_FORMAT_R8G8B8A8_SRGB)) {
                 log.cardinal_log_error("Failed to create fallback view for texture {d}", .{k});
                 // Critical failure if we can't even create fallback view
             }

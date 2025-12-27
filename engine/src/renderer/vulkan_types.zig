@@ -509,6 +509,7 @@ pub const VulkanManagedTexture = extern struct {
     path: ?[*:0]u8,
     bindless_index: u32,
     generation: u32,
+    is_hdr: bool,
 };
 
 pub const VulkanTextureManagerConfig = extern struct {
@@ -714,11 +715,23 @@ pub const GpuMesh = extern struct {
     i_allocation: c.VmaAllocation,
 };
 
+pub const SkyboxPipeline = extern struct {
+    pipeline: c.VkPipeline,
+    pipelineLayout: c.VkPipelineLayout,
+    descriptorSetLayout: c.VkDescriptorSetLayout,
+    descriptorPool: c.VkDescriptorPool,
+    descriptorSet: c.VkDescriptorSet,
+    texture: VulkanManagedTexture,
+    initialized: bool,
+};
+
 pub const VulkanPipelines = extern struct {
     mesh_shader_pipeline: MeshShaderPipeline,
     simple_descriptor_layout: c.VkDescriptorSetLayout,
     pbr_pipeline: VulkanPBRPipeline,
+    skybox_pipeline: SkyboxPipeline,
     use_pbr_pipeline: bool,
+    use_skybox_pipeline: bool,
 
     use_mesh_shader_pipeline: bool,
     compute_shader_initialized: bool,

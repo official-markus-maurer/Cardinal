@@ -116,6 +116,8 @@ pub fn build(b: *std.Build) void {
     engine.addIncludePath(b.path("engine/src/renderer"));
     engine.addIncludePath(b.path("libs/cgltf"));
     engine.addIncludePath(b.path("libs/stb"));
+    engine.addIncludePath(b.path("libs/tinyexr"));
+    engine.addIncludePath(b.path("libs/tinyexr/deps/miniz"));
     engine.addIncludePath(b.path("libs/glfw/include"));
 
     if (vulkan_sdk) |sdk| {
@@ -132,13 +134,11 @@ pub fn build(b: *std.Build) void {
 
     const stb_impl_c = gen_c_files.add("stb_impl.c",
         \\#define STB_IMAGE_IMPLEMENTATION
-        \\#define STBI_NO_HDR
         \\#define STBI_NO_PSD
         \\#define STBI_NO_PIC
         \\#define STBI_NO_PNM
         \\#define STBI_NO_GIF
         \\#define STBI_NO_TGA
-        \\#define STBI_NO_LINEAR
         \\#include <stdlib.h>
         \\#include "stb_image.h"
     );
@@ -146,6 +146,11 @@ pub fn build(b: *std.Build) void {
     const cgltf_impl_c = gen_c_files.add("cgltf_impl.c",
         \\#define CGLTF_IMPLEMENTATION
         \\#include "cgltf.h"
+    );
+
+    const tinyexr_impl_cpp = gen_c_files.add("tinyexr_impl.cc",
+        \\#define TINYEXR_IMPLEMENTATION
+        \\#include "tinyexr.h"
     );
 
     // Compile stb_image implementation
@@ -158,6 +163,18 @@ pub fn build(b: *std.Build) void {
     engine.addCSourceFile(.{
         .file = cgltf_impl_c,
         .flags = &.{"-std=c17"},
+    });
+
+    // Compile tinyexr implementation
+    engine.addCSourceFile(.{
+        .file = tinyexr_impl_cpp,
+        .flags = &.{"-std=c++14", "-fno-sanitize=undefined"},
+    });
+
+    // Compile miniz
+    engine.addCSourceFile(.{
+        .file = b.path("libs/tinyexr/deps/miniz/miniz.c"),
+        .flags = &.{"-std=c11"},
     });
 
     // Compile VMA implementation

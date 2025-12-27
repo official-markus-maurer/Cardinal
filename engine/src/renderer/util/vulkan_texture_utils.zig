@@ -98,7 +98,8 @@ pub fn shutdown_staging_buffer_cleanups(allocator: *types.VulkanAllocator) void 
 
 pub fn create_staging_buffer_with_data(allocator: ?*types.VulkanAllocator, device: c.VkDevice, texture: *const scene.CardinalTexture, outBuffer: *c.VkBuffer, outMemory: *c.VkDeviceMemory, outAllocation: *c.VmaAllocation) bool {
     _ = device; // unused if using VMA
-    const imageSize = @as(c.VkDeviceSize, texture.width) * texture.height * 4;
+    const pixel_size: u64 = if (texture.is_hdr) 16 else 4;
+    const imageSize = @as(c.VkDeviceSize, texture.width) * texture.height * pixel_size;
 
     var bufferInfo = std.mem.zeroes(c.VkBufferCreateInfo);
     bufferInfo.sType = c.VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO;
@@ -126,7 +127,7 @@ pub fn create_staging_buffer_with_data(allocator: ?*types.VulkanAllocator, devic
     return true;
 }
 
-pub fn create_image_and_memory(allocator: ?*types.VulkanAllocator, device: c.VkDevice, width: u32, height: u32, outImage: *c.VkImage, outMemory: *c.VkDeviceMemory, outAllocation: *c.VmaAllocation) bool {
+pub fn create_image_and_memory(allocator: ?*types.VulkanAllocator, device: c.VkDevice, width: u32, height: u32, format: c.VkFormat, outImage: *c.VkImage, outMemory: *c.VkDeviceMemory, outAllocation: *c.VmaAllocation) bool {
     _ = device;
     var imageInfo = std.mem.zeroes(c.VkImageCreateInfo);
     imageInfo.sType = c.VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO;
@@ -136,7 +137,7 @@ pub fn create_image_and_memory(allocator: ?*types.VulkanAllocator, device: c.VkD
     imageInfo.extent.depth = 1;
     imageInfo.mipLevels = 1;
     imageInfo.arrayLayers = 1;
-    imageInfo.format = c.VK_FORMAT_R8G8B8A8_SRGB;
+    imageInfo.format = format;
     imageInfo.tiling = c.VK_IMAGE_TILING_OPTIMAL;
     imageInfo.initialLayout = c.VK_IMAGE_LAYOUT_UNDEFINED;
     imageInfo.usage = c.VK_IMAGE_USAGE_TRANSFER_DST_BIT | c.VK_IMAGE_USAGE_SAMPLED_BIT;
@@ -271,12 +272,12 @@ fn submit_texture_upload(device: c.VkDevice, graphicsQueue: c.VkQueue, commandBu
     return true;
 }
 
-pub fn create_texture_image_view(device: c.VkDevice, image: c.VkImage, outImageView: *c.VkImageView) bool {
+pub fn create_texture_image_view(device: c.VkDevice, image: c.VkImage, outImageView: *c.VkImageView, format: c.VkFormat) bool {
     var viewInfo = std.mem.zeroes(c.VkImageViewCreateInfo);
     viewInfo.sType = c.VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO;
     viewInfo.image = image;
     viewInfo.viewType = c.VK_IMAGE_VIEW_TYPE_2D;
-    viewInfo.format = c.VK_FORMAT_R8G8B8A8_SRGB;
+    viewInfo.format = format;
     viewInfo.subresourceRange.aspectMask = c.VK_IMAGE_ASPECT_COLOR_BIT;
     viewInfo.subresourceRange.baseMipLevel = 0;
     viewInfo.subresourceRange.levelCount = 1;
@@ -303,7 +304,9 @@ pub export fn vk_texture_create_from_data(allocator: ?*types.VulkanAllocator, de
         return false;
     }
 
-    if (!create_image_and_memory(allocator, device, texture.?.width, texture.?.height, textureImage.?, textureImageMemory.?, textureAllocation.?)) {
+    const format: c.VkFormat = if (texture.?.is_hdr) c.VK_FORMAT_R32G32B32A32_SFLOAT else c.VK_FORMAT_R8G8B8A8_SRGB;
+
+    if (!create_image_and_memory(allocator, device, texture.?.width, texture.?.height, format, textureImage.?, textureImageMemory.?, textureAllocation.?)) {
         vk_allocator.vk_allocator_free_buffer(allocator, stagingBuffer, stagingBufferAllocation);
         return false;
     }
@@ -343,7 +346,7 @@ pub export fn vk_texture_create_from_data(allocator: ?*types.VulkanAllocator, de
         vk_allocator.vk_allocator_free_buffer(allocator, stagingBuffer, stagingBufferAllocation);
     }
 
-    if (!create_texture_image_view(device, textureImage.?.*, textureImageView.?)) {
+    if (!create_texture_image_view(device, textureImage.?.*, textureImageView.?, format)) {
         // const vk_allocator = @import("../vulkan_allocator.zig");
         vk_allocator.vk_allocator_free_image(allocator, textureImage.?.*, textureAllocation.?.*);
         return false;

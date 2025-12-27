@@ -105,8 +105,16 @@ float ShadowCalculation(vec3 worldPos, vec3 N, vec3 L) {
     
     if (projCoords.z > 1.0) return 1.0;
     
-    float bias = max(0.005 * (1.0 - dot(N, L)), 0.0005);
-    if (layer == 0) bias *= 3.0;
+    // Reduce bias significantly to match the large depth range of the shadow map
+    // The previous value (0.005) was too large for the extended Z-range (3000 units),
+    // causing shadows to detach (peter panning).
+    // With 16-bit depth (or even 32-bit float), precision is distributed over the range.
+    // 0.0005 should be sufficient to prevent acne without causing detachment.
+    float bias = max(0.0005 * (1.0 - dot(N, L)), 0.00005);
+    
+    // Do not increase bias for first cascade; if anything, it has better XY resolution so we might want less bias,
+    // but the Z precision is the main factor here.
+    // if (layer == 0) bias *= 3.0;
     
     float shadow = 0.0;
     vec2 texelSize = 1.0 / vec2(textureSize(shadowMap, 0));
@@ -271,7 +279,6 @@ vec3 fresnelSchlick(float cosTheta, vec3 F0) {
 }
 
 void main() {
-    bool debug_cascade_viz = (ubo.viewPosAndDebug.w > 0.5);
     // Apply texture transforms to UV coordinates
     vec2 albedoUV = applyTextureTransform(getUV(getUVIndex(0)), material.albedoTransform);
     vec2 normalUV = applyTextureTransform(getUV(getUVIndex(1)), material.normalTransform);
@@ -437,61 +444,6 @@ void main() {
     
     // Combine lighting components
     vec3 color = ambient + Lo;
-    
-    // DEBUG: Visualize shadow cascades
-    
-    if (debug_cascade_viz) {
-        // Recalculate layer
-        vec4 fPosView = ubo.view * vec4(fragWorldPos, 1.0);
-        float depthValue = abs(fPosView.z);
-        int layer = -1;
-        for (int i = 0; i < 4; i++) {
-            if (depthValue < shadowData.cascadeSplits[i]) {
-                layer = i;
-                break;
-            }
-        }
-        if (layer == -1) layer = 3;
-        
-        if (layer == 0) color *= vec3(1.0, 0.2, 0.2);
-        else if (layer == 1) color *= vec3(0.2, 1.0, 0.2);
-        else if (layer == 2) color *= vec3(0.2, 0.2, 1.0);
-        else color *= vec3(1.0, 1.0, 0.2);
-        
-        // Debug Shadow Map Sampling
-        vec4 lightSpacePos = shadowData.lightSpaceMatrices[layer] * vec4(fragWorldPos, 1.0);
-        
-        if (abs(lightSpacePos.w) < 0.001) {
-            color = vec3(1.0, 0.0, 0.0); // Red: W is zero (Matrix issue)
-        } else {
-            vec3 projCoords = lightSpacePos.xyz / lightSpacePos.w;
-            projCoords.xy = projCoords.xy * 0.5 + 0.5;
-            
-            // Visualize Raw Shadow Value
-            float bias = 0.005;
-            // Check 0..1 range
-            if (projCoords.x >= 0.0 && projCoords.x <= 1.0 && projCoords.y >= 0.0 && projCoords.y <= 1.0) {
-                if (projCoords.z >= 0.0 && projCoords.z <= 1.0) {
-                    // In bounds, sample
-                    vec4 shadowCoord = vec4(projCoords.xy, layer, projCoords.z - bias);
-                    float pcfDepth = texture(shadowMap, shadowCoord); 
-                    if (pcfDepth < 0.5) color = vec3(0.0, 0.0, 0.0); // Black
-                    else color = vec3(1.0, 1.0, 1.0); // White
-                } else {
-                    // Out of Z
-                    color = vec3(0.0, 0.0, 1.0); // Blue
-                }
-            } else {
-                 // Out of XY
-                 color = vec3(1.0, 0.0, 1.0); // Magenta
-            }
-        }
-        
-        // Debug output raw coordinates to color (clamped) to see values
-        // if (projCoords.x < 0.0 || projCoords.x > 1.0) color = vec3(1.0, 0.0, 0.0); // Red if X out
-        // if (projCoords.y < 0.0 || projCoords.y > 1.0) color = vec3(0.0, 1.0, 0.0); // Green if Y out
-    }
-    
     
     // Add emissive contribution AFTER tone mapping to preserve bright emissive materials
     // Apply improved tone mapping (ACES approximation)

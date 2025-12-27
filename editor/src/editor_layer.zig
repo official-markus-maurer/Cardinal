@@ -127,10 +127,7 @@ fn draw_pbr_settings_panel() void {
                     light_changed = true;
                 }
                 
-                // Add Debug Cascade Viz Toggle
-                if (c.imgui_bridge_checkbox("Debug Cascade Viz", &state.debug_cascade_viz)) {
-                    renderer.cardinal_renderer_set_debug_flags(state.renderer, if (state.debug_cascade_viz) 1.0 else 0.0);
-                }
+
 
                 var light_type = state.light.type;
                 var items: [3][*c]const u8 = undefined;
@@ -689,8 +686,11 @@ pub fn update() void {
         }
 
         // Status Bar (as a simple window for now, or part of dockspace)
-        if (c.imgui_bridge_begin("Status", null, 0)) {
-            defer c.imgui_bridge_end();
+        // Note: Begin() must be matched with End() regardless of return value
+        const status_open = c.imgui_bridge_begin("Status", null, 0);
+        defer c.imgui_bridge_end();
+        
+        if (status_open) {
             c.imgui_bridge_text("FPS: %.1f", 1.0 / dt);
             c.imgui_bridge_text("Status: %s", &state.status_msg);
         }
