@@ -359,3 +359,12 @@ pub fn get_completed_job() ?*Job {
      if (!g_job_system.initialized) return null;
      return job_queue_pop(&g_job_system.completed_queue, false);
 }
+
+pub fn get_pending_job_count() u32 {
+    if (!g_job_system.initialized) return 0;
+    
+    g_job_system.pending_queue.mutex.lock();
+    defer g_job_system.pending_queue.mutex.unlock();
+    
+    return g_job_system.pending_queue.count;
+}

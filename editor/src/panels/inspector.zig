@@ -42,8 +42,9 @@ pub fn draw_inspector_panel(state: *EditorState) void {
 
                             c.imgui_bridge_same_line(0, -1);
 
-                            if (c.imgui_bridge_checkbox("##visible", &model.visible)) {
-                                _ = model_manager.cardinal_model_manager_set_visible(&state.model_manager, model.id, model.visible);
+                            var visible = model.visible;
+                            if (c.imgui_bridge_checkbox("##visible", &visible)) {
+                                _ = model_manager.cardinal_model_manager_set_visible(&state.model_manager, model.id, visible);
                             }
                             if (c.imgui_bridge_is_item_hovered(0)) {
                                 c.imgui_bridge_set_tooltip("Toggle visibility");

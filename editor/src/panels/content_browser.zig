@@ -5,8 +5,10 @@ const loader = engine.loader;
 const async_loader = engine.async_loader;
 const vulkan_renderer = engine.vulkan_renderer;
 const c = @import("../c.zig").c;
-const EditorState = @import("../editor_state.zig").EditorState;
-const AssetState = @import("../editor_state.zig").AssetState;
+const editor_state_module = @import("../editor_state.zig");
+const EditorState = editor_state_module.EditorState;
+const LoadingTaskInfo = editor_state_module.LoadingTaskInfo;
+const AssetState = editor_state_module.AssetState;
 
 fn get_asset_type(path: []const u8) AssetState.AssetType {
     const ext = std.fs.path.extension(path);
@@ -172,29 +174,26 @@ pub fn scan_assets_dir(state: *EditorState, allocator: std.mem.Allocator) void {
 }
 
 pub fn load_scene(state: *EditorState, allocator: std.mem.Allocator, path: []const u8) void {
-    if (state.is_loading) {
-        _ = std.fmt.bufPrintZ(&state.status_msg, "Already loading...", .{}) catch {};
-        return;
-    }
-
-    if (state.loading_task) |task| {
-        _ = async_loader.cardinal_async_cancel_task(task);
-        async_loader.cardinal_async_free_task(task);
-        state.loading_task = null;
-    }
-
-    if (state.loading_scene_path) |p| {
-        allocator.free(p);
-        state.loading_scene_path = null;
-    }
-
     state.is_loading = true;
     _ = std.fmt.bufPrintZ(&state.status_msg, "Loading scene: {s}...", .{path}) catch {};
 
     const path_copy = allocator.dupeZ(u8, path) catch return;
-    state.loading_scene_path = path_copy;
-
-    state.loading_task = loader.cardinal_scene_load_async(path_copy, .HIGH, null, null);
+    
+    const task = loader.cardinal_scene_load_async(path_copy, .HIGH, null, null);
+    
+    if (task) |t| {
+        state.loading_tasks.append(allocator, .{
+            .task = t,
+            .path = path_copy,
+        }) catch {
+            _ = async_loader.cardinal_async_cancel_task(t);
+            async_loader.cardinal_async_free_task(t);
+            allocator.free(path_copy);
+        };
+    } else {
+        allocator.free(path_copy);
+        _ = std.fmt.bufPrintZ(&state.status_msg, "Failed to start loading: {s}", .{path}) catch {};
+    }
 }
 
 pub fn draw_asset_browser_panel(state: *EditorState, allocator: std.mem.Allocator) void {

@@ -720,10 +720,7 @@ pub export fn cardinal_async_get_error_message(task: ?*const CardinalAsyncTask) 
 }
 
 pub export fn cardinal_async_get_pending_task_count() callconv(.c) u32 {
-    // We can't easily get pending count from JobSystem unless we expose it
-    // But since this is a migration, maybe we can skip or add getter to JobSystem
-    // For now return 0 or implement getter in JobSystem
-    return 0; // TODO: Implement in JobSystem
+    return job_system.get_pending_job_count();
 }
 
 pub export fn cardinal_async_get_worker_thread_count() callconv(.c) u32 {

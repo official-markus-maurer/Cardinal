@@ -33,61 +33,65 @@ var state: EditorState = undefined;
 var initialized: bool = false;
 
 fn check_loading_status() void {
-    if (!state.is_loading or state.loading_task == null) return;
+    if (state.loading_tasks.items.len == 0) {
+        state.is_loading = false;
+        return;
+    }
 
-    const task = state.loading_task.?;
-    const status = async_loader.cardinal_async_get_task_status(task);
+    var i: usize = 0;
+    while (i < state.loading_tasks.items.len) {
+        const info = state.loading_tasks.items[i];
+        const task = info.task;
+        const status = async_loader.cardinal_async_get_task_status(task);
 
-    if (status == .COMPLETED) {
-        var loaded_scene: scene.CardinalScene = undefined;
-        if (async_loader.cardinal_async_get_scene_result(task, &loaded_scene)) {
-            const path = state.loading_scene_path orelse "unknown";
-            const filename = std.fs.path.basename(path);
-            const filename_z = allocator.dupeZ(u8, filename) catch "unknown";
-            defer allocator.free(filename_z);
+        if (status == .COMPLETED) {
+            var loaded_scene: scene.CardinalScene = undefined;
+            if (async_loader.cardinal_async_get_scene_result(task, &loaded_scene)) {
+                const path = info.path;
+                const filename = std.fs.path.basename(path);
+                
+                const filename_z_alloc = allocator.dupeZ(u8, filename) catch null;
+                const filename_z = if (filename_z_alloc) |p| p else "unknown";
+                defer if (filename_z_alloc) |p| allocator.free(p);
 
-            // Pass pointer to path_copy which is null-terminated and kept alive in state
-            const model_id = model_manager.cardinal_model_manager_add_scene(&state.model_manager, &loaded_scene, path, filename_z);
+                const model_id = model_manager.cardinal_model_manager_add_scene(&state.model_manager, &loaded_scene, path, filename_z);
 
-            if (model_id != 0) {
-                state.selected_model_id = model_id;
-                const combined = model_manager.cardinal_model_manager_get_combined_scene(&state.model_manager);
-                if (combined) |comb_ptr| {
-                    state.combined_scene = comb_ptr.*;
-                    state.scene_loaded = true;
+                if (model_id != 0) {
+                    state.selected_model_id = model_id;
+                    const combined = model_manager.cardinal_model_manager_get_combined_scene(&state.model_manager);
+                    if (combined) |comb_ptr| {
+                        state.combined_scene = comb_ptr.*;
+                        state.scene_loaded = true;
 
-                    if (initialized) {
-                        state.pending_scene = state.combined_scene;
-                        state.scene_upload_pending = true;
-                        log.cardinal_log_info("[EDITOR] Deferred scene upload scheduled", .{});
+                        if (initialized) {
+                            state.pending_scene = state.combined_scene;
+                            state.scene_upload_pending = true;
+                            log.cardinal_log_info("[EDITOR] Deferred scene upload scheduled", .{});
+                        }
+
+                        _ = std.fmt.bufPrintZ(&state.status_msg, "Loaded model: {d} meshes from {s} (ID: {d})", .{ loaded_scene.mesh_count, filename, model_id }) catch {};
                     }
-
-                    _ = std.fmt.bufPrintZ(&state.status_msg, "Loaded model: {d} meshes from {s} (ID: {d})", .{ loaded_scene.mesh_count, filename, model_id }) catch {};
                 }
             }
-        }
 
-        async_loader.cardinal_async_free_task(task);
-        state.loading_task = null;
-        state.is_loading = false;
-        if (state.loading_scene_path) |p| {
-            allocator.free(p);
-            state.loading_scene_path = null;
-        }
-    } else if (status == .FAILED) {
-        const err_msg = async_loader.cardinal_async_get_error_message(task);
-        const err_str = if (err_msg) |msg| std.mem.span(msg) else "unknown error";
-        const path = state.loading_scene_path orelse "unknown";
-        _ = std.fmt.bufPrintZ(&state.status_msg, "Failed to load: {s} - {s}", .{ path, err_str }) catch {};
+            async_loader.cardinal_async_free_task(task);
+            allocator.free(info.path);
+            _ = state.loading_tasks.swapRemove(i);
+        } else if (status == .FAILED) {
+            const err_msg = async_loader.cardinal_async_get_error_message(task);
+            const err_str = if (err_msg) |msg| std.mem.span(msg) else "unknown error";
+            const path = info.path;
+            _ = std.fmt.bufPrintZ(&state.status_msg, "Failed to load: {s} - {s}", .{ path, err_str }) catch {};
 
-        async_loader.cardinal_async_free_task(task);
-        state.loading_task = null;
-        state.is_loading = false;
-        if (state.loading_scene_path) |p| {
-            allocator.free(p);
-            state.loading_scene_path = null;
+            async_loader.cardinal_async_free_task(task);
+            allocator.free(info.path);
+            _ = state.loading_tasks.swapRemove(i);
+        } else {
+            i += 1;
         }
     }
+    
+    state.is_loading = (state.loading_tasks.items.len > 0);
 }
 
 fn draw_pbr_settings_panel() void {
@@ -560,6 +564,12 @@ pub fn shutdown() void {
     }
 
     model_manager.cardinal_model_manager_destroy(&state.model_manager);
+
+    for (state.loading_tasks.items) |info| {
+         async_loader.cardinal_async_free_task(info.task);
+         allocator.free(info.path);
+    }
+    state.loading_tasks.deinit(allocator);
 
     for (state.assets.entries.items) |entry| {
         entry.deinit(allocator);

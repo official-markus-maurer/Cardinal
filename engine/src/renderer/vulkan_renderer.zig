@@ -1224,6 +1224,15 @@ pub export fn cardinal_renderer_upload_scene(renderer: ?*types.CardinalRenderer,
 
     if (scene == null or scene.?.mesh_count == 0) {
         log.cardinal_log_info("[UPLOAD] Scene cleared (no meshes)", .{});
+        s.current_scene = null;
+        
+        // Also ensure PBR pipeline is cleared if enabled
+        if (s.pipelines.use_pbr_pipeline) {
+             if (!vk_pbr.vk_pbr_load_scene(@ptrCast(&s.pipelines.pbr_pipeline), s.context.device, s.context.physical_device, s.commands.pools.?[0], s.context.graphics_queue, @ptrCast(scene), @ptrCast(&s.allocator), @ptrCast(s))) {
+                log.cardinal_log_error("Failed to clear PBR scene", .{});
+            }
+        }
+        
         return;
     }
 
@@ -1266,6 +1275,13 @@ pub export fn cardinal_renderer_clear_scene(renderer: ?*types.CardinalRenderer) 
     _ = c.vkDeviceWaitIdle(s.context.device);
 
     destroy_scene_buffers(s);
+    s.current_scene = null;
+
+    if (s.pipelines.use_pbr_pipeline) {
+        if (!vk_pbr.vk_pbr_load_scene(@ptrCast(&s.pipelines.pbr_pipeline), s.context.device, s.context.physical_device, s.commands.pools.?[0], s.context.graphics_queue, null, @ptrCast(&s.allocator), @ptrCast(s))) {
+            log.cardinal_log_error("Failed to clear PBR scene", .{});
+        }
+    }
 }
 
 pub export fn cardinal_renderer_set_rendering_mode(renderer: ?*types.CardinalRenderer, mode: types.CardinalRenderingMode) callconv(.c) void {

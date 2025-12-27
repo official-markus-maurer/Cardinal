@@ -621,15 +621,18 @@ fn update_pbr_descriptor_sets(pipeline: *types.VulkanPBRPipeline) bool {
 pub export fn vk_pbr_load_scene(pipeline: ?*types.VulkanPBRPipeline, device: c.VkDevice, physicalDevice: c.VkPhysicalDevice, commandPool: c.VkCommandPool, graphicsQueue: c.VkQueue, scene_data: ?*const scene.CardinalScene, allocator: ?*types.VulkanAllocator, vulkan_state: ?*types.VulkanState) callconv(.c) bool {
     _ = physicalDevice;
 
-    if (pipeline == null or !pipeline.?.initialized or scene_data == null or scene_data.?.mesh_count == 0) {
-        log.cardinal_log_warn("PBR pipeline not initialized or no scene data", .{});
+    if (pipeline == null or !pipeline.?.initialized) {
+        log.cardinal_log_warn("PBR pipeline not initialized", .{});
         return true;
     }
     const pipe = pipeline.?;
-    const scn = scene_data.?;
     const alloc = allocator.?;
 
-    log.cardinal_log_info("Loading PBR scene: {d} meshes", .{scn.mesh_count});
+    if (scene_data) |scn| {
+        log.cardinal_log_info("Loading PBR scene: {d} meshes", .{scn.mesh_count});
+    } else {
+        log.cardinal_log_info("Clearing PBR scene (null scene)", .{});
+    }
 
     // Clean up previous buffers if they exist (after ensuring GPU idle)
     // We use vkDeviceWaitIdle instead of timeline semaphore wait to avoid issues with
@@ -649,6 +652,16 @@ pub export fn vk_pbr_load_scene(pipeline: ?*types.VulkanPBRPipeline, device: c.V
         pipe.indexBuffer = null;
         pipe.indexBufferMemory = null;
         pipe.indexBufferAllocation = null;
+    }
+
+    if (scene_data == null) {
+        return true;
+    }
+    const scn = scene_data.?;
+
+    if (scn.mesh_count == 0) {
+        log.cardinal_log_info("PBR scene cleared (no meshes)", .{});
+        return true;
     }
 
     // Create vertex and index buffers

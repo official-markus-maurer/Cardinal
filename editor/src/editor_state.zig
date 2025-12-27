@@ -46,6 +46,11 @@ pub const AssetState = struct {
     };
 };
 
+pub const LoadingTaskInfo = struct {
+    task: *async_loader.CardinalAsyncTask,
+    path: [:0]u8,
+};
+
 pub const EditorState = struct {
     renderer: *types.CardinalRenderer = undefined,
     window: *window.CardinalWindow = undefined,
@@ -55,9 +60,8 @@ pub const EditorState = struct {
     model_manager: model_manager.CardinalModelManager = undefined,
     combined_scene: scene.CardinalScene = undefined,
     scene_loaded: bool = false,
-    loading_task: ?*async_loader.CardinalAsyncTask = null,
+    loading_tasks: std.ArrayListUnmanaged(LoadingTaskInfo) = .{},
     is_loading: bool = false,
-    loading_scene_path: ?[:0]u8 = null,
 
     // Scene Upload
     scene_upload_pending: bool = false,

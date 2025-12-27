@@ -23,10 +23,12 @@ const MaterialCacheEntry = struct {
     material_id: [:0]u8,
     resource: *ref_counting.CardinalRefCountedResource,
     next: ?*MaterialCacheEntry,
+    prev: ?*MaterialCacheEntry,
 };
 
 const MaterialCache = struct {
-    entries: ?*MaterialCacheEntry = null,
+    entries: ?*MaterialCacheEntry = null, // Head of the list (MRU)
+    tail: ?*MaterialCacheEntry = null,    // Tail of the list (LRU)
     entry_count: u32 = 0,
     max_entries: u32 = 0,
     cache_hits: u32 = 0,
@@ -80,6 +82,7 @@ fn material_cache_init(max_entries: u32) bool {
     if (g_material_cache.initialized) return true;
 
     g_material_cache.entries = null;
+    g_material_cache.tail = null;
     g_material_cache.entry_count = 0;
     g_material_cache.max_entries = max_entries;
     g_material_cache.cache_hits = 0;
@@ -108,6 +111,7 @@ fn material_cache_shutdown() void {
     }
 
     g_material_cache.entries = null;
+    g_material_cache.tail = null;
     g_material_cache.entry_count = 0;
     g_material_cache.initialized = false;
 
@@ -126,6 +130,25 @@ fn material_cache_get(material_id: []const u8) ?*ref_counting.CardinalRefCounted
             // Found in cache, acquire reference
             _ = ref_counting.cardinal_ref_acquire(current.resource.identifier);
             g_material_cache.cache_hits += 1;
+
+            // Move to head (MRU) if not already head
+            if (g_material_cache.entries != current) {
+                // Unlink
+                if (current.prev) |prev| prev.next = current.next;
+                if (current.next) |next| next.prev = current.prev;
+
+                // Update tail if we are moving the tail
+                if (g_material_cache.tail == current) {
+                    g_material_cache.tail = current.prev;
+                }
+
+                // Relink at head
+                current.next = g_material_cache.entries;
+                current.prev = null;
+                if (g_material_cache.entries) |head| head.prev = current;
+                g_material_cache.entries = current;
+            }
+
             return current.resource;
         }
     }
@@ -142,19 +165,22 @@ fn material_cache_put(material_id: [:0]const u8, resource: *ref_counting.Cardina
 
     // Check if we're at capacity
     if (g_material_cache.entry_count >= g_material_cache.max_entries) {
-        // Remove oldest entry
-        if (g_material_cache.entries) |head| {
-            // TODO: Implement proper LRU eviction.
-            // Current implementation removes the head (which is the most recently added if we prepend).
-            // This behaves as a Stack (LIFO eviction), not a Cache (LRU/FIFO).
-
-            const to_remove = head;
-            g_material_cache.entries = to_remove.next;
+        // Remove oldest entry (tail)
+        if (g_material_cache.tail) |tail_entry| {
+            // Unlink tail
+            if (tail_entry.prev) |prev| {
+                prev.next = null;
+                g_material_cache.tail = prev;
+            } else {
+                // If tail has no prev, it's the only item
+                g_material_cache.entries = null;
+                g_material_cache.tail = null;
+            }
 
             const allocator = memory.cardinal_get_allocator_for_category(.ASSETS);
-            memory.cardinal_free(allocator, @ptrCast(to_remove.material_id.ptr));
-            ref_counting.cardinal_ref_release(to_remove.resource);
-            memory.cardinal_free(allocator, to_remove);
+            memory.cardinal_free(allocator, @ptrCast(tail_entry.material_id.ptr));
+            ref_counting.cardinal_ref_release(tail_entry.resource);
+            memory.cardinal_free(allocator, tail_entry);
 
             g_material_cache.entry_count -= 1;
         }
@@ -184,7 +210,18 @@ fn material_cache_put(material_id: [:0]const u8, resource: *ref_counting.Cardina
 
     // Add to front of list
     new_entry.next = g_material_cache.entries;
+    new_entry.prev = null;
+
+    if (g_material_cache.entries) |head| {
+        head.prev = new_entry;
+    }
     g_material_cache.entries = new_entry;
+
+    // If list was empty, this is also the tail
+    if (g_material_cache.tail == null) {
+        g_material_cache.tail = new_entry;
+    }
+
     g_material_cache.entry_count += 1;
 }
 
