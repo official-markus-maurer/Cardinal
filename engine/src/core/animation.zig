@@ -2,6 +2,7 @@ const std = @import("std");
 const builtin = @import("builtin");
 const transform = @import("transform.zig");
 const scene = @import("../assets/scene.zig");
+const memory = @import("memory.zig");
 
 const c = @cImport({
     @cInclude("stdlib.h");
@@ -249,7 +250,8 @@ pub export fn cardinal_animation_interpolate(interpolation: CardinalAnimationInt
 }
 
 pub export fn cardinal_animation_system_create(max_animations: u32, max_skins: u32) callconv(.c) ?*CardinalAnimationSystem {
-    const system_ptr = c.calloc(1, @sizeOf(CardinalAnimationSystem));
+    const allocator = memory.cardinal_get_allocator_for_category(.ENGINE);
+    const system_ptr = memory.cardinal_calloc(allocator, 1, @sizeOf(CardinalAnimationSystem));
     if (system_ptr == null) {
         std.log.err("Failed to allocate animation system", .{});
         return null;
@@ -257,21 +259,21 @@ pub export fn cardinal_animation_system_create(max_animations: u32, max_skins: u
     const system: *CardinalAnimationSystem = @ptrCast(@alignCast(system_ptr));
 
     if (max_animations > 0) {
-        const animations_ptr = c.calloc(max_animations, @sizeOf(CardinalAnimation));
+        const animations_ptr = memory.cardinal_calloc(allocator, max_animations, @sizeOf(CardinalAnimation));
         if (animations_ptr == null) {
             std.log.err("Failed to allocate animations array", .{});
-            c.free(system);
+            memory.cardinal_free(allocator, system);
             return null;
         }
         system.animations = @ptrCast(@alignCast(animations_ptr));
     }
 
     if (max_skins > 0) {
-        const skins_ptr = c.calloc(max_skins, @sizeOf(CardinalSkin));
+        const skins_ptr = memory.cardinal_calloc(allocator, max_skins, @sizeOf(CardinalSkin));
         if (skins_ptr == null) {
             std.log.err("Failed to allocate skins array", .{});
-            c.free(system.animations);
-            c.free(system);
+            if (system.animations) |ptr| memory.cardinal_free(allocator, ptr);
+            memory.cardinal_free(allocator, system);
             return null;
         }
         system.skins = @ptrCast(@alignCast(skins_ptr));
@@ -282,7 +284,7 @@ pub export fn cardinal_animation_system_create(max_animations: u32, max_skins: u
     system.state_count = 0;
 
     system.bone_matrix_count = 256; // Standard max bones
-    const bone_matrices_ptr = c.malloc(system.bone_matrix_count * 16 * @sizeOf(f32));
+    const bone_matrices_ptr = memory.cardinal_alloc(allocator, system.bone_matrix_count * 16 * @sizeOf(f32));
     if (bone_matrices_ptr) |ptr| {
         system.bone_matrices = @ptrCast(@alignCast(ptr));
         var i: u32 = 0;
@@ -305,49 +307,50 @@ pub export fn cardinal_animation_system_create(max_animations: u32, max_skins: u
 
 pub export fn cardinal_animation_system_destroy(system: ?*CardinalAnimationSystem) callconv(.c) void {
     if (system == null) return;
+    const allocator = memory.cardinal_get_allocator_for_category(.ENGINE);
 
     if (system.?.animations) |animations| {
         var i: u32 = 0;
         while (i < system.?.animation_count) : (i += 1) {
             const anim = &animations[i];
-            c.free(anim.name);
+            if (anim.name) |ptr| memory.cardinal_free(allocator, ptr);
 
             if (anim.samplers) |samplers| {
                 var j: u32 = 0;
                 while (j < anim.sampler_count) : (j += 1) {
-                    c.free(samplers[j].input);
-                    c.free(samplers[j].output);
+                    if (samplers[j].input) |ptr| memory.cardinal_free(allocator, ptr);
+                    if (samplers[j].output) |ptr| memory.cardinal_free(allocator, ptr);
                 }
-                c.free(anim.samplers);
+                memory.cardinal_free(allocator, anim.samplers);
             }
 
-            c.free(anim.channels);
+            if (anim.channels) |ptr| memory.cardinal_free(allocator, ptr);
         }
-        c.free(system.?.animations);
+        memory.cardinal_free(allocator, system.?.animations);
     }
 
     if (system.?.skins) |skins| {
         var i: u32 = 0;
         while (i < system.?.skin_count) : (i += 1) {
             const skin = &skins[i];
-            c.free(skin.name);
+            if (skin.name) |ptr| memory.cardinal_free(allocator, ptr);
 
             if (skin.bones) |bones| {
                 var j: u32 = 0;
                 while (j < skin.bone_count) : (j += 1) {
-                    c.free(bones[j].name);
+                    if (bones[j].name) |ptr| memory.cardinal_free(allocator, ptr);
                 }
-                c.free(skin.bones);
+                memory.cardinal_free(allocator, skin.bones);
             }
 
-            c.free(skin.mesh_indices);
+            if (skin.mesh_indices) |ptr| memory.cardinal_free(allocator, ptr);
         }
-        c.free(system.?.skins);
+        memory.cardinal_free(allocator, system.?.skins);
     }
 
-    c.free(system.?.states);
-    c.free(system.?.bone_matrices);
-    c.free(system);
+    if (system.?.states) |ptr| memory.cardinal_free(allocator, ptr);
+    if (system.?.bone_matrices) |ptr| memory.cardinal_free(allocator, ptr);
+    memory.cardinal_free(allocator, system);
 
     std.log.debug("Animation system destroyed", .{});
 }
@@ -357,12 +360,13 @@ pub export fn cardinal_animation_system_add_animation(system: ?*CardinalAnimatio
 
     const index = system.?.animation_count;
     const dest = &system.?.animations.?[index];
+    const allocator = memory.cardinal_get_allocator_for_category(.ENGINE);
 
     _ = c.memset(dest, 0, @sizeOf(CardinalAnimation));
 
     if (animation.?.name) |name| {
         const name_len = c.strlen(name) + 1;
-        const dest_name = c.malloc(name_len);
+        const dest_name = memory.cardinal_alloc(allocator, name_len);
         if (dest_name) |ptr| {
             dest.name = @ptrCast(ptr);
             _ = c.strcpy(dest.name, name);
@@ -374,7 +378,7 @@ pub export fn cardinal_animation_system_add_animation(system: ?*CardinalAnimatio
     dest.channel_count = animation.?.channel_count;
 
     if (animation.?.sampler_count > 0) {
-        const samplers_ptr = c.calloc(animation.?.sampler_count, @sizeOf(CardinalAnimationSampler));
+        const samplers_ptr = memory.cardinal_calloc(allocator, animation.?.sampler_count, @sizeOf(CardinalAnimationSampler));
         if (samplers_ptr) |ptr| {
             dest.samplers = @ptrCast(@alignCast(ptr));
             var i: u32 = 0;
@@ -387,7 +391,7 @@ pub export fn cardinal_animation_system_add_animation(system: ?*CardinalAnimatio
                 dst_sampler.output_count = src_sampler.output_count;
 
                 if (src_sampler.input != null and src_sampler.input_count > 0) {
-                    const input_ptr = c.malloc(src_sampler.input_count * @sizeOf(f32));
+                    const input_ptr = memory.cardinal_alloc(allocator, src_sampler.input_count * @sizeOf(f32));
                     if (input_ptr) |in_ptr| {
                         dst_sampler.input = @ptrCast(@alignCast(in_ptr));
                         @memcpy(dst_sampler.input.?[0..src_sampler.input_count], src_sampler.input.?[0..src_sampler.input_count]);
@@ -395,7 +399,7 @@ pub export fn cardinal_animation_system_add_animation(system: ?*CardinalAnimatio
                 }
 
                 if (src_sampler.output != null and src_sampler.output_count > 0) {
-                    const output_ptr = c.malloc(src_sampler.output_count * @sizeOf(f32));
+                    const output_ptr = memory.cardinal_alloc(allocator, src_sampler.output_count * @sizeOf(f32));
                     if (output_ptr) |out_ptr| {
                         dst_sampler.output = @ptrCast(@alignCast(out_ptr));
                         @memcpy(dst_sampler.output.?[0..src_sampler.output_count], src_sampler.output.?[0..src_sampler.output_count]);
@@ -406,7 +410,7 @@ pub export fn cardinal_animation_system_add_animation(system: ?*CardinalAnimatio
     }
 
     if (animation.?.channel_count > 0) {
-        const channels_ptr = c.malloc(animation.?.channel_count * @sizeOf(CardinalAnimationChannel));
+        const channels_ptr = memory.cardinal_alloc(allocator, animation.?.channel_count * @sizeOf(CardinalAnimationChannel));
         if (channels_ptr) |ptr| {
             dest.channels = @ptrCast(@alignCast(ptr));
             @memcpy(dest.channels.?[0..animation.?.channel_count], animation.?.channels.?[0..animation.?.channel_count]);
@@ -423,12 +427,13 @@ pub export fn cardinal_animation_system_add_skin(system: ?*CardinalAnimationSyst
 
     const index = system.?.skin_count;
     const dest = &system.?.skins.?[index];
+    const allocator = memory.cardinal_get_allocator_for_category(.ENGINE);
 
     _ = c.memset(dest, 0, @sizeOf(CardinalSkin));
 
     if (skin.?.name) |name| {
         const name_len = c.strlen(name) + 1;
-        const dest_name = c.malloc(name_len);
+        const dest_name = memory.cardinal_alloc(allocator, name_len);
         if (dest_name) |ptr| {
             dest.name = @ptrCast(ptr);
             _ = c.strcpy(dest.name, name);
@@ -440,7 +445,7 @@ pub export fn cardinal_animation_system_add_skin(system: ?*CardinalAnimationSyst
     dest.root_bone_index = skin.?.root_bone_index;
 
     if (skin.?.bone_count > 0) {
-        const bones_ptr = c.calloc(skin.?.bone_count, @sizeOf(CardinalBone));
+        const bones_ptr = memory.cardinal_calloc(allocator, skin.?.bone_count, @sizeOf(CardinalBone));
         if (bones_ptr) |ptr| {
             dest.bones = @ptrCast(@alignCast(ptr));
             var i: u32 = 0;
@@ -450,7 +455,7 @@ pub export fn cardinal_animation_system_add_skin(system: ?*CardinalAnimationSyst
 
                 if (src_bone.name) |name| {
                     const name_len = c.strlen(name) + 1;
-                    const dest_name = c.malloc(name_len);
+                    const dest_name = memory.cardinal_alloc(allocator, name_len);
                     if (dest_name) |n_ptr| {
                         dst_bone.name = @ptrCast(n_ptr);
                         _ = c.strcpy(dst_bone.name, name);
@@ -466,7 +471,7 @@ pub export fn cardinal_animation_system_add_skin(system: ?*CardinalAnimationSyst
     }
 
     if (skin.?.mesh_count > 0) {
-        const indices_ptr = c.malloc(skin.?.mesh_count * @sizeOf(u32));
+        const indices_ptr = memory.cardinal_alloc(allocator, skin.?.mesh_count * @sizeOf(u32));
         if (indices_ptr) |ptr| {
             dest.mesh_indices = @ptrCast(@alignCast(ptr));
             @memcpy(dest.mesh_indices.?[0..skin.?.mesh_count], skin.?.mesh_indices.?[0..skin.?.mesh_count]);
@@ -491,7 +496,8 @@ pub export fn cardinal_animation_play(system: ?*CardinalAnimationSystem, animati
     }
 
     if (state == null) {
-        const new_states_ptr = c.realloc(system.?.states, (system.?.state_count + 1) * @sizeOf(CardinalAnimationState));
+        const allocator = memory.cardinal_get_allocator_for_category(.ENGINE);
+        const new_states_ptr = memory.cardinal_realloc(allocator, system.?.states, (system.?.state_count + 1) * @sizeOf(CardinalAnimationState));
         if (new_states_ptr == null) return false;
         system.?.states = @ptrCast(@alignCast(new_states_ptr));
 
@@ -639,17 +645,18 @@ pub export fn cardinal_skin_update_bone_matrices(skin: ?*const CardinalSkin, sce
 
 pub export fn cardinal_skin_destroy(skin: ?*CardinalSkin) callconv(.c) void {
     if (skin == null) return;
+    const allocator = memory.cardinal_get_allocator_for_category(.ENGINE);
 
-    c.free(skin.?.name);
+    if (skin.?.name) |ptr| memory.cardinal_free(allocator, ptr);
 
     if (skin.?.bones) |bones| {
         var i: u32 = 0;
         while (i < skin.?.bone_count) : (i += 1) {
-            c.free(bones[i].name);
+            if (bones[i].name) |ptr| memory.cardinal_free(allocator, ptr);
         }
-        c.free(skin.?.bones);
+        memory.cardinal_free(allocator, skin.?.bones);
     }
 
-    c.free(skin.?.mesh_indices);
+    if (skin.?.mesh_indices) |ptr| memory.cardinal_free(allocator, ptr);
     _ = c.memset(skin, 0, @sizeOf(CardinalSkin));
 }

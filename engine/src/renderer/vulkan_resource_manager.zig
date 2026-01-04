@@ -1,6 +1,7 @@
 const std = @import("std");
 const builtin = @import("builtin");
 const log = @import("../core/log.zig");
+const memory = @import("../core/memory.zig");
 const types = @import("vulkan_types.zig");
 const vk_simple_pipelines = @import("vulkan_simple_pipelines.zig");
 const vk_mesh_shader = @import("vulkan_mesh_shader.zig");
@@ -8,6 +9,7 @@ const vk_pipeline = @import("vulkan_pipeline.zig");
 const vk_swapchain = @import("vulkan_swapchain.zig");
 const vk_commands = @import("vulkan_commands.zig");
 const vk_texture_manager = @import("vulkan_texture_manager.zig");
+const vk_descriptor_manager = @import("vulkan_descriptor_manager.zig");
 const vk_allocator = @import("vulkan_allocator.zig");
 const vk_compute = @import("vulkan_compute.zig");
 
@@ -106,7 +108,51 @@ pub export fn vulkan_resource_manager_destroy_pipelines(manager: ?*VulkanResourc
 
     const s = mgr.vulkan_state.?;
 
-    log.cardinal_log_debug("[RESOURCE_MANAGER] Destroying pipelines", .{});
+    if (s.pipelines.pbr_pipeline.initialized) {
+        log.cardinal_log_debug("[RESOURCE_MANAGER] Destroying PBR pipeline resources", .{});
+        vulkan_resource_manager_destroy_textures(manager, &s.pipelines.pbr_pipeline);
+        
+        // Destroy PBR buffers
+        const pbr = &s.pipelines.pbr_pipeline;
+        if (pbr.uniformBuffer != null) {
+            vulkan_resource_manager_destroy_buffer(manager, pbr.uniformBuffer, pbr.uniformBufferAllocation);
+            pbr.uniformBuffer = null;
+        }
+        if (pbr.materialBuffer != null) {
+            vulkan_resource_manager_destroy_buffer(manager, pbr.materialBuffer, pbr.materialBufferAllocation);
+            pbr.materialBuffer = null;
+        }
+        if (pbr.lightingBuffer != null) {
+            vulkan_resource_manager_destroy_buffer(manager, pbr.lightingBuffer, pbr.lightingBufferAllocation);
+            pbr.lightingBuffer = null;
+        }
+        if (pbr.boneMatricesBuffer != null) {
+            vulkan_resource_manager_destroy_buffer(manager, pbr.boneMatricesBuffer, pbr.boneMatricesBufferAllocation);
+            pbr.boneMatricesBuffer = null;
+        }
+        if (pbr.vertexBuffer != null) {
+            vulkan_resource_manager_destroy_buffer(manager, pbr.vertexBuffer, pbr.vertexBufferAllocation);
+            pbr.vertexBuffer = null;
+        }
+        if (pbr.indexBuffer != null) {
+            vulkan_resource_manager_destroy_buffer(manager, pbr.indexBuffer, pbr.indexBufferAllocation);
+            pbr.indexBuffer = null;
+        }
+        if (pbr.shadowUBO != null) {
+             vulkan_resource_manager_destroy_buffer(manager, pbr.shadowUBO, pbr.shadowUBOAllocation);
+             pbr.shadowUBO = null;
+        }
+        
+        // Descriptor manager should also be destroyed if it exists
+        if (pbr.descriptorManager) |dm| {
+             // We need a function to destroy descriptor manager or just free it if it was allocated via cardinal_alloc
+             // create_pbr_descriptor_manager allocated it.
+             vk_descriptor_manager.vk_descriptor_manager_destroy(dm);
+             const allocator = memory.cardinal_get_allocator_for_category(.RENDERER);
+             memory.cardinal_free(allocator, dm);
+             pbr.descriptorManager = null;
+        }
+    }
 
     // TODO: Update vk_simple_pipelines to accept types.VulkanState or cast
     vk_simple_pipelines.vk_destroy_simple_pipelines(s);

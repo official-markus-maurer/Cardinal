@@ -510,6 +510,7 @@ pub const VulkanManagedTexture = extern struct {
     bindless_index: u32,
     generation: u32,
     is_hdr: bool,
+    resource: ?*anyopaque, // ref_counting.CardinalRefCountedResource (void* to avoid circular dep)
 };
 
 pub const VulkanTextureManagerConfig = extern struct {
@@ -524,6 +525,7 @@ pub const VulkanTextureManagerConfig = extern struct {
 
 pub const VulkanTextureManager = extern struct {
     device: c.VkDevice,
+    physicalDevice: c.VkPhysicalDevice,
     allocator: ?*VulkanAllocator,
     commandPool: c.VkCommandPool,
     graphicsQueue: c.VkQueue,

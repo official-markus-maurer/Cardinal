@@ -212,6 +212,17 @@ pub fn vk_shadow_render(s: *types.VulkanState, cmd: c.VkCommandBuffer) void {
             radius = @max(radius, d2);
         }
         radius = std.math.sqrt(radius);
+        
+        // Apply a padding factor to the radius to include shadow casters that are outside the frustum slice
+        // but casting shadows into it. This reduces resolution but prevents shadow clipping artifacts.
+        // A factor of 1.4 adds 40% padding which is usually sufficient for typical scenes.
+        radius *= 1.4;
+
+        // Enforce minimum radius to prevent clipping of nearby large objects (like walls) when looking close up
+        // The first cascade can be very small (e.g. 1m), missing objects just outside the view.
+        const min_radius: f32 = 25.0;
+        radius = @max(radius, min_radius);
+        
         // Round radius to stabilize scale (optional, but good for consistency)
         radius = std.math.ceil(radius * 16.0) / 16.0;
         

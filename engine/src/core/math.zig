@@ -124,6 +124,15 @@ pub const Quat = extern struct {
         return .{ .x = arr[0], .y = arr[1], .z = arr[2], .w = arr[3] };
     }
 
+    pub fn mul(self: Quat, other: Quat) Quat {
+        return .{
+            .x = self.w * other.x + self.x * other.w + self.y * other.z - self.z * other.y,
+            .y = self.w * other.y - self.x * other.z + self.y * other.w + self.z * other.x,
+            .z = self.w * other.z + self.x * other.y - self.y * other.x + self.z * other.w,
+            .w = self.w * other.w - self.x * other.x - self.y * other.y - self.z * other.z,
+        };
+    }
+
     pub fn toArray(self: Quat) [4]f32 {
         return .{ self.x, self.y, self.z, self.w };
     }
@@ -161,6 +170,22 @@ pub const Mat4 = extern struct {
             }
         }
         return result;
+    }
+
+    pub fn transformPoint(self: Mat4, p: Vec3) Vec3 {
+        return .{
+            .x = self.data[0] * p.x + self.data[4] * p.y + self.data[8] * p.z + self.data[12],
+            .y = self.data[1] * p.x + self.data[5] * p.y + self.data[9] * p.z + self.data[13],
+            .z = self.data[2] * p.x + self.data[6] * p.y + self.data[10] * p.z + self.data[14],
+        };
+    }
+
+    pub fn transformVector(self: Mat4, v: Vec3) Vec3 {
+        return .{
+            .x = self.data[0] * v.x + self.data[4] * v.y + self.data[8] * v.z,
+            .y = self.data[1] * v.x + self.data[5] * v.y + self.data[9] * v.z,
+            .z = self.data[2] * v.x + self.data[6] * v.y + self.data[10] * v.z,
+        };
     }
 
     pub fn fromArray(arr: [16]f32) Mat4 {

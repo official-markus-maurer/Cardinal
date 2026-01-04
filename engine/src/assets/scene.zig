@@ -5,6 +5,7 @@ const log = @import("../core/log.zig");
 const transform_math = @import("../core/transform.zig");
 const pool_alloc = @import("../core/pool_allocator.zig");
 const handles = @import("../core/handles.zig");
+const animation = @import("../core/animation.zig");
 
 // --- Global Pool for Scene Nodes ---
 var g_node_pool: ?pool_alloc.PoolAllocator(CardinalSceneNode) = null;
@@ -423,8 +424,32 @@ pub export fn cardinal_scene_destroy(scene: ?*CardinalScene) void {
 
     if (s.all_nodes) |nodes| memory.cardinal_free(allocator, @ptrCast(nodes));
 
+    // Destroy lights
+    if (s.lights) |lights| {
+        memory.cardinal_free(allocator, @ptrCast(lights));
+    }
+
+    // Destroy skins
+    if (s.skins) |skins_opaque| {
+        const skins: [*]animation.CardinalSkin = @ptrCast(@alignCast(skins_opaque));
+        var i: u32 = 0;
+        while (i < s.skin_count) : (i += 1) {
+            animation.cardinal_skin_destroy(&skins[i]);
+        }
+        memory.cardinal_free(allocator, @ptrCast(skins));
+    }
+
+    // Destroy animation system
+    if (s.animation_system) |sys| {
+        animation.cardinal_animation_system_destroy(@ptrCast(@alignCast(sys)));
+    }
+
     s.mesh_count = 0;
     s.material_count = 0;
     s.texture_count = 0;
     s.root_node_count = 0;
+    s.light_count = 0;
+    s.skin_count = 0;
+    s.animation_system = null;
+    s.skins = null;
 }

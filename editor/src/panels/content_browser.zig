@@ -22,37 +22,10 @@ fn get_asset_type(path: []const u8) AssetState.AssetType {
     return .OTHER;
 }
 
-fn load_skybox_thread(context: *EditorState) void {
-    if (context.skybox_path) |path| {
-        var data = std.mem.zeroes(engine.texture_loader.TextureData);
-        if (engine.texture_loader.texture_load_from_file(path.ptr, &data)) {
-            // Allocate heap memory for result to pass to main thread
-            const allocator = engine.memory.cardinal_get_allocator_for_category(.ASSETS);
-            const data_ptr = engine.memory.cardinal_alloc(allocator, @sizeOf(engine.texture_loader.TextureData));
-            if (data_ptr) |ptr| {
-                const result = @as(*engine.texture_loader.TextureData, @ptrCast(@alignCast(ptr)));
-                result.* = data;
-                context.skybox_data = result;
-            } else {
-                engine.texture_loader.texture_data_free(&data);
-                log.cardinal_log_error("Failed to allocate memory for skybox data", .{});
-            }
-        } else {
-            log.cardinal_log_error("Failed to load skybox file: {s}", .{path});
-        }
-    }
-    context.skybox_load_pending = false;
-}
-
 fn load_skybox(state: *EditorState, allocator: std.mem.Allocator, path: []const u8) void {
     // Check extension to ensure it's a skybox candidate
     const ext = std.fs.path.extension(path);
     if (!std.mem.eql(u8, ext, ".hdr") and !std.mem.eql(u8, ext, ".exr")) return;
-
-    if (state.skybox_load_pending) {
-        _ = std.fmt.bufPrintZ(&state.status_msg, "Already loading a skybox...", .{}) catch {};
-        return;
-    }
 
     _ = std.fmt.bufPrintZ(&state.status_msg, "Loading skybox: {s}...", .{path}) catch {};
     
@@ -64,15 +37,14 @@ fn load_skybox(state: *EditorState, allocator: std.mem.Allocator, path: []const 
 
     // Store path
     state.skybox_path = allocator.dupeZ(u8, path) catch return;
-    state.skybox_load_pending = true;
 
-    // Spawn thread
-    state.skybox_loading_thread = std.Thread.spawn(.{}, load_skybox_thread, .{state}) catch |err| {
-        log.cardinal_log_error("Failed to spawn skybox loading thread: {}", .{err});
-        state.skybox_load_pending = false;
-        return;
-    };
-    state.skybox_loading_thread.?.detach();
+    // Set skybox directly (async internally)
+    const ptr_path: ?[*:0]const u8 = if (state.skybox_path) |p| p.ptr else null;
+    if (vulkan_renderer.cardinal_renderer_set_skybox(state.renderer, ptr_path)) {
+        _ = std.fmt.bufPrintZ(&state.status_msg, "Skybox set to: {s}", .{path}) catch {};
+    } else {
+        _ = std.fmt.bufPrintZ(&state.status_msg, "Failed to set skybox: {s}", .{path}) catch {};
+    }
 }
 
 pub fn scan_assets_dir(state: *EditorState, allocator: std.mem.Allocator) void {
@@ -312,18 +284,6 @@ pub fn draw_asset_browser_panel(state: *EditorState, allocator: std.mem.Allocato
     }
     
     // Check for finished skybox load
-    if (state.skybox_data) |data| {
-        if (vulkan_renderer.cardinal_renderer_set_skybox_from_data(state.renderer, data)) {
-            _ = std.fmt.bufPrintZ(&state.status_msg, "Loaded skybox from async load", .{}) catch {};
-        } else {
-            _ = std.fmt.bufPrintZ(&state.status_msg, "Failed to upload skybox from async load", .{}) catch {};
-        }
+    // Async load is handled by renderer now
 
-        // Cleanup
-        engine.texture_loader.texture_data_free(data);
-        
-        const mem_alloc = engine.memory.cardinal_get_allocator_for_category(.ASSETS);
-        engine.memory.cardinal_free(mem_alloc, data);
-        state.skybox_data = null;
-    }
 }

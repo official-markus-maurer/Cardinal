@@ -48,6 +48,7 @@ pub export fn vk_mesh_shader_init(s: ?*types.VulkanState) callconv(.c) bool {
 pub export fn vk_mesh_shader_cleanup(s: ?*types.VulkanState) callconv(.c) void {
     if (s == null) return;
     const vs = s.?;
+    log.cardinal_log_debug("vk_mesh_shader_cleanup: Starting", .{});
 
     vk_mesh_shader_destroy_pipeline(vs, &vs.pipelines.mesh_shader_pipeline);
 
@@ -266,22 +267,26 @@ pub export fn vk_mesh_shader_create_pipeline(s: ?*types.VulkanState, config: ?*c
     pipe.global_descriptor_set = null;
 
     // Descriptor Pool
-    const poolSizes = [_]c.VkDescriptorPoolSize{
-        .{ .type = c.VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, .descriptorCount = 1000 * 4 },
-        .{ .type = c.VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, .descriptorCount = 1000 * 5 },
-        .{ .type = c.VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, .descriptorCount = 1000 * 4096 },
-    };
+    if (pipe.descriptor_pool == null) {
+        const poolSizes = [_]c.VkDescriptorPoolSize{
+            .{ .type = c.VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, .descriptorCount = 1000 * 4 },
+            .{ .type = c.VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, .descriptorCount = 1000 * 5 },
+            .{ .type = c.VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, .descriptorCount = 1000 * 4096 },
+        };
 
-    var poolInfo = std.mem.zeroes(c.VkDescriptorPoolCreateInfo);
-    poolInfo.sType = c.VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO;
-    poolInfo.poolSizeCount = 3;
-    poolInfo.pPoolSizes = &poolSizes;
-    poolInfo.maxSets = 1000;
-    poolInfo.flags = c.VK_DESCRIPTOR_POOL_CREATE_FREE_DESCRIPTOR_SET_BIT | c.VK_DESCRIPTOR_POOL_CREATE_UPDATE_AFTER_BIND_BIT;
+        var poolInfo = std.mem.zeroes(c.VkDescriptorPoolCreateInfo);
+        poolInfo.sType = c.VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO;
+        poolInfo.poolSizeCount = 3;
+        poolInfo.pPoolSizes = &poolSizes;
+        poolInfo.maxSets = 1000;
+        poolInfo.flags = c.VK_DESCRIPTOR_POOL_CREATE_FREE_DESCRIPTOR_SET_BIT | c.VK_DESCRIPTOR_POOL_CREATE_UPDATE_AFTER_BIND_BIT;
 
-    if (c.vkCreateDescriptorPool(vs.context.device, &poolInfo, null, &pipe.descriptor_pool) != c.VK_SUCCESS) {
-        log.cardinal_log_error("Failed to create mesh shader descriptor pool", .{});
-        return false;
+        if (c.vkCreateDescriptorPool(vs.context.device, &poolInfo, null, &pipe.descriptor_pool) != c.VK_SUCCESS) {
+            log.cardinal_log_error("Failed to create mesh shader descriptor pool", .{});
+            return false;
+        }
+    } else {
+        log.cardinal_log_debug("Reusing existing mesh shader descriptor pool", .{});
     }
 
     // Default Material Buffer
@@ -438,6 +443,30 @@ pub export fn vk_mesh_shader_destroy_pipeline(s: ?*types.VulkanState, pipeline: 
     const vs = s.?;
     const pipe = pipeline.?;
 
+    // Invalidate pending descriptor sets associated with this pipeline's pool
+    // This prevents VUID-vkFreeDescriptorSets-pDescriptorSets-parent when pending cleanups
+    // are processed after the pool has been destroyed and recreated.
+    if (vs.pending_cleanup_lists != null) {
+        log.cardinal_log_debug("vk_mesh_shader_destroy_pipeline: Clearing pending descriptor sets", .{});
+        var f: u32 = 0;
+        const frames = if (vs.sync.max_frames_in_flight > 0) vs.sync.max_frames_in_flight else 3;
+        var cleared_count: u32 = 0;
+        while (f < frames) : (f += 1) {
+            if (vs.pending_cleanup_lists.?[f] != null) {
+                var i: u32 = 0;
+                while (i < vs.pending_cleanup_counts.?[f]) : (i += 1) {
+                    if ((vs.pending_cleanup_lists.?[f].?)[i].descriptor_set != null) {
+                        (vs.pending_cleanup_lists.?[f].?)[i].descriptor_set = null;
+                        cleared_count += 1;
+                    }
+                }
+            }
+        }
+        log.cardinal_log_debug("vk_mesh_shader_destroy_pipeline: Cleared {d} sets", .{cleared_count});
+    } else {
+        log.cardinal_log_debug("vk_mesh_shader_destroy_pipeline: pending_cleanup_lists is null", .{});
+    }
+
     if (pipe.pipeline != null) {
         c.vkDestroyPipeline(vs.context.device, pipe.pipeline, null);
         pipe.pipeline = null;
@@ -505,6 +534,7 @@ pub export fn vk_mesh_shader_destroy_draw_data(s: ?*types.VulkanState, draw_data
 
     // Free descriptor set
     if (data.descriptor_set != null and vs.pipelines.mesh_shader_pipeline.descriptor_pool != null) {
+        // log.cardinal_log_debug("Freeing descriptor set {any} from pool {any}", .{data.descriptor_set, vs.pipelines.mesh_shader_pipeline.descriptor_pool});
         _ = c.vkFreeDescriptorSets(vs.context.device, vs.pipelines.mesh_shader_pipeline.descriptor_pool, 1, &data.descriptor_set);
         data.descriptor_set = null;
     }

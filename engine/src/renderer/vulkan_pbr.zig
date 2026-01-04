@@ -106,11 +106,18 @@ fn create_pbr_pipeline_layout(pipeline: *types.VulkanPBRPipeline, device: c.VkDe
     var layoutCount: u32 = 1;
 
     if (pipeline.textureManager != null) {
+        log.cardinal_log_info("PBR: Checking bindless pool...", .{});
+        // Always try to use bindless layout if pool is valid, even if no textures yet
         const bindlessLayout = vk_descriptor_indexing.vk_bindless_texture_get_layout(&pipeline.textureManager.?.bindless_pool);
         if (bindlessLayout != null) {
+            log.cardinal_log_info("PBR: Bindless layout found and added to pipeline layout at index 1. Handle: 0x{x}", .{@intFromPtr(bindlessLayout)});
             descriptorLayouts[1] = bindlessLayout;
             layoutCount = 2;
+        } else {
+            log.cardinal_log_error("PBR: Bindless pool exists but layout is NULL!", .{});
         }
+    } else {
+        log.cardinal_log_error("PBR: Texture manager is NULL, cannot add bindless layout!", .{});
     }
 
     const device_wrapper = wrappers.Device.init(device);
@@ -1441,12 +1448,16 @@ pub export fn vk_pbr_render(pipeline: ?*types.VulkanPBRPipeline, commandBuffer: 
 
     // Pass 2: Blend
     cmd.bindPipeline(c.VK_PIPELINE_BIND_POINT_GRAPHICS, pipe.pipelineBlend);
+    
+    // Re-bind descriptor sets for new pipeline if needed (though layout compatibility usually allows inheritance, 
+    // it's safer to rebind or rely on compatibility. Here we rebind for clarity and safety)
     cmd.bindDescriptorSets(c.VK_PIPELINE_BIND_POINT_GRAPHICS, pipe.pipelineLayout, 0, &descriptorSets, &[_]u32{});
 
-    if (pipe.textureManager != null and pipe.textureManager.?.bindless_pool.descriptor_set != null) {
-        const bindlessSet = pipe.textureManager.?.bindless_pool.descriptor_set;
-        const bindlessSets = [_]c.VkDescriptorSet{bindlessSet};
-        cmd.bindDescriptorSets(c.VK_PIPELINE_BIND_POINT_GRAPHICS, pipe.pipelineLayout, 1, &bindlessSets, &[_]u32{});
+    if (pipe.textureManager != null) {
+        if (pipe.textureManager.?.bindless_pool.descriptor_set) |bindlessSet| {
+            const bindlessSets = [_]c.VkDescriptorSet{bindlessSet};
+            cmd.bindDescriptorSets(c.VK_PIPELINE_BIND_POINT_GRAPHICS, pipe.pipelineLayout, 1, &bindlessSets, &[_]u32{});
+        }
     }
 
     // Apply depth bias for transparent materials too (to prevent z-fighting with coplanar opaque surfaces)

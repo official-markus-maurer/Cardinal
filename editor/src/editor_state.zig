@@ -68,9 +68,6 @@ pub const EditorState = struct {
     pending_scene: scene.CardinalScene = undefined,
 
     // Skybox Loading
-    skybox_load_pending: bool = false,
-    skybox_loading_thread: ?std.Thread = null,
-    skybox_data: ?*engine.texture_loader.TextureData = null,
     skybox_path: ?[:0]u8 = null,
 
     // UI State

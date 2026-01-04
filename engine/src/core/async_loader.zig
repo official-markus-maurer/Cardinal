@@ -638,6 +638,13 @@ pub export fn cardinal_async_free_task(task: ?*CardinalAsyncTask) callconv(.c) v
              job_system.free_job(job);
         }
 
+        if (t.result_data) |data| {
+            if (t.type == .SCENE_LOAD) {
+                const scene_ptr = @as(*scene.CardinalScene, @ptrCast(@alignCast(data)));
+                memory.cardinal_free(allocator, scene_ptr);
+            }
+        }
+
         if (t.file_path) |path| {
             memory.cardinal_free(allocator, path);
         }
@@ -674,6 +681,9 @@ pub export fn cardinal_async_get_scene_result(task: ?*CardinalAsyncTask, out_sce
     const scene_res = @as(?*scene.CardinalScene, @ptrCast(@alignCast(task.?.result_data)));
     if (scene_res) |s| {
         out_scene.?.* = s.*;
+        // Zero out the source to transfer ownership (move semantics)
+        // This prevents double-free when free_task calls scene_destroy
+        s.* = std.mem.zeroes(scene.CardinalScene);
         return true;
     }
 

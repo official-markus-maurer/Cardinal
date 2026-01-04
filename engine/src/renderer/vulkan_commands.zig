@@ -480,9 +480,9 @@ fn vk_record_scene_with_secondary_buffers(s: *types.VulkanState, primary_cmd: c.
 
     var inheritance_rendering = std.mem.zeroes(c.VkCommandBufferInheritanceRenderingInfo);
     inheritance_rendering.sType = c.VK_STRUCTURE_TYPE_COMMAND_BUFFER_INHERITANCE_RENDERING_INFO;
-    inheritance_rendering.colorAttachmentCount = 1;
     var color_format = s.swapchain.format;
     inheritance_rendering.pColorAttachmentFormats = &color_format;
+    inheritance_rendering.colorAttachmentCount = 1;
     inheritance_rendering.depthAttachmentFormat = s.swapchain.depth_format;
     inheritance_rendering.rasterizationSamples = c.VK_SAMPLE_COUNT_1_BIT;
 

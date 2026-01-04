@@ -357,9 +357,10 @@ pub export fn vk_texture_create_from_data(allocator: ?*types.VulkanAllocator, de
 
 pub export fn vk_texture_create_placeholder(allocator: ?*types.VulkanAllocator, device: c.VkDevice, commandPool: c.VkCommandPool, graphicsQueue: c.VkQueue, textureImage: ?*c.VkImage, textureImageMemory: ?*c.VkDeviceMemory, textureImageView: ?*c.VkImageView, format: ?*const c.VkFormat, textureAllocation: ?*c.VmaAllocation) callconv(.c) bool {
     _ = format;
-    var whitePixel = [_]u8{ 255, 255, 255, 255 };
+    // Magenta placeholder (R=255, G=0, B=255, A=255)
+    var magentaPixel = [_]u8{ 255, 0, 255, 255 };
     var placeholderTexture = std.mem.zeroes(scene.CardinalTexture);
-    placeholderTexture.data = &whitePixel;
+    placeholderTexture.data = &magentaPixel;
     placeholderTexture.width = 1;
     placeholderTexture.height = 1;
     placeholderTexture.channels = 4;

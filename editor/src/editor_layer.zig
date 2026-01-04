@@ -56,6 +56,11 @@ fn check_loading_status() void {
 
                 const model_id = model_manager.cardinal_model_manager_add_scene(&state.model_manager, &loaded_scene, path, filename_z);
 
+                // loaded_scene resources are moved to model manager on success (and loaded_scene is zeroed)
+                // On failure, we must destroy loaded_scene to prevent leaks.
+                // If success, this is a no-op as loaded_scene is zeroed.
+                scene.cardinal_scene_destroy(&loaded_scene);
+
                 if (model_id != 0) {
                     state.selected_model_id = model_id;
                     const combined = model_manager.cardinal_model_manager_get_combined_scene(&state.model_manager);

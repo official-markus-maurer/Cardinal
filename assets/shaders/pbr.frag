@@ -87,6 +87,10 @@ layout(binding = 9) uniform ShadowUBO {
 } shadowData;
 
 float ShadowCalculation(vec3 worldPos, vec3 N, vec3 L) {
+    // Ensure normal and light direction are normalized for accurate bias calculation
+    vec3 normal = normalize(N);
+    vec3 lightDir = normalize(L);
+
     vec4 fragPosViewSpace = ubo.view * vec4(worldPos, 1.0);
     float depthValue = abs(fragPosViewSpace.z);
     
@@ -105,16 +109,12 @@ float ShadowCalculation(vec3 worldPos, vec3 N, vec3 L) {
     
     if (projCoords.z > 1.0) return 1.0;
     
-    // Reduce bias significantly to match the large depth range of the shadow map
-    // The previous value (0.005) was too large for the extended Z-range (3000 units),
-    // causing shadows to detach (peter panning).
-    // With 16-bit depth (or even 32-bit float), precision is distributed over the range.
-    // 0.0005 should be sufficient to prevent acne without causing detachment.
-    float bias = max(0.0005 * (1.0 - dot(N, L)), 0.00005);
+    // Use geometry normal (passed as N) for bias to avoid self-shadowing acne on normal mapped surfaces
+    float baseBias = max(0.00005 * (1.0 - dot(normal, lightDir)), 0.00001);
     
-    // Do not increase bias for first cascade; if anything, it has better XY resolution so we might want less bias,
-    // but the Z precision is the main factor here.
-    // if (layer == 0) bias *= 3.0;
+    // Scale by layer to prevent acne in lower resolution cascades
+    // Use minimal scaling to keep bias consistent across transitions
+    float bias = baseBias * (float(layer) * 0.1 + 1.0);
     
     float shadow = 0.0;
     vec2 texelSize = 1.0 / vec2(textureSize(shadowMap, 0));
@@ -125,6 +125,35 @@ float ShadowCalculation(vec3 worldPos, vec3 N, vec3 L) {
         }
     }
     shadow /= 9.0;
+    
+    // Cascade Blending
+    if (layer < 3) {
+        float splitDist = shadowData.cascadeSplits[layer];
+        float blendOverlap = 3.0; // Increased blend region to 3 meters for smoother transition
+        float distToEdge = splitDist - depthValue;
+        
+        if (distToEdge < blendOverlap) {
+            int nextLayer = layer + 1;
+            vec4 lightSpacePosNext = shadowData.lightSpaceMatrices[nextLayer] * vec4(worldPos, 1.0);
+            vec3 projCoordsNext = lightSpacePosNext.xyz / lightSpacePosNext.w;
+            projCoordsNext.xy = projCoordsNext.xy * 0.5 + 0.5;
+            
+            // Match bias scaling logic
+            float biasNext = baseBias * (float(nextLayer) * 0.1 + 1.0);
+            float shadowNext = 0.0;
+            
+            for(int x = -1; x <= 1; ++x) {
+                for(int y = -1; y <= 1; ++y) {
+                     float pcfDepth = texture(shadowMap, vec4(projCoordsNext.xy + vec2(x, y) * texelSize, nextLayer, projCoordsNext.z - biasNext)); 
+                     shadowNext += pcfDepth;
+                }
+            }
+            shadowNext /= 9.0;
+            
+            float t = smoothstep(blendOverlap, 0.0, distToEdge);
+            shadow = mix(shadow, shadowNext, t);
+        }
+    }
     
     return 1.0 - shadow;
 }
@@ -413,7 +442,9 @@ void main() {
 
         float shadow = 0.0;
         if (type == 0) { // Directional
-            shadow = ShadowCalculation(fragWorldPos, N, L);
+            // Pass geometry normal (fragNormal) instead of perturbed normal (N) for shadow bias calculation
+            // This prevents shadow acne on surfaces with strong normal maps
+            shadow = ShadowCalculation(fragWorldPos, normalize(fragNormal), L);
         }
 
         vec3 H = normalize(V + L);

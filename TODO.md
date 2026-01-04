@@ -2,6 +2,8 @@
 
 This document outlines the roadmap for the Cardinal Engine, focusing on robustness, extensibility, and future feature implementation.
 
+- [ ] Replace synchronous tasks with asynchronous ones.
+
 ## 1. Core Architecture (Robustness & Extensibility)
 
 ### Memory Management

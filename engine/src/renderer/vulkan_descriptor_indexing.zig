@@ -4,6 +4,8 @@ const log = @import("../core/log.zig");
 const memory = @import("../core/memory.zig");
 const types = @import("vulkan_types.zig");
 const c = @import("vulkan_c.zig").c;
+const vk_allocator = @import("vulkan_allocator.zig");
+const vk_texture_utils = @import("util/vulkan_texture_utils.zig");
 
 const CARDINAL_BINDLESS_TEXTURE_BINDING = 0;
 
@@ -410,15 +412,102 @@ pub export fn vk_bindless_texture_free(pool: ?*types.BindlessTexturePool, textur
     log.cardinal_log_debug("Freed bindless texture at index {d}", .{texture_index});
 }
 
-pub export fn vk_bindless_texture_update_data(pool: ?*types.BindlessTexturePool, texture_index: u32, data: ?*const anyopaque, data_size: c.VkDeviceSize, command_buffer: c.VkCommandBuffer) callconv(.c) bool {
-    _ = pool;
-    _ = texture_index;
-    _ = data;
-    _ = data_size;
-    _ = command_buffer;
-    // TODO: Implement texture data upload using staging buffer
-    log.cardinal_log_warn("Bindless texture data update not yet implemented", .{});
-    return false;
+pub export fn vk_bindless_texture_update_data(pool: ?*types.BindlessTexturePool, texture_index: u32, data: ?*const anyopaque, data_size: c.VkDeviceSize, command_buffer: c.VkCommandBuffer, timeline_value: u64) callconv(.c) bool {
+    if (pool == null or data == null or data_size == 0) return false;
+    const p = pool.?;
+
+    if (texture_index >= p.max_textures) {
+        log.cardinal_log_error("Invalid texture index {d}", .{texture_index});
+        return false;
+    }
+
+    const texture = &p.textures.?[texture_index];
+    if (!texture.is_allocated) {
+        log.cardinal_log_error("Texture at index {d} is not allocated", .{texture_index});
+        return false;
+    }
+
+    // Allocate staging buffer
+    var bufferInfo = std.mem.zeroes(c.VkBufferCreateInfo);
+    bufferInfo.sType = c.VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO;
+    bufferInfo.size = data_size;
+    bufferInfo.usage = c.VK_BUFFER_USAGE_TRANSFER_SRC_BIT;
+    bufferInfo.sharingMode = c.VK_SHARING_MODE_EXCLUSIVE;
+
+    var staging_buffer: c.VkBuffer = null;
+    var staging_memory: c.VkDeviceMemory = null;
+    var staging_allocation: c.VmaAllocation = null;
+
+    if (!vk_allocator.vk_allocator_allocate_buffer(p.allocator, &bufferInfo, &staging_buffer, &staging_memory, &staging_allocation, c.VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | c.VK_MEMORY_PROPERTY_HOST_COHERENT_BIT)) {
+        log.cardinal_log_error("Failed to allocate staging buffer for texture update", .{});
+        return false;
+    }
+
+    // Copy data to staging buffer
+    var mapped_data: ?*anyopaque = null;
+    if (vk_allocator.vk_allocator_map_memory(p.allocator, staging_allocation, &mapped_data) != c.VK_SUCCESS) {
+        log.cardinal_log_error("Failed to map staging buffer memory", .{});
+        vk_allocator.vk_allocator_free_buffer(p.allocator, staging_buffer, staging_allocation);
+        return false;
+    }
+
+    @memcpy(@as([*]u8, @ptrCast(mapped_data.?))[0..data_size], @as([*]const u8, @ptrCast(data.?))[0..data_size]);
+    vk_allocator.vk_allocator_unmap_memory(p.allocator, staging_allocation);
+
+    // Record copy commands
+    // 1. Transition to Transfer Dst
+    var barrier = std.mem.zeroes(c.VkImageMemoryBarrier2);
+    barrier.sType = c.VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2;
+    barrier.srcStageMask = c.VK_PIPELINE_STAGE_2_TOP_OF_PIPE_BIT;
+    barrier.srcAccessMask = 0;
+    barrier.dstStageMask = c.VK_PIPELINE_STAGE_2_TRANSFER_BIT;
+    barrier.dstAccessMask = c.VK_ACCESS_2_TRANSFER_WRITE_BIT;
+    barrier.oldLayout = c.VK_IMAGE_LAYOUT_UNDEFINED; // Discard old content
+    barrier.newLayout = c.VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
+    barrier.srcQueueFamilyIndex = c.VK_QUEUE_FAMILY_IGNORED;
+    barrier.dstQueueFamilyIndex = c.VK_QUEUE_FAMILY_IGNORED;
+    barrier.image = texture.image;
+    barrier.subresourceRange.aspectMask = c.VK_IMAGE_ASPECT_COLOR_BIT;
+    barrier.subresourceRange.baseMipLevel = 0;
+    barrier.subresourceRange.levelCount = 1;
+    barrier.subresourceRange.baseArrayLayer = 0;
+    barrier.subresourceRange.layerCount = 1;
+
+    var dep_info = std.mem.zeroes(c.VkDependencyInfo);
+    dep_info.sType = c.VK_STRUCTURE_TYPE_DEPENDENCY_INFO;
+    dep_info.imageMemoryBarrierCount = 1;
+    dep_info.pImageMemoryBarriers = &barrier;
+
+    c.vkCmdPipelineBarrier2(command_buffer, &dep_info);
+
+    // 2. Copy buffer to image
+    var region = std.mem.zeroes(c.VkBufferImageCopy);
+    region.bufferOffset = 0;
+    region.bufferRowLength = 0;
+    region.bufferImageHeight = 0;
+    region.imageSubresource.aspectMask = c.VK_IMAGE_ASPECT_COLOR_BIT;
+    region.imageSubresource.mipLevel = 0;
+    region.imageSubresource.baseArrayLayer = 0;
+    region.imageSubresource.layerCount = 1;
+    region.imageOffset = .{ .x = 0, .y = 0, .z = 0 };
+    region.imageExtent = texture.extent;
+
+    c.vkCmdCopyBufferToImage(command_buffer, staging_buffer, texture.image, c.VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &region);
+
+    // 3. Transition to Shader Read Only
+    barrier.srcStageMask = c.VK_PIPELINE_STAGE_2_TRANSFER_BIT;
+    barrier.srcAccessMask = c.VK_ACCESS_2_TRANSFER_WRITE_BIT;
+    barrier.dstStageMask = c.VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT; // Assuming used in fragment shader
+    barrier.dstAccessMask = c.VK_ACCESS_2_SHADER_READ_BIT;
+    barrier.oldLayout = c.VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
+    barrier.newLayout = c.VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+
+    c.vkCmdPipelineBarrier2(command_buffer, &dep_info);
+
+    // Register cleanup
+    vk_texture_utils.add_staging_buffer_cleanup(staging_buffer, staging_memory, staging_allocation, p.device, timeline_value);
+
+    return true;
 }
 
 pub export fn vk_bindless_texture_get_descriptor_set(pool: ?*const types.BindlessTexturePool) callconv(.c) c.VkDescriptorSet {

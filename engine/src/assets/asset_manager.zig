@@ -153,12 +153,22 @@ pub const AssetManager = struct {
         var texture = std.mem.zeroes(scene.CardinalTexture);
         const path_z = try self.allocator.dupeZ(u8, path);
         
-        // Use the existing C-based loading function
-        if (!texture_loader.texture_load_from_file(@ptrCast(path_z), @ptrCast(&texture))) {
+        // Use the async ref-counted loading function
+        var temp_data = std.mem.zeroes(texture_loader.TextureData);
+        const res = texture_loader.texture_load_with_ref_counting(@ptrCast(path_z), &temp_data);
+        
+        if (res == null) {
             self.allocator.free(path_z);
             return error.FailedToLoadTexture;
         }
         
+        // Copy initial data (placeholder or loaded)
+        texture.data = temp_data.data;
+        texture.width = temp_data.width;
+        texture.height = temp_data.height;
+        texture.channels = temp_data.channels;
+        texture.is_hdr = temp_data.is_hdr;
+        texture.ref_resource = res;
         texture.path = path_z;
         
         const handle = try self.textures.add(texture, path);

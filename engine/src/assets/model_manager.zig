@@ -5,6 +5,7 @@ const memory = @import("../core/memory.zig");
 const log = @import("../core/log.zig");
 const ref_counting = @import("../core/ref_counting.zig");
 const async_loader = @import("../core/async_loader.zig");
+const texture_loader = @import("texture_loader.zig");
 
 const model_log = log.ScopedLogger("MODEL");
 
@@ -370,18 +371,37 @@ fn rebuild_combined_scene(manager: *CardinalModelManager) void {
 
                 var used_ref_counting = false;
                 if (src_texture.ref_resource) |res| {
+                    // Try to acquire the resource properly via the registry
+                    var acquired = false;
                     if (res.identifier) |id| {
-                        dst_texture.ref_resource = ref_counting.cardinal_ref_acquire(id);
-                        if (dst_texture.ref_resource != null) {
-                            dst_texture.data = src_texture.data;
-                            used_ref_counting = true;
-                        } else {
-                            dst_texture.ref_resource = null;
-                            dst_texture.data = null;
-                            used_ref_counting = true; // Skip copy to avoid use-after-free
+                        if (ref_counting.cardinal_ref_acquire(id)) |acquired_res| {
+                            dst_texture.ref_resource = acquired_res;
+                            acquired = true;
                         }
+                    }
+
+                    if (acquired) {
+                        _ = @atomicRmw(u32, &dst_texture.ref_resource.?.ref_count, .Add, 0, .seq_cst); // Just to ensure visibility if needed, though acquire already did Add
+
+                        // Update data pointer from the resource directly to ensure we have the latest data
+                        if (dst_texture.ref_resource.?.resource) |r| {
+                            const tex_data = @as(*texture_loader.TextureData, @ptrCast(@alignCast(r)));
+                            dst_texture.data = tex_data.data;
+                            dst_texture.width = tex_data.width;
+                            dst_texture.height = tex_data.height;
+                            dst_texture.channels = tex_data.channels;
+                            dst_texture.is_hdr = tex_data.is_hdr;
+                        } else {
+                            dst_texture.data = src_texture.data;
+                        }
+                        used_ref_counting = true;
                     } else {
+                        // Fallback: If we couldn't acquire (e.g. not in registry), we don't use ref counting
+                        // and will fall through to deep copy below.
                         dst_texture.ref_resource = null;
+                        if (res.identifier) |id| {
+                            log.cardinal_log_warn("[MODEL_MGR] Failed to acquire ref for texture '{s}', falling back to copy", .{id});
+                        }
                     }
                 }
 
@@ -414,6 +434,27 @@ fn rebuild_combined_scene(manager: *CardinalModelManager) void {
                     }
                 } else {
                     dst_texture.path = null;
+                }
+                
+                // Copy fallback texture
+                if (dst_texture.ref_resource == null and src_texture.ref_resource != null) {
+                    // Check if it's the fallback texture
+                    if (src_texture.width == 2 and src_texture.height == 2) {
+                        // Try to acquire again
+                        if (src_texture.ref_resource.?.identifier) |id| {
+                            if (ref_counting.cardinal_ref_acquire(id)) |acquired_res| {
+                                dst_texture.ref_resource = acquired_res;
+                                dst_texture.data = src_texture.data;
+                            }
+                        }
+                    }
+                }
+
+                // Debug logging
+                if (dst_texture.ref_resource == null and src_texture.ref_resource != null) {
+                    log.cardinal_log_warn("[MODEL_MGR] Texture copy failed to preserve ref_resource! Src: {*}, Dst: {*}", .{src_texture.ref_resource, dst_texture.ref_resource});
+                } else if (dst_texture.ref_resource != null) {
+                     // log.cardinal_log_debug("[MODEL_MGR] Texture copy preserved ref_resource: {*}", .{dst_texture.ref_resource});
                 }
             }
         }
@@ -476,62 +517,70 @@ pub export fn cardinal_model_manager_destroy(manager: ?*CardinalModelManager) ca
 
 pub export fn cardinal_model_manager_load_model(manager: ?*CardinalModelManager, file_path: ?[*:0]const u8, name: ?[*:0]const u8) callconv(.c) u32 {
     if (manager == null or file_path == null) return 0;
-    const mgr = manager.?;
 
-    if (mgr.model_count >= mgr.model_capacity) {
-        if (!expand_models_array(mgr)) return 0;
-    }
+    // Use the async loader but wait for completion to maintain synchronous API contract
+    // Priority 2 = HIGH
+    const id = cardinal_model_manager_load_model_async(manager, file_path, name, 2);
+    if (id == 0) return 0;
 
-    const models = mgr.models.?;
-    const model = &models[mgr.model_count];
-    @memset(@as([*]u8, @ptrCast(model))[0..@sizeOf(CardinalModelInstance)], 0);
+    const model = cardinal_model_manager_get_model(manager, id);
+    if (model == null) return 0;
 
-    model.id = mgr.next_id;
-    mgr.next_id += 1;
-
-    const allocator = memory.cardinal_get_allocator_for_category(.ASSETS);
-
-    const path_len = std.mem.len(file_path.?);
-    const path_ptr = memory.cardinal_alloc(allocator, path_len + 1);
-    if (path_ptr) |pp| {
-        @memcpy(@as([*]u8, @ptrCast(pp))[0..path_len], @as([*]const u8, @ptrCast(file_path.?))[0..path_len]);
-        @as([*]u8, @ptrCast(pp))[path_len] = 0;
-        model.file_path = @ptrCast(pp);
-    }
-
-    if (name) |n| {
-        const name_len = std.mem.len(n);
-        const name_ptr = memory.cardinal_alloc(allocator, name_len + 1);
-        if (name_ptr) |np| {
-            @memcpy(@as([*]u8, @ptrCast(np))[0..name_len], @as([*]const u8, @ptrCast(n))[0..name_len]);
-            @as([*]u8, @ptrCast(np))[name_len] = 0;
-            model.name = @ptrCast(np);
+    // Wait for the task chain to complete
+    if (model.?.load_task) |task| {
+        if (!async_loader.cardinal_async_wait_for_task(task, 0)) {
+            log.cardinal_log_error("Failed to wait for model load task for {s}", .{file_path.?});
+            _ = cardinal_model_manager_remove_model(manager, id);
+            return 0;
         }
-    } else {
-        model.name = generate_model_name(file_path.?);
+
+        const status = async_loader.cardinal_async_get_task_status(task);
+        if (status == .COMPLETED) {
+            // Finalize the model (logic duplicated from update loop)
+            var success = false;
+            if (task.type == .CUSTOM) {
+                if (task.result_data) |result_ptr| {
+                    const result = @as(*FinalizedModelData, @ptrCast(@alignCast(result_ptr)));
+
+                    // Copy data to model
+                    model.?.scene = result.scene;
+                    model.?.bbox_min = result.bbox_min;
+                    model.?.bbox_max = result.bbox_max;
+
+                    // Free the result struct
+                    const allocator = memory.cardinal_get_allocator_for_category(.ASSETS);
+                    memory.cardinal_free(allocator, result_ptr);
+
+                    success = true;
+                    model.?.is_loading = false;
+                    manager.?.scene_dirty = true;
+
+                    const model_name_str = if (model.?.name) |n| n else "Unnamed";
+                    log.cardinal_log_info("Synchronous (via Async) loading completed for model '{s}' (ID: {d}, {d} meshes)", .{ model_name_str, model.?.id, model.?.scene.mesh_count });
+                }
+            }
+
+            // Cleanup task
+            async_loader.cardinal_async_free_task(task);
+            model.?.load_task = null;
+
+            if (!success) {
+                _ = cardinal_model_manager_remove_model(manager, id);
+                return 0;
+            }
+        } else {
+            const error_msg = async_loader.cardinal_async_get_error_message(task);
+            const err_str = if (error_msg) |e| e else "Unknown error";
+            log.cardinal_log_error("Model load failed: {s}", .{err_str});
+            
+            async_loader.cardinal_async_free_task(task);
+            model.?.load_task = null;
+            _ = cardinal_model_manager_remove_model(manager, id);
+            return 0;
+        }
     }
 
-    transform_math.cardinal_matrix_identity(&model.transform);
-    model.visible = true;
-    model.selected = false;
-    model.is_loading = false;
-
-    if (!cardinal_scene_load(file_path.?, &model.scene)) {
-        log.cardinal_log_error("Failed to load model from {s}", .{file_path.?});
-        if (model.name) |n| memory.cardinal_free(allocator, @ptrCast(n));
-        if (model.file_path) |p| memory.cardinal_free(allocator, @ptrCast(p));
-        return 0;
-    }
-
-    calculate_scene_bounds(&model.scene, &model.bbox_min, &model.bbox_max);
-
-    mgr.model_count += 1;
-    mgr.scene_dirty = true;
-
-    const model_name_str = if (model.name) |n| n else "Unnamed";
-    log.cardinal_log_info("Loaded model '{s}' from {s} (ID: {d}, {d} meshes)", .{ model_name_str, file_path.?, model.id, model.scene.mesh_count });
-
-    return model.id;
+    return id;
 }
 
 pub export fn cardinal_model_manager_load_model_async(manager: ?*CardinalModelManager, file_path: ?[*:0]const u8, name: ?[*:0]const u8, priority: c_int) callconv(.c) u32 {

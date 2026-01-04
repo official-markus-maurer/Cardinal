@@ -75,6 +75,7 @@ fn resolve_texture_index(textureHandle: handles.TextureHandle, manager: ?*const 
 
     if (mappedIndex < manager.?.textureCount) {
         const tex = &manager.?.textures.?[mappedIndex];
+        // log.cardinal_log_debug("Resolving texture handle {d} -> mapped index {d}, bindless index: {d}", .{textureIndex, mappedIndex, tex.bindless_index});
         if (tex.bindless_index != c.UINT32_MAX) {
             return tex.bindless_index;
         }

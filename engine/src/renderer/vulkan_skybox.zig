@@ -9,6 +9,8 @@ const shader_utils = @import("util/vulkan_shader_utils.zig");
 const texture_loader = @import("../assets/texture_loader.zig");
 const math = @import("../core/math.zig");
 const scene = @import("../assets/scene.zig");
+const ref_counting = @import("../core/ref_counting.zig");
+const resource_state = @import("../core/resource_state.zig");
 
 const skybox_log = log.ScopedLogger("SKYBOX");
 
@@ -222,7 +224,7 @@ pub fn vk_skybox_pipeline_destroy(pipeline: *types.SkyboxPipeline, device: c.VkD
     pipeline.initialized = false;
 }
 
-pub fn vk_skybox_load_from_data(pipeline: *types.SkyboxPipeline, device: c.VkDevice, allocator: *types.VulkanAllocator, commandPool: c.VkCommandPool, graphicsQueue: c.VkQueue, textureData: texture_loader.TextureData) bool {
+pub fn vk_skybox_load_from_data(pipeline: *types.SkyboxPipeline, device: c.VkDevice, allocator: *types.VulkanAllocator, commandPool: c.VkCommandPool, graphicsQueue: c.VkQueue, sync_manager: ?*types.VulkanSyncManager, textureData: texture_loader.TextureData) bool {
     // Clean up old texture
     if (pipeline.texture.is_allocated) {
         vk_allocator.vk_allocator_free_image(allocator, pipeline.texture.image, pipeline.texture.allocation);
@@ -240,7 +242,7 @@ pub fn vk_skybox_load_from_data(pipeline: *types.SkyboxPipeline, device: c.VkDev
     cardTex.is_hdr = textureData.is_hdr;
     
     // Create resources
-    if (!vk_texture_utils.vk_texture_create_from_data(allocator, device, commandPool, graphicsQueue, null, &cardTex, &pipeline.texture.image, &pipeline.texture.memory, &pipeline.texture.view, null, &pipeline.texture.allocation)) {
+    if (!vk_texture_utils.vk_texture_create_from_data(allocator, device, commandPool, graphicsQueue, sync_manager, &cardTex, &pipeline.texture.image, &pipeline.texture.memory, &pipeline.texture.view, null, &pipeline.texture.allocation)) {
         skybox_log.err("Failed to create skybox texture resources", .{});
         return false;
     }
@@ -292,22 +294,50 @@ pub fn vk_skybox_load_from_data(pipeline: *types.SkyboxPipeline, device: c.VkDev
     return true;
 }
 
-pub fn vk_skybox_load(pipeline: *types.SkyboxPipeline, device: c.VkDevice, allocator: *types.VulkanAllocator, commandPool: c.VkCommandPool, graphicsQueue: c.VkQueue, path: [:0]const u8) bool {
+pub fn vk_skybox_load(pipeline: *types.SkyboxPipeline, device: c.VkDevice, allocator: *types.VulkanAllocator, commandPool: c.VkCommandPool, graphicsQueue: c.VkQueue, sync_manager: ?*types.VulkanSyncManager, path: [:0]const u8) bool {
     var textureData = std.mem.zeroes(texture_loader.TextureData);
     
-    // Load texture (using ref counting loader for convenience, though we bypass cache mostly here as it's custom)
-    // Actually, direct load is better for custom format handling if needed, but texture_loader now handles HDR.
-    if (!texture_loader.texture_load_from_file(path.ptr, &textureData)) {
+    // Load texture asynchronously
+    const res = texture_loader.texture_load_with_ref_counting(path.ptr, &textureData);
+    if (res == null) {
         skybox_log.err("Failed to load skybox texture: {s}", .{path});
         return false;
     }
-    defer texture_loader.texture_data_free(&textureData);
 
-    if (vk_skybox_load_from_data(pipeline, device, allocator, commandPool, graphicsQueue, textureData)) {
-        skybox_log.info("Skybox loaded successfully: {s}", .{path});
+    // Upload the initial data (might be placeholder)
+    if (vk_skybox_load_from_data(pipeline, device, allocator, commandPool, graphicsQueue, sync_manager, textureData)) {
+        // Track the resource for updates
+        pipeline.texture.resource = res;
+        
+        // If the resource is still loading, mark as placeholder to trigger updates
+        const state = resource_state.cardinal_resource_state_get(res.?.identifier.?);
+        pipeline.texture.isPlaceholder = (state == .LOADING);
+        
+        skybox_log.info("Skybox set to: {s} (Placeholder={any})", .{path, pipeline.texture.isPlaceholder});
         return true;
     }
     return false;
+}
+
+pub fn vk_skybox_update(pipeline: *types.SkyboxPipeline, device: c.VkDevice, allocator: *types.VulkanAllocator, commandPool: c.VkCommandPool, graphicsQueue: c.VkQueue, sync_manager: ?*types.VulkanSyncManager) void {
+    if (!pipeline.initialized or !pipeline.texture.is_allocated) return;
+    
+    if (pipeline.texture.isPlaceholder and pipeline.texture.resource != null) {
+        const res = @as(*ref_counting.CardinalRefCountedResource, @ptrCast(@alignCast(pipeline.texture.resource.?)));
+        
+        if (res.identifier != null and resource_state.cardinal_resource_state_get(res.identifier) == .LOADED) {
+             const data = @as(*texture_loader.TextureData, @ptrCast(@alignCast(res.resource.?)));
+             
+             skybox_log.info("Updating skybox from placeholder to loaded texture", .{});
+             
+             // Upload actual data
+             if (vk_skybox_load_from_data(pipeline, device, allocator, commandPool, graphicsQueue, sync_manager, data.*)) {
+                 pipeline.texture.isPlaceholder = false;
+                 // Keep the resource pointer
+                 pipeline.texture.resource = res;
+             }
+        }
+    }
 }
 
 pub fn render(pipeline: *types.SkyboxPipeline, cmd: c.VkCommandBuffer, view: math.Mat4, proj: math.Mat4) void {

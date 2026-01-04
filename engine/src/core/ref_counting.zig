@@ -64,9 +64,9 @@ fn find_resource_locked(identifier: ?[*:0]const u8) ?*CardinalRefCountedResource
 }
 
 // Remove a resource from the registry
-fn remove_resource(identifier: ?[*:0]const u8) void {
+fn remove_resource(identifier: ?[*:0]const u8) bool {
     if (!g_registry_initialized or identifier == null) {
-        return;
+        return false;
     }
 
     g_registry_mutex.lock();
@@ -84,7 +84,7 @@ fn remove_resource(identifier: ?[*:0]const u8) void {
             // while we were waiting for the lock
             if (@atomicLoad(u32, &curr.ref_count, .seq_cst) > 0) {
                 ref_log.debug("Resource '{s}' resurrected (ref_count={d}), cancelling removal", .{ identifier.?, curr.ref_count });
-                return;
+                return false;
             }
 
             if (prev) |p| {
@@ -108,12 +108,26 @@ fn remove_resource(identifier: ?[*:0]const u8) void {
 
             _ = @atomicRmw(u32, &g_registry.total_resources, .Sub, 1, .seq_cst);
             ref_log.debug("Successfully removed and freed resource '{s}'", .{identifier.?});
-            return;
+            return true;
         }
         prev = curr;
         current = curr.next;
     }
     ref_log.warn("Failed to find resource '{s}' in registry for removal!", .{identifier.?});
+    
+    // Debug: print registry contents to help diagnose
+    ref_log.warn("Registry state at failure:", .{});
+    var i: usize = 0;
+    while (i < g_registry.bucket_count) : (i += 1) {
+        var current_node = g_registry.buckets.?[i];
+        while (current_node) |node| {
+            const node_id = if (node.identifier) |id| id else "null";
+            ref_log.warn("  - Bucket {d}: '{s}' (ref: {d})", .{i, node_id, @atomicLoad(u32, &node.ref_count, .seq_cst)});
+            current_node = node.next;
+        }
+    }
+    
+    return false;
 }
 
 pub export fn cardinal_ref_counting_init(bucket_count: usize) callconv(.c) bool {
@@ -286,7 +300,20 @@ pub export fn cardinal_ref_release(ref_resource: ?*CardinalRefCountedResource) c
 
     if (new_count == 0) {
         ref_log.debug("Resource '{s}' ref_count reached 0, cleaning up", .{res.identifier.?});
-        remove_resource(res.identifier);
+        if (!remove_resource(res.identifier)) {
+             // If not found in registry (orphan), we must free it manually to prevent leaks
+            ref_log.warn("Cleaning up orphan resource '{s}' (not in registry)", .{res.identifier.?});
+            
+            if (res.destructor) |destructor| {
+                if (res.resource) |r| {
+                    destructor(r);
+                }
+            }
+            
+            const allocator = memory.cardinal_get_allocator_for_category(.ENGINE);
+            memory.cardinal_free(allocator, res.identifier);
+            memory.cardinal_free(allocator, res);
+        }
     }
 }
 

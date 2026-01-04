@@ -14,6 +14,7 @@ const vk_pbr = @import("vulkan_pbr.zig");
 const vk_mesh_shader = @import("vulkan_mesh_shader.zig");
 const vk_simple_pipelines = @import("vulkan_simple_pipelines.zig");
 const vk_renderer = @import("vulkan_renderer.zig");
+const vk_texture_manager = @import("vulkan_texture_manager.zig");
 const vk_buffer_utils = @import("util/vulkan_buffer_utils.zig");
 const vk_texture_utils = @import("util/vulkan_texture_utils.zig");
 const vk_allocator = @import("vulkan_allocator.zig");
@@ -282,7 +283,17 @@ fn handle_pending_recreation(renderer: ?*types.CardinalRenderer, s: *types.Vulka
 }
 
 fn wait_for_fence(s: *types.VulkanState) bool {
+    if (s.sync.in_flight_fences == null) {
+        log.cardinal_log_error("[SYNC] Frame {d}: In-flight fences array is null", .{s.sync.current_frame});
+        return false;
+    }
+    
     var current_fence = s.sync.in_flight_fences.?[s.sync.current_frame];
+    if (current_fence == null) {
+        log.cardinal_log_error("[SYNC] Frame {d}: Current fence is null", .{s.sync.current_frame});
+        return false;
+    }
+
     const fence_status = c.vkGetFenceStatus(s.context.device, current_fence);
 
     if (fence_status == c.VK_SUCCESS) {
@@ -531,6 +542,17 @@ pub export fn cardinal_renderer_draw_frame(renderer: ?*types.CardinalRenderer) c
     // Clean up resources from the previous execution of this frame slot
     vk_mesh_shader.vk_mesh_shader_process_pending_cleanup(s);
     vk_texture_utils.process_staging_buffer_cleanups(@ptrCast(s.sync_manager), @ptrCast(&s.allocator));
+
+    // Update textures (async load completion)
+    if (s.pipelines.use_pbr_pipeline and s.pipelines.pbr_pipeline.textureManager != null) {
+        vk_texture_manager.vk_texture_manager_update_textures(s.pipelines.pbr_pipeline.textureManager.?);
+    }
+
+    // Update skybox (async load completion)
+    if (s.pipelines.use_skybox_pipeline) {
+        const vk_skybox = @import("vulkan_skybox.zig");
+        vk_skybox.vk_skybox_update(&s.pipelines.skybox_pipeline, s.context.device, &s.allocator, s.commands.pools.?[0], s.context.graphics_queue, s.sync_manager);
+    }
 
     // Prepare mesh shader rendering
     if (s.current_rendering_mode == .MESH_SHADER) {

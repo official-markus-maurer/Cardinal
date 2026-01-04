@@ -802,6 +802,7 @@ pub export fn cardinal_renderer_set_skybox_from_data(renderer: ?*types.CardinalR
         @ptrCast(&s.allocator),
         s.commands.pools.?[0],
         s.context.graphics_queue,
+        s.sync_manager,
         data.?.*
     );
 }
@@ -822,6 +823,7 @@ pub export fn cardinal_renderer_set_skybox(renderer: ?*types.CardinalRenderer, p
         @ptrCast(&s.allocator),
         s.commands.pools.?[0],
         s.context.graphics_queue,
+        s.sync_manager,
         path_slice
     );
 }

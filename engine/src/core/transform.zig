@@ -78,25 +78,16 @@ pub export fn cardinal_transform_point(matrix: *const [16]f32, point: *const [3]
     const m = Mat4.fromArray(matrix.*);
     const p = Vec3.fromArray(point.*);
 
-    // TODO: Temporary inline implementation
-    const x = p.x;
-    const y = p.y;
-    const z = p.z;
-    result[0] = m.data[0] * x + m.data[4] * y + m.data[8] * z + m.data[12];
-    result[1] = m.data[1] * x + m.data[5] * y + m.data[9] * z + m.data[13];
-    result[2] = m.data[2] * x + m.data[6] * y + m.data[10] * z + m.data[14];
+    const res = m.transformPoint(p);
+    result.* = res.toArray();
 }
 
 pub export fn cardinal_transform_vector(matrix: *const [16]f32, vector: *const [3]f32, result: *[3]f32) callconv(.c) void {
     const m = Mat4.fromArray(matrix.*);
     const v = Vec3.fromArray(vector.*);
 
-    const x = v.x;
-    const y = v.y;
-    const z = v.z;
-    result[0] = m.data[0] * x + m.data[4] * y + m.data[8] * z;
-    result[1] = m.data[1] * x + m.data[5] * y + m.data[9] * z;
-    result[2] = m.data[2] * x + m.data[6] * y + m.data[10] * z;
+    const res = m.transformVector(v);
+    result.* = res.toArray();
 }
 
 pub export fn cardinal_transform_normal(matrix: *const [16]f32, normal: *const [3]f32, result: *[3]f32) callconv(.c) void {
@@ -145,20 +136,10 @@ pub export fn cardinal_quaternion_identity(quaternion: *[4]f32) callconv(.c) voi
 }
 
 pub export fn cardinal_quaternion_multiply(a: *const [4]f32, b: *const [4]f32, result: *[4]f32) callconv(.c) void {
-    // TODO: Implement in Math.zig but for now manual.
-    const ax = a[0];
-    const ay = a[1];
-    const az = a[2];
-    const aw = a[3];
-    const bx = b[0];
-    const by = b[1];
-    const bz = b[2];
-    const bw = b[3];
-
-    result[0] = aw * bx + ax * bw + ay * bz - az * by;
-    result[1] = aw * by - ax * bz + ay * bw + az * bx;
-    result[2] = aw * bz + ax * by - ay * bx + az * bw;
-    result[3] = aw * bw - ax * bx - ay * by - az * bz;
+    const qa = Quat.fromArray(a.*);
+    const qb = Quat.fromArray(b.*);
+    const res = qa.mul(qb);
+    result.* = res.toArray();
 }
 
 pub export fn cardinal_quaternion_normalize(quaternion: *[4]f32) callconv(.c) void {
