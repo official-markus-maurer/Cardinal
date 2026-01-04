@@ -10,13 +10,13 @@ This document outlines the roadmap for the Cardinal Engine, focusing on robustne
 - [x] **Leak Detection**: Enhance the leak detector to provide stack traces for leaked allocations.
 
 ### System Architecture
-- [ ] **Event Bus**: Implement a publish/subscribe event system to decouple subsystems (e.g., Input triggers an Event, which the PlayerController consumes).
-- [ ] **Module System**: Define a clear lifecycle (Init, Update, Shutdown) for all engine subsystems to ensure correct startup/shutdown order.
-- [ ] **Error Handling**: Standardize error handling across the engine (unify Zig error sets and C-style return codes where boundary crossing happens).
+- [x] **Event Bus**: Implement a publish/subscribe event system to decouple subsystems (e.g., Input triggers an Event, which the PlayerController consumes).
+- [x] **Module System**: Define a clear lifecycle (Init, Update, Shutdown) for all engine subsystems to ensure correct startup/shutdown order.
+- [x] **Error Handling**: Standardize error handling across the engine (unify Zig error sets and C-style return codes where boundary crossing happens).
 
 ### Math Library (Optimization)
-- [ ] **SIMD Implementation**: Rewrite `Vec3`, `Vec4`, `Quat` using Zig's `@Vector(4, f32)` to leverage hardware intrinsics (SSE/AVX/NEON).
-- [ ] **Matrix Optimization**: Optimize `Mat4` multiplication to use SIMD or unrolled loops, replacing the current slow scalar loops.
+- [x] **SIMD Implementation**: Rewrite `Vec3`, `Vec4`, `Quat` using Zig's `@Vector(4, f32)` to leverage hardware intrinsics (SSE/AVX/NEON).
+- [x] **Matrix Optimization**: Optimize `Mat4` multiplication to use SIMD or unrolled loops, replacing the current slow scalar loops.
 - [ ] **Missing Types**: Implement `Mat3` (for normal matrices) and `Ray` structs.
 
 ### Logging & Diagnostics

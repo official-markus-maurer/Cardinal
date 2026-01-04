@@ -33,6 +33,7 @@ pub const EditorConfig = struct {
 
 pub const EditorApp = struct {
     allocator: std.mem.Allocator,
+    module_manager: engine.module.ModuleManager,
     window: ?*window.CardinalWindow,
     renderer: types.CardinalRenderer,
     config: EditorConfig,
@@ -51,6 +52,7 @@ pub const EditorApp = struct {
         const app = try allocator.create(EditorApp);
         app.* = EditorApp{
             .allocator = allocator,
+            .module_manager = engine.module.ModuleManager.init(allocator),
             .config = config,
             .window = null,
             .renderer = .{ ._opaque = null },
@@ -64,6 +66,9 @@ pub const EditorApp = struct {
         try app.initWindowAndRenderer();
         try app.initEditorLayer();
 
+        // Start modules
+        try app.module_manager.startup();
+
         return app;
     }
 
@@ -73,9 +78,20 @@ pub const EditorApp = struct {
         self.memory_initialized = true;
         log.cardinal_log_info("Memory management system initialized", .{});
 
-        // Initialize Input system
-        engine.input.init(self.allocator);
-        self.registerInputActions();
+        // Register Modules
+        try self.module_manager.register(.{
+            .name = "Events",
+            .init_fn = initEvents,
+            .shutdown_fn = shutdownEvents,
+            .ctx = self,
+        });
+
+        try self.module_manager.register(.{
+            .name = "Input",
+            .init_fn = initInput,
+            .shutdown_fn = shutdownInput,
+            .ctx = self,
+        });
 
         log.cardinal_log_info("Initializing reference counting system...", .{});
         if (!ref_counting.cardinal_ref_counting_init(self.config.ref_counting_buckets)) {
@@ -118,6 +134,29 @@ pub const EditorApp = struct {
         self.caches_initialized = true;
 
         log.cardinal_log_info("Multi-threaded asset caches initialized successfully", .{});
+    }
+
+    // Module wrappers
+    fn initEvents(ctx: ?*anyopaque) !void {
+        const self = @as(*EditorApp, @ptrCast(@alignCast(ctx)));
+        engine.events.init(self.allocator);
+    }
+
+    fn shutdownEvents(ctx: ?*anyopaque) !void {
+        _ = ctx;
+        engine.events.shutdown();
+    }
+
+    fn initInput(ctx: ?*anyopaque) !void {
+        const self = @as(*EditorApp, @ptrCast(@alignCast(ctx)));
+        engine.input.init(self.allocator);
+        self.registerInputActions();
+    }
+
+    fn shutdownInput(ctx: ?*anyopaque) !void {
+        _ = ctx;
+        // Input system doesn't have a shutdown yet, but we added one in previous turn
+        engine.input.shutdown();
     }
 
     fn registerInputActions(self: *EditorApp) void {
@@ -216,6 +255,10 @@ pub const EditorApp = struct {
         if (self.editor_layer_initialized) {
             editor_layer.shutdown();
         }
+        
+        // Shutdown modules
+        self.module_manager.shutdown();
+        self.module_manager.deinit();
 
         if (self.renderer_initialized) {
             vulkan_renderer.cardinal_renderer_destroy(&self.renderer);

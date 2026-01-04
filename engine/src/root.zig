@@ -1,4 +1,7 @@
 pub const log = @import("core/log.zig");
+pub const errors = @import("core/errors.zig");
+pub const events = @import("core/events.zig");
+pub const module = @import("core/module.zig");
 pub const input = @import("core/input.zig");
 pub const memory = @import("core/memory.zig");
 pub const window = @import("core/window.zig");
