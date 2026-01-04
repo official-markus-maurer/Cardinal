@@ -94,9 +94,7 @@ pub const EditorState = struct {
 
     // Camera Control
     mouse_captured: bool = false,
-    last_mouse_x: f64 = 0,
-    last_mouse_y: f64 = 0,
-    first_mouse: bool = true,
+    // last_mouse_x/y and first_mouse handled by engine input
     yaw: f32 = 90.0,
     pitch: f32 = 0.0,
     camera_speed: f32 = 5.0,

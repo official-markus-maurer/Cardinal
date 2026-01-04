@@ -73,6 +73,10 @@ pub const EditorApp = struct {
         self.memory_initialized = true;
         log.cardinal_log_info("Memory management system initialized", .{});
 
+        // Initialize Input system
+        engine.input.init(self.allocator);
+        self.registerInputActions();
+
         log.cardinal_log_info("Initializing reference counting system...", .{});
         if (!ref_counting.cardinal_ref_counting_init(self.config.ref_counting_buckets)) {
             log.cardinal_log_error("Failed to initialize reference counting system", .{});
@@ -116,6 +120,25 @@ pub const EditorApp = struct {
         log.cardinal_log_info("Multi-threaded asset caches initialized successfully", .{});
     }
 
+    fn registerInputActions(self: *EditorApp) void {
+        _ = self;
+        // Base layer actions (always active unless blocked by something very high priority)
+        engine.input.registerActionWithLayer("ToggleCursor", &[_]c_int{engine.input.KEY_TAB}, "Base");
+
+        // Game layer actions
+        engine.input.registerActionWithLayer("MoveForward", &[_]c_int{engine.input.KEY_W}, "Game");
+        engine.input.registerActionWithLayer("MoveBackward", &[_]c_int{engine.input.KEY_S}, "Game");
+        engine.input.registerActionWithLayer("StrafeLeft", &[_]c_int{engine.input.KEY_A}, "Game");
+        engine.input.registerActionWithLayer("StrafeRight", &[_]c_int{engine.input.KEY_D}, "Game");
+        engine.input.registerActionWithLayer("Jump", &[_]c_int{engine.input.KEY_SPACE}, "Game");
+        engine.input.registerActionWithLayer("Descend", &[_]c_int{engine.input.KEY_LEFT_SHIFT}, "Game");
+        engine.input.registerActionWithLayer("Sprint", &[_]c_int{engine.input.KEY_LEFT_CONTROL}, "Game");
+        
+        // Initialize layers
+        engine.input.pushLayer("Base", false);
+        // We start with just Base active. Game layer will be pushed when we capture cursor.
+    }
+
     fn initWindowAndRenderer(self: *EditorApp) !void {
         const config = window.CardinalWindowConfig{
             .title = self.config.window_title,
@@ -154,6 +177,9 @@ pub const EditorApp = struct {
     pub fn run(self: *EditorApp) !void {
         while (!window.cardinal_window_should_close(self.window)) {
             window.cardinal_window_poll(self.window);
+            if (self.window) |win| {
+                engine.input.update(win);
+            }
 
             editor_layer.update();
             editor_layer.render();

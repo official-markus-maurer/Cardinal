@@ -39,9 +39,45 @@ pub const CardinalWindow = extern struct {
 
     resize_callback: ?*const fn (u32, u32, ?*anyopaque) callconv(.c) void,
     resize_user_data: ?*anyopaque,
+
+    key_callback: ?*const fn (c_int, c_int, c_int, c_int, ?*anyopaque) callconv(.c) void,
+    key_user_data: ?*anyopaque,
+
+    mouse_button_callback: ?*const fn (c_int, c_int, c_int, ?*anyopaque) callconv(.c) void,
+    mouse_button_user_data: ?*anyopaque,
+
+    cursor_pos_callback: ?*const fn (f64, f64, ?*anyopaque) callconv(.c) void,
+    cursor_pos_user_data: ?*anyopaque,
 };
 
 // Callbacks
+fn key_callback(window: ?*c.GLFWwindow, key: c_int, scancode: c_int, action: c_int, mods: c_int) callconv(.c) void {
+    const win = @as(?*CardinalWindow, @ptrCast(@alignCast(c.glfwGetWindowUserPointer(window))));
+    if (win) |w| {
+        if (w.key_callback) |cb| {
+            cb(key, scancode, action, mods, w.key_user_data);
+        }
+    }
+}
+
+fn mouse_button_callback(window: ?*c.GLFWwindow, button: c_int, action: c_int, mods: c_int) callconv(.c) void {
+    const win = @as(?*CardinalWindow, @ptrCast(@alignCast(c.glfwGetWindowUserPointer(window))));
+    if (win) |w| {
+        if (w.mouse_button_callback) |cb| {
+            cb(button, action, mods, w.mouse_button_user_data);
+        }
+    }
+}
+
+fn cursor_pos_callback(window: ?*c.GLFWwindow, xpos: f64, ypos: f64) callconv(.c) void {
+    const win = @as(?*CardinalWindow, @ptrCast(@alignCast(c.glfwGetWindowUserPointer(window))));
+    if (win) |w| {
+        if (w.cursor_pos_callback) |cb| {
+            cb(xpos, ypos, w.cursor_pos_user_data);
+        }
+    }
+}
+
 fn glfw_error_callback(error_code: c_int, description: [*c]const u8) callconv(.c) void {
     std.log.err("GLFW error {d}: {s}", .{ error_code, if (description != null) std.mem.span(description) else "(null)" });
 }
@@ -125,6 +161,9 @@ pub export fn cardinal_window_create(config: *const CardinalWindowConfig) callco
     c.glfwSetWindowUserPointer(handle, win);
     _ = c.glfwSetFramebufferSizeCallback(handle, framebuffer_resize_callback);
     _ = c.glfwSetWindowIconifyCallback(handle, window_iconify_callback);
+    _ = c.glfwSetKeyCallback(handle, key_callback);
+    _ = c.glfwSetMouseButtonCallback(handle, mouse_button_callback);
+    _ = c.glfwSetCursorPosCallback(handle, cursor_pos_callback);
 
     if (builtin.os.tag == .windows) {
         c.InitializeCriticalSection(&win.mutex);
@@ -209,4 +248,25 @@ pub export fn cardinal_window_is_minimized(window: ?*const CardinalWindow) callc
         return win.is_minimized;
     }
     return false;
+}
+
+pub export fn cardinal_window_set_key_callback(window: ?*CardinalWindow, callback: ?*const fn (c_int, c_int, c_int, c_int, ?*anyopaque) callconv(.c) void, user_data: ?*anyopaque) callconv(.c) void {
+    if (window) |win| {
+        win.key_callback = callback;
+        win.key_user_data = user_data;
+    }
+}
+
+pub export fn cardinal_window_set_mouse_button_callback(window: ?*CardinalWindow, callback: ?*const fn (c_int, c_int, c_int, ?*anyopaque) callconv(.c) void, user_data: ?*anyopaque) callconv(.c) void {
+    if (window) |win| {
+        win.mouse_button_callback = callback;
+        win.mouse_button_user_data = user_data;
+    }
+}
+
+pub export fn cardinal_window_set_cursor_pos_callback(window: ?*CardinalWindow, callback: ?*const fn (f64, f64, ?*anyopaque) callconv(.c) void, user_data: ?*anyopaque) callconv(.c) void {
+    if (window) |win| {
+        win.cursor_pos_callback = callback;
+        win.cursor_pos_user_data = user_data;
+    }
 }

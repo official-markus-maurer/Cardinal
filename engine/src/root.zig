@@ -1,4 +1,5 @@
 pub const log = @import("core/log.zig");
+pub const input = @import("core/input.zig");
 pub const memory = @import("core/memory.zig");
 pub const window = @import("core/window.zig");
 pub const resource_state = @import("core/resource_state.zig");

@@ -4,33 +4,17 @@ const log = engine.log;
 const renderer = engine.vulkan_renderer;
 const math = engine.math;
 const Vec3 = math.Vec3;
-const c = @import("../c.zig").c;
 const EditorState = @import("../editor_state.zig").EditorState;
 
 pub fn update(state: *EditorState, dt: f32) void {
-    const win = @as(?*c.GLFWwindow, @ptrCast(state.window.handle));
-    if (win == null) return;
+    const win = state.window;
+    if (win.handle == null) return;
     if (dt <= 0.0) return;
 
-    if (state.first_mouse) {
-        log.cardinal_log_info("DEBUG: camera_controller - state.window: {*}, handle: {*}", .{ state.window, win });
-    }
-
     if (state.mouse_captured) {
-        var xpos: f64 = 0;
-        var ypos: f64 = 0;
-        c.glfwGetCursorPos(win, &xpos, &ypos);
-
-        if (state.first_mouse) {
-            state.last_mouse_x = xpos;
-            state.last_mouse_y = ypos;
-            state.first_mouse = false;
-        }
-
-        const xoffset = xpos - state.last_mouse_x;
-        const yoffset = state.last_mouse_y - ypos; // Reversed
-        state.last_mouse_x = xpos;
-        state.last_mouse_y = ypos;
+        const delta = engine.input.getMouseDelta();
+        const xoffset = delta.x;
+        const yoffset = delta.y;
 
         state.yaw += @floatCast(xoffset * state.mouse_sensitivity);
         state.pitch += @floatCast(yoffset * state.mouse_sensitivity);
@@ -51,30 +35,30 @@ pub fn update(state: *EditorState, dt: f32) void {
 
         // Keyboard
         var speed = state.camera_speed * dt;
-        if (c.glfwGetKey(win, c.GLFW_KEY_LEFT_CONTROL) == c.GLFW_PRESS) {
+        if (engine.input.isActionPressed(win, "Sprint")) {
             speed *= 4.0;
         }
 
         const up = Vec3{ .x = 0.0, .y = 1.0, .z = 0.0 };
         const right = front.cross(up).normalize();
 
-        if (c.glfwGetKey(win, c.GLFW_KEY_W) == c.GLFW_PRESS) {
+        if (engine.input.isActionPressed(win, "MoveForward")) {
             state.camera.position = state.camera.position.add(front.mul(speed));
         }
-        if (c.glfwGetKey(win, c.GLFW_KEY_S) == c.GLFW_PRESS) {
+        if (engine.input.isActionPressed(win, "MoveBackward")) {
             state.camera.position = state.camera.position.sub(front.mul(speed));
         }
-        if (c.glfwGetKey(win, c.GLFW_KEY_A) == c.GLFW_PRESS) {
+        if (engine.input.isActionPressed(win, "StrafeLeft")) {
             state.camera.position = state.camera.position.sub(right.mul(speed));
         }
-        if (c.glfwGetKey(win, c.GLFW_KEY_D) == c.GLFW_PRESS) {
+        if (engine.input.isActionPressed(win, "StrafeRight")) {
             state.camera.position = state.camera.position.add(right.mul(speed));
         }
 
-        if (c.glfwGetKey(win, c.GLFW_KEY_SPACE) == c.GLFW_PRESS) {
+        if (engine.input.isActionPressed(win, "Jump")) {
             state.camera.position.y += speed;
         }
-        if (c.glfwGetKey(win, c.GLFW_KEY_LEFT_SHIFT) == c.GLFW_PRESS) {
+        if (engine.input.isActionPressed(win, "Descend")) {
             state.camera.position.y -= speed;
         }
 

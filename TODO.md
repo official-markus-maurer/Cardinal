@@ -2,8 +2,6 @@
 
 This document outlines the roadmap for the Cardinal Engine, focusing on robustness, extensibility, and future feature implementation.
 
-- [ ] Replace synchronous tasks with asynchronous ones.
-
 ## 1. Core Architecture (Robustness & Extensibility)
 
 ### Memory Management
@@ -72,12 +70,12 @@ This document outlines the roadmap for the Cardinal Engine, focusing on robustne
 ## 5. Platform & Input
 
 ### Input System
-- [ ] **Core Input Integration**: Move input polling from the Editor layer (`editor/systems/input.zig`) to the Engine core (`engine/core/input.zig`).
+- [x] **Core Input Integration**: Move input polling from the Editor layer (`editor/systems/input.zig`) to the Engine core (`engine/core/input.zig`).
     - *Current Issue*: The Engine has no native input handling; the Editor manually polls GLFW.
-- [ ] **Window Callbacks**: Update `CardinalWindow` to support Key, MouseButton, and CursorPos callbacks.
-- [ ] **Input Action Mapping**: Abstract physical keys to logical actions (`MoveForward`, `Jump`) with remapping support.
+- [x] **Window Callbacks**: Update `CardinalWindow` to support Key, MouseButton, and CursorPos callbacks.
+- [x] **Input Action Mapping**: Abstract physical keys to logical actions (`MoveForward`, `Jump`) with remapping support.
 - [ ] **Gamepad Support**: Full gamepad polling and vibration support.
-- [ ] **Input Layers**: Support for input context stacks (e.g., UI takes input over Game).
+- [x] **Input Layers**: Support for input context stacks (e.g., UI takes input over Game).
 
 ### OS Integration
 - [ ] **High DPI**: Proper scaling support for high-resolution displays.
