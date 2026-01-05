@@ -1,191 +1,85 @@
-# Cardinal Vulkan Game Engine
+# Cardinal Engine
 
-A minimalistic Vulkan game engine written in pure C23, designed with a clean separation between an editor and client applications.
+**Cardinal Engine** is a modern, high-performance game engine written in **Zig**, designed for robustness, extensibility, and modern rendering features. It leverages **Vulkan** for rendering and **ImGui** for its editor interface, providing a powerful environment for 3D application development.
 
-## Features
+> **Note**: This project has migrated from a pure C codebase to Zig to take advantage of its build system, comptime features, and safety.
 
-- **Pure C23**: Modern C standard with latest language features
-- **Vulkan Renderer**: Hardware-accelerated PBR graphics pipeline
-- **GLFW Windowing**: Cross-platform window and input management
-- **Editor/Client Split**: Separate development and runtime applications
-- **ImGui Editor**: Integrated scene editor with dockable UI
-- **VS Code Integration**: Pre-configured tasks, debugging, and shader compilation
-- **CMake Build System**: Modern dependency management with FetchContent
-- **glTF 2.0 Support**: Complete scene loading with materials and textures
+## Key Features
 
-## Architecture
+### Core Architecture
+- **Zig-based**: Built with Zig 0.15+ for modern systems programming, utilizing comptime and safety features.
+- **Job System**: Multithreaded job system with dependency management and priority queues.
+- **Memory Management**: Custom allocators (Linear, Pool, Tracking) for performance-critical systems.
+- **ECS-ready**: Transitioning towards a Sparse-Set Entity Component System (ECS).
 
+### Rendering (Vulkan)
+- **Modern Vulkan Backend**: Utilizes Dynamic Rendering, Synchronization 2, and Timeline Semaphores.
+- **PBR Pipeline**: Physically Based Rendering with Image-Based Lighting (IBL) support.
+- **Mesh Shaders**: Support for modern GPU pipelines (where available).
+- **Bindless Resources**: Bindless texture support via `VK_EXT_descriptor_buffer`.
+- **Render Graph**: Frame graph architecture for automatic resource barrier management.
+
+### Editor & Tools
+- **Integrated Editor**: Built with **ImGui** (Docking enabled).
+- **Asset Management**: Unified asset system for Textures, Meshes, and Materials.
+- **Scene Hierarchy**: Tree-based scene graph with Inspector support.
+- **Gizmos**: Visual manipulation tools for scene objects.
+
+### Dependencies
+The engine manages its C/C++ dependencies directly via `build.zig`:
+- **GLFW**: Windowing and Input.
+- **ImGui**: Immediate Mode GUI.
+- **cgltf**: glTF 2.0 asset loading.
+- **stb_image**: Image loading.
+- **tinyexr**: HDR image loading.
+- **Vulkan SDK**: Required for rendering.
+
+## Getting Started
+
+### Prerequisites
+- **Zig Compiler**: Version 0.15.2 or later.
+- **Vulkan SDK**: Latest version installed and `VULKAN_SDK` environment variable set.
+- **Git**: For cloning the repository.
+
+### Build & Run
+
+1.  **Clone the repository**
+    ```bash
+    git clone https://github.com/yourusername/Cardinal.git
+    cd Cardinal
+    ```
+
+2.  **Run the Editor**
+    ```bash
+    zig build run-editor
+    ```
+
+3.  **Run the Client (Game)**
+    ```bash
+    zig build run-client
+    ```
+
+### Project Structure
 ```
 Cardinal/
-├── engine/          # Core engine library (static)
-│   ├── include/     # Public headers
-│   └── src/         # Engine implementation
-├── editor/          # Editor application
-│   └── src/         # Editor-specific code
-├── client/          # Client/runtime application
-│   └── src/         # Client-specific code
-└── CMakeLists.txt   # Root build configuration
+├── engine/           # Core Engine Code (Zig)
+│   ├── src/
+│   │   ├── core/     # Memory, Jobs, Math, Logging
+│   │   ├── renderer/ # Vulkan Backend, Pipelines, Render Graph
+│   │   ├── assets/   # Asset Manager, Loaders
+│   │   └── rhi/      # Render Hardware Interface
+├── editor/           # Editor Application (Zig + ImGui)
+├── client/           # Runtime Game Application
+├── libs/             # Third-party C/C++ libraries (GLFW, ImGui, etc.)
+└── assets/           # Shaders, Textures, Models
 ```
 
-### Engine Core
-
-- **Window Management**: GLFW-based window creation and event handling
-- **Vulkan Renderer**: Complete Vulkan implementation with:
-  - Instance and device creation
-  - Surface management via GLFW
-  - Swapchain setup
-  - Command buffer recording
-  - PBR (Physically Based Rendering) pipeline
-  - Scene rendering with mesh support
-- **Asset Loading**: glTF 2.0 scene loading with cgltf
-- **Scene Management**: Hierarchical scene graph with materials and textures
-
-## Build Requirements
-
-- **CMake 3.28+**
-- **Vulkan SDK** (for headers and validation layers)
-- **C23-compatible compiler**:
-  - MSVC 2022 (17.0+)
-  - GCC 13+ with `-std=c2x`
-  - Clang 15+ with `-std=c2x`
-
-## Building
-
-### Command Line
-
-```bash
-# Configure
-cmake -B build -S .
-
-# Build
-cmake --build build --config Debug
-
-# Run Editor
-.\build\editor\Debug\CardinalEditor.exe
-
-# Or for Release
-cmake --build build --config Release
-.\build\editor\Release\CardinalEditor.exe
-```
-
-### VS Code Development
-
-The project includes comprehensive VS Code integration with pre-configured tasks and debug configurations:
-
-#### Build Tasks (Ctrl+Shift+P → "Tasks: Run Task")
-
-- **Compile Shaders** - Compiles all GLSL shaders to SPIR-V using `glslc`
-- **Build Project** - Builds the Cardinal project (default: `Ctrl+Shift+B`)
-- **Full Build** - Compiles shaders + builds project + copies assets
-- **Launch Client** / **Launch Editor** - Runs the applications
-- **Launch Client (Debug)** / **Launch Editor (Debug)** - Runs with debug logging
-- **Clean Build** / **Rebuild All** - Clean and rebuild everything
-
-#### Code Quality Tasks
-
-- **Run Clang-Tidy** - Analyzes code for bugs, style issues, and C23 compliance
-- **Format Code** - Automatically formats all source files using clang-format
-
-#### Debug Configurations (F5 or Debug Panel)
-
-- **Debug Cardinal Client** - Debug the client application with GDB
-- **Debug Cardinal Editor** - Debug the editor application with GDB
-
-Both debug configurations automatically trigger a full build before launching.
-
-#### Quick Commands
-
-- `Ctrl+Shift+B` - Default build task
-- `F5` - Start debugging
-- `Ctrl+Shift+P` → "Tasks: Run Task" - Access all build tasks
-
-### Build Outputs
-
-- `build/engine/libcardinal_engine.a` - Core engine library
-- `build/client/CardinalClient.exe` - Runtime application
-- `build/editor/CardinalEditor.exe` - Editor application
-
-### Editor Application
-
-Provides a comprehensive development environment with:
-
-- **Scene Graph Panel**: Hierarchical view of loaded scenes
-- **Asset Browser**: File system navigation and glTF asset loading
-- **PBR Settings Panel**: Real-time camera and lighting controls
-- **ImGui Integration**: Dockable interface with modern UI
-- **Live Scene Loading**: Dynamic glTF/GLB file loading and rendering
-
-## Dependencies
-
-All dependencies are managed via CMake FetchContent:
-
-- **GLFW 3.4**: Window management and input
-- **Vulkan Headers**: Via system Vulkan SDK
-- **Dear ImGui**: UI framework with Vulkan backend (editor only)
-- **cgltf 1.13**: Header-only glTF 2.0 parser for asset loading
-
-## Platform Support
-
-- **Windows**: Primary development platform
-- **Linux**: Planned
-- **macOS**: Planned (via MoltenVK)
-
-## Development
-
-### Getting Started
-
-1. **Clone the repository**
-2. **Install dependencies**: Vulkan SDK, CMake 3.28+, C23-compatible compiler
-3. **Open in VS Code** for the best development experience
-4. **Use `Ctrl+Shift+B`** to build or **`F5`** to debug
-
-### Code Style
-
-- **C23 standard compliance** with modern language features
-- **Explicit struct initialization** for clarity
-- **Consistent naming** with `cardinal_` prefix for public APIs
-- **Minimal dependencies** - only essential libraries
-- **Clear separation of concerns** between engine, editor, and client
-
-### Code Quality
-
-The project enforces high code quality standards through automated tooling:
-
-#### Clang-Tidy Configuration
-
-- **C23 compliance checks** - Ensures modern C standard usage
-- **Bug detection** - Identifies potential runtime issues and logic errors
-- **Performance analysis** - Detects inefficient code patterns
-- **Security checks** - CERT C coding standard compliance
-- **Naming conventions** - Enforces `snake_case` for functions/variables, `PascalCase` for types
-- **Cardinal-specific rules** - Custom prefixes and engine-specific patterns
-
-#### Clang-Format Configuration
-
-- **Consistent indentation** - 4 spaces, no tabs
-- **100-character line limit** - Optimal for modern displays
-- **Attach braces style** - `{` on same line as control statements
-- **Pointer alignment** - Left-aligned (`int* ptr`)
-- **Include sorting** - Automatic header organization
-- **C23-optimized formatting** - Modern C language constructs
-
-#### Usage
-
-- Run `Tasks: Run Task` → `Run Clang-Tidy` to analyze code quality
-- Run `Tasks: Run Task` → `Format Code` to auto-format all source files
-- Both tools use project-specific `.clang-tidy` and `.clang-format` configurations
-
-### Project Goals
-
-- **Minimalism**: Keep the codebase small and focused
-- **Performance**: Leverage modern Vulkan features for optimal graphics performance
-- **Modularity**: Clean separation between engine, editor, and client
-- **Modern C**: Utilize C23 features for better code quality
-
-## License
-
-This engine is proprietary.
+## Roadmap
+See [TODO.md](TODO.md) for the detailed technical roadmap, including:
+- Render Graph 2.0 (Transient Resources, Async Compute)
+- Data-Driven Pipelines
+- Physics & Audio Integration
+- Scripting Layer (Lua/C#)
 
 ## Contributing
-
-Contributions welcome! Please follow the existing code style and ensure all changes maintain C23 compatibility.
+Contributions are welcome! Please read the roadmap and open an issue or PR for any improvements.

@@ -88,24 +88,9 @@ fn allocate_command_buffers(s: *types.VulkanState) bool {
     cmd_log.warn("Allocated {d} secondary command buffers", .{s.sync.max_frames_in_flight});
 
     // Scene secondary buffers (real secondary level)
-    const scene_sec_ptr = memory.cardinal_alloc(mem_alloc, s.sync.max_frames_in_flight * @sizeOf(c.VkCommandBuffer));
-    if (scene_sec_ptr == null) return false;
-    s.commands.scene_secondary_buffers = @as([*]c.VkCommandBuffer, @ptrCast(@alignCast(scene_sec_ptr)));
-
-    i = 0;
-    while (i < s.sync.max_frames_in_flight) : (i += 1) {
-        var ai = std.mem.zeroes(c.VkCommandBufferAllocateInfo);
-        ai.sType = c.VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO;
-        ai.commandPool = s.commands.pools.?[i];
-        ai.level = c.VK_COMMAND_BUFFER_LEVEL_SECONDARY;
-        ai.commandBufferCount = 1;
-
-        if (c.vkAllocateCommandBuffers(s.context.device, &ai, &s.commands.scene_secondary_buffers.?[i]) != c.VK_SUCCESS) {
-            return false;
-        }
-    }
-    log.cardinal_log_warn("[INIT] Allocated {d} scene secondary command buffers", .{s.sync.max_frames_in_flight});
-
+    // DISABLED: Causing validation errors with dynamic rendering. Forcing inline path.
+    // s.commands.scene_secondary_buffers = null;
+    
     return true;
 }
 
@@ -295,7 +280,7 @@ fn transition_images(s: *types.VulkanState, cmd: c.VkCommandBuffer, image_index:
     }
 }
 
-pub fn begin_dynamic_rendering(s: *types.VulkanState, cmd: c.VkCommandBuffer, image_index: u32, use_depth: bool, clears: [*]c.VkClearValue, should_clear: bool, flags: c.VkRenderingFlags) bool {
+pub fn begin_dynamic_rendering(s: *types.VulkanState, cmd: c.VkCommandBuffer, image_index: u32, use_depth: bool, depth_view: ?c.VkImageView, clears: [*]const c.VkClearValue, should_clear: bool, flags: c.VkRenderingFlags) bool {
     if (s.context.vkCmdBeginRendering == null or s.context.vkCmdEndRendering == null or s.context.vkCmdPipelineBarrier2 == null) {
         log.cardinal_log_error("[CMD] Frame {d}: Dynamic rendering functions not loaded", .{s.sync.current_frame});
         return false;
@@ -312,7 +297,7 @@ pub fn begin_dynamic_rendering(s: *types.VulkanState, cmd: c.VkCommandBuffer, im
     var depthAttachment = std.mem.zeroes(c.VkRenderingAttachmentInfo);
     if (use_depth) {
         depthAttachment.sType = c.VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO;
-        depthAttachment.imageView = s.swapchain.depth_image_view;
+        depthAttachment.imageView = if (depth_view) |dv| dv else s.swapchain.depth_image_view;
         depthAttachment.imageLayout = c.VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
         depthAttachment.loadOp = if (should_clear) c.VK_ATTACHMENT_LOAD_OP_CLEAR else c.VK_ATTACHMENT_LOAD_OP_LOAD;
         depthAttachment.storeOp = c.VK_ATTACHMENT_STORE_OP_DONT_CARE;
@@ -452,92 +437,13 @@ pub fn vk_record_scene_content(s: *types.VulkanState, cmd: c.VkCommandBuffer) vo
 }
 
 fn vk_record_scene_with_secondary_buffers(s: *types.VulkanState, primary_cmd: c.VkCommandBuffer, image_index: u32, use_depth: bool, clears: [*]c.VkClearValue) void {
-    // Use dedicated secondary command buffer for the main thread
-    // This avoids using the MT subsystem's thread pools which are prone to exhaustion/race conditions if not managed per-frame.
-
-    if (s.commands.scene_secondary_buffers == null) {
-        // Fallback if not allocated
-        if (begin_dynamic_rendering(s, primary_cmd, image_index, use_depth, clears, true, 0)) {
-            vk_record_scene_content(s, primary_cmd);
-            end_dynamic_rendering(s, primary_cmd);
-        }
-        return;
-    }
-
-    var secondary_cmd = s.commands.scene_secondary_buffers.?[s.sync.current_frame];
-
-    // Reset the secondary command buffer
-    // Since it's allocated from a pool with VK_COMMAND_POOL_CREATE_RESET_COMMAND_BUFFER_BIT, this is allowed.
-    if (c.vkResetCommandBuffer(secondary_cmd, 0) != c.VK_SUCCESS) {
-        log.cardinal_log_error("[CMD] Failed to reset scene secondary command buffer", .{});
-        // Fallback
-        if (begin_dynamic_rendering(s, primary_cmd, image_index, use_depth, clears, true, 0)) {
-            vk_record_scene_content(s, primary_cmd);
-            end_dynamic_rendering(s, primary_cmd);
-        }
-        return;
-    }
-
-    var inheritance_rendering = std.mem.zeroes(c.VkCommandBufferInheritanceRenderingInfo);
-    inheritance_rendering.sType = c.VK_STRUCTURE_TYPE_COMMAND_BUFFER_INHERITANCE_RENDERING_INFO;
-    var color_format = s.swapchain.format;
-    inheritance_rendering.pColorAttachmentFormats = &color_format;
-    inheritance_rendering.colorAttachmentCount = 1;
-    inheritance_rendering.depthAttachmentFormat = s.swapchain.depth_format;
-    inheritance_rendering.rasterizationSamples = c.VK_SAMPLE_COUNT_1_BIT;
-
-    var inheritance_info = std.mem.zeroes(c.VkCommandBufferInheritanceInfo);
-    inheritance_info.sType = c.VK_STRUCTURE_TYPE_COMMAND_BUFFER_INHERITANCE_INFO;
-    inheritance_info.pNext = &inheritance_rendering;
-    inheritance_info.renderPass = null;
-    inheritance_info.subpass = 0;
-    inheritance_info.framebuffer = null;
-    inheritance_info.occlusionQueryEnable = c.VK_FALSE;
-    inheritance_info.queryFlags = 0;
-    inheritance_info.pipelineStatistics = 0;
-
-    var begin_info = std.mem.zeroes(c.VkCommandBufferBeginInfo);
-    begin_info.sType = c.VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
-    begin_info.flags = c.VK_COMMAND_BUFFER_USAGE_RENDER_PASS_CONTINUE_BIT | c.VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
-    begin_info.pInheritanceInfo = &inheritance_info;
-
-    if (c.vkBeginCommandBuffer(secondary_cmd, &begin_info) != c.VK_SUCCESS) {
-        log.cardinal_log_error("[CMD] Failed to begin scene secondary command buffer", .{});
-        return;
-    }
-
-    var vp = std.mem.zeroes(c.VkViewport);
-    vp.x = 0;
-    vp.y = 0;
-    vp.width = @floatFromInt(s.swapchain.extent.width);
-    vp.height = @floatFromInt(s.swapchain.extent.height);
-    vp.minDepth = 0.0;
-    vp.maxDepth = 1.0;
-    c.vkCmdSetViewport(secondary_cmd, 0, 1, &vp);
-
-    var sc = std.mem.zeroes(c.VkRect2D);
-    sc.offset.x = 0;
-    sc.offset.y = 0;
-    sc.extent = s.swapchain.extent;
-    c.vkCmdSetScissor(secondary_cmd, 0, 1, &sc);
-
-    vk_record_scene_content(s, secondary_cmd);
-
-    if (c.vkEndCommandBuffer(secondary_cmd) != c.VK_SUCCESS) {
-        log.cardinal_log_error("[CMD] Failed to end scene secondary command buffer", .{});
-        return;
-    }
-
-    // Pass slice of 1 context
-    const cmd_buffers = @as([*]c.VkCommandBuffer, @ptrCast(&secondary_cmd))[0..1];
-
-    // Execute with Secondary Bit
-    if (begin_dynamic_rendering(s, primary_cmd, image_index, use_depth, clears, true, c.VK_RENDERING_CONTENTS_SECONDARY_COMMAND_BUFFERS_BIT)) {
-        c.vkCmdExecuteCommands(primary_cmd, 1, cmd_buffers.ptr);
-        end_dynamic_rendering(s, primary_cmd);
-    }
-
-    log.cardinal_log_debug("[CMD] Scene rendered using dedicated secondary command buffer", .{});
+    // Legacy secondary buffer path removed.
+    // We now use RenderGraph's inline dynamic rendering path exclusively.
+    _ = s;
+    _ = primary_cmd;
+    _ = image_index;
+    _ = use_depth;
+    _ = clears;
 }
 
 // Exported functions
@@ -688,11 +594,6 @@ pub export fn vk_destroy_commands_sync(s: ?*types.VulkanState) callconv(.c) void
         vs.commands.secondary_buffers = null;
     }
 
-    if (vs.commands.scene_secondary_buffers != null) {
-        memory.cardinal_free(mem_alloc, @as(?*anyopaque, @ptrCast(vs.commands.scene_secondary_buffers)));
-        vs.commands.scene_secondary_buffers = null;
-    }
-
     if (vs.commands.pools != null) {
         var i: u32 = 0;
         while (i < vs.sync.max_frames_in_flight) : (i += 1) {
@@ -720,11 +621,22 @@ pub export fn vk_record_cmd(s: ?*types.VulkanState, image_index: u32) callconv(.
     log.cardinal_log_info("[CMD] Frame {d}: Recording command buffer {any} (buffer {d}) for image {d}", .{ vs.sync.current_frame, cmd, vs.commands.current_buffer_index, image_index });
 
     if (!validate_swapchain_image(vs, image_index)) return;
+
+    // log.cardinal_log_debug("[DEBUG] Swapchain Image [{d}]: {any}", .{image_index, vs.swapchain.images.?[image_index]});
+    // log.cardinal_log_debug("[DEBUG] Current Scene: {any}", .{vs.current_scene});
+    // if (vs.pipelines.use_pbr_pipeline) {
+    //     log.cardinal_log_debug("[DEBUG] Shadow Map Image: {any}", .{vs.pipelines.pbr_pipeline.shadowMapImage});
+    // }
+
     if (!begin_command_buffer(vs, cmd)) return;
+
+    // log.cardinal_log_debug("[DEBUG] Started command buffer", .{});
 
     // Shadow Pass
     if (vs.pipelines.use_pbr_pipeline and vs.current_rendering_mode == types.CardinalRenderingMode.NORMAL) {
+        // log.cardinal_log_debug("[DEBUG] Recording Shadow Pass", .{});
         vk_shadows.vk_shadow_render(vs, cmd);
+        // log.cardinal_log_debug("[DEBUG] Finished Shadow Pass", .{});
     }
 
     var clears: [2]c.VkClearValue = undefined;
@@ -744,7 +656,10 @@ pub export fn vk_record_cmd(s: ?*types.VulkanState, image_index: u32) callconv(.
         // Register/Update resources
         rg.register_image(types.RESOURCE_ID_BACKBUFFER, vs.swapchain.images.?[image_index]) catch {};
         if (use_depth) {
-            rg.register_image(types.RESOURCE_ID_DEPTHBUFFER, vs.swapchain.depth_image) catch {};
+             // Register the swapchain depth image directly.
+             // This ensures we share the same depth buffer between RenderGraph passes and manual passes (like Skybox),
+             // preventing layout mismatches and validation errors.
+             rg.register_image(types.RESOURCE_ID_DEPTHBUFFER, vs.swapchain.depth_image) catch {};
         }
 
         // Update Initial States
@@ -761,49 +676,18 @@ pub export fn vk_record_cmd(s: ?*types.VulkanState, image_index: u32) callconv(.
         }
         rg.set_resource_state(types.RESOURCE_ID_BACKBUFFER, bb_state) catch {};
 
-        if (use_depth) {
-            var db_state = render_graph.ResourceState{
-                .access_mask = 0,
-                .stage_mask = c.VK_PIPELINE_STAGE_2_TOP_OF_PIPE_BIT,
-                .layout = c.VK_IMAGE_LAYOUT_UNDEFINED,
-            };
-            if (vs.swapchain.depth_layout_initialized) {
-                db_state.layout = c.VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
-                db_state.stage_mask = c.VK_PIPELINE_STAGE_2_LATE_FRAGMENT_TESTS_BIT;
-                db_state.access_mask = c.VK_ACCESS_2_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT;
-            } else {
-                vs.swapchain.depth_layout_initialized = true;
-            }
-            rg.set_resource_state(types.RESOURCE_ID_DEPTHBUFFER, db_state) catch {};
-        }
+        // Note: Depth buffer state is managed internally as it is now transient.
+        // We rely on RenderGraph to track the state across frames.
+        // For the first frame, it defaults to UNDEFINED.
+        // For subsequent frames, it should be in OPTIMAL layout from the previous frame.
+        // We do NOT explicitly reset it to UNDEFINED here, as that would force a barrier every frame
+        // and might confuse validation if the image isn't actually destroyed.
 
         // Execute Graph (This inserts barriers and calls pass callback)
         rg.execute(cmd, vs);
 
     } else {
-        transition_images(vs, cmd, image_index, use_depth);
-
-        var scene_drawn = false;
-
-        if (vs.current_scene != null) {
-            if (vs.commands.scene_secondary_buffers != null) {
-                vk_record_scene_with_secondary_buffers(vs, cmd, image_index, use_depth, &clears);
-                scene_drawn = true;
-            } else {
-                if (begin_dynamic_rendering(vs, cmd, image_index, use_depth, &clears, true, 0)) {
-                    vk_record_scene_content(vs, cmd);
-                    end_dynamic_rendering(vs, cmd);
-                    scene_drawn = true;
-                }
-            }
-        } else {
-            // Clear screen if no scene
-            if (begin_dynamic_rendering(vs, cmd, image_index, use_depth, &clears, true, 0)) {
-                end_dynamic_rendering(vs, cmd);
-                scene_drawn = true;
-            }
-        }
-
+        log.cardinal_log_error("[CMD] RenderGraph is null! Cannot record scene.", .{});
     }
 
     // Skybox Rendering
@@ -811,7 +695,7 @@ pub export fn vk_record_cmd(s: ?*types.VulkanState, image_index: u32) callconv(.
         if (vs.pipelines.use_pbr_pipeline and vs.pipelines.pbr_pipeline.uniformBufferMapped != null) {
             const ubo = @as(*types.PBRUniformBufferObject, @ptrCast(@alignCast(vs.pipelines.pbr_pipeline.uniformBufferMapped)));
             
-            if (begin_dynamic_rendering(vs, cmd, image_index, use_depth, &clears, false, 0)) {
+            if (begin_dynamic_rendering(vs, cmd, image_index, use_depth, null, &clears, false, 0)) {
                 var view: math.Mat4 = undefined;
                 var proj: math.Mat4 = undefined;
                 view.data = ubo.view;
@@ -824,7 +708,7 @@ pub export fn vk_record_cmd(s: ?*types.VulkanState, image_index: u32) callconv(.
 
     if (vs.ui_record_callback != null) {
         // Load contents from previous pass (whether scene was drawn or just cleared)
-        if (begin_dynamic_rendering(vs, cmd, image_index, use_depth, &clears, false, 0)) {
+        if (begin_dynamic_rendering(vs, cmd, image_index, use_depth, null, &clears, false, 0)) {
             vs.ui_record_callback.?(cmd);
             end_dynamic_rendering(vs, cmd);
         }

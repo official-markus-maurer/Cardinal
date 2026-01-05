@@ -486,7 +486,6 @@ pub const VulkanCommands = extern struct {
     pools: ?[*]c.VkCommandPool,
     buffers: ?[*]c.VkCommandBuffer,
     secondary_buffers: ?[*]c.VkCommandBuffer,
-    scene_secondary_buffers: ?[*]c.VkCommandBuffer,
     current_buffer_index: u32,
 };
 

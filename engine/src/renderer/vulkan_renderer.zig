@@ -46,9 +46,26 @@ fn pbr_pass_callback(cmd: c.VkCommandBuffer, state: *types.VulkanState) void {
     clears[1].depthStencil.depth = 1.0;
     clears[1].depthStencil.stencil = 0;
 
-    const use_depth = state.swapchain.depth_image_view != null and state.swapchain.depth_image != null;
+    var depth_view: ?c.VkImageView = null;
+    var use_depth = false;
 
-    if (vk_commands.begin_dynamic_rendering(state, cmd, state.current_image_index, use_depth, &clears, true, 0)) {
+    if (state.render_graph) |rg_ptr| {
+        const rg = @as(*render_graph.RenderGraph, @ptrCast(@alignCast(rg_ptr)));
+        if (rg.resources.get(types.RESOURCE_ID_DEPTHBUFFER)) |res| {
+             depth_view = res.image_view;
+             use_depth = (depth_view != null);
+        }
+    }
+
+    if (!use_depth) {
+         use_depth = state.swapchain.depth_image_view != null and state.swapchain.depth_image != null;
+    }
+
+    if (vk_commands.begin_dynamic_rendering(state, cmd, state.current_image_index, use_depth, depth_view, &clears, true, 0)) {
+        if (use_depth and depth_view != null) {
+             // Log the image view used for rendering
+             // log.cardinal_log_error("PBR Pass: Rendering with Depth View {any}", .{depth_view.?});
+        }
         vk_commands.vk_record_scene_content(state, cmd);
         vk_commands.end_dynamic_rendering(state, cmd);
     }
@@ -299,11 +316,18 @@ pub export fn cardinal_renderer_create(out_renderer: ?*types.CardinalRenderer, w
             .stage_mask = c.VK_PIPELINE_STAGE_2_EARLY_FRAGMENT_TESTS_BIT | c.VK_PIPELINE_STAGE_2_LATE_FRAGMENT_TESTS_BIT,
             .layout = c.VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL,
             .aspect_mask = c.VK_IMAGE_ASPECT_DEPTH_BIT,
-        }) catch {};
+        }) catch {
+             log.cardinal_log_error("Failed to add PBR pass depth output", .{});
+        };
         
         rg.add_pass(pass) catch {
              log.cardinal_log_error("Failed to add PBR pass", .{});
         };
+        
+        rg.compile() catch {
+             log.cardinal_log_error("Failed to compile render graph", .{});
+        };
+
         s.render_graph = rg;
     } else {
         log.cardinal_log_error("Failed to allocate render graph", .{});
@@ -402,6 +426,52 @@ pub export fn cardinal_renderer_create_headless(out_renderer: ?*types.CardinalRe
     s.recovery.recovery_in_progress = false;
     s.recovery.attempt_count = 0;
     s.recovery.max_attempts = 0;
+
+    // Initialize Render Graph
+    const rg_ptr = memory.cardinal_alloc(mem_alloc, @sizeOf(render_graph.RenderGraph));
+    if (rg_ptr != null) {
+        const rg = @as(*render_graph.RenderGraph, @ptrCast(@alignCast(rg_ptr)));
+        rg.* = render_graph.RenderGraph.init(std.heap.c_allocator);
+        
+        // Add PBR Pass
+        var pass = render_graph.RenderPass.init(std.heap.c_allocator, "PBR Pass", pbr_pass_callback);
+        
+        // Define outputs for automatic barriers
+        // Backbuffer (Color Attachment)
+        pass.add_output(std.heap.c_allocator, .{
+            .id = types.RESOURCE_ID_BACKBUFFER,
+            .type = .Image,
+            .access_mask = c.VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT | c.VK_ACCESS_2_COLOR_ATTACHMENT_READ_BIT,
+            .stage_mask = c.VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT,
+            .layout = c.VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
+            .aspect_mask = c.VK_IMAGE_ASPECT_COLOR_BIT,
+        }) catch {};
+
+        // Depthbuffer (Depth Attachment)
+        pass.add_output(std.heap.c_allocator, .{
+            .id = types.RESOURCE_ID_DEPTHBUFFER,
+            .type = .Image,
+            .access_mask = c.VK_ACCESS_2_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT | c.VK_ACCESS_2_DEPTH_STENCIL_ATTACHMENT_READ_BIT,
+            .stage_mask = c.VK_PIPELINE_STAGE_2_EARLY_FRAGMENT_TESTS_BIT | c.VK_PIPELINE_STAGE_2_LATE_FRAGMENT_TESTS_BIT,
+            .layout = c.VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL,
+            .aspect_mask = c.VK_IMAGE_ASPECT_DEPTH_BIT,
+        }) catch {
+             log.cardinal_log_error("Failed to add PBR pass depth output", .{});
+        };
+        
+        rg.add_pass(pass) catch {
+             log.cardinal_log_error("Failed to add PBR pass", .{});
+        };
+        
+        rg.compile() catch {
+             log.cardinal_log_error("Failed to compile render graph", .{});
+        };
+
+        s.render_graph = rg;
+    } else {
+        log.cardinal_log_error("Failed to allocate render graph", .{});
+        return false;
+    }
 
     log.cardinal_log_warn("renderer_create_headless: begin", .{});
     if (!vk_instance.vk_create_instance(@ptrCast(s))) {
@@ -587,6 +657,18 @@ pub export fn cardinal_renderer_destroy(renderer: ?*types.CardinalRenderer) call
     log.cardinal_log_debug("[DESTROY] Destroying base pipeline resources", .{});
     vk_pipeline.vk_destroy_pipeline(@ptrCast(s));
     vk_swapchain.vk_destroy_swapchain(@ptrCast(s));
+
+    // Destroy Render Graph
+    if (s.render_graph) |rg_ptr| {
+        log.cardinal_log_debug("[DESTROY] Destroying Render Graph", .{});
+        const rg = @as(*render_graph.RenderGraph, @ptrCast(@alignCast(rg_ptr)));
+        rg.destroy_transient_resources(s);
+        rg.deinit();
+        
+        const mem_alloc = memory.cardinal_get_allocator_for_category(.RENDERER);
+        memory.cardinal_free(mem_alloc, rg);
+        s.render_graph = null;
+    }
 
     // Shutdown VMA allocator before destroying device
     vk_texture_utils.shutdown_staging_buffer_cleanups(&s.allocator);
