@@ -18,42 +18,11 @@ fn mat4_identity() math.Mat4 {
 }
 
 fn mat4_ortho(left: f32, right: f32, bottom: f32, top: f32, zNear: f32, zFar: f32) math.Mat4 {
-    var m = math.Mat4.identity();
-    m.data[0] = 2.0 / (right - left);
-    m.data[5] = 2.0 / (top - bottom);
-    m.data[10] = 1.0 / (zFar - zNear);
-    m.data[12] = -(right + left) / (right - left);
-    m.data[13] = -(top + bottom) / (top - bottom);
-    m.data[14] = -zNear / (zFar - zNear);
-    
-    // m.data[5] *= -1.0; // Standard OpenGL Y-up
-    
-    return m;
+    return math.Mat4.ortho(left, right, bottom, top, zNear, zFar);
 }
 
 fn mat4_lookAt(eye: math.Vec3, center: math.Vec3, up: math.Vec3) math.Mat4 {
-    const f = center.sub(eye).normalize();
-    const s = f.cross(up).normalize();
-    const u = s.cross(f);
-    
-    var m = math.Mat4.identity();
-    m.data[0] = s.x;
-    m.data[4] = s.y;
-    m.data[8] = s.z;
-    
-    m.data[1] = u.x;
-    m.data[5] = u.y;
-    m.data[9] = u.z;
-    
-    m.data[2] = -f.x;
-    m.data[6] = -f.y;
-    m.data[10] = -f.z;
-    
-    m.data[12] = -s.dot(eye);
-    m.data[13] = -u.dot(eye);
-    m.data[14] = f.dot(eye);
-    
-    return m;
+    return math.Mat4.lookAt(eye, center, up);
 }
 
 pub fn vk_shadow_render(s: *types.VulkanState, cmd: c.VkCommandBuffer) void {

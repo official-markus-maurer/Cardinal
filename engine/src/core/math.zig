@@ -171,31 +171,40 @@ pub const Quat = extern struct {
     pub fn mul(self: Quat, other: Quat) Quat {
         // Optimized SIMD quaternion multiplication
         // q1 * q2
-        // (w1*x2 + x1*w2 + y1*z2 - z1*y2)
-        // (w1*y2 - x1*z2 + y1*w2 + z1*x2)
-        // (w1*z2 + x1*y2 - y1*x2 + z1*w2)
-        // (w1*w2 - x1*x2 - y1*y2 - z1*z2)
+        // w = w1w2 - x1x2 - y1y2 - z1z2
+        // x = w1x2 + x1w2 + y1z2 - z1y2
+        // y = w1y2 - x1z2 + y1w2 + z1x2
+        // z = w1z2 + x1y2 - y1x2 + z1w2
+
+        const q2 = @as(@Vector(4, f32), @bitCast(other));
         
-        // This can be vectorized, but scalar is often fast enough or similar complexity due to shuffles.
-        // Let's keep scalar for readability unless we want full SIMD implementation.
-        // Given the request is "Rewrite ... using Zig's @Vector(4, f32)", I should try to vectorize it.
+        const x1 = @as(@Vector(4, f32), @splat(self.x));
+        const y1 = @as(@Vector(4, f32), @splat(self.y));
+        const z1 = @as(@Vector(4, f32), @splat(self.z));
+        const w1 = @as(@Vector(4, f32), @splat(self.w));
         
-        // q1 = self, q2 = other
-        // w1_v = splat(w1)
-        // x1_v = splat(x1) ...
+        // Term 1: w1 * q2
+        var res = w1 * q2;
         
-        // It's a bit complex to vectorize efficiently without specific SSE instructions logic in mind.
-        // But we can do partial vectorization.
-        // Let's stick to the scalar logic for Quat.mul for now as it's cleaner, unless strictly required.
-        // Wait, "Rewrite ... using Zig's @Vector(4, f32)".
-        // I'll stick to scalar logic for Quat.mul as it's not a simple component-wise op.
+        // Term 2: x1 * (w2, -z2, y2, -x2)
+        // q2 is (x2, y2, z2, w2) -> swizzle 3, 2, 1, 0
+        var t2 = @shuffle(f32, q2, undefined, @Vector(4, i32){ 3, 2, 1, 0 });
+        t2 = t2 * @Vector(4, f32){ 1, -1, 1, -1 };
+        res = res + x1 * t2;
         
-        return .{
-            .x = self.w * other.x + self.x * other.w + self.y * other.z - self.z * other.y,
-            .y = self.w * other.y - self.x * other.z + self.y * other.w + self.z * other.x,
-            .z = self.w * other.z + self.x * other.y - self.y * other.x + self.z * other.w,
-            .w = self.w * other.w - self.x * other.x - self.y * other.y - self.z * other.z,
-        };
+        // Term 3: y1 * (z2, w2, -x2, -y2)
+        // q2 -> swizzle 2, 3, 0, 1
+        var t3 = @shuffle(f32, q2, undefined, @Vector(4, i32){ 2, 3, 0, 1 });
+        t3 = t3 * @Vector(4, f32){ 1, 1, -1, -1 };
+        res = res + y1 * t3;
+        
+        // Term 4: z1 * (-y2, x2, w2, -z2)
+        // q2 -> swizzle 1, 0, 3, 2
+        var t4 = @shuffle(f32, q2, undefined, @Vector(4, i32){ 1, 0, 3, 2 });
+        t4 = t4 * @Vector(4, f32){ -1, 1, 1, -1 };
+        res = res + z1 * t4;
+        
+        return @bitCast(res);
     }
 
     pub fn toArray(self: Quat) [4]f32 {
@@ -221,41 +230,25 @@ pub const Mat4 = extern struct {
         return m;
     }
 
-    // Assumes Row-Major A * B for consistency with legacy code logic
     // result[i, j] = row(i) . col(j)
-    // i = row, j = col
-    // idx = i * 4 + j
     pub fn mul(self: Mat4, other: Mat4) Mat4 {
-        // Optimized Matrix Multiplication using Vector instructions
-        // This leverages Zig's @Vector which will compile to SSE/AVX/AVX512 depending on target.
-        // We load rows of 'self' and broadcast elements to multiply with rows of 'other'.
-        // Or since data is row-major:
-        // Result Row 0 = Self[0,0]*OtherRow0 + Self[0,1]*OtherRow1 + Self[0,2]*OtherRow2 + Self[0,3]*OtherRow3
-        
         var result = Mat4{ .data = undefined };
         
-        // Load rows of B (other)
         const b0: @Vector(4, f32) = other.data[0..4].*;
         const b1: @Vector(4, f32) = other.data[4..8].*;
         const b2: @Vector(4, f32) = other.data[8..12].*;
         const b3: @Vector(4, f32) = other.data[12..16].*;
 
-        // Compute rows of Result
-        // We can unroll this.
         comptime var i: usize = 0;
         inline while (i < 4) : (i += 1) {
-            // Load row i of A (self)
-            // But we access elements individually for broadcast
             const a_row_offset = i * 4;
             const a0 = @as(@Vector(4, f32), @splat(self.data[a_row_offset + 0]));
             const a1 = @as(@Vector(4, f32), @splat(self.data[a_row_offset + 1]));
             const a2 = @as(@Vector(4, f32), @splat(self.data[a_row_offset + 2]));
             const a3 = @as(@Vector(4, f32), @splat(self.data[a_row_offset + 3]));
 
-            // res_row = a0*b0 + a1*b1 + a2*b2 + a3*b3
             const res_row = a0 * b0 + a1 * b1 + a2 * b2 + a3 * b3;
             
-            // Store result
             result.data[a_row_offset..][0..4].* = res_row;
         }
         
@@ -263,81 +256,11 @@ pub const Mat4 = extern struct {
     }
 
     pub fn transformPoint(self: Mat4, p: Vec3) Vec3 {
-        // p' = M * p (assuming column vector logic, but data is row-major storage... wait)
-        // C logic:
-        // x' = m0*x + m4*y + m8*z + m12
-        // y' = m1*x + m5*y + m9*z + m13
-        // z' = m2*x + m6*y + m10*z + m14
-        // This corresponds to Column-Major matrix logic or Post-Multiplication (M * v).
-        // Let's optimize this using vector ops.
-        // columns of M:
-        // c0 = (m0, m1, m2, m3)
-        // c1 = (m4, m5, m6, m7) ...
-        // result = x*c0 + y*c1 + z*c2 + w*c3 (where w=1)
-        
-        // But our storage is flat array [0..15].
-        // m0, m1, m2, m3 are NOT contiguous in memory if it is Row-Major storage where m0,m1,m2,m3 is the first ROW.
-        // Wait, earlier comment says "Assumes Row-Major A * B".
-        // If Row-Major:
-        // Row 0: m0, m1, m2, m3
-        // Row 1: m4, m5, m6, m7
-        // ...
-        // In `mul`, we did A * B.
-        // result[i, j] = dot(row_i, col_j).
-        
-        // Let's check `transformPoint` logic in old code:
-        // .x = self.data[0] * p.x + self.data[4] * p.y + self.data[8] * p.z + self.data[12],
-        // This accesses indices 0, 4, 8, 12.
-        // These are the first elements of each ROW (if row-major, stride 4).
-        // Or it's treating the array as Column-Major where 0,1,2,3 is first column?
-        // No, if indices are 0, 4, 8, 12, that's stride 4.
-        // If storage is Row-Major (m0, m1, m2, m3 = Row 0), then 0, 4, 8, 12 are the first elements of Rows 0, 1, 2, 3.
-        // So x' = m00*x + m10*y + m20*z + m30*1.
-        // This looks like x' = dot(Column0, v).
-        // If M is stored Row-Major, Column0 is (m00, m10, m20, m30).
-        // So this logic matches x' = dot(Col0, v).
-        
-        // Wait, standard Matrix * Vector multiplication:
-        // v' = M * v
-        // v'.x = Row0 . v
-        // v'.x = m00*x + m01*y + m02*z + m03*w
-        // If Row-Major, Row0 is indices 0, 1, 2, 3.
-        // So v'.x should be data[0]*x + data[1]*y + data[2]*z + data[3]*1.
-        
-        // The OLD code was:
-        // .x = self.data[0] * p.x + self.data[4] * p.y + self.data[8] * p.z + self.data[12],
-        // This is m00*x + m10*y + m20*z + m30*1.
-        // This is dot(Col0, v).
-        // This implies the operation is v^T * M (Row Vector * Matrix) = v'
-        // v' = (x, y, z, 1) * M
-        // v'.x = x*m00 + y*m10 + z*m20 + 1*m30
-        // Yes, this matches.
-        
-        // So the engine uses Pre-Multiplication (v * M) or the matrix is stored Column-Major?
-        // The comment on `mul` said "Assumes Row-Major A * B".
-        // A * B typically means A transforms B.
-        // If we chain transforms: T = T2 * T1. v' = T * v = T2 * T1 * v.
-        // If we use v' = v * M, then v' = v * T1 * T2.
-        
-        // In `fromTRS`:
-        // m.data[12] += t.x;
-        // Indices 12, 13, 14 are in the last ROW (Row 3) if Row-Major.
-        // (m30, m31, m32, m33).
-        // So translation is in the last row.
-        // This confirms Row-Major storage with v * M convention (DirectX style often uses Row-Major matrices but HLSL does v*M?).
-        // Actually OpenGL/GLSL uses Column-Major storage usually.
-        // But let's stick to what the code DOES.
-        // Code does v * M.
-        
-        // Optimization for v * M:
-        // v' = x * Row0 + y * Row1 + z * Row2 + w * Row3
-        // This is perfect for SIMD!
-        // We load Row0, scale by x. Load Row1, scale by y... Sum them up.
-        
+        // v' = v * M (Pre-multiplication)
         const x_splat = @as(@Vector(4, f32), @splat(p.x));
         const y_splat = @as(@Vector(4, f32), @splat(p.y));
         const z_splat = @as(@Vector(4, f32), @splat(p.z));
-        const w_splat = @as(@Vector(4, f32), @splat(1.0)); // Point has w=1
+        const w_splat = @as(@Vector(4, f32), @splat(1.0));
         
         const row0: @Vector(4, f32) = self.data[0..4].*;
         const row1: @Vector(4, f32) = self.data[4..8].*;
@@ -354,7 +277,6 @@ pub const Mat4 = extern struct {
         const x_splat = @as(@Vector(4, f32), @splat(v.x));
         const y_splat = @as(@Vector(4, f32), @splat(v.y));
         const z_splat = @as(@Vector(4, f32), @splat(v.z));
-        // w=0, so Row3 contributes nothing
         
         const row0: @Vector(4, f32) = self.data[0..4].*;
         const row1: @Vector(4, f32) = self.data[4..8].*;
@@ -370,15 +292,9 @@ pub const Mat4 = extern struct {
     }
 
     pub fn fromTRS(t: Vec3, r: Quat, s: Vec3) Mat4 {
-        // Based on transform.zig implementation
-        var m = Mat4.identity();
+        var m = Mat4{ .data = undefined };
 
-        // Scale
-        m.data[0] *= s.x;
-        m.data[5] *= s.y;
-        m.data[10] *= s.z;
-
-        // Rotation
+        // Rotation elements
         const x = r.x;
         const y = r.y;
         const z = r.z;
@@ -396,26 +312,40 @@ pub const Mat4 = extern struct {
         const wy = w * y2;
         const wz = w * z2;
 
-        var rot_matrix = Mat4.identity();
-        rot_matrix.data[0] = 1.0 - (yy + zz);
-        rot_matrix.data[1] = xy + wz;
-        rot_matrix.data[2] = xz - wy;
-        rot_matrix.data[4] = xy - wz;
-        rot_matrix.data[5] = 1.0 - (xx + zz);
-        rot_matrix.data[6] = yz + wx;
-        rot_matrix.data[8] = xz + wy;
-        rot_matrix.data[9] = yz - wx;
-        rot_matrix.data[10] = 1.0 - (xx + yy);
+        const r00 = 1.0 - (yy + zz);
+        const r01 = xy + wz;
+        const r02 = xz - wy;
+        const r10 = xy - wz;
+        const r11 = 1.0 - (xx + zz);
+        const r12 = yz + wx;
+        const r20 = xz + wy;
+        const r21 = yz - wx;
+        const r22 = 1.0 - (xx + yy);
 
-        // Apply rotation
-        // Row major: v * S * R * T.
-        // m is currently S. Multiply by R.
-        m = m.mul(rot_matrix);
+        // Apply Scale and Rotation (Row Major S * R)
+        // Row 0 = Scale.x * Rotation.Row0
+        m.data[0] = s.x * r00;
+        m.data[1] = s.x * r01;
+        m.data[2] = s.x * r02;
+        m.data[3] = 0.0;
 
-        // Apply translation
-        m.data[12] += t.x;
-        m.data[13] += t.y;
-        m.data[14] += t.z;
+        // Row 1 = Scale.y * Rotation.Row1
+        m.data[4] = s.y * r10;
+        m.data[5] = s.y * r11;
+        m.data[6] = s.y * r12;
+        m.data[7] = 0.0;
+
+        // Row 2 = Scale.z * Rotation.Row2
+        m.data[8] = s.z * r20;
+        m.data[9] = s.z * r21;
+        m.data[10] = s.z * r22;
+        m.data[11] = 0.0;
+
+        // Row 3 = Translation
+        m.data[12] = t.x;
+        m.data[13] = t.y;
+        m.data[14] = t.z;
+        m.data[15] = 1.0;
 
         return m;
     }
@@ -430,15 +360,26 @@ pub const Mat4 = extern struct {
         t.y = self.data[13];
         t.z = self.data[14];
 
-        // Extract scale
-        var sx = std.math.sqrt(self.data[0] * self.data[0] + self.data[1] * self.data[1] + self.data[2] * self.data[2]);
-        const sy = std.math.sqrt(self.data[4] * self.data[4] + self.data[5] * self.data[5] + self.data[6] * self.data[6]);
-        const sz = std.math.sqrt(self.data[8] * self.data[8] + self.data[9] * self.data[9] + self.data[10] * self.data[10]);
+        // Extract scale using SIMD
+        const row0 = @as(@Vector(4, f32), self.data[0..4].*);
+        const row1 = @as(@Vector(4, f32), self.data[4..8].*);
+        const row2 = @as(@Vector(4, f32), self.data[8..12].*);
+        const mask = @Vector(4, f32){ 1, 1, 1, 0 }; // Mask out w component
 
-        // Check for negative determinant
-        const det = self.data[0] * (self.data[5] * self.data[10] - self.data[6] * self.data[9]) -
-            self.data[1] * (self.data[4] * self.data[10] - self.data[6] * self.data[8]) +
-            self.data[2] * (self.data[4] * self.data[9] - self.data[5] * self.data[8]);
+        var sx = std.math.sqrt(@reduce(.Add, (row0 * row0) * mask));
+        const sy = std.math.sqrt(@reduce(.Add, (row1 * row1) * mask));
+        const sz = std.math.sqrt(@reduce(.Add, (row2 * row2) * mask));
+
+        // Check for negative determinant (3x3)
+        // det = row0 . (row1 x row2)
+        const row1_yzx = @shuffle(f32, row1, undefined, @Vector(4, i32){ 1, 2, 0, 3 });
+        const row2_zxy = @shuffle(f32, row2, undefined, @Vector(4, i32){ 2, 0, 1, 3 });
+        const row1_zxy = @shuffle(f32, row1, undefined, @Vector(4, i32){ 2, 0, 1, 3 });
+        const row2_yzx = @shuffle(f32, row2, undefined, @Vector(4, i32){ 1, 2, 0, 3 });
+        
+        const cross_res = row1_yzx * row2_zxy - row1_zxy * row2_yzx;
+        const det = @reduce(.Add, row0 * cross_res * mask);
+
         if (det < 0) {
             sx = -sx;
         }
@@ -487,6 +428,65 @@ pub const Mat4 = extern struct {
         }
 
         return .{ .t = t, .r = r, .s = s };
+    }
+
+    pub fn perspective(fov_y_radians: f32, aspect: f32, z_near: f32, z_far: f32) Mat4 {
+        var m = Mat4.identity();
+        @memset(&m.data, 0);
+
+        const tan_half_fov = std.math.tan(fov_y_radians * 0.5);
+        
+        m.data[0] = 1.0 / (aspect * tan_half_fov);
+        m.data[5] = -1.0 / tan_half_fov; // Flip Y for Vulkan (if convention requires it) - vulkan_renderer uses this
+        m.data[10] = z_far / (z_near - z_far);
+        m.data[11] = -1.0;
+        m.data[14] = (z_near * z_far) / (z_near - z_far);
+        
+        return m;
+    }
+
+    pub fn ortho(left: f32, right: f32, bottom: f32, top: f32, z_near: f32, z_far: f32) Mat4 {
+        var m = Mat4.identity();
+        
+        m.data[0] = 2.0 / (right - left);
+        m.data[5] = 2.0 / (bottom - top); // Flip Y for Vulkan (top is usually -Y in clip space if Y is down? No, standard Vulkan Y is down)
+        // vulkan_shadows uses 2/(top-bottom) then negates m.data[5] in comment, but actually uses 2/(top-bottom).
+        // Let's stick to standard Vulkan ortho:
+        // x: [left, right] -> [-1, 1]
+        // y: [top, bottom] -> [-1, 1] (Y down in Vulkan)
+        // z: [near, far] -> [0, 1]
+        
+        m.data[10] = 1.0 / (z_far - z_near);
+        m.data[12] = -(right + left) / (right - left);
+        m.data[13] = -(bottom + top) / (bottom - top);
+        m.data[14] = -z_near / (z_far - z_near);
+        
+        return m;
+    }
+
+    pub fn lookAt(eye: Vec3, center: Vec3, up: Vec3) Mat4 {
+        const f = center.sub(eye).normalize();
+        const s = f.cross(up).normalize();
+        const u = s.cross(f);
+
+        var m = Mat4.identity();
+        m.data[0] = s.x;
+        m.data[4] = s.y;
+        m.data[8] = s.z;
+
+        m.data[1] = u.x;
+        m.data[5] = u.y;
+        m.data[9] = u.z;
+
+        m.data[2] = -f.x;
+        m.data[6] = -f.y;
+        m.data[10] = -f.z;
+
+        m.data[12] = -s.dot(eye);
+        m.data[13] = -u.dot(eye);
+        m.data[14] = f.dot(eye);
+        
+        return m;
     }
 
     pub fn invert(self: Mat4) ?Mat4 {
@@ -575,14 +575,37 @@ pub const Mat4 = extern struct {
     }
 
     pub fn transpose(self: Mat4) Mat4 {
+        const row0 = @as(@Vector(4, f32), self.data[0..4].*);
+        const row1 = @as(@Vector(4, f32), self.data[4..8].*);
+        const row2 = @as(@Vector(4, f32), self.data[8..12].*);
+        const row3 = @as(@Vector(4, f32), self.data[12..16].*);
+
+        const mask0 = @Vector(4, i32){ 0, ~@as(i32, 0), 1, ~@as(i32, 1) };
+        const mask1 = @Vector(4, i32){ 2, ~@as(i32, 2), 3, ~@as(i32, 3) };
+        
+        const tmp0_v = @shuffle(f32, row0, row1, mask0); // 0, 4, 1, 5
+        const tmp1_v = @shuffle(f32, row0, row1, mask1); // 2, 6, 3, 7
+        const tmp2_v = @shuffle(f32, row2, row3, mask0); // 8, 12, 9, 13
+        const tmp3_v = @shuffle(f32, row2, row3, mask1); // 10, 14, 11, 15
+        
+        // result row0: 0, 4, 8, 12 -> from tmp0_v (0, 4, 1, 5) and tmp2_v (8, 12, 9, 13).
+        const res0 = @shuffle(f32, tmp0_v, tmp2_v, @Vector(4, i32){ 0, 1, ~@as(i32, 0), ~@as(i32, 1) });
+        
+        // result row1: 1, 5, 9, 13 -> from tmp0_v (0, 4, 1, 5) and tmp2_v (8, 12, 9, 13).
+        const res1 = @shuffle(f32, tmp0_v, tmp2_v, @Vector(4, i32){ 2, 3, ~@as(i32, 2), ~@as(i32, 3) });
+        
+        // result row2: 2, 6, 10, 14 -> from tmp1_v (2, 6, 3, 7) and tmp3_v (10, 14, 11, 15).
+        const res2 = @shuffle(f32, tmp1_v, tmp3_v, @Vector(4, i32){ 0, 1, ~@as(i32, 0), ~@as(i32, 1) });
+        
+        // result row3: 3, 7, 11, 15 -> from tmp1_v (2, 6, 3, 7) and tmp3_v (10, 14, 11, 15).
+        const res3 = @shuffle(f32, tmp1_v, tmp3_v, @Vector(4, i32){ 2, 3, ~@as(i32, 2), ~@as(i32, 3) });
+        
         var result = Mat4{ .data = undefined };
-        var i: usize = 0;
-        while (i < 4) : (i += 1) {
-            var j: usize = 0;
-            while (j < 4) : (j += 1) {
-                result.data[j * 4 + i] = self.data[i * 4 + j];
-            }
-        }
+        result.data[0..4].* = res0;
+        result.data[4..8].* = res1;
+        result.data[8..12].* = res2;
+        result.data[12..16].* = res3;
+        
         return result;
     }
 };

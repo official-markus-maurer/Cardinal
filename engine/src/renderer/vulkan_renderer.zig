@@ -2,6 +2,7 @@ const std = @import("std");
 const builtin = @import("builtin");
 const log = @import("../core/log.zig");
 const memory = @import("../core/memory.zig");
+const math = @import("../core/math.zig");
 const types = @import("vulkan_types.zig");
 const window = @import("../core/window.zig");
 
@@ -621,46 +622,17 @@ pub export fn cardinal_renderer_internal_graphics_queue(renderer: ?*types.Cardin
 }
 
 fn create_perspective_matrix(fov: f32, aspect: f32, near_plane: f32, far_plane: f32, matrix: [*]f32) void {
-    @memset(matrix[0..16], 0);
-
-    const tan_half_fov = std.math.tan(fov * 0.5 * std.math.pi / 180.0);
-
-    matrix[0] = 1.0 / (aspect * tan_half_fov);
-    matrix[5] = -1.0 / tan_half_fov;
-    matrix[10] = far_plane / (near_plane - far_plane);
-    matrix[11] = -1.0;
-    matrix[14] = (near_plane * far_plane) / (near_plane - far_plane);
+    const m = math.Mat4.perspective(fov * std.math.pi / 180.0, aspect, near_plane, far_plane);
+    @memcpy(matrix[0..16], &m.data);
 }
 
 fn create_view_matrix(eye: [*]const f32, center: [*]const f32, up: [*]const f32, matrix: [*]f32) void {
-    var f = [3]f32{ center[0] - eye[0], center[1] - eye[1], center[2] - eye[2] };
-    const f_len = std.math.sqrt(f[0] * f[0] + f[1] * f[1] + f[2] * f[2]);
-    f[0] /= f_len;
-    f[1] /= f_len;
-    f[2] /= f_len;
-
-    var s = [3]f32{ f[1] * up[2] - f[2] * up[1], f[2] * up[0] - f[0] * up[2], f[0] * up[1] - f[1] * up[0] };
-    const s_len = std.math.sqrt(s[0] * s[0] + s[1] * s[1] + s[2] * s[2]);
-    s[0] /= s_len;
-    s[1] /= s_len;
-    s[2] /= s_len;
-
-    const u = [3]f32{ s[1] * f[2] - s[2] * f[1], s[2] * f[0] - s[0] * f[2], s[0] * f[1] - s[1] * f[0] };
-
-    @memset(matrix[0..16], 0);
-    matrix[0] = s[0];
-    matrix[4] = s[1];
-    matrix[8] = s[2];
-    matrix[12] = -(s[0] * eye[0] + s[1] * eye[1] + s[2] * eye[2]);
-    matrix[1] = u[0];
-    matrix[5] = u[1];
-    matrix[9] = u[2];
-    matrix[13] = -(u[0] * eye[0] + u[1] * eye[1] + u[2] * eye[2]);
-    matrix[2] = -f[0];
-    matrix[6] = -f[1];
-    matrix[10] = -f[2];
-    matrix[14] = f[0] * eye[0] + f[1] * eye[1] + f[2] * eye[2];
-    matrix[15] = 1.0;
+    const eye_v = math.Vec3.fromArray(eye[0..3].*);
+    const center_v = math.Vec3.fromArray(center[0..3].*);
+    const up_v = math.Vec3.fromArray(up[0..3].*);
+    
+    const m = math.Mat4.lookAt(eye_v, center_v, up_v);
+    @memcpy(matrix[0..16], &m.data);
 }
 
 pub export fn cardinal_renderer_set_camera(renderer: ?*types.CardinalRenderer, camera: ?*const types.CardinalCamera) callconv(.c) void {
