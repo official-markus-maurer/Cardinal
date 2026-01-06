@@ -150,24 +150,30 @@ pub export fn vk_buffer_create(buffer_ptr: ?*VulkanBuffer, device: c.VkDevice, a
     bufferInfo.sType = c.VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO;
     bufferInfo.size = createInfo.size;
     bufferInfo.usage = createInfo.usage;
+    // Add SHADER_DEVICE_ADDRESS_BIT if the buffer type might be used in a descriptor buffer or needs address
+    // This fixes "buffer must have been created with the VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT usage flag set" validation error
+    if ((bufferInfo.usage & (c.VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT | c.VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | c.VK_BUFFER_USAGE_VERTEX_BUFFER_BIT | c.VK_BUFFER_USAGE_INDEX_BUFFER_BIT)) != 0) {
+        bufferInfo.usage |= c.VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT;
+    }
     bufferInfo.sharingMode = c.VK_SHARING_MODE_EXCLUSIVE;
 
     // Allocate buffer and memory using allocator
-    if (!vk_allocator.vk_allocator_allocate_buffer(allocator, &bufferInfo, &buffer.handle, &buffer.memory, &buffer.allocation, createInfo.properties)) {
+    // Pass persistentlyMapped as map_immediately to avoid double mapping and use VMA's internal mapping
+    if (!vk_allocator.vk_allocator_allocate_buffer(allocator, &bufferInfo, &buffer.handle, &buffer.memory, &buffer.allocation, createInfo.properties, createInfo.persistentlyMapped, &buffer.mapped)) {
         log.cardinal_log_error("Failed to create and allocate buffer", .{});
         return false;
     }
 
     buffer.size = createInfo.size;
-    buffer.usage = createInfo.usage;
+    buffer.usage = bufferInfo.usage; // Update usage to reflect added flags
     buffer.properties = createInfo.properties;
-    buffer.mapped = null;
+    // buffer.mapped is already set if map_immediately was true and successful
 
-    // Map memory if requested
-    if (createInfo.persistentlyMapped) {
+    // Fallback or explicit map if not handled by allocator (shouldn't happen with updated allocator)
+    if (createInfo.persistentlyMapped and buffer.mapped == null) {
         buffer.mapped = vk_buffer_map(buffer, allocator, 0, c.VK_WHOLE_SIZE);
         if (buffer.mapped == null) {
-            log.cardinal_log_warn("Failed to persistently map buffer memory", .{});
+            log.cardinal_log_warn("Failed to persistently map buffer memory (fallback)", .{});
         }
     }
 

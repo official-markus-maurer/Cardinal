@@ -38,7 +38,7 @@ This document outlines the roadmap for the Cardinal Engine, focusing on robustne
     - **Async Compute**: Support queue ownership transfers for parallel compute execution.
 - [x] **Data-Driven Pipelines**: Replace hardcoded pipeline setup (`vulkan_pbr.zig`, etc.) with a data-driven approach where Pipeline State Objects (PSOs) are loaded from asset files.
 - [ ] **Pipeline Caching**: Implement `VkPipelineCache` serialization.
-- [ ] **Bindless Architecture**: Standardize on the existing `VK_EXT_descriptor_buffer` implementation in `vulkan_descriptor_manager.zig`.
+- [x] **Bindless Architecture**: Standardize on the existing `VK_EXT_descriptor_buffer` implementation in `vulkan_descriptor_manager.zig`.
 
 ### Lighting & Materials
 - [x] **Material System**: Decouple materials from specific pipelines. Create a generic material system.

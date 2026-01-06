@@ -11,6 +11,7 @@ const scene = @import("../assets/scene.zig");
 const vk_allocator = @import("vulkan_allocator.zig");
 
 const vk_pso = @import("vulkan_pso.zig");
+const vk_desc_mgr = @import("vulkan_descriptor_manager.zig");
 
 // Helper Functions
 
@@ -187,11 +188,15 @@ pub export fn vk_mesh_shader_create_pipeline(s: ?*types.VulkanState, config: ?*c
         return false;
     }
     
-    if (process_shader(vs.context.device, cfg.fragment_shader_path, c.VK_SHADER_STAGE_FRAGMENT_BIT, &fragShaderModule, &set0_bindings, &set1_bindings, &pushConstantRange, allocator) catch false) {
-        descriptor.fragment_shader.module_handle = @intFromPtr(fragShaderModule);
+    if (cfg.fragment_shader_path != null) {
+        if (process_shader(vs.context.device, cfg.fragment_shader_path, c.VK_SHADER_STAGE_FRAGMENT_BIT, &fragShaderModule, &set0_bindings, &set1_bindings, &pushConstantRange, allocator) catch false) {
+            if (descriptor.fragment_shader) |*fs| fs.module_handle = @intFromPtr(fragShaderModule);
+        } else {
+            c.vkDestroyShaderModule(vs.context.device, meshShaderModule, null);
+            return false;
+        }
     } else {
-        c.vkDestroyShaderModule(vs.context.device, meshShaderModule, null);
-        return false;
+        descriptor.fragment_shader = null;
     }
     
     if (cfg.task_shader_path != null) {
@@ -208,79 +213,42 @@ pub export fn vk_mesh_shader_create_pipeline(s: ?*types.VulkanState, config: ?*c
         descriptor.task_shader = null;
     }
 
-    // Create Layouts
-    const create_layout = struct {
-        fn f(dev: c.VkDevice, map: *std.AutoHashMap(u32, BindingInfo), out_layout: *c.VkDescriptorSetLayout, alloc: std.mem.Allocator) bool {
-             var bindings = std.ArrayListUnmanaged(c.VkDescriptorSetLayoutBinding){};
-             var flags = std.ArrayListUnmanaged(c.VkDescriptorBindingFlags){};
-             var has_flags = false;
+    // Create Managers
+    const create_manager = struct {
+        fn f(alloc: std.mem.Allocator, map: *std.AutoHashMap(u32, BindingInfo), out_manager: *?*types.VulkanDescriptorManager, vulkan_state: *types.VulkanState, max_sets: u32) bool {
+             // Allocate manager struct
+             const mem_alloc = memory.cardinal_get_allocator_for_category(.RENDERER);
+             const ptr = memory.cardinal_alloc(mem_alloc, @sizeOf(types.VulkanDescriptorManager));
+             if (ptr == null) return false;
+             const mgr = @as(*types.VulkanDescriptorManager, @ptrCast(@alignCast(ptr)));
+             @memset(@as([*]u8, @ptrCast(mgr))[0..@sizeOf(types.VulkanDescriptorManager)], 0);
              
-             // Sort bindings by index
+             out_manager.* = mgr;
+
+             var desc_builder = vk_desc_mgr.DescriptorBuilder.init(alloc);
+             defer desc_builder.deinit();
+
              var keys = std.ArrayListUnmanaged(u32){};
              var kit = map.keyIterator();
              while (kit.next()) |k| keys.append(alloc, k.*) catch return false;
              std.mem.sort(u32, keys.items, {}, std.sort.asc(u32));
-             
+             defer keys.deinit(alloc);
+
              for (keys.items) |k| {
                  const entry = map.get(k).?;
-                 bindings.append(alloc, entry.binding) catch return false;
-                 if (entry.is_runtime_array) {
-                     flags.append(alloc, c.VK_DESCRIPTOR_BINDING_PARTIALLY_BOUND_BIT | c.VK_DESCRIPTOR_BINDING_UPDATE_AFTER_BIND_BIT) catch return false;
-                     has_flags = true;
-                 } else {
-                     flags.append(alloc, 0) catch return false;
-                 }
+                 desc_builder.add_binding(entry.binding.binding, entry.binding.descriptorType, entry.binding.descriptorCount, entry.binding.stageFlags) catch return false;
              }
              
-             var layoutInfo = std.mem.zeroes(c.VkDescriptorSetLayoutCreateInfo);
-             layoutInfo.sType = c.VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO;
-             layoutInfo.bindingCount = @intCast(bindings.items.len);
-             layoutInfo.pBindings = bindings.items.ptr;
-             
-             var flagsInfo = std.mem.zeroes(c.VkDescriptorSetLayoutBindingFlagsCreateInfo);
-             if (has_flags) {
-                 layoutInfo.flags = c.VK_DESCRIPTOR_SET_LAYOUT_CREATE_UPDATE_AFTER_BIND_POOL_BIT;
-                 flagsInfo.sType = c.VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_BINDING_FLAGS_CREATE_INFO;
-                 flagsInfo.bindingCount = @intCast(flags.items.len);
-                 flagsInfo.pBindingFlags = flags.items.ptr;
-                 layoutInfo.pNext = &flagsInfo;
-             }
-             
-             return c.vkCreateDescriptorSetLayout(dev, &layoutInfo, null, out_layout) == c.VK_SUCCESS;
+             // Prefer descriptor buffers if supported
+             return desc_builder.build(mgr, vulkan_state.context.device, &vulkan_state.allocator, vulkan_state, max_sets, true);
         }
     }.f;
 
-    var setLayouts: [2]c.VkDescriptorSetLayout = undefined;
-    if (!create_layout(vs.context.device, &set0_bindings, &setLayouts[0], allocator)) return false;
-    if (!create_layout(vs.context.device, &set1_bindings, &setLayouts[1], allocator)) return false;
+    if (!create_manager(allocator, &set0_bindings, &pipe.set0_manager, vs, 1000)) return false;
+    if (!create_manager(allocator, &set1_bindings, &pipe.set1_manager, vs, 1000)) return false;
 
-    pipe.set0_layout = setLayouts[0];
-    pipe.set1_layout = setLayouts[1];
     pipe.global_descriptor_set = null;
-
-    // Descriptor Pool (Existing logic)
-    if (pipe.descriptor_pool == null) {
-        const poolSizes = [_]c.VkDescriptorPoolSize{
-            .{ .type = c.VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, .descriptorCount = 1000 * 4 },
-            .{ .type = c.VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, .descriptorCount = 1000 * 5 },
-            .{ .type = c.VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, .descriptorCount = 1000 * 4096 },
-        };
-
-        var poolInfo = std.mem.zeroes(c.VkDescriptorPoolCreateInfo);
-        poolInfo.sType = c.VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO;
-        poolInfo.poolSizeCount = 3;
-        poolInfo.pPoolSizes = &poolSizes;
-        poolInfo.maxSets = 1000;
-        poolInfo.flags = c.VK_DESCRIPTOR_POOL_CREATE_FREE_DESCRIPTOR_SET_BIT | c.VK_DESCRIPTOR_POOL_CREATE_UPDATE_AFTER_BIND_BIT;
-
-        if (c.vkCreateDescriptorPool(vs.context.device, &poolInfo, null, &pipe.descriptor_pool) != c.VK_SUCCESS) {
-            log.cardinal_log_error("Failed to create mesh shader descriptor pool", .{});
-            return false;
-        }
-    } else {
-        log.cardinal_log_debug("Reusing existing mesh shader descriptor pool", .{});
-    }
-
+    
     // Default Material Buffer (Existing logic)
     const DefaultMaterialData = extern struct {
         albedo: [3]f32,
@@ -313,9 +281,15 @@ pub export fn vk_mesh_shader_create_pipeline(s: ?*types.VulkanState, config: ?*c
 
     } else {
         log.cardinal_log_error("Failed to create default material buffer", .{});
-        c.vkDestroyDescriptorPool(vs.context.device, pipe.descriptor_pool, null);
+        // Cleanup managers
+        if (pipe.set0_manager != null) vk_desc_mgr.vk_descriptor_manager_destroy(pipe.set0_manager);
+        if (pipe.set1_manager != null) vk_desc_mgr.vk_descriptor_manager_destroy(pipe.set1_manager);
         return false;
     }
+
+    var setLayouts: [2]c.VkDescriptorSetLayout = undefined;
+    setLayouts[0] = vk_desc_mgr.vk_descriptor_manager_get_layout(pipe.set0_manager);
+    setLayouts[1] = vk_desc_mgr.vk_descriptor_manager_get_layout(pipe.set1_manager);
 
     var pipelineLayoutInfo = std.mem.zeroes(c.VkPipelineLayoutCreateInfo);
     pipelineLayoutInfo.sType = c.VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO;
@@ -364,37 +338,69 @@ pub export fn vk_mesh_shader_create_pipeline(s: ?*types.VulkanState, config: ?*c
     };
 
     // Color Blend
-    // TODO: Support multiple color attachments
     if (descriptor.color_blend.attachments.len > 0) {
+        // Allocate new slice to hold modified attachments
+        const new_atts = builder.allocator.alloc(vk_pso.ColorBlendAttachmentDescriptor, descriptor.color_blend.attachments.len) catch return false;
         
-        var att = descriptor.color_blend.attachments[0];
-        att.blend_enable = cfg.blend_enable;
-        if (att.blend_enable) {
-             // TODO: Complete blend factor mapping
-             const map_blend_factor = struct {
-                 fn f(bf: c.VkBlendFactor) vk_pso.BlendFactor {
-                     return switch (bf) {
-                         c.VK_BLEND_FACTOR_ZERO => .zero,
-                         c.VK_BLEND_FACTOR_ONE => .one,
-                         c.VK_BLEND_FACTOR_SRC_ALPHA => .src_alpha,
-                         c.VK_BLEND_FACTOR_ONE_MINUS_SRC_ALPHA => .one_minus_src_alpha,
-                         else => .zero, // Fallback
-                     };
-                 }
-             }.f;
-             att.src_color_blend_factor = map_blend_factor(cfg.src_color_blend_factor);
-             att.dst_color_blend_factor = map_blend_factor(cfg.dst_color_blend_factor);
+        const map_blend_factor = struct {
+             fn f(bf: c.VkBlendFactor) vk_pso.BlendFactor {
+                 return switch (bf) {
+                     c.VK_BLEND_FACTOR_ZERO => .zero,
+                     c.VK_BLEND_FACTOR_ONE => .one,
+                     c.VK_BLEND_FACTOR_SRC_COLOR => .src_color,
+                     c.VK_BLEND_FACTOR_ONE_MINUS_SRC_COLOR => .one_minus_src_color,
+                     c.VK_BLEND_FACTOR_DST_COLOR => .dst_color,
+                     c.VK_BLEND_FACTOR_ONE_MINUS_DST_COLOR => .one_minus_dst_color,
+                     c.VK_BLEND_FACTOR_SRC_ALPHA => .src_alpha,
+                     c.VK_BLEND_FACTOR_ONE_MINUS_SRC_ALPHA => .one_minus_src_alpha,
+                     c.VK_BLEND_FACTOR_DST_ALPHA => .dst_alpha,
+                     c.VK_BLEND_FACTOR_ONE_MINUS_DST_ALPHA => .one_minus_dst_alpha,
+                     else => .zero, // Fallback
+                 };
+             }
+        }.f;
+
+        for (descriptor.color_blend.attachments, 0..) |old_att, i| {
+            var att = old_att;
+            att.blend_enable = cfg.blend_enable;
+            if (att.blend_enable) {
+                 att.src_color_blend_factor = map_blend_factor(cfg.src_color_blend_factor);
+                 att.dst_color_blend_factor = map_blend_factor(cfg.dst_color_blend_factor);
+            }
+            new_atts[i] = att;
         }
-        
-        // Allocate new slice to hold this modified attachment
-        const new_atts = builder.allocator.alloc(vk_pso.ColorBlendAttachmentDescriptor, 1) catch return false;
-        new_atts[0] = att;
         descriptor.color_blend.attachments = new_atts;
     }
 
     // Rendering
-    descriptor.rendering.color_formats = &.{swapchain_format};
+    if (descriptor.color_blend.attachments.len > 0) {
+        const new_formats = builder.allocator.alloc(c.VkFormat, descriptor.color_blend.attachments.len) catch return false;
+        for (0..descriptor.color_blend.attachments.len) |i| {
+            if (i == 0) {
+                new_formats[i] = swapchain_format;
+            } else if (i < descriptor.rendering.color_formats.len) {
+                new_formats[i] = descriptor.rendering.color_formats[i];
+            } else {
+                new_formats[i] = swapchain_format; // Fallback
+            }
+        }
+        descriptor.rendering.color_formats = new_formats;
+    } else {
+        descriptor.rendering.color_formats = &.{swapchain_format};
+    }
     descriptor.rendering.depth_format = depth_format;
+
+    // Check descriptor buffers
+    var use_buffers = false;
+    if (pipe.set0_manager) |mgr| {
+        if (mgr.useDescriptorBuffers) use_buffers = true;
+    }
+    if (pipe.set1_manager) |mgr| {
+        if (mgr.useDescriptorBuffers) use_buffers = true;
+    }
+    if (use_buffers) {
+        descriptor.flags |= c.VK_PIPELINE_CREATE_DESCRIPTOR_BUFFER_BIT_EXT;
+    }
 
     // Build Pipeline
     builder.build(descriptor, pipe.pipeline_layout, &pipe.pipeline) catch |err| {
@@ -423,9 +429,9 @@ pub export fn vk_mesh_shader_destroy_pipeline(s: ?*types.VulkanState, pipeline: 
     // This prevents VUID-vkFreeDescriptorSets-pDescriptorSets-parent when pending cleanups
     // are processed after the pool has been destroyed and recreated.
     if (vs.pending_cleanup_lists != null) {
-        log.cardinal_log_debug("vk_mesh_shader_destroy_pipeline: Clearing pending descriptor sets", .{});
-        var f: u32 = 0;
         const frames = if (vs.sync.max_frames_in_flight > 0) vs.sync.max_frames_in_flight else 3;
+        log.cardinal_log_debug("vk_mesh_shader_destroy_pipeline: Clearing pending descriptor sets. frames={d}", .{frames});
+        var f: u32 = 0;
         var cleared_count: u32 = 0;
         while (f < frames) : (f += 1) {
             if (vs.pending_cleanup_lists.?[f] != null) {
@@ -453,19 +459,18 @@ pub export fn vk_mesh_shader_destroy_pipeline(s: ?*types.VulkanState, pipeline: 
         pipe.pipeline_layout = null;
     }
 
-    if (pipe.set0_layout != null) {
-        c.vkDestroyDescriptorSetLayout(vs.context.device, pipe.set0_layout, null);
-        pipe.set0_layout = null;
+    if (pipe.set0_manager != null) {
+        vk_desc_mgr.vk_descriptor_manager_destroy(pipe.set0_manager);
+        const mem_alloc = memory.cardinal_get_allocator_for_category(.RENDERER);
+        memory.cardinal_free(mem_alloc, @as(?*anyopaque, @ptrCast(pipe.set0_manager)));
+        pipe.set0_manager = null;
     }
 
-    if (pipe.set1_layout != null) {
-        c.vkDestroyDescriptorSetLayout(vs.context.device, pipe.set1_layout, null);
-        pipe.set1_layout = null;
-    }
-
-    if (pipe.descriptor_pool != null) {
-        c.vkDestroyDescriptorPool(vs.context.device, pipe.descriptor_pool, null);
-        pipe.descriptor_pool = null;
+    if (pipe.set1_manager != null) {
+        vk_desc_mgr.vk_descriptor_manager_destroy(pipe.set1_manager);
+        const mem_alloc = memory.cardinal_get_allocator_for_category(.RENDERER);
+        memory.cardinal_free(mem_alloc, @as(?*anyopaque, @ptrCast(pipe.set1_manager)));
+        pipe.set1_manager = null;
     }
 }
 
@@ -477,12 +482,24 @@ pub export fn vk_mesh_shader_draw(cmd_buffer: c.VkCommandBuffer, s: ?*types.Vulk
 
     c.vkCmdBindPipeline(cmd_buffer, c.VK_PIPELINE_BIND_POINT_GRAPHICS, pipe.pipeline);
 
-    if (data.descriptor_set != null) {
-        c.vkCmdBindDescriptorSets(cmd_buffer, c.VK_PIPELINE_BIND_POINT_GRAPHICS, pipe.pipeline_layout, 0, 1, &data.descriptor_set, 0, null);
+    var use_buffers_0 = false;
+    if (pipe.set0_manager) |mgr| {
+        use_buffers_0 = mgr.useDescriptorBuffers;
     }
 
-    if (pipe.global_descriptor_set != null) {
-        c.vkCmdBindDescriptorSets(cmd_buffer, c.VK_PIPELINE_BIND_POINT_GRAPHICS, pipe.pipeline_layout, 1, 1, &pipe.global_descriptor_set, 0, null);
+    if (use_buffers_0 or (data.descriptor_set != null and @intFromPtr(data.descriptor_set) != 0)) {
+        const sets = [_]c.VkDescriptorSet{data.descriptor_set};
+        vk_desc_mgr.vk_descriptor_manager_bind_sets(pipe.set0_manager, cmd_buffer, pipe.pipeline_layout, 0, 1, &sets, 0, null);
+    }
+
+    var use_buffers_1 = false;
+    if (pipe.set1_manager) |mgr| {
+        use_buffers_1 = mgr.useDescriptorBuffers;
+    }
+
+    if (use_buffers_1 or (pipe.global_descriptor_set != null and @intFromPtr(pipe.global_descriptor_set) != 0)) {
+        const sets = [_]c.VkDescriptorSet{pipe.global_descriptor_set};
+        vk_desc_mgr.vk_descriptor_manager_bind_sets(pipe.set1_manager, cmd_buffer, pipe.pipeline_layout, 1, 1, &sets, 0, null);
     }
 
     // PFN_vkCmdDrawMeshTasksEXT loading and calling
@@ -502,10 +519,12 @@ pub export fn vk_mesh_shader_destroy_draw_data(s: ?*types.VulkanState, draw_data
     const data = draw_data.?;
 
     // Free descriptor set
-    if (data.descriptor_set != null and vs.pipelines.mesh_shader_pipeline.descriptor_pool != null) {
-        // log.cardinal_log_debug("Freeing descriptor set {any} from pool {any}", .{data.descriptor_set, vs.pipelines.mesh_shader_pipeline.descriptor_pool});
-        _ = c.vkFreeDescriptorSets(vs.context.device, vs.pipelines.mesh_shader_pipeline.descriptor_pool, 1, &data.descriptor_set);
+    if (data.descriptor_set != null and vs.pipelines.mesh_shader_pipeline.set0_manager != null) {
+        // log.cardinal_log_debug("vk_mesh_shader_destroy_draw_data: Freeing descriptor set {any}", .{data.descriptor_set});
+        vk_desc_mgr.vk_descriptor_manager_free_set(vs.pipelines.mesh_shader_pipeline.set0_manager, data.descriptor_set);
         data.descriptor_set = null;
+    } else if (data.descriptor_set != null) {
+        // log.cardinal_log_debug("vk_mesh_shader_destroy_draw_data: Descriptor set {any} not freed because manager is null", .{data.descriptor_set});
     }
 
     if (data.vertex_buffer != null) {
@@ -656,6 +675,7 @@ pub export fn vk_mesh_shader_create_draw_data(s: ?*types.VulkanState, meshlets: 
         data.meshlet_buffer = meshletBuffer.handle;
         data.meshlet_memory = meshletBuffer.memory;
         data.meshlet_allocation = meshletBuffer.allocation;
+        data.meshlet_buffer_size = meshletBufferSize;
     } else {
         log.cardinal_log_error("Failed to create meshlet buffer", .{});
         return false;
@@ -667,6 +687,7 @@ pub export fn vk_mesh_shader_create_draw_data(s: ?*types.VulkanState, meshlets: 
         data.vertex_buffer = vertexBuffer.handle;
         data.vertex_memory = vertexBuffer.memory;
         data.vertex_allocation = vertexBuffer.allocation;
+        data.vertex_buffer_size = vertex_size;
     } else {
         log.cardinal_log_error("Failed to create vertex buffer for mesh shader", .{});
         vk_mesh_shader_destroy_draw_data(vs, data);
@@ -680,6 +701,7 @@ pub export fn vk_mesh_shader_create_draw_data(s: ?*types.VulkanState, meshlets: 
         data.primitive_buffer = primitiveBuffer.handle;
         data.primitive_memory = primitiveBuffer.memory;
         data.primitive_allocation = primitiveBuffer.allocation;
+        data.primitive_buffer_size = primitiveBufferSize;
     } else {
         log.cardinal_log_error("Failed to create primitive buffer", .{});
         vk_mesh_shader_destroy_draw_data(vs, data);
@@ -700,12 +722,14 @@ pub export fn vk_mesh_shader_create_draw_data(s: ?*types.VulkanState, meshlets: 
         .first_instance = 0,
     };
     data.draw_command_count = 1;
+    const drawCmdSize = @sizeOf(GpuDrawCommand);
 
     var drawCmdBuffer: buffer_mgr.VulkanBuffer = undefined;
-    if (buffer_mgr.vk_buffer_create_device_local(&drawCmdBuffer, vs.context.device, &vs.allocator, vs.commands.pools.?[0], vs.context.graphics_queue, &drawCmd, @sizeOf(GpuDrawCommand), c.VK_BUFFER_USAGE_STORAGE_BUFFER_BIT, vs)) {
+    if (buffer_mgr.vk_buffer_create_device_local(&drawCmdBuffer, vs.context.device, &vs.allocator, vs.commands.pools.?[0], vs.context.graphics_queue, &drawCmd, drawCmdSize, c.VK_BUFFER_USAGE_STORAGE_BUFFER_BIT, vs)) {
         data.draw_command_buffer = drawCmdBuffer.handle;
         data.draw_command_memory = drawCmdBuffer.memory;
         data.draw_command_allocation = drawCmdBuffer.allocation;
+        data.draw_command_buffer_size = drawCmdSize;
     } else {
         log.cardinal_log_error("Failed to create draw command buffer", .{});
         vk_mesh_shader_destroy_draw_data(vs, data);
@@ -726,6 +750,7 @@ pub export fn vk_mesh_shader_create_draw_data(s: ?*types.VulkanState, meshlets: 
         data.uniform_memory = ubo.memory;
         data.uniform_allocation = ubo.allocation;
         data.uniform_mapped = ubo.mapped;
+        data.uniform_buffer_size = uboSize;
 
         // Initialize UBO with zeroes
         if (ubo.mapped) |mapped| {
@@ -750,172 +775,57 @@ pub export fn vk_mesh_shader_update_descriptor_buffers(
     texture_count: u32,
 ) callconv(.c) bool {
     if (s == null or pipeline == null) return false;
-    const vs = s.?;
     const pipe = pipeline.?;
 
     // 1. Update Global Descriptor Set (Set 1) if needed
     if (pipe.global_descriptor_set == null) {
-        if (pipe.descriptor_pool == null) {
-            log.cardinal_log_error("Mesh shader descriptor pool is null", .{});
-            return false;
-        }
-        var allocInfo = std.mem.zeroes(c.VkDescriptorSetAllocateInfo);
-        allocInfo.sType = c.VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO;
-        allocInfo.descriptorPool = pipe.descriptor_pool;
-        allocInfo.descriptorSetCount = 1;
-        allocInfo.pSetLayouts = &pipe.set1_layout;
-
-        if (c.vkAllocateDescriptorSets(vs.context.device, &allocInfo, &pipe.global_descriptor_set) != c.VK_SUCCESS) {
+        if (!vk_desc_mgr.vk_descriptor_manager_allocate_sets(pipe.set1_manager, 1, @as([*]c.VkDescriptorSet, @ptrCast(&pipe.global_descriptor_set)))) {
             log.cardinal_log_error("Failed to allocate global descriptor set for mesh shader", .{});
             return false;
         }
     }
 
     // Update Set 1
-    {
-        var writes: [4]c.VkWriteDescriptorSet = undefined;
-        var w: u32 = 0;
+    if (lighting_buffer != null) {
+        _ = vk_desc_mgr.vk_descriptor_manager_update_buffer(pipe.set1_manager, pipe.global_descriptor_set, 1, lighting_buffer, 0, @sizeOf(types.PBRLightingBuffer));
+    }
 
-        var lightInfo = c.VkDescriptorBufferInfo{
-            .buffer = lighting_buffer,
-            .offset = 0,
-            .range = c.VK_WHOLE_SIZE,
-        };
-
-        var imageInfos: ?[*]c.VkDescriptorImageInfo = null;
-        if (texture_count > 0 and texture_views != null and samplers != null) {
-            const ptr = c.malloc(texture_count * @sizeOf(c.VkDescriptorImageInfo));
-            if (ptr) |p| {
-                imageInfos = @as([*]c.VkDescriptorImageInfo, @ptrCast(@alignCast(p)));
-                var i: u32 = 0;
-                while (i < texture_count) : (i += 1) {
-                    imageInfos.?[i].sampler = samplers.?[i];
-                    imageInfos.?[i].imageView = texture_views.?[i];
-                    imageInfos.?[i].imageLayout = c.VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
-                }
-            }
-        }
-        defer if (imageInfos) |ptr| c.free(ptr);
-
-        if (lighting_buffer != null) {
-            writes[w] = std.mem.zeroes(c.VkWriteDescriptorSet);
-            writes[w].sType = c.VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
-            writes[w].dstSet = pipe.global_descriptor_set;
-            writes[w].dstBinding = 1;
-            writes[w].descriptorType = c.VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
-            writes[w].descriptorCount = 1;
-            writes[w].pBufferInfo = &lightInfo;
-            w += 1;
-        }
-
-        if (texture_count > 0 and imageInfos != null) {
-            writes[w] = std.mem.zeroes(c.VkWriteDescriptorSet);
-            writes[w].sType = c.VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
-            writes[w].dstSet = pipe.global_descriptor_set;
-            writes[w].dstBinding = 3;
-            writes[w].descriptorType = c.VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
-            writes[w].descriptorCount = texture_count;
-            writes[w].pImageInfo = imageInfos;
-            w += 1;
-        }
-
-        if (w > 0) {
-            c.vkUpdateDescriptorSets(vs.context.device, w, &writes, 0, null);
-        }
+    if (texture_count > 0 and texture_views != null and samplers != null) {
+        _ = vk_desc_mgr.vk_descriptor_manager_update_textures_with_samplers(pipe.set1_manager, pipe.global_descriptor_set, 3, texture_views, samplers, c.VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, texture_count);
     }
 
     // 2. Allocate and Update Set 0 (Mesh Data)
     if (draw_data) |d| {
         // Need mutable access to draw_data to set descriptor_set
-        // But the input is const. The C code casts away const: (MeshShaderDrawData*)draw_data
         const mutable_draw_data = @as(*types.MeshShaderDrawData, @constCast(d));
 
         if (mutable_draw_data.descriptor_set == null) {
-            if (pipe.descriptor_pool == null) return false;
-
-            var allocInfo = std.mem.zeroes(c.VkDescriptorSetAllocateInfo);
-            allocInfo.sType = c.VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO;
-            allocInfo.descriptorPool = pipe.descriptor_pool;
-            allocInfo.descriptorSetCount = 1;
-            allocInfo.pSetLayouts = &pipe.set0_layout;
-
-            if (c.vkAllocateDescriptorSets(vs.context.device, &allocInfo, &mutable_draw_data.descriptor_set) != c.VK_SUCCESS) {
+            if (!vk_desc_mgr.vk_descriptor_manager_allocate_sets(pipe.set0_manager, 1, @as([*]c.VkDescriptorSet, @ptrCast(&mutable_draw_data.descriptor_set)))) {
                 log.cardinal_log_error("Failed to allocate mesh draw descriptor set", .{});
                 return false;
             }
         }
 
-        var bufferInfos: [6]c.VkDescriptorBufferInfo = undefined;
-        var writes: [6]c.VkWriteDescriptorSet = undefined;
-        var w: u32 = 0;
+        const set = mutable_draw_data.descriptor_set;
+        const mgr = pipe.set0_manager;
 
-        // 0: DrawCmd
-        bufferInfos[0] = .{ .buffer = d.draw_command_buffer, .offset = 0, .range = c.VK_WHOLE_SIZE };
-        writes[w] = std.mem.zeroes(c.VkWriteDescriptorSet);
-        writes[w].sType = c.VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
-        writes[w].dstSet = mutable_draw_data.descriptor_set;
-        writes[w].dstBinding = 0;
-        writes[w].descriptorType = c.VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
-        writes[w].descriptorCount = 1;
-        writes[w].pBufferInfo = &bufferInfos[0];
-        w += 1;
-
-        // 1: Meshlet
-        bufferInfos[1] = .{ .buffer = d.meshlet_buffer, .offset = 0, .range = c.VK_WHOLE_SIZE };
-        writes[w] = std.mem.zeroes(c.VkWriteDescriptorSet);
-        writes[w].sType = c.VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
-        writes[w].dstSet = mutable_draw_data.descriptor_set;
-        writes[w].dstBinding = 1;
-        writes[w].descriptorType = c.VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
-        writes[w].descriptorCount = 1;
-        writes[w].pBufferInfo = &bufferInfos[1];
-        w += 1;
-
-        // 2: Culling (Use uniform buffer placeholder)
-        bufferInfos[2] = .{ .buffer = d.uniform_buffer, .offset = 0, .range = c.VK_WHOLE_SIZE };
-        writes[w] = std.mem.zeroes(c.VkWriteDescriptorSet);
-        writes[w].sType = c.VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
-        writes[w].dstSet = mutable_draw_data.descriptor_set;
-        writes[w].dstBinding = 2;
-        writes[w].descriptorType = c.VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
-        writes[w].descriptorCount = 1;
-        writes[w].pBufferInfo = &bufferInfos[2];
-        w += 1;
-
-        // 3: Vertex
-        bufferInfos[3] = .{ .buffer = d.vertex_buffer, .offset = 0, .range = c.VK_WHOLE_SIZE };
-        writes[w] = std.mem.zeroes(c.VkWriteDescriptorSet);
-        writes[w].sType = c.VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
-        writes[w].dstSet = mutable_draw_data.descriptor_set;
-        writes[w].dstBinding = 3;
-        writes[w].descriptorType = c.VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
-        writes[w].descriptorCount = 1;
-        writes[w].pBufferInfo = &bufferInfos[3];
-        w += 1;
-
-        // 4: Primitive
-        bufferInfos[4] = .{ .buffer = d.primitive_buffer, .offset = 0, .range = c.VK_WHOLE_SIZE };
-        writes[w] = std.mem.zeroes(c.VkWriteDescriptorSet);
-        writes[w].sType = c.VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
-        writes[w].dstSet = mutable_draw_data.descriptor_set;
-        writes[w].dstBinding = 4;
-        writes[w].descriptorType = c.VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
-        writes[w].descriptorCount = 1;
-        writes[w].pBufferInfo = &bufferInfos[4];
-        w += 1;
-
-        // 5: Uniform
-        bufferInfos[5] = .{ .buffer = d.uniform_buffer, .offset = 0, .range = c.VK_WHOLE_SIZE };
-        writes[w] = std.mem.zeroes(c.VkWriteDescriptorSet);
-        writes[w].sType = c.VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
-        writes[w].dstSet = mutable_draw_data.descriptor_set;
-        writes[w].dstBinding = 5;
-        writes[w].descriptorType = c.VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
-        writes[w].descriptorCount = 1;
-        writes[w].pBufferInfo = &bufferInfos[5];
-        w += 1;
-
-        c.vkUpdateDescriptorSets(vs.context.device, w, &writes, 0, null);
+        // 0: DrawCmd (Storage Buffer)
+        _ = vk_desc_mgr.vk_descriptor_manager_update_buffer(mgr, set, 0, d.draw_command_buffer, 0, d.draw_command_buffer_size);
+        
+        // 1: Meshlet (Storage Buffer)
+        _ = vk_desc_mgr.vk_descriptor_manager_update_buffer(mgr, set, 1, d.meshlet_buffer, 0, d.meshlet_buffer_size);
+        
+        // 2: Culling (Uniform Buffer) -> d.uniform_buffer
+        _ = vk_desc_mgr.vk_descriptor_manager_update_buffer(mgr, set, 2, d.uniform_buffer, 0, d.uniform_buffer_size);
+        
+        // 3: Vertex (Storage Buffer)
+        _ = vk_desc_mgr.vk_descriptor_manager_update_buffer(mgr, set, 3, d.vertex_buffer, 0, d.vertex_buffer_size);
+        
+        // 4: Primitive (Storage Buffer)
+        _ = vk_desc_mgr.vk_descriptor_manager_update_buffer(mgr, set, 4, d.primitive_buffer, 0, d.primitive_buffer_size);
+        
+        // 5: Uniform (Uniform Buffer) -> d.uniform_buffer
+        _ = vk_desc_mgr.vk_descriptor_manager_update_buffer(mgr, set, 5, d.uniform_buffer, 0, d.uniform_buffer_size);
     }
 
     return true;

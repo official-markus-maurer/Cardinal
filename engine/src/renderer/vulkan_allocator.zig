@@ -51,7 +51,6 @@ pub export fn vk_allocator_init(alloc: ?*types.VulkanAllocator, instance: c.VkIn
 
     _ = bufReqKHR;
     _ = imgReqKHR;
-    _ = bufDevAddr;
 
     const allocator = alloc.?;
     allocator.physical_device = phys;
@@ -121,7 +120,15 @@ pub export fn vk_allocator_init(alloc: ?*types.VulkanAllocator, instance: c.VkIn
     g_vulkan_functions.vkGetDeviceImageMemoryRequirements = imgReq;
 
     // Additional functions if available
-    // vulkanFunctions.vkGetBufferDeviceAddress = bufDevAddr;
+    if (bufDevAddr != null) {
+        if (@hasField(c.VmaVulkanFunctions, "vkGetBufferDeviceAddress")) {
+            @field(g_vulkan_functions, "vkGetBufferDeviceAddress") = bufDevAddr;
+        } else if (@hasField(c.VmaVulkanFunctions, "vkGetBufferDeviceAddressKHR")) {
+            @field(g_vulkan_functions, "vkGetBufferDeviceAddressKHR") = bufDevAddr;
+        } else {
+              log.cardinal_log_debug("VmaVulkanFunctions missing vkGetBufferDeviceAddress field - VMA will load it internally if needed", .{});
+         }
+    }
 
     var allocatorInfo = std.mem.zeroes(c.VmaAllocatorCreateInfo);
     allocatorInfo.physicalDevice = phys;
@@ -134,9 +141,9 @@ pub export fn vk_allocator_init(alloc: ?*types.VulkanAllocator, instance: c.VkIn
         allocatorInfo.flags |= c.VMA_ALLOCATOR_CREATE_KHR_MAINTENANCE4_BIT;
     }
 
-    // if (bufDevAddr != null) {
-    //    allocatorInfo.flags |= c.VMA_ALLOCATOR_CREATE_BUFFER_DEVICE_ADDRESS_BIT;
-    // }
+    if (bufDevAddr != null) {
+        allocatorInfo.flags |= c.VMA_ALLOCATOR_CREATE_BUFFER_DEVICE_ADDRESS_BIT;
+    }
 
     var vma_alloc: c.VmaAllocator = null;
     const result = c.vmaCreateAllocator(&allocatorInfo, &vma_alloc);
@@ -207,19 +214,16 @@ pub export fn vk_allocator_allocate_image(alloc: ?*types.VulkanAllocator, image_
     return true;
 }
 
-pub export fn vk_allocator_allocate_buffer(alloc: ?*types.VulkanAllocator, buffer_ci: ?*const c.VkBufferCreateInfo, out_buffer: ?*c.VkBuffer, out_memory: ?*c.VkDeviceMemory, out_allocation: ?*c.VmaAllocation, required_props: c.VkMemoryPropertyFlags) callconv(.c) bool {
+pub export fn vk_allocator_allocate_buffer(alloc: ?*types.VulkanAllocator, buffer_ci: ?*const c.VkBufferCreateInfo, out_buffer: ?*c.VkBuffer, out_memory: ?*c.VkDeviceMemory, out_allocation: ?*c.VmaAllocation, required_props: c.VkMemoryPropertyFlags, map_immediately: bool, out_mapped_ptr: ?*?*anyopaque) callconv(.c) bool {
     if (alloc == null or buffer_ci == null or out_buffer == null or out_allocation == null) return false;
 
     var allocInfo = std.mem.zeroes(c.VmaAllocationCreateInfo);
     allocInfo.usage = get_vma_usage(required_props);
     allocInfo.flags = get_vma_flags(required_props);
-    if ((required_props & c.VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT) != 0) {
-        // allocInfo.flags |= c.VMA_ALLOCATION_CREATE_MAPPED_BIT;
-    }
 
     var allocInfoOut: c.VmaAllocationInfo = undefined;
 
-    log.cardinal_log_info("Calling vmaCreateBuffer: size={d}, usage={d}, flags={d}", .{ buffer_ci.?.size, buffer_ci.?.usage, allocInfo.flags });
+    // log.cardinal_log_info("Calling vmaCreateBuffer: size={d}, usage={d}, flags={d}", .{ buffer_ci.?.size, buffer_ci.?.usage, allocInfo.flags });
 
     const result = c.vmaCreateBuffer(alloc.?.handle, buffer_ci, &allocInfo, out_buffer, out_allocation, &allocInfoOut);
     if (result != c.VK_SUCCESS) {
@@ -235,10 +239,31 @@ pub export fn vk_allocator_allocate_buffer(alloc: ?*types.VulkanAllocator, buffe
 
     if (out_memory != null) {
         out_memory.?.* = allocInfoOut.deviceMemory;
-        log.cardinal_log_debug("vmaCreateBuffer returned memory handle: {any}", .{allocInfoOut.deviceMemory});
+        // log.cardinal_log_debug("vmaCreateBuffer returned memory handle: {any}", .{allocInfoOut.deviceMemory});
     }
 
-    log.cardinal_log_info("vk_allocator_allocate_buffer success, buffer: {any}", .{out_buffer.?.*});
+    if (map_immediately) {
+        if (out_mapped_ptr) |ptr| {
+             const res = c.vmaMapMemory(alloc.?.handle, out_allocation.?.*, ptr);
+             if (res != c.VK_SUCCESS) {
+                 log.cardinal_log_error("vmaMapMemory failed: {d}", .{res});
+                 vk_allocator_free_buffer(alloc, out_buffer.?.*, out_allocation.?.*);
+                 return false;
+             }
+        } else {
+             var dummy_ptr: ?*anyopaque = null;
+             const res = c.vmaMapMemory(alloc.?.handle, out_allocation.?.*, &dummy_ptr);
+             if (res != c.VK_SUCCESS) {
+                 log.cardinal_log_error("vmaMapMemory failed: {d}", .{res});
+                 vk_allocator_free_buffer(alloc, out_buffer.?.*, out_allocation.?.*);
+                 return false;
+             }
+        }
+    } else if (out_mapped_ptr != null) {
+        out_mapped_ptr.?.* = null;
+    }
+
+    // log.cardinal_log_info("vk_allocator_allocate_buffer success, buffer: {any}", .{out_buffer.?.*});
     return true;
 }
 

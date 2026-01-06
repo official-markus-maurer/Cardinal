@@ -322,6 +322,9 @@ pub const VulkanDescriptorManager = extern struct {
     bindingOffsetCount: u32,
     initialized: bool,
     vulkan_state: ?*VulkanState,
+    freeIndices: ?[*]u32,
+    freeCount: u32,
+    freeCapacity: u32,
 };
 
 pub const DescriptorBufferCreateInfo = extern struct {
@@ -349,6 +352,7 @@ pub const VulkanContext = extern struct {
     device: c.VkDevice,
     graphics_queue_family: u32,
     descriptor_buffer_uniform_buffer_size: c.VkDeviceSize,
+    descriptor_buffer_storage_buffer_size: c.VkDeviceSize,
     descriptor_buffer_combined_image_sampler_size: c.VkDeviceSize,
 
     vkGetDescriptorSetLayoutSizeEXT: c.PFN_vkGetDescriptorSetLayoutSizeEXT,
@@ -624,7 +628,18 @@ pub const BindlessTexturePool = extern struct {
     descriptor_layout: c.VkDescriptorSetLayout,
     descriptor_set: c.VkDescriptorSet,
 
-    default_sampler: c.VkSampler,
+    // Descriptor Buffer Support
+    use_descriptor_buffer: bool,
+    descriptor_buffer: VulkanBuffer,
+    descriptor_set_size: c.VkDeviceSize,
+            descriptor_offset: c.VkDeviceSize,
+            descriptor_size: c.VkDeviceSize,
+            descriptor_buffer_address: c.VkDeviceAddress,
+            vkGetDescriptorEXT: c.PFN_vkGetDescriptorEXT,
+            vkCmdBindDescriptorBuffersEXT: c.PFN_vkCmdBindDescriptorBuffersEXT,
+            vkCmdSetDescriptorBufferOffsetsEXT: c.PFN_vkCmdSetDescriptorBufferOffsetsEXT,
+
+            default_sampler: c.VkSampler,
 
     // Pending updates for flush
     pending_updates: ?[*]u32,
@@ -656,9 +671,8 @@ pub const MeshShaderPipelineConfig = extern struct {
 pub const MeshShaderPipeline = extern struct {
     pipeline: c.VkPipeline,
     pipeline_layout: c.VkPipelineLayout,
-    descriptor_pool: c.VkDescriptorPool,
-    set0_layout: c.VkDescriptorSetLayout,
-    set1_layout: c.VkDescriptorSetLayout,
+    set0_manager: ?*VulkanDescriptorManager,
+    set1_manager: ?*VulkanDescriptorManager,
     global_descriptor_set: c.VkDescriptorSet,
     has_task_shader: bool,
     max_meshlets_per_workgroup: u32,
@@ -671,18 +685,23 @@ pub const MeshShaderDrawData = extern struct {
     vertex_buffer: c.VkBuffer,
     vertex_memory: c.VkDeviceMemory,
     vertex_allocation: c.VmaAllocation,
+    vertex_buffer_size: c.VkDeviceSize,
     meshlet_buffer: c.VkBuffer,
     meshlet_memory: c.VkDeviceMemory,
     meshlet_allocation: c.VmaAllocation,
+    meshlet_buffer_size: c.VkDeviceSize,
     primitive_buffer: c.VkBuffer,
     primitive_memory: c.VkDeviceMemory,
     primitive_allocation: c.VmaAllocation,
+    primitive_buffer_size: c.VkDeviceSize,
     draw_command_buffer: c.VkBuffer,
     draw_command_memory: c.VkDeviceMemory,
     draw_command_allocation: c.VmaAllocation,
+    draw_command_buffer_size: c.VkDeviceSize,
     uniform_buffer: c.VkBuffer,
-    uniform_memory: c.VkDeviceMemory, // Added likely missing memory field
+    uniform_memory: c.VkDeviceMemory,
     uniform_allocation: c.VmaAllocation,
+    uniform_buffer_size: c.VkDeviceSize,
     meshlet_count: u32,
     uniform_mapped: ?*anyopaque,
     draw_command_count: u32,
@@ -716,8 +735,7 @@ pub const GpuMesh = extern struct {
 pub const SkyboxPipeline = extern struct {
     pipeline: c.VkPipeline,
     pipelineLayout: c.VkPipelineLayout,
-    descriptorSetLayout: c.VkDescriptorSetLayout,
-    descriptorPool: c.VkDescriptorPool,
+    descriptorManager: ?*VulkanDescriptorManager,
     descriptorSet: c.VkDescriptorSet,
     texture: VulkanManagedTexture,
     initialized: bool,
@@ -725,7 +743,7 @@ pub const SkyboxPipeline = extern struct {
 
 pub const VulkanPipelines = extern struct {
     mesh_shader_pipeline: MeshShaderPipeline,
-    simple_descriptor_layout: c.VkDescriptorSetLayout,
+    simple_descriptor_manager: ?*VulkanDescriptorManager,
     pbr_pipeline: VulkanPBRPipeline,
     skybox_pipeline: SkyboxPipeline,
     use_pbr_pipeline: bool,
@@ -736,7 +754,6 @@ pub const VulkanPipelines = extern struct {
     simple_uniform_buffer: c.VkBuffer,
     simple_uniform_buffer_memory: c.VkDeviceMemory,
     simple_uniform_buffer_allocation: c.VmaAllocation,
-    simple_descriptor_pool: c.VkDescriptorPool,
     simple_descriptor_set: c.VkDescriptorSet,
     uv_pipeline: c.VkPipeline,
     uv_pipeline_layout: c.VkPipelineLayout,
@@ -770,8 +787,7 @@ pub const VulkanPBRPipeline = extern struct {
     // Shadow Mapping
     shadowPipeline: c.VkPipeline,
     shadowPipelineLayout: c.VkPipelineLayout,
-    shadowDescriptorSetLayout: c.VkDescriptorSetLayout,
-    shadowDescriptorPool: c.VkDescriptorPool,
+    shadowDescriptorManager: ?*VulkanDescriptorManager,
     shadowDescriptorSet: c.VkDescriptorSet,
     shadowMapImage: c.VkImage,
     shadowMapMemory: c.VkDeviceMemory,

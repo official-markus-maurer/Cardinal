@@ -24,7 +24,6 @@
         ]
     },
     "rendering": {
-        "color_formats": [],
-        "depth_format": "undefined"
+        "color_formats": []
     }
 }

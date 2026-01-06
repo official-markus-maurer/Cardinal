@@ -2,6 +2,7 @@ const std = @import("std");
 const builtin = @import("builtin");
 const log = @import("../core/log.zig");
 const buffer_mgr = @import("vulkan_buffer_manager.zig");
+const descriptor_mgr = @import("vulkan_descriptor_manager.zig");
 const types = @import("vulkan_types.zig");
 const vk_allocator = @import("vulkan_allocator.zig");
 const scene = @import("../assets/scene.zig");
@@ -18,20 +19,39 @@ const SimpleUniformBufferObject = extern struct {
     proj: [16]f32,
 };
 
-fn create_simple_descriptor_layout(s: *types.VulkanState) bool {
-    const device = wrappers.Device.init(s.context.device);
-
-    var uboLayoutBinding = std.mem.zeroes(c.VkDescriptorSetLayoutBinding);
-    uboLayoutBinding.binding = 0;
-    uboLayoutBinding.descriptorType = c.VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
-    uboLayoutBinding.descriptorCount = 1;
-    uboLayoutBinding.stageFlags = c.VK_SHADER_STAGE_VERTEX_BIT;
-    uboLayoutBinding.pImmutableSamplers = null;
-
-    s.pipelines.simple_descriptor_layout = device.createDescriptorSetLayout(&.{uboLayoutBinding}) catch |err| {
-        log.cardinal_log_error("Failed to create simple descriptor set layout: {}", .{err});
+fn create_simple_descriptor_resources(s: *types.VulkanState) bool {
+    const memory = @import("../core/memory.zig");
+    // Create Descriptor Manager
+    const mem_alloc = memory.cardinal_get_allocator_for_category(.RENDERER);
+    const ptr = memory.cardinal_alloc(mem_alloc, @sizeOf(types.VulkanDescriptorManager));
+    if (ptr == null) {
+        log.cardinal_log_error("Failed to allocate memory for simple descriptor manager", .{});
         return false;
-    };
+    }
+    s.pipelines.simple_descriptor_manager = @as(*types.VulkanDescriptorManager, @ptrCast(@alignCast(ptr)));
+
+    var desc_builder = descriptor_mgr.DescriptorBuilder.init(std.heap.page_allocator);
+    defer desc_builder.deinit();
+
+    // Binding 0: Uniform Buffer
+    desc_builder.add_binding(0, c.VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, 1, c.VK_SHADER_STAGE_VERTEX_BIT) catch return false;
+
+    if (!desc_builder.build(s.pipelines.simple_descriptor_manager.?, s.context.device, @constCast(&s.allocator), s, 1, true)) {
+        log.cardinal_log_error("Failed to build simple descriptor manager", .{});
+        return false;
+    }
+
+    // Allocate Set
+    if (!descriptor_mgr.vk_descriptor_manager_allocate_sets(s.pipelines.simple_descriptor_manager, 1, @as([*]c.VkDescriptorSet, @ptrCast(&s.pipelines.simple_descriptor_set)))) {
+        log.cardinal_log_error("Failed to allocate simple descriptor set", .{});
+        return false;
+    }
+
+    // Update Set
+    if (!descriptor_mgr.vk_descriptor_manager_update_buffer(s.pipelines.simple_descriptor_manager, s.pipelines.simple_descriptor_set, 0, s.pipelines.simple_uniform_buffer, 0, @sizeOf(SimpleUniformBufferObject))) {
+         log.cardinal_log_error("Failed to update simple UBO descriptor", .{});
+         return false;
+    }
 
     return true;
 }
@@ -65,45 +85,7 @@ fn create_simple_uniform_buffer(s: *types.VulkanState) bool {
     return true;
 }
 
-fn create_simple_descriptor_pool(s: *types.VulkanState) bool {
-    const device = wrappers.Device.init(s.context.device);
 
-    var poolSize = std.mem.zeroes(c.VkDescriptorPoolSize);
-    poolSize.type = c.VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
-    poolSize.descriptorCount = 1;
-
-    s.pipelines.simple_descriptor_pool = device.createDescriptorPool(&.{poolSize}, 1) catch |err| {
-        log.cardinal_log_error("Failed to create simple descriptor pool: {}", .{err});
-        return false;
-    };
-
-    var sets = [_]c.VkDescriptorSet{null};
-    var layouts = [_]c.VkDescriptorSetLayout{s.pipelines.simple_descriptor_layout};
-    
-    device.allocateDescriptorSets(s.pipelines.simple_descriptor_pool, &layouts, &sets) catch |err| {
-        log.cardinal_log_error("Failed to allocate simple descriptor set: {}", .{err});
-        return false;
-    };
-    s.pipelines.simple_descriptor_set = sets[0];
-
-    var bufferInfo = std.mem.zeroes(c.VkDescriptorBufferInfo);
-    bufferInfo.buffer = s.pipelines.simple_uniform_buffer;
-    bufferInfo.offset = 0;
-    bufferInfo.range = @sizeOf(SimpleUniformBufferObject);
-
-    var descriptorWrite = std.mem.zeroes(c.VkWriteDescriptorSet);
-    descriptorWrite.sType = c.VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
-    descriptorWrite.dstSet = s.pipelines.simple_descriptor_set;
-    descriptorWrite.dstBinding = 0;
-    descriptorWrite.dstArrayElement = 0;
-    descriptorWrite.descriptorType = c.VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
-    descriptorWrite.descriptorCount = 1;
-    descriptorWrite.pBufferInfo = &bufferInfo;
-
-    device.updateDescriptorSets(&.{descriptorWrite}, &.{});
-
-    return true;
-}
 
 fn create_simple_pipeline_from_json(s: *types.VulkanState, json_path: []const u8, pipeline: *c.VkPipeline, pipelineLayout: *c.VkPipelineLayout, pipelineCache: c.VkPipelineCache) bool {
     var builder = vk_pso.PipelineBuilder.init(std.heap.page_allocator, s.context.device, pipelineCache);
@@ -130,13 +112,20 @@ fn create_simple_pipeline_from_json(s: *types.VulkanState, json_path: []const u8
     var pipelineLayoutInfo = std.mem.zeroes(c.VkPipelineLayoutCreateInfo);
     pipelineLayoutInfo.sType = c.VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO;
     pipelineLayoutInfo.setLayoutCount = 1;
-    pipelineLayoutInfo.pSetLayouts = &s.pipelines.simple_descriptor_layout;
+    const layout = descriptor_mgr.vk_descriptor_manager_get_layout(s.pipelines.simple_descriptor_manager);
+    pipelineLayoutInfo.pSetLayouts = &layout;
     pipelineLayoutInfo.pushConstantRangeCount = 1;
     pipelineLayoutInfo.pPushConstantRanges = &pushConstantRange;
 
     if (c.vkCreatePipelineLayout(s.context.device, &pipelineLayoutInfo, null, pipelineLayout) != c.VK_SUCCESS) {
         log.cardinal_log_error("Failed to create simple pipeline layout!", .{});
         return false;
+    }
+
+    if (s.pipelines.simple_descriptor_manager) |mgr| {
+        if (mgr.useDescriptorBuffers) {
+            descriptor.flags |= c.VK_PIPELINE_CREATE_DESCRIPTOR_BUFFER_BIT_EXT;
+        }
     }
 
     builder.build(descriptor, pipelineLayout.*, pipeline) catch |err| {
@@ -151,18 +140,13 @@ pub export fn vk_create_simple_pipelines(s: ?*types.VulkanState, pipelineCache: 
     if (s == null) return false;
     const vs = s.?;
 
-    // Create shared descriptor layout
-    if (!create_simple_descriptor_layout(vs)) {
-        return false;
-    }
-
     // Create shared uniform buffer
     if (!create_simple_uniform_buffer(vs)) {
         return false;
     }
 
-    // Create descriptor pool and sets
-    if (!create_simple_descriptor_pool(vs)) {
+    // Create shared descriptor layout and update descriptors
+    if (!create_simple_descriptor_resources(vs)) {
         return false;
     }
 
@@ -197,21 +181,12 @@ pub export fn vk_destroy_simple_pipelines(s: ?*types.VulkanState) callconv(.c) v
         vs.pipelines.simple_uniform_buffer_memory = null;
     }
 
-    if (vs.pipelines.simple_descriptor_pool != null) {
-        // Wait for device to be idle before resetting descriptor pool
-        const waitResult = c.vkDeviceWaitIdle(vs.context.device);
-        if (waitResult != c.VK_SUCCESS) {
-            log.cardinal_log_warn("vkDeviceWaitIdle failed before resetting simple descriptor pool: {d}", .{waitResult});
-        }
-
-        _ = c.vkResetDescriptorPool(vs.context.device, vs.pipelines.simple_descriptor_pool, 0);
-        c.vkDestroyDescriptorPool(vs.context.device, vs.pipelines.simple_descriptor_pool, null);
-        vs.pipelines.simple_descriptor_pool = null;
-    }
-
-    if (vs.pipelines.simple_descriptor_layout != null) {
-        c.vkDestroyDescriptorSetLayout(vs.context.device, vs.pipelines.simple_descriptor_layout, null);
-        vs.pipelines.simple_descriptor_layout = null;
+    if (vs.pipelines.simple_descriptor_manager != null) {
+        const memory = @import("../core/memory.zig");
+        const mem_alloc = memory.cardinal_get_allocator_for_category(.RENDERER);
+        descriptor_mgr.vk_descriptor_manager_destroy(@ptrCast(vs.pipelines.simple_descriptor_manager));
+        memory.cardinal_free(mem_alloc, vs.pipelines.simple_descriptor_manager);
+        vs.pipelines.simple_descriptor_manager = null;
     }
 
     if (vs.pipelines.uv_pipeline != null) {
@@ -264,7 +239,8 @@ pub export fn vk_render_simple(s: ?*types.VulkanState, commandBufferHandle: c.Vk
     cmd.bindPipeline(c.VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline);
     
     var descriptorSets = [_]c.VkDescriptorSet{vs.pipelines.simple_descriptor_set};
-    cmd.bindDescriptorSets(c.VK_PIPELINE_BIND_POINT_GRAPHICS, pipelineLayout, 0, &descriptorSets, &.{});
+    // Use manager bind function to handle descriptor buffers transparently
+    descriptor_mgr.vk_descriptor_manager_bind_sets(vs.pipelines.simple_descriptor_manager, commandBufferHandle, pipelineLayout, 0, 1, &descriptorSets, 0, null);
 
     var vertexBuffers = [_]c.VkBuffer{pipe.vertexBuffer};
     var offsets = [_]c.VkDeviceSize{0};

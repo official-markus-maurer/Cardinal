@@ -765,6 +765,7 @@ pub export fn vk_create_device(s: ?*types.VulkanState) callconv(.c) bool {
 
             c.vkGetPhysicalDeviceProperties2(vs.context.physical_device, &descriptorBufferProps2);
             vs.context.descriptor_buffer_uniform_buffer_size = desc_buffer_props.uniformBufferDescriptorSize;
+            vs.context.descriptor_buffer_storage_buffer_size = desc_buffer_props.storageBufferDescriptorSize;
             vs.context.descriptor_buffer_combined_image_sampler_size = desc_buffer_props.combinedImageSamplerDescriptorSize;
         } else {
             vs.context.supports_descriptor_buffer = false;

@@ -244,6 +244,14 @@ fn check_render_feasibility(s: *types.VulkanState) bool {
 }
 
 fn handle_pending_recreation(renderer: ?*types.CardinalRenderer, s: *types.VulkanState) bool {
+    // Check device loss first
+    if (s.recovery.device_lost) {
+        if (s.recovery.attempt_count < s.recovery.max_attempts) {
+            _ = vk_recover_from_device_loss(s);
+        }
+        return false;
+    }
+
     if (s.swapchain.window_resize_pending) {
         log.cardinal_log_info("[SWAPCHAIN] Frame {d}: Window resize pending", .{s.sync.current_frame});
         s.swapchain.recreation_pending = true;
@@ -276,16 +284,28 @@ fn handle_pending_recreation(renderer: ?*types.CardinalRenderer, s: *types.Vulka
         log.cardinal_log_warn("[SWAPCHAIN] Clearing pending recreation after failures", .{});
     }
 
-    if (s.recovery.device_lost and s.recovery.attempt_count < s.recovery.max_attempts) {
-        _ = vk_recover_from_device_loss(s);
-    }
     return false;
 }
 
 fn wait_for_fence(s: *types.VulkanState) bool {
     if (s.sync.in_flight_fences == null) {
-        log.cardinal_log_error("[SYNC] Frame {d}: In-flight fences array is null", .{s.sync.current_frame});
-        return false;
+        log.cardinal_log_warn("[SYNC] Frame {d}: In-flight fences array is null, attempting lazy initialization", .{s.sync.current_frame});
+        
+        var max_frames = s.sync.max_frames_in_flight;
+        if (max_frames == 0) max_frames = 3;
+        
+        if (s.context.device == null) {
+             log.cardinal_log_error("[SYNC] Device is null, cannot initialize sync manager", .{});
+             return false;
+        }
+
+        if (!vk_sync_manager.vulkan_sync_manager_init(&s.sync, s.context.device, s.context.graphics_queue, max_frames)) {
+             log.cardinal_log_error("[SYNC] Lazy initialization failed", .{});
+             return false;
+        }
+        
+        // Update max frames in case it was 0
+        s.sync.max_frames_in_flight = max_frames;
     }
     
     var current_fence = s.sync.in_flight_fences.?[s.sync.current_frame];

@@ -1,4 +1,6 @@
 const std = @import("std");
+const memory = @import("../core/memory.zig");
+const descriptor_mgr = @import("vulkan_descriptor_manager.zig");
 const c = @import("vulkan_c.zig").c;
 const types = @import("vulkan_types.zig");
 const log = @import("../core/log.zig");
@@ -20,25 +22,32 @@ pub const SkyboxPushConstants = extern struct {
     proj: math.Mat4,
 };
 
-pub fn vk_skybox_pipeline_init(pipeline: *types.SkyboxPipeline, device: c.VkDevice, format: c.VkFormat, depthFormat: c.VkFormat, allocator: *types.VulkanAllocator) bool {
-    _ = allocator;
+pub fn vk_skybox_pipeline_init(pipeline: *types.SkyboxPipeline, device: c.VkDevice, format: c.VkFormat, depthFormat: c.VkFormat, allocator: *types.VulkanAllocator, vulkan_state: ?*types.VulkanState) bool {
     pipeline.initialized = false;
     
-    // 1. Create Descriptor Set Layout
-    var binding = std.mem.zeroes(c.VkDescriptorSetLayoutBinding);
-    binding.binding = 0;
-    binding.descriptorType = c.VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
-    binding.descriptorCount = 1;
-    binding.stageFlags = c.VK_SHADER_STAGE_FRAGMENT_BIT;
-    binding.pImmutableSamplers = null;
+    // Create Descriptor Manager
+    const mem_alloc = memory.cardinal_get_allocator_for_category(.RENDERER);
+    const ptr = memory.cardinal_alloc(mem_alloc, @sizeOf(types.VulkanDescriptorManager));
+    if (ptr == null) {
+        skybox_log.err("Failed to allocate memory for skybox descriptor manager", .{});
+        return false;
+    }
+    pipeline.descriptorManager = @as(*types.VulkanDescriptorManager, @ptrCast(@alignCast(ptr)));
 
-    var layoutInfo = std.mem.zeroes(c.VkDescriptorSetLayoutCreateInfo);
-    layoutInfo.sType = c.VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO;
-    layoutInfo.bindingCount = 1;
-    layoutInfo.pBindings = &binding;
+    var desc_builder = descriptor_mgr.DescriptorBuilder.init(std.heap.page_allocator);
+    defer desc_builder.deinit();
 
-    if (c.vkCreateDescriptorSetLayout(device, &layoutInfo, null, &pipeline.descriptorSetLayout) != c.VK_SUCCESS) {
-        skybox_log.err("Failed to create descriptor set layout", .{});
+    // Binding 0: Combined Image Sampler
+    desc_builder.add_binding(0, c.VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1, c.VK_SHADER_STAGE_FRAGMENT_BIT) catch return false;
+
+    if (!desc_builder.build(pipeline.descriptorManager.?, device, allocator, vulkan_state, 1, true)) {
+        skybox_log.err("Failed to build skybox descriptor manager", .{});
+        return false;
+    }
+
+    // Allocate Descriptor Set
+    if (!descriptor_mgr.vk_descriptor_manager_allocate_sets(pipeline.descriptorManager, 1, @as([*]c.VkDescriptorSet, @ptrCast(&pipeline.descriptorSet)))) {
+        skybox_log.err("Failed to allocate descriptor set", .{});
         return false;
     }
 
@@ -51,7 +60,9 @@ pub fn vk_skybox_pipeline_init(pipeline: *types.SkyboxPipeline, device: c.VkDevi
     var pipelineLayoutInfo = std.mem.zeroes(c.VkPipelineLayoutCreateInfo);
     pipelineLayoutInfo.sType = c.VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO;
     pipelineLayoutInfo.setLayoutCount = 1;
-    pipelineLayoutInfo.pSetLayouts = &pipeline.descriptorSetLayout;
+    // Get layout from manager
+    const layout = descriptor_mgr.vk_descriptor_manager_get_layout(pipeline.descriptorManager);
+    pipelineLayoutInfo.pSetLayouts = &layout;
     pipelineLayoutInfo.pushConstantRangeCount = 1;
     pipelineLayoutInfo.pPushConstantRanges = &pushConstantRange;
 
@@ -76,38 +87,16 @@ pub fn vk_skybox_pipeline_init(pipeline: *types.SkyboxPipeline, device: c.VkDevi
     descriptor.rendering.color_formats = &.{format};
     descriptor.rendering.depth_format = depthFormat;
 
+    if (pipeline.descriptorManager) |mgr| {
+        if (mgr.useDescriptorBuffers) {
+            descriptor.flags |= c.VK_PIPELINE_CREATE_DESCRIPTOR_BUFFER_BIT_EXT;
+        }
+    }
+
     builder.build(descriptor, pipeline.pipelineLayout, &pipeline.pipeline) catch |err| {
         skybox_log.err("Failed to build skybox pipeline: {s}", .{@errorName(err)});
         return false;
     };
-
-    // Create Descriptor Pool
-    var poolSize = std.mem.zeroes(c.VkDescriptorPoolSize);
-    poolSize.type = c.VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
-    poolSize.descriptorCount = 1;
-
-    var poolInfo = std.mem.zeroes(c.VkDescriptorPoolCreateInfo);
-    poolInfo.sType = c.VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO;
-    poolInfo.poolSizeCount = 1;
-    poolInfo.pPoolSizes = &poolSize;
-    poolInfo.maxSets = 1;
-
-    if (c.vkCreateDescriptorPool(device, &poolInfo, null, &pipeline.descriptorPool) != c.VK_SUCCESS) {
-        skybox_log.err("Failed to create descriptor pool", .{});
-        return false;
-    }
-
-    // Allocate Descriptor Set
-    var allocInfo = std.mem.zeroes(c.VkDescriptorSetAllocateInfo);
-    allocInfo.sType = c.VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO;
-    allocInfo.descriptorPool = pipeline.descriptorPool;
-    allocInfo.descriptorSetCount = 1;
-    allocInfo.pSetLayouts = &pipeline.descriptorSetLayout;
-
-    if (c.vkAllocateDescriptorSets(device, &allocInfo, &pipeline.descriptorSet) != c.VK_SUCCESS) {
-        skybox_log.err("Failed to allocate descriptor set", .{});
-        return false;
-    }
 
     pipeline.initialized = true;
     return true;
@@ -122,10 +111,14 @@ pub fn vk_skybox_pipeline_destroy(pipeline: *types.SkyboxPipeline, device: c.VkD
         c.vkDestroySampler(device, pipeline.texture.sampler, null);
     }
 
-    c.vkDestroyDescriptorPool(device, pipeline.descriptorPool, null);
+    if (pipeline.descriptorManager != null) {
+        const mem_alloc = memory.cardinal_get_allocator_for_category(.RENDERER);
+        descriptor_mgr.vk_descriptor_manager_destroy(@ptrCast(pipeline.descriptorManager));
+        memory.cardinal_free(mem_alloc, pipeline.descriptorManager);
+        pipeline.descriptorManager = null;
+    }
     c.vkDestroyPipeline(device, pipeline.pipeline, null);
     c.vkDestroyPipelineLayout(device, pipeline.pipelineLayout, null);
-    c.vkDestroyDescriptorSetLayout(device, pipeline.descriptorSetLayout, null);
 
     pipeline.initialized = false;
 }
@@ -184,21 +177,10 @@ pub fn vk_skybox_load_from_data(pipeline: *types.SkyboxPipeline, device: c.VkDev
     pipeline.texture.format = if (textureData.is_hdr) c.VK_FORMAT_R32G32B32A32_SFLOAT else c.VK_FORMAT_R8G8B8A8_SRGB;
 
     // Update Descriptor Set
-    var imageInfo = std.mem.zeroes(c.VkDescriptorImageInfo);
-    imageInfo.imageLayout = c.VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
-    imageInfo.imageView = pipeline.texture.view;
-    imageInfo.sampler = pipeline.texture.sampler;
-
-    var descriptorWrite = std.mem.zeroes(c.VkWriteDescriptorSet);
-    descriptorWrite.sType = c.VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
-    descriptorWrite.dstSet = pipeline.descriptorSet;
-    descriptorWrite.dstBinding = 0;
-    descriptorWrite.dstArrayElement = 0;
-    descriptorWrite.descriptorType = c.VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
-    descriptorWrite.descriptorCount = 1;
-    descriptorWrite.pImageInfo = &imageInfo;
-
-    c.vkUpdateDescriptorSets(device, 1, &descriptorWrite, 0, null);
+    if (!descriptor_mgr.vk_descriptor_manager_update_textures(pipeline.descriptorManager, pipeline.descriptorSet, 0, @ptrCast(&pipeline.texture.view), pipeline.texture.sampler, c.VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, 1)) {
+        skybox_log.err("Failed to update skybox descriptor", .{});
+        return false;
+    }
 
     skybox_log.info("Skybox uploaded successfully", .{});
     return true;
@@ -256,8 +238,20 @@ pub fn render(pipeline: *types.SkyboxPipeline, cmd: c.VkCommandBuffer, view: mat
     c.vkCmdBindPipeline(cmd, c.VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline.pipeline);
 
     // Bind Descriptor Set
+    var use_buffers = false;
+    if (pipeline.descriptorManager) |mgr| {
+        use_buffers = mgr.useDescriptorBuffers;
+    }
+
+    if (!use_buffers and (pipeline.descriptorSet == null or @intFromPtr(pipeline.descriptorSet) == 0)) {
+        return;
+    }
     const sets = [_]c.VkDescriptorSet{pipeline.descriptorSet};
-    c.vkCmdBindDescriptorSets(cmd, c.VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline.pipelineLayout, 0, 1, &sets, 0, null);
+    if (pipeline.descriptorManager) |mgr| {
+        descriptor_mgr.vk_descriptor_manager_bind_sets(mgr, cmd, pipeline.pipelineLayout, 0, 1, &sets, 0, null);
+    } else {
+        c.vkCmdBindDescriptorSets(cmd, c.VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline.pipelineLayout, 0, 1, &sets, 0, null);
+    }
 
     // Push Constants
     var pc: SkyboxPushConstants = undefined;

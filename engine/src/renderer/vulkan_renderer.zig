@@ -230,8 +230,7 @@ fn init_simple_pipelines_helper(s: *types.VulkanState) void {
     s.pipelines.uv_pipeline_layout = null;
     s.pipelines.wireframe_pipeline = null;
     s.pipelines.wireframe_pipeline_layout = null;
-    s.pipelines.simple_descriptor_layout = null;
-    s.pipelines.simple_descriptor_pool = null;
+    s.pipelines.simple_descriptor_manager = null;
     s.pipelines.simple_descriptor_set = null;
     s.pipelines.simple_uniform_buffer = null;
     s.pipelines.simple_uniform_buffer_memory = null;
@@ -246,7 +245,7 @@ fn init_simple_pipelines_helper(s: *types.VulkanState) void {
 
 fn init_skybox_pipeline_helper(s: *types.VulkanState) void {
     s.pipelines.use_skybox_pipeline = false;
-    if (vk_skybox.vk_skybox_pipeline_init(@ptrCast(&s.pipelines.skybox_pipeline), s.context.device, s.swapchain.format, s.swapchain.depth_format, @ptrCast(&s.allocator))) {
+    if (vk_skybox.vk_skybox_pipeline_init(@ptrCast(&s.pipelines.skybox_pipeline), s.context.device, s.swapchain.format, s.swapchain.depth_format, @ptrCast(&s.allocator), @ptrCast(s))) {
         s.pipelines.use_skybox_pipeline = true;
         log.cardinal_log_info("renderer_create: Skybox pipeline", .{});
     } else {
@@ -649,11 +648,10 @@ pub export fn cardinal_renderer_destroy(renderer: ?*types.CardinalRenderer) call
     }
 
     // Destroy mesh shader pipeline BEFORE destroying allocator
-    if (s.pipelines.use_mesh_shader_pipeline) {
-        log.cardinal_log_debug("[DESTROY] Destroying mesh shader pipeline", .{});
-        vk_mesh_shader.vk_mesh_shader_cleanup(@ptrCast(s));
-        s.pipelines.use_mesh_shader_pipeline = false;
-    }
+    // Always cleanup mesh shader resources if they were initialized (checked inside cleanup)
+    log.cardinal_log_debug("[DESTROY] Destroying mesh shader pipeline", .{});
+    vk_mesh_shader.vk_mesh_shader_cleanup(@ptrCast(s));
+    s.pipelines.use_mesh_shader_pipeline = false;
 
     log.cardinal_log_debug("[DESTROY] Destroying base pipeline resources", .{});
     vk_pipeline.vk_destroy_pipeline(@ptrCast(s));

@@ -183,7 +183,7 @@ pub const LogicOp = enum {
 
 pub const ShaderStageDescriptor = struct {
     path: []const u8,
-    stage: c.VkShaderStageFlagBits,
+    stage: c.VkShaderStageFlagBits = c.VK_SHADER_STAGE_ALL,
     entry_point: []const u8 = "main",
     // Store handle as u64 to avoid std.json issues with opaque pointers
     module_handle: ?u64 = null,
@@ -277,7 +277,7 @@ pub const RenderingDescriptor = struct {
 pub const PipelineDescriptor = struct {
     name: []const u8,
     vertex_shader: ?ShaderStageDescriptor = null,
-    fragment_shader: ShaderStageDescriptor,
+    fragment_shader: ?ShaderStageDescriptor = null,
     mesh_shader: ?ShaderStageDescriptor = null,
     task_shader: ?ShaderStageDescriptor = null,
     vertex_input: VertexInputDescriptor = .{},
@@ -291,6 +291,7 @@ pub const PipelineDescriptor = struct {
         c.VK_DYNAMIC_STATE_SCISSOR,
     },
     rendering: RenderingDescriptor,
+    flags: c.VkPipelineCreateFlags = 0,
 };
 
 // --- Builder ---
@@ -374,8 +375,9 @@ pub const PipelineBuilder = struct {
             try load_shader(self, ts, c.VK_SHADER_STAGE_TASK_BIT_EXT, &shader_stages, &modules_to_destroy);
         }
 
-        // TODO: Support optional fragment shaders (e.g. for depth-only passes)
-        try load_shader(self, descriptor.fragment_shader, c.VK_SHADER_STAGE_FRAGMENT_BIT, &shader_stages, &modules_to_destroy);
+        if (descriptor.fragment_shader) |fs| {
+            try load_shader(self, fs, c.VK_SHADER_STAGE_FRAGMENT_BIT, &shader_stages, &modules_to_destroy);
+        }
 
         // 2. Vertex Input
         var vertex_input_info = std.mem.zeroes(c.VkPipelineVertexInputStateCreateInfo);
@@ -569,7 +571,7 @@ pub const PipelineBuilder = struct {
             .renderPass = null,
             .subpass = 0,
             .pNext = &rendering_info,
-            .flags = 0,
+            .flags = descriptor.flags,
             .basePipelineHandle = null,
             .basePipelineIndex = -1,
         };

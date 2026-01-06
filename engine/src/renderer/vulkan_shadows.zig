@@ -9,6 +9,7 @@ const animation = @import("../core/animation.zig");
 const wrappers = @import("vulkan_wrappers.zig");
 const vk_pso = @import("vulkan_pso.zig");
 const material_utils = @import("util/vulkan_material_utils.zig");
+const descriptor_mgr = @import("vulkan_descriptor_manager.zig");
 
 const SHADOW_MAP_SIZE = 2048;
 const SHADOW_CASCADE_COUNT = 4;
@@ -239,10 +240,6 @@ pub fn vk_shadow_render(s: *types.VulkanState, cmd: c.VkCommandBuffer) void {
         centerLS.x = @floor(centerLS.x / worldUnitsPerTexel) * worldUnitsPerTexel;
         centerLS.y = @floor(centerLS.y / worldUnitsPerTexel) * worldUnitsPerTexel;
         
-        // Update LightView to look at the SNAPPED center?
-        // Or just define Ortho bounds relative to the Base LightView.
-        // If we use Base LightView as the View Matrix, then 'centerLS' is the center of our projection volume in View Space.
-        
         const lightView = baseLightView;
         
         const minX = centerLS.x - radius;
@@ -323,6 +320,12 @@ pub fn vk_shadow_render(s: *types.VulkanState, cmd: c.VkCommandBuffer) void {
         }
     }
     
+    // Check descriptors upfront
+    if (pipe.shadowDescriptorSet == null and pipe.shadowDescriptorManager == null) {
+        log.cardinal_log_error("Shadow: Shadow descriptor set is null (and no manager)", .{});
+        return;
+    }
+
     var j_layer: u32 = 0;
     while (j_layer < SHADOW_CASCADE_COUNT) : (j_layer += 1) {
         // Begin Rendering
@@ -335,6 +338,19 @@ pub fn vk_shadow_render(s: *types.VulkanState, cmd: c.VkCommandBuffer) void {
         var depthAttachment = std.mem.zeroes(c.VkRenderingAttachmentInfo);
         depthAttachment.sType = c.VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO;
         depthAttachment.imageView = pipe.shadowCascadeViews[j_layer];
+        
+        // Transition to attachment optimal BEFORE rendering
+        {
+            var barrier = std.mem.zeroes(c.VkImageMemoryBarrier2);
+            barrier.sType = c.VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2;
+            barrier.srcStageMask = c.VK_PIPELINE_STAGE_2_EARLY_FRAGMENT_TESTS_BIT | c.VK_PIPELINE_STAGE_2_LATE_FRAGMENT_TESTS_BIT;
+            barrier.srcAccessMask = c.VK_ACCESS_2_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT;
+            barrier.dstStageMask = c.VK_PIPELINE_STAGE_2_EARLY_FRAGMENT_TESTS_BIT | c.VK_PIPELINE_STAGE_2_LATE_FRAGMENT_TESTS_BIT;
+            barrier.dstAccessMask = c.VK_ACCESS_2_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT;
+            barrier.oldLayout = c.VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
+            barrier.newLayout = c.VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
+        }
+
         depthAttachment.imageLayout = c.VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
         depthAttachment.loadOp = c.VK_ATTACHMENT_LOAD_OP_CLEAR;
         depthAttachment.storeOp = c.VK_ATTACHMENT_STORE_OP_STORE;
@@ -366,8 +382,21 @@ pub fn vk_shadow_render(s: *types.VulkanState, cmd: c.VkCommandBuffer) void {
         c.vkCmdBindPipeline(cmd, c.VK_PIPELINE_BIND_POINT_GRAPHICS, pipe.shadowPipeline);
         
         // Bind Descriptor Set
-        const descriptorSets = [_]c.VkDescriptorSet{pipe.shadowDescriptorSet};
-        c.vkCmdBindDescriptorSets(cmd, c.VK_PIPELINE_BIND_POINT_GRAPHICS, pipe.shadowPipelineLayout, 0, 1, &descriptorSets, 0, null);
+        if (pipe.shadowDescriptorManager) |mgr| {
+            var sets: ?[*]const c.VkDescriptorSet = null;
+            var descriptorSets = [_]c.VkDescriptorSet{pipe.shadowDescriptorSet};
+            
+            const use_buffers = mgr.useDescriptorBuffers;
+            if (use_buffers or (pipe.shadowDescriptorSet != null and @intFromPtr(pipe.shadowDescriptorSet) != 0)) {
+                sets = &descriptorSets;
+            }
+            descriptor_mgr.vk_descriptor_manager_bind_sets(mgr, cmd, pipe.shadowPipelineLayout, 0, 1, sets, 0, null);
+        } else {
+            if (pipe.shadowDescriptorSet != null and @intFromPtr(pipe.shadowDescriptorSet) != 0) {
+                const descriptorSets = [_]c.VkDescriptorSet{pipe.shadowDescriptorSet};
+                c.vkCmdBindDescriptorSets(cmd, c.VK_PIPELINE_BIND_POINT_GRAPHICS, pipe.shadowPipelineLayout, 0, 1, &descriptorSets, 0, null);
+            }
+        }
         
         // Bind Vertex/Index Buffers
         const vertexBuffers = [_]c.VkBuffer{pipe.vertexBuffer};
@@ -389,7 +418,7 @@ pub fn vk_shadow_render(s: *types.VulkanState, cmd: c.VkCommandBuffer) void {
             
             // Skip transparent objects for shadow map?
             // For now, render everything to ensure we see shadows.
-            // Ideally we need a separate shader for alpha-tested shadows.
+            // TODO: Ideally we need a separate shader for alpha-tested shadows.
             
             // var is_opaque = true;
             // if (mesh.material_index < scn.material_count) {
@@ -491,6 +520,27 @@ pub fn vk_shadow_render(s: *types.VulkanState, cmd: c.VkCommandBuffer) void {
         
         if (s.context.vkCmdPipelineBarrier2) |func| {
             func(cmd, &dep);
+        } else {
+            var barrier_v1 = std.mem.zeroes(c.VkImageMemoryBarrier);
+            barrier_v1.sType = c.VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
+            barrier_v1.srcAccessMask = c.VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT;
+            barrier_v1.dstAccessMask = c.VK_ACCESS_SHADER_READ_BIT;
+            barrier_v1.oldLayout = c.VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
+            barrier_v1.newLayout = c.VK_IMAGE_LAYOUT_DEPTH_STENCIL_READ_ONLY_OPTIMAL;
+            barrier_v1.image = pipe.shadowMapImage;
+            barrier_v1.subresourceRange = barrier.subresourceRange;
+            barrier_v1.srcQueueFamilyIndex = c.VK_QUEUE_FAMILY_IGNORED;
+            barrier_v1.dstQueueFamilyIndex = c.VK_QUEUE_FAMILY_IGNORED;
+
+            c.vkCmdPipelineBarrier(
+                cmd,
+                c.VK_PIPELINE_STAGE_LATE_FRAGMENT_TESTS_BIT,
+                c.VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT,
+                0,
+                0, null,
+                0, null,
+                1, &barrier_v1
+            );
         }
     }
 }
