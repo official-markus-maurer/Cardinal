@@ -310,9 +310,7 @@ pub export fn vk_mesh_shader_create_pipeline(s: ?*types.VulkanState, config: ?*c
 
     var defaultMatBuffer: types.VulkanBuffer = undefined;
     if (buffer_mgr.vk_buffer_create_device_local(@ptrCast(&defaultMatBuffer), vs.context.device, &vs.allocator, vs.commands.pools.?[0], vs.context.graphics_queue, &defaultMat, @sizeOf(DefaultMaterialData), c.VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT, vs)) {
-        pipe.default_material_buffer = defaultMatBuffer.handle;
-        pipe.default_material_memory = defaultMatBuffer.memory;
-        pipe.default_material_allocation = defaultMatBuffer.allocation;
+
     } else {
         log.cardinal_log_error("Failed to create default material buffer", .{});
         c.vkDestroyDescriptorPool(vs.context.device, pipe.descriptor_pool, null);
@@ -468,13 +466,6 @@ pub export fn vk_mesh_shader_destroy_pipeline(s: ?*types.VulkanState, pipeline: 
     if (pipe.descriptor_pool != null) {
         c.vkDestroyDescriptorPool(vs.context.device, pipe.descriptor_pool, null);
         pipe.descriptor_pool = null;
-    }
-
-    if (pipe.default_material_buffer != null) {
-        vk_allocator.vk_allocator_free_buffer(@ptrCast(&vs.allocator), pipe.default_material_buffer, pipe.default_material_allocation);
-        pipe.default_material_buffer = null;
-        pipe.default_material_memory = null;
-        pipe.default_material_allocation = null;
     }
 }
 
@@ -753,7 +744,6 @@ pub export fn vk_mesh_shader_update_descriptor_buffers(
     s: ?*types.VulkanState,
     pipeline: ?*types.MeshShaderPipeline,
     draw_data: ?*const types.MeshShaderDrawData,
-    material_buffer: c.VkBuffer,
     lighting_buffer: c.VkBuffer,
     texture_views: ?[*]c.VkImageView,
     samplers: ?[*]c.VkSampler,
@@ -786,16 +776,6 @@ pub export fn vk_mesh_shader_update_descriptor_buffers(
         var writes: [4]c.VkWriteDescriptorSet = undefined;
         var w: u32 = 0;
 
-        var defaultMatInfo = c.VkDescriptorBufferInfo{
-            .buffer = pipe.default_material_buffer,
-            .offset = 0,
-            .range = c.VK_WHOLE_SIZE,
-        };
-        var matInfo = c.VkDescriptorBufferInfo{
-            .buffer = material_buffer,
-            .offset = 0,
-            .range = c.VK_WHOLE_SIZE,
-        };
         var lightInfo = c.VkDescriptorBufferInfo{
             .buffer = lighting_buffer,
             .offset = 0,
@@ -817,17 +797,6 @@ pub export fn vk_mesh_shader_update_descriptor_buffers(
         }
         defer if (imageInfos) |ptr| c.free(ptr);
 
-        if (pipe.default_material_buffer != null) {
-            writes[w] = std.mem.zeroes(c.VkWriteDescriptorSet);
-            writes[w].sType = c.VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
-            writes[w].dstSet = pipe.global_descriptor_set;
-            writes[w].dstBinding = 0;
-            writes[w].descriptorType = c.VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
-            writes[w].descriptorCount = 1;
-            writes[w].pBufferInfo = &defaultMatInfo;
-            w += 1;
-        }
-
         if (lighting_buffer != null) {
             writes[w] = std.mem.zeroes(c.VkWriteDescriptorSet);
             writes[w].sType = c.VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
@@ -836,17 +805,6 @@ pub export fn vk_mesh_shader_update_descriptor_buffers(
             writes[w].descriptorType = c.VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
             writes[w].descriptorCount = 1;
             writes[w].pBufferInfo = &lightInfo;
-            w += 1;
-        }
-
-        if (material_buffer != null) {
-            writes[w] = std.mem.zeroes(c.VkWriteDescriptorSet);
-            writes[w].sType = c.VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
-            writes[w].dstSet = pipe.global_descriptor_set;
-            writes[w].dstBinding = 2;
-            writes[w].descriptorType = c.VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
-            writes[w].descriptorCount = 1;
-            writes[w].pBufferInfo = &matInfo;
             w += 1;
         }
 
@@ -1000,7 +958,8 @@ pub export fn vk_mesh_shader_record_frame(s: ?*types.VulkanState, cmd: c.VkComma
                     }
 
                     // Update descriptors
-                    const material_buffer = if (vs.pipelines.use_pbr_pipeline) vs.pipelines.pbr_pipeline.materialBuffer else null;
+                    // const material_buffer = if (vs.pipelines.use_pbr_pipeline) vs.pipelines.pbr_pipeline.materialBuffer else null;
+                    // const material_buffer: c.VkBuffer = null; // Removed from pipeline
                     const lighting_buffer = if (vs.pipelines.use_pbr_pipeline) vs.pipelines.pbr_pipeline.lightingBuffer else null;
 
                     var texture_views: ?[*]c.VkImageView = null;
@@ -1032,7 +991,7 @@ pub export fn vk_mesh_shader_record_frame(s: ?*types.VulkanState, cmd: c.VkComma
                         if (samplers) |ptr| c.free(@as(?*anyopaque, @ptrCast(ptr)));
                     }
 
-                    if (vk_mesh_shader_update_descriptor_buffers(vs, &vs.pipelines.mesh_shader_pipeline, &draw_data, material_buffer, lighting_buffer, texture_views, samplers, texture_count)) {
+                    if (vk_mesh_shader_update_descriptor_buffers(vs, &vs.pipelines.mesh_shader_pipeline, &draw_data, lighting_buffer, texture_views, samplers, texture_count)) {
                         vk_mesh_shader_draw(cmd, vs, &vs.pipelines.mesh_shader_pipeline, &draw_data);
                     }
 

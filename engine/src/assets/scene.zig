@@ -104,8 +104,6 @@ pub const CardinalMaterial = extern struct {
     metallic_roughness_transform: CardinalTextureTransform,
     ao_transform: CardinalTextureTransform,
     emissive_transform: CardinalTextureTransform,
-
-    ref_resource: ?*ref_counting.CardinalRefCountedResource,
 };
 
 pub const CardinalLight = extern struct {
@@ -396,10 +394,6 @@ pub export fn cardinal_scene_destroy(scene: ?*CardinalScene) void {
 
     // Destroy materials
     if (s.materials) |mats| {
-        var i: u32 = 0;
-        while (i < s.material_count) : (i += 1) {
-            if (mats[i].ref_resource) |r| ref_counting.cardinal_ref_release(r);
-        }
         memory.cardinal_free(allocator, @ptrCast(mats));
     }
 

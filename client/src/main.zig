@@ -63,7 +63,6 @@ pub fn main() !u8 {
     // Initialize asset caches
     _ = texture_loader.texture_cache_initialize(1000);
     _ = mesh_loader.mesh_cache_initialize(1000);
-    _ = material_loader.material_cache_initialize(1000);
 
     log.cardinal_log_info("Multi-threaded engine initialized successfully", .{});
 
@@ -90,7 +89,6 @@ pub fn main() !u8 {
     vulkan_renderer.cardinal_renderer_enable_pbr(&renderer, true);
 
     // Load Skybox
-    // Note: STB Image does not support .exr files. Please use .hdr files for skyboxes.
     // const skybox_path = "C:\\Users\\admin\\Documents\\Cardinal\\assets\\skybox\\kloofendal_48d_partly_cloudy_puresky_16k.exr";
     // if (!vulkan_renderer.cardinal_renderer_set_skybox(&renderer, skybox_path)) {
     //    log.cardinal_log_error("Failed to set skybox: {s}", .{skybox_path});
@@ -112,7 +110,6 @@ pub fn main() !u8 {
 
     texture_loader.texture_cache_shutdown_system();
     mesh_loader.mesh_cache_shutdown_system();
-    material_loader.material_cache_shutdown_system();
 
     async_loader.cardinal_async_loader_shutdown();
     ref_counting.cardinal_ref_counting_shutdown();

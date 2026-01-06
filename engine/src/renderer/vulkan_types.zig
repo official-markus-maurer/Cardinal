@@ -659,9 +659,6 @@ pub const MeshShaderPipeline = extern struct {
     descriptor_pool: c.VkDescriptorPool,
     set0_layout: c.VkDescriptorSetLayout,
     set1_layout: c.VkDescriptorSetLayout,
-    default_material_buffer: c.VkBuffer,
-    default_material_memory: c.VkDeviceMemory,
-    default_material_allocation: c.VmaAllocation,
     global_descriptor_set: c.VkDescriptorSet,
     has_task_shader: bool,
     max_meshlets_per_workgroup: u32,
@@ -765,11 +762,6 @@ pub const VulkanPBRPipeline = extern struct {
     uniformBufferAllocation: c.VmaAllocation,
     uniformBufferMapped: ?*anyopaque,
 
-    materialBuffer: c.VkBuffer,
-    materialBufferMemory: c.VkDeviceMemory,
-    materialBufferAllocation: c.VmaAllocation,
-    materialBufferMapped: ?*anyopaque,
-
     lightingBuffer: c.VkBuffer,
     lightingBufferMemory: c.VkDeviceMemory,
     lightingBufferAllocation: c.VmaAllocation,
@@ -841,6 +833,9 @@ pub const VulkanState = extern struct {
     ui_record_callback: ?*const fn (c.VkCommandBuffer) callconv(.c) void,
     render_graph: ?*anyopaque,
     current_image_index: u32,
+    
+    // Material System
+    material_system: ?*anyopaque, // Pointer to MaterialSystem (opaque to avoid circular deps)
 };
 
 // Secondary Command Context (from texture manager usage)

@@ -118,10 +118,6 @@ pub export fn vulkan_resource_manager_destroy_pipelines(manager: ?*VulkanResourc
             vulkan_resource_manager_destroy_buffer(manager, pbr.uniformBuffer, pbr.uniformBufferAllocation);
             pbr.uniformBuffer = null;
         }
-        if (pbr.materialBuffer != null) {
-            vulkan_resource_manager_destroy_buffer(manager, pbr.materialBuffer, pbr.materialBufferAllocation);
-            pbr.materialBuffer = null;
-        }
         if (pbr.lightingBuffer != null) {
             vulkan_resource_manager_destroy_buffer(manager, pbr.lightingBuffer, pbr.lightingBufferAllocation);
             pbr.lightingBuffer = null;

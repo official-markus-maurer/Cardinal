@@ -14,7 +14,7 @@ extern fn texture_data_free(data: ?*anyopaque) callconv(.c) void;
 
 extern fn cardinal_scene_load(file_path: [*:0]const u8, scene: ?*scene.CardinalScene) callconv(.c) bool;
 
-extern fn material_load_with_ref_counting(material_data: ?*const scene.CardinalMaterial, out_material: ?*scene.CardinalMaterial) callconv(.c) ?*ref_counting.CardinalRefCountedResource;
+// material_load_with_ref_counting removed - legacy system
 extern fn material_data_free(material: ?*scene.CardinalMaterial) callconv(.c) void;
 
 // --- Enums and Structs ---
@@ -204,32 +204,17 @@ fn execute_scene_load_task(task: *CardinalAsyncTask) bool {
 fn execute_material_load_task(task: *CardinalAsyncTask) bool {
     if (task.custom_data == null) return false;
 
-    async_log.debug("Loading material with reference counting", .{});
+    async_log.debug("Loading material", .{});
 
-    const source_material = @as(*const scene.CardinalMaterial, @ptrCast(@alignCast(task.custom_data)));
+    // Modern POD system: The material data is already in custom_data (copied from source).
+    // We just pass it through as the result.
+    // We transfer ownership of the allocated memory from custom_data to result_data.
+    
+    task.result_data = task.custom_data;
+    task.result_size = @sizeOf(scene.CardinalMaterial);
+    task.custom_data = null; // Clear custom_data so we don't double-free or confuse ownership
 
-    // Allocate memory for material copy (managed by C code usually, but here we do it)
-    const allocator = memory.cardinal_get_allocator_for_category(.ASSETS);
-    const material_ptr = memory.cardinal_alloc(allocator, @sizeOf(scene.CardinalMaterial));
-    if (material_ptr == null) return false;
-
-    const material = @as(*scene.CardinalMaterial, @ptrCast(@alignCast(material_ptr)));
-    material.* = source_material.*;
-
-    var out_material: scene.CardinalMaterial = undefined;
-    const ref_resource = material_load_with_ref_counting(material, &out_material);
-
-    if (ref_resource == null) {
-        memory.cardinal_free(allocator, material_ptr);
-        return false;
-    }
-
-    memory.cardinal_free(allocator, material_ptr);
-
-    task.result_data = ref_resource;
-    task.result_size = @sizeOf(ref_counting.CardinalRefCountedResource);
-
-    async_log.debug("Successfully loaded material with reference counting", .{});
+    async_log.debug("Successfully loaded material", .{});
     return true;
 }
 
@@ -642,6 +627,9 @@ pub export fn cardinal_async_free_task(task: ?*CardinalAsyncTask) callconv(.c) v
             if (t.type == .SCENE_LOAD) {
                 const scene_ptr = @as(*scene.CardinalScene, @ptrCast(@alignCast(data)));
                 memory.cardinal_free(allocator, scene_ptr);
+            } else if (t.type == .MATERIAL_LOAD) {
+                const mat_ptr = @as(*scene.CardinalMaterial, @ptrCast(@alignCast(data)));
+                memory.cardinal_free(allocator, mat_ptr);
             }
         }
 
@@ -695,15 +683,13 @@ pub export fn cardinal_async_get_material_result(task: ?*CardinalAsyncTask, out_
         return null;
     }
 
-    const ref_resource = @as(?*ref_counting.CardinalRefCountedResource, @ptrCast(@alignCast(task.?.result_data)));
-    if (ref_resource == null) return null;
-
-    const material = @as(?*scene.CardinalMaterial, @ptrCast(@alignCast(ref_resource.?.resource)));
-    if (material) |mat| {
+    // Modern system: result_data is *CardinalMaterial (POD), not RefCountedResource
+    const material_ptr = @as(?*scene.CardinalMaterial, @ptrCast(@alignCast(task.?.result_data)));
+    if (material_ptr) |mat| {
         out_material.?.* = mat.*;
     }
 
-    return ref_resource;
+    return null; // No ref resource to return
 }
 
 pub export fn cardinal_async_get_mesh_result(task: ?*CardinalAsyncTask, out_mesh: ?*scene.CardinalMesh) callconv(.c) ?*ref_counting.CardinalRefCountedResource {

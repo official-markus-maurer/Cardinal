@@ -26,7 +26,6 @@ const vk_buffer_utils = @import("util/vulkan_buffer_utils.zig");
 const vk_texture_utils = @import("util/vulkan_texture_utils.zig");
 const vk_barrier_validation = @import("vulkan_barrier_validation.zig");
 const ref_counting = @import("../core/ref_counting.zig");
-const material_ref_counting = @import("../assets/material_ref_counting.zig");
 const asset_manager = @import("../assets/asset_manager.zig");
 const transform = @import("../core/transform.zig");
 const render_graph = @import("render_graph.zig");
@@ -113,14 +112,6 @@ fn init_ref_counting() bool {
         renderer_log.debug("Reference counting system already initialized or failed to initialize", .{});
     }
     renderer_log.info("renderer_create: ref_counting", .{});
-
-    // Initialize material reference counting
-    if (!material_ref_counting.cardinal_material_ref_init()) {
-        renderer_log.err("cardinal_material_ref_counting_init failed", .{});
-        ref_counting.cardinal_ref_counting_shutdown();
-        return false;
-    }
-    renderer_log.info("renderer_create: material_ref_counting", .{});
 
     // Initialize unified asset manager
     asset_manager.init() catch {
@@ -348,6 +339,18 @@ pub export fn cardinal_renderer_create(out_renderer: ?*types.CardinalRenderer, w
     win.?.resize_callback = vk_handle_window_resize;
     win.?.resize_user_data = s;
 
+    // Initialize Material System
+    const mat_sys_ptr = memory.cardinal_alloc(mem_alloc, @sizeOf(@import("vulkan_material_system.zig").MaterialSystem));
+    if (mat_sys_ptr) |ptr| {
+        const mat_sys = @as(*@import("vulkan_material_system.zig").MaterialSystem, @ptrCast(@alignCast(ptr)));
+        mat_sys.* = @import("vulkan_material_system.zig").MaterialSystem.init(std.heap.c_allocator);
+        s.material_system = ptr;
+        log.cardinal_log_info("Material system initialized", .{});
+    } else {
+        log.cardinal_log_error("Failed to allocate material system", .{});
+        return false;
+    }
+
     if (!init_vulkan_core(s, win))
         return false;
 
@@ -370,7 +373,6 @@ pub export fn cardinal_renderer_create(out_renderer: ?*types.CardinalRenderer, w
 
     if (!vk_swapchain.vk_create_swapchain(@ptrCast(@alignCast(s)))) {
         log.cardinal_log_error("vk_create_swapchain failed", .{});
-        material_ref_counting.cardinal_material_ref_shutdown();
         ref_counting.cardinal_ref_counting_shutdown();
         return false;
     }
@@ -619,7 +621,6 @@ pub export fn cardinal_renderer_destroy(renderer: ?*types.CardinalRenderer) call
     }
 
     // Shutdown reference counting systems
-    material_ref_counting.cardinal_material_ref_shutdown();
 
     // Shutdown barrier validation system
     vk_barrier_validation.cardinal_barrier_validation_shutdown();
@@ -668,6 +669,16 @@ pub export fn cardinal_renderer_destroy(renderer: ?*types.CardinalRenderer) call
         const mem_alloc = memory.cardinal_get_allocator_for_category(.RENDERER);
         memory.cardinal_free(mem_alloc, rg);
         s.render_graph = null;
+    }
+
+    // Destroy Material System
+    if (s.material_system) |ms_ptr| {
+        log.cardinal_log_debug("[DESTROY] Destroying Material System", .{});
+        const mat_sys = @as(*@import("vulkan_material_system.zig").MaterialSystem, @ptrCast(@alignCast(ms_ptr)));
+        mat_sys.deinit();
+        const mem_alloc = memory.cardinal_get_allocator_for_category(.RENDERER);
+        memory.cardinal_free(mem_alloc, ms_ptr);
+        s.material_system = null;
     }
 
     // Shutdown VMA allocator before destroying device

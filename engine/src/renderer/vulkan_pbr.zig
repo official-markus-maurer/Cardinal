@@ -182,20 +182,6 @@ fn create_pbr_uniform_buffers(pipeline: *types.VulkanPBRPipeline, device: c.VkDe
     pipeline.uniformBufferAllocation = uboBuffer.allocation;
     pipeline.uniformBufferMapped = uboBuffer.mapped;
 
-    // Material
-    var matInfo = std.mem.zeroes(buffer_mgr.VulkanBufferCreateInfo);
-    matInfo.size = @sizeOf(types.PBRMaterialProperties);
-    matInfo.usage = c.VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT;
-    matInfo.properties = c.VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | c.VK_MEMORY_PROPERTY_HOST_COHERENT_BIT;
-    matInfo.persistentlyMapped = true;
-
-    var matBuffer: buffer_mgr.VulkanBuffer = undefined;
-    if (!buffer_mgr.vk_buffer_create(&matBuffer, device, allocator, &matInfo)) return false;
-    pipeline.materialBuffer = matBuffer.handle;
-    pipeline.materialBufferMemory = matBuffer.memory;
-    pipeline.materialBufferAllocation = matBuffer.allocation;
-    pipeline.materialBufferMapped = matBuffer.mapped;
-
     // Lighting
     var lightInfo = std.mem.zeroes(buffer_mgr.VulkanBufferCreateInfo);
     lightInfo.size = @sizeOf(types.PBRLightingBuffer);
@@ -240,26 +226,6 @@ fn create_pbr_uniform_buffers(pipeline: *types.VulkanPBRPipeline, device: c.VkDe
 }
 
 fn initialize_pbr_defaults(pipeline: *types.VulkanPBRPipeline) void {
-    var defaultMaterial = std.mem.zeroes(types.PBRMaterialProperties);
-    defaultMaterial.albedoFactor[0] = 0.8;
-    defaultMaterial.albedoFactor[1] = 0.8;
-    defaultMaterial.albedoFactor[2] = 0.8;
-    defaultMaterial.metallicFactor = 0.0;
-    defaultMaterial.roughnessFactor = 0.5;
-    defaultMaterial.emissiveFactor[0] = 0.0;
-    defaultMaterial.emissiveFactor[1] = 0.0;
-    defaultMaterial.emissiveFactor[2] = 0.0;
-    defaultMaterial.normalScale = 1.0;
-    defaultMaterial.aoStrength = 1.0;
-    defaultMaterial.albedoTextureIndex = 0;
-    defaultMaterial.normalTextureIndex = 0;
-    defaultMaterial.metallicRoughnessTextureIndex = 0;
-    defaultMaterial.aoTextureIndex = 0;
-    defaultMaterial.emissiveTextureIndex = 0;
-    defaultMaterial.supportsDescriptorIndexing = 1;
-
-    @memcpy(@as([*]u8, @ptrCast(pipeline.materialBufferMapped))[0..@sizeOf(types.PBRMaterialProperties)], @as([*]const u8, @ptrCast(&defaultMaterial))[0..@sizeOf(types.PBRMaterialProperties)]);
-
     var defaultLighting = std.mem.zeroes(types.PBRLightingBuffer);
     defaultLighting.count = 1;
     defaultLighting.lights[0].lightDirection[0] = -0.5;
@@ -959,14 +925,6 @@ pub export fn vk_pbr_pipeline_destroy(pipeline: ?*types.VulkanPBRPipeline, devic
             pipe.uniformBufferMapped = null;
         }
         vk_allocator.vk_allocator_free_buffer(alloc, pipe.uniformBuffer, pipe.uniformBufferAllocation);
-    }
-
-    if (pipe.materialBuffer != null or pipe.materialBufferMemory != null) {
-        if (pipe.materialBufferMapped != null) {
-            vk_allocator.vk_allocator_unmap_memory(alloc, pipe.materialBufferAllocation);
-            pipe.materialBufferMapped = null;
-        }
-        vk_allocator.vk_allocator_free_buffer(alloc, pipe.materialBuffer, pipe.materialBufferAllocation);
     }
 
     if (pipe.lightingBuffer != null or pipe.lightingBufferMemory != null) {

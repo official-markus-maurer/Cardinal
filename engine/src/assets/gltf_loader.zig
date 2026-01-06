@@ -1,7 +1,7 @@
 const std = @import("std");
 const scene = @import("scene.zig");
 const texture_loader = @import("texture_loader.zig");
-const material_ref_counting = @import("material_ref_counting.zig");
+const material_loader = @import("material_loader.zig");
 const ref_counting = @import("../core/ref_counting.zig");
 const animation = @import("../core/animation.zig");
 const transform_math = @import("../core/transform.zig");
@@ -1080,13 +1080,10 @@ pub export fn cardinal_gltf_load_scene(path: [*:0]const u8, out_scene: *scene.Ca
             }
 
             var temp_material: scene.CardinalMaterial = undefined;
-            const material_ref = material_ref_counting.cardinal_material_load_with_ref_counting(card_mat, &temp_material);
-            if (material_ref) |ref| {
-                card_mat.* = temp_material;
-                card_mat.ref_resource = ref;
-            } else {
-                card_mat.ref_resource = null;
-            }
+            temp_material = card_mat.*;
+            // No ref counting or deduplication - just use the material as is
+            card_mat.* = temp_material;
+            
             material_count += 1;
         }
     }

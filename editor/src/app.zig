@@ -130,7 +130,6 @@ pub const EditorApp = struct {
 
         _ = texture_loader.texture_cache_initialize(self.config.cache_size);
         _ = mesh_loader.mesh_cache_initialize(self.config.cache_size);
-        _ = material_loader.material_cache_initialize(self.config.cache_size);
         self.caches_initialized = true;
 
         log.cardinal_log_info("Multi-threaded asset caches initialized successfully", .{});
@@ -246,7 +245,7 @@ pub const EditorApp = struct {
 
         // Shutdown caches to release held references before renderer/ref-counting shutdown
         if (self.caches_initialized) {
-            material_loader.material_cache_shutdown_system();
+            // material_cache_shutdown_system removed - legacy system
             mesh_loader.mesh_cache_shutdown_system();
             texture_loader.texture_cache_shutdown_system();
             self.caches_initialized = false;

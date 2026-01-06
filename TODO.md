@@ -41,7 +41,7 @@ This document outlines the roadmap for the Cardinal Engine, focusing on robustne
 - [ ] **Bindless Architecture**: Standardize on the existing `VK_EXT_descriptor_buffer` implementation in `vulkan_descriptor_manager.zig`.
 
 ### Lighting & Materials
-- [ ] **Material System**: Decouple materials from specific pipelines. Create a generic material system.
+- [x] **Material System**: Decouple materials from specific pipelines. Create a generic material system.
 - [ ] **IBL**: Implement Environment Maps, Irradiance Maps, and Prefiltered Specular maps.
 - [ ] **Advanced Shadows**: Cascade Shadow Maps (CSM) refinement and Soft Shadows (PCF/PCSS).
 - [ ] **Emissive Strength**: Support `KHR_materials_emissive_strength`.

@@ -346,17 +346,6 @@ fn rebuild_combined_scene(manager: *CardinalModelManager) void {
                 if (dst_material.metallic_roughness_texture.is_valid()) dst_material.metallic_roughness_texture.index += texture_offset;
                 if (dst_material.ao_texture.is_valid()) dst_material.ao_texture.index += texture_offset;
                 if (dst_material.emissive_texture.is_valid()) dst_material.emissive_texture.index += texture_offset;
-
-                // Acquire reference
-                if (src_material.ref_resource) |res| {
-                    if (res.identifier) |id| {
-                        dst_material.ref_resource = ref_counting.cardinal_ref_acquire(id);
-                    } else {
-                        dst_material.ref_resource = null;
-                    }
-                } else {
-                    dst_material.ref_resource = null;
-                }
             }
         }
 

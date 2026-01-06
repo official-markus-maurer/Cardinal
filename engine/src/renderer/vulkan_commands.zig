@@ -728,7 +728,6 @@ pub export fn vk_prepare_mesh_shader_rendering(s: ?*types.VulkanState) callconv(
         return;
     }
 
-    const material_buffer = if (vs.pipelines.use_pbr_pipeline) vs.pipelines.pbr_pipeline.materialBuffer else null;
     const lighting_buffer = if (vs.pipelines.use_pbr_pipeline) vs.pipelines.pbr_pipeline.lightingBuffer else null;
 
     var texture_views: ?[*]c.VkImageView = null;
@@ -763,7 +762,7 @@ pub export fn vk_prepare_mesh_shader_rendering(s: ?*types.VulkanState) callconv(
         }
     }
 
-    if (!vk_mesh_shader.vk_mesh_shader_update_descriptor_buffers(@ptrCast(vs), &vs.pipelines.mesh_shader_pipeline, null, material_buffer, lighting_buffer, texture_views, samplers, texture_count)) {
+    if (!vk_mesh_shader.vk_mesh_shader_update_descriptor_buffers(@ptrCast(vs), &vs.pipelines.mesh_shader_pipeline, null, lighting_buffer, texture_views, samplers, texture_count)) {
         log.cardinal_log_error("[MESH_SHADER] Failed to update descriptor buffers during preparation", .{});
     } else {
         log.cardinal_log_debug("[MESH_SHADER] Updated descriptor buffers during preparation (bindless textures: {d})", .{texture_count});
