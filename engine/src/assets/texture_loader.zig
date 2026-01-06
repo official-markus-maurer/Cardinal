@@ -101,32 +101,59 @@ var g_placeholder_texture = TextureData{
 
 pub export fn texture_load_from_disk(path: [*:0]const u8, out_texture: *TextureData) bool {
     const filename_c = path;
-    const is_hdr = (stbi_is_hdr(filename_c) != 0);
+    
+    // Check for EXR explicitly first
+    const span = std.mem.span(filename_c);
+    const has_exr_extension = (span.len > 4 and std.ascii.eqlIgnoreCase(span[span.len - 4 ..], ".exr"));
+
+    var is_exr = false;
+    if (has_exr_extension) {
+        is_exr = (IsEXR(filename_c) != 0);
+        
+        // Fallback: If IsEXR failed, but extension suggests EXR, check magic bytes manually.
+        // This handles cases where IsEXR might fail on valid files (e.g. path encoding issues).
+        if (!is_exr) {
+            // Try to open and check magic bytes: 0x76, 0x2f, 0x31, 0x01
+            if (std.fs.cwd().openFile(span, .{})) |file| {
+                defer file.close();
+                var magic: [4]u8 = undefined;
+                if (file.read(&magic)) |read_bytes| {
+                    if (read_bytes == 4 and magic[0] == 0x76 and magic[1] == 0x2f and magic[2] == 0x31 and magic[3] == 0x01) {
+                        log.cardinal_log_warn("IsEXR returned false but magic bytes match. Forcing EXR path for: {s}", .{span});
+                        is_exr = true;
+                    }
+                } else |_| {}
+            } else |_| {}
+        }
+    }
+
+    // If not EXR, check if STB thinks it's HDR (e.g. .hdr file)
+    const is_stb_hdr = if (!is_exr) (stbi_is_hdr(filename_c) != 0) else false;
+    
+    const is_hdr = is_exr or is_stb_hdr;
 
     var w: c_int = 0;
     var h: c_int = 0;
     var c: c_int = 0;
     var data: ?*anyopaque = null;
 
-    if (is_hdr) {
-        if (IsEXR(filename_c) != 0) {
-            var exr_data: ?[*]f32 = null;
-            var err: ?[*]const u8 = null;
-            const res = LoadEXR(&exr_data, &w, &h, filename_c, &err);
-            if (res != 0) {
-                if (err) |e| {
-                    const e_span = @as([*:0]const u8, @ptrCast(e));
-                    log.cardinal_log_error("[CRITICAL] TinyEXR failed: {s}", .{std.mem.span(e_span)});
-                    FreeEXRErrorMessage(e);
-                }
-                return false;
+    if (is_exr) {
+        var exr_data: ?[*]f32 = null;
+        var err: ?[*]const u8 = null;
+        const res = LoadEXR(&exr_data, &w, &h, filename_c, &err);
+        if (res != 0) {
+            if (err) |e| {
+                const e_span = @as([*:0]const u8, @ptrCast(e));
+                log.cardinal_log_error("[CRITICAL] TinyEXR failed: {s}", .{std.mem.span(e_span)});
+                FreeEXRErrorMessage(e);
             }
-            data = @ptrCast(exr_data);
-            c = 4; // TinyEXR loads as RGBA
-        } else {
-             const ptr = stbi_loadf(filename_c, &w, &h, &c, 4);
-             data = @ptrCast(ptr);
+            return false;
         }
+        data = @ptrCast(exr_data);
+        c = 4; // TinyEXR loads as RGBA
+    } else if (is_stb_hdr) {
+         const ptr = stbi_loadf(filename_c, &w, &h, &c, 4);
+         data = @ptrCast(ptr);
     } else {
         data = stbi_load(filename_c, &w, &h, &c, 4);
     }

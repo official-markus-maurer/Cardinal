@@ -7,7 +7,7 @@ const vk_pbr = @import("vulkan_pbr.zig");
 const scene = @import("../assets/scene.zig");
 const animation = @import("../core/animation.zig");
 const wrappers = @import("vulkan_wrappers.zig");
-const vk_renderer_frame = @import("vulkan_renderer_frame.zig");
+const vk_pso = @import("vulkan_pso.zig");
 const material_utils = @import("util/vulkan_material_utils.zig");
 
 const SHADOW_MAP_SIZE = 2048;

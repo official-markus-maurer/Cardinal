@@ -1,0 +1,39 @@
+{
+    "name": "Shadow Pipeline",
+    "vertex_shader": {
+        "path": "assets/shaders/shadow.vert.spv",
+        "stage": 1
+    },
+    "fragment_shader": {
+        "path": "assets/shaders/shadow.frag.spv",
+        "stage": 16
+    },
+    "vertex_input": {
+        "use_standard_layout": true
+    },
+    "input_assembly": {
+        "topology": "triangle_list"
+    },
+    "rasterization": {
+        "cull_mode": "none",
+        "front_face": "clockwise",
+        "depth_bias_enable": true
+    },
+    "multisampling": {
+        "rasterization_samples": 1
+    },
+    "depth_stencil": {
+        "depth_test_enable": true,
+        "depth_write_enable": true,
+        "depth_compare_op": "less"
+    },
+    "color_blend": {
+        "logic_op_enable": false,
+        "attachments": []
+    },
+    "dynamic_states": [ 0, 1, 3 ],
+    "rendering": {
+        "color_formats": [],
+        "depth_format": 126
+    }
+}

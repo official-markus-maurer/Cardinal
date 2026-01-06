@@ -36,7 +36,7 @@ This document outlines the roadmap for the Cardinal Engine, focusing on robustne
     - **Transient Resources**: Automatically allocate/free attachments (images/buffers) that are only needed for a single frame.
     - **Graph Culling**: Automatically prune passes that do not contribute to the backbuffer.
     - **Async Compute**: Support queue ownership transfers for parallel compute execution.
-- [ ] **Data-Driven Pipelines**: Replace hardcoded pipeline setup (`vulkan_pbr.zig`, etc.) with a data-driven approach where Pipeline State Objects (PSOs) are loaded from asset files.
+- [x] **Data-Driven Pipelines**: Replace hardcoded pipeline setup (`vulkan_pbr.zig`, etc.) with a data-driven approach where Pipeline State Objects (PSOs) are loaded from asset files.
 - [ ] **Pipeline Caching**: Implement `VkPipelineCache` serialization.
 - [ ] **Bindless Architecture**: Standardize on the existing `VK_EXT_descriptor_buffer` implementation in `vulkan_descriptor_manager.zig`.
 

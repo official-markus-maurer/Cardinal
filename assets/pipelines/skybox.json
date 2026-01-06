@@ -1,0 +1,11 @@
+{
+    "name": "Skybox",
+    "vertex_shader": { "path": "assets/shaders/skybox.vert.spv", "stage": 1 },
+    "fragment_shader": { "path": "assets/shaders/skybox.frag.spv", "stage": 16 },
+    "vertex_input": { "use_standard_layout": false },
+    "input_assembly": { "topology": "triangle_list" },
+    "rasterization": { "cull_mode": "none", "front_face": "counter_clockwise", "depth_clamp_enable": false },
+    "depth_stencil": { "depth_test_enable": true, "depth_write_enable": false, "depth_compare_op": "less_or_equal" },
+    "color_blend": { "attachments": [{ "blend_enable": false, "color_write_mask": 15 }] },
+    "rendering": { "color_formats": [], "depth_format": 0 }
+}

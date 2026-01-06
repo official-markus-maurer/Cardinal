@@ -8,6 +8,7 @@ const scene = @import("../assets/scene.zig");
 const shader_utils = @import("util/vulkan_shader_utils.zig");
 const material_utils = @import("util/vulkan_material_utils.zig");
 const wrappers = @import("vulkan_wrappers.zig");
+const vk_pso = @import("vulkan_pso.zig");
 
 const c = @import("vulkan_c.zig").c;
 
@@ -104,115 +105,21 @@ fn create_simple_descriptor_pool(s: *types.VulkanState) bool {
     return true;
 }
 
-fn create_simple_pipeline(s: *types.VulkanState, vertShaderPath: [*c]const u8, fragShaderPath: [*c]const u8, pipeline: *c.VkPipeline, pipelineLayout: *c.VkPipelineLayout, wireframe: bool, pipelineCache: c.VkPipelineCache) bool {
-    // Load shaders
-    var vertShaderModule: c.VkShaderModule = null;
-    var fragShaderModule: c.VkShaderModule = null;
-
-    if (!shader_utils.vk_shader_create_module(s.context.device, vertShaderPath, &vertShaderModule) or
-        !shader_utils.vk_shader_create_module(s.context.device, fragShaderPath, &fragShaderModule))
-    {
-        log.cardinal_log_error("Failed to load simple pipeline shaders", .{});
-        if (vertShaderModule != null) c.vkDestroyShaderModule(s.context.device, vertShaderModule, null);
-        if (fragShaderModule != null) c.vkDestroyShaderModule(s.context.device, fragShaderModule, null);
+fn create_simple_pipeline_from_json(s: *types.VulkanState, json_path: []const u8, pipeline: *c.VkPipeline, pipelineLayout: *c.VkPipelineLayout, pipelineCache: c.VkPipelineCache) bool {
+    var builder = vk_pso.PipelineBuilder.init(std.heap.page_allocator, s.context.device, pipelineCache);
+    
+    var parsed = vk_pso.PipelineBuilder.load_from_json(std.heap.page_allocator, json_path) catch |err| {
+        log.cardinal_log_error("Failed to load pipeline JSON '{s}': {s}", .{json_path, @errorName(err)});
         return false;
-    }
-    defer c.vkDestroyShaderModule(s.context.device, vertShaderModule, null);
-    defer c.vkDestroyShaderModule(s.context.device, fragShaderModule, null);
+    };
+    defer parsed.deinit();
 
-    var vertShaderStageInfo = std.mem.zeroes(c.VkPipelineShaderStageCreateInfo);
-    vertShaderStageInfo.sType = c.VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
-    vertShaderStageInfo.stage = c.VK_SHADER_STAGE_VERTEX_BIT;
-    vertShaderStageInfo.module = vertShaderModule;
-    vertShaderStageInfo.pName = "main";
-
-    var fragShaderStageInfo = std.mem.zeroes(c.VkPipelineShaderStageCreateInfo);
-    fragShaderStageInfo.sType = c.VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
-    fragShaderStageInfo.stage = c.VK_SHADER_STAGE_FRAGMENT_BIT;
-    fragShaderStageInfo.module = fragShaderModule;
-    fragShaderStageInfo.pName = "main";
-
-    var shaderStages = [_]c.VkPipelineShaderStageCreateInfo{ vertShaderStageInfo, fragShaderStageInfo };
-
-    // Vertex input (same as PBR pipeline)
-    var bindingDescription = std.mem.zeroes(c.VkVertexInputBindingDescription);
-    bindingDescription.binding = 0;
-    bindingDescription.stride = @sizeOf(scene.CardinalVertex);
-    bindingDescription.inputRate = c.VK_VERTEX_INPUT_RATE_VERTEX;
-
-    var attributeDescriptions: [3]c.VkVertexInputAttributeDescription = undefined;
-    // Position
-    attributeDescriptions[0].binding = 0;
-    attributeDescriptions[0].location = 0;
-    attributeDescriptions[0].format = c.VK_FORMAT_R32G32B32_SFLOAT;
-    attributeDescriptions[0].offset = @offsetOf(scene.CardinalVertex, "px");
-    // Normal
-    attributeDescriptions[1].binding = 0;
-    attributeDescriptions[1].location = 1;
-    attributeDescriptions[1].format = c.VK_FORMAT_R32G32B32_SFLOAT;
-    attributeDescriptions[1].offset = @offsetOf(scene.CardinalVertex, "nx");
-    // UV
-    attributeDescriptions[2].binding = 0;
-    attributeDescriptions[2].location = 2;
-    attributeDescriptions[2].format = c.VK_FORMAT_R32G32_SFLOAT;
-    attributeDescriptions[2].offset = @offsetOf(scene.CardinalVertex, "u");
-
-    var vertexInputInfo = std.mem.zeroes(c.VkPipelineVertexInputStateCreateInfo);
-    vertexInputInfo.sType = c.VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO;
-    vertexInputInfo.vertexBindingDescriptionCount = 1;
-    vertexInputInfo.pVertexBindingDescriptions = &bindingDescription;
-    vertexInputInfo.vertexAttributeDescriptionCount = 3;
-    vertexInputInfo.pVertexAttributeDescriptions = &attributeDescriptions;
-
-    var inputAssembly = std.mem.zeroes(c.VkPipelineInputAssemblyStateCreateInfo);
-    inputAssembly.sType = c.VK_STRUCTURE_TYPE_PIPELINE_INPUT_ASSEMBLY_STATE_CREATE_INFO;
-    inputAssembly.topology = c.VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST;
-    inputAssembly.primitiveRestartEnable = c.VK_FALSE;
-
-    var viewportState = std.mem.zeroes(c.VkPipelineViewportStateCreateInfo);
-    viewportState.sType = c.VK_STRUCTURE_TYPE_PIPELINE_VIEWPORT_STATE_CREATE_INFO;
-    viewportState.viewportCount = 1;
-    viewportState.scissorCount = 1;
-
-    var rasterizer = std.mem.zeroes(c.VkPipelineRasterizationStateCreateInfo);
-    rasterizer.sType = c.VK_STRUCTURE_TYPE_PIPELINE_RASTERIZATION_STATE_CREATE_INFO;
-    rasterizer.depthClampEnable = c.VK_FALSE;
-    rasterizer.rasterizerDiscardEnable = c.VK_FALSE;
-    rasterizer.polygonMode = if (wireframe) c.VK_POLYGON_MODE_LINE else c.VK_POLYGON_MODE_FILL;
-    rasterizer.lineWidth = 1.0;
-    rasterizer.cullMode = c.VK_CULL_MODE_NONE;
-    rasterizer.frontFace = c.VK_FRONT_FACE_CLOCKWISE;
-    rasterizer.depthBiasEnable = c.VK_FALSE;
-
-    var multisampling = std.mem.zeroes(c.VkPipelineMultisampleStateCreateInfo);
-    multisampling.sType = c.VK_STRUCTURE_TYPE_PIPELINE_MULTISAMPLE_STATE_CREATE_INFO;
-    multisampling.sampleShadingEnable = c.VK_FALSE;
-    multisampling.rasterizationSamples = c.VK_SAMPLE_COUNT_1_BIT;
-
-    var depthStencil = std.mem.zeroes(c.VkPipelineDepthStencilStateCreateInfo);
-    depthStencil.sType = c.VK_STRUCTURE_TYPE_PIPELINE_DEPTH_STENCIL_STATE_CREATE_INFO;
-    depthStencil.depthTestEnable = c.VK_TRUE;
-    depthStencil.depthWriteEnable = c.VK_TRUE;
-    depthStencil.depthCompareOp = c.VK_COMPARE_OP_LESS;
-    depthStencil.depthBoundsTestEnable = c.VK_FALSE;
-    depthStencil.stencilTestEnable = c.VK_FALSE;
-
-    var colorBlendAttachment = std.mem.zeroes(c.VkPipelineColorBlendAttachmentState);
-    colorBlendAttachment.colorWriteMask = c.VK_COLOR_COMPONENT_R_BIT | c.VK_COLOR_COMPONENT_G_BIT |
-        c.VK_COLOR_COMPONENT_B_BIT | c.VK_COLOR_COMPONENT_A_BIT;
-    colorBlendAttachment.blendEnable = c.VK_FALSE;
-
-    var colorBlending = std.mem.zeroes(c.VkPipelineColorBlendStateCreateInfo);
-    colorBlending.sType = c.VK_STRUCTURE_TYPE_PIPELINE_COLOR_BLEND_STATE_CREATE_INFO;
-    colorBlending.logicOpEnable = c.VK_FALSE;
-    colorBlending.attachmentCount = 1;
-    colorBlending.pAttachments = &colorBlendAttachment;
-
-    var dynamicStates = [_]c.VkDynamicState{ c.VK_DYNAMIC_STATE_VIEWPORT, c.VK_DYNAMIC_STATE_SCISSOR };
-    var dynamicState = std.mem.zeroes(c.VkPipelineDynamicStateCreateInfo);
-    dynamicState.sType = c.VK_STRUCTURE_TYPE_PIPELINE_DYNAMIC_STATE_CREATE_INFO;
-    dynamicState.dynamicStateCount = 2;
-    dynamicState.pDynamicStates = &dynamicStates;
+    var descriptor = parsed.value;
+    
+    // Override rendering formats
+    const colorFormat = s.swapchain.format;
+    descriptor.rendering.color_formats = &.{colorFormat};
+    descriptor.rendering.depth_format = s.swapchain.depth_format;
 
     // Create pipeline layout with push constants
     var pushConstantRange = std.mem.zeroes(c.VkPushConstantRange);
@@ -232,37 +139,10 @@ fn create_simple_pipeline(s: *types.VulkanState, vertShaderPath: [*c]const u8, f
         return false;
     }
 
-    var pipelineInfo = std.mem.zeroes(c.VkGraphicsPipelineCreateInfo);
-    pipelineInfo.sType = c.VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO;
-    pipelineInfo.stageCount = 2;
-    pipelineInfo.pStages = &shaderStages;
-    pipelineInfo.pVertexInputState = &vertexInputInfo;
-    pipelineInfo.pInputAssemblyState = &inputAssembly;
-    pipelineInfo.pViewportState = &viewportState;
-    pipelineInfo.pRasterizationState = &rasterizer;
-    pipelineInfo.pMultisampleState = &multisampling;
-    pipelineInfo.pDepthStencilState = &depthStencil;
-    pipelineInfo.pColorBlendState = &colorBlending;
-    pipelineInfo.pDynamicState = &dynamicState;
-    pipelineInfo.layout = pipelineLayout.*;
-
-    // Use dynamic rendering
-    var pipelineRenderingInfo = std.mem.zeroes(c.VkPipelineRenderingCreateInfo);
-    pipelineRenderingInfo.sType = c.VK_STRUCTURE_TYPE_PIPELINE_RENDERING_CREATE_INFO;
-    pipelineRenderingInfo.colorAttachmentCount = 1;
-    var colorFormat = s.swapchain.format;
-    pipelineRenderingInfo.pColorAttachmentFormats = &colorFormat;
-    pipelineRenderingInfo.depthAttachmentFormat = s.swapchain.depth_format;
-    pipelineRenderingInfo.stencilAttachmentFormat = c.VK_FORMAT_UNDEFINED;
-    pipelineInfo.pNext = &pipelineRenderingInfo;
-    pipelineInfo.renderPass = null;
-    pipelineInfo.subpass = 0;
-
-    if (c.vkCreateGraphicsPipelines(s.context.device, pipelineCache, 1, &pipelineInfo, null, pipeline) != c.VK_SUCCESS) {
-        log.cardinal_log_error("Failed to create simple graphics pipeline!", .{});
-        c.vkDestroyPipelineLayout(s.context.device, pipelineLayout.*, null);
+    builder.build(descriptor, pipelineLayout.*, pipeline) catch |err| {
+        log.cardinal_log_error("Failed to build simple pipeline: {s}", .{@errorName(err)});
         return false;
-    }
+    };
 
     return true;
 }
@@ -287,27 +167,13 @@ pub export fn vk_create_simple_pipelines(s: ?*types.VulkanState, pipelineCache: 
     }
 
     // Create UV pipeline
-    var uv_vert_path: [512]u8 = undefined;
-    var uv_frag_path: [512]u8 = undefined;
-    var shaders_dir: [*c]const u8 = @ptrCast(c.getenv("CARDINAL_SHADERS_DIR"));
-    if (shaders_dir == null or shaders_dir[0] == 0) {
-        shaders_dir = "assets/shaders";
-    }
-    _ = c.snprintf(&uv_vert_path, 512, "%s/uv.vert.spv", shaders_dir);
-    _ = c.snprintf(&uv_frag_path, 512, "%s/uv.frag.spv", shaders_dir);
-
-    if (!create_simple_pipeline(vs, &uv_vert_path, &uv_frag_path, &vs.pipelines.uv_pipeline, &vs.pipelines.uv_pipeline_layout, false, pipelineCache)) {
+    if (!create_simple_pipeline_from_json(vs, "assets/pipelines/debug_uv.json", &vs.pipelines.uv_pipeline, &vs.pipelines.uv_pipeline_layout, pipelineCache)) {
         log.cardinal_log_error("Failed to create UV pipeline", .{});
         return false;
     }
 
     // Create wireframe pipeline
-    var wireframe_vert_path: [512]u8 = undefined;
-    var wireframe_frag_path: [512]u8 = undefined;
-    _ = c.snprintf(&wireframe_vert_path, 512, "%s/wireframe.vert.spv", shaders_dir);
-    _ = c.snprintf(&wireframe_frag_path, 512, "%s/wireframe.frag.spv", shaders_dir);
-
-    if (!create_simple_pipeline(vs, &wireframe_vert_path, &wireframe_frag_path, &vs.pipelines.wireframe_pipeline, &vs.pipelines.wireframe_pipeline_layout, true, pipelineCache)) {
+    if (!create_simple_pipeline_from_json(vs, "assets/pipelines/debug_wireframe.json", &vs.pipelines.wireframe_pipeline, &vs.pipelines.wireframe_pipeline_layout, pipelineCache)) {
         log.cardinal_log_error("Failed to create wireframe pipeline", .{});
         return false;
     }

@@ -431,6 +431,16 @@ pub export fn vk_descriptor_manager_allocate_sets(manager: ?*types.VulkanDescrip
     i = 0;
     while (i < setCount) : (i += 1) {
         if (mgr.descriptorSetCount < mgr.maxSets) {
+            // Ensure descriptorSets array is allocated before accessing
+            if (mgr.descriptorSets == null) {
+                const descriptor_sets_ptr = memory.cardinal_alloc(mem_alloc, mgr.maxSets * @sizeOf(c.VkDescriptorSet));
+                if (descriptor_sets_ptr == null) {
+                    log.cardinal_log_error("Failed to allocate memory for descriptor sets array", .{});
+                    return false;
+                }
+                mgr.descriptorSets = @as([*]c.VkDescriptorSet, @ptrCast(@alignCast(descriptor_sets_ptr)));
+            }
+            
             mgr.descriptorSets.?[mgr.descriptorSetCount] = pDescriptorSets.?[i];
             mgr.descriptorSetCount += 1;
         } else {

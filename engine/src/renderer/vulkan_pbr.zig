@@ -17,6 +17,7 @@ const texture_utils = @import("util/vulkan_texture_utils.zig");
 const vk_utils = @import("vulkan_utils.zig");
 const vk_descriptor_indexing = @import("vulkan_descriptor_indexing.zig");
 const wrappers = @import("vulkan_wrappers.zig");
+const vk_pso = @import("vulkan_pso.zig");
 const scene = @import("../assets/scene.zig");
 const animation = @import("../core/animation.zig");
 
@@ -131,232 +132,38 @@ fn create_pbr_pipeline_layout(pipeline: *types.VulkanPBRPipeline, device: c.VkDe
     return true;
 }
 
-fn load_pbr_shaders(device: c.VkDevice, vertShaderModule: *c.VkShaderModule, fragShaderModule: *c.VkShaderModule) bool {
-    var vert_path: [512]u8 = undefined;
-    var frag_path: [512]u8 = undefined;
+fn create_pbr_graphics_pipeline(pipeline: *types.VulkanPBRPipeline, device: c.VkDevice, vertShader: c.VkShaderModule, fragShader: c.VkShaderModule, swapchainFormat: c.VkFormat, depthFormat: c.VkFormat, json_path: []const u8, outPipeline: *c.VkPipeline, pipelineCache: c.VkPipelineCache) bool {
+    var builder = vk_pso.PipelineBuilder.init(std.heap.page_allocator, device, pipelineCache);
 
-    var shaders_dir: [*c]const u8 = @ptrCast(c.getenv("CARDINAL_SHADERS_DIR"));
-    if (shaders_dir == null or shaders_dir[0] == 0) {
-        shaders_dir = "assets/shaders";
-    }
-
-    _ = c.snprintf(&vert_path, 512, "%s/pbr.vert.spv", shaders_dir);
-    _ = c.snprintf(&frag_path, 512, "%s/pbr.frag.spv", shaders_dir);
-
-    const vert_path_ptr = @as([*:0]const u8, @ptrCast(&vert_path));
-    const frag_path_ptr = @as([*:0]const u8, @ptrCast(&frag_path));
-
-    // log.cardinal_log_debug("Using shader paths: vert={s}, frag={s}", .{std.mem.span(vert_path_ptr), std.mem.span(frag_path_ptr)});
-
-    if (!shader_utils.vk_shader_create_module(device, vert_path_ptr, vertShaderModule)) {
-        log.cardinal_log_error("Failed to create vertex shader module!", .{});
+    var parsed = vk_pso.PipelineBuilder.load_from_json(std.heap.page_allocator, json_path) catch |err| {
+        log.cardinal_log_error("Failed to load pipeline JSON '{s}': {s}", .{json_path, @errorName(err)});
         return false;
-    }
+    };
+    defer parsed.deinit();
 
-    if (!shader_utils.vk_shader_create_module(device, frag_path_ptr, fragShaderModule)) {
-        log.cardinal_log_error("Failed to create fragment shader module!", .{});
-        wrappers.Device.init(device).destroyShaderModule(vertShaderModule.*);
+    var descriptor = parsed.value;
+
+    // Override shader modules with pre-compiled ones
+    if (descriptor.vertex_shader) |*vs| {
+        vs.module_handle = @intFromPtr(vertShader);
+    } else {
+        descriptor.vertex_shader = .{
+            .path = "internal_pbr_vert",
+            .stage = c.VK_SHADER_STAGE_VERTEX_BIT,
+            .module_handle = @intFromPtr(vertShader),
+        };
+    }
+    descriptor.fragment_shader.module_handle = @intFromPtr(fragShader);
+
+    // Override rendering formats
+    var color_formats = [_]c.VkFormat{swapchainFormat};
+    descriptor.rendering.color_formats = &color_formats;
+    descriptor.rendering.depth_format = depthFormat;
+
+    builder.build(descriptor, pipeline.pipelineLayout, outPipeline) catch {
         return false;
-    }
-    return true;
-}
-
-fn configure_shader_stages(stages: []c.VkPipelineShaderStageCreateInfo, vertShader: c.VkShaderModule, fragShader: c.VkShaderModule) void {
-    stages[0].sType = c.VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
-    stages[0].stage = c.VK_SHADER_STAGE_VERTEX_BIT;
-    stages[0].module = vertShader;
-    stages[0].pName = "main";
-    stages[0].pNext = null;
-    stages[0].flags = 0;
-    stages[0].pSpecializationInfo = null;
-
-    stages[1].sType = c.VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
-    stages[1].stage = c.VK_SHADER_STAGE_FRAGMENT_BIT;
-    stages[1].module = fragShader;
-    stages[1].pName = "main";
-    stages[1].pNext = null;
-    stages[1].flags = 0;
-    stages[1].pSpecializationInfo = null;
-}
-
-fn configure_vertex_input(info: *c.VkPipelineVertexInputStateCreateInfo, binding: *c.VkVertexInputBindingDescription, attributes: []c.VkVertexInputAttributeDescription) void {
-    binding.* = .{ .binding = 0, .stride = @sizeOf(scene.CardinalVertex), .inputRate = c.VK_VERTEX_INPUT_RATE_VERTEX };
-
-    attributes[0] = .{ .binding = 0, .location = 0, .format = c.VK_FORMAT_R32G32B32_SFLOAT, .offset = 0 };
-    attributes[1] = .{ .binding = 0, .location = 1, .format = c.VK_FORMAT_R32G32B32_SFLOAT, .offset = @sizeOf(f32) * 3 };
-    attributes[2] = .{ .binding = 0, .location = 2, .format = c.VK_FORMAT_R32G32_SFLOAT, .offset = @sizeOf(f32) * 6 };
-    attributes[3] = .{ .binding = 0, .location = 3, .format = c.VK_FORMAT_R32G32B32A32_SFLOAT, .offset = @offsetOf(scene.CardinalVertex, "bone_weights") };
-    attributes[4] = .{ .binding = 0, .location = 4, .format = c.VK_FORMAT_R32G32B32A32_UINT, .offset = @offsetOf(scene.CardinalVertex, "bone_indices") };
-    attributes[5] = .{ .binding = 0, .location = 5, .format = c.VK_FORMAT_R32G32_SFLOAT, .offset = @offsetOf(scene.CardinalVertex, "u1") };
-
-    info.sType = c.VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO;
-    info.vertexBindingDescriptionCount = 1;
-    info.pVertexBindingDescriptions = binding;
-    info.vertexAttributeDescriptionCount = 6;
-    info.pVertexAttributeDescriptions = attributes.ptr;
-    info.pNext = null;
-    info.flags = 0;
-}
-
-fn configure_input_assembly(info: *c.VkPipelineInputAssemblyStateCreateInfo) void {
-    info.sType = c.VK_STRUCTURE_TYPE_PIPELINE_INPUT_ASSEMBLY_STATE_CREATE_INFO;
-    info.topology = c.VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST;
-    info.primitiveRestartEnable = c.VK_FALSE;
-    info.pNext = null;
-    info.flags = 0;
-}
-
-fn configure_viewport_state(info: *c.VkPipelineViewportStateCreateInfo) void {
-    info.sType = c.VK_STRUCTURE_TYPE_PIPELINE_VIEWPORT_STATE_CREATE_INFO;
-    info.viewportCount = 1;
-    info.scissorCount = 1;
-    info.pNext = null;
-    info.flags = 0;
-}
-
-fn configure_rasterization(info: *c.VkPipelineRasterizationStateCreateInfo) void {
-    info.sType = c.VK_STRUCTURE_TYPE_PIPELINE_RASTERIZATION_STATE_CREATE_INFO;
-    info.depthClampEnable = c.VK_FALSE;
-    info.rasterizerDiscardEnable = c.VK_FALSE;
-    info.polygonMode = c.VK_POLYGON_MODE_FILL;
-    info.lineWidth = 1.0;
-    info.cullMode = c.VK_CULL_MODE_NONE;
-    info.frontFace = c.VK_FRONT_FACE_CLOCKWISE;
-    info.depthBiasEnable = c.VK_FALSE;
-    info.pNext = null;
-    info.flags = 0;
-}
-
-fn configure_multisampling(info: *c.VkPipelineMultisampleStateCreateInfo) void {
-    info.sType = c.VK_STRUCTURE_TYPE_PIPELINE_MULTISAMPLE_STATE_CREATE_INFO;
-    info.sampleShadingEnable = c.VK_FALSE;
-    info.rasterizationSamples = c.VK_SAMPLE_COUNT_1_BIT;
-    info.minSampleShading = 1.0;
-    info.pSampleMask = null;
-    info.alphaToCoverageEnable = c.VK_FALSE;
-    info.alphaToOneEnable = c.VK_FALSE;
-    info.pNext = null;
-    info.flags = 0;
-}
-
-fn configure_depth_stencil(info: *c.VkPipelineDepthStencilStateCreateInfo, depthWriteEnable: bool) void {
-    info.sType = c.VK_STRUCTURE_TYPE_PIPELINE_DEPTH_STENCIL_STATE_CREATE_INFO;
-    info.depthTestEnable = c.VK_TRUE;
-    info.depthWriteEnable = if (depthWriteEnable) c.VK_TRUE else c.VK_FALSE;
-    info.depthCompareOp = c.VK_COMPARE_OP_LESS_OR_EQUAL;
-    info.depthBoundsTestEnable = c.VK_FALSE;
-    info.stencilTestEnable = c.VK_FALSE;
-    info.pNext = null;
-    info.flags = 0;
-}
-
-fn configure_color_blending(info: *c.VkPipelineColorBlendStateCreateInfo, attachment: *c.VkPipelineColorBlendAttachmentState, blendEnable: bool) void {
-    attachment.colorWriteMask = c.VK_COLOR_COMPONENT_R_BIT | c.VK_COLOR_COMPONENT_G_BIT | c.VK_COLOR_COMPONENT_B_BIT | c.VK_COLOR_COMPONENT_A_BIT;
-    attachment.blendEnable = if (blendEnable) c.VK_TRUE else c.VK_FALSE;
-
-    if (blendEnable) {
-        attachment.srcColorBlendFactor = c.VK_BLEND_FACTOR_SRC_ALPHA;
-        attachment.dstColorBlendFactor = c.VK_BLEND_FACTOR_ONE_MINUS_SRC_ALPHA;
-        attachment.colorBlendOp = c.VK_BLEND_OP_ADD;
-        attachment.srcAlphaBlendFactor = c.VK_BLEND_FACTOR_ONE;
-        attachment.dstAlphaBlendFactor = c.VK_BLEND_FACTOR_ZERO;
-        attachment.alphaBlendOp = c.VK_BLEND_OP_ADD;
-    }
-
-    info.sType = c.VK_STRUCTURE_TYPE_PIPELINE_COLOR_BLEND_STATE_CREATE_INFO;
-    info.logicOpEnable = c.VK_FALSE;
-    info.logicOp = c.VK_LOGIC_OP_COPY;
-    info.attachmentCount = 1;
-    info.pAttachments = attachment;
-    info.blendConstants[0] = 0.0;
-    info.blendConstants[1] = 0.0;
-    info.blendConstants[2] = 0.0;
-    info.blendConstants[3] = 0.0;
-    info.pNext = null;
-    info.flags = 0;
-}
-
-fn configure_dynamic_state(info: *c.VkPipelineDynamicStateCreateInfo, states: []c.VkDynamicState) void {
-    states[0] = c.VK_DYNAMIC_STATE_VIEWPORT;
-    states[1] = c.VK_DYNAMIC_STATE_SCISSOR;
-    states[2] = c.VK_DYNAMIC_STATE_DEPTH_BIAS;
-
-    info.sType = c.VK_STRUCTURE_TYPE_PIPELINE_DYNAMIC_STATE_CREATE_INFO;
-    info.dynamicStateCount = 3;
-    info.pDynamicStates = states.ptr;
-    info.pNext = null;
-    info.flags = 0;
-}
-
-fn configure_rendering_info(info: *c.VkPipelineRenderingCreateInfo, colorFormat: *c.VkFormat, depthFormat: c.VkFormat) void {
-    info.sType = c.VK_STRUCTURE_TYPE_PIPELINE_RENDERING_CREATE_INFO;
-    info.viewMask = 0;
-    info.colorAttachmentCount = 1;
-    info.pColorAttachmentFormats = colorFormat;
-    info.depthAttachmentFormat = depthFormat;
-    info.stencilAttachmentFormat = c.VK_FORMAT_UNDEFINED;
-    info.pNext = null;
-}
-
-fn create_pbr_graphics_pipeline(pipeline: *types.VulkanPBRPipeline, device: c.VkDevice, vertShader: c.VkShaderModule, fragShader: c.VkShaderModule, swapchainFormat: c.VkFormat, depthFormat: c.VkFormat, enableBlending: bool, enableDepthWrite: bool, outPipeline: *c.VkPipeline, pipelineCache: c.VkPipelineCache) bool {
-    var shaderStages: [2]c.VkPipelineShaderStageCreateInfo = undefined;
-    configure_shader_stages(&shaderStages, vertShader, fragShader);
-
-    var bindingDescription: c.VkVertexInputBindingDescription = undefined;
-    var attributeDescriptions: [6]c.VkVertexInputAttributeDescription = undefined;
-    var vertexInputInfo: c.VkPipelineVertexInputStateCreateInfo = undefined;
-    configure_vertex_input(&vertexInputInfo, &bindingDescription, &attributeDescriptions);
-
-    var inputAssembly: c.VkPipelineInputAssemblyStateCreateInfo = undefined;
-    configure_input_assembly(&inputAssembly);
-
-    var viewportState: c.VkPipelineViewportStateCreateInfo = undefined;
-    configure_viewport_state(&viewportState);
-
-    var rasterizer: c.VkPipelineRasterizationStateCreateInfo = undefined;
-    configure_rasterization(&rasterizer);
-    rasterizer.depthBiasEnable = c.VK_TRUE;
-
-    var multisampling: c.VkPipelineMultisampleStateCreateInfo = undefined;
-    configure_multisampling(&multisampling);
-
-    var depthStencil: c.VkPipelineDepthStencilStateCreateInfo = undefined;
-    configure_depth_stencil(&depthStencil, enableDepthWrite);
-
-    var colorBlendAttachment: c.VkPipelineColorBlendAttachmentState = undefined;
-    var colorBlending: c.VkPipelineColorBlendStateCreateInfo = undefined;
-    configure_color_blending(&colorBlending, &colorBlendAttachment, enableBlending);
-
-    var dynamicStates: [3]c.VkDynamicState = undefined;
-    var dynamicState: c.VkPipelineDynamicStateCreateInfo = undefined;
-    configure_dynamic_state(&dynamicState, &dynamicStates);
-
-    var pipelineInfo = std.mem.zeroes(c.VkGraphicsPipelineCreateInfo);
-    pipelineInfo.sType = c.VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO;
-    pipelineInfo.stageCount = 2;
-    pipelineInfo.pStages = &shaderStages;
-    pipelineInfo.pVertexInputState = &vertexInputInfo;
-    pipelineInfo.pInputAssemblyState = &inputAssembly;
-    pipelineInfo.pViewportState = &viewportState;
-    pipelineInfo.pRasterizationState = &rasterizer;
-    pipelineInfo.pMultisampleState = &multisampling;
-    pipelineInfo.pDepthStencilState = &depthStencil;
-    pipelineInfo.pColorBlendState = &colorBlending;
-    pipelineInfo.pDynamicState = &dynamicState;
-    pipelineInfo.layout = pipeline.pipelineLayout;
-    pipelineInfo.renderPass = null;
-    pipelineInfo.subpass = 0;
-
-    var pipelineRenderingInfo: c.VkPipelineRenderingCreateInfo = undefined;
-    var colorFmt = swapchainFormat;
-    configure_rendering_info(&pipelineRenderingInfo, &colorFmt, depthFormat);
-    pipelineInfo.pNext = &pipelineRenderingInfo;
-
-    const result = c.vkCreateGraphicsPipelines(device, pipelineCache, 1, &pipelineInfo, null, outPipeline);
-    if (result != c.VK_SUCCESS) {
-        log.cardinal_log_error("Failed to create PBR graphics pipeline: {d}", .{result});
-        return false;
-    }
+    };
+    
     return true;
 }
 
@@ -695,6 +502,13 @@ pub export fn vk_pbr_load_scene(pipeline: ?*types.VulkanPBRPipeline, device: c.V
         if (dm.descriptorPool != null) {
             _ = c.vkResetDescriptorPool(dm.device, dm.descriptorPool, 0);
             dm.descriptorSetCount = 0;
+            // Clear the tracking array to avoid stale references
+            // The descriptor sets are implicitly freed by reset, so we just clear our CPU-side tracking
+            // Use memset on the pointer value, not the pointer itself (which is on stack if not careful)
+            // dm.descriptorSets is ?[*]VkDescriptorSet
+            if (dm.descriptorSets) |ptr| {
+                @memset(ptr[0..dm.maxSets], null);
+            }
         }
     }
 
@@ -923,98 +737,23 @@ fn create_shadow_pipeline(pipeline: *types.VulkanPBRPipeline, device: c.VkDevice
         return false;
     }
     
-    // Load Shaders
-    var vertShader: c.VkShaderModule = null;
-    var fragShader: c.VkShaderModule = null;
-    
-    var vert_path: [512]u8 = undefined;
-    var frag_path: [512]u8 = undefined;
-    var shaders_dir: [*c]const u8 = @ptrCast(c.getenv("CARDINAL_SHADERS_DIR"));
-    if (shaders_dir == null or shaders_dir[0] == 0) {
-        shaders_dir = "assets/shaders";
-    }
-    
-    _ = c.snprintf(&vert_path, 512, "%s/shadow.vert.spv", shaders_dir);
-    _ = c.snprintf(&frag_path, 512, "%s/shadow.frag.spv", shaders_dir);
-    
-    if (!shader_utils.vk_shader_create_module(device, @as([*:0]const u8, @ptrCast(&vert_path)), &vertShader)) {
-        log.cardinal_log_error("Failed to create shadow vertex shader", .{});
+    // Use PipelineBuilder
+    var builder = vk_pso.PipelineBuilder.init(std.heap.page_allocator, device, null);
+
+    var parsed = vk_pso.PipelineBuilder.load_from_json(std.heap.page_allocator, "assets/pipelines/shadow.json") catch |err| {
+        log.cardinal_log_error("Failed to load shadow pipeline JSON: {s}", .{@errorName(err)});
         return false;
-    }
-    if (!shader_utils.vk_shader_create_module(device, @as([*:0]const u8, @ptrCast(&frag_path)), &fragShader)) {
-        log.cardinal_log_error("Failed to create shadow fragment shader", .{});
-        c.vkDestroyShaderModule(device, vertShader, null);
+    };
+    defer parsed.deinit();
+
+    var descriptor = parsed.value;
+    descriptor.rendering.depth_format = SHADOW_FORMAT;
+    descriptor.rendering.color_formats = &.{}; 
+
+    builder.build(descriptor, pipeline.shadowPipelineLayout, &pipeline.shadowPipeline) catch |err| {
+        log.cardinal_log_error("Failed to build shadow pipeline: {s}", .{@errorName(err)});
         return false;
-    }
-    defer c.vkDestroyShaderModule(device, vertShader, null);
-    defer c.vkDestroyShaderModule(device, fragShader, null);
-    
-    // Shader Stages
-    var shaderStages: [2]c.VkPipelineShaderStageCreateInfo = undefined;
-    configure_shader_stages(&shaderStages, vertShader, fragShader);
-    
-    // Vertex Input
-    var bindingDescription: c.VkVertexInputBindingDescription = undefined;
-    var attributeDescriptions: [6]c.VkVertexInputAttributeDescription = undefined;
-    var vertexInputInfo: c.VkPipelineVertexInputStateCreateInfo = undefined;
-    configure_vertex_input(&vertexInputInfo, &bindingDescription, &attributeDescriptions);
-    
-    // Assembly, Viewport, Rasterizer, Multisample
-    var inputAssembly: c.VkPipelineInputAssemblyStateCreateInfo = undefined;
-    configure_input_assembly(&inputAssembly);
-    
-    var viewportState: c.VkPipelineViewportStateCreateInfo = undefined;
-    configure_viewport_state(&viewportState);
-    
-    var rasterizer: c.VkPipelineRasterizationStateCreateInfo = undefined;
-    configure_rasterization(&rasterizer);
-    rasterizer.cullMode = c.VK_CULL_MODE_NONE; // Disable culling for shadows to be safe
-    rasterizer.depthBiasEnable = c.VK_TRUE; // Important for shadows
-    
-    var multisampling: c.VkPipelineMultisampleStateCreateInfo = undefined;
-    configure_multisampling(&multisampling);
-    
-    // Depth Stencil
-    var depthStencil: c.VkPipelineDepthStencilStateCreateInfo = undefined;
-    configure_depth_stencil(&depthStencil, true);
-    
-    // Color Blend (Disabled)
-    var colorBlendAttachment: c.VkPipelineColorBlendAttachmentState = undefined;
-    var colorBlending: c.VkPipelineColorBlendStateCreateInfo = undefined;
-    configure_color_blending(&colorBlending, &colorBlendAttachment, false);
-    colorBlending.attachmentCount = 0; // No color attachment
-    
-    // Dynamic State
-    var dynamicStates: [3]c.VkDynamicState = undefined;
-    var dynamicState: c.VkPipelineDynamicStateCreateInfo = undefined;
-    configure_dynamic_state(&dynamicState, &dynamicStates);
-    
-    // Pipeline Info
-    var pipelineInfo = std.mem.zeroes(c.VkGraphicsPipelineCreateInfo);
-    pipelineInfo.sType = c.VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO;
-    pipelineInfo.stageCount = 2;
-    pipelineInfo.pStages = &shaderStages;
-    pipelineInfo.pVertexInputState = &vertexInputInfo;
-    pipelineInfo.pInputAssemblyState = &inputAssembly;
-    pipelineInfo.pViewportState = &viewportState;
-    pipelineInfo.pRasterizationState = &rasterizer;
-    pipelineInfo.pMultisampleState = &multisampling;
-    pipelineInfo.pDepthStencilState = &depthStencil;
-    pipelineInfo.pColorBlendState = &colorBlending;
-    pipelineInfo.pDynamicState = &dynamicState;
-    pipelineInfo.layout = pipeline.shadowPipelineLayout;
-    
-    // Dynamic Rendering
-    var pipelineRenderingInfo = std.mem.zeroes(c.VkPipelineRenderingCreateInfo);
-    pipelineRenderingInfo.sType = c.VK_STRUCTURE_TYPE_PIPELINE_RENDERING_CREATE_INFO;
-    pipelineRenderingInfo.depthAttachmentFormat = SHADOW_FORMAT;
-    pipelineRenderingInfo.colorAttachmentCount = 0;
-    pipelineInfo.pNext = &pipelineRenderingInfo;
-    
-    if (c.vkCreateGraphicsPipelines(device, null, 1, &pipelineInfo, null, &pipeline.shadowPipeline) != c.VK_SUCCESS) {
-        log.cardinal_log_error("Failed to create shadow pipeline", .{});
-        return false;
-    }
+    };
     
     return true;
 }
@@ -1146,13 +885,13 @@ pub export fn vk_pbr_pipeline_create(pipeline: ?*types.VulkanPBRPipeline, device
 
     const dev = wrappers.Device.init(device);
 
-    if (!create_pbr_graphics_pipeline(pipe, device, vertShader, fragShader, swapchainFormat, depthFormat, false, true, &pipe.pipeline, pipelineCache)) {
+    if (!create_pbr_graphics_pipeline(pipe, device, vertShader, fragShader, swapchainFormat, depthFormat, "assets/pipelines/pbr_opaque.json", &pipe.pipeline, pipelineCache)) {
         dev.destroyShaderModule(vertShader);
         dev.destroyShaderModule(fragShader);
         return false;
     }
 
-    if (!create_pbr_graphics_pipeline(pipe, device, vertShader, fragShader, swapchainFormat, depthFormat, true, false, &pipe.pipelineBlend, pipelineCache)) {
+    if (!create_pbr_graphics_pipeline(pipe, device, vertShader, fragShader, swapchainFormat, depthFormat, "assets/pipelines/pbr_transparent.json", &pipe.pipelineBlend, pipelineCache)) {
         dev.destroyShaderModule(vertShader);
         dev.destroyShaderModule(fragShader);
         return false;

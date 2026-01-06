@@ -10,6 +10,8 @@ const vk_texture_utils = @import("util/vulkan_texture_utils.zig");
 const scene = @import("../assets/scene.zig");
 const vk_allocator = @import("vulkan_allocator.zig");
 
+const vk_pso = @import("vulkan_pso.zig");
+
 // Helper Functions
 
 fn load_shader_module(device: c.VkDevice, path: [*:0]const u8, out_module: *c.VkShaderModule) bool {
@@ -83,14 +85,13 @@ pub export fn vk_mesh_shader_create_pipeline(s: ?*types.VulkanState, config: ?*c
 
     pipe.max_meshlets_per_workgroup = 32;
     pipe.max_vertices_per_meshlet = cfg.max_vertices_per_meshlet;
-    // pipe.max_primitives_per_meshlet = cfg.max_primitives_per_meshlet; // Struct definition might differ, check if field exists
 
     // Allocator for reflection data
     var arena = std.heap.ArenaAllocator.init(std.heap.c_allocator);
     defer arena.deinit();
     const allocator = arena.allocator();
 
-    // Helper map for merging bindings: binding_index -> BindingInfo
+    // Helper map for merging bindings
     const BindingInfo = struct {
         binding: c.VkDescriptorSetLayoutBinding,
         is_runtime_array: bool,
@@ -127,7 +128,6 @@ pub export fn vk_mesh_shader_create_pipeline(s: ?*types.VulkanState, config: ?*c
                  log.cardinal_log_error("Failed to reflect shader {s}: {s}", .{path, @errorName(err)});
                  return false;
              };
-             // defer reflect.deinit(); // Allocated in arena
              
              if (reflect.push_constant_size > 0) {
                  pc.stageFlags |= reflect.push_constant_stages;
@@ -164,14 +164,31 @@ pub export fn vk_mesh_shader_create_pipeline(s: ?*types.VulkanState, config: ?*c
         }
     }.func;
 
+    // Load PSO JSON
+    var builder = vk_pso.PipelineBuilder.init(std.heap.page_allocator, vs.context.device, pipeline_cache);
+    
+    var parsed = vk_pso.PipelineBuilder.load_from_json(std.heap.page_allocator, "assets/pipelines/mesh_shader.json") catch |err| {
+        log.cardinal_log_error("Failed to load mesh pipeline JSON: {s}", .{@errorName(err)});
+        return false;
+    };
+    defer parsed.deinit();
+
+    var descriptor = parsed.value;
+
+    // Override paths
+    if (cfg.mesh_shader_path) |path| descriptor.mesh_shader = .{ .path = std.mem.span(path), .stage = c.VK_SHADER_STAGE_MESH_BIT_EXT };
+    if (cfg.fragment_shader_path) |path| descriptor.fragment_shader = .{ .path = std.mem.span(path), .stage = c.VK_SHADER_STAGE_FRAGMENT_BIT };
+    if (cfg.task_shader_path) |path| descriptor.task_shader = .{ .path = std.mem.span(path), .stage = c.VK_SHADER_STAGE_TASK_BIT_EXT };
+
+    // Process shaders (reflect + load modules)
     if (process_shader(vs.context.device, cfg.mesh_shader_path, c.VK_SHADER_STAGE_MESH_BIT_EXT, &meshShaderModule, &set0_bindings, &set1_bindings, &pushConstantRange, allocator) catch false) {
-        // OK
+        if (descriptor.mesh_shader) |*ms| ms.module_handle = @intFromPtr(meshShaderModule);
     } else {
         return false;
     }
     
     if (process_shader(vs.context.device, cfg.fragment_shader_path, c.VK_SHADER_STAGE_FRAGMENT_BIT, &fragShaderModule, &set0_bindings, &set1_bindings, &pushConstantRange, allocator) catch false) {
-        // OK
+        descriptor.fragment_shader.module_handle = @intFromPtr(fragShaderModule);
     } else {
         c.vkDestroyShaderModule(vs.context.device, meshShaderModule, null);
         return false;
@@ -180,6 +197,7 @@ pub export fn vk_mesh_shader_create_pipeline(s: ?*types.VulkanState, config: ?*c
     if (cfg.task_shader_path != null) {
         if (process_shader(vs.context.device, cfg.task_shader_path, c.VK_SHADER_STAGE_TASK_BIT_EXT, &taskShaderModule, &set0_bindings, &set1_bindings, &pushConstantRange, allocator) catch false) {
             pipe.has_task_shader = true;
+            if (descriptor.task_shader) |*ts| ts.module_handle = @intFromPtr(taskShaderModule);
         } else {
              c.vkDestroyShaderModule(vs.context.device, meshShaderModule, null);
              c.vkDestroyShaderModule(vs.context.device, fragShaderModule, null);
@@ -187,34 +205,8 @@ pub export fn vk_mesh_shader_create_pipeline(s: ?*types.VulkanState, config: ?*c
         }
     } else {
         pipe.has_task_shader = false;
+        descriptor.task_shader = null;
     }
-
-    // Build ShaderStages array
-    var shaderStages: [3]c.VkPipelineShaderStageCreateInfo = undefined;
-    var stageCount: u32 = 0;
-    
-    if (pipe.has_task_shader) {
-        shaderStages[stageCount] = std.mem.zeroes(c.VkPipelineShaderStageCreateInfo);
-        shaderStages[stageCount].sType = c.VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
-        shaderStages[stageCount].stage = c.VK_SHADER_STAGE_TASK_BIT_EXT;
-        shaderStages[stageCount].module = taskShaderModule;
-        shaderStages[stageCount].pName = "main";
-        stageCount += 1;
-    }
-    
-    shaderStages[stageCount] = std.mem.zeroes(c.VkPipelineShaderStageCreateInfo);
-    shaderStages[stageCount].sType = c.VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
-    shaderStages[stageCount].stage = c.VK_SHADER_STAGE_MESH_BIT_EXT;
-    shaderStages[stageCount].module = meshShaderModule;
-    shaderStages[stageCount].pName = "main";
-    stageCount += 1;
-    
-    shaderStages[stageCount] = std.mem.zeroes(c.VkPipelineShaderStageCreateInfo);
-    shaderStages[stageCount].sType = c.VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
-    shaderStages[stageCount].stage = c.VK_SHADER_STAGE_FRAGMENT_BIT;
-    shaderStages[stageCount].module = fragShaderModule;
-    shaderStages[stageCount].pName = "main";
-    stageCount += 1;
 
     // Create Layouts
     const create_layout = struct {
@@ -266,7 +258,7 @@ pub export fn vk_mesh_shader_create_pipeline(s: ?*types.VulkanState, config: ?*c
     pipe.set1_layout = setLayouts[1];
     pipe.global_descriptor_set = null;
 
-    // Descriptor Pool
+    // Descriptor Pool (Existing logic)
     if (pipe.descriptor_pool == null) {
         const poolSizes = [_]c.VkDescriptorPoolSize{
             .{ .type = c.VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, .descriptorCount = 1000 * 4 },
@@ -289,7 +281,7 @@ pub export fn vk_mesh_shader_create_pipeline(s: ?*types.VulkanState, config: ?*c
         log.cardinal_log_debug("Reusing existing mesh shader descriptor pool", .{});
     }
 
-    // Default Material Buffer
+    // Default Material Buffer (Existing logic)
     const DefaultMaterialData = extern struct {
         albedo: [3]f32,
         pad0: f32,
@@ -323,7 +315,6 @@ pub export fn vk_mesh_shader_create_pipeline(s: ?*types.VulkanState, config: ?*c
         pipe.default_material_allocation = defaultMatBuffer.allocation;
     } else {
         log.cardinal_log_error("Failed to create default material buffer", .{});
-        // Cleanup descriptor pool if buffer creation fails
         c.vkDestroyDescriptorPool(vs.context.device, pipe.descriptor_pool, null);
         return false;
     }
@@ -345,92 +336,79 @@ pub export fn vk_mesh_shader_create_pipeline(s: ?*types.VulkanState, config: ?*c
         return false;
     }
 
-    // Graphics Pipeline
-    var viewportState = std.mem.zeroes(c.VkPipelineViewportStateCreateInfo);
-    viewportState.sType = c.VK_STRUCTURE_TYPE_PIPELINE_VIEWPORT_STATE_CREATE_INFO;
-    viewportState.viewportCount = 1;
-    viewportState.scissorCount = 1;
+    // Override State in Descriptor
+    descriptor.rasterization.polygon_mode = switch (cfg.polygon_mode) {
+        c.VK_POLYGON_MODE_LINE => .line,
+        c.VK_POLYGON_MODE_POINT => .point,
+        else => .fill,
+    };
+    descriptor.rasterization.cull_mode = switch (cfg.cull_mode) {
+        c.VK_CULL_MODE_NONE => .none,
+        c.VK_CULL_MODE_FRONT_BIT => .front,
+        c.VK_CULL_MODE_BACK_BIT => .back,
+        c.VK_CULL_MODE_FRONT_AND_BACK => .front_and_back,
+        else => .back,
+    };
+    descriptor.rasterization.front_face = if (cfg.front_face == c.VK_FRONT_FACE_CLOCKWISE) .clockwise else .counter_clockwise;
+    
+    descriptor.depth_stencil.depth_test_enable = cfg.depth_test_enable;
+    descriptor.depth_stencil.depth_write_enable = cfg.depth_write_enable;
+    descriptor.depth_stencil.depth_compare_op = switch (cfg.depth_compare_op) {
+         c.VK_COMPARE_OP_NEVER => .never,
+         c.VK_COMPARE_OP_LESS => .less,
+         c.VK_COMPARE_OP_EQUAL => .equal,
+         c.VK_COMPARE_OP_LESS_OR_EQUAL => .less_or_equal,
+         c.VK_COMPARE_OP_GREATER => .greater,
+         c.VK_COMPARE_OP_NOT_EQUAL => .not_equal,
+         c.VK_COMPARE_OP_GREATER_OR_EQUAL => .greater_or_equal,
+         c.VK_COMPARE_OP_ALWAYS => .always,
+         else => .less,
+    };
 
-    var rasterizer = std.mem.zeroes(c.VkPipelineRasterizationStateCreateInfo);
-    rasterizer.sType = c.VK_STRUCTURE_TYPE_PIPELINE_RASTERIZATION_STATE_CREATE_INFO;
-    rasterizer.depthClampEnable = c.VK_FALSE;
-    rasterizer.rasterizerDiscardEnable = c.VK_FALSE;
-    rasterizer.polygonMode = cfg.polygon_mode;
-    rasterizer.lineWidth = 1.0;
-    rasterizer.cullMode = cfg.cull_mode;
-    rasterizer.frontFace = cfg.front_face;
-    rasterizer.depthBiasEnable = c.VK_FALSE;
-
-    var multisampling = std.mem.zeroes(c.VkPipelineMultisampleStateCreateInfo);
-    multisampling.sType = c.VK_STRUCTURE_TYPE_PIPELINE_MULTISAMPLE_STATE_CREATE_INFO;
-    multisampling.sampleShadingEnable = c.VK_FALSE;
-    multisampling.rasterizationSamples = c.VK_SAMPLE_COUNT_1_BIT;
-
-    var depthStencil = std.mem.zeroes(c.VkPipelineDepthStencilStateCreateInfo);
-    depthStencil.sType = c.VK_STRUCTURE_TYPE_PIPELINE_DEPTH_STENCIL_STATE_CREATE_INFO;
-    depthStencil.depthTestEnable = if (cfg.depth_test_enable) c.VK_TRUE else c.VK_FALSE;
-    depthStencil.depthWriteEnable = if (cfg.depth_write_enable) c.VK_TRUE else c.VK_FALSE;
-    depthStencil.depthCompareOp = cfg.depth_compare_op;
-    depthStencil.depthBoundsTestEnable = c.VK_FALSE;
-    depthStencil.stencilTestEnable = c.VK_FALSE;
-
-    var colorBlendAttachment = std.mem.zeroes(c.VkPipelineColorBlendAttachmentState);
-    colorBlendAttachment.colorWriteMask = c.VK_COLOR_COMPONENT_R_BIT | c.VK_COLOR_COMPONENT_G_BIT | c.VK_COLOR_COMPONENT_B_BIT | c.VK_COLOR_COMPONENT_A_BIT;
-    colorBlendAttachment.blendEnable = if (cfg.blend_enable) c.VK_TRUE else c.VK_FALSE;
-    if (cfg.blend_enable) {
-        colorBlendAttachment.srcColorBlendFactor = cfg.src_color_blend_factor;
-        colorBlendAttachment.dstColorBlendFactor = cfg.dst_color_blend_factor;
-        colorBlendAttachment.colorBlendOp = cfg.color_blend_op;
-        colorBlendAttachment.srcAlphaBlendFactor = c.VK_BLEND_FACTOR_ONE;
-        colorBlendAttachment.dstAlphaBlendFactor = c.VK_BLEND_FACTOR_ZERO;
-        colorBlendAttachment.alphaBlendOp = c.VK_BLEND_OP_ADD;
+    // Color Blend
+    // TODO: Support multiple color attachments
+    if (descriptor.color_blend.attachments.len > 0) {
+        
+        var att = descriptor.color_blend.attachments[0];
+        att.blend_enable = cfg.blend_enable;
+        if (att.blend_enable) {
+             // TODO: Complete blend factor mapping
+             const map_blend_factor = struct {
+                 fn f(bf: c.VkBlendFactor) vk_pso.BlendFactor {
+                     return switch (bf) {
+                         c.VK_BLEND_FACTOR_ZERO => .zero,
+                         c.VK_BLEND_FACTOR_ONE => .one,
+                         c.VK_BLEND_FACTOR_SRC_ALPHA => .src_alpha,
+                         c.VK_BLEND_FACTOR_ONE_MINUS_SRC_ALPHA => .one_minus_src_alpha,
+                         else => .zero, // Fallback
+                     };
+                 }
+             }.f;
+             att.src_color_blend_factor = map_blend_factor(cfg.src_color_blend_factor);
+             att.dst_color_blend_factor = map_blend_factor(cfg.dst_color_blend_factor);
+        }
+        
+        // Allocate new slice to hold this modified attachment
+        const new_atts = builder.allocator.alloc(vk_pso.ColorBlendAttachmentDescriptor, 1) catch return false;
+        new_atts[0] = att;
+        descriptor.color_blend.attachments = new_atts;
     }
 
-    var colorBlending = std.mem.zeroes(c.VkPipelineColorBlendStateCreateInfo);
-    colorBlending.sType = c.VK_STRUCTURE_TYPE_PIPELINE_COLOR_BLEND_STATE_CREATE_INFO;
-    colorBlending.logicOpEnable = c.VK_FALSE;
-    colorBlending.attachmentCount = 1;
-    colorBlending.pAttachments = &colorBlendAttachment;
+    // Rendering
+    descriptor.rendering.color_formats = &.{swapchain_format};
+    descriptor.rendering.depth_format = depth_format;
 
-    const dynamicStates = [_]c.VkDynamicState{ c.VK_DYNAMIC_STATE_VIEWPORT, c.VK_DYNAMIC_STATE_SCISSOR };
-    var dynamicState = std.mem.zeroes(c.VkPipelineDynamicStateCreateInfo);
-    dynamicState.sType = c.VK_STRUCTURE_TYPE_PIPELINE_DYNAMIC_STATE_CREATE_INFO;
-    dynamicState.dynamicStateCount = 2;
-    dynamicState.pDynamicStates = &dynamicStates;
-
-    var renderingInfo = std.mem.zeroes(c.VkPipelineRenderingCreateInfo);
-    renderingInfo.sType = c.VK_STRUCTURE_TYPE_PIPELINE_RENDERING_CREATE_INFO;
-    renderingInfo.colorAttachmentCount = 1;
-    renderingInfo.pColorAttachmentFormats = &swapchain_format;
-    renderingInfo.depthAttachmentFormat = depth_format;
-
-    var pipelineInfo = std.mem.zeroes(c.VkGraphicsPipelineCreateInfo);
-    pipelineInfo.sType = c.VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO;
-    pipelineInfo.pNext = &renderingInfo;
-    pipelineInfo.stageCount = stageCount;
-    pipelineInfo.pStages = &shaderStages;
-    pipelineInfo.pVertexInputState = null;
-    pipelineInfo.pInputAssemblyState = null;
-    pipelineInfo.pViewportState = &viewportState;
-    pipelineInfo.pRasterizationState = &rasterizer;
-    pipelineInfo.pMultisampleState = &multisampling;
-    pipelineInfo.pDepthStencilState = &depthStencil;
-    pipelineInfo.pColorBlendState = &colorBlending;
-    pipelineInfo.pDynamicState = &dynamicState;
-    pipelineInfo.layout = pipe.pipeline_layout;
-    pipelineInfo.renderPass = null;
-    pipelineInfo.subpass = 0;
-    pipelineInfo.basePipelineHandle = null;
-
-    if (c.vkCreateGraphicsPipelines(vs.context.device, pipeline_cache, 1, &pipelineInfo, null, &pipe.pipeline) != c.VK_SUCCESS) {
-        log.cardinal_log_error("Failed to create mesh shader graphics pipeline!", .{});
+    // Build Pipeline
+    builder.build(descriptor, pipe.pipeline_layout, &pipe.pipeline) catch |err| {
+        log.cardinal_log_error("Failed to build mesh pipeline: {s}", .{@errorName(err)});
         c.vkDestroyPipelineLayout(vs.context.device, pipe.pipeline_layout, null);
         c.vkDestroyShaderModule(vs.context.device, meshShaderModule, null);
         c.vkDestroyShaderModule(vs.context.device, fragShaderModule, null);
         if (taskShaderModule != null) c.vkDestroyShaderModule(vs.context.device, taskShaderModule, null);
         return false;
-    }
+    };
 
+    // Cleanup shader modules (builder didn't own them because we passed handles)
     c.vkDestroyShaderModule(vs.context.device, meshShaderModule, null);
     c.vkDestroyShaderModule(vs.context.device, fragShaderModule, null);
     if (taskShaderModule != null) c.vkDestroyShaderModule(vs.context.device, taskShaderModule, null);

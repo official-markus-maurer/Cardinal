@@ -1,0 +1,30 @@
+{
+    "name": "mesh_shader_pipeline",
+    "mesh_shader": {
+        "path": "assets/shaders/mesh.mesh.spv"
+    },
+    "fragment_shader": {
+        "path": "assets/shaders/mesh.frag.spv"
+    },
+    "rasterization": {
+        "cull_mode": "back",
+        "front_face": "counter_clockwise",
+        "polygon_mode": "fill"
+    },
+    "depth_stencil": {
+        "depth_test_enable": true,
+        "depth_write_enable": true,
+        "depth_compare_op": "less"
+    },
+    "color_blend": {
+        "attachments": [
+            {
+                "blend_enable": false
+            }
+        ]
+    },
+    "rendering": {
+        "color_formats": [],
+        "depth_format": "undefined"
+    }
+}
