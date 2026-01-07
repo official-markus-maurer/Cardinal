@@ -540,6 +540,8 @@ pub const VulkanTextureManager = extern struct {
     defaultSampler: c.VkSampler,
     initialized: bool,
 
+    vkQueueSubmit2: c.PFN_vkQueueSubmit2,
+
     manager_mutex: cardinal_mutex_t,
     hasPlaceholder: bool,
     bindless_pool: BindlessTexturePool,

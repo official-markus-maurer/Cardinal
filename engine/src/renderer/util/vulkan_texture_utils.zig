@@ -22,7 +22,24 @@ const StagingBufferCleanup = struct {
     next: ?*StagingBufferCleanup,
 };
 
+const ImageCleanup = struct {
+    image: c.VkImage,
+    allocation: c.VmaAllocation,
+    timeline_value: u64,
+    next: ?*ImageCleanup,
+};
+
+const CommandBufferCleanup = struct {
+    commandBuffer: c.VkCommandBuffer,
+    commandPool: c.VkCommandPool,
+    device: c.VkDevice,
+    timeline_value: u64,
+    next: ?*CommandBufferCleanup,
+};
+
 var g_pending_cleanups: ?*StagingBufferCleanup = null;
+var g_pending_image_cleanups: ?*ImageCleanup = null;
+var g_pending_cmd_cleanups: ?*CommandBufferCleanup = null;
 var g_cleanup_system_initialized: bool = false;
 
 fn get_current_thread_id() u32 {
@@ -55,9 +72,30 @@ pub fn add_staging_buffer_cleanup(buffer: c.VkBuffer, memory: c.VkDeviceMemory, 
     tex_utils_log.debug("Added staging buffer {any} to deferred cleanup (timeline: {d})", .{ buffer, timeline_value });
 }
 
+pub fn add_image_cleanup(image: c.VkImage, allocation: c.VmaAllocation, timeline_value: u64) void {
+    const mem_alloc = @import("../../core/memory.zig").cardinal_get_allocator_for_category(.RENDERER);
+    const mem_utils = @import("../../core/memory.zig");
+    const cleanup = mem_utils.cardinal_alloc(mem_alloc, @sizeOf(ImageCleanup));
+    if (cleanup == null) {
+        tex_utils_log.err("Failed to allocate image cleanup tracking, immediate cleanup might leak if used", .{});
+        return;
+    }
+
+    const ptr = @as(*ImageCleanup, @ptrCast(@alignCast(cleanup)));
+    ptr.image = image;
+    ptr.allocation = allocation;
+    ptr.timeline_value = timeline_value;
+    ptr.next = g_pending_image_cleanups;
+    g_pending_image_cleanups = ptr;
+    g_cleanup_system_initialized = true;
+
+    tex_utils_log.debug("Added image {any} to deferred cleanup (timeline: {d})", .{ image, timeline_value });
+}
+
 pub fn process_staging_buffer_cleanups(sync_manager: ?*types.VulkanSyncManager, allocator: ?*types.VulkanAllocator) void {
     if (!g_cleanup_system_initialized or sync_manager == null or allocator == null) return;
 
+    // Process staging buffers
     var current = &g_pending_cleanups;
     while (current.*) |cleanup| {
         var reached: bool = false;
@@ -75,6 +113,66 @@ pub fn process_staging_buffer_cleanups(sync_manager: ?*types.VulkanSyncManager, 
             current = &cleanup.next;
         }
     }
+
+    // Process images
+    var current_img = &g_pending_image_cleanups;
+    while (current_img.*) |cleanup| {
+        var reached: bool = false;
+        if (vk_sync_manager.vulkan_sync_manager_is_timeline_value_reached(@ptrCast(sync_manager), cleanup.timeline_value, &reached) == c.VK_SUCCESS and reached) {
+            tex_utils_log.debug("Cleaning up completed image {any} (timeline: {d})", .{ cleanup.image, cleanup.timeline_value });
+
+            vk_allocator.vk_allocator_free_image(allocator, cleanup.image, cleanup.allocation);
+
+            current_img.* = cleanup.next;
+
+            const mem_alloc = @import("../../core/memory.zig").cardinal_get_allocator_for_category(.RENDERER);
+            const mem_utils = @import("../../core/memory.zig");
+            mem_utils.cardinal_free(mem_alloc, cleanup);
+        } else {
+            current_img = &cleanup.next;
+        }
+    }
+
+    // Process command buffers
+    var current_cmd = &g_pending_cmd_cleanups;
+    while (current_cmd.*) |cleanup| {
+        var reached: bool = false;
+        if (vk_sync_manager.vulkan_sync_manager_is_timeline_value_reached(@ptrCast(sync_manager), cleanup.timeline_value, &reached) == c.VK_SUCCESS and reached) {
+            tex_utils_log.debug("Cleaning up completed command buffer {any} (timeline: {d})", .{ cleanup.commandBuffer, cleanup.timeline_value });
+
+            var cmd_buf = cleanup.commandBuffer;
+            c.vkFreeCommandBuffers(cleanup.device, cleanup.commandPool, 1, &cmd_buf);
+
+            current_cmd.* = cleanup.next;
+
+            const mem_alloc = @import("../../core/memory.zig").cardinal_get_allocator_for_category(.RENDERER);
+            const mem_utils = @import("../../core/memory.zig");
+            mem_utils.cardinal_free(mem_alloc, cleanup);
+        } else {
+            current_cmd = &cleanup.next;
+        }
+    }
+}
+
+pub fn add_command_buffer_cleanup(commandBuffer: c.VkCommandBuffer, commandPool: c.VkCommandPool, device: c.VkDevice, timeline_value: u64) void {
+    const mem_alloc = @import("../../core/memory.zig").cardinal_get_allocator_for_category(.RENDERER);
+    const mem_utils = @import("../../core/memory.zig");
+    const cleanup = mem_utils.cardinal_alloc(mem_alloc, @sizeOf(CommandBufferCleanup));
+    if (cleanup == null) {
+        tex_utils_log.err("Failed to allocate command buffer cleanup tracking, immediate cleanup might leak if used", .{});
+        return;
+    }
+
+    const ptr = @as(*CommandBufferCleanup, @ptrCast(@alignCast(cleanup)));
+    ptr.commandBuffer = commandBuffer;
+    ptr.commandPool = commandPool;
+    ptr.device = device;
+    ptr.timeline_value = timeline_value;
+    ptr.next = g_pending_cmd_cleanups;
+    g_pending_cmd_cleanups = ptr;
+    g_cleanup_system_initialized = true;
+
+    tex_utils_log.debug("Added command buffer {any} to deferred cleanup (timeline: {d})", .{ commandBuffer, timeline_value });
 }
 
 pub fn shutdown_staging_buffer_cleanups(allocator: *types.VulkanAllocator) void {
@@ -93,6 +191,36 @@ pub fn shutdown_staging_buffer_cleanups(allocator: *types.VulkanAllocator) void 
         current = next;
     }
     g_pending_cleanups = null;
+
+    var current_img = g_pending_image_cleanups;
+    while (current_img) |cleanup| {
+        const next = cleanup.next;
+        tex_utils_log.debug("Force cleaning up image {any} on shutdown", .{cleanup.image});
+        vk_allocator.vk_allocator_free_image(allocator, cleanup.image, cleanup.allocation);
+
+        const mem_alloc = @import("../../core/memory.zig").cardinal_get_allocator_for_category(.RENDERER);
+        const mem_utils = @import("../../core/memory.zig");
+        mem_utils.cardinal_free(mem_alloc, cleanup);
+
+        current_img = next;
+    }
+    g_pending_image_cleanups = null;
+
+    var current_cmd = g_pending_cmd_cleanups;
+    while (current_cmd) |cleanup| {
+        const next = cleanup.next;
+        tex_utils_log.debug("Force cleaning up command buffer {any} on shutdown", .{cleanup.commandBuffer});
+        var cmd_buf = cleanup.commandBuffer;
+        c.vkFreeCommandBuffers(cleanup.device, cleanup.commandPool, 1, &cmd_buf);
+
+        const mem_alloc = @import("../../core/memory.zig").cardinal_get_allocator_for_category(.RENDERER);
+        const mem_utils = @import("../../core/memory.zig");
+        mem_utils.cardinal_free(mem_alloc, cleanup);
+
+        current_cmd = next;
+    }
+    g_pending_cmd_cleanups = null;
+
     g_cleanup_system_initialized = false;
 }
 

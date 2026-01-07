@@ -129,12 +129,66 @@ fn init_ref_counting() bool {
 }
 
 fn setup_function_pointers(s: *types.VulkanState) void {
-    if (s.context.vkQueueSubmit2 == null)
+    if (s.context.vkQueueSubmit2 == null) {
+        const func = c.vkGetDeviceProcAddr(s.context.device, "vkQueueSubmit2");
+        if (func) |f| {
+            s.context.vkQueueSubmit2 = @ptrCast(f);
+        } else {
+            // Try KHR extension
+            const func_khr = c.vkGetDeviceProcAddr(s.context.device, "vkQueueSubmit2KHR");
+            if (func_khr) |f| {
+                s.context.vkQueueSubmit2 = @ptrCast(f);
+            }
+        }
+    }
+    
+    if (s.context.vkQueueSubmit2 == null) {
+        log.cardinal_log_warn("vkQueueSubmit2 not found via vkGetDeviceProcAddr, falling back to static linking (unsafe if not supported)", .{});
         s.context.vkQueueSubmit2 = c.vkQueueSubmit2;
+    }
+
+    if (s.context.vkCmdPipelineBarrier2 == null) {
+        const func = c.vkGetDeviceProcAddr(s.context.device, "vkCmdPipelineBarrier2");
+        if (func) |f| {
+            s.context.vkCmdPipelineBarrier2 = @ptrCast(f);
+        } else {
+            const func_khr = c.vkGetDeviceProcAddr(s.context.device, "vkCmdPipelineBarrier2KHR");
+            if (func_khr) |f| {
+                s.context.vkCmdPipelineBarrier2 = @ptrCast(f);
+            }
+        }
+    }
+
     if (s.context.vkCmdPipelineBarrier2 == null)
         s.context.vkCmdPipelineBarrier2 = c.vkCmdPipelineBarrier2;
+
+    if (s.context.vkCmdBeginRendering == null) {
+        const func = c.vkGetDeviceProcAddr(s.context.device, "vkCmdBeginRendering");
+        if (func) |f| {
+            s.context.vkCmdBeginRendering = @ptrCast(f);
+        } else {
+            const func_khr = c.vkGetDeviceProcAddr(s.context.device, "vkCmdBeginRenderingKHR");
+            if (func_khr) |f| {
+                s.context.vkCmdBeginRendering = @ptrCast(f);
+            }
+        }
+    }
+
     if (s.context.vkCmdBeginRendering == null)
         s.context.vkCmdBeginRendering = c.vkCmdBeginRendering;
+
+    if (s.context.vkCmdEndRendering == null) {
+        const func = c.vkGetDeviceProcAddr(s.context.device, "vkCmdEndRendering");
+        if (func) |f| {
+            s.context.vkCmdEndRendering = @ptrCast(f);
+        } else {
+            const func_khr = c.vkGetDeviceProcAddr(s.context.device, "vkCmdEndRenderingKHR");
+            if (func_khr) |f| {
+                s.context.vkCmdEndRendering = @ptrCast(f);
+            }
+        }
+    }
+
     if (s.context.vkCmdEndRendering == null)
         s.context.vkCmdEndRendering = c.vkCmdEndRendering;
 }

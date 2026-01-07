@@ -308,7 +308,7 @@ pub export fn vulkan_resource_manager_process_mesh_cleanup(manager: ?*VulkanReso
 
     const s = mgr.vulkan_state.?;
     if (s.context.supports_mesh_shader) {
-        // vk_mesh_shader_process_pending_cleanup(s);
+        vk_mesh_shader.vk_mesh_shader_process_pending_cleanup(s);
     }
 }
 

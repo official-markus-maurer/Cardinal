@@ -409,6 +409,23 @@ pub export fn vk_mesh_shader_create_pipeline(s: ?*types.VulkanState, config: ?*c
         c.vkDestroyShaderModule(vs.context.device, meshShaderModule, null);
         c.vkDestroyShaderModule(vs.context.device, fragShaderModule, null);
         if (taskShaderModule != null) c.vkDestroyShaderModule(vs.context.device, taskShaderModule, null);
+        
+        // Cleanup managers and buffer
+        const mem_alloc = memory.cardinal_get_allocator_for_category(.RENDERER);
+        if (pipe.set0_manager != null) {
+            vk_desc_mgr.vk_descriptor_manager_destroy(pipe.set0_manager);
+            memory.cardinal_free(mem_alloc, @as(?*anyopaque, @ptrCast(pipe.set0_manager)));
+            pipe.set0_manager = null;
+        }
+        if (pipe.set1_manager != null) {
+            vk_desc_mgr.vk_descriptor_manager_destroy(pipe.set1_manager);
+            memory.cardinal_free(mem_alloc, @as(?*anyopaque, @ptrCast(pipe.set1_manager)));
+            pipe.set1_manager = null;
+        }
+        if (pipe.defaultMaterialBuffer.handle != null) {
+            buffer_mgr.vk_buffer_destroy(&pipe.defaultMaterialBuffer, vs.context.device, @ptrCast(&vs.allocator), vs);
+        }
+        
         return false;
     };
 
@@ -474,7 +491,7 @@ pub export fn vk_mesh_shader_destroy_pipeline(s: ?*types.VulkanState, pipeline: 
     }
 
     if (pipe.defaultMaterialBuffer.handle != null) {
-        vk_allocator.vk_allocator_free_buffer(@ptrCast(&vs.allocator), pipe.defaultMaterialBuffer.handle, pipe.defaultMaterialBuffer.allocation);
+        buffer_mgr.vk_buffer_destroy(&pipe.defaultMaterialBuffer, vs.context.device, @ptrCast(&vs.allocator), vs);
         pipe.defaultMaterialBuffer.handle = null;
         pipe.defaultMaterialBuffer.allocation = null;
         pipe.defaultMaterialBuffer.memory = null;
