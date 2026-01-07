@@ -5,7 +5,7 @@ This document outlines the roadmap for the Cardinal Engine, focusing on robustne
 ## 1. Core Architecture (Robustness & Extensibility)
 
 ### Memory Management
-- [ ] **Stack Allocator**: Implement a double-ended stack allocator for efficient frame-temporary memory (replacing general heap allocations for temporary data).
+- [x] **Stack Allocator**: Implement a double-ended stack allocator for efficient frame-temporary memory (replacing general heap allocations for temporary data).
 - [ ] **Job System Optimization**: 
     - Implement a **Pool Allocator** for `Job` structs to avoid `malloc` overhead per job.
     - Remove the hard limit of 8 dependents per job.

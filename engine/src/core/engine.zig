@@ -8,6 +8,7 @@ const window = @import("window.zig");
 const module = @import("module.zig");
 const events = @import("events.zig");
 const input = @import("input.zig");
+const stack_allocator = @import("stack_allocator.zig");
 const texture_loader = @import("../assets/texture_loader.zig");
 const mesh_loader = @import("../assets/mesh_loader.zig");
 const vulkan_renderer = @import("../renderer/vulkan_renderer.zig");
@@ -31,6 +32,9 @@ pub const CardinalEngine = struct {
     window: ?*window.CardinalWindow,
     renderer: vulkan_types.CardinalRenderer,
     config: CardinalEngineConfig,
+
+    frame_allocator: stack_allocator.StackAllocator = undefined,
+    frame_memory: []u8 = undefined,
 
     // Track initialization state
     memory_initialized: bool = false,
@@ -101,9 +105,16 @@ pub const CardinalEngine = struct {
         if (self.memory_initialized) {
             memory.cardinal_memory_shutdown();
         }
+
+        if (self.frame_memory.len > 0) {
+            self.allocator.free(self.frame_memory);
+        }
     }
 
     pub fn update(self: *CardinalEngine) !void {
+        // Reset frame allocator at the beginning of the frame
+        self.frame_allocator.reset();
+
         if (self.window) |win| {
             window.cardinal_window_poll(win);
             input.update(win);
@@ -120,6 +131,12 @@ pub const CardinalEngine = struct {
         memory.cardinal_memory_init(self.config.memory_size);
         self.memory_initialized = true;
         log.cardinal_log_info("Memory management system initialized", .{});
+
+        // Initialize Frame Allocator (16MB)
+        const frame_mem_size = 16 * 1024 * 1024;
+        self.frame_memory = try self.allocator.alloc(u8, frame_mem_size);
+        self.frame_allocator = stack_allocator.StackAllocator.init(self.frame_memory);
+        log.cardinal_log_info("Frame allocator initialized with {d}MB", .{frame_mem_size / 1024 / 1024});
 
         // Register Core Modules
         try self.module_manager.register(.{
@@ -199,6 +216,9 @@ pub const CardinalEngine = struct {
             return error.RendererCreateFailed;
         }
         self.renderer_initialized = true;
+
+        // Set frame allocator
+        vulkan_renderer.cardinal_renderer_set_frame_allocator(&self.renderer, &self.frame_allocator);
     }
 };
 

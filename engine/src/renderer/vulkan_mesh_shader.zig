@@ -278,7 +278,7 @@ pub export fn vk_mesh_shader_create_pipeline(s: ?*types.VulkanState, config: ?*c
 
     var defaultMatBuffer: types.VulkanBuffer = undefined;
     if (buffer_mgr.vk_buffer_create_device_local(@ptrCast(&defaultMatBuffer), vs.context.device, &vs.allocator, vs.commands.pools.?[0], vs.context.graphics_queue, &defaultMat, @sizeOf(DefaultMaterialData), c.VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT, vs)) {
-
+        pipe.defaultMaterialBuffer = defaultMatBuffer;
     } else {
         log.cardinal_log_error("Failed to create default material buffer", .{});
         // Cleanup managers
@@ -471,6 +471,13 @@ pub export fn vk_mesh_shader_destroy_pipeline(s: ?*types.VulkanState, pipeline: 
         const mem_alloc = memory.cardinal_get_allocator_for_category(.RENDERER);
         memory.cardinal_free(mem_alloc, @as(?*anyopaque, @ptrCast(pipe.set1_manager)));
         pipe.set1_manager = null;
+    }
+
+    if (pipe.defaultMaterialBuffer.handle != null) {
+        vk_allocator.vk_allocator_free_buffer(@ptrCast(&vs.allocator), pipe.defaultMaterialBuffer.handle, pipe.defaultMaterialBuffer.allocation);
+        pipe.defaultMaterialBuffer.handle = null;
+        pipe.defaultMaterialBuffer.allocation = null;
+        pipe.defaultMaterialBuffer.memory = null;
     }
 }
 

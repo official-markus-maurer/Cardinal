@@ -5,6 +5,7 @@ pub const module = @import("core/module.zig");
 pub const engine = @import("core/engine.zig");
 pub const input = @import("core/input.zig");
 pub const memory = @import("core/memory.zig");
+pub const stack_allocator = @import("core/stack_allocator.zig");
 pub const window = @import("core/window.zig");
 pub const resource_state = @import("core/resource_state.zig");
 pub const transform = @import("core/transform.zig");

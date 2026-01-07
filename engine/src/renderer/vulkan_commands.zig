@@ -14,6 +14,7 @@ const vk_simple_pipelines = @import("vulkan_simple_pipelines.zig");
 const vk_sync_manager = @import("vulkan_sync_manager.zig");
 const render_graph = @import("render_graph.zig");
 const vk_shadows = @import("vulkan_shadows.zig");
+const stack_allocator = @import("../core/stack_allocator.zig");
 
 const cmd_log = log.ScopedLogger("COMMANDS");
 
@@ -739,12 +740,24 @@ pub export fn vk_prepare_mesh_shader_rendering(s: ?*types.VulkanState) callconv(
     {
         texture_count = vs.pipelines.pbr_pipeline.textureManager.?.textureCount;
 
-        const mem_alloc = memory.cardinal_get_allocator_for_category(.RENDERER);
-        const views_ptr = memory.cardinal_alloc(mem_alloc, @sizeOf(c.VkImageView) * texture_count);
-        const samplers_ptr = memory.cardinal_alloc(mem_alloc, @sizeOf(c.VkSampler) * texture_count);
+        if (vs.frame_allocator) |fa_ptr| {
+             const fa = @as(*stack_allocator.StackAllocator, @ptrCast(@alignCast(fa_ptr)));
+             // Allocate from stack (no need to free)
+             // We use the generic allocator interface or direct calls. Direct calls are better for slices.
+             // We need aligned allocation for types.
+             const views_slice = fa.allocator().alloc(c.VkImageView, texture_count) catch return;
+             const samplers_slice = fa.allocator().alloc(c.VkSampler, texture_count) catch return;
+             
+             texture_views = views_slice.ptr;
+             samplers = samplers_slice.ptr;
+        } else {
+            const mem_alloc = memory.cardinal_get_allocator_for_category(.RENDERER);
+            const views_ptr = memory.cardinal_alloc(mem_alloc, @sizeOf(c.VkImageView) * texture_count);
+            const samplers_ptr = memory.cardinal_alloc(mem_alloc, @sizeOf(c.VkSampler) * texture_count);
 
-        texture_views = if (views_ptr) |p| @as([*]c.VkImageView, @ptrCast(@alignCast(p))) else null;
-        samplers = if (samplers_ptr) |p| @as([*]c.VkSampler, @ptrCast(@alignCast(p))) else null;
+            texture_views = if (views_ptr) |p| @as([*]c.VkImageView, @ptrCast(@alignCast(p))) else null;
+            samplers = if (samplers_ptr) |p| @as([*]c.VkSampler, @ptrCast(@alignCast(p))) else null;
+        }
 
         if (texture_views != null and samplers != null) {
             var i: u32 = 0;
@@ -754,11 +767,15 @@ pub export fn vk_prepare_mesh_shader_rendering(s: ?*types.VulkanState) callconv(
                 samplers.?[i] = if (texSampler != null) texSampler else vs.pipelines.pbr_pipeline.textureManager.?.defaultSampler;
             }
         } else {
-            if (texture_views) |p| memory.cardinal_free(mem_alloc, @as(?*anyopaque, @ptrCast(p)));
-            if (samplers) |p| memory.cardinal_free(mem_alloc, @as(?*anyopaque, @ptrCast(p)));
-            texture_views = null;
-            samplers = null;
-            texture_count = 0;
+             // Cleanup if allocation failed (only for heap)
+             if (vs.frame_allocator == null) {
+                const mem_alloc = memory.cardinal_get_allocator_for_category(.RENDERER);
+                if (texture_views) |p| memory.cardinal_free(mem_alloc, @as(?*anyopaque, @ptrCast(p)));
+                if (samplers) |p| memory.cardinal_free(mem_alloc, @as(?*anyopaque, @ptrCast(p)));
+             }
+             texture_views = null;
+             samplers = null;
+             texture_count = 0;
         }
     }
 
@@ -768,13 +785,15 @@ pub export fn vk_prepare_mesh_shader_rendering(s: ?*types.VulkanState) callconv(
         log.cardinal_log_debug("[MESH_SHADER] Updated descriptor buffers during preparation (bindless textures: {d})", .{texture_count});
     }
 
-    if (texture_views) |p| {
-        const mem_alloc = memory.cardinal_get_allocator_for_category(.RENDERER);
-        memory.cardinal_free(mem_alloc, @as(?*anyopaque, @ptrCast(p)));
-    }
-    if (samplers) |p| {
-        const mem_alloc = memory.cardinal_get_allocator_for_category(.RENDERER);
-        memory.cardinal_free(mem_alloc, @as(?*anyopaque, @ptrCast(p)));
+    if (vs.frame_allocator == null) {
+        if (texture_views) |p| {
+            const mem_alloc = memory.cardinal_get_allocator_for_category(.RENDERER);
+            memory.cardinal_free(mem_alloc, @as(?*anyopaque, @ptrCast(p)));
+        }
+        if (samplers) |p| {
+            const mem_alloc = memory.cardinal_get_allocator_for_category(.RENDERER);
+            memory.cardinal_free(mem_alloc, @as(?*anyopaque, @ptrCast(p)));
+        }
     }
 }
 

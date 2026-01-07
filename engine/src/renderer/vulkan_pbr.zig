@@ -136,7 +136,7 @@ fn create_pbr_graphics_pipeline(pipeline: *types.VulkanPBRPipeline, device: c.Vk
     var builder = vk_pso.PipelineBuilder.init(std.heap.page_allocator, device, pipelineCache);
 
     var parsed = vk_pso.PipelineBuilder.load_from_json(std.heap.page_allocator, json_path) catch |err| {
-        log.cardinal_log_error("Failed to load pipeline JSON '{s}': {s}", .{json_path, @errorName(err)});
+        log.cardinal_log_error("Failed to load pipeline JSON '{s}': {s}", .{ json_path, @errorName(err) });
         return false;
     };
     defer parsed.deinit();
@@ -183,7 +183,7 @@ fn create_pbr_graphics_pipeline(pipeline: *types.VulkanPBRPipeline, device: c.Vk
     builder.build(descriptor, pipeline.pipelineLayout, outPipeline) catch {
         return false;
     };
-    
+
     return true;
 }
 
@@ -210,7 +210,10 @@ fn create_pbr_uniform_buffers(pipeline: *types.VulkanPBRPipeline, device: c.VkDe
     lightInfo.persistentlyMapped = true;
 
     var lightBuffer: buffer_mgr.VulkanBuffer = undefined;
-    if (!buffer_mgr.vk_buffer_create(&lightBuffer, device, allocator, &lightInfo)) return false;
+    if (!buffer_mgr.vk_buffer_create(&lightBuffer, device, allocator, &lightInfo)) {
+        buffer_mgr.vk_buffer_destroy(&uboBuffer, device, allocator, null);
+        return false;
+    }
     pipeline.lightingBuffer = lightBuffer.handle;
     pipeline.lightingBufferMemory = lightBuffer.memory;
     pipeline.lightingBufferAllocation = lightBuffer.allocation;
@@ -225,7 +228,11 @@ fn create_pbr_uniform_buffers(pipeline: *types.VulkanPBRPipeline, device: c.VkDe
     boneInfo.persistentlyMapped = true;
 
     var boneBuffer: buffer_mgr.VulkanBuffer = undefined;
-    if (!buffer_mgr.vk_buffer_create(&boneBuffer, device, allocator, &boneInfo)) return false;
+    if (!buffer_mgr.vk_buffer_create(&boneBuffer, device, allocator, &boneInfo)) {
+        buffer_mgr.vk_buffer_destroy(&lightBuffer, device, allocator, null);
+        buffer_mgr.vk_buffer_destroy(&uboBuffer, device, allocator, null);
+        return false;
+    }
     pipeline.boneMatricesBuffer = boneBuffer.handle;
     pipeline.boneMatricesBufferMemory = boneBuffer.memory;
     pipeline.boneMatricesBufferAllocation = boneBuffer.allocation;
@@ -408,8 +415,8 @@ fn update_pbr_descriptor_sets(pipeline: *types.VulkanPBRPipeline) bool {
     // Update Shadow Map (Binding 7)
     if (pipeline.shadowMapView != null) {
         if (!descriptor_mgr.vk_descriptor_manager_update_image(dm, set, 7, pipeline.shadowMapView, pipeline.shadowMapSampler, c.VK_IMAGE_LAYOUT_DEPTH_STENCIL_READ_ONLY_OPTIMAL)) {
-             log.cardinal_log_error("Failed to update shadow map descriptor", .{});
-             return false;
+            log.cardinal_log_error("Failed to update shadow map descriptor", .{});
+            return false;
         }
     }
 
@@ -417,8 +424,8 @@ fn update_pbr_descriptor_sets(pipeline: *types.VulkanPBRPipeline) bool {
     if (pipeline.shadowUBO != null) {
         const shadowUBOSize = @sizeOf(math.Mat4) * SHADOW_CASCADE_COUNT + @sizeOf(f32) * 4;
         if (!descriptor_mgr.vk_descriptor_manager_update_buffer(dm, set, 9, pipeline.shadowUBO, 0, shadowUBOSize)) {
-             log.cardinal_log_error("Failed to update shadow UBO descriptor", .{});
-             return false;
+            log.cardinal_log_error("Failed to update shadow UBO descriptor", .{});
+            return false;
         }
     }
 
@@ -540,16 +547,16 @@ fn create_shadow_resources(pipeline: *types.VulkanPBRPipeline, device: c.VkDevic
     imageInfo.usage = c.VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT | c.VK_IMAGE_USAGE_SAMPLED_BIT;
     imageInfo.samples = c.VK_SAMPLE_COUNT_1_BIT;
     imageInfo.sharingMode = c.VK_SHARING_MODE_EXCLUSIVE;
-    
+
     var allocInfo = std.mem.zeroes(c.VmaAllocationCreateInfo);
     allocInfo.usage = c.VMA_MEMORY_USAGE_AUTO;
     allocInfo.flags = c.VMA_ALLOCATION_CREATE_DEDICATED_MEMORY_BIT;
-    
+
     if (c.vmaCreateImage(allocator.handle, &imageInfo, &allocInfo, &pipeline.shadowMapImage, &pipeline.shadowMapAllocation, null) != c.VK_SUCCESS) {
         log.cardinal_log_error("Failed to create shadow map image", .{});
         return false;
     }
-    
+
     // Create View
     var viewInfo = std.mem.zeroes(c.VkImageViewCreateInfo);
     viewInfo.sType = c.VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO;
@@ -561,7 +568,7 @@ fn create_shadow_resources(pipeline: *types.VulkanPBRPipeline, device: c.VkDevic
     viewInfo.subresourceRange.levelCount = 1;
     viewInfo.subresourceRange.baseArrayLayer = 0;
     viewInfo.subresourceRange.layerCount = SHADOW_CASCADE_COUNT;
-    
+
     if (c.vkCreateImageView(device, &viewInfo, null, &pipeline.shadowMapView) != c.VK_SUCCESS) {
         log.cardinal_log_error("Failed to create shadow map view", .{});
         return false;
@@ -573,11 +580,11 @@ fn create_shadow_resources(pipeline: *types.VulkanPBRPipeline, device: c.VkDevic
         viewInfo.subresourceRange.baseArrayLayer = i;
         viewInfo.subresourceRange.layerCount = 1;
         if (c.vkCreateImageView(device, &viewInfo, null, &pipeline.shadowCascadeViews[i]) != c.VK_SUCCESS) {
-             log.cardinal_log_error("Failed to create shadow cascade view {d}", .{i});
-             return false;
+            log.cardinal_log_error("Failed to create shadow cascade view {d}", .{i});
+            return false;
         }
     }
-    
+
     // Create Sampler (PCF compatible)
     var samplerInfo = std.mem.zeroes(c.VkSamplerCreateInfo);
     samplerInfo.sType = c.VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO;
@@ -590,32 +597,32 @@ fn create_shadow_resources(pipeline: *types.VulkanPBRPipeline, device: c.VkDevic
     samplerInfo.borderColor = c.VK_BORDER_COLOR_FLOAT_OPAQUE_WHITE;
     samplerInfo.compareEnable = c.VK_TRUE;
     samplerInfo.compareOp = c.VK_COMPARE_OP_LESS;
-    
+
     if (c.vkCreateSampler(device, &samplerInfo, null, &pipeline.shadowMapSampler) != c.VK_SUCCESS) {
         log.cardinal_log_error("Failed to create shadow map sampler", .{});
         return false;
     }
-    
+
     // Create Shadow UBO
     var bufferInfo = std.mem.zeroes(buffer_mgr.VulkanBufferCreateInfo);
     bufferInfo.size = @sizeOf(math.Mat4) * SHADOW_CASCADE_COUNT + @sizeOf(f32) * 4; // Matrices + Splits
     bufferInfo.usage = c.VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT;
     bufferInfo.properties = c.VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | c.VK_MEMORY_PROPERTY_HOST_COHERENT_BIT;
     bufferInfo.persistentlyMapped = true;
-    
+
     var shadowBuffer: buffer_mgr.VulkanBuffer = undefined;
     if (!buffer_mgr.vk_buffer_create(&shadowBuffer, device, allocator, &bufferInfo)) return false;
-    
+
     pipeline.shadowUBO = shadowBuffer.handle;
     pipeline.shadowUBOMemory = shadowBuffer.memory;
     pipeline.shadowUBOAllocation = shadowBuffer.allocation;
     pipeline.shadowUBOMapped = shadowBuffer.mapped;
-    
+
     return true;
 }
 
 fn create_shadow_pipeline(pipeline: *types.VulkanPBRPipeline, device: c.VkDevice, allocator: *types.VulkanAllocator, vulkan_state: ?*types.VulkanState) bool {
-    
+
     // Create Descriptor Manager
     const mem_alloc = memory.cardinal_get_allocator_for_category(.RENDERER);
     const ptr = memory.cardinal_alloc(mem_alloc, @sizeOf(types.VulkanDescriptorManager));
@@ -648,22 +655,22 @@ fn create_shadow_pipeline(pipeline: *types.VulkanPBRPipeline, device: c.VkDevice
     // Binding 0
     const shadowUBOSize = @sizeOf(math.Mat4) * SHADOW_CASCADE_COUNT + @sizeOf(f32) * 4;
     if (!descriptor_mgr.vk_descriptor_manager_update_buffer(pipeline.shadowDescriptorManager, pipeline.shadowDescriptorSet, 0, pipeline.shadowUBO, 0, shadowUBOSize)) {
-         log.cardinal_log_error("Failed to update shadow UBO descriptor", .{});
-         return false;
+        log.cardinal_log_error("Failed to update shadow UBO descriptor", .{});
+        return false;
     }
 
     // Binding 6
     if (!descriptor_mgr.vk_descriptor_manager_update_buffer(pipeline.shadowDescriptorManager, pipeline.shadowDescriptorSet, 6, pipeline.boneMatricesBuffer, 0, pipeline.maxBones * 16 * @sizeOf(f32))) {
-         log.cardinal_log_error("Failed to update bone matrices descriptor", .{});
-         return false;
+        log.cardinal_log_error("Failed to update bone matrices descriptor", .{});
+        return false;
     }
-    
+
     // Push Constant Range
     var pushConstantRange = std.mem.zeroes(c.VkPushConstantRange);
     pushConstantRange.stageFlags = c.VK_SHADER_STAGE_VERTEX_BIT;
     pushConstantRange.offset = 0;
     pushConstantRange.size = 156; // model(64) + padding + hasSkeleton(4) + cascadeIndex(4) -> 156
-    
+
     // Pipeline Layout
     var pipelineLayoutInfo = std.mem.zeroes(c.VkPipelineLayoutCreateInfo);
     pipelineLayoutInfo.sType = c.VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO;
@@ -673,12 +680,12 @@ fn create_shadow_pipeline(pipeline: *types.VulkanPBRPipeline, device: c.VkDevice
     pipelineLayoutInfo.pSetLayouts = &layout;
     pipelineLayoutInfo.pushConstantRangeCount = 1;
     pipelineLayoutInfo.pPushConstantRanges = &pushConstantRange;
-    
+
     if (c.vkCreatePipelineLayout(device, &pipelineLayoutInfo, null, &pipeline.shadowPipelineLayout) != c.VK_SUCCESS) {
         log.cardinal_log_error("Failed to create shadow pipeline layout", .{});
         return false;
     }
-    
+
     // Use PipelineBuilder
     var builder = vk_pso.PipelineBuilder.init(std.heap.page_allocator, device, null);
 
@@ -690,7 +697,7 @@ fn create_shadow_pipeline(pipeline: *types.VulkanPBRPipeline, device: c.VkDevice
 
     var descriptor = parsed.value;
     descriptor.rendering.depth_format = SHADOW_FORMAT;
-    descriptor.rendering.color_formats = &.{}; 
+    descriptor.rendering.color_formats = &.{};
 
     if (pipeline.shadowDescriptorManager) |mgr| {
         if (mgr.useDescriptorBuffers) {
@@ -702,7 +709,7 @@ fn create_shadow_pipeline(pipeline: *types.VulkanPBRPipeline, device: c.VkDevice
         log.cardinal_log_error("Failed to build shadow pipeline: {s}", .{@errorName(err)});
         return false;
     };
-    
+
     return true;
 }
 
@@ -727,7 +734,7 @@ pub export fn vk_pbr_pipeline_create(pipeline: ?*types.VulkanPBRPipeline, device
     const allocator_arena = arena.allocator();
 
     var set0_bindings = std.AutoHashMap(u32, c.VkDescriptorSetLayoutBinding).init(allocator_arena);
-    
+
     var pushConstantRange = c.VkPushConstantRange{
         .stageFlags = 0,
         .offset = 0,
@@ -739,54 +746,52 @@ pub export fn vk_pbr_pipeline_create(pipeline: ?*types.VulkanPBRPipeline, device
 
     // Load Shaders and Reflect
     const process_shader = struct {
-        fn func(dev: c.VkDevice, name: []const u8, stage: c.VkShaderStageFlags, module_out: *c.VkShaderModule,
-               map: *std.AutoHashMap(u32, c.VkDescriptorSetLayoutBinding), pc: *c.VkPushConstantRange, allocator_ref: std.mem.Allocator) !bool {
-             
-             var path: [512]u8 = undefined;
-             var shaders_dir: [*c]const u8 = @ptrCast(c.getenv("CARDINAL_SHADERS_DIR"));
-             if (shaders_dir == null or shaders_dir[0] == 0) {
-                 shaders_dir = "assets/shaders";
-             }
-             _ = c.snprintf(&path, 512, "%s/%s", shaders_dir, name.ptr);
-             const path_slice = std.mem.span(@as([*:0]const u8, @ptrCast(&path)));
-             
-             const code = shader_utils.vk_shader_read_file(allocator_ref, path_slice) catch |err| {
-                 log.cardinal_log_error("Failed to read shader {s}: {s}", .{path_slice, @errorName(err)});
-                 return false;
-             };
-             
-             if (!shader_utils.vk_shader_create_module_from_code(dev, code.ptr, code.len * 4, module_out)) {
-                 log.cardinal_log_error("Failed to create shader module for {s}", .{path_slice});
-                 return false;
-             }
-             
-             const reflect = shader_utils.reflection.reflect_shader(allocator_ref, code, stage) catch |err| {
-                 log.cardinal_log_error("Failed to reflect shader {s}: {s}", .{path_slice, @errorName(err)});
-                 return false;
-             };
-             
-             if (reflect.push_constant_size > 0) {
-                 pc.stageFlags |= reflect.push_constant_stages;
-                 if (reflect.push_constant_size > pc.size) pc.size = reflect.push_constant_size;
-             }
-             
-             for (reflect.resources.items) |res| {
-                 if (res.set != 0) continue; // Only process Set 0 for descriptor manager
-                 
-                 const entry = try map.getOrPut(res.binding);
-                 if (entry.found_existing) {
-                     entry.value_ptr.stageFlags |= res.stage_flags;
-                 } else {
-                     entry.value_ptr.* = .{
-                         .binding = res.binding,
-                         .descriptorType = res.type,
-                         .descriptorCount = res.count,
-                         .stageFlags = res.stage_flags,
-                         .pImmutableSamplers = null,
-                     };
-                 }
-             }
-             return true;
+        fn func(dev: c.VkDevice, name: []const u8, stage: c.VkShaderStageFlags, module_out: *c.VkShaderModule, map: *std.AutoHashMap(u32, c.VkDescriptorSetLayoutBinding), pc: *c.VkPushConstantRange, allocator_ref: std.mem.Allocator) !bool {
+            var path: [512]u8 = undefined;
+            var shaders_dir: [*c]const u8 = @ptrCast(c.getenv("CARDINAL_SHADERS_DIR"));
+            if (shaders_dir == null or shaders_dir[0] == 0) {
+                shaders_dir = "assets/shaders";
+            }
+            _ = c.snprintf(&path, 512, "%s/%s", shaders_dir, name.ptr);
+            const path_slice = std.mem.span(@as([*:0]const u8, @ptrCast(&path)));
+
+            const code = shader_utils.vk_shader_read_file(allocator_ref, path_slice) catch |err| {
+                log.cardinal_log_error("Failed to read shader {s}: {s}", .{ path_slice, @errorName(err) });
+                return false;
+            };
+
+            if (!shader_utils.vk_shader_create_module_from_code(dev, code.ptr, code.len * 4, module_out)) {
+                log.cardinal_log_error("Failed to create shader module for {s}", .{path_slice});
+                return false;
+            }
+
+            const reflect = shader_utils.reflection.reflect_shader(allocator_ref, code, stage) catch |err| {
+                log.cardinal_log_error("Failed to reflect shader {s}: {s}", .{ path_slice, @errorName(err) });
+                return false;
+            };
+
+            if (reflect.push_constant_size > 0) {
+                pc.stageFlags |= reflect.push_constant_stages;
+                if (reflect.push_constant_size > pc.size) pc.size = reflect.push_constant_size;
+            }
+
+            for (reflect.resources.items) |res| {
+                if (res.set != 0) continue; // Only process Set 0 for descriptor manager
+
+                const entry = try map.getOrPut(res.binding);
+                if (entry.found_existing) {
+                    entry.value_ptr.stageFlags |= res.stage_flags;
+                } else {
+                    entry.value_ptr.* = .{
+                        .binding = res.binding,
+                        .descriptorType = res.type,
+                        .descriptorCount = res.count,
+                        .stageFlags = res.stage_flags,
+                        .pImmutableSamplers = null,
+                    };
+                }
+            }
+            return true;
         }
     }.func;
 
@@ -802,7 +807,7 @@ pub export fn vk_pbr_pipeline_create(pipeline: ?*types.VulkanPBRPipeline, device
         c.vkDestroyShaderModule(device, vertShader, null);
         return false;
     }
-    
+
     // Ensure push constant size is at least what struct expects (safety check)
     if (pushConstantRange.size < @sizeOf(types.PBRPushConstants)) {
         pushConstantRange.size = @sizeOf(types.PBRPushConstants);
@@ -817,17 +822,13 @@ pub export fn vk_pbr_pipeline_create(pipeline: ?*types.VulkanPBRPipeline, device
     log.cardinal_log_debug("Descriptor manager created successfully", .{});
 
     if (!create_pbr_texture_manager(pipe, device, alloc, commandPool, graphicsQueue, vulkan_state)) {
-        descriptor_mgr.vk_descriptor_manager_destroy(@ptrCast(pipe.descriptorManager));
-        c.free(pipe.descriptorManager);
+        vk_pbr_pipeline_destroy(pipeline, device, allocator);
         return false;
     }
     log.cardinal_log_debug("Texture manager initialized successfully", .{});
 
     if (!create_pbr_pipeline_layout(pipe, device, &pushConstantRange)) {
-        vk_texture_mgr.vk_texture_manager_destroy(pipe.textureManager.?);
-        c.free(@as(?*anyopaque, @ptrCast(pipe.textureManager)));
-        descriptor_mgr.vk_descriptor_manager_destroy(@ptrCast(pipe.descriptorManager));
-        c.free(pipe.descriptorManager);
+        vk_pbr_pipeline_destroy(pipeline, device, allocator);
         return false;
     }
 
@@ -836,12 +837,14 @@ pub export fn vk_pbr_pipeline_create(pipeline: ?*types.VulkanPBRPipeline, device
     if (!create_pbr_graphics_pipeline(pipe, device, vertShader, fragShader, swapchainFormat, depthFormat, "assets/pipelines/pbr_opaque.json", &pipe.pipeline, pipelineCache)) {
         dev.destroyShaderModule(vertShader);
         dev.destroyShaderModule(fragShader);
+        vk_pbr_pipeline_destroy(pipeline, device, allocator);
         return false;
     }
 
     if (!create_pbr_graphics_pipeline(pipe, device, vertShader, fragShader, swapchainFormat, depthFormat, "assets/pipelines/pbr_transparent.json", &pipe.pipelineBlend, pipelineCache)) {
         dev.destroyShaderModule(vertShader);
         dev.destroyShaderModule(fragShader);
+        vk_pbr_pipeline_destroy(pipeline, device, allocator);
         return false;
     }
 
@@ -851,17 +854,20 @@ pub export fn vk_pbr_pipeline_create(pipeline: ?*types.VulkanPBRPipeline, device
     log.cardinal_log_debug("PBR graphics pipelines created", .{});
 
     if (!create_pbr_uniform_buffers(pipe, device, alloc)) {
+        vk_pbr_pipeline_destroy(pipeline, device, allocator);
         return false;
     }
 
     // Initialize Shadow Maps
     if (!create_shadow_resources(pipe, device, alloc)) {
         log.cardinal_log_error("Failed to create shadow resources", .{});
+        vk_pbr_pipeline_destroy(pipeline, device, allocator);
         return false;
     }
 
     if (!create_shadow_pipeline(pipe, device, alloc, vulkan_state)) {
         log.cardinal_log_error("Failed to create shadow pipeline", .{});
+        vk_pbr_pipeline_destroy(pipeline, device, allocator);
         return false;
     }
 
@@ -878,8 +884,8 @@ pub export fn vk_pbr_pipeline_destroy(pipeline: ?*types.VulkanPBRPipeline, devic
         return;
     }
     if (!pipeline.?.initialized) {
-        log.cardinal_log_warn("vk_pbr_pipeline_destroy called on uninitialized pipeline", .{});
-        return;
+        log.cardinal_log_warn("vk_pbr_pipeline_destroy called on uninitialized pipeline (cleaning up partial resources)", .{});
+        // Continue cleanup even if not initialized, to handle partial failures
     }
     const pipe = pipeline.?;
     const alloc = allocator.?;
@@ -917,13 +923,6 @@ pub export fn vk_pbr_pipeline_destroy(pipeline: ?*types.VulkanPBRPipeline, devic
         vk_allocator.vk_allocator_free_buffer(alloc, pipe.lightingBuffer, pipe.lightingBufferAllocation);
     }
 
-    if (pipe.textureManager != null) {
-        vk_texture_mgr.vk_texture_manager_destroy(pipe.textureManager.?);
-        const mem_alloc = memory.cardinal_get_allocator_for_category(.RENDERER);
-        memory.cardinal_free(mem_alloc, pipe.textureManager);
-        pipe.textureManager = null;
-    }
-
     if (pipe.descriptorManager != null) {
         const mem_alloc = memory.cardinal_get_allocator_for_category(.RENDERER);
         descriptor_mgr.vk_descriptor_manager_destroy(@ptrCast(pipe.descriptorManager));
@@ -954,14 +953,14 @@ pub export fn vk_pbr_pipeline_destroy(pipeline: ?*types.VulkanPBRPipeline, devic
         memory.cardinal_free(mem_alloc, pipe.shadowDescriptorManager);
         pipe.shadowDescriptorManager = null;
     }
-    
+
     var i: u32 = 0;
     while (i < SHADOW_CASCADE_COUNT) : (i += 1) {
         if (pipe.shadowCascadeViews[i] != null) {
             c.vkDestroyImageView(device, pipe.shadowCascadeViews[i], null);
         }
     }
-    
+
     if (pipe.shadowMapView != null) {
         c.vkDestroyImageView(device, pipe.shadowMapView, null);
     }
@@ -971,7 +970,7 @@ pub export fn vk_pbr_pipeline_destroy(pipeline: ?*types.VulkanPBRPipeline, devic
     if (pipe.shadowMapSampler != null) {
         c.vkDestroySampler(device, pipe.shadowMapSampler, null);
     }
-    
+
     if (pipe.shadowUBO != null or pipe.shadowUBOMemory != null) {
         if (pipe.shadowUBOMapped != null) {
             vk_allocator.vk_allocator_unmap_memory(alloc, pipe.shadowUBOAllocation);
@@ -1027,15 +1026,15 @@ pub export fn vk_pbr_render(pipeline: ?*types.VulkanPBRPipeline, commandBuffer: 
     var descriptorSet: c.VkDescriptorSet = null;
     if (pipe.descriptorManager != null) {
         const dm = @as(*types.VulkanDescriptorManager, @ptrCast(pipe.descriptorManager));
-        
+
         if (dm.useDescriptorBuffers) {
-             if (dm.descriptorSetCount > 0) {
-                 const setIndex = dm.descriptorSetCount - 1;
-                 descriptorSet = @ptrFromInt(setIndex);
-             } else {
-                 log.cardinal_log_warn("vk_pbr_render skipped: no descriptor sets (buffer mode)", .{});
-                 return;
-             }
+            if (dm.descriptorSetCount > 0) {
+                const setIndex = dm.descriptorSetCount - 1;
+                descriptorSet = @ptrFromInt(setIndex);
+            } else {
+                log.cardinal_log_warn("vk_pbr_render skipped: no descriptor sets (buffer mode)", .{});
+                return;
+            }
         } else {
             if (dm.descriptorSets != null and dm.descriptorSetCount > 0) {
                 const setIndex = dm.descriptorSetCount - 1;
@@ -1063,7 +1062,7 @@ pub export fn vk_pbr_render(pipeline: ?*types.VulkanPBRPipeline, commandBuffer: 
 
     // Pass 1: Opaque
     cmd.bindPipeline(c.VK_PIPELINE_BIND_POINT_GRAPHICS, pipe.pipeline);
-    
+
     // Bind main descriptor set (Set 0)
     if (pipe.descriptorManager) |mgr| {
         var sets: ?[*]const c.VkDescriptorSet = null;
@@ -1081,24 +1080,24 @@ pub export fn vk_pbr_render(pipeline: ?*types.VulkanPBRPipeline, commandBuffer: 
     if (pipe.textureManager != null) {
         const tm = pipe.textureManager.?;
         if (tm.bindless_pool.use_descriptor_buffer) {
-             const pool = &tm.bindless_pool;
-             
-             var binding_info = std.mem.zeroes(c.VkDescriptorBufferBindingInfoEXT);
-             binding_info.sType = c.VK_STRUCTURE_TYPE_DESCRIPTOR_BUFFER_BINDING_INFO_EXT;
-             binding_info.address = pool.descriptor_buffer_address;
-             binding_info.usage = c.VK_BUFFER_USAGE_RESOURCE_DESCRIPTOR_BUFFER_BIT_EXT;
-             
-             const binding_infos = [_]c.VkDescriptorBufferBindingInfoEXT{binding_info};
-             if (pool.vkCmdBindDescriptorBuffersEXT) |bind_buffers| {
-                 bind_buffers(commandBuffer, 1, &binding_infos);
-             }
-             
-             const buffer_index: u32 = 0;
-             const offset: c.VkDeviceSize = 0;
-             
-             if (pool.vkCmdSetDescriptorBufferOffsetsEXT) |set_offsets| {
-                 set_offsets(commandBuffer, c.VK_PIPELINE_BIND_POINT_GRAPHICS, pipe.pipelineLayout, 1, 1, &buffer_index, &offset);
-             }
+            const pool = &tm.bindless_pool;
+
+            var binding_info = std.mem.zeroes(c.VkDescriptorBufferBindingInfoEXT);
+            binding_info.sType = c.VK_STRUCTURE_TYPE_DESCRIPTOR_BUFFER_BINDING_INFO_EXT;
+            binding_info.address = pool.descriptor_buffer_address;
+            binding_info.usage = c.VK_BUFFER_USAGE_RESOURCE_DESCRIPTOR_BUFFER_BIT_EXT;
+
+            const binding_infos = [_]c.VkDescriptorBufferBindingInfoEXT{binding_info};
+            if (pool.vkCmdBindDescriptorBuffersEXT) |bind_buffers| {
+                bind_buffers(commandBuffer, 1, &binding_infos);
+            }
+
+            const buffer_index: u32 = 0;
+            const offset: c.VkDeviceSize = 0;
+
+            if (pool.vkCmdSetDescriptorBufferOffsetsEXT) |set_offsets| {
+                set_offsets(commandBuffer, c.VK_PIPELINE_BIND_POINT_GRAPHICS, pipe.pipelineLayout, 1, 1, &buffer_index, &offset);
+            }
         } else if (tm.bindless_pool.descriptor_set != null) {
             const bindlessSet = tm.bindless_pool.descriptor_set;
             if (@intFromPtr(bindlessSet) != 0) {
@@ -1185,7 +1184,7 @@ pub export fn vk_pbr_render(pipeline: ?*types.VulkanPBRPipeline, commandBuffer: 
 
     // Pass 2: Blend
     cmd.bindPipeline(c.VK_PIPELINE_BIND_POINT_GRAPHICS, pipe.pipelineBlend);
-    
+
     // Re-bind descriptor sets for new pipeline if needed
     if (pipe.descriptorManager) |mgr| {
         var sets: ?[*]const c.VkDescriptorSet = null;
@@ -1202,24 +1201,24 @@ pub export fn vk_pbr_render(pipeline: ?*types.VulkanPBRPipeline, commandBuffer: 
     if (pipe.textureManager != null) {
         const tm = pipe.textureManager.?;
         if (tm.bindless_pool.use_descriptor_buffer) {
-             const pool = &tm.bindless_pool;
-             
-             var binding_info = std.mem.zeroes(c.VkDescriptorBufferBindingInfoEXT);
-             binding_info.sType = c.VK_STRUCTURE_TYPE_DESCRIPTOR_BUFFER_BINDING_INFO_EXT;
-             binding_info.address = pool.descriptor_buffer_address;
-             binding_info.usage = c.VK_BUFFER_USAGE_RESOURCE_DESCRIPTOR_BUFFER_BIT_EXT;
-             
-             const binding_infos = [_]c.VkDescriptorBufferBindingInfoEXT{binding_info};
-             if (pool.vkCmdBindDescriptorBuffersEXT) |bind_buffers| {
-                 bind_buffers(commandBuffer, 1, &binding_infos);
-             }
-             
-             const buffer_index: u32 = 0;
-             const offset: c.VkDeviceSize = 0;
-             
-             if (pool.vkCmdSetDescriptorBufferOffsetsEXT) |set_offsets| {
-                 set_offsets(commandBuffer, c.VK_PIPELINE_BIND_POINT_GRAPHICS, pipe.pipelineLayout, 1, 1, &buffer_index, &offset);
-             }
+            const pool = &tm.bindless_pool;
+
+            var binding_info = std.mem.zeroes(c.VkDescriptorBufferBindingInfoEXT);
+            binding_info.sType = c.VK_STRUCTURE_TYPE_DESCRIPTOR_BUFFER_BINDING_INFO_EXT;
+            binding_info.address = pool.descriptor_buffer_address;
+            binding_info.usage = c.VK_BUFFER_USAGE_RESOURCE_DESCRIPTOR_BUFFER_BIT_EXT;
+
+            const binding_infos = [_]c.VkDescriptorBufferBindingInfoEXT{binding_info};
+            if (pool.vkCmdBindDescriptorBuffersEXT) |bind_buffers| {
+                bind_buffers(commandBuffer, 1, &binding_infos);
+            }
+
+            const buffer_index: u32 = 0;
+            const offset: c.VkDeviceSize = 0;
+
+            if (pool.vkCmdSetDescriptorBufferOffsetsEXT) |set_offsets| {
+                set_offsets(commandBuffer, c.VK_PIPELINE_BIND_POINT_GRAPHICS, pipe.pipelineLayout, 1, 1, &buffer_index, &offset);
+            }
         } else {
             if (tm.bindless_pool.descriptor_set) |bindlessSet| {
                 if (@intFromPtr(bindlessSet) != 0) {

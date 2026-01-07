@@ -51,19 +51,19 @@ fn pbr_pass_callback(cmd: c.VkCommandBuffer, state: *types.VulkanState) void {
     if (state.render_graph) |rg_ptr| {
         const rg = @as(*render_graph.RenderGraph, @ptrCast(@alignCast(rg_ptr)));
         if (rg.resources.get(types.RESOURCE_ID_DEPTHBUFFER)) |res| {
-             depth_view = res.image_view;
-             use_depth = (depth_view != null);
+            depth_view = res.image_view;
+            use_depth = (depth_view != null);
         }
     }
 
     if (!use_depth) {
-         use_depth = state.swapchain.depth_image_view != null and state.swapchain.depth_image != null;
+        use_depth = state.swapchain.depth_image_view != null and state.swapchain.depth_image != null;
     }
 
     if (vk_commands.begin_dynamic_rendering(state, cmd, state.current_image_index, use_depth, depth_view, &clears, true, 0)) {
         if (use_depth and depth_view != null) {
-             // Log the image view used for rendering
-             // log.cardinal_log_error("PBR Pass: Rendering with Depth View {any}", .{depth_view.?});
+            // Log the image view used for rendering
+            // log.cardinal_log_error("PBR Pass: Rendering with Depth View {any}", .{depth_view.?});
         }
         vk_commands.vk_record_scene_content(state, cmd);
         vk_commands.end_dynamic_rendering(state, cmd);
@@ -103,6 +103,11 @@ fn init_vulkan_core(s: *types.VulkanState, win: ?*window.CardinalWindow) bool {
     }
     renderer_log.info("renderer_create: device", .{});
     return true;
+}
+
+pub export fn cardinal_renderer_set_frame_allocator(renderer: ?*types.CardinalRenderer, allocator: ?*anyopaque) callconv(.c) void {
+    const s = get_state(renderer) orelse return;
+    s.frame_allocator = allocator;
 }
 
 fn init_ref_counting() bool {
@@ -283,10 +288,10 @@ pub export fn cardinal_renderer_create(out_renderer: ?*types.CardinalRenderer, w
     if (rg_ptr != null) {
         const rg = @as(*render_graph.RenderGraph, @ptrCast(@alignCast(rg_ptr)));
         rg.* = render_graph.RenderGraph.init(std.heap.c_allocator);
-        
+
         // Add PBR Pass
         var pass = render_graph.RenderPass.init(std.heap.c_allocator, "PBR Pass", pbr_pass_callback);
-        
+
         // Define outputs for automatic barriers
         // Backbuffer (Color Attachment)
         pass.add_output(std.heap.c_allocator, .{
@@ -307,15 +312,15 @@ pub export fn cardinal_renderer_create(out_renderer: ?*types.CardinalRenderer, w
             .layout = c.VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL,
             .aspect_mask = c.VK_IMAGE_ASPECT_DEPTH_BIT,
         }) catch {
-             log.cardinal_log_error("Failed to add PBR pass depth output", .{});
+            log.cardinal_log_error("Failed to add PBR pass depth output", .{});
         };
-        
+
         rg.add_pass(pass) catch {
-             log.cardinal_log_error("Failed to add PBR pass", .{});
+            log.cardinal_log_error("Failed to add PBR pass", .{});
         };
-        
+
         rg.compile() catch {
-             log.cardinal_log_error("Failed to compile render graph", .{});
+            log.cardinal_log_error("Failed to compile render graph", .{});
         };
 
         s.render_graph = rg;
@@ -433,10 +438,10 @@ pub export fn cardinal_renderer_create_headless(out_renderer: ?*types.CardinalRe
     if (rg_ptr != null) {
         const rg = @as(*render_graph.RenderGraph, @ptrCast(@alignCast(rg_ptr)));
         rg.* = render_graph.RenderGraph.init(std.heap.c_allocator);
-        
+
         // Add PBR Pass
         var pass = render_graph.RenderPass.init(std.heap.c_allocator, "PBR Pass", pbr_pass_callback);
-        
+
         // Define outputs for automatic barriers
         // Backbuffer (Color Attachment)
         pass.add_output(std.heap.c_allocator, .{
@@ -457,15 +462,15 @@ pub export fn cardinal_renderer_create_headless(out_renderer: ?*types.CardinalRe
             .layout = c.VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL,
             .aspect_mask = c.VK_IMAGE_ASPECT_DEPTH_BIT,
         }) catch {
-             log.cardinal_log_error("Failed to add PBR pass depth output", .{});
+            log.cardinal_log_error("Failed to add PBR pass depth output", .{});
         };
-        
+
         rg.add_pass(pass) catch {
-             log.cardinal_log_error("Failed to add PBR pass", .{});
+            log.cardinal_log_error("Failed to add PBR pass", .{});
         };
-        
+
         rg.compile() catch {
-             log.cardinal_log_error("Failed to compile render graph", .{});
+            log.cardinal_log_error("Failed to compile render graph", .{});
         };
 
         s.render_graph = rg;
@@ -548,8 +553,8 @@ pub fn destroy_scene_buffers(vs: *types.VulkanState) void {
         log.cardinal_log_info("[RENDERER] destroy_scene_buffers: Calling vkDeviceWaitIdle to ensure safety", .{});
         const idle_res = c.vkDeviceWaitIdle(vs.context.device);
         if (idle_res != c.VK_SUCCESS) {
-             log.cardinal_log_error("[RENDERER] destroy_scene_buffers: vkDeviceWaitIdle failed with {d}", .{idle_res});
-             // We proceed, but expect trouble if device is lost.
+            log.cardinal_log_error("[RENDERER] destroy_scene_buffers: vkDeviceWaitIdle failed with {d}", .{idle_res});
+            // We proceed, but expect trouble if device is lost.
         }
     }
 
@@ -564,14 +569,14 @@ pub fn destroy_scene_buffers(vs: *types.VulkanState) void {
     while (i < vs.scene_mesh_count) : (i += 1) {
         var m = &vs.scene_meshes.?[i];
         if (m.vbuf != null) {
-            log.cardinal_log_debug("[RENDERER] Destroying mesh {d} vbuf handle={any} alloc={any}", .{i, m.vbuf, m.v_allocation});
+            log.cardinal_log_debug("[RENDERER] Destroying mesh {d} vbuf handle={any} alloc={any}", .{ i, m.vbuf, m.v_allocation });
             vk_allocator.vk_allocator_free_buffer(@ptrCast(&vs.allocator), m.vbuf, m.v_allocation);
             m.vbuf = null;
             m.vmem = null;
             m.v_allocation = null;
         }
         if (m.ibuf != null) {
-            log.cardinal_log_debug("[RENDERER] Destroying mesh {d} ibuf handle={any} alloc={any}", .{i, m.ibuf, m.i_allocation});
+            log.cardinal_log_debug("[RENDERER] Destroying mesh {d} ibuf handle={any} alloc={any}", .{ i, m.ibuf, m.i_allocation });
             vk_allocator.vk_allocator_free_buffer(@ptrCast(&vs.allocator), m.ibuf, m.i_allocation);
             m.ibuf = null;
             m.imem = null;
@@ -595,7 +600,7 @@ pub export fn cardinal_renderer_destroy(renderer: ?*types.CardinalRenderer) call
     destroy_scene_buffers(s);
 
     // Check if timeline semaphore is shared with sync manager to avoid double free
-    // Since s.sync IS the sync manager storage (s.sync_manager points to it), 
+    // Since s.sync IS the sync manager storage (s.sync_manager points to it),
     // we MUST NOT clear the handle here, otherwise vk_destroy_commands_sync won't destroy it.
     // const sm_check = @as(?*types.VulkanSyncManager, @ptrCast(s.sync_manager));
     // if (sm_check != null and s.sync.timeline_semaphore == sm_check.?.timeline_semaphore) {
@@ -663,7 +668,7 @@ pub export fn cardinal_renderer_destroy(renderer: ?*types.CardinalRenderer) call
         const rg = @as(*render_graph.RenderGraph, @ptrCast(@alignCast(rg_ptr)));
         rg.destroy_transient_resources(s);
         rg.deinit();
-        
+
         const mem_alloc = memory.cardinal_get_allocator_for_category(.RENDERER);
         memory.cardinal_free(mem_alloc, rg);
         s.render_graph = null;
@@ -721,7 +726,7 @@ fn create_view_matrix(eye: [*]const f32, center: [*]const f32, up: [*]const f32,
     const eye_v = math.Vec3.fromArray(eye[0..3].*);
     const center_v = math.Vec3.fromArray(center[0..3].*);
     const up_v = math.Vec3.fromArray(up[0..3].*);
-    
+
     const m = math.Mat4.lookAt(eye_v, center_v, up_v);
     @memcpy(matrix[0..16], &m.data);
 }
@@ -748,7 +753,7 @@ pub export fn cardinal_renderer_set_camera(renderer: ?*types.CardinalRenderer, c
     ubo.viewPos[0] = cam.position.x;
     ubo.viewPos[1] = cam.position.y;
     ubo.viewPos[2] = cam.position.z;
-    
+
     // Set debug flags from pipeline state
     ubo.debugFlags = s.pipelines.pbr_pipeline.debug_flags;
 
@@ -763,21 +768,21 @@ pub export fn cardinal_renderer_set_camera(renderer: ?*types.CardinalRenderer, c
 pub export fn cardinal_renderer_set_debug_flags(renderer: ?*types.CardinalRenderer, flags: f32) callconv(.c) void {
     if (renderer == null) return;
     const s = get_state(renderer) orelse return;
-    
+
     if (!s.pipelines.use_pbr_pipeline) return;
-    
+
     // Update stored state
     s.pipelines.pbr_pipeline.debug_flags = flags;
-    
+
     // Update UBO immediately
     if (s.pipelines.pbr_pipeline.uniformBufferMapped != null) {
         var ubo: types.PBRUniformBufferObject = undefined;
         @memcpy(@as([*]u8, @ptrCast(&ubo))[0..@sizeOf(types.PBRUniformBufferObject)], @as([*]const u8, @ptrCast(s.pipelines.pbr_pipeline.uniformBufferMapped))[0..@sizeOf(types.PBRUniformBufferObject)]);
-        
+
         ubo.debugFlags = flags;
-        
+
         @memcpy(@as([*]u8, @ptrCast(s.pipelines.pbr_pipeline.uniformBufferMapped))[0..@sizeOf(types.PBRUniformBufferObject)], @as([*]const u8, @ptrCast(&ubo))[0..@sizeOf(types.PBRUniformBufferObject)]);
-        
+
         // Propagate to centralized updater
         vk_pbr.vk_pbr_update_uniforms(@ptrCast(&s.pipelines.pbr_pipeline), @ptrCast(&ubo), null);
     }
@@ -786,24 +791,24 @@ pub export fn cardinal_renderer_set_debug_flags(renderer: ?*types.CardinalRender
 pub export fn cardinal_renderer_set_lights(renderer: ?*types.CardinalRenderer, lights: ?[*]const types.PBRLight, count: u32) callconv(.c) void {
     if (renderer == null) return;
     const s = get_state(renderer) orelse return;
-    
+
     log.cardinal_log_info("Setting lights: count={d}", .{count});
 
     if (!s.pipelines.use_pbr_pipeline) return;
 
     var lighting = std.mem.zeroes(types.PBRLightingBuffer);
     lighting.count = if (count > types.MAX_LIGHTS) types.MAX_LIGHTS else count;
-    
+
     if (lights != null and count > 0) {
         var i: u32 = 0;
         while (i < lighting.count) : (i += 1) {
             lighting.lights[i] = lights.?[i];
         }
     }
-    
+
     // Update buffer
     @memcpy(@as([*]u8, @ptrCast(s.pipelines.pbr_pipeline.lightingBufferMapped))[0..@sizeOf(types.PBRLightingBuffer)], @as([*]const u8, @ptrCast(&lighting))[0..@sizeOf(types.PBRLightingBuffer)]);
-    
+
     vk_pbr.vk_pbr_update_uniforms(@ptrCast(&s.pipelines.pbr_pipeline), null, @ptrCast(&lighting));
 }
 
@@ -859,15 +864,7 @@ pub export fn cardinal_renderer_set_skybox_from_data(renderer: ?*types.CardinalR
         return false;
     }
 
-    return vk_skybox.vk_skybox_load_from_data(
-        @ptrCast(&s.pipelines.skybox_pipeline),
-        s.context.device,
-        @ptrCast(&s.allocator),
-        s.commands.pools.?[0],
-        s.context.graphics_queue,
-        s.sync_manager,
-        data.?.*
-    );
+    return vk_skybox.vk_skybox_load_from_data(@ptrCast(&s.pipelines.skybox_pipeline), s.context.device, @ptrCast(&s.allocator), s.commands.pools.?[0], s.context.graphics_queue, s.sync_manager, data.?.*);
 }
 
 pub export fn cardinal_renderer_set_skybox(renderer: ?*types.CardinalRenderer, path: ?[*:0]const u8) callconv(.c) bool {
@@ -880,15 +877,7 @@ pub export fn cardinal_renderer_set_skybox(renderer: ?*types.CardinalRenderer, p
     }
 
     const path_slice = std.mem.span(path.?);
-    return vk_skybox.vk_skybox_load(
-        @ptrCast(&s.pipelines.skybox_pipeline),
-        s.context.device,
-        @ptrCast(&s.allocator),
-        s.commands.pools.?[0],
-        s.context.graphics_queue,
-        s.sync_manager,
-        path_slice
-    );
+    return vk_skybox.vk_skybox_load(@ptrCast(&s.pipelines.skybox_pipeline), s.context.device, @ptrCast(&s.allocator), s.commands.pools.?[0], s.context.graphics_queue, s.sync_manager, path_slice);
 }
 
 pub export fn cardinal_renderer_enable_pbr(renderer: ?*types.CardinalRenderer, enable: bool) callconv(.c) void {
@@ -1290,14 +1279,14 @@ pub export fn cardinal_renderer_upload_scene(renderer: ?*types.CardinalRenderer,
     if (scene == null or scene.?.mesh_count == 0) {
         log.cardinal_log_info("[UPLOAD] Scene cleared (no meshes)", .{});
         s.current_scene = null;
-        
+
         // Also ensure PBR pipeline is cleared if enabled
         if (s.pipelines.use_pbr_pipeline) {
-             if (!vk_pbr.vk_pbr_load_scene(@ptrCast(&s.pipelines.pbr_pipeline), s.context.device, s.context.physical_device, s.commands.pools.?[0], s.context.graphics_queue, @ptrCast(scene), @ptrCast(&s.allocator), @ptrCast(s))) {
+            if (!vk_pbr.vk_pbr_load_scene(@ptrCast(&s.pipelines.pbr_pipeline), s.context.device, s.context.physical_device, s.commands.pools.?[0], s.context.graphics_queue, @ptrCast(scene), @ptrCast(&s.allocator), @ptrCast(s))) {
                 log.cardinal_log_error("Failed to clear PBR scene", .{});
             }
         }
-        
+
         return;
     }
 
