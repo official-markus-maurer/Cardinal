@@ -32,6 +32,7 @@ This document outlines the roadmap for the Cardinal Engine, focusing on robustne
 ## 3. Rendering (Vulkan)
 
 ### Core Architecture
+- [x] **Engine Lifecycle Refactor**: Decoupled engine initialization from `EditorApp` into a reusable `CardinalEngine` struct for better maintainability and extensibility.
 - [x] **Render Graph 2.0**: Enhance `RenderGraph` to support:
     - **Transient Resources**: Automatically allocate/free attachments (images/buffers) that are only needed for a single frame.
     - **Graph Culling**: Automatically prune passes that do not contribute to the backbuffer.
