@@ -209,7 +209,7 @@ fn execute_material_load_task(task: *CardinalAsyncTask) bool {
     // Modern POD system: The material data is already in custom_data (copied from source).
     // We just pass it through as the result.
     // We transfer ownership of the allocated memory from custom_data to result_data.
-    
+
     task.result_data = task.custom_data;
     task.result_size = @sizeOf(scene.CardinalMaterial);
     task.custom_data = null; // Clear custom_data so we don't double-free or confuse ownership
@@ -344,17 +344,17 @@ pub export fn cardinal_async_loader_init(config: ?*const CardinalAsyncLoaderConf
         .max_queue_size = g_async_loader.config.max_queue_size,
         .enable_priority_queue = g_async_loader.config.enable_priority_queue,
     };
-    
+
     if (!job_system.init(&job_config)) {
         return false;
     }
-    
+
     // Update config with actual thread count used by job system (defaulted inside)
     g_async_loader.config.worker_thread_count = job_system.g_job_system.config.worker_thread_count;
 
     g_async_loader.state_mutex = .{};
     g_async_loader.next_task_id = 0;
-    
+
     g_async_loader.initialized = true;
     std.log.info("Async loader (JobSystem) initialized with {d} worker threads", .{g_async_loader.config.worker_thread_count});
     return true;
@@ -388,7 +388,7 @@ pub export fn cardinal_async_add_dependency(dependent: ?*CardinalAsyncTask, depe
 
     const job_dependent = @as(*job_system.Job, @ptrCast(t_dependent.next));
     const job_dependency = @as(*job_system.Job, @ptrCast(t_dependency.next));
-    
+
     if (job_system.add_dependency(job_dependent, job_dependency)) {
         t_dependent.dependency_count += 1;
         // dependents array in Task is legacy/unused now, but we could populate it if we wanted to sync state
@@ -581,7 +581,7 @@ pub export fn cardinal_async_cancel_task(task: ?*CardinalAsyncTask) callconv(.c)
             // We need to mark job as cancelled too, but JobSystem API for cancel is implicit via status?
             // JobSystem worker checks job.status == .CANCELLED
             job.status = .CANCELLED;
-            
+
             t.status = .CANCELLED;
             return true;
         }
@@ -618,9 +618,14 @@ pub export fn cardinal_async_free_task(task: ?*CardinalAsyncTask) callconv(.c) v
     if (task) |t| {
         const allocator = memory.cardinal_get_allocator_for_category(.ENGINE);
 
-        if (t.next) |job_ptr| {
-             const job = @as(*job_system.Job, @ptrCast(job_ptr));
-             job_system.free_job(job);
+        // Only free the job if the loader is initialized.
+        // If we are shutting down (or already shut down), the job system pool is likely destroyed,
+        // so the job pointer is invalid or the pool is gone.
+        if (g_async_loader.initialized) {
+            if (t.next) |job_ptr| {
+                const job = @as(*job_system.Job, @ptrCast(job_ptr));
+                job_system.free_job(job);
+            }
         }
 
         if (t.result_data) |data| {
@@ -733,7 +738,7 @@ pub export fn cardinal_async_process_completed_tasks(max_tasks: u32) callconv(.c
         if (job == null) break;
 
         const task = @as(*CardinalAsyncTask, @ptrCast(@alignCast(job.?.data)));
-        
+
         if (task.callback) |cb| {
             cb(task, task.callback_data);
         }
@@ -744,7 +749,7 @@ pub export fn cardinal_async_process_completed_tasks(max_tasks: u32) callconv(.c
         // But task is completed.
         // However, user might call `free_task` later which tries to free `job`.
         // So we should probably keep it alive until task is freed.
-        
+
         processed += 1;
     }
 

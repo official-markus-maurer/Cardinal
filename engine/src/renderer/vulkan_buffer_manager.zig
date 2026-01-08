@@ -183,6 +183,13 @@ pub export fn vk_buffer_create(buffer_ptr: ?*VulkanBuffer, device: c.VkDevice, a
 
 fn wait_for_buffer_idle(buffer: *VulkanBuffer, device: c.VkDevice, vulkan_state: ?*types.VulkanState) void {
     if (vulkan_state) |state| {
+        // Check initialization state first to avoid spurious warnings during shutdown
+        if (!state.sync.initialized) {
+            log.cardinal_log_info("[BUFFER_MANAGER] SYNC_SKIP: Sync manager not initialized, using device wait idle for buffer={any}", .{buffer.handle});
+            _ = c.vkDeviceWaitIdle(device);
+            return;
+        }
+
         // Use thread-safe timeline value retrieval
         var current_value: u64 = 0;
         log.cardinal_log_info("[BUFFER_MANAGER] SYNC_CHECK: Getting timeline semaphore value for buffer={any}", .{buffer.handle});

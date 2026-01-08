@@ -53,7 +53,6 @@ pub const vulkan_material_utils = @import("renderer/util/vulkan_material_utils.z
 pub const vulkan_renderer = @import("renderer/vulkan_renderer.zig");
 pub const vulkan_renderer_frame = @import("renderer/vulkan_renderer_frame.zig");
 pub const vulkan_pipeline_manager = @import("renderer/vulkan_pipeline_manager.zig");
-pub const rhi = @import("rhi/rhi.zig");
 
 comptime {
     _ = log;
@@ -103,7 +102,6 @@ comptime {
     _ = vulkan_renderer;
     _ = vulkan_renderer_frame;
     _ = vulkan_pipeline_manager;
-    _ = rhi;
 }
 
 test {

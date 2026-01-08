@@ -559,6 +559,9 @@ pub fn on_device_restored(user_data: ?*anyopaque, success: bool) callconv(.c) vo
 }
 
 pub fn shutdown() void {
+    // Process any remaining completed tasks
+    _ = async_loader.cardinal_async_process_completed_tasks(0);
+
     c.imgui_bridge_impl_vulkan_shutdown();
     c.imgui_bridge_impl_glfw_shutdown();
     c.imgui_bridge_destroy_context();
@@ -590,6 +593,9 @@ pub fn shutdown() void {
 
 pub fn update() void {
     if (!initialized) return;
+
+    // Process async callbacks (frees fire-and-forget tasks like textures)
+    _ = async_loader.cardinal_async_process_completed_tasks(0);
 
     check_loading_status();
 

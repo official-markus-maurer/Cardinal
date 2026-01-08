@@ -8,23 +8,25 @@ const job_log = log.ScopedLogger("JOB_SYSTEM");
 // --- Types ---
 
 const CardinalAllocatorWrapper = struct {
-    backing: *memory.CardinalAllocator,
+    backing: ?*memory.CardinalAllocator,
 
     const vtable = std.mem.Allocator.VTable{
         .alloc = alloc,
         .resize = resize,
         .free = free,
+        .remap = remap,
     };
 
-    fn alloc(ctx: *anyopaque, len: usize, ptr_align: u8, ret_addr: usize) ?[*]u8 {
+    fn alloc(ctx: *anyopaque, len: usize, ptr_align: std.mem.Alignment, ret_addr: usize) ?[*]u8 {
         _ = ret_addr;
         const self: *CardinalAllocatorWrapper = @ptrCast(@alignCast(ctx));
-        const alignment = @as(usize, 1) << @as(u6, @intCast(ptr_align));
-        const ptr = self.backing.alloc(self.backing, len, alignment);
+        if (self.backing == null) return null;
+        const alignment = ptr_align.toByteUnits();
+        const ptr = self.backing.?.alloc(self.backing.?, len, alignment);
         return @as(?[*]u8, @ptrCast(ptr));
     }
 
-    fn resize(ctx: *anyopaque, buf: []u8, buf_align: u8, new_len: usize, ret_addr: usize) bool {
+    fn resize(ctx: *anyopaque, buf: []u8, buf_align: std.mem.Alignment, new_len: usize, ret_addr: usize) bool {
         _ = ctx;
         _ = buf;
         _ = buf_align;
@@ -33,11 +35,22 @@ const CardinalAllocatorWrapper = struct {
         return false;
     }
 
-    fn free(ctx: *anyopaque, buf: []u8, buf_align: u8, ret_addr: usize) void {
+    fn free(ctx: *anyopaque, buf: []u8, buf_align: std.mem.Alignment, ret_addr: usize) void {
         _ = ret_addr;
         _ = buf_align;
         const self: *CardinalAllocatorWrapper = @ptrCast(@alignCast(ctx));
-        self.backing.free(self.backing, buf.ptr);
+        if (self.backing) |backing| {
+            backing.free(backing, buf.ptr);
+        }
+    }
+
+    fn remap(ctx: *anyopaque, memory_slice: []u8, alignment: std.mem.Alignment, new_len: usize, ret_addr: usize) ?[*]u8 {
+        _ = ctx;
+        _ = memory_slice;
+        _ = alignment;
+        _ = new_len;
+        _ = ret_addr;
+        return null;
     }
 
     fn allocator(self: *CardinalAllocatorWrapper) std.mem.Allocator {
@@ -63,7 +76,7 @@ pub const JobStatus = enum(c_int) {
     CANCELLED = 4,
 };
 
-pub const JobFunc = *const fn (data: ?*anyopaque) callconv(.c) void;
+pub const JobFunc = ?*const fn (data: ?*anyopaque) callconv(.c) void;
 
 pub const DependencyNode = struct {
     job: *Job,
@@ -228,7 +241,9 @@ fn worker_thread_func(worker: *WorkerThread) void {
         }
 
         job.status = .RUNNING;
-        job.func(job.data);
+        if (job.func) |f| {
+            f(job.data);
+        }
         job.status = .COMPLETED; // We assume success for generic jobs, handle failure in func if needed
 
         _ = job_queue_push(&g_job_system.completed_queue, job);
@@ -261,7 +276,10 @@ fn worker_thread_func(worker: *WorkerThread) void {
 pub fn init(config: ?*const JobSystemConfig) bool {
     if (g_job_system.initialized) return true;
 
-    g_job_system = std.mem.zeroes(JobSystemState);
+    g_job_system = undefined;
+    g_job_system.initialized = false;
+    g_job_system.shutting_down = false;
+    g_job_system.workers = null;
 
     if (config) |c| {
         g_job_system.config = c.*;

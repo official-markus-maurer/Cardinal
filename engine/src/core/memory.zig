@@ -12,6 +12,14 @@ extern "c" fn _aligned_malloc(size: usize, alignment: usize) ?*anyopaque;
 extern "c" fn _aligned_free(ptr: ?*anyopaque) void;
 extern "c" fn posix_memalign(memptr: *?*anyopaque, alignment: usize, size: usize) c_int;
 
+// Windows Stack Trace
+extern "kernel32" fn RtlCaptureStackBackTrace(
+    FramesToSkip: u32,
+    FramesToCapture: u32,
+    BackTrace: [*]?*anyopaque,
+    BackTraceHash: ?*u32,
+) u16;
+
 // Enums and Structs matching C header
 pub const CardinalMemoryCategory = enum(c_int) { UNKNOWN = 0, ENGINE, RENDERER, VULKAN_BUFFERS, VULKAN_DEVICE, TEXTURES, MESHES, ASSETS, SHADERS, WINDOW, LOGGING, TEMPORARY, MAX };
 
@@ -82,7 +90,7 @@ const AllocInfo = struct {
 // Global State
 var g_stats: CardinalGlobalMemoryStats = std.mem.zeroes(CardinalGlobalMemoryStats);
 var g_alloc_map: std.AutoHashMap(usize, AllocInfo) = undefined;
-var g_alloc_map_mutex: std.Thread.Mutex = .{};
+var g_alloc_map_lock: std.Thread.RwLock = .{};
 var g_alloc_map_init: bool = false;
 var g_active_allocs: usize = 0;
 
@@ -162,8 +170,8 @@ fn ensure_alloc_map() void {
 fn track_alloc(ptr: ?*anyopaque, size: usize, is_aligned: bool) void {
     if (ptr == null) return;
 
-    g_alloc_map_mutex.lock();
-    defer g_alloc_map_mutex.unlock();
+    g_alloc_map_lock.lock();
+    defer g_alloc_map_lock.unlock();
 
     ensure_alloc_map();
 
@@ -180,17 +188,29 @@ fn track_alloc(ptr: ?*anyopaque, size: usize, is_aligned: bool) void {
 
     // Capture stack trace if debug build
     if (builtin.mode == .Debug) {
-        // Try to capture stack trace
-        // Passing null, null lets Zig figure out the current frame
-        // var it = std.debug.StackIterator.init(null, null);
-        // var idx: usize = 0;
-        // while (it.next()) |return_address| : (idx += 1) {
-        //     if (idx >= 16) break;
-        //     info.stack_addresses[idx] = return_address;
-        // }
-        // info.stack_depth = idx;
+        if (builtin.os.tag == .windows) {
+             // Use Windows API for faster/safer stack walking
+             // Skip 0 frames (capture current), capture up to 16
+             var stack: [16]?*anyopaque = undefined;
+             const count = RtlCaptureStackBackTrace(0, 16, &stack, null);
+             
+             var i: usize = 0;
+             while (i < count) : (i += 1) {
+                 info.stack_addresses[i] = @intFromPtr(stack[i]);
+             }
+             info.stack_depth = count;
+        } else {
+            // Fallback for other OSs using Zig's StackIterator
+            var it = std.debug.StackIterator.init(@returnAddress(), null);
+            var idx: usize = 0;
+            while (it.next()) |return_address| : (idx += 1) {
+                if (idx >= 16) break;
+                info.stack_addresses[idx] = return_address;
+            }
+            info.stack_depth = idx;
+        }
 
-        // Fallback: If stack iterator failed to find anything, at least grab the immediate caller
+        // Fallback: If stack capture failed to find anything, at least grab the immediate caller
         if (info.stack_depth == 0) {
             info.stack_addresses[0] = @returnAddress();
             info.stack_depth = 1;
@@ -220,8 +240,8 @@ fn print_stack_trace(addresses: []const usize, depth: usize) void {
 fn find_alloc(ptr: ?*anyopaque) ?AllocInfo {
     if (ptr == null) return null;
 
-    g_alloc_map_mutex.lock();
-    defer g_alloc_map_mutex.unlock();
+    g_alloc_map_lock.lockShared();
+    defer g_alloc_map_lock.unlockShared();
 
     if (!g_alloc_map_init) return null;
 
@@ -232,8 +252,8 @@ fn find_alloc(ptr: ?*anyopaque) ?AllocInfo {
 fn untrack_alloc(ptr: ?*anyopaque, out_size: ?*usize, out_is_aligned: ?*bool) bool {
     if (ptr == null) return false;
 
-    g_alloc_map_mutex.lock();
-    defer g_alloc_map_mutex.unlock();
+    g_alloc_map_lock.lock();
+    defer g_alloc_map_lock.unlock();
 
     if (!g_alloc_map_init) return false;
 
@@ -637,8 +657,8 @@ pub export fn cardinal_memory_shutdown() void {
         g_linear_state.offset = 0;
     }
 
-    g_alloc_map_mutex.lock();
-    defer g_alloc_map_mutex.unlock();
+    g_alloc_map_lock.lock();
+    defer g_alloc_map_lock.unlock();
 
     if (g_alloc_map_init) {
         if (g_alloc_map.count() > 0) {

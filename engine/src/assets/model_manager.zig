@@ -424,7 +424,7 @@ fn rebuild_combined_scene(manager: *CardinalModelManager) void {
                 } else {
                     dst_texture.path = null;
                 }
-                
+
                 // Copy fallback texture
                 if (dst_texture.ref_resource == null and src_texture.ref_resource != null) {
                     // Check if it's the fallback texture
@@ -441,9 +441,9 @@ fn rebuild_combined_scene(manager: *CardinalModelManager) void {
 
                 // Debug logging
                 if (dst_texture.ref_resource == null and src_texture.ref_resource != null) {
-                    log.cardinal_log_warn("[MODEL_MGR] Texture copy failed to preserve ref_resource! Src: {*}, Dst: {*}", .{src_texture.ref_resource, dst_texture.ref_resource});
+                    log.cardinal_log_warn("[MODEL_MGR] Texture copy failed to preserve ref_resource! Src: {*}, Dst: {*}", .{ src_texture.ref_resource, dst_texture.ref_resource });
                 } else if (dst_texture.ref_resource != null) {
-                     // log.cardinal_log_debug("[MODEL_MGR] Texture copy preserved ref_resource: {*}", .{dst_texture.ref_resource});
+                    // log.cardinal_log_debug("[MODEL_MGR] Texture copy preserved ref_resource: {*}", .{dst_texture.ref_resource});
                 }
             }
         }
@@ -459,6 +459,26 @@ fn rebuild_combined_scene(manager: *CardinalModelManager) void {
     manager.scene_dirty = false;
 
     log.cardinal_log_debug("Rebuilt combined scene: {d} meshes, {d} materials, {d} textures", .{ total_meshes, total_materials, total_textures });
+}
+
+fn free_model_load_task(task: *async_loader.CardinalAsyncTask) void {
+    const status = async_loader.cardinal_async_get_task_status(task);
+    // If the task hasn't run (PENDING or CANCELLED), we need to clean up the custom data
+    // because finalize_model_task won't run to do it.
+    if (task.type == .CUSTOM and task.custom_data != null and (status == .PENDING or status == .CANCELLED)) {
+        const ctx = @as(*FinalizeContext, @ptrCast(@alignCast(task.custom_data)));
+        const allocator = memory.cardinal_get_allocator_for_category(.ASSETS);
+
+        // Free the dependency scene task which is otherwise leaked
+        async_loader.cardinal_async_free_task(ctx.scene_task);
+
+        // Free the context struct
+        memory.cardinal_free(allocator, ctx);
+
+        // Clear custom_data to prevent double free if something else tries
+        task.custom_data = null;
+    }
+    async_loader.cardinal_async_free_task(task);
 }
 
 // --- Public API ---
@@ -491,7 +511,7 @@ pub export fn cardinal_model_manager_destroy(manager: ?*CardinalModelManager) ca
             scene.cardinal_scene_destroy(&model.scene);
 
             if (model.load_task) |task| {
-                async_loader.cardinal_async_free_task(task);
+                free_model_load_task(task);
             }
         }
         memory.cardinal_free(allocator, models);
@@ -550,7 +570,7 @@ pub export fn cardinal_model_manager_load_model(manager: ?*CardinalModelManager,
             }
 
             // Cleanup task
-            async_loader.cardinal_async_free_task(task);
+            free_model_load_task(task);
             model.?.load_task = null;
 
             if (!success) {
@@ -561,8 +581,8 @@ pub export fn cardinal_model_manager_load_model(manager: ?*CardinalModelManager,
             const error_msg = async_loader.cardinal_async_get_error_message(task);
             const err_str = if (error_msg) |e| e else "Unknown error";
             log.cardinal_log_error("Model load failed: {s}", .{err_str});
-            
-            async_loader.cardinal_async_free_task(task);
+
+            free_model_load_task(task);
             model.?.load_task = null;
             _ = cardinal_model_manager_remove_model(manager, id);
             return 0;
@@ -750,7 +770,7 @@ pub export fn cardinal_model_manager_remove_model(manager: ?*CardinalModelManage
     scene.cardinal_scene_destroy(&model.scene);
 
     if (model.load_task) |task| {
-        async_loader.cardinal_async_free_task(task);
+        free_model_load_task(task);
     }
 
     var i = idx;
@@ -900,7 +920,7 @@ pub export fn cardinal_model_manager_update(manager: ?*CardinalModelManager) cal
                         log.cardinal_log_error("Failed to get scene result for model '{s}'", .{model_name_str});
                     }
 
-                    async_loader.cardinal_async_free_task(model.load_task.?);
+                    free_model_load_task(model.load_task.?);
                     model.load_task = null;
                 } else if (status == .FAILED) {
                     const error_msg = async_loader.cardinal_async_get_error_message(model.load_task.?);
@@ -908,7 +928,7 @@ pub export fn cardinal_model_manager_update(manager: ?*CardinalModelManager) cal
                     const err_str = if (error_msg) |e| e else "Unknown error";
                     log.cardinal_log_error("Async loading failed for model '{s}': {s}", .{ model_name_str, err_str });
 
-                    async_loader.cardinal_async_free_task(model.load_task.?);
+                    free_model_load_task(model.load_task.?);
                     model.load_task = null;
                     model.is_loading = false;
                 }
@@ -967,7 +987,7 @@ pub export fn cardinal_model_manager_clear(manager: ?*CardinalModelManager) call
             scene.cardinal_scene_destroy(&model.scene);
 
             if (model.load_task) |task| {
-                async_loader.cardinal_async_free_task(task);
+                free_model_load_task(task);
             }
         }
     }

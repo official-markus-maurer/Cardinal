@@ -251,6 +251,11 @@ fn texture_load_async_func(task: ?*async_loader.CardinalAsyncTask, user_data: ?*
     }
 }
 
+fn texture_load_task_cleanup(task: ?*async_loader.CardinalAsyncTask, user_data: ?*anyopaque) callconv(.c) void {
+    _ = user_data;
+    async_loader.cardinal_async_free_task(task);
+}
+
 // C API exports
 
 pub export fn texture_cache_initialize(max_entries: u32) bool {
@@ -655,7 +660,15 @@ pub export fn texture_load_with_ref_counting(filepath: ?[*]const u8, out_texture
                 _ = @atomicRmw(u32, &temp_ref.ref_count, .Add, 1, .seq_cst);
                 
                 // Launch Async Task
-                _ = async_loader.cardinal_async_submit_custom_task(texture_load_async_func, ctx, .NORMAL, null, null);
+                const task = async_loader.cardinal_async_submit_custom_task(texture_load_async_func, ctx, .NORMAL, texture_load_task_cleanup, null);
+                if (task == null) {
+                    // Failed to submit task, clean up
+                    log.cardinal_log_error("[TEXTURE] Failed to submit async task for {s}", .{path});
+                    memory.cardinal_free(allocator, ctx);
+                    // Release the ref we added for the task
+                    _ = @atomicRmw(u32, &temp_ref.ref_count, .Sub, 1, .seq_cst);
+                    cardinal_resource_state_set(temp_ref.identifier.?, .ERROR, thread_id);
+                }
             } else {
                     // Fallback: synchronous load or error? 
                     // If we fail to allocate context, we can't submit task properly.

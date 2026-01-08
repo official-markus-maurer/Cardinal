@@ -304,6 +304,7 @@ pub const VulkanDescriptorManager = extern struct {
     bindings: ?[*]const VulkanDescriptorBinding,
     bindingCount: u32,
     maxSets: u32,
+    poolFlags: c.VkDescriptorPoolCreateFlags,
     useDescriptorBuffers: bool,
     descriptorPool: c.VkDescriptorPool,
     device: c.VkDevice,
@@ -323,6 +324,10 @@ pub const VulkanDescriptorManager = extern struct {
     freeIndices: ?[*]u32,
     freeCount: u32,
     freeCapacity: u32,
+    retiredPools: ?[*]c.VkDescriptorPool,
+    retiredPoolCount: u32,
+    retiredPoolCapacity: u32,
+    setPoolMapping: ?*anyopaque,
 };
 
 pub const DescriptorBufferCreateInfo = extern struct {
