@@ -337,6 +337,9 @@ pub export fn vk_descriptor_manager_create(manager: ?*types.VulkanDescriptorMana
         const map = @as(*SetPoolMap, @ptrCast(@alignCast(map_ptr)));
         map.* = .{};
         mgr.setPoolMapping = map;
+    } else {
+        log.cardinal_log_error("Failed to allocate setPoolMapping", .{});
+        return false;
     }
 
     const ptr = memory.cardinal_alloc(mem_alloc, info.bindingCount * @sizeOf(types.VulkanDescriptorBinding));

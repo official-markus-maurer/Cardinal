@@ -61,12 +61,21 @@ fn pbr_pass_callback(cmd: c.VkCommandBuffer, state: *types.VulkanState) void {
         use_depth = state.swapchain.depth_image_view != null and state.swapchain.depth_image != null;
     }
 
-    if (vk_commands.begin_dynamic_rendering(state, cmd, state.current_image_index, use_depth, depth_view, &clears, true, 0)) {
+    const use_secondary = (state.commands.scene_secondary_buffers != null);
+    const flags: c.VkRenderingFlags = if (use_secondary) c.VK_RENDERING_CONTENTS_SECONDARY_COMMAND_BUFFERS_BIT else 0;
+
+    if (vk_commands.begin_dynamic_rendering(state, cmd, state.current_image_index, use_depth, depth_view, &clears, true, flags)) {
         if (use_depth and depth_view != null) {
             // Log the image view used for rendering
             // log.cardinal_log_error("PBR Pass: Rendering with Depth View {any}", .{depth_view.?});
         }
-        vk_commands.vk_record_scene_content(state, cmd);
+        
+        if (use_secondary) {
+            vk_commands.vk_record_scene_with_secondary_buffers(state, cmd, state.current_image_index, use_depth, &clears);
+        } else {
+            vk_commands.vk_record_scene_content(state, cmd);
+        }
+        
         vk_commands.end_dynamic_rendering(state, cmd);
     }
 }

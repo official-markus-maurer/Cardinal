@@ -41,6 +41,7 @@ var g_pending_cleanups: ?*StagingBufferCleanup = null;
 var g_pending_image_cleanups: ?*ImageCleanup = null;
 var g_pending_cmd_cleanups: ?*CommandBufferCleanup = null;
 var g_cleanup_system_initialized: bool = false;
+var g_is_shutting_down: bool = false;
 
 fn get_current_thread_id() u32 {
     if (builtin.os.tag == .windows) {
@@ -50,7 +51,13 @@ fn get_current_thread_id() u32 {
     }
 }
 
-pub fn add_staging_buffer_cleanup(buffer: c.VkBuffer, memory: c.VkDeviceMemory, allocation: c.VmaAllocation, device: c.VkDevice, timeline_value: u64) void {
+pub fn add_staging_buffer_cleanup(allocator: ?*types.VulkanAllocator, buffer: c.VkBuffer, memory: c.VkDeviceMemory, allocation: c.VmaAllocation, device: c.VkDevice, timeline_value: u64) void {
+    if (g_is_shutting_down) {
+        tex_utils_log.debug("Immediate cleanup of staging buffer {any} due to shutdown", .{buffer});
+        vk_allocator.vk_allocator_free_buffer(allocator, buffer, allocation);
+        return;
+    }
+
     const mem_alloc = @import("../../core/memory.zig").cardinal_get_allocator_for_category(.RENDERER);
     const mem_utils = @import("../../core/memory.zig");
     const cleanup = mem_utils.cardinal_alloc(mem_alloc, @sizeOf(StagingBufferCleanup));
@@ -72,7 +79,13 @@ pub fn add_staging_buffer_cleanup(buffer: c.VkBuffer, memory: c.VkDeviceMemory, 
     tex_utils_log.debug("Added staging buffer {any} to deferred cleanup (timeline: {d})", .{ buffer, timeline_value });
 }
 
-pub fn add_image_cleanup(image: c.VkImage, allocation: c.VmaAllocation, timeline_value: u64) void {
+pub fn add_image_cleanup(allocator: ?*types.VulkanAllocator, image: c.VkImage, allocation: c.VmaAllocation, timeline_value: u64) void {
+    if (g_is_shutting_down) {
+        tex_utils_log.debug("Immediate cleanup of image {any} due to shutdown", .{image});
+        vk_allocator.vk_allocator_free_image(allocator, image, allocation);
+        return;
+    }
+
     const mem_alloc = @import("../../core/memory.zig").cardinal_get_allocator_for_category(.RENDERER);
     const mem_utils = @import("../../core/memory.zig");
     const cleanup = mem_utils.cardinal_alloc(mem_alloc, @sizeOf(ImageCleanup));
@@ -155,6 +168,13 @@ pub fn process_staging_buffer_cleanups(sync_manager: ?*types.VulkanSyncManager, 
 }
 
 pub fn add_command_buffer_cleanup(commandBuffer: c.VkCommandBuffer, commandPool: c.VkCommandPool, device: c.VkDevice, timeline_value: u64) void {
+    if (g_is_shutting_down) {
+        tex_utils_log.debug("Immediate cleanup of command buffer {any} due to shutdown", .{commandBuffer});
+        var cmd_buf = commandBuffer;
+        c.vkFreeCommandBuffers(device, commandPool, 1, &cmd_buf);
+        return;
+    }
+
     const mem_alloc = @import("../../core/memory.zig").cardinal_get_allocator_for_category(.RENDERER);
     const mem_utils = @import("../../core/memory.zig");
     const cleanup = mem_utils.cardinal_alloc(mem_alloc, @sizeOf(CommandBufferCleanup));
@@ -176,6 +196,7 @@ pub fn add_command_buffer_cleanup(commandBuffer: c.VkCommandBuffer, commandPool:
 }
 
 pub fn shutdown_staging_buffer_cleanups(allocator: *types.VulkanAllocator) void {
+    g_is_shutting_down = true;
     if (!g_cleanup_system_initialized) return;
 
     var current = g_pending_cleanups;
@@ -468,7 +489,7 @@ pub export fn vk_texture_create_from_data(allocator: ?*types.VulkanAllocator, de
     c.vkFreeCommandBuffers(device, commandPool, 1, &commandBuffer);
 
     if (sync_manager != null and outTimelineValue != null) {
-        add_staging_buffer_cleanup(stagingBuffer, stagingBufferMemory, stagingBufferAllocation, device, outTimelineValue.?.*);
+        add_staging_buffer_cleanup(allocator, stagingBuffer, stagingBufferMemory, stagingBufferAllocation, device, outTimelineValue.?.*);
         process_staging_buffer_cleanups(sync_manager, allocator);
     } else {
         vk_allocator.vk_allocator_free_buffer(allocator, stagingBuffer, stagingBufferAllocation);

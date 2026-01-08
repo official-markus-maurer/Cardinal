@@ -492,8 +492,11 @@ pub const VulkanSyncManager = extern struct {
 pub const VulkanCommands = extern struct {
     pools: ?[*]c.VkCommandPool,
     buffers: ?[*]c.VkCommandBuffer,
+    // Note: These are allocated as VK_COMMAND_BUFFER_LEVEL_PRIMARY and used as alternate primary buffers.
+    // Do not confuse with actual secondary command buffers (VK_COMMAND_BUFFER_LEVEL_SECONDARY).
     secondary_buffers: ?[*]c.VkCommandBuffer,
     current_buffer_index: u32,
+    scene_secondary_buffers: ?[*]c.VkCommandBuffer,
 };
 
 // Texture Manager Types

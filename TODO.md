@@ -34,9 +34,9 @@ This document outlines the roadmap for the Cardinal Engine, focusing on robustne
     - [ ] Move hardcoded values (e.g., PBR clear color `0.05, 0.05, 0.08`) to a `RendererConfig` struct.
     - [ ] Externalize hardcoded asset paths (e.g., `"assets/pipelines/*.json"`, `"assets/shaders"`) found in `vulkan_pbr.zig` and others.
     - [ ] Move Shadow constants (`SHADOW_MAP_SIZE`, `SHADOW_CASCADE_COUNT`, `lambda`, clips) from `vulkan_shadows.zig` to configuration.
-- [ ] **Standardize Memory Allocation**:
-    - [ ] Replace direct usage of `std.heap.c_allocator` and `std.heap.page_allocator` with `CardinalAllocator` (found in `scene.zig`, `vulkan_mesh_shader.zig`, `vulkan_pbr.zig`, `log.zig`, `editor_layer.zig`, etc.).
-    - [ ] Fix `vulkan_pso.zig`: Uses hidden `std.heap.GeneralPurposeAllocator` for shader cache; switch to `CardinalAllocator`.
+- [x] **Standardize Memory Allocation**:
+    - [x] Replace direct usage of `std.heap.c_allocator` and `std.heap.page_allocator` with `CardinalAllocator` (found in `scene.zig`, `vulkan_mesh_shader.zig`, `vulkan_pbr.zig`, `log.zig`, `editor_layer.zig`, etc.).
+    - [x] Fix `vulkan_pso.zig`: Uses hidden `std.heap.GeneralPurposeAllocator` for shader cache; switch to `CardinalAllocator`.
 - [ ] **Code Deduplication**:
     - [ ] Consolidate `get_current_thread_id` (found in `vulkan_commands.zig` and `texture_loader.zig`) into a shared `core/platform.zig` helper.
     - [ ] Consolidate platform-specific time logic (found in `vulkan_swapchain.zig` and likely others) into `core/platform.zig`.
@@ -50,8 +50,8 @@ This document outlines the roadmap for the Cardinal Engine, focusing on robustne
     - [ ] **Async Loader**: Update `CardinalAsyncTask` to remove the legacy hardcoded limit of 8 dependents (matching the Job System fix).
     - [ ] **Handle System**: Implement a generic `HandleManager` to centralize safe handle generation (index + generation) instead of ad-hoc logic per resource type.
 - [ ] **Vulkan Optimization**:
-    - [ ] Re-enable/Fix **Secondary Command Buffers** for scene rendering (currently disabled in `vulkan_commands.zig` due to validation errors).
-    - [ ] Clarify `secondary_buffers` usage in `vulkan_commands.zig` (currently allocated as `PRIMARY`).
+    - [x] Re-enable/Fix **Secondary Command Buffers** for scene rendering (currently disabled in `vulkan_commands.zig` due to validation errors).
+    - [x] Clarify `secondary_buffers` usage in `vulkan_commands.zig` (currently allocated as `PRIMARY`).
     - [ ] Verify `CardinalLight` and `CardinalCamera` struct alignment for UBO compatibility (std140).
     - [ ] **Pipeline Cache**: Implement persistence (save/load `VkPipelineCache` to disk) to improve startup times (`vulkan_pipeline.zig`/`vulkan_pso.zig`).
 - [ ] **Texture Loader**:

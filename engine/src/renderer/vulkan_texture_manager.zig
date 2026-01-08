@@ -923,10 +923,10 @@ pub fn vk_texture_manager_update_textures(manager: *types.VulkanTextureManager) 
             if (submit_success and ctx.success) {
                 // Register cleanup for staging buffer and OLD image
                 if (manager.syncManager != null) {
-                    vk_texture_utils.add_staging_buffer_cleanup(ctx.staging_buffer, ctx.staging_memory, ctx.staging_allocation, manager.device, signal_val);
+                    vk_texture_utils.add_staging_buffer_cleanup(manager.allocator, ctx.staging_buffer, ctx.staging_memory, ctx.staging_allocation, manager.device, signal_val);
                 } else {
                     // If no sync manager, we wait idle (already handled partially by submit logic blocking? No.)
-                    // Fallback path: we really should have sync manager.
+                    // TODO: Use a sync manager for this.
                     // But if not, we leak or block.
                     // Assuming sync manager exists for now as per original code.
                 }
@@ -939,7 +939,7 @@ pub fn vk_texture_manager_update_textures(manager: *types.VulkanTextureManager) 
                     if (tex.view != null) c.vkDestroyImageView(manager.device, tex.view, null);
                     if (tex.image != null) {
                         if (manager.syncManager != null) {
-                            vk_texture_utils.add_image_cleanup(tex.image, tex.allocation, signal_val);
+                            vk_texture_utils.add_image_cleanup(manager.allocator, tex.image, tex.allocation, signal_val);
                         } else {
                             vk_allocator.vk_allocator_free_image(manager.allocator, tex.image, tex.allocation);
                         }

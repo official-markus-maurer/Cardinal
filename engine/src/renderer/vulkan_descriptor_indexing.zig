@@ -576,7 +576,7 @@ pub export fn vk_bindless_texture_update_data(pool: ?*types.BindlessTexturePool,
     c.vkCmdPipelineBarrier2(command_buffer, &dep_info);
 
     // Register cleanup
-    vk_texture_utils.add_staging_buffer_cleanup(staging_buffer, staging_memory, staging_allocation, p.device, timeline_value);
+    vk_texture_utils.add_staging_buffer_cleanup(p.allocator, staging_buffer, staging_memory, staging_allocation, p.device, timeline_value);
 
     return true;
 }

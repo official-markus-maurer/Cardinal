@@ -69,7 +69,10 @@ fn allocate_command_buffers(s: *types.VulkanState) bool {
     }
     cmd_log.warn("Allocated {d} primary command buffers", .{s.sync.max_frames_in_flight});
 
-    // Secondary buffers
+    // Secondary buffers (Alternate Primary Buffers)
+    // Note: These are named 'secondary_buffers' but are allocated as PRIMARY buffers.
+    // They serve as an alternate set of primary command buffers (e.g., for double buffering
+    // logic or separate submissions), distinct from Vulkan's VK_COMMAND_BUFFER_LEVEL_SECONDARY.
     const sec_buffers_ptr = memory.cardinal_alloc(mem_alloc, s.sync.max_frames_in_flight * @sizeOf(c.VkCommandBuffer));
     if (sec_buffers_ptr == null) return false;
     s.commands.secondary_buffers = @as([*]c.VkCommandBuffer, @ptrCast(@alignCast(sec_buffers_ptr)));
@@ -79,18 +82,35 @@ fn allocate_command_buffers(s: *types.VulkanState) bool {
         var ai = std.mem.zeroes(c.VkCommandBufferAllocateInfo);
         ai.sType = c.VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO;
         ai.commandPool = s.commands.pools.?[i];
-        ai.level = c.VK_COMMAND_BUFFER_LEVEL_PRIMARY; // Allocated as PRIMARY
+        // Explicitly allocating as PRIMARY despite the variable name 'secondary_buffers'.
+        // These are used as an alternate set of primary buffers, not as nested command buffers.
+        ai.level = c.VK_COMMAND_BUFFER_LEVEL_PRIMARY;
         ai.commandBufferCount = 1;
 
         if (c.vkAllocateCommandBuffers(s.context.device, &ai, &s.commands.secondary_buffers.?[i]) != c.VK_SUCCESS) {
             return false;
         }
     }
-    cmd_log.warn("Allocated {d} secondary command buffers", .{s.sync.max_frames_in_flight});
+    cmd_log.warn("Allocated {d} alternate primary command buffers (secondary_buffers)", .{s.sync.max_frames_in_flight});
 
     // Scene secondary buffers (real secondary level)
-    // DISABLED: Causing validation errors with dynamic rendering. Forcing inline path.
-    // s.commands.scene_secondary_buffers = null;
+    const scene_sec_ptr = memory.cardinal_alloc(mem_alloc, s.sync.max_frames_in_flight * @sizeOf(c.VkCommandBuffer));
+    if (scene_sec_ptr == null) return false;
+    s.commands.scene_secondary_buffers = @as([*]c.VkCommandBuffer, @ptrCast(@alignCast(scene_sec_ptr)));
+
+    i = 0;
+    while (i < s.sync.max_frames_in_flight) : (i += 1) {
+        var ai = std.mem.zeroes(c.VkCommandBufferAllocateInfo);
+        ai.sType = c.VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO;
+        ai.commandPool = s.commands.pools.?[i];
+        ai.level = c.VK_COMMAND_BUFFER_LEVEL_SECONDARY;
+        ai.commandBufferCount = 1;
+
+        if (c.vkAllocateCommandBuffers(s.context.device, &ai, &s.commands.scene_secondary_buffers.?[i]) != c.VK_SUCCESS) {
+            return false;
+        }
+    }
+    cmd_log.warn("Allocated {d} scene secondary command buffers", .{s.sync.max_frames_in_flight});
 
     return true;
 }
@@ -437,12 +457,82 @@ pub fn vk_record_scene_content(s: *types.VulkanState, cmd: c.VkCommandBuffer) vo
     }
 }
 
-fn vk_record_scene_with_secondary_buffers(s: *types.VulkanState, primary_cmd: c.VkCommandBuffer, image_index: u32, use_depth: bool, clears: [*]c.VkClearValue) void {
-    _ = s;
-    _ = primary_cmd;
+pub fn vk_record_scene_with_secondary_buffers(s: *types.VulkanState, primary_cmd: c.VkCommandBuffer, image_index: u32, use_depth: bool, clears: [*]const c.VkClearValue) void {
     _ = image_index;
-    _ = use_depth;
     _ = clears;
+    if (s.commands.scene_secondary_buffers == null) {
+        // Fallback to inline
+        vk_record_scene_content(s, primary_cmd);
+        return;
+    }
+
+    // Select secondary buffer for current frame
+    const sec_cmd = s.commands.scene_secondary_buffers.?[s.sync.current_frame];
+
+    // Reset
+    if (c.vkResetCommandBuffer(sec_cmd, 0) != c.VK_SUCCESS) {
+        log.cardinal_log_error("Failed to reset secondary command buffer", .{});
+        return;
+    }
+
+    // Prepare Inheritance
+    const color_format = s.swapchain.format;
+    const depth_format = s.swapchain.depth_format;
+
+    var inheritance_rendering_info = std.mem.zeroes(c.VkCommandBufferInheritanceRenderingInfo);
+    inheritance_rendering_info.sType = c.VK_STRUCTURE_TYPE_COMMAND_BUFFER_INHERITANCE_RENDERING_INFO;
+    inheritance_rendering_info.colorAttachmentCount = 1;
+    inheritance_rendering_info.pColorAttachmentFormats = &color_format;
+    inheritance_rendering_info.depthAttachmentFormat = if (use_depth) depth_format else c.VK_FORMAT_UNDEFINED;
+    inheritance_rendering_info.rasterizationSamples = c.VK_SAMPLE_COUNT_1_BIT;
+    inheritance_rendering_info.flags = 0;
+
+    var inheritance_info = std.mem.zeroes(c.VkCommandBufferInheritanceInfo);
+    inheritance_info.sType = c.VK_STRUCTURE_TYPE_COMMAND_BUFFER_INHERITANCE_INFO;
+    inheritance_info.pNext = &inheritance_rendering_info;
+    inheritance_info.renderPass = null;
+    inheritance_info.subpass = 0;
+    inheritance_info.framebuffer = null;
+
+    var begin_info = std.mem.zeroes(c.VkCommandBufferBeginInfo);
+    begin_info.sType = c.VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
+    begin_info.flags = c.VK_COMMAND_BUFFER_USAGE_RENDER_PASS_CONTINUE_BIT | c.VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
+    begin_info.pInheritanceInfo = &inheritance_info;
+
+    // Begin Secondary
+    if (c.vkBeginCommandBuffer(sec_cmd, &begin_info) != c.VK_SUCCESS) {
+        log.cardinal_log_error("Failed to begin secondary command buffer", .{});
+        return;
+    }
+
+    // Set Viewport and Scissor (Required in secondary buffer if not inherited, but dynamic rendering inheritance is tricky.
+    // Explicitly setting them is safer.)
+    var vp = std.mem.zeroes(c.VkViewport);
+    vp.x = 0;
+    vp.y = 0;
+    vp.width = @floatFromInt(s.swapchain.extent.width);
+    vp.height = @floatFromInt(s.swapchain.extent.height);
+    vp.minDepth = 0.0;
+    vp.maxDepth = 1.0;
+    c.vkCmdSetViewport(sec_cmd, 0, 1, &vp);
+
+    var sc = std.mem.zeroes(c.VkRect2D);
+    sc.offset.x = 0;
+    sc.offset.y = 0;
+    sc.extent = s.swapchain.extent;
+    c.vkCmdSetScissor(sec_cmd, 0, 1, &sc);
+
+    // Record Content
+    vk_record_scene_content(s, sec_cmd);
+
+    // End Secondary
+    if (c.vkEndCommandBuffer(sec_cmd) != c.VK_SUCCESS) {
+        log.cardinal_log_error("Failed to end secondary command buffer", .{});
+        return;
+    }
+
+    // Execute
+    c.vkCmdExecuteCommands(primary_cmd, 1, &sec_cmd);
 }
 
 // Exported functions
@@ -591,6 +681,11 @@ pub export fn vk_destroy_commands_sync(s: ?*types.VulkanState) callconv(.c) void
     if (vs.commands.secondary_buffers != null) {
         memory.cardinal_free(mem_alloc, @as(?*anyopaque, @ptrCast(vs.commands.secondary_buffers)));
         vs.commands.secondary_buffers = null;
+    }
+
+    if (vs.commands.scene_secondary_buffers != null) {
+        memory.cardinal_free(mem_alloc, @as(?*anyopaque, @ptrCast(vs.commands.scene_secondary_buffers)));
+        vs.commands.scene_secondary_buffers = null;
     }
 
     if (vs.commands.pools != null) {

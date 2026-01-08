@@ -40,6 +40,30 @@ fn init_texture_cache() void {
     }
 }
 
+fn compute_cache_key(buf: []u8, base: []const u8, uri: []const u8) ![]const u8 {
+    if (uri.len > 0 and (uri[0] == '/' or (uri.len > 1 and uri[1] == ':'))) {
+        // Absolute path
+        if (uri.len > buf.len) return error.BufferTooSmall;
+        @memcpy(buf[0..uri.len], uri);
+        return buf[0..uri.len];
+    }
+
+    var dir: []const u8 = ".";
+    var last_sep: ?usize = null;
+    if (std.mem.lastIndexOfScalar(u8, base, '/')) |idx| {
+        last_sep = idx;
+    }
+    if (std.mem.lastIndexOfScalar(u8, base, '\\')) |idx| {
+        if (last_sep == null or idx > last_sep.?) last_sep = idx;
+    }
+    
+    if (last_sep) |idx| {
+        dir = base[0..idx];
+    }
+
+    return std.fmt.bufPrint(buf, "{s}/{s}", .{dir, uri});
+}
+
 fn lookup_cached_path(base: []const u8, uri: []const u8) ?[]const u8 {
     if (!g_cache_initialized) return null;
 
@@ -47,24 +71,7 @@ fn lookup_cached_path(base: []const u8, uri: []const u8) ?[]const u8 {
     defer g_cache_mutex.unlock();
 
     var key_buf: [1024]u8 = undefined;
-    var key: []u8 = undefined;
-    
-    if (uri.len > 0 and (uri[0] == '/' or (uri.len > 1 and uri[1] == ':'))) {
-        if (uri.len > 1024) return null;
-        @memcpy(key_buf[0..uri.len], uri);
-        key = key_buf[0..uri.len];
-    } else {
-        var dir = base;
-        if (std.mem.lastIndexOfScalar(u8, base, '/')) |idx| {
-            dir = base[0..idx];
-        } else if (std.mem.lastIndexOfScalar(u8, base, '\\')) |idx| {
-            dir = base[0..idx];
-        } else {
-            dir = ".";
-        }
-
-        key = std.fmt.bufPrint(&key_buf, "{s}/{s}", .{dir, uri}) catch return null;
-    }
+    const key = compute_cache_key(&key_buf, base, uri) catch return null;
 
     if (g_texture_path_cache.get(key)) |resolved| {
         gltf_log.debug("Cache hit for texture: {s} -> {s}", .{ key, resolved });
@@ -83,23 +90,7 @@ fn cache_texture_path(base: []const u8, uri: []const u8, resolved_path: []const 
     const std_allocator = allocator.as_allocator();
 
     var key_buf: [1024]u8 = undefined;
-    var key_slice: []u8 = undefined;
-
-    if (uri.len > 0 and (uri[0] == '/' or (uri.len > 1 and uri[1] == ':'))) {
-        if (uri.len > 1024) return;
-        @memcpy(key_buf[0..uri.len], uri);
-        key_slice = key_buf[0..uri.len];
-    } else {
-        var dir = base;
-        if (std.mem.lastIndexOfScalar(u8, base, '/')) |idx| {
-            dir = base[0..idx];
-        } else if (std.mem.lastIndexOfScalar(u8, base, '\\')) |idx| {
-            dir = base[0..idx];
-        } else {
-            dir = ".";
-        }
-        key_slice = std.fmt.bufPrint(&key_buf, "{s}/{s}", .{dir, uri}) catch return;
-    }
+    const key_slice = compute_cache_key(&key_buf, base, uri) catch return;
 
     if (g_texture_path_cache.contains(key_slice)) return;
 

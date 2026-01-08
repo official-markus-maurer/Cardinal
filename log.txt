@@ -1,1 +1,0 @@
-info: cardinal_window_create: success
