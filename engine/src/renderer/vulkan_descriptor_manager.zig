@@ -457,7 +457,7 @@ pub export fn vk_descriptor_manager_destroy(manager: ?*types.VulkanDescriptorMan
     if (mgr.setPoolMapping != null) {
         const mem_alloc = memory.cardinal_get_allocator_for_category(.RENDERER);
         const map = @as(*SetPoolMap, @ptrCast(@alignCast(mgr.setPoolMapping)));
-        map.deinit(std.heap.c_allocator);
+        map.deinit(mem_alloc.as_allocator());
         memory.cardinal_free(mem_alloc, map);
         mgr.setPoolMapping = null;
     }

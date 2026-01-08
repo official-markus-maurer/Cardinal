@@ -33,7 +33,8 @@ pub export fn vk_shader_create_module(device: c.VkDevice, filename: ?[*:0]const 
     // We use the C allocator to match the original C implementation's behavior if needed,
     // but here we just need a temporary buffer. Zig allocator is fine.
     // However, we need to ensure alignment for uint32.
-    const allocator = std.heap.c_allocator;
+    const memory = @import("../../core/memory.zig");
+    const allocator = memory.cardinal_get_allocator_for_category(.RENDERER).as_allocator();
 
     const code = allocator.alloc(u8, stat.size) catch {
         shader_utils_log.err("Failed to allocate memory for shader code", .{});

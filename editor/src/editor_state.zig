@@ -56,6 +56,9 @@ pub const EditorState = struct {
     window: *window.CardinalWindow = undefined,
     descriptor_pool: c.VkDescriptorPool = null,
 
+    // Config
+    config_manager: engine.config.ConfigManager = undefined,
+
     // Scene & Models
     model_manager: model_manager.CardinalModelManager = undefined,
     combined_scene: scene.CardinalScene = undefined,

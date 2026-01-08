@@ -60,7 +60,7 @@ fn draw_scene_node(state: *EditorState, node: *scene.CardinalSceneNode, depth: i
     }
 }
 
-pub fn draw_scene_graph_panel(state: *EditorState) void {
+pub fn draw_hierarchy_panel(state: *EditorState) void {
     if (state.show_scene_graph) {
         const open = c.imgui_bridge_begin("Scene Graph", &state.show_scene_graph, 0);
         defer c.imgui_bridge_end();

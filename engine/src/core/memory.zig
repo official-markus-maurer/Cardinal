@@ -60,6 +60,53 @@ pub const CardinalAllocator = extern struct {
     realloc: *const fn (*CardinalAllocator, ?*anyopaque, usize, usize, usize) callconv(.c) ?*anyopaque,
     free: *const fn (*CardinalAllocator, ?*anyopaque) callconv(.c) void,
     reset: ?*const fn (*CardinalAllocator) callconv(.c) void,
+
+    pub fn as_allocator(self: *CardinalAllocator) std.mem.Allocator {
+        return .{
+            .ptr = self,
+            .vtable = &vtable,
+        };
+    }
+
+    const vtable = std.mem.Allocator.VTable{
+        .alloc = wrap_alloc,
+        .resize = wrap_resize,
+        .free = wrap_free,
+        .remap = wrap_remap,
+    };
+
+    fn wrap_alloc(ctx: *anyopaque, len: usize, ptr_align: std.mem.Alignment, ret_addr: usize) ?[*]u8 {
+        _ = ret_addr;
+        const self: *CardinalAllocator = @ptrCast(@alignCast(ctx));
+        const alignment = ptr_align.toByteUnits();
+        const ptr = self.alloc(self, len, alignment);
+        return @ptrCast(ptr);
+    }
+
+    fn wrap_resize(ctx: *anyopaque, buf: []u8, buf_align: std.mem.Alignment, new_len: usize, ret_addr: usize) bool {
+        _ = ret_addr;
+        _ = buf_align;
+        _ = ctx;
+        _ = buf;
+        _ = new_len;
+        return false;
+    }
+
+    fn wrap_remap(ctx: *anyopaque, memory: []u8, alignment: std.mem.Alignment, new_len: usize, ret_addr: usize) ?[*]u8 {
+        _ = ctx;
+        _ = memory;
+        _ = alignment;
+        _ = new_len;
+        _ = ret_addr;
+        return null;
+    }
+
+    fn wrap_free(ctx: *anyopaque, buf: []u8, buf_align: std.mem.Alignment, ret_addr: usize) void {
+        _ = ret_addr;
+        _ = buf_align;
+        const self: *CardinalAllocator = @ptrCast(@alignCast(ctx));
+        self.free(self, buf.ptr);
+    }
 };
 
 // Internal State Structures
@@ -93,6 +140,7 @@ var g_alloc_map: std.AutoHashMap(usize, AllocInfo) = undefined;
 var g_alloc_map_lock: std.Thread.RwLock = .{};
 var g_alloc_map_init: bool = false;
 var g_active_allocs: usize = 0;
+var g_initialized: bool = false;
 
 var g_dynamic_state: DynamicState = .{ .placeholder = 0 };
 var g_linear_state: LinearState = undefined;
@@ -189,16 +237,16 @@ fn track_alloc(ptr: ?*anyopaque, size: usize, is_aligned: bool) void {
     // Capture stack trace if debug build
     if (builtin.mode == .Debug) {
         if (builtin.os.tag == .windows) {
-             // Use Windows API for faster/safer stack walking
-             // Skip 0 frames (capture current), capture up to 16
-             var stack: [16]?*anyopaque = undefined;
-             const count = RtlCaptureStackBackTrace(0, 16, &stack, null);
-             
-             var i: usize = 0;
-             while (i < count) : (i += 1) {
-                 info.stack_addresses[i] = @intFromPtr(stack[i]);
-             }
-             info.stack_depth = count;
+            // Use Windows API for faster/safer stack walking
+            // Skip 0 frames (capture current), capture up to 16
+            var stack: [16]?*anyopaque = undefined;
+            const count = RtlCaptureStackBackTrace(0, 16, &stack, null);
+
+            var i: usize = 0;
+            while (i < count) : (i += 1) {
+                info.stack_addresses[i] = @intFromPtr(stack[i]);
+            }
+            info.stack_depth = count;
         } else {
             // Fallback for other OSs using Zig's StackIterator
             var it = std.debug.StackIterator.init(@returnAddress(), null);
@@ -646,6 +694,10 @@ pub export fn cardinal_memory_init(default_linear_capacity: usize) void {
 }
 
 pub export fn cardinal_memory_shutdown() void {
+    if (!g_initialized) return;
+    g_initialized = false;
+
+    // Shutdown allocators
     arena_reset(&g_arena);
 
     if (g_linear_state.capacity > 0) {

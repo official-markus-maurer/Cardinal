@@ -1,4 +1,5 @@
 const std = @import("std");
+const memory = @import("memory.zig");
 
 const c = @cImport({
     @cInclude("stdarg.h");
@@ -131,7 +132,8 @@ fn file_sink_destroy(user_data: ?*anyopaque) callconv(.c) void {
         const data: *FileSinkData = @ptrCast(@alignCast(ptr));
         const file_obj = std.fs.File{ .handle = data.file_handle };
         file_obj.close();
-        std.heap.c_allocator.destroy(data);
+        const allocator = memory.cardinal_get_allocator_for_category(.LOGGING).as_allocator();
+        allocator.destroy(data);
     }
 }
 
@@ -141,14 +143,15 @@ pub export fn cardinal_log_create_file_sink(filename: ?[*:0]const u8) ?*Cardinal
     const span = std.mem.span(filename.?);
     const f = std.fs.cwd().createFile(span, .{}) catch return null;
 
-    const data_ptr = std.heap.c_allocator.create(FileSinkData) catch {
+    const allocator = memory.cardinal_get_allocator_for_category(.LOGGING).as_allocator();
+    const data_ptr = allocator.create(FileSinkData) catch {
         f.close();
         return null;
     };
     data_ptr.file_handle = f.handle;
 
-    const sink_ptr = std.heap.c_allocator.create(CardinalLogSink) catch {
-        std.heap.c_allocator.destroy(data_ptr);
+    const sink_ptr = allocator.create(CardinalLogSink) catch {
+        allocator.destroy(data_ptr);
         f.close();
         return null;
     };
@@ -222,7 +225,8 @@ pub export fn cardinal_log_shutdown() void {
                 if (sink.destroy_func) |destroy| {
                     destroy(sink.user_data);
                 }
-                std.heap.c_allocator.destroy(sink);
+                const allocator = memory.cardinal_get_allocator_for_category(.LOGGING).as_allocator();
+                allocator.destroy(sink);
             }
             g_sinks[i] = null;
         }
@@ -297,7 +301,8 @@ pub export fn cardinal_log_destroy_sink(sink_ptr: ?*CardinalLogSink) void {
     if (sink_ptr.?.destroy_func) |destroy| {
         destroy(sink_ptr.?.user_data);
     }
-    std.heap.c_allocator.destroy(sink_ptr.?);
+    const allocator = memory.cardinal_get_allocator_for_category(.LOGGING).as_allocator();
+    allocator.destroy(sink_ptr.?);
 }
 
 // --- Log Output ---

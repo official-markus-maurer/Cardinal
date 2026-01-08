@@ -56,15 +56,16 @@ This document outlines the roadmap for the Cardinal Engine, focusing on robustne
     - [ ] **Pipeline Cache**: Implement persistence (save/load `VkPipelineCache` to disk) to improve startup times (`vulkan_pipeline.zig`/`vulkan_pso.zig`).
 - [ ] **Texture Loader**:
     - [ ] Verify and address "not yet ported" C header dependencies.
-    - [ ] Improve glTF texture path cache (`gltf_loader.zig`): Current implementation is a fixed-size (256) hash table with potential collisions.
+    - [x] Improve glTF texture path cache (`gltf_loader.zig`): Replaced fixed-size hash table with `std.StringHashMap` and added thread safety.
 - [ ] **Editor Improvements**:
-    - [ ] Extract Animation Panel logic from `editor_layer.zig` to `panels/animation_panel.zig` for better maintainability.
+    - [x] Extract Animation Panel logic from `editor_layer.zig` to `panels/animation_panel.zig` for better maintainability.
+    - [x] Extract Hierarchy Panel logic from `editor_layer.zig` to `panels/hierarchy_panel.zig` for better maintainability.
 
 ## 2. Data & Assets
 
 ### Asset System
 - [ ] **Asset Database**: Implement a metadata system (`.meta` files) to store import settings and GUIDs for assets, decoupling file paths from asset identity.
-- [ ] **Texture Cache**: Improve `init_texture_cache` thread safety or usage in `gltf_loader.zig`.
+- [x] **Texture Cache**: Improved `init_texture_cache` thread safety and usage in `gltf_loader.zig` (using Mutex and HashMap).
 - [ ] **Async Loading**: Implement a proper `Promise` or `Handle` state system for async loading, allowing the engine to query if an asset is `Loading`, `Ready`, or `Failed`.
 - [ ] **Hot-Reloading**: Generic hot-reloading support for all asset types.
 - [ ] **Shader Compilation**: Integrate runtime shader compilation (e.g., shaderc or slang) to compile `.glsl` to `.spv` on the fly.

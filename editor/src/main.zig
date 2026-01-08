@@ -11,9 +11,12 @@ fn print_usage(program_name: []const u8) void {
 }
 
 pub fn main() !u8 {
-    var gpa = std.heap.GeneralPurposeAllocator(.{}){};
-    defer _ = gpa.deinit();
-    const allocator = gpa.allocator();
+    // Initialize memory system first
+    // Note: CardinalEngine also initializes memory, but we made it idempotent.
+    const memory = @import("cardinal_engine").memory;
+    memory.cardinal_memory_init(1024 * 1024 * 64); // 64MB
+
+    const allocator = memory.cardinal_get_allocator_for_category(.ENGINE).as_allocator();
 
     var log_level: log.CardinalLogLevel = .WARN;
 
@@ -34,6 +37,7 @@ pub fn main() !u8 {
 
     log.cardinal_log_init_with_level(log_level);
     defer log.cardinal_log_shutdown();
+    defer memory.cardinal_memory_shutdown();
 
     const config = EditorConfig{
         .window_title = "Cardinal Editor",

@@ -9,14 +9,15 @@ const wrappers = @import("vulkan_wrappers.zig");
 var g_shader_cache: std.StringHashMap(c.VkShaderModule) = undefined;
 var g_shader_cache_mutex: std.Thread.Mutex = .{};
 var g_shader_cache_initialized: bool = false;
-var g_allocator = std.heap.GeneralPurposeAllocator(.{}){};
 
 fn get_or_load_shader_module(device: c.VkDevice, path: []const u8) !c.VkShaderModule {
     g_shader_cache_mutex.lock();
     defer g_shader_cache_mutex.unlock();
 
+    const allocator = @import("../core/memory.zig").cardinal_get_allocator_for_category(.SHADERS).as_allocator();
+
     if (!g_shader_cache_initialized) {
-        g_shader_cache = std.StringHashMap(c.VkShaderModule).init(g_allocator.allocator());
+        g_shader_cache = std.StringHashMap(c.VkShaderModule).init(allocator);
         g_shader_cache_initialized = true;
     }
 
@@ -26,8 +27,8 @@ fn get_or_load_shader_module(device: c.VkDevice, path: []const u8) !c.VkShaderMo
 
     // Not in cache, load it
     // We need a null-terminated string for the C API
-    const path_z = try g_allocator.allocator().dupeZ(u8, path);
-    defer g_allocator.allocator().free(path_z);
+    const path_z = try allocator.dupeZ(u8, path);
+    defer allocator.free(path_z);
 
     var module: c.VkShaderModule = undefined;
     if (!shader_utils.vk_shader_create_module(device, path_z, &module)) {
@@ -36,8 +37,8 @@ fn get_or_load_shader_module(device: c.VkDevice, path: []const u8) !c.VkShaderMo
     }
 
     // Store in cache (dup key for persistence)
-    const key = try g_allocator.allocator().dupe(u8, path);
-    errdefer g_allocator.allocator().free(key);
+    const key = try allocator.dupe(u8, path);
+    errdefer allocator.free(key);
 
     try g_shader_cache.put(key, module);
 
@@ -52,17 +53,15 @@ pub fn vk_pso_cleanup_shader_cache(device: c.VkDevice) void {
     if (!g_shader_cache_initialized) return;
 
     log.cardinal_log_info("Cleaning up shader cache ({d} modules)", .{g_shader_cache.count()});
+    const allocator = @import("../core/memory.zig").cardinal_get_allocator_for_category(.SHADERS).as_allocator();
 
     var it = g_shader_cache.iterator();
     while (it.next()) |entry| {
         wrappers.Device.init(device).destroyShaderModule(entry.value_ptr.*);
-        g_allocator.allocator().free(entry.key_ptr.*);
+        allocator.free(entry.key_ptr.*);
     }
     g_shader_cache.deinit();
     g_shader_cache_initialized = false;
-    _ = g_allocator.deinit();
-    // Reset allocator for next use if needed (GPA doesn't need reset, but we re-init it)
-    g_allocator = std.heap.GeneralPurposeAllocator(.{}){};
 }
 
 // --- Enums ---

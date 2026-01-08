@@ -310,6 +310,16 @@ void imgui_bridge_table_set_column_index(int column_n) {
 }
 
 // Tooltips & Interaction
+void imgui_bridge_open_popup(const char *str_id) { ImGui::OpenPopup(str_id); }
+
+bool imgui_bridge_begin_popup(const char *str_id, int flags) {
+  return ImGui::BeginPopup(str_id, flags);
+}
+
+void imgui_bridge_end_popup(void) { ImGui::EndPopup(); }
+
+void imgui_bridge_close_current_popup(void) { ImGui::CloseCurrentPopup(); }
+
 void imgui_bridge_set_tooltip(const char *fmt, ...) {
   va_list args;
   va_start(args, fmt);

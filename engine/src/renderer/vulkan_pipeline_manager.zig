@@ -1,6 +1,7 @@
 const std = @import("std");
 const builtin = @import("builtin");
 const log = @import("../core/log.zig");
+const memory = @import("../core/memory.zig");
 const types = @import("vulkan_types.zig");
 const c = @import("vulkan_c.zig").c;
 
@@ -93,7 +94,7 @@ fn create_pipeline_cache(manager: *VulkanPipelineManager) bool {
         defer f.close();
         if (f.stat()) |stat| {
             if (stat.size > 0) {
-                const alloc = std.heap.c_allocator;
+                const alloc = memory.cardinal_get_allocator_for_category(.RENDERER).as_allocator();
                 if (alloc.alloc(u8, stat.size)) |buf| {
                     if (f.readAll(buf)) |read_bytes| {
                         if (read_bytes == stat.size) {
@@ -107,7 +108,10 @@ fn create_pipeline_cache(manager: *VulkanPipelineManager) bool {
             }
         } else |_| {}
     }
-    defer if (file_buffer.len > 0) std.heap.c_allocator.free(file_buffer);
+    defer if (file_buffer.len > 0) {
+        const alloc = memory.cardinal_get_allocator_for_category(.RENDERER).as_allocator();
+        alloc.free(file_buffer);
+    };
 
     if (c.vkCreatePipelineCache(s.context.device, &cache_info, null, &manager.pipeline_cache) != c.VK_SUCCESS) {
         log.cardinal_log_error("[PIPELINE_MANAGER] Failed to create pipeline cache", .{});
@@ -124,7 +128,7 @@ fn destroy_pipeline_cache(manager: *VulkanPipelineManager) void {
         var size: usize = 0;
         if (c.vkGetPipelineCacheData(s.context.device, manager.pipeline_cache, &size, null) == c.VK_SUCCESS) {
              if (size > 0) {
-                 const alloc = std.heap.c_allocator;
+                 const alloc = memory.cardinal_get_allocator_for_category(.RENDERER).as_allocator();
                  if (alloc.alloc(u8, size)) |buf| {
                      defer alloc.free(buf);
                      if (c.vkGetPipelineCacheData(s.context.device, manager.pipeline_cache, &size, buf.ptr) == c.VK_SUCCESS) {
@@ -147,8 +151,9 @@ fn destroy_pipeline_cache(manager: *VulkanPipelineManager) void {
 
 fn ensure_pipeline_capacity(manager: *VulkanPipelineManager) bool {
     if (manager.pipeline_count >= manager.pipeline_capacity) {
-        const new_capacity = manager.pipeline_capacity * 2;
-        const new_pipelines = c.realloc(@as(?*anyopaque, @ptrCast(manager.pipelines)), @sizeOf(VulkanPipelineInfo) * new_capacity);
+        const new_capacity = if (manager.pipeline_capacity == 0) 16 else manager.pipeline_capacity * 2;
+        const alloc = memory.cardinal_get_allocator_for_category(.RENDERER);
+        const new_pipelines = memory.cardinal_realloc(alloc, @as(?*anyopaque, @ptrCast(manager.pipelines)), @sizeOf(VulkanPipelineInfo) * new_capacity);
         if (new_pipelines == null) {
             log.cardinal_log_error("[PIPELINE_MANAGER] Failed to expand pipeline array", .{});
             return false;
@@ -183,9 +188,10 @@ fn remove_pipeline_from_manager(manager: *VulkanPipelineManager, type_val: Vulka
 
 fn ensure_shader_capacity(manager: *VulkanPipelineManager) bool {
     if (manager.shader_module_count >= manager.shader_module_capacity) {
-        const new_capacity = manager.shader_module_capacity * 2;
-        const new_modules = c.realloc(@as(?*anyopaque, @ptrCast(manager.shader_modules)), @sizeOf(c.VkShaderModule) * new_capacity);
-        const new_paths = c.realloc(@as(?*anyopaque, @ptrCast(manager.shader_paths)), @sizeOf([*c]u8) * new_capacity);
+        const new_capacity = if (manager.shader_module_capacity == 0) 16 else manager.shader_module_capacity * 2;
+        const alloc = memory.cardinal_get_allocator_for_category(.RENDERER);
+        const new_modules = memory.cardinal_realloc(alloc, @as(?*anyopaque, @ptrCast(manager.shader_modules)), @sizeOf(c.VkShaderModule) * new_capacity);
+        const new_paths = memory.cardinal_realloc(alloc, @as(?*anyopaque, @ptrCast(manager.shader_paths)), @sizeOf([*c]u8) * new_capacity);
 
         if (new_modules == null or new_paths == null) {
             log.cardinal_log_error("[PIPELINE_MANAGER] Failed to expand shader cache", .{});

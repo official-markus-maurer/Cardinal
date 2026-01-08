@@ -342,14 +342,15 @@ pub export fn cardinal_renderer_create(out_renderer: ?*types.CardinalRenderer, w
     const rg_ptr = memory.cardinal_alloc(mem_alloc, @sizeOf(render_graph.RenderGraph));
     if (rg_ptr != null) {
         const rg = @as(*render_graph.RenderGraph, @ptrCast(@alignCast(rg_ptr)));
-        rg.* = render_graph.RenderGraph.init(std.heap.c_allocator);
+        const renderer_alloc = memory.cardinal_get_allocator_for_category(.RENDERER).as_allocator();
+        rg.* = render_graph.RenderGraph.init(renderer_alloc);
 
         // Add PBR Pass
-        var pass = render_graph.RenderPass.init(std.heap.c_allocator, "PBR Pass", pbr_pass_callback);
+        var pass = render_graph.RenderPass.init(renderer_alloc, "PBR Pass", pbr_pass_callback);
 
         // Define outputs for automatic barriers
         // Backbuffer (Color Attachment)
-        pass.add_output(std.heap.c_allocator, .{
+        pass.add_output(renderer_alloc, .{
             .id = types.RESOURCE_ID_BACKBUFFER,
             .type = .Image,
             .access_mask = c.VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT | c.VK_ACCESS_2_COLOR_ATTACHMENT_READ_BIT,
@@ -359,7 +360,7 @@ pub export fn cardinal_renderer_create(out_renderer: ?*types.CardinalRenderer, w
         }) catch {};
 
         // Depthbuffer (Depth Attachment)
-        pass.add_output(std.heap.c_allocator, .{
+        pass.add_output(renderer_alloc, .{
             .id = types.RESOURCE_ID_DEPTHBUFFER,
             .type = .Image,
             .access_mask = c.VK_ACCESS_2_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT | c.VK_ACCESS_2_DEPTH_STENCIL_ATTACHMENT_READ_BIT,
@@ -402,7 +403,8 @@ pub export fn cardinal_renderer_create(out_renderer: ?*types.CardinalRenderer, w
     const mat_sys_ptr = memory.cardinal_alloc(mem_alloc, @sizeOf(@import("vulkan_material_system.zig").MaterialSystem));
     if (mat_sys_ptr) |ptr| {
         const mat_sys = @as(*@import("vulkan_material_system.zig").MaterialSystem, @ptrCast(@alignCast(ptr)));
-        mat_sys.* = @import("vulkan_material_system.zig").MaterialSystem.init(std.heap.c_allocator);
+        const renderer_alloc = memory.cardinal_get_allocator_for_category(.RENDERER).as_allocator();
+        mat_sys.* = @import("vulkan_material_system.zig").MaterialSystem.init(renderer_alloc);
         s.material_system = ptr;
         log.cardinal_log_info("Material system initialized", .{});
     } else {
@@ -492,14 +494,15 @@ pub export fn cardinal_renderer_create_headless(out_renderer: ?*types.CardinalRe
     const rg_ptr = memory.cardinal_alloc(mem_alloc, @sizeOf(render_graph.RenderGraph));
     if (rg_ptr != null) {
         const rg = @as(*render_graph.RenderGraph, @ptrCast(@alignCast(rg_ptr)));
-        rg.* = render_graph.RenderGraph.init(std.heap.c_allocator);
+        const renderer_alloc = memory.cardinal_get_allocator_for_category(.RENDERER).as_allocator();
+        rg.* = render_graph.RenderGraph.init(renderer_alloc);
 
         // Add PBR Pass
-        var pass = render_graph.RenderPass.init(std.heap.c_allocator, "PBR Pass", pbr_pass_callback);
+        var pass = render_graph.RenderPass.init(renderer_alloc, "PBR Pass", pbr_pass_callback);
 
         // Define outputs for automatic barriers
         // Backbuffer (Color Attachment)
-        pass.add_output(std.heap.c_allocator, .{
+        pass.add_output(renderer_alloc, .{
             .id = types.RESOURCE_ID_BACKBUFFER,
             .type = .Image,
             .access_mask = c.VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT | c.VK_ACCESS_2_COLOR_ATTACHMENT_READ_BIT,
@@ -509,7 +512,7 @@ pub export fn cardinal_renderer_create_headless(out_renderer: ?*types.CardinalRe
         }) catch {};
 
         // Depthbuffer (Depth Attachment)
-        pass.add_output(std.heap.c_allocator, .{
+        pass.add_output(renderer_alloc, .{
             .id = types.RESOURCE_ID_DEPTHBUFFER,
             .type = .Image,
             .access_mask = c.VK_ACCESS_2_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT | c.VK_ACCESS_2_DEPTH_STENCIL_ATTACHMENT_READ_BIT,

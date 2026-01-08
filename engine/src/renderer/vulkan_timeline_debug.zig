@@ -458,8 +458,9 @@ pub export fn vulkan_timeline_debug_print_event_summary(debug_ctx: *types.Vulkan
     var type_counts: [9]u32 = std.mem.zeroes([9]u32);
 
     // Allocate temp buffer
-    const events = std.heap.c_allocator.alloc(types.VulkanTimelineDebugEvent, event_count) catch return;
-    defer std.heap.c_allocator.free(events);
+    const allocator = memory.cardinal_get_allocator_for_category(.RENDERER).as_allocator();
+    const events = allocator.alloc(types.VulkanTimelineDebugEvent, event_count) catch return;
+    defer allocator.free(events);
 
     var actual_count: u32 = 0;
     if (vulkan_timeline_debug_get_events(debug_ctx, events.ptr, event_count, &actual_count)) {

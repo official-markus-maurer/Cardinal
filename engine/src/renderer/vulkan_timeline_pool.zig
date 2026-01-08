@@ -5,17 +5,26 @@ const types = @import("vulkan_timeline_types.zig");
 
 const c = types.c;
 
+const memory = @import("../core/memory.zig");
+
 // Platform-specific mutex helpers
 fn pool_mutex_init(mutex: *?*anyopaque) bool {
+    const allocator = memory.cardinal_get_allocator_for_category(.RENDERER);
     if (builtin.os.tag == .windows) {
-        const cs = std.heap.c_allocator.create(c.CRITICAL_SECTION) catch return false;
+        const ptr = memory.cardinal_alloc(allocator, @sizeOf(c.CRITICAL_SECTION));
+        if (ptr == null) return false;
+        const cs = @as(*c.CRITICAL_SECTION, @ptrCast(@alignCast(ptr)));
+        
         c.InitializeCriticalSection(cs);
         mutex.* = cs;
         return true;
     } else {
-        const m = std.heap.c_allocator.create(c.pthread_mutex_t) catch return false;
+        const ptr = memory.cardinal_alloc(allocator, @sizeOf(c.pthread_mutex_t));
+        if (ptr == null) return false;
+        const m = @as(*c.pthread_mutex_t, @ptrCast(@alignCast(ptr)));
+        
         if (c.pthread_mutex_init(m, null) != 0) {
-            std.heap.c_allocator.destroy(m);
+            memory.cardinal_free(allocator, m);
             return false;
         }
         mutex.* = m;
@@ -24,15 +33,16 @@ fn pool_mutex_init(mutex: *?*anyopaque) bool {
 }
 
 fn pool_mutex_destroy(mutex: *?*anyopaque) void {
+    const allocator = memory.cardinal_get_allocator_for_category(.RENDERER);
     if (mutex.*) |m| {
         if (builtin.os.tag == .windows) {
             const cs: *c.CRITICAL_SECTION = @ptrCast(@alignCast(m));
             c.DeleteCriticalSection(cs);
-            std.heap.c_allocator.destroy(cs);
+            memory.cardinal_free(allocator, cs);
         } else {
             const pm: *c.pthread_mutex_t = @ptrCast(@alignCast(m));
             _ = c.pthread_mutex_destroy(pm);
-            std.heap.c_allocator.destroy(pm);
+            memory.cardinal_free(allocator, pm);
         }
         mutex.* = null;
     }
@@ -177,7 +187,8 @@ pub export fn vulkan_timeline_pool_destroy(pool: *types.VulkanTimelinePool) call
     // Need to reconstruct slice or use free on pointer if allocator supports it (c_allocator uses free)
     // std.heap.c_allocator.free expects slice.
     const entries_slice = @as([*]u8, @ptrCast(pool.entries))[0..(@sizeOf(types.VulkanTimelinePoolEntry) * pool.max_pool_size)];
-    std.heap.c_allocator.free(entries_slice);
+    const allocator = memory.cardinal_get_allocator_for_category(.RENDERER).as_allocator();
+    allocator.free(entries_slice);
 
     // Zero out struct
     _ = c.memset(pool, 0, @sizeOf(types.VulkanTimelinePool));

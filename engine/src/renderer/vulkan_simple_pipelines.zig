@@ -1,5 +1,6 @@
 const std = @import("std");
 const builtin = @import("builtin");
+const memory = @import("../core/memory.zig");
 const log = @import("../core/log.zig");
 const buffer_mgr = @import("vulkan_buffer_manager.zig");
 const descriptor_mgr = @import("vulkan_descriptor_manager.zig");
@@ -20,7 +21,6 @@ const SimpleUniformBufferObject = extern struct {
 };
 
 fn create_simple_descriptor_resources(s: *types.VulkanState) bool {
-    const memory = @import("../core/memory.zig");
     // Create Descriptor Manager
     const mem_alloc = memory.cardinal_get_allocator_for_category(.RENDERER);
     const ptr = memory.cardinal_alloc(mem_alloc, @sizeOf(types.VulkanDescriptorManager));
@@ -30,7 +30,8 @@ fn create_simple_descriptor_resources(s: *types.VulkanState) bool {
     }
     s.pipelines.simple_descriptor_manager = @as(*types.VulkanDescriptorManager, @ptrCast(@alignCast(ptr)));
 
-    var desc_builder = descriptor_mgr.DescriptorBuilder.init(std.heap.page_allocator);
+    const renderer_allocator = memory.cardinal_get_allocator_for_category(.RENDERER).as_allocator();
+    var desc_builder = descriptor_mgr.DescriptorBuilder.init(renderer_allocator);
     defer desc_builder.deinit();
 
     // Binding 0: Uniform Buffer
@@ -88,9 +89,10 @@ fn create_simple_uniform_buffer(s: *types.VulkanState) bool {
 
 
 fn create_simple_pipeline_from_json(s: *types.VulkanState, json_path: []const u8, pipeline: *c.VkPipeline, pipelineLayout: *c.VkPipelineLayout, pipelineCache: c.VkPipelineCache) bool {
-    var builder = vk_pso.PipelineBuilder.init(std.heap.page_allocator, s.context.device, pipelineCache);
+    const renderer_allocator = memory.cardinal_get_allocator_for_category(.RENDERER).as_allocator();
+    var builder = vk_pso.PipelineBuilder.init(renderer_allocator, s.context.device, pipelineCache);
     
-    var parsed = vk_pso.PipelineBuilder.load_from_json(std.heap.page_allocator, json_path) catch |err| {
+    var parsed = vk_pso.PipelineBuilder.load_from_json(renderer_allocator, json_path) catch |err| {
         log.cardinal_log_error("Failed to load pipeline JSON '{s}': {s}", .{json_path, @errorName(err)});
         return false;
     };
@@ -176,7 +178,7 @@ pub fn vk_destroy_simple_pipelines(s: *types.VulkanState) void {
     }
 
     if (s.pipelines.simple_descriptor_manager != null) {
-        const memory = @import("../core/memory.zig");
+        // memory is already imported at file scope
         const mem_alloc = memory.cardinal_get_allocator_for_category(.RENDERER);
         descriptor_mgr.vk_descriptor_manager_destroy(@ptrCast(s.pipelines.simple_descriptor_manager));
         memory.cardinal_free(mem_alloc, s.pipelines.simple_descriptor_manager);

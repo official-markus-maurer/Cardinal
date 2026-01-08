@@ -16,18 +16,18 @@ const editor_state = @import("editor_state.zig");
 const EditorState = editor_state.EditorState;
 const AssetState = editor_state.AssetState;
 
-const scene_hierarchy = @import("panels/scene_hierarchy.zig");
+const hierarchy_panel = @import("panels/hierarchy_panel.zig");
 const content_browser = @import("panels/content_browser.zig");
 const inspector = @import("panels/inspector.zig");
 const memory_stats = @import("panels/memory_stats.zig");
+const animation_panel = @import("panels/animation_panel.zig");
 const input_system = @import("systems/input.zig");
 const camera_controller = @import("systems/camera_controller.zig");
 
 const c = @import("c.zig").c;
 
 // Global allocator for editor state
-var gpa = std.heap.GeneralPurposeAllocator(.{}){};
-const allocator = gpa.allocator();
+const allocator = engine.memory.cardinal_get_allocator_for_category(.ENGINE).as_allocator();
 
 var state: EditorState = undefined;
 var initialized: bool = false;
@@ -49,7 +49,7 @@ fn check_loading_status() void {
             if (async_loader.cardinal_async_get_scene_result(task, &loaded_scene)) {
                 const path = info.path;
                 const filename = std.fs.path.basename(path);
-                
+
                 const filename_z_alloc = allocator.dupeZ(u8, filename) catch null;
                 const filename_z = if (filename_z_alloc) |p| p else "unknown";
                 defer if (filename_z_alloc) |p| allocator.free(p);
@@ -95,7 +95,7 @@ fn check_loading_status() void {
             i += 1;
         }
     }
-    
+
     state.is_loading = (state.loading_tasks.items.len > 0);
 }
 
@@ -130,20 +130,18 @@ fn draw_pbr_settings_panel() void {
 
             if (c.imgui_bridge_collapsing_header("Lighting", c.ImGuiTreeNodeFlags_DefaultOpen)) {
                 var light_changed = false;
-                
+
                 // Add Directional Light Toggle
                 if (c.imgui_bridge_checkbox("Enable Directional Light", &state.enable_directional_light)) {
                     light_changed = true;
                 }
-                
-
 
                 var light_type = state.light.type;
                 var items: [3][*c]const u8 = undefined;
                 items[0] = "Directional";
                 items[1] = "Point";
                 items[2] = "Spot";
-                
+
                 if (state.enable_directional_light) {
                     c.imgui_bridge_text_disabled("Type locked to Directional");
                     state.light.type = 0;
@@ -248,118 +246,6 @@ fn draw_pbr_settings_panel() void {
     }
 }
 
-fn draw_animation_panel() void {
-    if (state.show_animation) {
-        const open = c.imgui_bridge_begin("Animation", &state.show_animation, 0);
-        defer c.imgui_bridge_end();
-
-        if (open) {
-            if (state.scene_loaded and state.combined_scene.animation_system != null) {
-                const anim_sys_opaque = state.combined_scene.animation_system.?;
-                const anim_sys = @as(*animation.CardinalAnimationSystem, @ptrCast(@alignCast(anim_sys_opaque)));
-
-                // Animation selection
-                c.imgui_bridge_text("Animations (%d)", anim_sys.animation_count);
-                c.imgui_bridge_separator();
-
-                if (c.imgui_bridge_begin_child("##animation_list", 0, 120, true, 0)) {
-                    var i: u32 = 0;
-                    while (i < anim_sys.animation_count) : (i += 1) {
-                        const anim = &anim_sys.animations.?[i];
-                        const name = if (anim.name) |n| std.mem.span(n) else "Unnamed Animation";
-
-                        const is_selected = (state.selected_animation == @as(i32, @intCast(i)));
-                        if (c.imgui_bridge_selectable(name.ptr, is_selected, 0)) {
-                            state.selected_animation = @as(i32, @intCast(i));
-                            state.animation_time = 0.0; // Reset time
-                        }
-
-                        c.imgui_bridge_same_line(0, -1);
-                        c.imgui_bridge_text_disabled("(%.2fs, %d channels)", anim.duration, anim.channel_count);
-                    }
-                    c.imgui_bridge_end_child();
-                }
-
-                c.imgui_bridge_separator();
-
-                // Playback controls
-                if (state.selected_animation >= 0 and state.selected_animation < anim_sys.animation_count) {
-                    const current_anim = &anim_sys.animations.?[@intCast(state.selected_animation)];
-
-                    c.imgui_bridge_text("Playback Controls");
-
-                    if (state.animation_playing) {
-                        if (c.imgui_bridge_button("Pause")) {
-                            state.animation_playing = false;
-                            _ = animation.cardinal_animation_pause(anim_sys, @intCast(state.selected_animation));
-                        }
-                    } else {
-                        if (c.imgui_bridge_button("Play")) {
-                            state.animation_playing = true;
-                            _ = animation.cardinal_animation_play(anim_sys, @intCast(state.selected_animation), state.animation_looping, 1.0);
-                        }
-                    }
-
-                    c.imgui_bridge_same_line(0, -1);
-                    if (c.imgui_bridge_button("Stop")) {
-                        state.animation_playing = false;
-                        state.animation_time = 0.0;
-                        _ = animation.cardinal_animation_stop(anim_sys, @intCast(state.selected_animation));
-                    }
-
-                    c.imgui_bridge_same_line(0, -1);
-                    _ = c.imgui_bridge_checkbox("Loop", &state.animation_looping);
-
-                    // Speed control
-                    c.imgui_bridge_set_next_item_width(100);
-                    if (c.imgui_bridge_slider_float("Speed", &state.animation_speed, 0.1, 3.0, "%.1fx")) {
-                        _ = animation.cardinal_animation_set_speed(anim_sys, @intCast(state.selected_animation), state.animation_speed);
-                    }
-
-                    // Timeline
-                    c.imgui_bridge_separator();
-                    c.imgui_bridge_text("Timeline");
-
-                    c.imgui_bridge_text("Time: %.2f / %.2f seconds", state.animation_time, current_anim.duration);
-
-                    // Timeline scrubber
-                    if (c.imgui_bridge_slider_float("##timeline", &state.animation_time, 0.0, current_anim.duration, "%.2fs")) {
-                        if (state.animation_time < 0.0) state.animation_time = 0.0;
-                        if (state.animation_time > current_anim.duration) {
-                            if (state.animation_looping) {
-                                state.animation_time = @mod(state.animation_time, current_anim.duration);
-                            } else {
-                                state.animation_time = current_anim.duration;
-                                state.animation_playing = false;
-                            }
-                        }
-                    }
-
-                    c.imgui_bridge_separator();
-                    c.imgui_bridge_text("Animation Info");
-                    c.imgui_bridge_text("Name: %s", if (current_anim.name) |n| n else "Unnamed");
-                    c.imgui_bridge_text("Duration: %.2f seconds", current_anim.duration);
-                    c.imgui_bridge_text("Channels: %d", current_anim.channel_count);
-                    c.imgui_bridge_text("Samplers: %d", current_anim.sampler_count);
-
-                    if (c.imgui_bridge_collapsing_header("Channels", 0)) {
-                        var i: u32 = 0;
-                        while (i < current_anim.channel_count) : (i += 1) {
-                            const channel = &current_anim.channels.?[i];
-                            c.imgui_bridge_text("Channel %d: Node %d, Target %d", i, channel.target.node_index, @intFromEnum(channel.target.path));
-                        }
-                    }
-                } else {
-                    c.imgui_bridge_text_disabled("Select an animation to see controls");
-                }
-            } else {
-                c.imgui_bridge_text("No animations");
-                c.imgui_bridge_text_wrapped("Load a scene with animations to see animation controls.");
-            }
-        }
-    }
-}
-
 const VkCommandBuffer = c.VkCommandBuffer;
 
 fn ui_draw_callback(cmd: VkCommandBuffer) callconv(.c) void {
@@ -399,11 +285,34 @@ pub fn init(win_ptr: *window.CardinalWindow, rnd_ptr: *types.CardinalRenderer) b
 
     if (!model_manager.cardinal_model_manager_init(&state.model_manager)) return false;
 
-    const default_assets_dir = "C:/Users/admin/Documents/Cardinal/assets";
-    state.assets.assets_dir = allocator.dupeZ(u8, default_assets_dir) catch return false;
-    state.assets.current_dir = allocator.dupeZ(u8, default_assets_dir) catch return false;
+    // Init Config
+    state.config_manager = engine.config.ConfigManager.init(allocator, "cardinal_config.json");
+    state.config_manager.load() catch |err| {
+        log.cardinal_log_warn("Failed to load config: {}", .{err});
+    };
+
+    var buffer: [1024]u8 = undefined;
+    var assets_path: []const u8 = undefined;
+
+    // Check if configured path exists
+    if (std.fs.openDirAbsolute(state.config_manager.config.assets_path, .{})) |_| {
+        assets_path = state.config_manager.config.assets_path;
+    } else |err| {
+        // Fallback to relative "assets"
+        log.cardinal_log_warn("Configured assets path '{s}' invalid ({}), using default", .{ state.config_manager.config.assets_path, err });
+        assets_path = std.fs.cwd().realpath("assets", &buffer) catch |e| {
+            log.cardinal_log_error("Failed to resolve assets directory: {}", .{e});
+            return false;
+        };
+    }
+
+    state.assets.assets_dir = allocator.dupeZ(u8, assets_path) catch return false;
+    state.assets.current_dir = allocator.dupeZ(u8, assets_path) catch return false;
     state.assets.search_filter = allocator.alloc(u8, 256) catch return false;
     @memset(state.assets.search_filter, 0);
+
+    // Initial scan
+    content_browser.scan_assets_dir(&state, allocator);
 
     c.imgui_bridge_create_context();
     c.imgui_bridge_enable_docking(true);
@@ -472,12 +381,6 @@ pub fn init(win_ptr: *window.CardinalWindow, rnd_ptr: *types.CardinalRenderer) b
 
 pub fn on_device_loss(_: ?*anyopaque) callconv(.c) void {
     log.cardinal_log_warn("[EDITOR_LAYER] Device loss detected, shutting down ImGui", .{});
-
-    // Always attempt to shutdown the Vulkan backend if we were initialized
-    // We check if the context exists by checking if the descriptor pool was created (which happens during init)
-    // Even if it's null, calling shutdown might be safer if we are unsure, but ImGui backend asserts if not initialized.
-    // However, the "Already initialized" error comes from Init, not Shutdown.
-    // So we must ensure Shutdown is called.
 
     // We can use the global 'initialized' flag or check descriptor_pool.
     // If descriptor_pool is set, we definitely initialized.
@@ -574,8 +477,8 @@ pub fn shutdown() void {
     model_manager.cardinal_model_manager_destroy(&state.model_manager);
 
     for (state.loading_tasks.items) |info| {
-         async_loader.cardinal_async_free_task(info.task);
-         allocator.free(info.path);
+        async_loader.cardinal_async_free_task(info.task);
+        allocator.free(info.path);
     }
     state.loading_tasks.deinit(allocator);
 
@@ -688,11 +591,11 @@ pub fn update() void {
         }
 
         // Panels
-        scene_hierarchy.draw_scene_graph_panel(&state);
+        hierarchy_panel.draw_hierarchy_panel(&state);
         content_browser.draw_asset_browser_panel(&state, allocator);
         inspector.draw_inspector_panel(&state);
         draw_pbr_settings_panel();
-        draw_animation_panel();
+        animation_panel.draw_animation_panel(&state);
         memory_stats.draw_memory_stats_panel(&state);
 
         // Check for dirty model manager and update combined scene
@@ -710,7 +613,7 @@ pub fn update() void {
         // Note: Begin() must be matched with End() regardless of return value
         const status_open = c.imgui_bridge_begin("Status", null, 0);
         defer c.imgui_bridge_end();
-        
+
         if (status_open) {
             c.imgui_bridge_text("FPS: %.1f", 1.0 / dt);
             c.imgui_bridge_text("Status: %s", &state.status_msg);
@@ -750,22 +653,22 @@ pub fn process_pending_uploads() void {
                     state.light.direction = .{ .x = -m[8], .y = -m[9], .z = -m[10] };
                     // Position is column 3: m[12], m[13], m[14]
                     state.light.position = .{ .x = m[12], .y = m[13], .z = m[14] };
-                    log.cardinal_log_info("Updated light transform from node {d}: Pos=({d:.2},{d:.2},{d:.2})", .{sl.node_index, state.light.position.x, state.light.position.y, state.light.position.z});
+                    log.cardinal_log_info("Updated light transform from node {d}: Pos=({d:.2},{d:.2},{d:.2})", .{ sl.node_index, state.light.position.x, state.light.position.y, state.light.position.z });
                 }
             }
-            
+
             // Boost intensity if it looks like a raw unit (e.g. < 100) to make it visible in PBR
             if (state.light.intensity < 100.0) {
                 state.light.intensity *= 100.0;
                 log.cardinal_log_info("Auto-boosted light intensity to {d:.2}", .{state.light.intensity});
             }
-            
-            log.cardinal_log_info("Updated editor light from scene: Type={d}, Intensity={d}, Range={d}", .{state.light.type, state.light.intensity, state.light.range});
+
+            log.cardinal_log_info("Updated editor light from scene: Type={d}, Intensity={d}, Range={d}", .{ state.light.type, state.light.intensity, state.light.range });
         }
 
         if (state.pbr_enabled) {
             renderer.cardinal_renderer_set_camera(state.renderer, &state.camera);
-            
+
             var pbr_lights: [types.MAX_LIGHTS]types.PBRLight = undefined;
             var light_count: u32 = 0;
 
@@ -779,20 +682,20 @@ pub fn process_pending_uploads() void {
                 pbr_lights[light_count].ambientColor = .{ state.light.ambient.x, state.light.ambient.y, state.light.ambient.z, state.light.range };
                 light_count += 1;
             }
-            
+
             // 2. Add Scene Lights (Point/Spot)
             if (state.combined_scene.light_count > 0 and state.combined_scene.lights != null) {
                 var i: u32 = 0;
                 while (i < state.combined_scene.light_count and light_count < types.MAX_LIGHTS) : (i += 1) {
                     const sl = &state.combined_scene.lights.?[i];
-                    
+
                     // Skip Directional lights from scene if manual is enabled (or just prioritize manual)
                     // The user requested "point and spotlights should be used by the models"
                     // If the scene has a directional light, we'll include it, but manual one is already added as #0 (shadow caster)
-                    
+
                     var pos = math.Vec3{ .x = 0, .y = 0, .z = 0 };
                     var dir = math.Vec3{ .x = 0, .y = -1, .z = 0 };
-                    
+
                     if (sl.node_index < state.combined_scene.all_node_count and state.combined_scene.all_nodes != null) {
                         if (state.combined_scene.all_nodes.?[sl.node_index]) |node| {
                             const m = node.world_transform;
@@ -800,16 +703,16 @@ pub fn process_pending_uploads() void {
                             pos = .{ .x = m[12], .y = m[13], .z = m[14] };
                         }
                     }
-                    
+
                     var intensity = sl.intensity;
                     if (intensity < 100.0) intensity *= 100.0; // Auto-boost
-                    
+
                     pbr_lights[light_count] = std.mem.zeroes(types.PBRLight);
                     pbr_lights[light_count].lightDirection = .{ dir.x, dir.y, dir.z, @floatFromInt(@intFromEnum(sl.type)) };
                     pbr_lights[light_count].lightPosition = .{ pos.x, pos.y, pos.z, 0.0 };
                     pbr_lights[light_count].lightColor = .{ sl.color[0], sl.color[1], sl.color[2], intensity };
                     pbr_lights[light_count].ambientColor = .{ 0.0, 0.0, 0.0, sl.range }; // No ambient for additional lights
-                    
+
                     light_count += 1;
                 }
             }
@@ -817,9 +720,9 @@ pub fn process_pending_uploads() void {
             if (light_count > 0) {
                 renderer.cardinal_renderer_set_lights(state.renderer, &pbr_lights, light_count);
             } else {
-                 // Fallback if no lights enabled (prevent crash or undefined state)
-                 // Just send 0 lights
-                 renderer.cardinal_renderer_set_lights(state.renderer, null, 0);
+                // Fallback if no lights enabled (prevent crash or undefined state)
+                // Just send 0 lights
+                renderer.cardinal_renderer_set_lights(state.renderer, null, 0);
             }
         }
     }

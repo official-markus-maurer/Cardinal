@@ -109,7 +109,8 @@ pub export fn vk_mesh_shader_create_pipeline(s: ?*types.VulkanState, config: ?*c
     pipe.max_vertices_per_meshlet = cfg.max_vertices_per_meshlet;
 
     // Allocator for reflection data
-    var arena = std.heap.ArenaAllocator.init(std.heap.c_allocator);
+    const renderer_allocator = memory.cardinal_get_allocator_for_category(.RENDERER).as_allocator();
+    var arena = std.heap.ArenaAllocator.init(renderer_allocator);
     defer arena.deinit();
     const allocator = arena.allocator();
 
@@ -187,9 +188,9 @@ pub export fn vk_mesh_shader_create_pipeline(s: ?*types.VulkanState, config: ?*c
     }.func;
 
     // Load PSO JSON
-    var builder = vk_pso.PipelineBuilder.init(std.heap.page_allocator, vs.context.device, pipeline_cache);
+    var builder = vk_pso.PipelineBuilder.init(allocator, vs.context.device, pipeline_cache);
     
-    var parsed = vk_pso.PipelineBuilder.load_from_json(std.heap.page_allocator, "assets/pipelines/mesh_shader.json") catch |err| {
+    var parsed = vk_pso.PipelineBuilder.load_from_json(allocator, "assets/pipelines/mesh_shader.json") catch |err| {
         log.cardinal_log_error("Failed to load mesh pipeline JSON: {s}", .{@errorName(err)});
         return false;
     };

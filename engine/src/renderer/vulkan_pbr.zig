@@ -35,7 +35,8 @@ fn create_pbr_descriptor_manager(pipeline: *types.VulkanPBRPipeline, device: c.V
     pipeline.descriptorManager = @as(*types.VulkanDescriptorManager, @ptrCast(@alignCast(ptr)));
 
     // Use DescriptorBuilder to configure bindings
-    var builder = descriptor_mgr.DescriptorBuilder.init(std.heap.page_allocator);
+    const renderer_allocator = memory.cardinal_get_allocator_for_category(.RENDERER).as_allocator();
+    var builder = descriptor_mgr.DescriptorBuilder.init(renderer_allocator);
     defer builder.deinit();
 
     var bindings_added = true;
@@ -133,9 +134,10 @@ fn create_pbr_pipeline_layout(pipeline: *types.VulkanPBRPipeline, device: c.VkDe
 }
 
 fn create_pbr_graphics_pipeline(pipeline: *types.VulkanPBRPipeline, device: c.VkDevice, vertShader: c.VkShaderModule, fragShader: c.VkShaderModule, swapchainFormat: c.VkFormat, depthFormat: c.VkFormat, json_path: []const u8, outPipeline: *c.VkPipeline, pipelineCache: c.VkPipelineCache) bool {
-    var builder = vk_pso.PipelineBuilder.init(std.heap.page_allocator, device, pipelineCache);
+    const renderer_allocator = memory.cardinal_get_allocator_for_category(.RENDERER).as_allocator();
+    var builder = vk_pso.PipelineBuilder.init(renderer_allocator, device, pipelineCache);
 
-    var parsed = vk_pso.PipelineBuilder.load_from_json(std.heap.page_allocator, json_path) catch |err| {
+    var parsed = vk_pso.PipelineBuilder.load_from_json(renderer_allocator, json_path) catch |err| {
         log.cardinal_log_error("Failed to load pipeline JSON '{s}': {s}", .{ json_path, @errorName(err) });
         return false;
     };
@@ -632,7 +634,8 @@ fn create_shadow_pipeline(pipeline: *types.VulkanPBRPipeline, device: c.VkDevice
     }
     pipeline.shadowDescriptorManager = @as(*types.VulkanDescriptorManager, @ptrCast(@alignCast(ptr)));
 
-    var desc_builder = descriptor_mgr.DescriptorBuilder.init(std.heap.page_allocator);
+    const renderer_allocator = mem_alloc.as_allocator();
+    var desc_builder = descriptor_mgr.DescriptorBuilder.init(renderer_allocator);
     defer desc_builder.deinit();
 
     // Binding 0: Shadow UBO
@@ -698,9 +701,9 @@ fn create_shadow_pipeline(pipeline: *types.VulkanPBRPipeline, device: c.VkDevice
     }
 
     // Use PipelineBuilder
-    var builder = vk_pso.PipelineBuilder.init(std.heap.page_allocator, device, null);
+    var builder = vk_pso.PipelineBuilder.init(renderer_allocator, device, null);
 
-    var parsed = vk_pso.PipelineBuilder.load_from_json(std.heap.page_allocator, "assets/pipelines/shadow.json") catch |err| {
+    var parsed = vk_pso.PipelineBuilder.load_from_json(renderer_allocator, "assets/pipelines/shadow.json") catch |err| {
         log.cardinal_log_error("Failed to load shadow pipeline JSON: {s}", .{@errorName(err)});
         return false;
     };
@@ -728,7 +731,7 @@ fn create_shadow_pipeline(pipeline: *types.VulkanPBRPipeline, device: c.VkDevice
     };
 
     // Create Alpha-Tested Shadow Pipeline
-    var parsedAlpha = vk_pso.PipelineBuilder.load_from_json(std.heap.page_allocator, "assets/pipelines/shadow_alpha.json") catch |err| {
+    var parsedAlpha = vk_pso.PipelineBuilder.load_from_json(renderer_allocator, "assets/pipelines/shadow_alpha.json") catch |err| {
         log.cardinal_log_error("Failed to load shadow alpha pipeline JSON: {s}", .{@errorName(err)});
         // Don't fail completely, just skip alpha shadows
         return true;
@@ -774,7 +777,8 @@ pub export fn vk_pbr_pipeline_create(pipeline: ?*types.VulkanPBRPipeline, device
     log.cardinal_log_info("[PBR] Descriptor indexing support: enabled", .{});
 
     // Allocator for reflection data
-    var arena = std.heap.ArenaAllocator.init(std.heap.c_allocator);
+    const renderer_allocator = memory.cardinal_get_allocator_for_category(.RENDERER).as_allocator();
+    var arena = std.heap.ArenaAllocator.init(renderer_allocator);
     defer arena.deinit();
     const allocator_arena = arena.allocator();
 

@@ -20,9 +20,11 @@ fn print_usage(program_name: []const u8) void {
 }
 
 pub fn main() !u8 {
-    var gpa = std.heap.GeneralPurposeAllocator(.{}){};
-    defer _ = gpa.deinit();
-    const allocator = gpa.allocator();
+    // Initialize memory system first
+    memory.cardinal_memory_init(1024 * 1024 * 64); // 64MB
+    
+    // Get allocator for arguments
+    const allocator = memory.cardinal_get_allocator_for_category(.ENGINE).as_allocator();
 
     var log_level: log.CardinalLogLevel = .WARN;
 
@@ -42,9 +44,6 @@ pub fn main() !u8 {
     }
 
     log.cardinal_log_init_with_level(log_level);
-
-    // Initialize memory system
-    memory.cardinal_memory_init(1024 * 1024 * 64); // 64MB
 
     // Initialize async loader
     const async_config = async_loader.CardinalAsyncLoaderConfig{

@@ -109,7 +109,7 @@ pub export fn vk_compute_create_pipeline(vulkan_state: ?*types.VulkanState, conf
     var push_constant_range = std.mem.zeroes(c.VkPushConstantRange);
 
     {
-        const alloc = std.heap.c_allocator;
+        const alloc = memory.cardinal_get_allocator_for_category(.RENDERER).as_allocator();
         const path_ptr = cfg.compute_shader_path orelse {
              log.cardinal_log_error("[COMPUTE] Compute shader path is null", .{});
              return false;

@@ -28,7 +28,7 @@ fn load_skybox(state: *EditorState, allocator: std.mem.Allocator, path: []const 
     if (!std.mem.eql(u8, ext, ".hdr") and !std.mem.eql(u8, ext, ".exr")) return;
 
     _ = std.fmt.bufPrintZ(&state.status_msg, "Loading skybox: {s}...", .{path}) catch {};
-    
+
     // Clean up previous path if any
     if (state.skybox_path) |p| {
         allocator.free(p);
@@ -130,7 +130,7 @@ pub fn scan_assets_dir(state: *EditorState, allocator: std.mem.Allocator) void {
     }.less);
 
     // Filter
-    const filter_text = std.mem.span(@as([*:0]const u8, @ptrCast(&state.assets.search_filter)));
+    const filter_text = std.mem.span(@as([*:0]const u8, @ptrCast(state.assets.search_filter.ptr)));
 
     for (state.assets.entries.items) |entry| {
         if (filter_text.len > 0) {
@@ -150,9 +150,9 @@ pub fn load_scene(state: *EditorState, allocator: std.mem.Allocator, path: []con
     _ = std.fmt.bufPrintZ(&state.status_msg, "Loading scene: {s}...", .{path}) catch {};
 
     const path_copy = allocator.dupeZ(u8, path) catch return;
-    
+
     const task = loader.cardinal_scene_load_async(path_copy, .HIGH, null, null);
-    
+
     if (task) |t| {
         state.loading_tasks.append(allocator, .{
             .task = t,
@@ -172,12 +172,64 @@ pub fn draw_asset_browser_panel(state: *EditorState, allocator: std.mem.Allocato
     if (state.show_assets) {
         const open = c.imgui_bridge_begin("Assets", &state.show_assets, 0);
         defer c.imgui_bridge_end();
-        
+
         if (open) {
             c.imgui_bridge_text("Project Assets");
             c.imgui_bridge_separator();
 
             c.imgui_bridge_text("Assets Root:");
+            c.imgui_bridge_same_line(0, -1);
+            if (c.imgui_bridge_button("Config")) {
+                c.imgui_bridge_open_popup("ConfigAssets");
+            }
+
+            if (c.imgui_bridge_begin_popup("ConfigAssets", 0)) {
+                c.imgui_bridge_text("Configure Assets Path");
+
+                // We need a temporary buffer for input text
+                // For now we'll assume the path isn't longer than 512 chars
+                var path_buf: [512]u8 = [_]u8{0} ** 512;
+                const current_path = state.config_manager.config.assets_path;
+                @memcpy(path_buf[0..current_path.len], current_path);
+                path_buf[current_path.len] = 0;
+
+                if (c.imgui_bridge_input_text_with_hint("Path", "Absolute path to assets", @ptrCast(&path_buf), 512)) {
+                    // Just input handling
+                }
+
+                if (c.imgui_bridge_button("Save & Reload")) {
+                    const new_len = std.mem.indexOf(u8, &path_buf, &[_]u8{0}) orelse path_buf.len;
+                    const new_path = path_buf[0..new_len];
+
+                    state.config_manager.setAssetsPath(new_path) catch |err| {
+                        log.cardinal_log_error("Failed to set assets path: {}", .{err});
+                    };
+
+                    state.config_manager.save() catch |err| {
+                        log.cardinal_log_error("Failed to save config: {}", .{err});
+                    };
+
+                    // Update asset dir
+                    allocator.free(state.assets.assets_dir);
+                    allocator.free(state.assets.current_dir);
+
+                    state.assets.assets_dir = allocator.dupeZ(u8, new_path) catch {
+                        log.cardinal_log_error("Failed to allocate assets dir", .{});
+                        return;
+                    };
+                    state.assets.current_dir = allocator.dupeZ(u8, new_path) catch {
+                        allocator.free(state.assets.assets_dir);
+                        log.cardinal_log_error("Failed to allocate current dir", .{});
+                        return;
+                    };
+
+                    scan_assets_dir(state, allocator);
+                    c.imgui_bridge_close_current_popup();
+                }
+
+                c.imgui_bridge_end_popup();
+            }
+
             c.imgui_bridge_set_next_item_width(-1.0);
 
             if (c.imgui_bridge_button("Refresh")) {
@@ -282,7 +334,7 @@ pub fn draw_asset_browser_panel(state: *EditorState, allocator: std.mem.Allocato
             c.imgui_bridge_end_child();
         }
     }
-    
+
     // Check for finished skybox load
     // Async load is handled by renderer now
 

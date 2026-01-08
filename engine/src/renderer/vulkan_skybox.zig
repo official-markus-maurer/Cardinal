@@ -73,9 +73,10 @@ pub fn vk_skybox_pipeline_init(pipeline: *types.SkyboxPipeline, device: c.VkDevi
 
     // 3. Load Shaders & Pipeline -> Replace with PSO
     
-    var builder = vk_pso.PipelineBuilder.init(std.heap.page_allocator, device, null);
+    const renderer_allocator = mem_alloc.as_allocator();
+    var builder = vk_pso.PipelineBuilder.init(renderer_allocator, device, null);
     
-    var parsed = vk_pso.PipelineBuilder.load_from_json(std.heap.page_allocator, "assets/pipelines/skybox.json") catch |err| {
+    var parsed = vk_pso.PipelineBuilder.load_from_json(renderer_allocator, "assets/pipelines/skybox.json") catch |err| {
         skybox_log.err("Failed to load skybox pipeline JSON: {s}", .{@errorName(err)});
         return false;
     };

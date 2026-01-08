@@ -18,7 +18,8 @@ fn get_node_pool() *pool_alloc.PoolAllocator(CardinalSceneNode) {
     defer g_pool_init_mutex.unlock();
 
     if (g_node_pool == null) {
-        g_node_pool = pool_alloc.PoolAllocator(CardinalSceneNode).init(std.heap.c_allocator);
+        const allocator = memory.cardinal_get_allocator_for_category(.ENGINE).as_allocator();
+        g_node_pool = pool_alloc.PoolAllocator(CardinalSceneNode).init(allocator);
     }
     return &g_node_pool.?;
 }
@@ -130,8 +131,8 @@ pub const CardinalTexture = extern struct {
 
 pub const CardinalMorphTarget = extern struct {
     positions: ?[*]f32, // vec3 * vertex_count
-    normals: ?[*]f32,   // vec3 * vertex_count
-    tangents: ?[*]f32,  // vec3 * vertex_count
+    normals: ?[*]f32, // vec3 * vertex_count
+    tangents: ?[*]f32, // vec3 * vertex_count
 };
 
 pub const CardinalMesh = extern struct {
@@ -163,7 +164,7 @@ pub const CardinalSceneNode = extern struct {
     is_bone: bool,
     bone_index: u32,
     skin_index: u32,
-    
+
     light_index: i32, // -1 if no light
 };
 

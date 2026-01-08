@@ -3,6 +3,7 @@ pub const errors = @import("core/errors.zig");
 pub const events = @import("core/events.zig");
 pub const module = @import("core/module.zig");
 pub const engine = @import("core/engine.zig");
+pub const config = @import("core/config.zig");
 pub const input = @import("core/input.zig");
 pub const memory = @import("core/memory.zig");
 pub const stack_allocator = @import("core/stack_allocator.zig");

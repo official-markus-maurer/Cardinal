@@ -299,6 +299,12 @@ void imgui_bridge_table_setup_column(const char *label, int flags,
 void imgui_bridge_table_headers_row(void);
 void imgui_bridge_table_set_column_index(int column_n);
 
+// Popups
+void imgui_bridge_open_popup(const char *str_id);
+bool imgui_bridge_begin_popup(const char *str_id, int flags);
+void imgui_bridge_end_popup(void);
+void imgui_bridge_close_current_popup(void);
+
 // Tooltips & Interaction
 void imgui_bridge_set_tooltip(const char *fmt, ...);
 bool imgui_bridge_is_item_hovered(int flags);
