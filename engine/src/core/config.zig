@@ -1,11 +1,13 @@
 const std = @import("std");
 const log = @import("log.zig");
+const vk_types = @import("../renderer/vulkan_types.zig");
+const c = @import("../renderer/vulkan_c.zig").c;
 
 pub const CardinalEngineConfig = struct {
     // Engine/Window settings
     window_title: []const u8 = "Cardinal Engine",
-    window_width: u32 = 1600,
-    window_height: u32 = 900,
+    window_width: u32 = 1920,
+    window_height: u32 = 1080,
     window_resizable: bool = true,
 
     // Memory/System settings
@@ -17,6 +19,14 @@ pub const CardinalEngineConfig = struct {
 
     // Paths
     assets_path: []const u8 = "assets",
+
+    // Renderer settings
+    renderer: vk_types.RendererConfig = .{
+        .shader_dir = "assets/shaders".* ++ .{0} ** (64 - "assets/shaders".len),
+        .pipeline_dir = "assets/pipelines".* ++ .{0} ** (64 - "assets/pipelines".len),
+        .texture_dir = "assets/textures".* ++ .{0} ** (64 - "assets/textures".len),
+        .model_dir = "assets/models".* ++ .{0} ** (64 - "assets/models".len),
+    },
 
     // Helper to ensure title is null-terminated if needed, though usually handled by duplication
 };
@@ -52,6 +62,26 @@ pub const ConfigManager = struct {
         const content = try file.readToEndAlloc(self.allocator, 1024 * 10);
         defer self.allocator.free(content);
 
+        const ParsedRendererConfig = struct {
+            pbr_clear_color: ?[4]f32 = null,
+            pbr_ambient_color: ?[4]f32 = null,
+            pbr_default_light_direction: ?[4]f32 = null,
+            pbr_default_light_color: ?[4]f32 = null,
+            shadow_map_format: ?c.VkFormat = null,
+            shadow_cascade_count: ?u32 = null,
+            shadow_map_size: ?u32 = null,
+            shadow_split_lambda: ?f32 = null,
+            shadow_near_clip: ?f32 = null,
+            shadow_far_clip: ?f32 = null,
+            max_lights: ?u32 = null,
+            max_frames_in_flight: ?u32 = null,
+            timeline_max_ahead: ?u64 = null,
+            shader_dir: ?[]const u8 = null,
+            pipeline_dir: ?[]const u8 = null,
+            texture_dir: ?[]const u8 = null,
+            model_dir: ?[]const u8 = null,
+        };
+
         const ParsedConfig = struct {
             window_title: ?[]const u8 = null,
             window_width: ?u32 = null,
@@ -63,6 +93,7 @@ pub const ConfigManager = struct {
             async_queue_size: ?u32 = null,
             cache_size: ?u32 = null,
             assets_path: ?[]const u8 = null,
+            renderer: ?ParsedRendererConfig = null,
         };
 
         const parsed = try std.json.parseFromSlice(ParsedConfig, self.allocator, content, .{ .ignore_unknown_fields = true });
@@ -78,6 +109,43 @@ pub const ConfigManager = struct {
         if (parsed.value.async_queue_size) |val| self.config.async_queue_size = val;
         if (parsed.value.cache_size) |val| self.config.cache_size = val;
         if (parsed.value.assets_path) |val| self.config.assets_path = try self.allocator.dupe(u8, val);
+
+        if (parsed.value.renderer) |r| {
+            if (r.pbr_clear_color) |v| self.config.renderer.pbr_clear_color = v;
+            if (r.pbr_ambient_color) |v| self.config.renderer.pbr_ambient_color = v;
+            if (r.pbr_default_light_direction) |v| self.config.renderer.pbr_default_light_direction = v;
+            if (r.pbr_default_light_color) |v| self.config.renderer.pbr_default_light_color = v;
+            if (r.shadow_map_format) |v| self.config.renderer.shadow_map_format = v;
+            if (r.shadow_cascade_count) |v| self.config.renderer.shadow_cascade_count = v;
+            if (r.shadow_map_size) |v| self.config.renderer.shadow_map_size = v;
+            if (r.shadow_split_lambda) |v| self.config.renderer.shadow_split_lambda = v;
+            if (r.shadow_near_clip) |v| self.config.renderer.shadow_near_clip = v;
+            if (r.shadow_far_clip) |v| self.config.renderer.shadow_far_clip = v;
+            if (r.max_lights) |v| self.config.renderer.max_lights = v;
+            if (r.max_frames_in_flight) |v| self.config.renderer.max_frames_in_flight = v;
+            if (r.timeline_max_ahead) |v| self.config.renderer.timeline_max_ahead = v;
+
+            if (r.shader_dir) |v| {
+                @memset(&self.config.renderer.shader_dir, 0);
+                const len = @min(v.len, 63);
+                @memcpy(self.config.renderer.shader_dir[0..len], v[0..len]);
+            }
+            if (r.pipeline_dir) |v| {
+                @memset(&self.config.renderer.pipeline_dir, 0);
+                const len = @min(v.len, 63);
+                @memcpy(self.config.renderer.pipeline_dir[0..len], v[0..len]);
+            }
+            if (r.texture_dir) |v| {
+                @memset(&self.config.renderer.texture_dir, 0);
+                const len = @min(v.len, 63);
+                @memcpy(self.config.renderer.texture_dir[0..len], v[0..len]);
+            }
+            if (r.model_dir) |v| {
+                @memset(&self.config.renderer.model_dir, 0);
+                const len = @min(v.len, 63);
+                @memcpy(self.config.renderer.model_dir[0..len], v[0..len]);
+            }
+        }
 
         log.cardinal_log_info("Config loaded from {s}", .{self.config_path});
     }

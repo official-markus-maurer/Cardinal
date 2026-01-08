@@ -39,10 +39,10 @@ fn get_state(renderer: ?*types.CardinalRenderer) ?*types.VulkanState {
 
 fn pbr_pass_callback(cmd: c.VkCommandBuffer, state: *types.VulkanState) void {
     var clears: [2]c.VkClearValue = undefined;
-    clears[0].color.float32[0] = 0.05;
-    clears[0].color.float32[1] = 0.05;
-    clears[0].color.float32[2] = 0.08;
-    clears[0].color.float32[3] = 1.0;
+    clears[0].color.float32[0] = state.config.pbr_clear_color[0];
+    clears[0].color.float32[1] = state.config.pbr_clear_color[1];
+    clears[0].color.float32[2] = state.config.pbr_clear_color[2];
+    clears[0].color.float32[3] = state.config.pbr_clear_color[3];
     clears[1].depthStencil.depth = 1.0;
     clears[1].depthStencil.stencil = 0;
 
@@ -69,13 +69,13 @@ fn pbr_pass_callback(cmd: c.VkCommandBuffer, state: *types.VulkanState) void {
             // Log the image view used for rendering
             // log.cardinal_log_error("PBR Pass: Rendering with Depth View {any}", .{depth_view.?});
         }
-        
+
         if (use_secondary) {
             vk_commands.vk_record_scene_with_secondary_buffers(state, cmd, state.current_image_index, use_depth, &clears);
         } else {
             vk_commands.vk_record_scene_content(state, cmd);
         }
-        
+
         vk_commands.end_dynamic_rendering(state, cmd);
     }
 }
@@ -211,7 +211,7 @@ fn init_sync_manager(s: *types.VulkanState) bool {
     // Check if initialized (it should be, by vk_create_commands which calls create_sync_objects)
     if (!s.sync.initialized) {
         log.cardinal_log_warn("Sync manager not initialized by commands, initializing now", .{});
-        if (!vk_sync_manager.vulkan_sync_manager_init(&s.sync, s.context.device, s.context.graphics_queue, s.sync.max_frames_in_flight)) {
+        if (!vk_sync_manager.vulkan_sync_manager_init(&s.sync, s.context.device, s.context.graphics_queue, s.sync.max_frames_in_flight, s.config.timeline_max_ahead)) {
             return false;
         }
     }
@@ -244,7 +244,7 @@ fn init_mesh_shader_pipeline_helper(s: *types.VulkanState) void {
 
     var config = std.mem.zeroes(types.MeshShaderPipelineConfig);
 
-    var shaders_dir: []const u8 = "assets/shaders";
+    var shaders_dir: []const u8 = std.mem.span(@as([*:0]const u8, @ptrCast(&s.config.shader_dir)));
 
     const env_dir_c = c.getenv("CARDINAL_SHADERS_DIR");
     if (env_dir_c != null) {
@@ -336,7 +336,7 @@ fn init_pipelines(s: *types.VulkanState) bool {
     return true;
 }
 
-pub export fn cardinal_renderer_create(out_renderer: ?*types.CardinalRenderer, win: ?*window.CardinalWindow) callconv(.c) bool {
+pub export fn cardinal_renderer_create(out_renderer: ?*types.CardinalRenderer, win: ?*window.CardinalWindow, config: ?*const types.RendererConfig) callconv(.c) bool {
     if (out_renderer == null or win == null)
         return false;
 
@@ -346,6 +346,18 @@ pub export fn cardinal_renderer_create(out_renderer: ?*types.CardinalRenderer, w
     const s: *types.VulkanState = @ptrCast(@alignCast(s_ptr));
 
     out_renderer.?._opaque = s;
+
+    // Initialize Config
+    if (config) |cfg| {
+        s.config = cfg.*;
+    } else {
+        s.config = .{
+            .shader_dir = "assets/shaders".* ++ .{0} ** (64 - "assets/shaders".len),
+            .pipeline_dir = "assets/pipelines".* ++ .{0} ** (64 - "assets/pipelines".len),
+            .texture_dir = "assets/textures".* ++ .{0} ** (64 - "assets/textures".len),
+            .model_dir = "assets/models".* ++ .{0} ** (64 - "assets/models".len),
+        };
+    }
 
     // Initialize Render Graph
     const rg_ptr = memory.cardinal_alloc(mem_alloc, @sizeOf(render_graph.RenderGraph));
@@ -572,7 +584,7 @@ pub export fn cardinal_renderer_create_headless(out_renderer: ?*types.CardinalRe
     }
     s.sync_manager = @ptrCast(@alignCast(sync_mgr_ptr));
 
-    if (!vk_sync_manager.vulkan_sync_manager_init(@ptrCast(s.sync_manager), s.context.device, s.context.graphics_queue, s.sync.max_frames_in_flight)) {
+    if (!vk_sync_manager.vulkan_sync_manager_init(@ptrCast(s.sync_manager), s.context.device, s.context.graphics_queue, s.sync.max_frames_in_flight, s.config.timeline_max_ahead)) {
         log.cardinal_log_error("vulkan_sync_manager_init failed", .{});
         memory.cardinal_free(mem_alloc, s.sync_manager);
         s.sync_manager = null;
@@ -677,8 +689,6 @@ pub export fn cardinal_renderer_destroy(renderer: ?*types.CardinalRenderer) call
     //     s.sync.timeline_semaphore = null;
     // }
 
-    vk_commands.vk_destroy_commands_sync(@ptrCast(s));
-
     // Cleanup VulkanSyncManager
     // Since s.sync_manager points to s.sync (embedded), we don't need to free it.
     // It will be cleaned up when VulkanState is freed.
@@ -759,6 +769,9 @@ pub export fn cardinal_renderer_destroy(renderer: ?*types.CardinalRenderer) call
 
     // Shutdown VMA allocator before destroying device
     vk_allocator.vk_allocator_shutdown(&s.allocator);
+
+    // Ensure all device objects are destroyed before instance
+    vk_commands.vk_destroy_commands_sync(@ptrCast(s));
 
     vk_instance.vk_destroy_device_objects(@ptrCast(s));
 
@@ -995,7 +1008,7 @@ pub export fn cardinal_renderer_enable_mesh_shader(renderer: ?*types.CardinalRen
         // Create default mesh shader pipeline configuration
         var config = std.mem.zeroes(types.MeshShaderPipelineConfig);
 
-        var shaders_dir: []const u8 = "assets/shaders";
+        var shaders_dir: []const u8 = std.mem.span(@as([*:0]const u8, @ptrCast(&s.config.shader_dir)));
         const env_dir_c = c.getenv("CARDINAL_SHADERS_DIR");
         if (env_dir_c != null) {
             shaders_dir = std.mem.span(env_dir_c);

@@ -111,11 +111,16 @@ fn get_timestamp_ms() u64 {
     return @as(u64, @intCast(std.time.milliTimestamp()));
 }
 
-fn execute_task_job(data: ?*anyopaque) callconv(.c) void {
+fn execute_task_job(data: ?*anyopaque) callconv(.c) i32 {
     if (data) |d| {
         const task = @as(*CardinalAsyncTask, @ptrCast(@alignCast(d)));
-        _ = execute_task(task);
+        if (execute_task(task)) {
+            return 0;
+        } else {
+            return -1; // Generic error code
+        }
     }
+    return -1;
 }
 
 fn create_task(task_type: CardinalAsyncTaskType, priority: CardinalAsyncPriority) ?*CardinalAsyncTask {

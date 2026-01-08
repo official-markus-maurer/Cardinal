@@ -11,9 +11,6 @@ const vk_pso = @import("vulkan_pso.zig");
 const material_utils = @import("util/vulkan_material_utils.zig");
 const descriptor_mgr = @import("vulkan_descriptor_manager.zig");
 
-const SHADOW_MAP_SIZE = 2048;
-const SHADOW_CASCADE_COUNT = 4;
-
 fn mat4_identity() math.Mat4 {
     return math.Mat4.identity();
 }
@@ -95,13 +92,13 @@ pub fn vk_shadow_render(s: *types.VulkanState, cmd: c.VkCommandBuffer) void {
     const ratio = maxZ / minZ;
     const range = maxZ - minZ;
 
-    const lambda: f32 = 0.95;
+    const lambda: f32 = s.config.shadow_split_lambda;
 
     var lastSplitDist: f32 = 0.0;
 
     var j: usize = 0;
-    while (j < SHADOW_CASCADE_COUNT) : (j += 1) {
-        const p = @as(f32, @floatFromInt(j + 1)) / @as(f32, @floatFromInt(SHADOW_CASCADE_COUNT));
+    while (j < s.config.shadow_cascade_count) : (j += 1) {
+        const p = @as(f32, @floatFromInt(j + 1)) / @as(f32, @floatFromInt(s.config.shadow_cascade_count));
         const logC = minZ * std.math.pow(f32, ratio, p);
         const uniC = minZ + range * p;
         const d = lambda * logC + (1.0 - lambda) * uniC;
@@ -190,7 +187,7 @@ pub fn vk_shadow_render(s: *types.VulkanState, cmd: c.VkCommandBuffer) void {
         var centerLS = mulMat4Vec3(baseLightView, center);
 
         // Calculate Shadow Map Resolution
-        const shadowMapWidth = @as(f32, @floatFromInt(SHADOW_MAP_SIZE));
+        const shadowMapWidth = @as(f32, @floatFromInt(s.config.shadow_map_size));
 
         // World units per texel
         // The projection width is 2 * radius
@@ -248,7 +245,7 @@ pub fn vk_shadow_render(s: *types.VulkanState, cmd: c.VkCommandBuffer) void {
         barrier.subresourceRange.baseMipLevel = 0;
         barrier.subresourceRange.levelCount = 1;
         barrier.subresourceRange.baseArrayLayer = 0;
-        barrier.subresourceRange.layerCount = SHADOW_CASCADE_COUNT;
+        barrier.subresourceRange.layerCount = s.config.shadow_cascade_count;
 
         var dep = std.mem.zeroes(c.VkDependencyInfo);
         dep.sType = c.VK_STRUCTURE_TYPE_DEPENDENCY_INFO;
@@ -280,12 +277,12 @@ pub fn vk_shadow_render(s: *types.VulkanState, cmd: c.VkCommandBuffer) void {
     }
 
     var j_layer: u32 = 0;
-    while (j_layer < SHADOW_CASCADE_COUNT) : (j_layer += 1) {
+    while (j_layer < s.config.shadow_cascade_count) : (j_layer += 1) {
         // Begin Rendering
         var renderingInfo = std.mem.zeroes(c.VkRenderingInfo);
         renderingInfo.sType = c.VK_STRUCTURE_TYPE_RENDERING_INFO;
-        renderingInfo.renderArea.extent.width = SHADOW_MAP_SIZE;
-        renderingInfo.renderArea.extent.height = SHADOW_MAP_SIZE;
+        renderingInfo.renderArea.extent.width = s.config.shadow_map_size;
+        renderingInfo.renderArea.extent.height = s.config.shadow_map_size;
         renderingInfo.layerCount = 1;
 
         var depthAttachment = std.mem.zeroes(c.VkRenderingAttachmentInfo);
@@ -317,14 +314,14 @@ pub fn vk_shadow_render(s: *types.VulkanState, cmd: c.VkCommandBuffer) void {
 
         // Set Viewport/Scissor
         var vp = std.mem.zeroes(c.VkViewport);
-        vp.width = @floatFromInt(SHADOW_MAP_SIZE);
-        vp.height = @floatFromInt(SHADOW_MAP_SIZE);
+        vp.width = @floatFromInt(s.config.shadow_map_size);
+        vp.height = @floatFromInt(s.config.shadow_map_size);
         vp.maxDepth = 1.0;
         c.vkCmdSetViewport(cmd, 0, 1, &vp);
 
         var sc = std.mem.zeroes(c.VkRect2D);
-        sc.extent.width = SHADOW_MAP_SIZE;
-        sc.extent.height = SHADOW_MAP_SIZE;
+        sc.extent.width = s.config.shadow_map_size;
+        sc.extent.height = s.config.shadow_map_size;
         c.vkCmdSetScissor(cmd, 0, 1, &sc);
 
         // Reduce bias to avoid pushing shadows out of depth range
@@ -556,7 +553,7 @@ pub fn vk_shadow_render(s: *types.VulkanState, cmd: c.VkCommandBuffer) void {
         barrier.subresourceRange.baseMipLevel = 0;
         barrier.subresourceRange.levelCount = 1;
         barrier.subresourceRange.baseArrayLayer = 0;
-        barrier.subresourceRange.layerCount = SHADOW_CASCADE_COUNT;
+        barrier.subresourceRange.layerCount = s.config.shadow_cascade_count;
 
         var dep = std.mem.zeroes(c.VkDependencyInfo);
         dep.sType = c.VK_STRUCTURE_TYPE_DEPENDENCY_INFO;

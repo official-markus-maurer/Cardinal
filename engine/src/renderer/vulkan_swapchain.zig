@@ -415,7 +415,7 @@ fn destroy_backup_resources(s: *types.VulkanState, backup: *const SwapchainBacku
 fn recreate_mesh_shader_pipeline_logic(s: *types.VulkanState) bool {
     var base: [*c]const u8 = @ptrCast(c.getenv("CARDINAL_SHADERS_DIR"));
     if (base == null or base[0] == 0) {
-        base = "assets/shaders";
+        base = @ptrCast(&s.config.shader_dir);
     }
 
     var mesh_path: [512]u8 = undefined;

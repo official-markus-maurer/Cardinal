@@ -18,5 +18,30 @@
     "async_queue_size": 200,
 
     "_comment_cache": "Size of the asset cache (number of items).",
-    "cache_size": 1000
+    "cache_size": 1000,
+
+    "_comment_renderer": "Renderer configuration settings.",
+    "renderer": {
+        "_comment_pbr": "PBR rendering settings. Colors are RGBA or RGB+Intensity/Range.",
+        "pbr_clear_color": [0.05, 0.05, 0.08, 1.0],
+        "pbr_ambient_color": [0.2, 0.2, 0.2, 100.0],
+        "pbr_default_light_direction": [-0.5, -1.0, -0.3, 0.0],
+        "pbr_default_light_color": [1.0, 1.0, 1.0, 2.5],
+
+        "_comment_shadows": "Shadow mapping settings. Format 126 is D32_SFLOAT.",
+        "shadow_map_format": 126,
+        "shadow_cascade_count": 4,
+        "shadow_map_size": 4096,
+        "shadow_split_lambda": 0.95,
+        "shadow_near_clip": 0.1,
+        "shadow_far_clip": 1000.0,
+        "shader_dir": "assets/shaders",
+        "pipeline_dir": "assets/pipelines",
+        "texture_dir": "assets/textures",
+        "model_dir": "assets/models",
+
+        "_comment_system": "Renderer system limits.",
+        "max_lights": 128,
+        "max_frames_in_flight": 3
+    }
 }

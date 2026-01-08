@@ -487,6 +487,7 @@ pub const VulkanSyncManager = extern struct {
     render_complete_value: u64,
     timeline_signal_count: u64,
     value_strategy: TimelineValueStrategy,
+    max_ahead_value: u64,
 };
 
 pub const VulkanCommands = extern struct {
@@ -835,8 +836,36 @@ pub const VulkanPBRPipeline = extern struct {
     debug_flags: f32,
 };
 
+pub const RendererConfig = extern struct {
+    // PBR Settings
+    pbr_clear_color: [4]f32 = .{ 0.05, 0.05, 0.08, 1.0 },
+    pbr_ambient_color: [4]f32 = .{ 0.2, 0.2, 0.2, 100.0 }, // xyz=color, w=range
+    pbr_default_light_direction: [4]f32 = .{ -0.5, -1.0, -0.3, 0.0 }, // xyz=dir, w=type
+    pbr_default_light_color: [4]f32 = .{ 1.0, 1.0, 1.0, 2.5 }, // xyz=color, w=intensity
+
+    // Shadow Settings
+    shadow_map_format: c.VkFormat = c.VK_FORMAT_D32_SFLOAT,
+    shadow_cascade_count: u32 = 4,
+    shadow_map_size: u32 = 4096,
+    shadow_split_lambda: f32 = 0.95,
+    shadow_near_clip: f32 = 0.1,
+    shadow_far_clip: f32 = 1000.0,
+
+    // Asset Paths
+    shader_dir: [64]u8,
+    pipeline_dir: [64]u8,
+    texture_dir: [64]u8,
+    model_dir: [64]u8,
+
+    // System Settings
+    max_lights: u32 = 128,
+    max_frames_in_flight: u32 = 3,
+    timeline_max_ahead: u64 = 1000000,
+};
+
 // Main State
 pub const VulkanState = extern struct {
+    config: RendererConfig,
     context: VulkanContext,
     swapchain: VulkanSwapchain,
     commands: VulkanCommands,

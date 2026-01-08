@@ -163,7 +163,7 @@ fn create_sync_objects(s: *types.VulkanState) bool {
 
     // Initialize using centralized sync manager
     log.cardinal_log_info("[INIT] Initializing sync objects via centralized manager", .{});
-    return vk_sync_manager.vulkan_sync_manager_init(&s.sync, s.context.device, s.context.graphics_queue, s.sync.max_frames_in_flight);
+    return vk_sync_manager.vulkan_sync_manager_init(&s.sync, s.context.device, s.context.graphics_queue, s.sync.max_frames_in_flight, s.config.timeline_max_ahead);
 }
 
 fn select_command_buffer(s: *types.VulkanState) c.VkCommandBuffer {

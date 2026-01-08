@@ -15,23 +15,20 @@ This document outlines the roadmap for the Cardinal Engine, focusing on robustne
 - [ ] **Missing Operations**: Implement `Mat4`, `Quat` (quaternions), `lerp`, `slerp`, `reflect` in `math.zig`.
 
 ### Code Cleanup & Refactoring
-- [ ] **Synchronization**:
-    - [ ] Handle `vkDeviceWaitIdle` failures gracefully in `vulkan_sync_manager.zig` (currently ignored during reset).
-    - [ ] Externalize hardcoded timeline semaphore constants (e.g., `1000000` limit) to a config or constant definition.
-- [ ] **Job System**:
-    - [ ] Add **Error Propagation**: Allow jobs to return errors and handle them in the completion queue/callback.
+- [x] **Synchronization**:
+    - [x] Handle `vkDeviceWaitIdle` failures gracefully in `vulkan_sync_manager.zig` (currently ignored during reset).
+    - [x] Externalize hardcoded timeline semaphore constants (e.g., `1000000` limit) to a config or constant definition.
+- [x] **Job System**:
+    - [x] Add **Error Propagation**: Allow jobs to return errors and handle them in the completion queue/callback.
 - [ ] **Renderer Configuration**:
-    - [ ] Move hardcoded values (e.g., PBR clear color `0.05, 0.05, 0.08`) to a `RendererConfig` struct.
-    - [ ] Externalize hardcoded asset paths (e.g., `"assets/pipelines/*.json"`, `"assets/shaders"`) found in `vulkan_pbr.zig` and others.
-    - [ ] Move Shadow constants (`SHADOW_MAP_SIZE`, `SHADOW_CASCADE_COUNT`, `lambda`, clips) from `vulkan_shadows.zig` to configuration.
+    - [x] Move hardcoded values (e.g., PBR clear color `0.05, 0.05, 0.08`) to a `RendererConfig` struct.
+    - [x] Externalize hardcoded asset paths (e.g., `"assets/pipelines/*.json"`, `"assets/shaders"`) found in `vulkan_pbr.zig` and others.
+    - [x] Move Shadow constants (`SHADOW_MAP_SIZE`, `SHADOW_CASCADE_COUNT`, `lambda`, clips) from `vulkan_shadows.zig` to configuration.
 - [ ] **Code Deduplication**:
     - [ ] Consolidate `get_current_thread_id` (found in `vulkan_commands.zig` and `texture_loader.zig`) into a shared `core/platform.zig` helper.
     - [ ] Consolidate platform-specific time logic (found in `vulkan_swapchain.zig` and likely others) into `core/platform.zig`.
 - [ ] **Engine Core**:
     - [ ] Implement **Delta Time** calculation in `CardinalEngine.update` and pass it to subsystems (`engine.zig`). Currently, the engine lacks a standardized time step.
-    - [x] Externalize `CardinalEngineConfig` defaults (resolution, threads) to a config file.
-    - [x] Verify Matrix Multiplication Order: Ensure `math.zig` and `transform.zig` consistently use column-major (or row-major) order to avoid subtle bugs.
-    - [x] **Event System Optimization**: `events.zig` currently allocates (clones listener list) on every event publish to avoid deadlocks. Optimize this (e.g., small stack buffer, copy-on-write).
     - [ ] **Module System**: Add explicit dependency management or validation to `module.zig` (currently relies on manual registration order).
     - [ ] **Reference Counting**: Add weak reference support or cycle detection to `ref_counting.zig` to prevent leaks from circular dependencies.
     - [ ] **Handle System**: Implement a generic `HandleManager` to centralize safe handle generation (index + generation) instead of ad-hoc logic per resource type.

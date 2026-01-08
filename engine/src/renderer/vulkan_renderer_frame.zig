@@ -146,7 +146,7 @@ fn vk_recover_from_device_loss(s: *types.VulkanState) bool {
     // Recreate mesh shader pipeline if it was enabled and supported
     if (success and s.context.supports_mesh_shader) {
         var config = std.mem.zeroes(types.MeshShaderPipelineConfig);
-        var shaders_dir: []const u8 = "assets/shaders";
+        var shaders_dir: []const u8 = std.mem.span(@as([*:0]const u8, @ptrCast(&s.config.shader_dir)));
         const env_dir_c = c.getenv("CARDINAL_SHADERS_DIR");
         if (env_dir_c != null) {
             shaders_dir = std.mem.span(env_dir_c);
@@ -299,7 +299,7 @@ fn wait_for_fence(s: *types.VulkanState) bool {
              return false;
         }
 
-        if (!vk_sync_manager.vulkan_sync_manager_init(&s.sync, s.context.device, s.context.graphics_queue, max_frames)) {
+        if (!vk_sync_manager.vulkan_sync_manager_init(&s.sync, s.context.device, s.context.graphics_queue, max_frames, s.config.timeline_max_ahead)) {
              log.cardinal_log_error("[SYNC] Lazy initialization failed", .{});
              return false;
         }

@@ -882,9 +882,14 @@ pub export fn vk_descriptor_manager_free_set(manager: ?*types.VulkanDescriptorMa
                 _ = c.vkFreeDescriptorSets(mgr.device, p, 1, &descriptorSet);
                 _ = map.remove(descriptorSet);
             } else {
+                // If not found in mapping, try current pool but suppress validation errors if invalid
+                // Ideally we should track every set.
+                // For now, let's just warn if not found
+                // log.cardinal_log_warn("Attempting to free descriptor set not found in pool mapping", .{});
                 _ = c.vkFreeDescriptorSets(mgr.device, mgr.descriptorPool, 1, &descriptorSet);
             }
         } else {
+            // No mapping, assume current pool
             _ = c.vkFreeDescriptorSets(mgr.device, mgr.descriptorPool, 1, &descriptorSet);
         }
     }

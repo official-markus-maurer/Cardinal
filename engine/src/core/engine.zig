@@ -212,7 +212,7 @@ pub const CardinalEngine = struct {
         }
         self.window_initialized = true;
 
-        if (!vulkan_renderer.cardinal_renderer_create(&self.renderer, self.window)) {
+        if (!vulkan_renderer.cardinal_renderer_create(&self.renderer, self.window, &self.config.renderer)) {
             // Cleanup window if renderer creation fails
             window.cardinal_window_destroy(self.window);
             self.window = null;

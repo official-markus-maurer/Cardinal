@@ -254,21 +254,12 @@ fn create_pbr_uniform_buffers(pipeline: *types.VulkanPBRPipeline, device: c.VkDe
     return true;
 }
 
-fn initialize_pbr_defaults(pipeline: *types.VulkanPBRPipeline) void {
+fn initialize_pbr_defaults(pipeline: *types.VulkanPBRPipeline, config: *const types.RendererConfig) void {
     var defaultLighting = std.mem.zeroes(types.PBRLightingBuffer);
     defaultLighting.count = 1;
-    defaultLighting.lights[0].lightDirection[0] = -0.5;
-    defaultLighting.lights[0].lightDirection[1] = -1.0;
-    defaultLighting.lights[0].lightDirection[2] = -0.3;
-    defaultLighting.lights[0].lightDirection[3] = 0.0; // Directional
-    defaultLighting.lights[0].lightColor[0] = 1.0;
-    defaultLighting.lights[0].lightColor[1] = 1.0;
-    defaultLighting.lights[0].lightColor[2] = 1.0;
-    defaultLighting.lights[0].lightColor[3] = 2.5; // Intensity
-    defaultLighting.lights[0].ambientColor[0] = 0.2;
-    defaultLighting.lights[0].ambientColor[1] = 0.2;
-    defaultLighting.lights[0].ambientColor[2] = 0.2;
-    defaultLighting.lights[0].ambientColor[3] = 100.0; // Range
+    defaultLighting.lights[0].lightDirection = config.pbr_default_light_direction;
+    defaultLighting.lights[0].lightColor = config.pbr_default_light_color;
+    defaultLighting.lights[0].ambientColor = config.pbr_ambient_color;
 
     @memcpy(@as([*]u8, @ptrCast(pipeline.lightingBufferMapped))[0..@sizeOf(types.PBRLightingBuffer)], @as([*]const u8, @ptrCast(&defaultLighting))[0..@sizeOf(types.PBRLightingBuffer)]);
 }
@@ -359,7 +350,7 @@ fn create_pbr_mesh_buffers(pipeline: *types.VulkanPBRPipeline, device: c.VkDevic
     return true;
 }
 
-fn update_pbr_descriptor_sets(pipeline: *types.VulkanPBRPipeline) bool {
+fn update_pbr_descriptor_sets(pipeline: *types.VulkanPBRPipeline, vulkan_state: ?*types.VulkanState) bool {
     const dm = @as(*types.VulkanDescriptorManager, @ptrCast(@alignCast(pipeline.descriptorManager)));
     const setIndex = if (dm.descriptorSetCount > 0)
         dm.descriptorSetCount - 1
@@ -424,7 +415,7 @@ fn update_pbr_descriptor_sets(pipeline: *types.VulkanPBRPipeline) bool {
 
     // Update Shadow UBO (Binding 9)
     if (pipeline.shadowUBO != null) {
-        const shadowUBOSize = @sizeOf(math.Mat4) * SHADOW_CASCADE_COUNT + @sizeOf(f32) * 4;
+        const shadowUBOSize = @sizeOf(math.Mat4) * vulkan_state.?.config.shadow_cascade_count + @sizeOf(f32) * 4;
         if (!descriptor_mgr.vk_descriptor_manager_update_buffer(dm, set, 9, pipeline.shadowUBO, 0, shadowUBOSize)) {
             log.cardinal_log_error("Failed to update shadow UBO descriptor", .{});
             return false;
@@ -521,7 +512,7 @@ pub export fn vk_pbr_load_scene(pipeline: ?*types.VulkanPBRPipeline, device: c.V
     }
 
     // Update descriptor sets
-    if (!update_pbr_descriptor_sets(@ptrCast(pipe))) {
+    if (!update_pbr_descriptor_sets(@ptrCast(pipe), vulkan_state)) {
         return false;
     }
 
@@ -529,21 +520,22 @@ pub export fn vk_pbr_load_scene(pipeline: ?*types.VulkanPBRPipeline, device: c.V
     return true;
 }
 
-const SHADOW_MAP_SIZE: u32 = 2048;
-const SHADOW_CASCADE_COUNT: u32 = 4;
-const SHADOW_FORMAT = c.VK_FORMAT_D32_SFLOAT;
+fn create_shadow_resources(pipeline: *types.VulkanPBRPipeline, device: c.VkDevice, allocator: *types.VulkanAllocator, vulkan_state: ?*types.VulkanState) bool {
+    const config = &vulkan_state.?.config;
+    const shadow_map_size = config.shadow_map_size;
+    const shadow_cascade_count = config.shadow_cascade_count;
+    const shadow_format = config.shadow_map_format;
 
-fn create_shadow_resources(pipeline: *types.VulkanPBRPipeline, device: c.VkDevice, allocator: *types.VulkanAllocator) bool {
     // Create Shadow Image (2D Array)
     var imageInfo = std.mem.zeroes(c.VkImageCreateInfo);
     imageInfo.sType = c.VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO;
     imageInfo.imageType = c.VK_IMAGE_TYPE_2D;
-    imageInfo.extent.width = SHADOW_MAP_SIZE;
-    imageInfo.extent.height = SHADOW_MAP_SIZE;
+    imageInfo.extent.width = shadow_map_size;
+    imageInfo.extent.height = shadow_map_size;
     imageInfo.extent.depth = 1;
     imageInfo.mipLevels = 1;
-    imageInfo.arrayLayers = SHADOW_CASCADE_COUNT;
-    imageInfo.format = SHADOW_FORMAT;
+    imageInfo.arrayLayers = shadow_cascade_count;
+    imageInfo.format = shadow_format;
     imageInfo.tiling = c.VK_IMAGE_TILING_OPTIMAL;
     imageInfo.initialLayout = c.VK_IMAGE_LAYOUT_UNDEFINED;
     imageInfo.usage = c.VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT | c.VK_IMAGE_USAGE_SAMPLED_BIT;
@@ -564,12 +556,12 @@ fn create_shadow_resources(pipeline: *types.VulkanPBRPipeline, device: c.VkDevic
     viewInfo.sType = c.VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO;
     viewInfo.image = pipeline.shadowMapImage;
     viewInfo.viewType = c.VK_IMAGE_VIEW_TYPE_2D_ARRAY;
-    viewInfo.format = SHADOW_FORMAT;
+    viewInfo.format = shadow_format;
     viewInfo.subresourceRange.aspectMask = c.VK_IMAGE_ASPECT_DEPTH_BIT;
     viewInfo.subresourceRange.baseMipLevel = 0;
     viewInfo.subresourceRange.levelCount = 1;
     viewInfo.subresourceRange.baseArrayLayer = 0;
-    viewInfo.subresourceRange.layerCount = SHADOW_CASCADE_COUNT;
+    viewInfo.subresourceRange.layerCount = shadow_cascade_count;
 
     if (c.vkCreateImageView(device, &viewInfo, null, &pipeline.shadowMapView) != c.VK_SUCCESS) {
         log.cardinal_log_error("Failed to create shadow map view", .{});
@@ -578,7 +570,7 @@ fn create_shadow_resources(pipeline: *types.VulkanPBRPipeline, device: c.VkDevic
 
     // Create Per-Cascade Views
     var i: u32 = 0;
-    while (i < SHADOW_CASCADE_COUNT) : (i += 1) {
+    while (i < shadow_cascade_count) : (i += 1) {
         viewInfo.subresourceRange.baseArrayLayer = i;
         viewInfo.subresourceRange.layerCount = 1;
         if (c.vkCreateImageView(device, &viewInfo, null, &pipeline.shadowCascadeViews[i]) != c.VK_SUCCESS) {
@@ -607,7 +599,7 @@ fn create_shadow_resources(pipeline: *types.VulkanPBRPipeline, device: c.VkDevic
 
     // Create Shadow UBO
     var bufferInfo = std.mem.zeroes(buffer_mgr.VulkanBufferCreateInfo);
-    bufferInfo.size = @sizeOf(math.Mat4) * SHADOW_CASCADE_COUNT + @sizeOf(f32) * 4; // Matrices + Splits
+    bufferInfo.size = @sizeOf(math.Mat4) * shadow_cascade_count + @sizeOf(f32) * 4; // Matrices + Splits
     bufferInfo.usage = c.VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT;
     bufferInfo.properties = c.VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | c.VK_MEMORY_PROPERTY_HOST_COHERENT_BIT;
     bufferInfo.persistentlyMapped = true;
@@ -656,7 +648,7 @@ fn create_shadow_pipeline(pipeline: *types.VulkanPBRPipeline, device: c.VkDevice
 
     // Update Set
     // Binding 0
-    const shadowUBOSize = @sizeOf(math.Mat4) * SHADOW_CASCADE_COUNT + @sizeOf(f32) * 4;
+    const shadowUBOSize = @sizeOf(math.Mat4) * vulkan_state.?.config.shadow_cascade_count + @sizeOf(f32) * 4;
     if (!descriptor_mgr.vk_descriptor_manager_update_buffer(pipeline.shadowDescriptorManager, pipeline.shadowDescriptorSet, 0, pipeline.shadowUBO, 0, shadowUBOSize)) {
         log.cardinal_log_error("Failed to update shadow UBO descriptor", .{});
         return false;
@@ -703,14 +695,18 @@ fn create_shadow_pipeline(pipeline: *types.VulkanPBRPipeline, device: c.VkDevice
     // Use PipelineBuilder
     var builder = vk_pso.PipelineBuilder.init(renderer_allocator, device, null);
 
-    var parsed = vk_pso.PipelineBuilder.load_from_json(renderer_allocator, "assets/pipelines/shadow.json") catch |err| {
+    const pipeline_dir_span = std.mem.span(@as([*:0]const u8, @ptrCast(&vulkan_state.?.config.pipeline_dir)));
+    const shadow_path = std.fmt.allocPrint(renderer_allocator, "{s}/shadow.json", .{pipeline_dir_span}) catch return false;
+    defer renderer_allocator.free(shadow_path);
+
+    var parsed = vk_pso.PipelineBuilder.load_from_json(renderer_allocator, shadow_path) catch |err| {
         log.cardinal_log_error("Failed to load shadow pipeline JSON: {s}", .{@errorName(err)});
         return false;
     };
     defer parsed.deinit();
 
     var descriptor = parsed.value;
-    descriptor.rendering.depth_format = SHADOW_FORMAT;
+    descriptor.rendering.depth_format = vulkan_state.?.config.shadow_map_format;
     descriptor.rendering.color_formats = &.{};
 
     if (pipeline.shadowDescriptorManager) |mgr| {
@@ -731,7 +727,10 @@ fn create_shadow_pipeline(pipeline: *types.VulkanPBRPipeline, device: c.VkDevice
     };
 
     // Create Alpha-Tested Shadow Pipeline
-    var parsedAlpha = vk_pso.PipelineBuilder.load_from_json(renderer_allocator, "assets/pipelines/shadow_alpha.json") catch |err| {
+    const shadow_alpha_path = std.fmt.allocPrint(renderer_allocator, "{s}/shadow_alpha.json", .{pipeline_dir_span}) catch return false;
+    defer renderer_allocator.free(shadow_alpha_path);
+
+    var parsedAlpha = vk_pso.PipelineBuilder.load_from_json(renderer_allocator, shadow_alpha_path) catch |err| {
         log.cardinal_log_error("Failed to load shadow alpha pipeline JSON: {s}", .{@errorName(err)});
         // Don't fail completely, just skip alpha shadows
         return true;
@@ -739,7 +738,7 @@ fn create_shadow_pipeline(pipeline: *types.VulkanPBRPipeline, device: c.VkDevice
     defer parsedAlpha.deinit();
 
     var descAlpha = parsedAlpha.value;
-    descAlpha.rendering.depth_format = SHADOW_FORMAT;
+    descAlpha.rendering.depth_format = vulkan_state.?.config.shadow_map_format;
     descAlpha.rendering.color_formats = &.{};
 
     if (pipeline.shadowDescriptorManager) |mgr| {
@@ -795,11 +794,11 @@ pub export fn vk_pbr_pipeline_create(pipeline: ?*types.VulkanPBRPipeline, device
 
     // Load Shaders and Reflect
     const process_shader = struct {
-        fn func(dev: c.VkDevice, name: []const u8, stage: c.VkShaderStageFlags, module_out: *c.VkShaderModule, map: *std.AutoHashMap(u32, c.VkDescriptorSetLayoutBinding), pc: *c.VkPushConstantRange, allocator_ref: std.mem.Allocator) !bool {
+        fn func(dev: c.VkDevice, name: []const u8, stage: c.VkShaderStageFlags, module_out: *c.VkShaderModule, map: *std.AutoHashMap(u32, c.VkDescriptorSetLayoutBinding), pc: *c.VkPushConstantRange, allocator_ref: std.mem.Allocator, shader_dir: []const u8) !bool {
             var path: [512]u8 = undefined;
             var shaders_dir: [*c]const u8 = @ptrCast(c.getenv("CARDINAL_SHADERS_DIR"));
             if (shaders_dir == null or shaders_dir[0] == 0) {
-                shaders_dir = "assets/shaders";
+                shaders_dir = @ptrCast(shader_dir.ptr);
             }
             _ = c.snprintf(&path, 512, "%s/%s", shaders_dir, name.ptr);
             const path_slice = std.mem.span(@as([*:0]const u8, @ptrCast(&path)));
@@ -844,13 +843,15 @@ pub export fn vk_pbr_pipeline_create(pipeline: ?*types.VulkanPBRPipeline, device
         }
     }.func;
 
-    if (process_shader(device, "pbr.vert.spv", c.VK_SHADER_STAGE_VERTEX_BIT, &vertShader, &set0_bindings, &pushConstantRange, allocator_arena) catch false) {
+    const shader_dir_span = std.mem.span(@as([*:0]const u8, @ptrCast(&vulkan_state.?.config.shader_dir)));
+
+    if (process_shader(device, "pbr.vert.spv", c.VK_SHADER_STAGE_VERTEX_BIT, &vertShader, &set0_bindings, &pushConstantRange, allocator_arena, shader_dir_span) catch false) {
         // OK
     } else {
         return false;
     }
 
-    if (process_shader(device, "pbr.frag.spv", c.VK_SHADER_STAGE_FRAGMENT_BIT, &fragShader, &set0_bindings, &pushConstantRange, allocator_arena) catch false) {
+    if (process_shader(device, "pbr.frag.spv", c.VK_SHADER_STAGE_FRAGMENT_BIT, &fragShader, &set0_bindings, &pushConstantRange, allocator_arena, shader_dir_span) catch false) {
         // OK
     } else {
         c.vkDestroyShaderModule(device, vertShader, null);
@@ -883,14 +884,21 @@ pub export fn vk_pbr_pipeline_create(pipeline: ?*types.VulkanPBRPipeline, device
 
     const dev = wrappers.Device.init(device);
 
-    if (!create_pbr_graphics_pipeline(pipe, device, vertShader, fragShader, swapchainFormat, depthFormat, "assets/pipelines/pbr_opaque.json", &pipe.pipeline, pipelineCache)) {
+    const pipeline_dir_span = std.mem.span(@as([*:0]const u8, @ptrCast(&vulkan_state.?.config.pipeline_dir)));
+    const opaque_path = std.fmt.allocPrint(renderer_allocator, "{s}/pbr_opaque.json", .{pipeline_dir_span}) catch return false;
+    defer renderer_allocator.free(opaque_path);
+
+    if (!create_pbr_graphics_pipeline(pipe, device, vertShader, fragShader, swapchainFormat, depthFormat, opaque_path, &pipe.pipeline, pipelineCache)) {
         dev.destroyShaderModule(vertShader);
         dev.destroyShaderModule(fragShader);
         vk_pbr_pipeline_destroy(pipeline, device, allocator);
         return false;
     }
 
-    if (!create_pbr_graphics_pipeline(pipe, device, vertShader, fragShader, swapchainFormat, depthFormat, "assets/pipelines/pbr_transparent.json", &pipe.pipelineBlend, pipelineCache)) {
+    const transparent_path = std.fmt.allocPrint(renderer_allocator, "{s}/pbr_transparent.json", .{pipeline_dir_span}) catch return false;
+    defer renderer_allocator.free(transparent_path);
+
+    if (!create_pbr_graphics_pipeline(pipe, device, vertShader, fragShader, swapchainFormat, depthFormat, transparent_path, &pipe.pipelineBlend, pipelineCache)) {
         dev.destroyShaderModule(vertShader);
         dev.destroyShaderModule(fragShader);
         vk_pbr_pipeline_destroy(pipeline, device, allocator);
@@ -908,7 +916,7 @@ pub export fn vk_pbr_pipeline_create(pipeline: ?*types.VulkanPBRPipeline, device
     }
 
     // Initialize Shadow Maps
-    if (!create_shadow_resources(pipe, device, alloc)) {
+    if (!create_shadow_resources(pipe, device, alloc, vulkan_state)) {
         log.cardinal_log_error("Failed to create shadow resources", .{});
         vk_pbr_pipeline_destroy(pipeline, device, allocator);
         return false;
@@ -920,7 +928,7 @@ pub export fn vk_pbr_pipeline_create(pipeline: ?*types.VulkanPBRPipeline, device
         return false;
     }
 
-    initialize_pbr_defaults(pipe);
+    initialize_pbr_defaults(pipe, &vulkan_state.?.config);
 
     pipe.initialized = true;
     log.cardinal_log_info("PBR pipeline created successfully", .{});
@@ -1007,7 +1015,7 @@ pub export fn vk_pbr_pipeline_destroy(pipeline: ?*types.VulkanPBRPipeline, devic
     }
 
     var i: u32 = 0;
-    while (i < SHADOW_CASCADE_COUNT) : (i += 1) {
+    while (i < pipe.shadowCascadeViews.len) : (i += 1) {
         if (pipe.shadowCascadeViews[i] != null) {
             c.vkDestroyImageView(device, pipe.shadowCascadeViews[i], null);
         }

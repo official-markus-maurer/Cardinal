@@ -76,7 +76,8 @@ pub const JobStatus = enum(c_int) {
     CANCELLED = 4,
 };
 
-pub const JobFunc = ?*const fn (data: ?*anyopaque) callconv(.c) void;
+pub const JobFunc = ?*const fn (data: ?*anyopaque) callconv(.c) i32;
+pub const JobErrorFunc = ?*const fn (data: ?*anyopaque, error_code: i32) callconv(.c) void;
 
 pub const DependencyNode = struct {
     job: *Job,
@@ -90,6 +91,10 @@ pub const Job = extern struct {
 
     func: JobFunc,
     data: ?*anyopaque,
+
+    // Error Handling
+    error_func: JobErrorFunc,
+    error_code: i32,
 
     // Internal List
     next: ?*Job,
@@ -242,9 +247,19 @@ fn worker_thread_func(worker: *WorkerThread) void {
 
         job.status = .RUNNING;
         if (job.func) |f| {
-            f(job.data);
+            const result = f(job.data);
+            if (result != 0) {
+                job.status = .FAILED;
+                job.error_code = result;
+                if (job.error_func) |ef| {
+                    ef(job.data, result);
+                }
+            } else {
+                job.status = .COMPLETED;
+            }
+        } else {
+            job.status = .COMPLETED;
         }
-        job.status = .COMPLETED; // We assume success for generic jobs, handle failure in func if needed
 
         _ = job_queue_push(&g_job_system.completed_queue, job);
 
@@ -368,7 +383,17 @@ pub fn create_job(func: JobFunc, data: ?*anyopaque, priority: JobPriority) ?*Job
     job.data = data;
     job.priority = priority;
     job.status = .PENDING;
+    job.error_code = 0;
+    job.error_func = null;
 
+    return job;
+}
+
+pub fn create_job_with_error_handler(func: JobFunc, data: ?*anyopaque, priority: JobPriority, error_func: JobErrorFunc) ?*Job {
+    const job = create_job(func, data, priority);
+    if (job) |j| {
+        j.error_func = error_func;
+    }
     return job;
 }
 

@@ -24,7 +24,7 @@ pub fn vulkan_sync_manager_unlock_shared() void {
     g_sync_lock.unlockShared();
 }
 
-pub fn vulkan_sync_manager_init(sync_manager: ?*types.VulkanSyncManager, device: c.VkDevice, graphics_queue: c.VkQueue, max_frames_in_flight: u32) bool {
+pub fn vulkan_sync_manager_init(sync_manager: ?*types.VulkanSyncManager, device: c.VkDevice, graphics_queue: c.VkQueue, max_frames_in_flight: u32, max_ahead: u64) bool {
     if (sync_manager == null or device == null or max_frames_in_flight == 0) {
         log.cardinal_log_error("[SYNC_MANAGER] Invalid parameters for initialization", .{});
         return false;
@@ -38,6 +38,7 @@ pub fn vulkan_sync_manager_init(sync_manager: ?*types.VulkanSyncManager, device:
     mgr.graphics_queue = graphics_queue;
     mgr.max_frames_in_flight = max_frames_in_flight;
     mgr.current_frame = 0;
+    mgr.max_ahead_value = max_ahead;
 
     // Allocate arrays
     const sem_size = @sizeOf(c.VkSemaphore);
@@ -136,7 +137,10 @@ pub fn vulkan_sync_manager_destroy(sync_manager: ?*types.VulkanSyncManager) void
     if (mgr.device == null) return;
 
     // Wait for device to be idle
-    _ = c.vkDeviceWaitIdle(mgr.device);
+    const res = c.vkDeviceWaitIdle(mgr.device);
+    if (res != c.VK_SUCCESS) {
+        log.cardinal_log_error("[SYNC_MANAGER] vkDeviceWaitIdle failed during destruction: {d}", .{res});
+    }
 
     // Destroy timeline semaphore
     if (mgr.timeline_semaphore != null) {
@@ -286,7 +290,7 @@ pub fn vulkan_sync_manager_wait_timeline(sync_manager: ?*types.VulkanSyncManager
     // Check for stale values (e.g. if timeline was reset)
     // We use a loose check without lock to avoid overhead, as exact synchronization is handled by the semaphore
     const current_atomic = atomic(&mgr.global_timeline_counter).load(.seq_cst);
-    if (value > current_atomic + 1000000) {
+    if (value > current_atomic + mgr.max_ahead_value) {
         log.cardinal_log_warn("[SYNC_MANAGER] wait_timeline: value {d} is too far ahead of current {d}, ignoring wait", .{ value, current_atomic });
         return c.VK_SUCCESS; // Treat as if already signaled to avoid hang
     }
@@ -546,7 +550,7 @@ pub fn vulkan_sync_manager_wait_timeline_safe(sync_manager: ?*types.VulkanSyncMa
     }
 
     const current_value = atomic(&mgr.global_timeline_counter).load(.seq_cst);
-    if (value > current_value + 1000000) {
+    if (value > current_value + mgr.max_ahead_value) {
         if (error_info) |info| {
             info.error_type = types.VulkanTimelineError.INVALID_VALUE;
             info.vulkan_result = c.VK_ERROR_UNKNOWN;
@@ -678,7 +682,7 @@ pub fn vulkan_sync_manager_validate_timeline_state(sync_manager: ?*types.VulkanS
     }
 
     const atomic_value = atomic(&mgr.global_timeline_counter).load(.seq_cst);
-    if (current_value > atomic_value + 1000000) {
+    if (current_value > atomic_value + mgr.max_ahead_value) {
         log.cardinal_log_warn("[SYNC_MANAGER] Timeline value inconsistency: semaphore={d}, atomic={d}", .{ current_value, atomic_value });
     }
 
@@ -805,7 +809,7 @@ pub fn vulkan_sync_manager_reset_timeline_values(sync_manager: ?*types.VulkanSyn
     var current_dev_val: u64 = 0;
     const dev_res = c.vkGetSemaphoreCounterValue(mgr.device, mgr.timeline_semaphore, &current_dev_val);
 
-    if (current_atomic < 1000000 and (dev_res == c.VK_SUCCESS and current_dev_val < 1000000)) {
+    if (current_atomic < mgr.max_ahead_value and (dev_res == c.VK_SUCCESS and current_dev_val < mgr.max_ahead_value)) {
         // Already reset, return success
         return true;
     }
@@ -815,7 +819,10 @@ pub fn vulkan_sync_manager_reset_timeline_values(sync_manager: ?*types.VulkanSyn
     // Wait for device idle to ensure no commands are using the semaphore
     // This is crucial because we are about to destroy it
     // NOTE: vkDeviceWaitIdle might fail if the device is lost, but we proceed anyway to reset state
-    _ = c.vkDeviceWaitIdle(mgr.device);
+    const wait_result = c.vkDeviceWaitIdle(mgr.device);
+    if (wait_result != c.VK_SUCCESS) {
+        log.cardinal_log_warn("[SYNC_MANAGER] vkDeviceWaitIdle failed during reset: {d}", .{wait_result});
+    }
 
     if (mgr.timeline_semaphore != null) {
         c.vkDestroySemaphore(mgr.device, mgr.timeline_semaphore, null);

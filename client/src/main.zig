@@ -78,7 +78,7 @@ pub fn main() !u8 {
     }
 
     var renderer: types.CardinalRenderer = .{ ._opaque = null };
-    if (!vulkan_renderer.cardinal_renderer_create(&renderer, win)) {
+    if (!vulkan_renderer.cardinal_renderer_create(&renderer, win, null)) {
         window.cardinal_window_destroy(win);
         log.cardinal_log_shutdown();
         return 255;
