@@ -6,7 +6,7 @@ const window = @import("../core/window.zig");
 const math = @import("../core/math.zig");
 
 // Constants
-pub const CARDINAL_MAX_SECONDARY_COMMAND_BUFFERS = 64;
+pub const CARDINAL_MAX_SECONDARY_COMMAND_BUFFERS = 512;
 pub const CARDINAL_MAX_MT_THREADS = 16;
 
 // Forward declarations for external types

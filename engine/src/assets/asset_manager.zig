@@ -4,6 +4,7 @@ const scene = @import("scene.zig");
 const texture_loader = @import("texture_loader.zig");
 const memory = @import("../core/memory.zig");
 const log = @import("../core/log.zig");
+const ref_counting = @import("../core/ref_counting.zig");
 
 const asset_log = log.ScopedLogger("ASSET_MGR");
 
@@ -48,22 +49,32 @@ fn AssetStorage(comptime T: type, comptime Handle: type) type {
             self.entries.deinit(self.allocator);
             self.free_indices.deinit(self.allocator);
         }
-        
-        pub fn add(self: *Self, data: T, path: ?[]const u8) !Handle {
+
+        pub const AddResult = struct {
+            handle: Handle,
+            stored_path: ?[]const u8,
+        };
+
+        pub fn add(self: *Self, data: T, path: ?[]const u8) !AddResult {
             var index: u32 = 0;
             var generation: u32 = 1;
-            
+            var stored_path: ?[]const u8 = null;
+
+            if (path) |p| {
+                stored_path = try self.allocator.dupe(u8, p);
+            }
+
             if (self.free_indices.items.len > 0) {
                 index = self.free_indices.pop();
                 generation = self.entries.items[index].generation + 1;
                 // Avoid 0 generation
                 if (generation == 0) generation = 1;
-                
+
                 self.entries.items[index] = .{
                     .data = data,
                     .generation = generation,
                     .ref_count = 1,
-                    .path = if (path) |p| try self.allocator.dupe(u8, p) else null,
+                    .path = stored_path,
                 };
             } else {
                 index = @intCast(self.entries.items.len);
@@ -71,11 +82,14 @@ fn AssetStorage(comptime T: type, comptime Handle: type) type {
                     .data = data,
                     .generation = generation,
                     .ref_count = 1,
-                    .path = if (path) |p| try self.allocator.dupe(u8, p) else null,
+                    .path = stored_path,
                 });
             }
-            
-            return Handle{ .index = index, .generation = generation };
+
+            return AddResult{
+                .handle = Handle{ .index = index, .generation = generation },
+                .stored_path = stored_path,
+            };
         }
 
         pub fn get(self: *Self, handle: Handle) ?*T {
@@ -85,48 +99,53 @@ fn AssetStorage(comptime T: type, comptime Handle: type) type {
             return &entry.data;
         }
 
-        pub fn release(self: *Self, handle: Handle) bool {
-            if (handle.index >= self.entries.items.len) return false;
+        pub const ReleaseResult = struct {
+            destroyed: bool,
+            path: ?[]const u8,
+            data: ?T,
+        };
+
+        pub fn release(self: *Self, handle: Handle) ReleaseResult {
+            if (handle.index >= self.entries.items.len) return .{ .destroyed = false, .path = null, .data = null };
             var entry = &self.entries.items[handle.index];
-            if (entry.generation != handle.generation) return false;
-            
+            if (entry.generation != handle.generation) return .{ .destroyed = false, .path = null, .data = null };
+
             if (entry.ref_count > 0) {
                 entry.ref_count -= 1;
             }
-            
+
             if (entry.ref_count == 0) {
-                // Free path
-                if (entry.path) |p| {
-                    self.allocator.free(p);
-                    entry.path = null;
-                }
-                
+                // Detach path (ownership transfer to caller)
+                const p = entry.path;
+                const d = entry.data;
+                entry.path = null;
+
                 // Add to free list
                 self.free_indices.append(self.allocator, handle.index) catch {};
-                return true; // Resource destroyed
+                return .{ .destroyed = true, .path = p, .data = d };
             }
-            return false;
+            return .{ .destroyed = false, .path = null, .data = null };
         }
-        
+
         pub fn acquire(self: *Self, handle: Handle) void {
-             if (handle.index >= self.entries.items.len) return;
-             var entry = &self.entries.items[handle.index];
-             if (entry.generation != handle.generation) return;
-             entry.ref_count += 1;
+            if (handle.index >= self.entries.items.len) return;
+            var entry = &self.entries.items[handle.index];
+            if (entry.generation != handle.generation) return;
+            entry.ref_count += 1;
         }
     };
 }
 
 pub const AssetManager = struct {
     allocator: std.mem.Allocator,
-    
+
     textures: AssetStorage(scene.CardinalTexture, handles.TextureHandle),
     meshes: AssetStorage(scene.CardinalMesh, handles.MeshHandle),
     materials: AssetStorage(scene.CardinalMaterial, handles.MaterialHandle),
-    
+
     // Map path to handle
     texture_path_map: std.StringHashMapUnmanaged(handles.TextureHandle),
-    
+
     pub fn init(allocator: std.mem.Allocator) AssetManager {
         return .{
             .allocator = allocator,
@@ -136,32 +155,32 @@ pub const AssetManager = struct {
             .texture_path_map = .{},
         };
     }
-    
+
     pub fn deinit(self: *AssetManager) void {
         self.textures.deinit();
         self.meshes.deinit();
         self.materials.deinit();
         self.texture_path_map.deinit(self.allocator);
     }
-    
+
     pub fn loadTexture(self: *AssetManager, path: []const u8) !handles.TextureHandle {
         if (self.texture_path_map.get(path)) |handle| {
             self.textures.acquire(handle);
             return handle;
         }
-        
+
         var texture = std.mem.zeroes(scene.CardinalTexture);
         const path_z = try self.allocator.dupeZ(u8, path);
-        
+
         // Use the async ref-counted loading function
         var temp_data = std.mem.zeroes(texture_loader.TextureData);
         const res = texture_loader.texture_load_with_ref_counting(@ptrCast(path_z), &temp_data);
-        
+
         if (res == null) {
             self.allocator.free(path_z);
             return error.FailedToLoadTexture;
         }
-        
+
         // Copy initial data (placeholder or loaded)
         texture.data = temp_data.data;
         texture.width = temp_data.width;
@@ -170,23 +189,50 @@ pub const AssetManager = struct {
         texture.is_hdr = temp_data.is_hdr;
         texture.ref_resource = res;
         texture.path = path_z;
-        
-        const handle = try self.textures.add(texture, path);
-        try self.texture_path_map.put(self.allocator, path, handle);
-        
-        asset_log.info("Loaded texture: {s} -> Handle({d}, {d})", .{path, handle.index, handle.generation});
-        return handle;
+
+        const add_res = try self.textures.add(texture, path);
+        if (add_res.stored_path) |p| {
+            try self.texture_path_map.put(self.allocator, p, add_res.handle);
+        } else {
+            try self.texture_path_map.put(self.allocator, path, add_res.handle);
+        }
+
+        asset_log.info("Loaded texture: {s} -> Handle({d}, {d})", .{ path, add_res.handle.index, add_res.handle.generation });
+        return add_res.handle;
     }
-    
+
     pub fn getTexture(self: *AssetManager, handle: handles.TextureHandle) ?*scene.CardinalTexture {
         return self.textures.get(handle);
     }
-    
+
+    pub fn findTexture(self: *AssetManager, path: []const u8) ?*scene.CardinalTexture {
+        if (self.texture_path_map.get(path)) |handle| {
+            return self.textures.get(handle);
+        }
+        return null;
+    }
+
     pub fn releaseTexture(self: *AssetManager, handle: handles.TextureHandle) void {
-        if (self.textures.release(handle)) {
-             // TODO: Remove from path map.
-             // Currently the path string is freed by AssetStorage so we can't easily lookup the key to remove it.
-             // Need a way to retrieve the path before deletion or store a reverse mapping.
+        const res = self.textures.release(handle);
+        if (res.destroyed) {
+            if (res.data) |tex| {
+                if (tex.path) |p| {
+                    // Free the path allocated by dupeZ
+                    self.allocator.free(std.mem.span(p));
+                }
+                if (tex.ref_resource) |ref| {
+                    const r: *ref_counting.CardinalRefCountedResource = @ptrCast(@alignCast(ref));
+                    _ = ref_counting.cardinal_ref_release(r);
+                }
+            }
+
+            if (res.path) |p| {
+                if (self.texture_path_map.fetchRemove(p)) |kv| {
+                    self.allocator.free(kv.key);
+                } else {
+                    self.allocator.free(p);
+                }
+            }
         }
     }
 };
@@ -202,18 +248,27 @@ fn cardinalAlloc(ctx: *anyopaque, len: usize, ptr_align: std.mem.Alignment, ret_
 }
 
 fn cardinalResize(ctx: *anyopaque, buf: []u8, buf_align: std.mem.Alignment, new_len: usize, ret_addr: usize) bool {
-    _ = ctx; _ = buf; _ = buf_align; _ = new_len; _ = ret_addr;
+    _ = ctx;
+    _ = buf;
+    _ = buf_align;
+    _ = new_len;
+    _ = ret_addr;
     return false;
 }
 
 fn cardinalFree(ctx: *anyopaque, buf: []u8, buf_align: std.mem.Alignment, ret_addr: usize) void {
-    _ = buf_align; _ = ret_addr;
+    _ = buf_align;
+    _ = ret_addr;
     const self = @as(*memory.CardinalAllocator, @ptrCast(@alignCast(ctx)));
     self.free(self, @ptrCast(buf.ptr));
 }
 
 fn cardinalRemap(ctx: *anyopaque, buf: []u8, buf_align: std.mem.Alignment, new_len: usize, ret_addr: usize) ?[*]u8 {
-    _ = ctx; _ = buf; _ = buf_align; _ = new_len; _ = ret_addr;
+    _ = ctx;
+    _ = buf;
+    _ = buf_align;
+    _ = new_len;
+    _ = ret_addr;
     return null;
 }
 

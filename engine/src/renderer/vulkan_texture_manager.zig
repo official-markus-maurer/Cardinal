@@ -36,7 +36,6 @@ const TextureUploadContext = struct {
 };
 
 const AsyncTextureUpdateContext = struct {
-    task: types.CardinalMTTask, // Must be first for task system
     allocator: *types.VulkanAllocator,
     device: c.VkDevice,
     managed_texture: *types.VulkanManagedTexture,
@@ -58,26 +57,28 @@ const AsyncTextureUpdateContext = struct {
     // Texture data copy
     texture_data: scene.CardinalTexture,
 
+    finished: bool,
+    success: bool,
     next: ?*AsyncTextureUpdateContext,
 };
 
 fn update_texture_task(data: ?*anyopaque) callconv(.c) void {
     if (data == null) return;
     const ctx: *AsyncTextureUpdateContext = @ptrCast(@alignCast(data));
-    ctx.task.success = false;
+    ctx.success = false;
 
     // Get thread command pool
     const pool = vk_mt.cardinal_mt_get_thread_command_pool(&vk_mt.g_cardinal_mt_subsystem.command_manager);
     if (pool == null) {
         tex_mgr_log.err("Failed to get thread command pool for update task", .{});
-        ctx.task.is_completed = true;
+        @atomicStore(bool, &ctx.finished, true, .release);
         return;
     }
 
     // Allocate secondary command buffer
     if (!vk_mt.cardinal_mt_allocate_secondary_command_buffer(pool.?, &ctx.secondary_context)) {
         tex_mgr_log.err("Failed to allocate secondary command buffer for update task", .{});
-        ctx.task.is_completed = true;
+        @atomicStore(bool, &ctx.finished, true, .release);
         return;
     }
 
@@ -85,21 +86,21 @@ fn update_texture_task(data: ?*anyopaque) callconv(.c) void {
     const format: c.VkFormat = if (ctx.texture_data.is_hdr) c.VK_FORMAT_R32G32B32A32_SFLOAT else c.VK_FORMAT_R8G8B8A8_SRGB;
     if (!vk_texture_utils.create_image_and_memory(ctx.allocator, ctx.device, ctx.texture_data.width, ctx.texture_data.height, format, &ctx.new_image, &ctx.new_memory, &ctx.new_allocation)) {
         tex_mgr_log.err("Failed to create new image for update", .{});
-        ctx.task.is_completed = true;
+        @atomicStore(bool, &ctx.finished, true, .release);
         return;
     }
 
     // Create staging buffer and copy data
     if (!vk_texture_utils.create_staging_buffer_with_data(ctx.allocator, ctx.device, &ctx.texture_data, &ctx.staging_buffer, &ctx.staging_memory, &ctx.staging_allocation)) {
         tex_mgr_log.err("Failed to create staging buffer for update", .{});
-        ctx.task.is_completed = true;
+        @atomicStore(bool, &ctx.finished, true, .release);
         return;
     }
 
     // Create new view
     if (!vk_texture_utils.create_texture_image_view(ctx.device, ctx.new_image, &ctx.new_view, format)) {
         tex_mgr_log.err("Failed to create new view for update", .{});
-        ctx.task.is_completed = true;
+        @atomicStore(bool, &ctx.finished, true, .release);
         return;
     }
 
@@ -114,7 +115,7 @@ fn update_texture_task(data: ?*anyopaque) callconv(.c) void {
 
     if (c.vkBeginCommandBuffer(ctx.secondary_context.command_buffer, &begin_info) != c.VK_SUCCESS) {
         tex_mgr_log.err("Failed to begin secondary command buffer for update", .{});
-        ctx.task.is_completed = true;
+        @atomicStore(bool, &ctx.finished, true, .release);
         return;
     }
 
@@ -122,12 +123,12 @@ fn update_texture_task(data: ?*anyopaque) callconv(.c) void {
 
     if (c.vkEndCommandBuffer(ctx.secondary_context.command_buffer) != c.VK_SUCCESS) {
         tex_mgr_log.err("Failed to end secondary command buffer for update", .{});
-        ctx.task.is_completed = true;
+        @atomicStore(bool, &ctx.finished, true, .release);
         return;
     }
 
-    ctx.task.success = true;
-    ctx.task.is_completed = true;
+    ctx.success = true;
+    @atomicStore(bool, &ctx.finished, true, .release);
 }
 
 fn upload_texture_task(data: ?*anyopaque) callconv(.c) void {
@@ -208,6 +209,7 @@ pub fn vk_texture_manager_init(manager: *types.VulkanTextureManager, config: *co
     manager.textureCount = 0;
     manager.textureCapacity = 0;
     manager.hasPlaceholder = false;
+    manager.pending_updates = null;
     manager.bindless_pool = std.mem.zeroes(types.BindlessTexturePool);
 
     // Initialize bindless pool if vulkan_state is available
@@ -797,7 +799,7 @@ pub fn vk_texture_manager_update_textures(manager: *types.VulkanTextureManager) 
     while (curr_ptr) |ctx| {
         const next = ctx.next;
 
-        if (ctx.task.is_completed) {
+        if (@atomicLoad(bool, &ctx.finished, .acquire)) {
             // Remove from pending list
             if (prev) |p| {
                 p.next = next;
@@ -833,7 +835,7 @@ pub fn vk_texture_manager_update_textures(manager: *types.VulkanTextureManager) 
 
             var iter = completed_list;
             while (iter) |ctx| : (iter = ctx.next) {
-                if (ctx.task.success) {
+                if (ctx.success) {
                     bufs[valid_count] = ctx.secondary_context.command_buffer;
                     valid_count += 1;
                 }
@@ -918,7 +920,7 @@ pub fn vk_texture_manager_update_textures(manager: *types.VulkanTextureManager) 
             const next = ctx.next;
 
             // If the batch submit succeeded AND this specific task was successful
-            if (submit_success and ctx.task.success) {
+            if (submit_success and ctx.success) {
                 // Register cleanup for staging buffer and OLD image
                 if (manager.syncManager != null) {
                     vk_texture_utils.add_staging_buffer_cleanup(ctx.staging_buffer, ctx.staging_memory, ctx.staging_allocation, manager.device, signal_val);
@@ -967,7 +969,7 @@ pub fn vk_texture_manager_update_textures(manager: *types.VulkanTextureManager) 
                 tex_mgr_log.info("Async texture upload complete for texture", .{});
             } else {
                 // Task failed OR batch submit failed
-                if (ctx.task.success) {
+                if (ctx.success) {
                     // Task was fine, but submit failed. Need to cleanup new resources.
                     tex_mgr_log.err("Failed to submit async texture upload batch", .{});
                 } else {
@@ -1025,22 +1027,33 @@ pub fn vk_texture_manager_update_textures(manager: *types.VulkanTextureManager) 
                     ctx.texture_data.channels = data.channels;
                     ctx.texture_data.is_hdr = data.is_hdr;
                     ctx.next = null;
+                    ctx.finished = false;
+                    ctx.success = false;
 
-                    ctx.task.type = types.CardinalMTTaskType.CARDINAL_MT_TASK_COMMAND_RECORD;
-                    ctx.task.data = ctx;
-                    ctx.task.execute_func = update_texture_task;
-                    ctx.task.callback_func = null;
-                    ctx.task.is_completed = false;
-                    ctx.task.success = false;
-                    ctx.task.next = null;
+                    // Allocate task separately
+                    const task_ptr = memory.cardinal_alloc(mem_alloc, @sizeOf(types.CardinalMTTask));
+                    if (task_ptr) |tptr| {
+                        const task: *types.CardinalMTTask = @ptrCast(@alignCast(tptr));
+                        task.type = types.CardinalMTTaskType.CARDINAL_MT_TASK_COMMAND_RECORD;
+                        task.data = ctx;
+                        task.execute_func = update_texture_task;
+                        task.callback_func = null;
+                        task.is_completed = false;
+                        task.success = false;
+                        task.next = null;
 
-                    if (vk_mt.cardinal_mt_submit_task(&ctx.task)) {
-                        tex.is_updating = true;
-                        // Add to pending list (prepend)
-                        ctx.next = @ptrCast(@alignCast(manager.pending_updates));
-                        manager.pending_updates = ctx;
+                        if (vk_mt.cardinal_mt_submit_task(task)) {
+                            tex.is_updating = true;
+                            // Add to pending list (prepend)
+                            ctx.next = @ptrCast(@alignCast(manager.pending_updates));
+                            manager.pending_updates = ctx;
+                        } else {
+                            tex_mgr_log.err("Failed to submit async texture task", .{});
+                            memory.cardinal_free(mem_alloc, tptr);
+                            memory.cardinal_free(mem_alloc, ptr);
+                        }
                     } else {
-                        tex_mgr_log.err("Failed to submit async texture task", .{});
+                        tex_mgr_log.err("Failed to allocate task for texture update", .{});
                         memory.cardinal_free(mem_alloc, ptr);
                     }
                 }

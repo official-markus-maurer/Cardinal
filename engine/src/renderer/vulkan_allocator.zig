@@ -274,6 +274,7 @@ pub export fn vk_allocator_free_image(alloc: ?*types.VulkanAllocator, image: c.V
 
 pub export fn vk_allocator_free_buffer(alloc: ?*types.VulkanAllocator, buffer: c.VkBuffer, allocation: c.VmaAllocation) callconv(.c) void {
     if (alloc == null or buffer == null or allocation == null) return;
+    // vma_log.debug("Freeing buffer {any}, allocation {any}", .{buffer, allocation});
     c.vmaDestroyBuffer(alloc.?.handle, buffer, allocation);
 }
 

@@ -543,15 +543,18 @@ pub export fn vk_mesh_shader_destroy_draw_data(s: ?*types.VulkanState, draw_data
     const data = draw_data.?;
 
     // Free descriptor set
-    if (data.descriptor_set != null and vs.pipelines.mesh_shader_pipeline.set0_manager != null) {
-        // log.cardinal_log_debug("vk_mesh_shader_destroy_draw_data: Freeing descriptor set {any}", .{data.descriptor_set});
-        vk_desc_mgr.vk_descriptor_manager_free_set(vs.pipelines.mesh_shader_pipeline.set0_manager, data.descriptor_set);
+    if (data.descriptor_set != null) {
+        if (vs.pipelines.mesh_shader_pipeline.set0_manager != null) {
+            // log.cardinal_log_debug("vk_mesh_shader_destroy_draw_data: Freeing descriptor set {any}", .{data.descriptor_set});
+            vk_desc_mgr.vk_descriptor_manager_free_set(vs.pipelines.mesh_shader_pipeline.set0_manager, data.descriptor_set);
+        } else {
+             log.cardinal_log_warn("vk_mesh_shader_destroy_draw_data: Descriptor set {any} not freed because manager is null (pool likely destroyed)", .{data.descriptor_set});
+        }
         data.descriptor_set = null;
-    } else if (data.descriptor_set != null) {
-        // log.cardinal_log_debug("vk_mesh_shader_destroy_draw_data: Descriptor set {any} not freed because manager is null", .{data.descriptor_set});
     }
 
     if (data.vertex_buffer != null) {
+        // log.cardinal_log_debug("vk_mesh_shader_destroy_draw_data: Freeing vertex buffer {any}", .{data.vertex_buffer});
         vk_allocator.vk_allocator_free_buffer(@ptrCast(&vs.allocator), data.vertex_buffer, data.vertex_allocation);
         data.vertex_buffer = null;
         data.vertex_memory = null;

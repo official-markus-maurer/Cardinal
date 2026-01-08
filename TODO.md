@@ -6,6 +6,7 @@ This document outlines the roadmap for the Cardinal Engine, focusing on robustne
 
 ### Memory Management
 - [x] **Stack Allocator**: Implement a double-ended stack allocator for efficient frame-temporary memory (replacing general heap allocations for temporary data).
+- [ ] **Allocator Optimization**: Expand the last allocation in the current block if possible (`memory.zig`).
 - [ ] **Job System Optimization**: 
     - Implement a **Pool Allocator** for `Job` structs to avoid `malloc` overhead per job.
     - Remove the hard limit of 8 dependents per job.
@@ -18,7 +19,9 @@ This document outlines the roadmap for the Cardinal Engine, focusing on robustne
 
 ### Asset System
 - [ ] **Asset Database**: Implement a metadata system (`.meta` files) to store import settings and GUIDs for assets, decoupling file paths from asset identity.
-- [ ] **Bug Fix**: Fix `releaseTexture` in `asset_manager.zig` not removing entries from `texture_path_map` (dangling key issue).
+- [x] **GLTF Loader Logging**: Remove "DEBUG" prefix from error/warn logs and clean up logging in `gltf_loader.zig`.
+- [ ] **Texture Cache**: Improve `init_texture_cache` thread safety or usage in `gltf_loader.zig`.
+- [x] **Bug Fix**: Fix `releaseTexture` in `asset_manager.zig` not removing entries from `texture_path_map` (dangling key issue).
 - [ ] **Async Loading**: Implement a proper `Promise` or `Handle` state system for async loading, allowing the engine to query if an asset is `Loading`, `Ready`, or `Failed`.
 - [ ] **Hot-Reloading**: Generic hot-reloading support for all asset types.
 - [ ] **Shader Compilation**: Integrate runtime shader compilation (e.g., shaderc or slang) to compile `.glsl` to `.spv` on the fly.
@@ -54,6 +57,17 @@ This document outlines the roadmap for the Cardinal Engine, focusing on robustne
 
 ### Optimization
 - [ ] **GPU Culling**: Implement GPU-driven frustum and occlusion culling using Mesh Shaders or Compute Shaders.
+- [ ] **Shader Module Caching**: Implement caching for shader modules to avoid recompilation/reloading (`vulkan_pso.zig`).
+- [ ] **Alpha-Tested Shadows**: Create a separate shader for alpha-tested shadows (`vulkan_shadows.zig`).
+- [ ] **Dynamic Color Blending**: Support multiple color blend attachments dynamically (`vulkan_pso.zig`).
+
+### Debugging
+- [ ] **Timeline Debug Config**: Make `VULKAN_TIMELINE_DEBUG_MAX_EVENTS` configurable or dynamic (`vulkan_timeline_types.zig`).
+- [ ] **Timeline Debug Memory**: Use engine allocator instead of `std.heap.c_allocator` in `vulkan_timeline_debug.zig`.
+
+### Render Graph
+- [ ] **Resource Pooling**: Use a pool for allocations in `render_graph.zig`.
+- [ ] **Resource Management**: Ensure old resources are freed if allocated (`render_graph.zig`).
 
 ## 4. Gameplay & Systems (New)
 

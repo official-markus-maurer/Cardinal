@@ -141,7 +141,7 @@ fn setup_function_pointers(s: *types.VulkanState) void {
             }
         }
     }
-    
+
     if (s.context.vkQueueSubmit2 == null) {
         log.cardinal_log_warn("vkQueueSubmit2 not found via vkGetDeviceProcAddr, falling back to static linking (unsafe if not supported)", .{});
         s.context.vkQueueSubmit2 = c.vkQueueSubmit2;
@@ -653,6 +653,9 @@ pub export fn cardinal_renderer_destroy(renderer: ?*types.CardinalRenderer) call
     // destroy in reverse order
     destroy_scene_buffers(s);
 
+    // Process deferred cleanups (buffers, images, command buffers) BEFORE destroying command pools
+    vk_texture_utils.shutdown_staging_buffer_cleanups(&s.allocator);
+
     // Check if timeline semaphore is shared with sync manager to avoid double free
     // Since s.sync IS the sync manager storage (s.sync_manager points to it),
     // we MUST NOT clear the handle here, otherwise vk_destroy_commands_sync won't destroy it.
@@ -739,7 +742,6 @@ pub export fn cardinal_renderer_destroy(renderer: ?*types.CardinalRenderer) call
     }
 
     // Shutdown VMA allocator before destroying device
-    vk_texture_utils.shutdown_staging_buffer_cleanups(&s.allocator);
     vk_allocator.vk_allocator_shutdown(&s.allocator);
 
     vk_instance.vk_destroy_device_objects(@ptrCast(s));

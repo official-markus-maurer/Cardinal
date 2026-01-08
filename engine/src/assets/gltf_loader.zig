@@ -168,7 +168,7 @@ fn fallback_texture_destructor(resource: ?*anyopaque) callconv(.c) void {
 }
 
 fn create_fallback_texture(out_texture: *scene.CardinalTexture) bool {
-    log.cardinal_log_error("DEBUG: create_fallback_texture (out_texture: {*})", .{out_texture});
+    gltf_log.debug("create_fallback_texture (out_texture: {*})", .{out_texture});
     out_texture.width = 2;
     out_texture.height = 2;
     out_texture.channels = 4;
@@ -177,7 +177,7 @@ fn create_fallback_texture(out_texture: *scene.CardinalTexture) bool {
     if (ref_counting.cardinal_ref_acquire(fallback_id)) |ref| {
         out_texture.data = @ptrCast(ref.resource);
         out_texture.ref_resource = ref;
-        log.cardinal_log_error("DEBUG: Acquired existing fallback texture (ref: {*})", .{ref});
+        gltf_log.debug("Acquired existing fallback texture (ref: {*})", .{ref});
     } else {
         const allocator = memory.cardinal_get_allocator_for_category(.ASSETS);
         const data = memory.cardinal_alloc(allocator, 16);
@@ -195,11 +195,11 @@ fn create_fallback_texture(out_texture: *scene.CardinalTexture) bool {
         if (ref_counting.cardinal_ref_create(fallback_id, data, 16, fallback_texture_destructor)) |ref| {
             out_texture.data = @ptrCast(data);
             out_texture.ref_resource = ref;
-            log.cardinal_log_error("DEBUG: Created new fallback texture (ref: {*})", .{ref});
+            gltf_log.debug("Created new fallback texture (ref: {*})", .{ref});
         } else {
             out_texture.data = @ptrCast(data);
             out_texture.ref_resource = null;
-            log.cardinal_log_error("DEBUG: Failed to create ref for fallback texture", .{});
+            gltf_log.err("Failed to create ref for fallback texture", .{});
         }
     }
 
@@ -219,15 +219,15 @@ fn load_texture_with_fallback(original_uri: [*:0]const u8, base_path: [*:0]const
     const uri = std.mem.span(original_uri);
     const base = std.mem.span(base_path);
     
-    log.cardinal_log_debug("Loading texture '{s}'", .{uri});
+    gltf_log.debug("Loading texture '{s}'", .{uri});
 
     if (uri.len == 0) {
-        log.cardinal_log_warn("Empty texture URI provided, using fallback", .{});
+        gltf_log.warn("Empty texture URI provided, using fallback", .{});
         return create_fallback_texture(out_texture);
     }
 
     if (lookup_cached_path(uri)) |cached_path| {
-        log.cardinal_log_debug("Found cached path '{s}'", .{cached_path});
+        gltf_log.debug("Found cached path '{s}'", .{cached_path});
         var tex_data: texture_loader.TextureData = undefined;
         // Need null terminated cached_path
         var cached_path_z: [512]u8 = undefined;
@@ -248,10 +248,10 @@ fn load_texture_with_fallback(original_uri: [*:0]const u8, base_path: [*:0]const
                 out_texture.path = @ptrCast(ptr);
             }
             out_texture.ref_resource = ref;
-            log.cardinal_log_debug("Loaded texture from cache: {s}", .{cached_path});
+            gltf_log.debug("Loaded texture from cache: {s}", .{cached_path});
             return true;
         }
-        log.cardinal_log_warn("Failed to load cached path '{s}'", .{cached_path});
+        gltf_log.warn("Failed to load cached path '{s}'", .{cached_path});
     }
 
     var texture_path_buf: [512]u8 = undefined;
@@ -260,7 +260,7 @@ fn load_texture_with_fallback(original_uri: [*:0]const u8, base_path: [*:0]const
 
     // Absolute path check
     if (uri[0] == '/' or std.mem.indexOf(u8, uri, "://") != null or (uri.len > 2 and uri[1] == ':')) {
-        log.cardinal_log_debug("Trying absolute path '{s}'", .{uri});
+        gltf_log.debug("Trying absolute path '{s}'", .{uri});
         ref_resource = try_texture_path(std.mem.span(original_uri), &tex_data);
         if (ref_resource != null) {
             cache_texture_path(uri, uri);
@@ -278,11 +278,11 @@ fn load_texture_with_fallback(original_uri: [*:0]const u8, base_path: [*:0]const
                 out_texture.path = @ptrCast(ptr);
             }
             out_texture.ref_resource = ref_resource;
-            log.cardinal_log_debug("Loaded texture absolute: {s}", .{uri});
+            gltf_log.debug("Loaded texture absolute: {s}", .{uri});
             return true;
         }
-        log.cardinal_log_debug("Failed absolute path '{s}'", .{uri});
-        log.cardinal_log_warn("Failed to load texture '{s}', using fallback", .{uri});
+        gltf_log.debug("Failed absolute path '{s}'", .{uri});
+        gltf_log.warn("Failed to load texture '{s}', using fallback", .{uri});
         return create_fallback_texture(out_texture);
     }
 
@@ -313,7 +313,7 @@ fn load_texture_with_fallback(original_uri: [*:0]const u8, base_path: [*:0]const
 
         const path = std.fmt.bufPrintZ(&texture_path_buf, "{s}{s}{s}", .{dir, separator, uri}) catch null;
         if (path) |p| {
-             log.cardinal_log_debug("Trying relative path '{s}'", .{p});
+             gltf_log.debug("Trying relative path '{s}'", .{p});
              ref_resource = try_texture_path(p, &tex_data);
              if (ref_resource != null) {
                 cache_texture_path(uri, p);
@@ -329,15 +329,15 @@ fn load_texture_with_fallback(original_uri: [*:0]const u8, base_path: [*:0]const
                     out_texture.path = @ptrCast(ptr);
                 }
                 out_texture.ref_resource = ref_resource;
-                log.cardinal_log_info("DEBUG: Successfully loaded texture relative: {s} (ref: {*} at {*}, data: {*})", .{p, ref_resource, &out_texture.ref_resource, out_texture.data});
+                gltf_log.info("Successfully loaded texture relative: {s} (ref: {*} at {*}, data: {*})", .{p, ref_resource, &out_texture.ref_resource, out_texture.data});
                 return true;
              }
-             log.cardinal_log_warn("DEBUG: Failed relative path '{s}'", .{p});
+             gltf_log.debug("Failed relative path '{s}'", .{p});
         }
     }
 
     // Try optimized fallback paths
-    log.cardinal_log_warn("DEBUG: Trying fallback paths for '{s}'", .{uri});
+    gltf_log.debug("Trying fallback paths for '{s}'", .{uri});
     ref_resource = try_optimized_fallback_paths(uri, base, &texture_path_buf, &tex_data);
     if (ref_resource) |res| {
         const path = std.mem.sliceTo(@as([*:0]u8, @ptrCast(&texture_path_buf)), 0);
@@ -354,14 +354,14 @@ fn load_texture_with_fallback(original_uri: [*:0]const u8, base_path: [*:0]const
             out_texture.path = @ptrCast(ptr);
         }
         out_texture.ref_resource = res;
-        log.cardinal_log_error("DEBUG: Loaded texture fallback: {s} (ref: {*} at {*}, data: {*})", .{ path, res, &out_texture.ref_resource, out_texture.data });
+        gltf_log.info("Loaded texture fallback: {s} (ref: {*} at {*}, data: {*})", .{ path, res, &out_texture.ref_resource, out_texture.data });
         return true;
     }
     
-    log.cardinal_log_error("DEBUG: Failed all fallback paths for '{s}'", .{uri});
+    gltf_log.warn("Failed all fallback paths for '{s}'", .{uri});
 
     // Fallback to create_fallback_texture if no paths match
-    log.cardinal_log_warn("Failed to load texture '{s}' from all paths, using fallback", .{uri});
+    gltf_log.warn("Failed to load texture '{s}' from all paths, using fallback", .{uri});
     return create_fallback_texture(out_texture);
 }
 
@@ -379,13 +379,13 @@ fn extract_texture_transform(texture_view: *const c.cgltf_texture_view, out_tran
         out_transform.scale[0] = transform.scale[0];
         out_transform.scale[1] = transform.scale[1];
         out_transform.rotation = transform.rotation;
-        log.cardinal_log_debug("Texture transform: offset=({d:.3},{d:.3}), scale=({d:.3},{d:.3}), rotation={d:.3}", .{ out_transform.offset[0], out_transform.offset[1], out_transform.scale[0], out_transform.scale[1], out_transform.rotation });
+        gltf_log.debug("Texture transform: offset=({d:.3},{d:.3}), scale=({d:.3},{d:.3}), rotation={d:.3}", .{ out_transform.offset[0], out_transform.offset[1], out_transform.scale[0], out_transform.scale[1], out_transform.rotation });
     }
 }
 
 fn convert_sampler(gltf_sampler: ?*const c.cgltf_sampler, out_sampler: *scene.CardinalSampler) void {
     if (gltf_sampler == null) {
-        log.cardinal_log_debug("Sampler is NULL, defaulting to CLAMP_TO_EDGE", .{});
+        gltf_log.debug("Sampler is NULL, defaulting to CLAMP_TO_EDGE", .{});
         // Default to CLAMP_TO_EDGE instead of REPEAT to prevent tiling artifacts
         // on models that don't explicitly define samplers.
         out_sampler.wrap_s = c.VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
@@ -395,7 +395,7 @@ fn convert_sampler(gltf_sampler: ?*const c.cgltf_sampler, out_sampler: *scene.Ca
         return;
     }
     const s = gltf_sampler.?;
-    log.cardinal_log_debug("Sampler defined: wrapS={d}, wrapT={d}", .{s.wrap_s, s.wrap_t});
+    gltf_log.debug("Sampler defined: wrapS={d}, wrapT={d}", .{s.wrap_s, s.wrap_t});
 
     if (s.wrap_s == 33071 or s.wrap_s == 33069 or s.wrap_s == 10496) {
         out_sampler.wrap_s = c.VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
@@ -428,7 +428,7 @@ fn convert_sampler(gltf_sampler: ?*const c.cgltf_sampler, out_sampler: *scene.Ca
 
 fn load_texture_from_gltf(data: *const c.cgltf_data, img_idx: usize, base_path: [*:0]const u8, out_texture: *scene.CardinalTexture) bool {
     if (img_idx >= data.images_count or data.images == null) {
-        log.cardinal_log_error("Invalid image index {d}", .{img_idx});
+        gltf_log.err("Invalid image index {d}", .{img_idx});
         return false;
     }
 
@@ -436,7 +436,7 @@ fn load_texture_from_gltf(data: *const c.cgltf_data, img_idx: usize, base_path: 
     if (img.uri != null) {
         return load_texture_with_fallback(img.uri, base_path, out_texture);
     } else {
-        log.cardinal_log_warn("Embedded textures not supported yet, using fallback", .{});
+        gltf_log.warn("Embedded textures not supported yet, using fallback", .{});
         return create_fallback_texture(out_texture);
     }
 }
@@ -520,7 +520,7 @@ fn build_scene_node(data: *const c.cgltf_data, gltf_node: *const c.cgltf_node, m
     const node_name = if (gltf_node.name) |n| std.mem.span(n) else "Unnamed Node";
     const scene_node = scene.cardinal_scene_node_create(node_name);
     if (scene_node == null) {
-        log.cardinal_log_error("Failed to create scene node", .{});
+        gltf_log.err("Failed to create scene node", .{});
         return null;
     }
     const node = scene_node.?;
@@ -571,7 +571,7 @@ fn build_scene_node(data: *const c.cgltf_data, gltf_node: *const c.cgltf_node, m
             const allocator = memory.cardinal_get_allocator_for_category(.ASSETS);
             const indices_ptr = memory.cardinal_alloc(allocator, primitive_count * @sizeOf(u32));
             if (indices_ptr == null) {
-                log.cardinal_log_error("Failed to allocate mesh indices", .{});
+                gltf_log.err("Failed to allocate mesh indices", .{});
                 return node;
             }
             node.mesh_indices = @ptrCast(@alignCast(indices_ptr));
@@ -616,7 +616,7 @@ fn load_skins_from_gltf(data: *const c.cgltf_data, out_skins: *?[*]animation.Car
     const allocator = memory.cardinal_get_allocator_for_category(.ASSETS);
     const skins_ptr = memory.cardinal_calloc(allocator, data.skins_count, @sizeOf(animation.CardinalSkin));
     if (skins_ptr == null) {
-        log.cardinal_log_error("Failed to allocate memory for skins", .{});
+        gltf_log.err("Failed to allocate memory for skins", .{});
         return false;
     }
     const skins: [*]animation.CardinalSkin = @ptrCast(@alignCast(skins_ptr));
@@ -648,7 +648,7 @@ fn load_skins_from_gltf(data: *const c.cgltf_data, out_skins: *?[*]animation.Car
             const bones_ptr = memory.cardinal_calloc(allocator, skin.bone_count, @sizeOf(animation.CardinalBone));
             skin.bones = @ptrCast(@alignCast(bones_ptr));
             if (skin.bones == null) {
-                log.cardinal_log_error("Failed to allocate memory for skin bones", .{});
+                gltf_log.err("Failed to allocate memory for skin bones", .{});
                 var j: usize = 0;
                 while (j < i) : (j += 1) {
                     animation.cardinal_skin_destroy(&skins[j]);
@@ -681,7 +681,7 @@ fn load_skins_from_gltf(data: *const c.cgltf_data, out_skins: *?[*]animation.Car
 
     out_skins.* = skins;
     out_skin_count.* = @intCast(data.skins_count);
-    log.cardinal_log_info("Loaded {d} skins from GLTF", .{out_skin_count.*});
+    gltf_log.info("Loaded {d} skins from GLTF", .{out_skin_count.*});
     return true;
 }
 
@@ -822,7 +822,7 @@ fn load_animations_from_gltf(data: *const c.cgltf_data, anim_system: *animation.
         if (anim.name) |n| memory.cardinal_free(allocator, n);
     }
 
-    log.cardinal_log_info("Loaded {d} animations from GLTF", .{data.animations_count});
+    gltf_log.info("Loaded {d} animations from GLTF", .{data.animations_count});
     return true;
 }
 
@@ -835,7 +835,7 @@ fn load_lights_from_gltf(data: *const c.cgltf_data, out_lights: *?[*]scene.Cardi
     const allocator = memory.cardinal_get_allocator_for_category(.ASSETS);
     const lights_ptr = memory.cardinal_calloc(allocator, data.lights_count, @sizeOf(scene.CardinalLight));
     if (lights_ptr == null) {
-        log.cardinal_log_error("Failed to allocate memory for lights", .{});
+        gltf_log.err("Failed to allocate memory for lights", .{});
         return false;
     }
     const lights: [*]scene.CardinalLight = @ptrCast(@alignCast(lights_ptr));
@@ -864,12 +864,12 @@ fn load_lights_from_gltf(data: *const c.cgltf_data, out_lights: *?[*]scene.Cardi
 
     out_lights.* = lights;
     out_light_count.* = @intCast(data.lights_count);
-    log.cardinal_log_info("Loaded {d} lights from GLTF", .{out_light_count.*});
+    gltf_log.info("Loaded {d} lights from GLTF", .{out_light_count.*});
     return true;
 }
 
 pub export fn cardinal_gltf_load_scene(path: [*:0]const u8, out_scene: *scene.CardinalScene) callconv(.c) bool {
-    log.cardinal_log_info("Starting GLTF scene loading: {s}", .{path});
+    gltf_log.info("Starting GLTF scene loading: {s}", .{path});
     @memset(@as([*]u8, @ptrCast(out_scene))[0..@sizeOf(scene.CardinalScene)], 0);
 
     var options: c.cgltf_options = std.mem.zeroes(c.cgltf_options);
@@ -877,13 +877,13 @@ pub export fn cardinal_gltf_load_scene(path: [*:0]const u8, out_scene: *scene.Ca
 
     const result = c.cgltf_parse_file(&options, path, &data);
     if (result != c.cgltf_result_success) {
-        log.cardinal_log_error("cgltf_parse_file failed: {d} for {s}", .{ result, path });
+        gltf_log.err("cgltf_parse_file failed: {d} for {s}", .{ result, path });
         return false;
     }
 
     const load_result = c.cgltf_load_buffers(&options, data, path);
     if (load_result != c.cgltf_result_success) {
-        log.cardinal_log_error("cgltf_load_buffers failed: {d} for {s}", .{ load_result, path });
+        gltf_log.err("cgltf_load_buffers failed: {d} for {s}", .{ load_result, path });
         c.cgltf_free(data);
         return false;
     }
@@ -899,7 +899,7 @@ pub export fn cardinal_gltf_load_scene(path: [*:0]const u8, out_scene: *scene.Ca
         const allocator = memory.cardinal_get_allocator_for_category(.ASSETS);
         const textures_ptr = memory.cardinal_calloc(allocator, num_textures, @sizeOf(scene.CardinalTexture));
         if (textures_ptr == null) {
-            log.cardinal_log_error("Failed to allocate textures", .{});
+            gltf_log.err("Failed to allocate textures", .{});
             c.cgltf_free(data);
             return false;
         }
@@ -944,7 +944,7 @@ pub export fn cardinal_gltf_load_scene(path: [*:0]const u8, out_scene: *scene.Ca
         const allocator = memory.cardinal_get_allocator_for_category(.ASSETS);
         const materials_ptr = memory.cardinal_calloc(allocator, d.materials_count, @sizeOf(scene.CardinalMaterial));
         if (materials_ptr == null) {
-            log.cardinal_log_error("Failed to allocate materials", .{});
+            gltf_log.err("Failed to allocate materials", .{});
             // Cleanup textures
             if (textures) |texs| {
                 var i: usize = 0;
@@ -992,7 +992,7 @@ pub export fn cardinal_gltf_load_scene(path: [*:0]const u8, out_scene: *scene.Ca
                 const name_slice = std.mem.span(name);
                 
                 // Log material name and mode for debugging
-                log.cardinal_log_debug("Material '{s}': alpha_mode={any}", .{name_slice, card_mat.alpha_mode});
+                gltf_log.debug("Material '{s}': alpha_mode={any}", .{name_slice, card_mat.alpha_mode});
             }
 
             const identity = scene.CardinalTextureTransform{ .offset = .{ 0, 0 }, .scale = .{ 1, 1 }, .rotation = 0 };
@@ -1103,7 +1103,7 @@ pub export fn cardinal_gltf_load_scene(path: [*:0]const u8, out_scene: *scene.Ca
     const allocator = memory.cardinal_get_allocator_for_category(.ASSETS);
     const meshes_ptr = memory.cardinal_calloc(allocator, mesh_count, @sizeOf(scene.CardinalMesh));
     if (meshes_ptr == null) {
-        log.cardinal_log_error("Failed to allocate meshes", .{});
+        gltf_log.err("Failed to allocate meshes", .{});
         c.cgltf_free(data);
         return false;
     }
@@ -1120,7 +1120,7 @@ pub export fn cardinal_gltf_load_scene(path: [*:0]const u8, out_scene: *scene.Ca
 
             // Check for Draco compression
             if (p.has_draco_mesh_compression != 0) {
-                log.cardinal_log_warn("Draco compression detected for primitive {d}. Draco is not yet supported; mesh may be incomplete.", .{pi});
+                gltf_log.warn("Draco compression detected for primitive {d}. Draco is not yet supported; mesh may be incomplete.", .{pi});
             }
 
             // Attributes
@@ -1158,7 +1158,7 @@ pub export fn cardinal_gltf_load_scene(path: [*:0]const u8, out_scene: *scene.Ca
                 var v: [3]f32 = .{ 0, 0, 0 };
                 // Check return value for robust sparse accessor handling
                 if (c.cgltf_accessor_read_float(pos_acc, vi, &v[0], 3) == 0) {
-                    log.cardinal_log_warn("Failed to read position for vertex {d}", .{vi});
+                    gltf_log.warn("Failed to read position for vertex {d}", .{vi});
                 }
                 vertices[vi].px = v[0];
                 vertices[vi].py = v[1];
@@ -1224,7 +1224,7 @@ pub export fn cardinal_gltf_load_scene(path: [*:0]const u8, out_scene: *scene.Ca
                             const count = ta.data.*.count;
 
                             if (count != vcount) {
-                                log.cardinal_log_warn("Morph target attribute count mismatch: {d} vs {d}", .{count, vcount});
+                                gltf_log.warn("Morph target attribute count mismatch: {d} vs {d}", .{count, vcount});
                                 continue;
                             }
 
@@ -1247,7 +1247,7 @@ pub export fn cardinal_gltf_load_scene(path: [*:0]const u8, out_scene: *scene.Ca
                             }
                         }
                     }
-                    log.cardinal_log_info("Loaded {d} morph targets for primitive", .{morph_target_count});
+                    gltf_log.info("Loaded {d} morph targets for primitive", .{morph_target_count});
                 }
             }
 
@@ -1297,10 +1297,10 @@ pub export fn cardinal_gltf_load_scene(path: [*:0]const u8, out_scene: *scene.Ca
                     
                     if (has_uv1 or tex_coord > 0) {
                         const mat_name = if (mat_def.name) |n| std.mem.span(n) else "unnamed";
-                        log.cardinal_log_info("Primitive {d}: Material {d} ({s}), Has UV1: {any}, BaseColor TexCoord: {d}", .{pi, mat_idx, mat_name, has_uv1, tex_coord});
+                        gltf_log.info("Primitive {d}: Material {d} ({s}), Has UV1: {any}, BaseColor TexCoord: {d}", .{pi, mat_idx, mat_name, has_uv1, tex_coord});
                     } else {
                         const mat_name = if (mat_def.name) |n| std.mem.span(n) else "unnamed";
-                        log.cardinal_log_info("Primitive {d}: Material {d} ({s})", .{pi, mat_idx, mat_name});
+                        gltf_log.info("Primitive {d}: Material {d} ({s})", .{pi, mat_idx, mat_name});
                     }
                 } else {
                     dst.material_index = std.math.maxInt(u32);
@@ -1389,7 +1389,7 @@ pub export fn cardinal_gltf_load_scene(path: [*:0]const u8, out_scene: *scene.Ca
     var skins: ?[*]animation.CardinalSkin = null;
     var skin_count: u32 = 0;
     if (!load_skins_from_gltf(d, &skins, &skin_count)) {
-        log.cardinal_log_error("Failed to load skins", .{});
+        gltf_log.err("Failed to load skins", .{});
     }
     // Cast to opaque pointer for scene storage
     out_scene.skins = @ptrCast(skins);
@@ -1434,7 +1434,7 @@ pub export fn cardinal_gltf_load_scene(path: [*:0]const u8, out_scene: *scene.Ca
     // Load Animations
     if (out_scene.animation_system) |sys| {
         if (!load_animations_from_gltf(d, @ptrCast(@alignCast(sys)))) {
-            log.cardinal_log_error("Failed to load animations", .{});
+            gltf_log.err("Failed to load animations", .{});
         }
     }
 
@@ -1459,7 +1459,7 @@ pub export fn cardinal_gltf_load_scene(path: [*:0]const u8, out_scene: *scene.Ca
     var lights: ?[*]scene.CardinalLight = null;
     var light_count: u32 = 0;
     if (!load_lights_from_gltf(d, &lights, &light_count)) {
-        log.cardinal_log_error("Failed to load lights", .{});
+        gltf_log.err("Failed to load lights", .{});
     }
     out_scene.lights = lights;
     out_scene.light_count = light_count;
