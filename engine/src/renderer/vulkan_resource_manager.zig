@@ -111,7 +111,7 @@ pub export fn vulkan_resource_manager_destroy_pipelines(manager: ?*VulkanResourc
     if (s.pipelines.pbr_pipeline.initialized) {
         log.cardinal_log_debug("[RESOURCE_MANAGER] Destroying PBR pipeline resources", .{});
         vulkan_resource_manager_destroy_textures(manager, &s.pipelines.pbr_pipeline);
-        
+
         // Destroy PBR buffers
         const pbr = &s.pipelines.pbr_pipeline;
         if (pbr.uniformBuffer != null) {
@@ -135,22 +135,21 @@ pub export fn vulkan_resource_manager_destroy_pipelines(manager: ?*VulkanResourc
             pbr.indexBuffer = null;
         }
         if (pbr.shadowUBO != null) {
-             vulkan_resource_manager_destroy_buffer(manager, pbr.shadowUBO, pbr.shadowUBOAllocation);
-             pbr.shadowUBO = null;
+            vulkan_resource_manager_destroy_buffer(manager, pbr.shadowUBO, pbr.shadowUBOAllocation);
+            pbr.shadowUBO = null;
         }
-        
+
         // Descriptor manager should also be destroyed if it exists
         if (pbr.descriptorManager) |dm| {
-             // We need a function to destroy descriptor manager or just free it if it was allocated via cardinal_alloc
-             // create_pbr_descriptor_manager allocated it.
-             vk_descriptor_manager.vk_descriptor_manager_destroy(dm);
-             const allocator = memory.cardinal_get_allocator_for_category(.RENDERER);
-             memory.cardinal_free(allocator, dm);
-             pbr.descriptorManager = null;
+            // We need a function to destroy descriptor manager or just free it if it was allocated via cardinal_alloc
+            // create_pbr_descriptor_manager allocated it.
+            vk_descriptor_manager.vk_descriptor_manager_destroy(dm);
+            const allocator = memory.cardinal_get_allocator_for_category(.RENDERER);
+            memory.cardinal_free(allocator, dm);
+            pbr.descriptorManager = null;
         }
     }
 
-    // TODO: Update vk_simple_pipelines to accept types.VulkanState or cast
     vk_simple_pipelines.vk_destroy_simple_pipelines(s);
 
     _ = vulkan_resource_manager_wait_idle(mgr);

@@ -136,28 +136,25 @@ fn create_simple_pipeline_from_json(s: *types.VulkanState, json_path: []const u8
     return true;
 }
 
-pub export fn vk_create_simple_pipelines(s: ?*types.VulkanState, pipelineCache: c.VkPipelineCache) callconv(.c) bool {
-    if (s == null) return false;
-    const vs = s.?;
-
+pub fn vk_create_simple_pipelines(s: *types.VulkanState, pipelineCache: c.VkPipelineCache) bool {
     // Create shared uniform buffer
-    if (!create_simple_uniform_buffer(vs)) {
+    if (!create_simple_uniform_buffer(s)) {
         return false;
     }
 
     // Create shared descriptor layout and update descriptors
-    if (!create_simple_descriptor_resources(vs)) {
+    if (!create_simple_descriptor_resources(s)) {
         return false;
     }
 
     // Create UV pipeline
-    if (!create_simple_pipeline_from_json(vs, "assets/pipelines/debug_uv.json", &vs.pipelines.uv_pipeline, &vs.pipelines.uv_pipeline_layout, pipelineCache)) {
+    if (!create_simple_pipeline_from_json(s, "assets/pipelines/debug_uv.json", &s.pipelines.uv_pipeline, &s.pipelines.uv_pipeline_layout, pipelineCache)) {
         log.cardinal_log_error("Failed to create UV pipeline", .{});
         return false;
     }
 
     // Create wireframe pipeline
-    if (!create_simple_pipeline_from_json(vs, "assets/pipelines/debug_wireframe.json", &vs.pipelines.wireframe_pipeline, &vs.pipelines.wireframe_pipeline_layout, pipelineCache)) {
+    if (!create_simple_pipeline_from_json(s, "assets/pipelines/debug_wireframe.json", &s.pipelines.wireframe_pipeline, &s.pipelines.wireframe_pipeline_layout, pipelineCache)) {
         log.cardinal_log_error("Failed to create wireframe pipeline", .{});
         return false;
     }
@@ -166,71 +163,65 @@ pub export fn vk_create_simple_pipelines(s: ?*types.VulkanState, pipelineCache: 
     return true;
 }
 
-pub export fn vk_destroy_simple_pipelines(s: ?*types.VulkanState) callconv(.c) void {
-    if (s == null) return;
-    const vs = s.?;
-
-    if (vs.pipelines.simple_uniform_buffer_mapped != null) {
-        vk_allocator.vk_allocator_unmap_memory(&vs.allocator, vs.pipelines.simple_uniform_buffer_allocation);
-        vs.pipelines.simple_uniform_buffer_mapped = null;
+pub fn vk_destroy_simple_pipelines(s: *types.VulkanState) void {
+    if (s.pipelines.simple_uniform_buffer_mapped != null) {
+        vk_allocator.vk_allocator_unmap_memory(&s.allocator, s.pipelines.simple_uniform_buffer_allocation);
+        s.pipelines.simple_uniform_buffer_mapped = null;
     }
 
-    if (vs.pipelines.simple_uniform_buffer != null or vs.pipelines.simple_uniform_buffer_memory != null) {
-        vk_allocator.vk_allocator_free_buffer(&vs.allocator, vs.pipelines.simple_uniform_buffer, vs.pipelines.simple_uniform_buffer_allocation);
-        vs.pipelines.simple_uniform_buffer = null;
-        vs.pipelines.simple_uniform_buffer_memory = null;
+    if (s.pipelines.simple_uniform_buffer != null or s.pipelines.simple_uniform_buffer_memory != null) {
+        vk_allocator.vk_allocator_free_buffer(&s.allocator, s.pipelines.simple_uniform_buffer, s.pipelines.simple_uniform_buffer_allocation);
+        s.pipelines.simple_uniform_buffer = null;
+        s.pipelines.simple_uniform_buffer_memory = null;
     }
 
-    if (vs.pipelines.simple_descriptor_manager != null) {
+    if (s.pipelines.simple_descriptor_manager != null) {
         const memory = @import("../core/memory.zig");
         const mem_alloc = memory.cardinal_get_allocator_for_category(.RENDERER);
-        descriptor_mgr.vk_descriptor_manager_destroy(@ptrCast(vs.pipelines.simple_descriptor_manager));
-        memory.cardinal_free(mem_alloc, vs.pipelines.simple_descriptor_manager);
-        vs.pipelines.simple_descriptor_manager = null;
+        descriptor_mgr.vk_descriptor_manager_destroy(@ptrCast(s.pipelines.simple_descriptor_manager));
+        memory.cardinal_free(mem_alloc, s.pipelines.simple_descriptor_manager);
+        s.pipelines.simple_descriptor_manager = null;
     }
 
-    if (vs.pipelines.uv_pipeline != null) {
-        c.vkDestroyPipeline(vs.context.device, vs.pipelines.uv_pipeline, null);
-        vs.pipelines.uv_pipeline = null;
+    if (s.pipelines.uv_pipeline != null) {
+        c.vkDestroyPipeline(s.context.device, s.pipelines.uv_pipeline, null);
+        s.pipelines.uv_pipeline = null;
     }
 
-    if (vs.pipelines.uv_pipeline_layout != null) {
-        c.vkDestroyPipelineLayout(vs.context.device, vs.pipelines.uv_pipeline_layout, null);
-        vs.pipelines.uv_pipeline_layout = null;
+    if (s.pipelines.uv_pipeline_layout != null) {
+        c.vkDestroyPipelineLayout(s.context.device, s.pipelines.uv_pipeline_layout, null);
+        s.pipelines.uv_pipeline_layout = null;
     }
 
-    if (vs.pipelines.wireframe_pipeline != null) {
-        c.vkDestroyPipeline(vs.context.device, vs.pipelines.wireframe_pipeline, null);
-        vs.pipelines.wireframe_pipeline = null;
+    if (s.pipelines.wireframe_pipeline != null) {
+        c.vkDestroyPipeline(s.context.device, s.pipelines.wireframe_pipeline, null);
+        s.pipelines.wireframe_pipeline = null;
     }
 
-    if (vs.pipelines.wireframe_pipeline_layout != null) {
-        c.vkDestroyPipelineLayout(vs.context.device, vs.pipelines.wireframe_pipeline_layout, null);
-        vs.pipelines.wireframe_pipeline_layout = null;
+    if (s.pipelines.wireframe_pipeline_layout != null) {
+        c.vkDestroyPipelineLayout(s.context.device, s.pipelines.wireframe_pipeline_layout, null);
+        s.pipelines.wireframe_pipeline_layout = null;
     }
 }
 
-pub export fn vk_update_simple_uniforms(s: ?*types.VulkanState, model: ?*const f32, view: ?*const f32, proj: ?*const f32) callconv(.c) void {
-    if (s == null or s.?.pipelines.simple_uniform_buffer_mapped == null or model == null or view == null or proj == null) return;
-    const vs = s.?;
+pub fn update_simple_uniforms(s: *types.VulkanState, model: *const [16]f32, view: *const [16]f32, proj: *const [16]f32) void {
+    if (s.pipelines.simple_uniform_buffer_mapped == null) return;
 
     var ubo: SimpleUniformBufferObject = undefined;
-    @memcpy(ubo.model[0..16], @as([*]const f32, @ptrCast(model))[0..16]);
-    @memcpy(ubo.view[0..16], @as([*]const f32, @ptrCast(view))[0..16]);
-    @memcpy(ubo.proj[0..16], @as([*]const f32, @ptrCast(proj))[0..16]);
+    @memcpy(&ubo.model, model);
+    @memcpy(&ubo.view, view);
+    @memcpy(&ubo.proj, proj);
 
-    @memcpy(@as([*]u8, @ptrCast(vs.pipelines.simple_uniform_buffer_mapped))[0..@sizeOf(SimpleUniformBufferObject)], @as([*]const u8, @ptrCast(&ubo))[0..@sizeOf(SimpleUniformBufferObject)]);
+    @memcpy(@as([*]u8, @ptrCast(s.pipelines.simple_uniform_buffer_mapped))[0..@sizeOf(SimpleUniformBufferObject)], @as([*]const u8, @ptrCast(&ubo))[0..@sizeOf(SimpleUniformBufferObject)]);
 }
 
-pub export fn vk_render_simple(s: ?*types.VulkanState, commandBufferHandle: c.VkCommandBuffer, pipeline: c.VkPipeline, pipelineLayout: c.VkPipelineLayout) callconv(.c) void {
-    if (s == null) return;
-    const vs = s.?;
-    if (vs.current_scene == null) return;
-    const scn = vs.current_scene.?;
+pub fn render_simple(s: *types.VulkanState, commandBufferHandle: c.VkCommandBuffer, pipeline: c.VkPipeline, pipelineLayout: c.VkPipelineLayout) void {
+    if (s.current_scene == null) return;
+    const scn = s.current_scene.?;
 
     // Use PBR buffers if available
-    if (!vs.pipelines.use_pbr_pipeline or !vs.pipelines.pbr_pipeline.initialized) return;
-    const pipe = &vs.pipelines.pbr_pipeline;
+    if (!s.pipelines.use_pbr_pipeline or !s.pipelines.pbr_pipeline.initialized) return;
+    const pipe = &s.pipelines.pbr_pipeline;
 
     if (pipe.vertexBuffer == null or pipe.indexBuffer == null) return;
 
@@ -238,9 +229,9 @@ pub export fn vk_render_simple(s: ?*types.VulkanState, commandBufferHandle: c.Vk
 
     cmd.bindPipeline(c.VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline);
     
-    var descriptorSets = [_]c.VkDescriptorSet{vs.pipelines.simple_descriptor_set};
+    var descriptorSets = [_]c.VkDescriptorSet{s.pipelines.simple_descriptor_set};
     // Use manager bind function to handle descriptor buffers transparently
-    descriptor_mgr.vk_descriptor_manager_bind_sets(vs.pipelines.simple_descriptor_manager, commandBufferHandle, pipelineLayout, 0, 1, &descriptorSets, 0, null);
+    descriptor_mgr.vk_descriptor_manager_bind_sets(s.pipelines.simple_descriptor_manager, commandBufferHandle, pipelineLayout, 0, 1, &descriptorSets, 0, null);
 
     var vertexBuffers = [_]c.VkBuffer{pipe.vertexBuffer};
     var offsets = [_]c.VkDeviceSize{0};
@@ -263,7 +254,7 @@ pub export fn vk_render_simple(s: ?*types.VulkanState, commandBufferHandle: c.Vk
             // Prepare push constants
             var pushConstants = std.mem.zeroes(types.PBRPushConstants);
             // Cast to C types for the C function call
-            material_utils.vk_material_setup_push_constants(@ptrCast(&pushConstants), @ptrCast(mesh), @ptrCast(scn), @ptrCast(vs.pipelines.pbr_pipeline.textureManager));
+            material_utils.vk_material_setup_push_constants(@ptrCast(&pushConstants), @ptrCast(mesh), @ptrCast(scn), @ptrCast(s.pipelines.pbr_pipeline.textureManager));
 
             cmd.pushConstants(pipelineLayout, c.VK_SHADER_STAGE_VERTEX_BIT | c.VK_SHADER_STAGE_FRAGMENT_BIT, 0, @sizeOf(types.PBRPushConstants), &pushConstants);
 

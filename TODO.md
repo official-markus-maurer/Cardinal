@@ -15,11 +15,11 @@ This document outlines the roadmap for the Cardinal Engine, focusing on robustne
 - [ ] **Missing Operations**: Implement `Mat4`, `Quat` (quaternions), `lerp`, `slerp`, `reflect` in `math.zig`.
 
 ### Code Cleanup & Refactoring
-- [ ] **Render Graph**:
-    - [ ] Implement a **Resource Pool** for transient resources (images/buffers) to avoid frequent allocation/deallocation (`render_graph.zig`).
-    - [ ] Fix resource update logic: properly free old resources when updating transient images.
-- [ ] **Vulkan Resource Manager**:
-    - [ ] Refactor `vk_simple_pipelines` to accept `types.VulkanState` directly instead of raw pointers/casts (`vulkan_resource_manager.zig`).
+- [x] **Render Graph**:
+    - [x] Implement a **Resource Pool** for transient resources (images/buffers) to avoid frequent allocation/deallocation (`render_graph.zig`).
+    - [x] Fix resource update logic: properly free old resources when updating transient images.
+- [x] **Vulkan Resource Manager**:
+    - [x] Refactor `vk_simple_pipelines` to accept `types.VulkanState` directly instead of raw pointers/casts (`vulkan_resource_manager.zig`).
 - [x] **Vulkan Descriptor Manager**:
     - [x] **Dynamic Pool Growth**: Currently `create_descriptor_pool` creates a single fixed-size pool. Implement chaining or dynamic creation of new pools when one fills up.
 - [x] **Memory System**:
@@ -97,8 +97,8 @@ This document outlines the roadmap for the Cardinal Engine, focusing on robustne
 - [ ] **Timeline Debug Config**: Make `VULKAN_TIMELINE_DEBUG_MAX_EVENTS` configurable or dynamic (`vulkan_timeline_types.zig`).
 
 ### Render Graph
-- [ ] **Resource Pooling**: Use a pool for allocations in `render_graph.zig`.
-- [ ] **Resource Management**: Ensure old resources are freed if allocated (`render_graph.zig`).
+- [x] **Resource Pooling**: Use a pool for allocations in `render_graph.zig`.
+- [x] **Resource Management**: Ensure old resources are freed if allocated (`render_graph.zig`).
 
 ## 4. Gameplay & Systems (New)
 

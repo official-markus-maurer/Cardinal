@@ -41,6 +41,21 @@ pub const ResourceLifecycle = enum {
     Transient,
 };
 
+const PooledImage = struct {
+    image: c.VkImage,
+    allocation: c.VmaAllocation,
+    memory: c.VkDeviceMemory,
+    image_view: ?c.VkImageView,
+    desc: ImageDesc,
+};
+
+const PooledBuffer = struct {
+    buffer: c.VkBuffer,
+    allocation: c.VmaAllocation,
+    memory: c.VkDeviceMemory,
+    desc: BufferDesc,
+};
+
 pub const RenderGraphResource = struct {
     id: ResourceId,
     lifecycle: ResourceLifecycle,
@@ -125,12 +140,18 @@ pub const RenderGraph = struct {
     // Track current state of resources during execution
     resource_states: std.AutoHashMapUnmanaged(ResourceId, ResourceState),
 
+    // Resource Pools
+    image_pool: std.ArrayListUnmanaged(PooledImage),
+    buffer_pool: std.ArrayListUnmanaged(PooledBuffer),
+
     pub fn init(allocator: std.mem.Allocator) RenderGraph {
         return .{
             .passes = .{},
             .allocator = allocator,
             .resources = .{},
             .resource_states = .{},
+            .image_pool = .{},
+            .buffer_pool = .{},
         };
     }
 
@@ -141,6 +162,8 @@ pub const RenderGraph = struct {
         self.passes.deinit(self.allocator);
         self.resources.deinit(self.allocator);
         self.resource_states.deinit(self.allocator);
+        self.image_pool.deinit(self.allocator);
+        self.buffer_pool.deinit(self.allocator);
     }
 
     pub fn register_image(self: *RenderGraph, id: ResourceId, image: c.VkImage) !void {
@@ -187,6 +210,43 @@ pub const RenderGraph = struct {
         }
     }
 
+    fn acquire_pooled_image(self: *RenderGraph, desc: ImageDesc) ?PooledImage {
+        var i: usize = 0;
+        while (i < self.image_pool.items.len) : (i += 1) {
+            const item = self.image_pool.items[i];
+            if (item.desc.format == desc.format and 
+                item.desc.width == desc.width and 
+                item.desc.height == desc.height and
+                item.desc.usage == desc.usage and
+                item.desc.aspect_mask == desc.aspect_mask) 
+            {
+                return self.image_pool.swapRemove(i);
+            }
+        }
+        return null;
+    }
+
+    fn release_image_to_pool(self: *RenderGraph, image: PooledImage) !void {
+        try self.image_pool.append(self.allocator, image);
+    }
+
+    fn acquire_pooled_buffer(self: *RenderGraph, desc: BufferDesc) ?PooledBuffer {
+        var i: usize = 0;
+        while (i < self.buffer_pool.items.len) : (i += 1) {
+            const item = self.buffer_pool.items[i];
+            if (item.desc.size == desc.size and 
+                item.desc.usage == desc.usage)
+            {
+                return self.buffer_pool.swapRemove(i);
+            }
+        }
+        return null;
+    }
+
+    fn release_buffer_to_pool(self: *RenderGraph, buffer: PooledBuffer) !void {
+        try self.buffer_pool.append(self.allocator, buffer);
+    }
+
     pub fn add_transient_image(self: *RenderGraph, id: ResourceId, desc: ImageDesc) !void {
         try self.resources.put(self.allocator, id, .{
             .id = id,
@@ -220,16 +280,30 @@ pub const RenderGraph = struct {
              
              if (match) return; // No change needed
 
-             // TODO: free old resource if allocated
+             // Release old resource to pool if allocated
              if (res.handle != null) {
                  switch (res.handle.?) {
                      .Image => |image| {
-                         if (res.image_view) |view| {
-                             c.vkDestroyImageView(state.context.device, view, null);
-                             res.image_view = null;
-                         }
-                         if (res.allocation) |allocation| {
-                             vk_allocator.vk_allocator_free_image(&state.allocator, image, allocation);
+                         if (res.desc) |d| {
+                             switch (d) {
+                                 .Image => |old_desc| {
+                                     const pooled = PooledImage{
+                                         .image = image,
+                                         .allocation = res.allocation.?,
+                                         .memory = res.memory.?,
+                                         .image_view = res.image_view,
+                                         .desc = old_desc,
+                                     };
+                                     self.release_image_to_pool(pooled) catch {
+                                         // Fallback to destroy if pool fails
+                                         if (res.image_view) |view| {
+                                             c.vkDestroyImageView(state.context.device, view, null);
+                                         }
+                                         vk_allocator.vk_allocator_free_image(&state.allocator, image, res.allocation.?);
+                                     };
+                                 },
+                                 else => {}
+                             }
                          }
                      },
                      else => {}
@@ -237,10 +311,11 @@ pub const RenderGraph = struct {
                  res.handle = null;
                  res.allocation = null;
                  res.memory = null;
+                 res.image_view = null;
              }
         }
         
-        // TODO: Update or add (overwrites desc, resets handle if we didn't already)
+        // Update or add (overwrites desc, resets handle if we didn't already)
         // If we didn't find it, this adds it. If we found it, we freed handle so it's safe to overwrite.
         try self.add_transient_image(id, desc);
     }
@@ -271,6 +346,24 @@ pub const RenderGraph = struct {
                  res.memory = null;
             }
         }
+
+        // Destroy pooled resources
+        for (self.image_pool.items) |pooled| {
+            if (pooled.image_view) |view| {
+                c.vkDestroyImageView(state.context.device, view, null);
+            }
+            if (pooled.allocation) |alloc| {
+                vk_allocator.vk_allocator_free_image(&state.allocator, pooled.image, alloc);
+            }
+        }
+        self.image_pool.clearRetainingCapacity();
+
+        for (self.buffer_pool.items) |pooled| {
+            if (pooled.allocation) |alloc| {
+                 vk_allocator.vk_allocator_free_buffer(&state.allocator, pooled.buffer, alloc);
+            }
+        }
+        self.buffer_pool.clearRetainingCapacity();
     }
 
     pub fn set_resource_state(self: *RenderGraph, id: ResourceId, state: ResourceState) !void {
@@ -468,61 +561,71 @@ pub const RenderGraph = struct {
             const res = entry.value_ptr;
             if (res.lifecycle == .Transient and res.handle == null) {
                 // Allocation logic here
-                // TODO: use a pool. 
-                // For now, we will create actual resources using the allocator
                 switch (res.desc.?) {
                     .Image => |img_desc| {
-                        var imageInfo = std.mem.zeroes(c.VkImageCreateInfo);
-                        imageInfo.sType = c.VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO;
-                        imageInfo.imageType = c.VK_IMAGE_TYPE_2D;
-                        imageInfo.extent.width = img_desc.width;
-                        imageInfo.extent.height = img_desc.height;
-                        imageInfo.extent.depth = 1;
-                        imageInfo.mipLevels = 1;
-                        imageInfo.arrayLayers = 1;
-                        imageInfo.format = img_desc.format;
-                        imageInfo.tiling = c.VK_IMAGE_TILING_OPTIMAL;
-                        imageInfo.initialLayout = c.VK_IMAGE_LAYOUT_UNDEFINED;
-                        imageInfo.usage = img_desc.usage;
-                        imageInfo.samples = c.VK_SAMPLE_COUNT_1_BIT;
-                        imageInfo.sharingMode = c.VK_SHARING_MODE_EXCLUSIVE;
-
-                        var image: c.VkImage = null;
-                        var memory: c.VkDeviceMemory = null;
-                        var allocation: c.VmaAllocation = null;
-
-                        if (vk_allocator.vk_allocator_allocate_image(&state.allocator, &imageInfo, &image, &memory, &allocation, c.VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT)) {
-                            res.handle = .{ .Image = image };
-                            res.allocation = allocation;
-                            res.memory = memory;
-                            
-                            // Create view if needed? Usually render passes need views.
-                            // The pass callback creates views or we store them here.
-                            // For transient, we probably want to create a default view.
-                            var viewInfo = std.mem.zeroes(c.VkImageViewCreateInfo);
-                            viewInfo.sType = c.VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO;
-                            viewInfo.image = image;
-                            viewInfo.viewType = c.VK_IMAGE_VIEW_TYPE_2D;
-                            viewInfo.format = img_desc.format;
-                            viewInfo.subresourceRange.aspectMask = img_desc.aspect_mask;
-                            viewInfo.subresourceRange.levelCount = 1;
-                            viewInfo.subresourceRange.layerCount = 1;
-                            
-                            var view: c.VkImageView = null;
-                            if (c.vkCreateImageView(state.context.device, &viewInfo, null, &view) == c.VK_SUCCESS) {
-                                res.image_view = view;
-                            } else {
-                                log.cardinal_log_error("RG: Failed to create image view for transient image {d}", .{res.id});
-                            }
+                        // Try to acquire from pool
+                        if (self.acquire_pooled_image(img_desc)) |pooled| {
+                            res.handle = .{ .Image = pooled.image };
+                            res.allocation = pooled.allocation;
+                            res.memory = pooled.memory;
+                            res.image_view = pooled.image_view;
                         } else {
-                            log.cardinal_log_error("RG: Failed to allocate transient image {d}", .{res.id});
+                            var imageInfo = std.mem.zeroes(c.VkImageCreateInfo);
+                            imageInfo.sType = c.VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO;
+                            imageInfo.imageType = c.VK_IMAGE_TYPE_2D;
+                            imageInfo.extent.width = img_desc.width;
+                            imageInfo.extent.height = img_desc.height;
+                            imageInfo.extent.depth = 1;
+                            imageInfo.mipLevels = 1;
+                            imageInfo.arrayLayers = 1;
+                            imageInfo.format = img_desc.format;
+                            imageInfo.tiling = c.VK_IMAGE_TILING_OPTIMAL;
+                            imageInfo.initialLayout = c.VK_IMAGE_LAYOUT_UNDEFINED;
+                            imageInfo.usage = img_desc.usage;
+                            imageInfo.samples = c.VK_SAMPLE_COUNT_1_BIT;
+                            imageInfo.sharingMode = c.VK_SHARING_MODE_EXCLUSIVE;
+
+                            var image: c.VkImage = null;
+                            var memory: c.VkDeviceMemory = null;
+                            var allocation: c.VmaAllocation = null;
+
+                            if (vk_allocator.vk_allocator_allocate_image(&state.allocator, &imageInfo, &image, &memory, &allocation, c.VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT)) {
+                                res.handle = .{ .Image = image };
+                                res.allocation = allocation;
+                                res.memory = memory;
+                                
+                                // Create view if needed
+                                var viewInfo = std.mem.zeroes(c.VkImageViewCreateInfo);
+                                viewInfo.sType = c.VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO;
+                                viewInfo.image = image;
+                                viewInfo.viewType = c.VK_IMAGE_VIEW_TYPE_2D;
+                                viewInfo.format = img_desc.format;
+                                viewInfo.subresourceRange.aspectMask = img_desc.aspect_mask;
+                                viewInfo.subresourceRange.levelCount = 1;
+                                viewInfo.subresourceRange.layerCount = 1;
+                                
+                                var view: c.VkImageView = null;
+                                if (c.vkCreateImageView(state.context.device, &viewInfo, null, &view) == c.VK_SUCCESS) {
+                                    res.image_view = view;
+                                } else {
+                                    log.cardinal_log_error("RG: Failed to create image view for transient image {d}", .{res.id});
+                                }
+                            } else {
+                                log.cardinal_log_error("RG: Failed to allocate transient image {d}", .{res.id});
+                            }
                         }
                     },
                     .Buffer => |buf_desc| {
-                         // Similar logic for buffers
-                         _ = buf_desc;
-                    }
-                }
+                         if (self.acquire_pooled_buffer(buf_desc)) |pooled| {
+                             res.handle = .{ .Buffer = pooled.buffer };
+                             res.allocation = pooled.allocation;
+                             res.memory = pooled.memory;
+                         } else {
+                              // Buffer allocation (implement if needed, for now placeholder as before)
+                              // TODO: Implement actual buffer allocation
+                          }
+                     }
+                 }
             }
         }
 

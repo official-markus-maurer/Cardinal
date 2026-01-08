@@ -591,6 +591,7 @@ pub export fn vk_recreate_swapchain(s: ?*types.VulkanState) callconv(.c) bool {
 
     vs.swapchain.depth_layout_initialized = false;
 
+    vk_simple_pipelines.vk_destroy_simple_pipelines(vs);
     if (!vk_simple_pipelines.vk_create_simple_pipelines(vs, null)) {
         return handle_recreation_failure(vs, &backup);
     }

@@ -91,7 +91,7 @@ fn allocate_command_buffers(s: *types.VulkanState) bool {
     // Scene secondary buffers (real secondary level)
     // DISABLED: Causing validation errors with dynamic rendering. Forcing inline path.
     // s.commands.scene_secondary_buffers = null;
-    
+
     return true;
 }
 
@@ -406,7 +406,7 @@ fn vk_update_frame_uniforms(s: *types.VulkanState) void {
 
         // Update simple uniforms using PBR data if in UV/Wireframe mode
         if (s.current_rendering_mode == .UV or s.current_rendering_mode == .WIREFRAME) {
-             vk_simple_pipelines.vk_update_simple_uniforms(s, @ptrCast(&ubo.model), @ptrCast(&ubo.view), @ptrCast(&ubo.proj));
+            vk_simple_pipelines.update_simple_uniforms(s, &ubo.model, &ubo.view, &ubo.proj);
         }
     }
 }
@@ -420,12 +420,12 @@ pub fn vk_record_scene_content(s: *types.VulkanState, cmd: c.VkCommandBuffer) vo
         },
         types.CardinalRenderingMode.UV => {
             if (s.pipelines.uv_pipeline != null and s.pipelines.use_pbr_pipeline and s.pipelines.pbr_pipeline.initialized) {
-                vk_simple_pipelines.vk_render_simple(s, cmd, s.pipelines.uv_pipeline, s.pipelines.uv_pipeline_layout);
+                vk_simple_pipelines.render_simple(s, cmd, s.pipelines.uv_pipeline, s.pipelines.uv_pipeline_layout);
             }
         },
         types.CardinalRenderingMode.WIREFRAME => {
             if (s.pipelines.wireframe_pipeline != null and s.pipelines.use_pbr_pipeline and s.pipelines.pbr_pipeline.initialized) {
-                vk_simple_pipelines.vk_render_simple(s, cmd, s.pipelines.wireframe_pipeline, s.pipelines.wireframe_pipeline_layout);
+                vk_simple_pipelines.render_simple(s, cmd, s.pipelines.wireframe_pipeline, s.pipelines.wireframe_pipeline_layout);
             }
         },
         types.CardinalRenderingMode.DEBUG => {
@@ -438,8 +438,6 @@ pub fn vk_record_scene_content(s: *types.VulkanState, cmd: c.VkCommandBuffer) vo
 }
 
 fn vk_record_scene_with_secondary_buffers(s: *types.VulkanState, primary_cmd: c.VkCommandBuffer, image_index: u32, use_depth: bool, clears: [*]c.VkClearValue) void {
-    // Legacy secondary buffer path removed.
-    // We now use RenderGraph's inline dynamic rendering path exclusively.
     _ = s;
     _ = primary_cmd;
     _ = image_index;
@@ -653,14 +651,14 @@ pub export fn vk_record_cmd(s: ?*types.VulkanState, image_index: u32) callconv(.
     // Use RenderGraph if available
     if (vs.render_graph) |rg_ptr| {
         const rg = @as(*render_graph.RenderGraph, @ptrCast(@alignCast(rg_ptr)));
-        
+
         // Register/Update resources
         rg.register_image(types.RESOURCE_ID_BACKBUFFER, vs.swapchain.images.?[image_index]) catch {};
         if (use_depth) {
-             // Register the swapchain depth image directly.
-             // This ensures we share the same depth buffer between RenderGraph passes and manual passes (like Skybox),
-             // preventing layout mismatches and validation errors.
-             rg.register_image(types.RESOURCE_ID_DEPTHBUFFER, vs.swapchain.depth_image) catch {};
+            // Register the swapchain depth image directly.
+            // This ensures we share the same depth buffer between RenderGraph passes and manual passes (like Skybox),
+            // preventing layout mismatches and validation errors.
+            rg.register_image(types.RESOURCE_ID_DEPTHBUFFER, vs.swapchain.depth_image) catch {};
         }
 
         // Update Initial States
@@ -686,7 +684,6 @@ pub export fn vk_record_cmd(s: ?*types.VulkanState, image_index: u32) callconv(.
 
         // Execute Graph (This inserts barriers and calls pass callback)
         rg.execute(cmd, vs);
-
     } else {
         log.cardinal_log_error("[CMD] RenderGraph is null! Cannot record scene.", .{});
     }
@@ -695,7 +692,7 @@ pub export fn vk_record_cmd(s: ?*types.VulkanState, image_index: u32) callconv(.
     if (vs.pipelines.use_skybox_pipeline and vs.pipelines.skybox_pipeline.initialized and vs.pipelines.skybox_pipeline.texture.is_allocated) {
         if (vs.pipelines.use_pbr_pipeline and vs.pipelines.pbr_pipeline.uniformBufferMapped != null) {
             const ubo = @as(*types.PBRUniformBufferObject, @ptrCast(@alignCast(vs.pipelines.pbr_pipeline.uniformBufferMapped)));
-            
+
             if (begin_dynamic_rendering(vs, cmd, image_index, use_depth, null, &clears, false, 0)) {
                 var view: math.Mat4 = undefined;
                 var proj: math.Mat4 = undefined;
@@ -741,15 +738,15 @@ pub export fn vk_prepare_mesh_shader_rendering(s: ?*types.VulkanState) callconv(
         texture_count = vs.pipelines.pbr_pipeline.textureManager.?.textureCount;
 
         if (vs.frame_allocator) |fa_ptr| {
-             const fa = @as(*stack_allocator.StackAllocator, @ptrCast(@alignCast(fa_ptr)));
-             // Allocate from stack (no need to free)
-             // We use the generic allocator interface or direct calls. Direct calls are better for slices.
-             // We need aligned allocation for types.
-             const views_slice = fa.allocator().alloc(c.VkImageView, texture_count) catch return;
-             const samplers_slice = fa.allocator().alloc(c.VkSampler, texture_count) catch return;
-             
-             texture_views = views_slice.ptr;
-             samplers = samplers_slice.ptr;
+            const fa = @as(*stack_allocator.StackAllocator, @ptrCast(@alignCast(fa_ptr)));
+            // Allocate from stack (no need to free)
+            // We use the generic allocator interface or direct calls. Direct calls are better for slices.
+            // We need aligned allocation for types.
+            const views_slice = fa.allocator().alloc(c.VkImageView, texture_count) catch return;
+            const samplers_slice = fa.allocator().alloc(c.VkSampler, texture_count) catch return;
+
+            texture_views = views_slice.ptr;
+            samplers = samplers_slice.ptr;
         } else {
             const mem_alloc = memory.cardinal_get_allocator_for_category(.RENDERER);
             const views_ptr = memory.cardinal_alloc(mem_alloc, @sizeOf(c.VkImageView) * texture_count);
@@ -767,15 +764,15 @@ pub export fn vk_prepare_mesh_shader_rendering(s: ?*types.VulkanState) callconv(
                 samplers.?[i] = if (texSampler != null) texSampler else vs.pipelines.pbr_pipeline.textureManager.?.defaultSampler;
             }
         } else {
-             // Cleanup if allocation failed (only for heap)
-             if (vs.frame_allocator == null) {
+            // Cleanup if allocation failed (only for heap)
+            if (vs.frame_allocator == null) {
                 const mem_alloc = memory.cardinal_get_allocator_for_category(.RENDERER);
                 if (texture_views) |p| memory.cardinal_free(mem_alloc, @as(?*anyopaque, @ptrCast(p)));
                 if (samplers) |p| memory.cardinal_free(mem_alloc, @as(?*anyopaque, @ptrCast(p)));
-             }
-             texture_views = null;
-             samplers = null;
-             texture_count = 0;
+            }
+            texture_views = null;
+            samplers = null;
+            texture_count = 0;
         }
     }
 

@@ -296,7 +296,7 @@ fn init_simple_pipelines_helper(s: *types.VulkanState) void {
     s.pipelines.simple_uniform_buffer_memory = null;
     s.pipelines.simple_uniform_buffer_mapped = null;
 
-    if (!vk_simple_pipelines.vk_create_simple_pipelines(@ptrCast(s), null)) {
+    if (!vk_simple_pipelines.vk_create_simple_pipelines(s, null)) {
         log.cardinal_log_error("vk_create_simple_pipelines failed", .{});
     } else {
         log.cardinal_log_info("renderer_create: simple pipelines", .{});
@@ -689,7 +689,7 @@ pub export fn cardinal_renderer_destroy(renderer: ?*types.CardinalRenderer) call
 
     // Destroy simple pipelines
     log.cardinal_log_debug("[DESTROY] Destroying simple pipelines", .{});
-    vk_simple_pipelines.vk_destroy_simple_pipelines(@ptrCast(s));
+    vk_simple_pipelines.vk_destroy_simple_pipelines(s);
 
     // Wait for all GPU operations to complete before destroying PBR pipeline
     if (s.context.device != null) {
