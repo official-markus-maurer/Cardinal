@@ -230,59 +230,67 @@ pub const Mat4 = extern struct {
         return m;
     }
 
-    // result[i, j] = row(i) . col(j)
+    // Column-Major Matrix Multiplication
+    // result = self * other
     pub fn mul(self: Mat4, other: Mat4) Mat4 {
         var result = Mat4{ .data = undefined };
         
-        const b0: @Vector(4, f32) = other.data[0..4].*;
-        const b1: @Vector(4, f32) = other.data[4..8].*;
-        const b2: @Vector(4, f32) = other.data[8..12].*;
-        const b3: @Vector(4, f32) = other.data[12..16].*;
+        // Columns of self (A)
+        const a0: @Vector(4, f32) = self.data[0..4].*;
+        const a1: @Vector(4, f32) = self.data[4..8].*;
+        const a2: @Vector(4, f32) = self.data[8..12].*;
+        const a3: @Vector(4, f32) = self.data[12..16].*;
 
         comptime var i: usize = 0;
         inline while (i < 4) : (i += 1) {
-            const a_row_offset = i * 4;
-            const a0 = @as(@Vector(4, f32), @splat(self.data[a_row_offset + 0]));
-            const a1 = @as(@Vector(4, f32), @splat(self.data[a_row_offset + 1]));
-            const a2 = @as(@Vector(4, f32), @splat(self.data[a_row_offset + 2]));
-            const a3 = @as(@Vector(4, f32), @splat(self.data[a_row_offset + 3]));
-
-            const res_row = a0 * b0 + a1 * b1 + a2 * b2 + a3 * b3;
+            // Computing Column i of Result
+            // Res_col_i = A * Col_i(B)
+            // Res_col_i = B_0i * A_col0 + B_1i * A_col1 + B_2i * A_col2 + B_3i * A_col3
             
-            result.data[a_row_offset..][0..4].* = res_row;
+            const b_col_offset = i * 4;
+            const b_col = other.data[b_col_offset..];
+            
+            const b0 = @as(@Vector(4, f32), @splat(b_col[0]));
+            const b1 = @as(@Vector(4, f32), @splat(b_col[1]));
+            const b2 = @as(@Vector(4, f32), @splat(b_col[2]));
+            const b3 = @as(@Vector(4, f32), @splat(b_col[3]));
+            
+            const res_col = a0 * b0 + a1 * b1 + a2 * b2 + a3 * b3;
+            
+            result.data[b_col_offset..][0..4].* = res_col;
         }
         
         return result;
     }
 
     pub fn transformPoint(self: Mat4, p: Vec3) Vec3 {
-        // v' = v * M (Pre-multiplication)
+        // v' = M * v (Column-Major)
         const x_splat = @as(@Vector(4, f32), @splat(p.x));
         const y_splat = @as(@Vector(4, f32), @splat(p.y));
         const z_splat = @as(@Vector(4, f32), @splat(p.z));
         const w_splat = @as(@Vector(4, f32), @splat(1.0));
         
-        const row0: @Vector(4, f32) = self.data[0..4].*;
-        const row1: @Vector(4, f32) = self.data[4..8].*;
-        const row2: @Vector(4, f32) = self.data[8..12].*;
-        const row3: @Vector(4, f32) = self.data[12..16].*;
+        const col0: @Vector(4, f32) = self.data[0..4].*;
+        const col1: @Vector(4, f32) = self.data[4..8].*;
+        const col2: @Vector(4, f32) = self.data[8..12].*;
+        const col3: @Vector(4, f32) = self.data[12..16].*;
         
-        const res = x_splat * row0 + y_splat * row1 + z_splat * row2 + w_splat * row3;
+        const res = x_splat * col0 + y_splat * col1 + z_splat * col2 + w_splat * col3;
         
         return .{ .x = res[0], .y = res[1], .z = res[2] };
     }
 
     pub fn transformVector(self: Mat4, v: Vec3) Vec3 {
-        // v' = v * M with w=0 (Direction vector)
+        // v' = M * v with w=0 (Direction vector)
         const x_splat = @as(@Vector(4, f32), @splat(v.x));
         const y_splat = @as(@Vector(4, f32), @splat(v.y));
         const z_splat = @as(@Vector(4, f32), @splat(v.z));
         
-        const row0: @Vector(4, f32) = self.data[0..4].*;
-        const row1: @Vector(4, f32) = self.data[4..8].*;
-        const row2: @Vector(4, f32) = self.data[8..12].*;
+        const col0: @Vector(4, f32) = self.data[0..4].*;
+        const col1: @Vector(4, f32) = self.data[4..8].*;
+        const col2: @Vector(4, f32) = self.data[8..12].*;
         
-        const res = x_splat * row0 + y_splat * row1 + z_splat * row2;
+        const res = x_splat * col0 + y_splat * col1 + z_splat * col2;
         
         return .{ .x = res[0], .y = res[1], .z = res[2] };
     }
@@ -322,26 +330,26 @@ pub const Mat4 = extern struct {
         const r21 = yz - wx;
         const r22 = 1.0 - (xx + yy);
 
-        // Apply Scale and Rotation (Row Major S * R)
-        // Row 0 = Scale.x * Rotation.Row0
+        // Apply Scale and Rotation (Column Major R * S)
+        // Col 0 = Scale.x * Rotation.Col0
         m.data[0] = s.x * r00;
         m.data[1] = s.x * r01;
         m.data[2] = s.x * r02;
         m.data[3] = 0.0;
 
-        // Row 1 = Scale.y * Rotation.Row1
+        // Col 1 = Scale.y * Rotation.Col1
         m.data[4] = s.y * r10;
         m.data[5] = s.y * r11;
         m.data[6] = s.y * r12;
         m.data[7] = 0.0;
 
-        // Row 2 = Scale.z * Rotation.Row2
+        // Col 2 = Scale.z * Rotation.Col2
         m.data[8] = s.z * r20;
         m.data[9] = s.z * r21;
         m.data[10] = s.z * r22;
         m.data[11] = 0.0;
 
-        // Row 3 = Translation
+        // Col 3 = Translation
         m.data[12] = t.x;
         m.data[13] = t.y;
         m.data[14] = t.z;

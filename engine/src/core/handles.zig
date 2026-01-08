@@ -32,3 +32,14 @@ pub const MaterialHandle = extern struct {
         return self.index != std.math.maxInt(u32);
     }
 };
+
+pub const AsyncHandle = extern struct {
+    index: u32,
+    generation: u32,
+
+    pub const INVALID = AsyncHandle{ .index = std.math.maxInt(u32), .generation = 0 };
+
+    pub fn is_valid(self: AsyncHandle) bool {
+        return self.index != std.math.maxInt(u32);
+    }
+};

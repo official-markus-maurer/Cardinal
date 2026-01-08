@@ -214,7 +214,8 @@ pub fn vk_shadow_render(s: *types.VulkanState, cmd: c.VkCommandBuffer) void {
 
         const lightProjFinal = mat4_ortho(minX, maxX, minY, maxY, maxZ_ortho, minZ_ortho);
 
-        lightSpaceMatrices[j] = lightView.mul(lightProjFinal);
+        // Standard Column-Major: P * V (Apply View then Proj)
+        lightSpaceMatrices[j] = lightProjFinal.mul(lightView);
 
         lastSplitDist = d;
     }

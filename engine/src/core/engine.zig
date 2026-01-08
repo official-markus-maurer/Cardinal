@@ -1,4 +1,5 @@
 const std = @import("std");
+const config_pkg = @import("config.zig");
 const log = @import("log.zig");
 const memory = @import("memory.zig");
 const ref_counting = @import("ref_counting.zig");
@@ -14,17 +15,7 @@ const mesh_loader = @import("../assets/mesh_loader.zig");
 const vulkan_renderer = @import("../renderer/vulkan_renderer.zig");
 const vulkan_types = @import("../renderer/vulkan_types.zig");
 
-pub const CardinalEngineConfig = struct {
-    window_title: [*:0]const u8 = "Cardinal Engine",
-    window_width: u32 = 1600,
-    window_height: u32 = 900,
-    window_resizable: bool = true,
-    memory_size: usize = 4 * 1024 * 1024,
-    ref_counting_buckets: u32 = 1009,
-    async_worker_threads: u32 = 2,
-    async_queue_size: u32 = 100,
-    cache_size: u32 = 1000,
-};
+pub const CardinalEngineConfig = config_pkg.CardinalEngineConfig;
 
 pub const CardinalEngine = struct {
     allocator: std.mem.Allocator,
@@ -32,6 +23,7 @@ pub const CardinalEngine = struct {
     window: ?*window.CardinalWindow,
     renderer: vulkan_types.CardinalRenderer,
     config: CardinalEngineConfig,
+    config_manager: config_pkg.ConfigManager,
 
     frame_allocator: stack_allocator.StackAllocator = undefined,
     frame_memory: []u8 = undefined,
@@ -47,10 +39,17 @@ pub const CardinalEngine = struct {
 
     pub fn create(allocator: std.mem.Allocator, config: CardinalEngineConfig) !*CardinalEngine {
         const self = try allocator.create(CardinalEngine);
+
+        var config_manager = config_pkg.ConfigManager.init(allocator, "cardinal_config.json", config);
+        config_manager.load() catch |err| {
+            log.cardinal_log_warn("Failed to load config file: {}", .{err});
+        };
+
         self.* = CardinalEngine{
             .allocator = allocator,
             .module_manager = module.ModuleManager.init(allocator),
-            .config = config,
+            .config_manager = config_manager,
+            .config = config_manager.config,
             .window = null,
             .renderer = .{ ._opaque = null },
         };
@@ -109,6 +108,8 @@ pub const CardinalEngine = struct {
         if (self.frame_memory.len > 0) {
             self.allocator.free(self.frame_memory);
         }
+
+        self.config_manager.deinit();
     }
 
     pub fn update(self: *CardinalEngine) !void {
@@ -196,8 +197,11 @@ pub const CardinalEngine = struct {
     }
 
     fn initWindowAndRenderer(self: *CardinalEngine) !void {
+        const title_z = try self.allocator.dupeZ(u8, self.config.window_title);
+        defer self.allocator.free(title_z);
+
         const config = window.CardinalWindowConfig{
-            .title = self.config.window_title,
+            .title = title_z,
             .width = self.config.window_width,
             .height = self.config.window_height,
             .resizable = self.config.window_resizable,

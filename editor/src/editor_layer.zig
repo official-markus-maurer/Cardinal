@@ -286,7 +286,7 @@ pub fn init(win_ptr: *window.CardinalWindow, rnd_ptr: *types.CardinalRenderer) b
     if (!model_manager.cardinal_model_manager_init(&state.model_manager)) return false;
 
     // Init Config
-    state.config_manager = engine.config.ConfigManager.init(allocator, "cardinal_config.json");
+    state.config_manager = engine.config.ConfigManager.init(allocator, "cardinal_config.json", .{});
     state.config_manager.load() catch |err| {
         log.cardinal_log_warn("Failed to load config: {}", .{err});
     };

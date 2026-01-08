@@ -1,6 +1,7 @@
 const std = @import("std");
 const log = @import("log.zig");
 const memory = @import("memory.zig");
+const handles = @import("handles.zig");
 
 const async_log = log.ScopedLogger("ASYNC");
 
@@ -46,6 +47,11 @@ pub const CardinalAsyncTaskType = enum(c_int) {
 pub const CardinalAsyncTaskFunc = ?*const fn (task: ?*CardinalAsyncTask, user_data: ?*anyopaque) callconv(.c) bool;
 pub const CardinalAsyncCallback = ?*const fn (task: ?*CardinalAsyncTask, user_data: ?*anyopaque) callconv(.c) void;
 
+pub const CardinalAsyncDependencyNode = extern struct {
+    task: *CardinalAsyncTask,
+    next: ?*CardinalAsyncDependencyNode,
+};
+
 pub const CardinalAsyncTask = extern struct {
     id: u32,
     type: CardinalAsyncTaskType,
@@ -69,7 +75,7 @@ pub const CardinalAsyncTask = extern struct {
 
     // Dependency Graph (Maintained for legacy API structure, but logic delegated to JobSystem)
     dependency_count: u32,
-    dependents: [8]?*CardinalAsyncTask,
+    dependents_head: ?*CardinalAsyncDependencyNode,
 };
 
 pub const CardinalAsyncLoaderConfig = extern struct {
@@ -80,12 +86,21 @@ pub const CardinalAsyncLoaderConfig = extern struct {
 
 // --- Internal State ---
 
+const TaskSlot = struct {
+    task: ?*CardinalAsyncTask,
+    generation: u32,
+};
+
 const AsyncLoaderState = struct {
     initialized: bool,
     shutting_down: bool,
     config: CardinalAsyncLoaderConfig,
     next_task_id: u32,
     state_mutex: std.Thread.Mutex,
+
+    task_pool: std.ArrayListUnmanaged(TaskSlot),
+    free_indices: std.ArrayListUnmanaged(u32),
+    allocator: std.mem.Allocator,
 };
 
 var g_async_loader: AsyncLoaderState = undefined;
@@ -116,8 +131,25 @@ fn create_task(task_type: CardinalAsyncTaskType, priority: CardinalAsyncPriority
     @memset(@as([*]u8, @ptrCast(task))[0..@sizeOf(CardinalAsyncTask)], 0);
 
     g_async_loader.state_mutex.lock();
-    g_async_loader.next_task_id += 1;
-    task.id = g_async_loader.next_task_id;
+
+    var index: u32 = 0;
+    var generation: u32 = 1;
+
+    if (g_async_loader.free_indices.items.len > 0) {
+        index = g_async_loader.free_indices.pop().?;
+        generation = g_async_loader.task_pool.items[index].generation + 1;
+        if (generation == 0) generation = 1;
+        g_async_loader.task_pool.items[index] = .{ .task = task, .generation = generation };
+    } else {
+        index = @intCast(g_async_loader.task_pool.items.len);
+        g_async_loader.task_pool.append(g_async_loader.allocator, .{ .task = task, .generation = generation }) catch {
+            g_async_loader.state_mutex.unlock();
+            memory.cardinal_free(allocator, ptr);
+            return null;
+        };
+    }
+    task.id = index;
+
     g_async_loader.state_mutex.unlock();
 
     task.type = task_type;
@@ -328,14 +360,17 @@ pub export fn cardinal_async_loader_init(config: ?*const CardinalAsyncLoaderConf
         return true;
     }
 
-    g_async_loader = std.mem.zeroes(AsyncLoaderState);
+    g_async_loader.initialized = false;
+    g_async_loader.shutting_down = false;
 
     if (config) |c| {
         g_async_loader.config = c.*;
     } else {
-        g_async_loader.config.worker_thread_count = 0;
-        g_async_loader.config.max_queue_size = 1000;
-        g_async_loader.config.enable_priority_queue = true;
+        g_async_loader.config = .{
+            .worker_thread_count = 0,
+            .max_queue_size = 1000,
+            .enable_priority_queue = true,
+        };
     }
 
     // Initialize Job System
@@ -355,6 +390,11 @@ pub export fn cardinal_async_loader_init(config: ?*const CardinalAsyncLoaderConf
     g_async_loader.state_mutex = .{};
     g_async_loader.next_task_id = 0;
 
+    const allocator = memory.cardinal_get_allocator_for_category(.ENGINE);
+    g_async_loader.allocator = allocator.as_allocator();
+    g_async_loader.task_pool = .{};
+    g_async_loader.free_indices = .{};
+
     g_async_loader.initialized = true;
     std.log.info("Async loader (JobSystem) initialized with {d} worker threads", .{g_async_loader.config.worker_thread_count});
     return true;
@@ -369,6 +409,10 @@ pub export fn cardinal_async_loader_shutdown() callconv(.c) void {
     job_system.shutdown();
 
     g_async_loader.initialized = false;
+
+    g_async_loader.task_pool.deinit(g_async_loader.allocator);
+    g_async_loader.free_indices.deinit(g_async_loader.allocator);
+
     std.log.info("Async loader shutdown complete", .{});
 }
 
@@ -391,8 +435,19 @@ pub export fn cardinal_async_add_dependency(dependent: ?*CardinalAsyncTask, depe
 
     if (job_system.add_dependency(job_dependent, job_dependency)) {
         t_dependent.dependency_count += 1;
-        // dependents array in Task is legacy/unused now, but we could populate it if we wanted to sync state
-        // For now, rely on JobSystem.
+
+        // Populate the dependents list in the dependency task to mirror JobSystem
+        const allocator = memory.cardinal_get_allocator_for_category(.ENGINE);
+        const node_ptr = memory.cardinal_alloc(allocator, @sizeOf(CardinalAsyncDependencyNode));
+        if (node_ptr) |ptr| {
+            const node = @as(*CardinalAsyncDependencyNode, @ptrCast(@alignCast(ptr)));
+            node.task = t_dependent;
+            node.next = t_dependency.dependents_head;
+            t_dependency.dependents_head = node;
+        } else {
+            async_log.warn("Failed to allocate dependency node for legacy tracking", .{});
+        }
+
         return true;
     }
 
@@ -628,6 +683,15 @@ pub export fn cardinal_async_free_task(task: ?*CardinalAsyncTask) callconv(.c) v
             }
         }
 
+        // Free dependency nodes
+        var node = t.dependents_head;
+        while (node) |n| {
+            const next = n.next;
+            memory.cardinal_free(allocator, n);
+            node = next;
+        }
+        t.dependents_head = null;
+
         if (t.result_data) |data| {
             if (t.type == .SCENE_LOAD) {
                 const scene_ptr = @as(*scene.CardinalScene, @ptrCast(@alignCast(data)));
@@ -644,6 +708,15 @@ pub export fn cardinal_async_free_task(task: ?*CardinalAsyncTask) callconv(.c) v
         if (t.error_message) |msg| {
             memory.cardinal_free(allocator, msg);
         }
+
+        g_async_loader.state_mutex.lock();
+        if (t.id < g_async_loader.task_pool.items.len) {
+            g_async_loader.task_pool.items[t.id].task = null;
+            g_async_loader.free_indices.append(g_async_loader.allocator, t.id) catch {
+                async_log.err("Failed to recycle task index {d}", .{t.id});
+            };
+        }
+        g_async_loader.state_mutex.unlock();
 
         memory.cardinal_free(allocator, t);
     }
@@ -743,15 +816,76 @@ pub export fn cardinal_async_process_completed_tasks(max_tasks: u32) callconv(.c
             cb(task, task.callback_data);
         }
 
-        // Note: Job is NOT freed here, it is freed when task is freed.
-        // Or should we free it here and null out task.next?
-        // If we free it here, we save memory, but task.next becomes invalid.
-        // But task is completed.
-        // However, user might call `free_task` later which tries to free `job`.
-        // So we should probably keep it alive until task is freed.
-
         processed += 1;
     }
 
     return processed;
+}
+
+// --- Handle System API ---
+
+pub export fn cardinal_async_get_handle(task: ?*CardinalAsyncTask) callconv(.c) handles.AsyncHandle {
+    if (task) |t| {
+        g_async_loader.state_mutex.lock();
+        defer g_async_loader.state_mutex.unlock();
+
+        if (t.id < g_async_loader.task_pool.items.len) {
+            const gen = g_async_loader.task_pool.items[t.id].generation;
+            return handles.AsyncHandle{ .index = t.id, .generation = gen };
+        }
+    }
+    return handles.AsyncHandle.INVALID;
+}
+
+pub export fn cardinal_async_is_loading(handle: handles.AsyncHandle) callconv(.c) bool {
+    g_async_loader.state_mutex.lock();
+    defer g_async_loader.state_mutex.unlock();
+
+    if (handle.index >= g_async_loader.task_pool.items.len) return false;
+    const slot = g_async_loader.task_pool.items[handle.index];
+    if (slot.generation != handle.generation) return false;
+
+    if (slot.task) |t| {
+        return t.status == .PENDING or t.status == .RUNNING;
+    }
+    return false;
+}
+
+pub export fn cardinal_async_is_ready(handle: handles.AsyncHandle) callconv(.c) bool {
+    g_async_loader.state_mutex.lock();
+    defer g_async_loader.state_mutex.unlock();
+
+    if (handle.index >= g_async_loader.task_pool.items.len) return false;
+    const slot = g_async_loader.task_pool.items[handle.index];
+    if (slot.generation != handle.generation) return false;
+
+    if (slot.task) |t| {
+        return t.status == .COMPLETED;
+    }
+    return false;
+}
+
+pub export fn cardinal_async_has_failed(handle: handles.AsyncHandle) callconv(.c) bool {
+    g_async_loader.state_mutex.lock();
+    defer g_async_loader.state_mutex.unlock();
+
+    if (handle.index >= g_async_loader.task_pool.items.len) return true;
+    const slot = g_async_loader.task_pool.items[handle.index];
+    if (slot.generation != handle.generation) return true;
+
+    if (slot.task) |t| {
+        return t.status == .FAILED or t.status == .CANCELLED;
+    }
+    return true;
+}
+
+pub export fn cardinal_async_get_task_from_handle(handle: handles.AsyncHandle) callconv(.c) ?*CardinalAsyncTask {
+    g_async_loader.state_mutex.lock();
+    defer g_async_loader.state_mutex.unlock();
+
+    if (handle.index >= g_async_loader.task_pool.items.len) return null;
+    const slot = g_async_loader.task_pool.items[handle.index];
+    if (slot.generation != handle.generation) return null;
+
+    return slot.task;
 }

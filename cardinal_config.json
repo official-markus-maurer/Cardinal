@@ -1,3 +1,22 @@
 {
-    "assets_path": "C:\\Users\\admin\\Documents\\Cardinal\\assets"
+    "_comment": "Cardinal Engine Configuration File. Note: Standard JSON does not support comments, so we use _comment fields which are ignored by the engine.",
+    
+    "_comment_assets": "Path to the assets directory containing shaders, textures, models, etc.",
+    "assets_path": "C:\\Users\\admin\\Documents\\Cardinal\\assets",
+
+    "_comment_window": "Window configuration settings.",
+    "window_width": 1920,
+    "window_height": 1080,
+    "window_resizable": true,
+
+    "_comment_memory": "Memory management settings. memory_size is in bytes (4MB default).",
+    "memory_size": 4194304,
+    "ref_counting_buckets": 1009,
+
+    "_comment_async": "Async loader settings. Threads for background loading and queue size.",
+    "async_worker_threads": 16,
+    "async_queue_size": 200,
+
+    "_comment_cache": "Size of the asset cache (number of items).",
+    "cache_size": 1000
 }

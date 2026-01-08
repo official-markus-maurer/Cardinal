@@ -15,16 +15,6 @@ This document outlines the roadmap for the Cardinal Engine, focusing on robustne
 - [ ] **Missing Operations**: Implement `Mat4`, `Quat` (quaternions), `lerp`, `slerp`, `reflect` in `math.zig`.
 
 ### Code Cleanup & Refactoring
-- [x] **Render Graph**:
-    - [x] Implement a **Resource Pool** for transient resources (images/buffers) to avoid frequent allocation/deallocation (`render_graph.zig`).
-    - [x] Fix resource update logic: properly free old resources when updating transient images.
-- [x] **Vulkan Resource Manager**:
-    - [x] Refactor `vk_simple_pipelines` to accept `types.VulkanState` directly instead of raw pointers/casts (`vulkan_resource_manager.zig`).
-- [x] **Vulkan Descriptor Manager**:
-    - [x] **Dynamic Pool Growth**: Currently `create_descriptor_pool` creates a single fixed-size pool. Implement chaining or dynamic creation of new pools when one fills up.
-- [x] **Memory System**:
-    - [x] Improve stack trace capturing in `track_alloc` (currently using a simple fallback).
-    - [x] Consider using `std.Thread.RwLock` for `g_alloc_map` to reduce contention during high-frequency allocations.
 - [ ] **Synchronization**:
     - [ ] Handle `vkDeviceWaitIdle` failures gracefully in `vulkan_sync_manager.zig` (currently ignored during reset).
     - [ ] Externalize hardcoded timeline semaphore constants (e.g., `1000000` limit) to a config or constant definition.
@@ -34,39 +24,27 @@ This document outlines the roadmap for the Cardinal Engine, focusing on robustne
     - [ ] Move hardcoded values (e.g., PBR clear color `0.05, 0.05, 0.08`) to a `RendererConfig` struct.
     - [ ] Externalize hardcoded asset paths (e.g., `"assets/pipelines/*.json"`, `"assets/shaders"`) found in `vulkan_pbr.zig` and others.
     - [ ] Move Shadow constants (`SHADOW_MAP_SIZE`, `SHADOW_CASCADE_COUNT`, `lambda`, clips) from `vulkan_shadows.zig` to configuration.
-- [x] **Standardize Memory Allocation**:
-    - [x] Replace direct usage of `std.heap.c_allocator` and `std.heap.page_allocator` with `CardinalAllocator` (found in `scene.zig`, `vulkan_mesh_shader.zig`, `vulkan_pbr.zig`, `log.zig`, `editor_layer.zig`, etc.).
-    - [x] Fix `vulkan_pso.zig`: Uses hidden `std.heap.GeneralPurposeAllocator` for shader cache; switch to `CardinalAllocator`.
 - [ ] **Code Deduplication**:
     - [ ] Consolidate `get_current_thread_id` (found in `vulkan_commands.zig` and `texture_loader.zig`) into a shared `core/platform.zig` helper.
     - [ ] Consolidate platform-specific time logic (found in `vulkan_swapchain.zig` and likely others) into `core/platform.zig`.
 - [ ] **Engine Core**:
     - [ ] Implement **Delta Time** calculation in `CardinalEngine.update` and pass it to subsystems (`engine.zig`). Currently, the engine lacks a standardized time step.
-    - [ ] Externalize `CardinalEngineConfig` defaults (resolution, threads) to a config file.
-    - [ ] Verify Matrix Multiplication Order: Ensure `math.zig` and `transform.zig` consistently use column-major (or row-major) order to avoid subtle bugs.
-    - [ ] **Event System Optimization**: `events.zig` currently allocates (clones listener list) on every event publish to avoid deadlocks. Optimize this (e.g., small stack buffer, copy-on-write).
+    - [x] Externalize `CardinalEngineConfig` defaults (resolution, threads) to a config file.
+    - [x] Verify Matrix Multiplication Order: Ensure `math.zig` and `transform.zig` consistently use column-major (or row-major) order to avoid subtle bugs.
+    - [x] **Event System Optimization**: `events.zig` currently allocates (clones listener list) on every event publish to avoid deadlocks. Optimize this (e.g., small stack buffer, copy-on-write).
     - [ ] **Module System**: Add explicit dependency management or validation to `module.zig` (currently relies on manual registration order).
     - [ ] **Reference Counting**: Add weak reference support or cycle detection to `ref_counting.zig` to prevent leaks from circular dependencies.
-    - [ ] **Async Loader**: Update `CardinalAsyncTask` to remove the legacy hardcoded limit of 8 dependents (matching the Job System fix).
     - [ ] **Handle System**: Implement a generic `HandleManager` to centralize safe handle generation (index + generation) instead of ad-hoc logic per resource type.
 - [ ] **Vulkan Optimization**:
-    - [x] Re-enable/Fix **Secondary Command Buffers** for scene rendering (currently disabled in `vulkan_commands.zig` due to validation errors).
-    - [x] Clarify `secondary_buffers` usage in `vulkan_commands.zig` (currently allocated as `PRIMARY`).
     - [ ] Verify `CardinalLight` and `CardinalCamera` struct alignment for UBO compatibility (std140).
     - [ ] **Pipeline Cache**: Implement persistence (save/load `VkPipelineCache` to disk) to improve startup times (`vulkan_pipeline.zig`/`vulkan_pso.zig`).
 - [ ] **Texture Loader**:
     - [ ] Verify and address "not yet ported" C header dependencies.
-    - [x] Improve glTF texture path cache (`gltf_loader.zig`): Replaced fixed-size hash table with `std.StringHashMap` and added thread safety.
-- [ ] **Editor Improvements**:
-    - [x] Extract Animation Panel logic from `editor_layer.zig` to `panels/animation_panel.zig` for better maintainability.
-    - [x] Extract Hierarchy Panel logic from `editor_layer.zig` to `panels/hierarchy_panel.zig` for better maintainability.
 
 ## 2. Data & Assets
 
 ### Asset System
 - [ ] **Asset Database**: Implement a metadata system (`.meta` files) to store import settings and GUIDs for assets, decoupling file paths from asset identity.
-- [x] **Texture Cache**: Improved `init_texture_cache` thread safety and usage in `gltf_loader.zig` (using Mutex and HashMap).
-- [ ] **Async Loading**: Implement a proper `Promise` or `Handle` state system for async loading, allowing the engine to query if an asset is `Loading`, `Ready`, or `Failed`.
 - [ ] **Hot-Reloading**: Generic hot-reloading support for all asset types.
 - [ ] **Shader Compilation**: Integrate runtime shader compilation (e.g., shaderc or slang) to compile `.glsl` to `.spv` on the fly.
 
@@ -96,10 +74,6 @@ This document outlines the roadmap for the Cardinal Engine, focusing on robustne
 
 ### Debugging
 - [ ] **Timeline Debug Config**: Make `VULKAN_TIMELINE_DEBUG_MAX_EVENTS` configurable or dynamic (`vulkan_timeline_types.zig`).
-
-### Render Graph
-- [x] **Resource Pooling**: Use a pool for allocations in `render_graph.zig`.
-- [x] **Resource Management**: Ensure old resources are freed if allocated (`render_graph.zig`).
 
 ## 4. Gameplay & Systems (New)
 

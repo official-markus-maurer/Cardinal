@@ -1,4 +1,5 @@
 const std = @import("std");
+const log = @import("log.zig");
 
 pub const EventId = u64;
 
@@ -66,44 +67,42 @@ pub fn unsubscribe(event_id: EventId, callback: EventHandler) void {
 }
 
 pub fn publish(event_id: EventId, data: ?*const anyopaque) void {
-    // We lock to get the listeners, but ideally we shouldn't hold the lock while calling callbacks
-    // to avoid deadlocks if a callback tries to subscribe/unsubscribe/publish.
-    // However, for simplicity in this initial implementation, we might copy the listeners?
-    // Or just hold the lock (risky).
-    // Let's copy the listeners to a temporary list (stack or allocator) if possible, or just risk it for now 
-    // but warn about it. 
-    // A better approach for a simple engine:
-    // 1. Lock
-    // 2. Clone the listener list
-    // 3. Unlock
-    // 4. Iterate and call
-    // 5. Free clone
-    
-    // Using an arena or temp allocator would be nice. 
-    // Let's just lock for now, assuming callbacks are fast and don't modify the bus structure recursively.
-    // If they do, we'll need to improve this.
-    
+    // TODO: Use a stack buffer for small listener counts to avoid allocation
+    const MAX_STACK_LISTENERS = 64;
+    var stack_buffer: [MAX_STACK_LISTENERS]Listener = undefined;
+
     g_mutex.lock();
-    // We can't defer unlock here if we want to unlock before callback.
-    
+
     const list_ptr = g_listeners.getPtr(event_id);
     if (list_ptr == null) {
         g_mutex.unlock();
         return;
     }
-    
+
     const list = list_ptr.?;
-    // Clone to allow safe iteration without lock
-    const listeners_copy = list.clone(g_allocator) catch {
+    const count = list.items.len;
+
+    if (count <= MAX_STACK_LISTENERS) {
+        @memcpy(stack_buffer[0..count], list.items);
         g_mutex.unlock();
-        return;
-    };
-    g_mutex.unlock();
-    
-    defer listeners_copy.deinit(g_allocator);
-    
-    const event = Event{ .id = event_id, .data = data };
-    for (listeners_copy.items) |listener| {
-        listener.callback(event, listener.user_data);
+
+        const event = Event{ .id = event_id, .data = data };
+        for (stack_buffer[0..count]) |listener| {
+            listener.callback(event, listener.user_data);
+        }
+    } else {
+        // Fallback to heap allocation for large listener counts
+        const listeners_copy = list.clone(g_allocator) catch {
+            g_mutex.unlock();
+            log.cardinal_log_error("Failed to allocate listener copy for event {}", .{event_id});
+            return;
+        };
+        g_mutex.unlock();
+        defer listeners_copy.deinit(g_allocator);
+
+        const event = Event{ .id = event_id, .data = data };
+        for (listeners_copy.items) |listener| {
+            listener.callback(event, listener.user_data);
+        }
     }
 }
