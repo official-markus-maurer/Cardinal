@@ -5,6 +5,66 @@ const log = @import("../core/log.zig");
 const shader_utils = @import("util/vulkan_shader_utils.zig");
 const wrappers = @import("vulkan_wrappers.zig");
 
+// --- Shader Cache ---
+var g_shader_cache: std.StringHashMap(c.VkShaderModule) = undefined;
+var g_shader_cache_mutex: std.Thread.Mutex = .{};
+var g_shader_cache_initialized: bool = false;
+var g_allocator = std.heap.GeneralPurposeAllocator(.{}){};
+
+fn get_or_load_shader_module(device: c.VkDevice, path: []const u8) !c.VkShaderModule {
+    g_shader_cache_mutex.lock();
+    defer g_shader_cache_mutex.unlock();
+
+    if (!g_shader_cache_initialized) {
+        g_shader_cache = std.StringHashMap(c.VkShaderModule).init(g_allocator.allocator());
+        g_shader_cache_initialized = true;
+    }
+
+    if (g_shader_cache.get(path)) |module| {
+        return module;
+    }
+
+    // Not in cache, load it
+    // We need a null-terminated string for the C API
+    const path_z = try g_allocator.allocator().dupeZ(u8, path);
+    defer g_allocator.allocator().free(path_z);
+
+    var module: c.VkShaderModule = undefined;
+    if (!shader_utils.vk_shader_create_module(device, path_z, &module)) {
+        log.cardinal_log_error("Failed to create shader module from path: '{s}'", .{path_z});
+        return error.ShaderLoadFailed;
+    }
+
+    // Store in cache (dup key for persistence)
+    const key = try g_allocator.allocator().dupe(u8, path);
+    errdefer g_allocator.allocator().free(key);
+
+    try g_shader_cache.put(key, module);
+
+    log.cardinal_log_info("Loaded and cached shader: {s}", .{path});
+    return module;
+}
+
+pub fn vk_pso_cleanup_shader_cache(device: c.VkDevice) void {
+    g_shader_cache_mutex.lock();
+    defer g_shader_cache_mutex.unlock();
+
+    if (!g_shader_cache_initialized) return;
+
+    log.cardinal_log_info("Cleaning up shader cache ({d} modules)", .{g_shader_cache.count()});
+
+    var it = g_shader_cache.iterator();
+    while (it.next()) |entry| {
+        wrappers.Device.init(device).destroyShaderModule(entry.value_ptr.*);
+        g_allocator.allocator().free(entry.key_ptr.*);
+    }
+    g_shader_cache.deinit();
+    g_shader_cache_initialized = false;
+    _ = g_allocator.deinit();
+    // Reset allocator for next use if needed (GPA doesn't need reset, but we re-init it)
+    g_allocator = std.heap.GeneralPurposeAllocator(.{}){};
+}
+
 // --- Enums ---
 
 pub const Topology = enum {
@@ -207,7 +267,7 @@ pub const VertexInputDescriptor = struct {
     // If using standard layout, how many attributes to use (starting from 0)
     // 0 = Px, 1 = Nx, 2 = UV, 3 = Weights, 4 = Indices, 5 = U1
     standard_layout_attribute_count: u32 = 6,
-    
+
     // Custom layout (used if use_standard_layout is false)
     bindings: []const VertexInputBindingDescriptor = &.{},
     attributes: []const VertexInputAttributeDescriptor = &.{},
@@ -322,33 +382,22 @@ pub const PipelineBuilder = struct {
     pub fn build(self: *PipelineBuilder, descriptor: PipelineDescriptor, pipeline_layout: c.VkPipelineLayout, out_pipeline: *c.VkPipeline) !void {
         // 1. Shaders
         log.cardinal_log_info("Building pipeline '{s}'", .{descriptor.name});
-        
+
         var shader_stages = std.ArrayListUnmanaged(c.VkPipelineShaderStageCreateInfo){};
         defer shader_stages.deinit(self.allocator);
 
-        var modules_to_destroy = std.ArrayListUnmanaged(c.VkShaderModule){};
-        defer {
-            for (modules_to_destroy.items) |mod| {
-                wrappers.Device.init(self.device).destroyShaderModule(mod);
-            }
-            modules_to_destroy.deinit(self.allocator);
-        }
-
         // Helper to load shader
         const load_shader = struct {
-            fn load(b: *PipelineBuilder, stage_desc: ShaderStageDescriptor, stage_bit: c.VkShaderStageFlagBits, stages: *std.ArrayListUnmanaged(c.VkPipelineShaderStageCreateInfo), to_destroy: *std.ArrayListUnmanaged(c.VkShaderModule)) !void {
+            fn load(b: *PipelineBuilder, stage_desc: ShaderStageDescriptor, stage_bit: c.VkShaderStageFlagBits, stages: *std.ArrayListUnmanaged(c.VkPipelineShaderStageCreateInfo)) !void {
                 var module: c.VkShaderModule = undefined;
                 if (stage_desc.module_handle) |h| {
                     module = @ptrFromInt(h);
                 } else {
-                    // TODO: Implement shader module caching
-                    const path_z = try b.allocator.dupeZ(u8, stage_desc.path);
-                    defer b.allocator.free(path_z);
-                    if (!shader_utils.vk_shader_create_module(b.device, path_z, &module)) {
-                        log.cardinal_log_error("Failed to create shader module from path: '{s}'", .{path_z});
+                    // Use cached shader module
+                    module = get_or_load_shader_module(b.device, stage_desc.path) catch |err| {
+                        log.cardinal_log_error("Failed to load shader module from path: '{s}' (err={any})", .{ stage_desc.path, err });
                         return error.ShaderLoadFailed;
-                    }
-                    try to_destroy.append(b.allocator, module);
+                    };
                 }
 
                 try stages.append(b.allocator, .{
@@ -364,19 +413,19 @@ pub const PipelineBuilder = struct {
         }.load;
 
         if (descriptor.vertex_shader) |vs| {
-            try load_shader(self, vs, c.VK_SHADER_STAGE_VERTEX_BIT, &shader_stages, &modules_to_destroy);
+            try load_shader(self, vs, c.VK_SHADER_STAGE_VERTEX_BIT, &shader_stages);
         }
 
         if (descriptor.mesh_shader) |ms| {
-            try load_shader(self, ms, c.VK_SHADER_STAGE_MESH_BIT_EXT, &shader_stages, &modules_to_destroy);
+            try load_shader(self, ms, c.VK_SHADER_STAGE_MESH_BIT_EXT, &shader_stages);
         }
 
         if (descriptor.task_shader) |ts| {
-            try load_shader(self, ts, c.VK_SHADER_STAGE_TASK_BIT_EXT, &shader_stages, &modules_to_destroy);
+            try load_shader(self, ts, c.VK_SHADER_STAGE_TASK_BIT_EXT, &shader_stages);
         }
 
         if (descriptor.fragment_shader) |fs| {
-            try load_shader(self, fs, c.VK_SHADER_STAGE_FRAGMENT_BIT, &shader_stages, &modules_to_destroy);
+            try load_shader(self, fs, c.VK_SHADER_STAGE_FRAGMENT_BIT, &shader_stages);
         }
 
         // 2. Vertex Input
@@ -402,7 +451,7 @@ pub const PipelineBuilder = struct {
                 .stride = @sizeOf(scene_import.CardinalVertex),
                 .inputRate = c.VK_VERTEX_INPUT_RATE_VERTEX,
             };
-            
+
             attribute_descs = [_]c.VkVertexInputAttributeDescription{
                 .{ .binding = 0, .location = 0, .format = c.VK_FORMAT_R32G32B32_SFLOAT, .offset = 0 },
                 .{ .binding = 0, .location = 1, .format = c.VK_FORMAT_R32G32B32_SFLOAT, .offset = @sizeOf(f32) * 3 },
@@ -506,7 +555,15 @@ pub const PipelineBuilder = struct {
         };
 
         // 8. Color Blending
-        // TODO: Support multiple color blend attachments dynamically
+        if (descriptor.color_blend.attachments.len != descriptor.rendering.color_formats.len) {
+            log.cardinal_log_error("Color blend attachment count ({d}) does not match rendering color format count ({d}) for pipeline '{s}'", .{
+                descriptor.color_blend.attachments.len,
+                descriptor.rendering.color_formats.len,
+                descriptor.name,
+            });
+            return error.PipelineCreationError;
+        }
+
         var color_blend_attachments = try self.allocator.alloc(c.VkPipelineColorBlendAttachmentState, descriptor.color_blend.attachments.len);
         defer self.allocator.free(color_blend_attachments);
 
@@ -578,7 +635,7 @@ pub const PipelineBuilder = struct {
 
         const result = c.vkCreateGraphicsPipelines(self.device, self.pipeline_cache, 1, &pipeline_info, null, out_pipeline);
         if (result != c.VK_SUCCESS) {
-            log.cardinal_log_error("Failed to create graphics pipeline '{s}': {d}", .{descriptor.name, result});
+            log.cardinal_log_error("Failed to create graphics pipeline '{s}': {d}", .{ descriptor.name, result });
             return error.PipelineCreationError;
         }
     }

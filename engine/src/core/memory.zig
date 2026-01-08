@@ -88,10 +88,12 @@ var g_active_allocs: usize = 0;
 
 var g_dynamic_state: DynamicState = .{ .placeholder = 0 };
 var g_linear_state: LinearState = undefined;
+var g_arena_state: ArenaState = undefined;
 var g_tracked_state: [12]TrackedState = undefined;
 
 var g_dynamic: CardinalAllocator = undefined;
 var g_linear: CardinalAllocator = undefined;
+var g_arena: CardinalAllocator = undefined;
 var g_tracked: [12]CardinalAllocator = undefined;
 
 // Stats Helpers
@@ -159,7 +161,7 @@ fn ensure_alloc_map() void {
 
 fn track_alloc(ptr: ?*anyopaque, size: usize, is_aligned: bool) void {
     if (ptr == null) return;
-    
+
     g_alloc_map_mutex.lock();
     defer g_alloc_map_mutex.unlock();
 
@@ -175,7 +177,7 @@ fn track_alloc(ptr: ?*anyopaque, size: usize, is_aligned: bool) void {
         .stack_depth = 0,
     };
     @memset(&info.stack_addresses, 0);
-    
+
     // Capture stack trace if debug build
     if (builtin.mode == .Debug) {
         // Try to capture stack trace
@@ -217,7 +219,7 @@ fn print_stack_trace(addresses: []const usize, depth: usize) void {
 
 fn find_alloc(ptr: ?*anyopaque) ?AllocInfo {
     if (ptr == null) return null;
-    
+
     g_alloc_map_mutex.lock();
     defer g_alloc_map_mutex.unlock();
 
@@ -378,11 +380,11 @@ fn arena_create_block(backing: *CardinalAllocator, capacity: usize) ?*ArenaBlock
     block.next = null;
     block.capacity = capacity;
     block.offset = 0;
-    
+
     // Data starts after the struct
     const ptr_int = @intFromPtr(ptr);
     block.data = @ptrFromInt(ptr_int + @sizeOf(ArenaBlock));
-    
+
     return block;
 }
 
@@ -411,16 +413,16 @@ fn arena_alloc(self: *CardinalAllocator, size: usize, alignment: usize) callconv
     st.current_block = new_block;
 
     // Allocate from new block (guaranteed to fit and be aligned at start)
-    // Note: arena_create_block returns aligned pointer for ArenaBlock, 
+    // Note: arena_create_block returns aligned pointer for ArenaBlock,
     // but data might need alignment relative to start if header is weirdly sized.
     // However, @sizeOf(ArenaBlock) should be aligned enough.
     // Let's re-calculate just to be safe.
-    
+
     const block = new_block.?;
     const ptr_int = @intFromPtr(block.data);
     const mis = ptr_int % align_val;
     const pad = if (mis > 0) align_val - mis else 0;
-    
+
     block.offset = pad + size;
     return @ptrFromInt(ptr_int + pad);
 }
@@ -428,9 +430,40 @@ fn arena_alloc(self: *CardinalAllocator, size: usize, alignment: usize) callconv
 fn arena_realloc(self: *CardinalAllocator, ptr: ?*anyopaque, old_size: usize, new_size: usize, alignment: usize) callconv(.c) ?*anyopaque {
     // Arenas don't support true realloc easily (in-place expansion), so we alloc-copy
     if (ptr == null) return arena_alloc(self, new_size, alignment);
-    
-    // TODO: if it's the very last allocation in the current block, we could expand.
-    // For now, simple alloc-copy.
+
+    const st: *ArenaState = @ptrCast(@alignCast(self.state));
+
+    if (st.current_block) |block| {
+        const ptr_addr = @intFromPtr(ptr);
+        const align_val = if (alignment > 0) alignment else @sizeOf(?*anyopaque);
+
+        // Cannot expand in place if the existing pointer doesn't satisfy the new alignment
+        if (ptr_addr % align_val == 0) {
+            const block_data_addr = @intFromPtr(block.data);
+            const current_end = block_data_addr + block.offset;
+
+            // Check if this is the last allocation
+            if (ptr_addr + old_size == current_end) {
+                if (new_size > old_size) {
+                    // Expand
+                    const diff = new_size - old_size;
+                    if (block.offset + diff <= block.capacity) {
+                        block.offset += diff;
+                        return ptr;
+                    }
+                } else if (new_size < old_size) {
+                    // Shrink
+                    const diff = old_size - new_size;
+                    block.offset -= diff;
+                    return ptr;
+                } else {
+                    return ptr;
+                }
+            }
+        }
+    }
+
+    // Fallback to alloc-copy
     const new_ptr = arena_alloc(self, new_size, alignment);
     if (new_ptr != null and old_size > 0) {
         const copy_len = if (old_size < new_size) old_size else new_size;
@@ -445,12 +478,7 @@ fn arena_free(_: *CardinalAllocator, _: ?*anyopaque) callconv(.c) void {
 
 fn arena_reset(self: *CardinalAllocator) callconv(.c) void {
     const st: *ArenaState = @ptrCast(@alignCast(self.state));
-    
-    // Free all blocks except the first one? Or all? 
-    // Usually arenas keep memory for reuse, but here we are built on top of a backing allocator.
-    // Let's free everything to be safe and clean, or we could keep one block.
-    // Let's free everything for "reset" to release memory to backing.
-    
+
     var curr = st.current_block;
     while (curr) |block| {
         const next = block.next;
@@ -560,6 +588,23 @@ pub export fn cardinal_memory_init(default_linear_capacity: usize) void {
         .reset = lin_reset,
     };
 
+    // Arena
+    g_arena_state = .{
+        .backing = &g_dynamic,
+        .current_block = null,
+        .default_block_size = 4 * 1024 * 1024,
+    };
+    g_arena = .{
+        .type = .ARENA,
+        .name = "arena",
+        .category = .ENGINE,
+        .state = &g_arena_state,
+        .alloc = arena_alloc,
+        .realloc = arena_realloc,
+        .free = arena_free,
+        .reset = arena_reset,
+    };
+
     // Tracked
     var i: usize = 0;
     while (i < 12) : (i += 1) { // 12 = CARDINAL_MEMORY_CATEGORY_MAX
@@ -581,6 +626,8 @@ pub export fn cardinal_memory_init(default_linear_capacity: usize) void {
 }
 
 pub export fn cardinal_memory_shutdown() void {
+    arena_reset(&g_arena);
+
     if (g_linear_state.capacity > 0) {
         if (g_linear_state.buffer) |b| {
             c.free(@ptrCast(b));
@@ -595,20 +642,20 @@ pub export fn cardinal_memory_shutdown() void {
 
     if (g_alloc_map_init) {
         if (g_alloc_map.count() > 0) {
-             _ = c.printf("[Memory] Warning: %d allocations leaked at shutdown.\n", g_alloc_map.count());
-             
-             if (builtin.mode == .Debug) {
-                 var it = g_alloc_map.iterator();
-                 while (it.next()) |entry| {
-                     const info = entry.value_ptr;
-                     _ = c.printf("  Leak: %p, Size: %zu\n", info.ptr, info.size);
-                     
-                     if (info.stack_depth > 0) {
-                         _ = c.printf("    Stack Trace:\n");
-                         print_stack_trace(&info.stack_addresses, info.stack_depth);
-                     }
-                 }
-             }
+            _ = c.printf("[Memory] Warning: %d allocations leaked at shutdown.\n", g_alloc_map.count());
+
+            if (builtin.mode == .Debug) {
+                var it = g_alloc_map.iterator();
+                while (it.next()) |entry| {
+                    const info = entry.value_ptr;
+                    _ = c.printf("  Leak: %p, Size: %zu\n", info.ptr, info.size);
+
+                    if (info.stack_depth > 0) {
+                        _ = c.printf("    Stack Trace:\n");
+                        print_stack_trace(&info.stack_addresses, info.stack_depth);
+                    }
+                }
+            }
         }
         g_alloc_map.deinit();
         g_alloc_map_init = false;
@@ -622,6 +669,10 @@ export fn cardinal_get_dynamic_allocator() *CardinalAllocator {
 
 export fn cardinal_get_linear_allocator() *CardinalAllocator {
     return &g_linear;
+}
+
+export fn cardinal_get_arena_allocator() *CardinalAllocator {
+    return &g_arena;
 }
 
 pub export fn cardinal_get_allocator_for_category(category: CardinalMemoryCategory) *CardinalAllocator {
@@ -716,7 +767,7 @@ pub export fn cardinal_arena_create(backing_allocator: ?*CardinalAllocator, defa
     // Allocate state container from backing allocator
     const state_ptr = backing.alloc(backing, @sizeOf(ArenaState), @alignOf(ArenaState));
     if (state_ptr == null) return null;
-    
+
     const state: *ArenaState = @ptrCast(@alignCast(state_ptr));
     state.backing = backing;
     state.current_block = null;

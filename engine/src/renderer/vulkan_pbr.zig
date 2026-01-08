@@ -667,17 +667,28 @@ fn create_shadow_pipeline(pipeline: *types.VulkanPBRPipeline, device: c.VkDevice
 
     // Push Constant Range
     var pushConstantRange = std.mem.zeroes(c.VkPushConstantRange);
-    pushConstantRange.stageFlags = c.VK_SHADER_STAGE_VERTEX_BIT;
+    pushConstantRange.stageFlags = c.VK_SHADER_STAGE_VERTEX_BIT | c.VK_SHADER_STAGE_FRAGMENT_BIT;
     pushConstantRange.offset = 0;
     pushConstantRange.size = 156; // model(64) + padding + hasSkeleton(4) + cascadeIndex(4) -> 156
 
     // Pipeline Layout
     var pipelineLayoutInfo = std.mem.zeroes(c.VkPipelineLayoutCreateInfo);
     pipelineLayoutInfo.sType = c.VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO;
-    pipelineLayoutInfo.setLayoutCount = 1;
-    // Get layout from manager
-    const layout = descriptor_mgr.vk_descriptor_manager_get_layout(pipeline.shadowDescriptorManager);
-    pipelineLayoutInfo.pSetLayouts = &layout;
+
+    var layouts: [2]c.VkDescriptorSetLayout = undefined;
+    layouts[0] = descriptor_mgr.vk_descriptor_manager_get_layout(pipeline.shadowDescriptorManager);
+    var layoutCount: u32 = 1;
+
+    if (pipeline.textureManager) |tm| {
+        const bindlessLayout = vk_descriptor_indexing.vk_bindless_texture_get_layout(&tm.bindless_pool);
+        if (bindlessLayout != null) {
+            layouts[1] = bindlessLayout;
+            layoutCount = 2;
+        }
+    }
+
+    pipelineLayoutInfo.setLayoutCount = layoutCount;
+    pipelineLayoutInfo.pSetLayouts = &layouts;
     pipelineLayoutInfo.pushConstantRangeCount = 1;
     pipelineLayoutInfo.pPushConstantRanges = &pushConstantRange;
 
@@ -704,10 +715,44 @@ fn create_shadow_pipeline(pipeline: *types.VulkanPBRPipeline, device: c.VkDevice
             descriptor.flags |= c.VK_PIPELINE_CREATE_DESCRIPTOR_BUFFER_BIT_EXT;
         }
     }
+    // Also check texture manager for descriptor buffer bit
+    if (pipeline.textureManager) |tm| {
+        if (tm.bindless_pool.use_descriptor_buffer) {
+            descriptor.flags |= c.VK_PIPELINE_CREATE_DESCRIPTOR_BUFFER_BIT_EXT;
+        }
+    }
 
     builder.build(descriptor, pipeline.shadowPipelineLayout, &pipeline.shadowPipeline) catch |err| {
         log.cardinal_log_error("Failed to build shadow pipeline: {s}", .{@errorName(err)});
         return false;
+    };
+
+    // Create Alpha-Tested Shadow Pipeline
+    var parsedAlpha = vk_pso.PipelineBuilder.load_from_json(std.heap.page_allocator, "assets/pipelines/shadow_alpha.json") catch |err| {
+        log.cardinal_log_error("Failed to load shadow alpha pipeline JSON: {s}", .{@errorName(err)});
+        // Don't fail completely, just skip alpha shadows
+        return true;
+    };
+    defer parsedAlpha.deinit();
+
+    var descAlpha = parsedAlpha.value;
+    descAlpha.rendering.depth_format = SHADOW_FORMAT;
+    descAlpha.rendering.color_formats = &.{};
+
+    if (pipeline.shadowDescriptorManager) |mgr| {
+        if (mgr.useDescriptorBuffers) {
+            descAlpha.flags |= c.VK_PIPELINE_CREATE_DESCRIPTOR_BUFFER_BIT_EXT;
+        }
+    }
+    if (pipeline.textureManager) |tm| {
+        if (tm.bindless_pool.use_descriptor_buffer) {
+            descAlpha.flags |= c.VK_PIPELINE_CREATE_DESCRIPTOR_BUFFER_BIT_EXT;
+        }
+    }
+
+    builder.build(descAlpha, pipeline.shadowPipelineLayout, &pipeline.shadowAlphaPipeline) catch |err| {
+        log.cardinal_log_error("Failed to build shadow alpha pipeline: {s}", .{@errorName(err)});
+        // Don't fail completely
     };
 
     return true;
@@ -943,6 +988,9 @@ pub export fn vk_pbr_pipeline_destroy(pipeline: ?*types.VulkanPBRPipeline, devic
 
     if (pipe.shadowPipeline != null) {
         c.vkDestroyPipeline(device, pipe.shadowPipeline, null);
+    }
+    if (pipe.shadowAlphaPipeline != null) {
+        c.vkDestroyPipeline(device, pipe.shadowAlphaPipeline, null);
     }
     if (pipe.shadowPipelineLayout != null) {
         c.vkDestroyPipelineLayout(device, pipe.shadowPipelineLayout, null);

@@ -13,6 +13,7 @@ const c = @import("vulkan_c.zig").c;
 const vk_instance = @import("vulkan_instance.zig");
 const vk_swapchain = @import("vulkan_swapchain.zig");
 const vk_pipeline = @import("vulkan_pipeline.zig");
+const vk_pso = @import("vulkan_pso.zig");
 const vk_commands = @import("vulkan_commands.zig");
 const vk_sync_manager = @import("vulkan_sync_manager.zig");
 const vk_pbr = @import("vulkan_pbr.zig");
@@ -740,6 +741,9 @@ pub export fn cardinal_renderer_destroy(renderer: ?*types.CardinalRenderer) call
         memory.cardinal_free(mem_alloc, ms_ptr);
         s.material_system = null;
     }
+
+    // Destroy shader cache
+    vk_pso.vk_pso_cleanup_shader_cache(s.context.device);
 
     // Shutdown VMA allocator before destroying device
     vk_allocator.vk_allocator_shutdown(&s.allocator);

@@ -1,10 +1,52 @@
 const std = @import("std");
 const log = @import("log.zig");
 const memory = @import("memory.zig");
+const pool_allocator = @import("pool_allocator.zig");
 
 const job_log = log.ScopedLogger("JOB_SYSTEM");
 
 // --- Types ---
+
+const CardinalAllocatorWrapper = struct {
+    backing: *memory.CardinalAllocator,
+
+    const vtable = std.mem.Allocator.VTable{
+        .alloc = alloc,
+        .resize = resize,
+        .free = free,
+    };
+
+    fn alloc(ctx: *anyopaque, len: usize, ptr_align: u8, ret_addr: usize) ?[*]u8 {
+        _ = ret_addr;
+        const self: *CardinalAllocatorWrapper = @ptrCast(@alignCast(ctx));
+        const alignment = @as(usize, 1) << @as(u6, @intCast(ptr_align));
+        const ptr = self.backing.alloc(self.backing, len, alignment);
+        return @as(?[*]u8, @ptrCast(ptr));
+    }
+
+    fn resize(ctx: *anyopaque, buf: []u8, buf_align: u8, new_len: usize, ret_addr: usize) bool {
+        _ = ctx;
+        _ = buf;
+        _ = buf_align;
+        _ = new_len;
+        _ = ret_addr;
+        return false;
+    }
+
+    fn free(ctx: *anyopaque, buf: []u8, buf_align: u8, ret_addr: usize) void {
+        _ = ret_addr;
+        _ = buf_align;
+        const self: *CardinalAllocatorWrapper = @ptrCast(@alignCast(ctx));
+        self.backing.free(self.backing, buf.ptr);
+    }
+
+    fn allocator(self: *CardinalAllocatorWrapper) std.mem.Allocator {
+        return .{
+            .ptr = self,
+            .vtable = &vtable,
+        };
+    }
+};
 
 pub const JobPriority = enum(c_int) {
     LOW = 0,
@@ -23,20 +65,25 @@ pub const JobStatus = enum(c_int) {
 
 pub const JobFunc = *const fn (data: ?*anyopaque) callconv(.c) void;
 
+pub const DependencyNode = struct {
+    job: *Job,
+    next: ?*DependencyNode,
+};
+
 pub const Job = extern struct {
     id: u32,
     priority: JobPriority,
     status: JobStatus,
-    
+
     func: JobFunc,
     data: ?*anyopaque,
 
     // Internal List
     next: ?*Job,
-    
+
     // Dependency Graph
     dependency_count: u32,
-    dependents: [8]?*Job,
+    dependents_head: ?*DependencyNode,
 };
 
 pub const JobSystemConfig = extern struct {
@@ -72,6 +119,10 @@ const JobSystemState = struct {
     workers: ?[]WorkerThread,
     next_job_id: u32,
     state_mutex: std.Thread.Mutex,
+
+    allocator_wrapper: CardinalAllocatorWrapper,
+    job_pool: pool_allocator.PoolAllocator(Job),
+    dependency_pool: pool_allocator.PoolAllocator(DependencyNode),
 };
 
 pub var g_job_system: JobSystemState = undefined;
@@ -184,19 +235,23 @@ fn worker_thread_func(worker: *WorkerThread) void {
 
         // Process dependencies
         g_job_system.state_mutex.lock();
-        for (job.dependents) |dependent_opt| {
-            if (dependent_opt) |dependent| {
-                if (dependent.dependency_count > 0) {
-                    dependent.dependency_count -= 1;
-                    if (dependent.dependency_count == 0) {
-                        // Move from waiting to pending
-                        if (job_queue_remove(&g_job_system.waiting_queue, dependent)) {
-                            _ = job_queue_push(&g_job_system.pending_queue, dependent);
-                        }
+        var node = job.dependents_head;
+        while (node) |n| {
+            const dependent = n.job;
+            if (dependent.dependency_count > 0) {
+                dependent.dependency_count -= 1;
+                if (dependent.dependency_count == 0) {
+                    // Move from waiting to pending
+                    if (job_queue_remove(&g_job_system.waiting_queue, dependent)) {
+                        _ = job_queue_push(&g_job_system.pending_queue, dependent);
                     }
                 }
             }
+            const next = n.next;
+            g_job_system.dependency_pool.destroy(n);
+            node = next;
         }
+        job.dependents_head = null;
         g_job_system.state_mutex.unlock();
     }
 }
@@ -228,6 +283,10 @@ pub fn init(config: ?*const JobSystemConfig) bool {
     g_job_system.next_job_id = 0;
 
     const allocator = memory.cardinal_get_allocator_for_category(.ENGINE);
+    g_job_system.allocator_wrapper = CardinalAllocatorWrapper{ .backing = allocator };
+    g_job_system.job_pool = pool_allocator.PoolAllocator(Job).init(g_job_system.allocator_wrapper.allocator());
+    g_job_system.dependency_pool = pool_allocator.PoolAllocator(DependencyNode).init(g_job_system.allocator_wrapper.allocator());
+
     const workers = memory.cardinal_alloc(allocator, @sizeOf(WorkerThread) * g_job_system.config.worker_thread_count);
     if (workers == null) return false;
 
@@ -265,10 +324,13 @@ pub fn shutdown() void {
                 t.join();
             }
         }
-        
+
         const allocator = memory.cardinal_get_allocator_for_category(.ENGINE);
         memory.cardinal_free(allocator, workers.ptr);
     }
+
+    g_job_system.job_pool.deinit();
+    g_job_system.dependency_pool.deinit();
 
     g_job_system.initialized = false;
 }
@@ -276,11 +338,7 @@ pub fn shutdown() void {
 pub fn create_job(func: JobFunc, data: ?*anyopaque, priority: JobPriority) ?*Job {
     if (!g_job_system.initialized) return null;
 
-    const allocator = memory.cardinal_get_allocator_for_category(.ENGINE);
-    const ptr = memory.cardinal_alloc(allocator, @sizeOf(Job));
-    if (ptr == null) return null;
-
-    const job = @as(*Job, @ptrCast(@alignCast(ptr)));
+    const job = g_job_system.job_pool.create() catch return null;
     @memset(@as([*]u8, @ptrCast(job))[0..@sizeOf(Job)], 0);
 
     g_job_system.state_mutex.lock();
@@ -298,18 +356,26 @@ pub fn create_job(func: JobFunc, data: ?*anyopaque, priority: JobPriority) ?*Job
 
 pub fn submit_job(job: *Job) bool {
     if (!g_job_system.initialized) return false;
-    
+
     // If job has dependencies, put in waiting queue
     if (job.dependency_count > 0) {
         return job_queue_push(&g_job_system.waiting_queue, job);
     }
-    
+
     return job_queue_push(&g_job_system.pending_queue, job);
 }
 
 pub fn free_job(job: *Job) void {
-    const allocator = memory.cardinal_get_allocator_for_category(.ENGINE);
-    memory.cardinal_free(allocator, job);
+    // Clean up any remaining dependency nodes (though they should be gone if job ran)
+    var node = job.dependents_head;
+    while (node) |n| {
+        const next = n.next;
+        g_job_system.dependency_pool.destroy(n);
+        node = next;
+    }
+    job.dependents_head = null;
+
+    g_job_system.job_pool.destroy(job);
 }
 
 pub fn add_dependency(dependent: *Job, dependency: *Job) bool {
@@ -322,22 +388,14 @@ pub fn add_dependency(dependent: *Job, dependency: *Job) bool {
         return true; // Already done, no wait needed
     }
 
-    var i: usize = 0;
-    while (i < dependency.dependents.len) : (i += 1) {
-        if (dependency.dependents[i] == null) {
-            dependency.dependents[i] = dependent;
-            dependent.dependency_count += 1;
-            
-            // If dependent was in pending queue, move to waiting?
-            // This assumes we add dependencies BEFORE submitting, or we handle the move.
-            // For now assume BEFORE submitting or while in waiting/pending.
-            // If dependent is already RUNNING, it's too late.
-            
-            return true;
-        }
-    }
+    const node = g_job_system.dependency_pool.create() catch return false;
+    node.job = dependent;
+    node.next = dependency.dependents_head;
+    dependency.dependents_head = node;
 
-    return false;
+    dependent.dependency_count += 1;
+
+    return true;
 }
 
 pub fn process_completed_jobs(max_jobs: u32) u32 {
@@ -356,15 +414,15 @@ pub fn process_completed_jobs(max_jobs: u32) u32 {
 }
 
 pub fn get_completed_job() ?*Job {
-     if (!g_job_system.initialized) return null;
-     return job_queue_pop(&g_job_system.completed_queue, false);
+    if (!g_job_system.initialized) return null;
+    return job_queue_pop(&g_job_system.completed_queue, false);
 }
 
 pub fn get_pending_job_count() u32 {
     if (!g_job_system.initialized) return 0;
-    
+
     g_job_system.pending_queue.mutex.lock();
     defer g_job_system.pending_queue.mutex.unlock();
-    
+
     return g_job_system.pending_queue.count;
 }

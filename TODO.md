@@ -6,11 +6,11 @@ This document outlines the roadmap for the Cardinal Engine, focusing on robustne
 
 ### Memory Management
 - [x] **Stack Allocator**: Implement a double-ended stack allocator for efficient frame-temporary memory (replacing general heap allocations for temporary data).
-- [ ] **Allocator Optimization**: Expand the last allocation in the current block if possible (`memory.zig`).
+- [x] **Allocator Optimization**: Expand the last allocation in the current block if possible (`memory.zig`).
 - [ ] **Job System Optimization**: 
-    - Implement a **Pool Allocator** for `Job` structs to avoid `malloc` overhead per job.
-    - Remove the hard limit of 8 dependents per job.
-    - (Long-term) Switch to a **Fiber-based** job system (Naughty Dog / GDC 2015 style) for finer-grained concurrency and to avoid blocking worker threads.
+    - [x] Implement a **Pool Allocator** for `Job` structs to avoid `malloc` overhead per job.
+    - [x] Remove the hard limit of 8 dependents per job.
+    - [ ] (Long-term) Switch to a **Fiber-based** job system (Naughty Dog / GDC 2015 style) for finer-grained concurrency and to avoid blocking worker threads.
 
 ### Math Library (Optimization)
 - [ ] **Missing Types**: Implement `Mat3` (for normal matrices) and `Ray` structs.
@@ -57,13 +57,13 @@ This document outlines the roadmap for the Cardinal Engine, focusing on robustne
 
 ### Optimization
 - [ ] **GPU Culling**: Implement GPU-driven frustum and occlusion culling using Mesh Shaders or Compute Shaders.
-- [ ] **Shader Module Caching**: Implement caching for shader modules to avoid recompilation/reloading (`vulkan_pso.zig`).
-- [ ] **Alpha-Tested Shadows**: Create a separate shader for alpha-tested shadows (`vulkan_shadows.zig`).
-- [ ] **Dynamic Color Blending**: Support multiple color blend attachments dynamically (`vulkan_pso.zig`).
+- [x] **Shader Module Caching**: Implement caching for shader modules to avoid recompilation/reloading (`vulkan_pso.zig`).
+- [x] **Alpha-Tested Shadows**: Create a separate shader for alpha-tested shadows (`vulkan_shadows.zig`).
+- [x] **Dynamic Color Blending**: Support multiple color blend attachments dynamically (`vulkan_pso.zig`).
 
 ### Debugging
 - [ ] **Timeline Debug Config**: Make `VULKAN_TIMELINE_DEBUG_MAX_EVENTS` configurable or dynamic (`vulkan_timeline_types.zig`).
-- [ ] **Timeline Debug Memory**: Use engine allocator instead of `std.heap.c_allocator` in `vulkan_timeline_debug.zig`.
+- [x] **Timeline Debug Memory**: Use engine allocator instead of `std.heap.c_allocator` in `vulkan_timeline_debug.zig`.
 
 ### Render Graph
 - [ ] **Resource Pooling**: Use a pool for allocations in `render_graph.zig`.

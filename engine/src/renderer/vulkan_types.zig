@@ -789,6 +789,7 @@ pub const VulkanPBRPipeline = extern struct {
 
     // Shadow Mapping
     shadowPipeline: c.VkPipeline,
+    shadowAlphaPipeline: c.VkPipeline,
     shadowPipelineLayout: c.VkPipelineLayout,
     shadowDescriptorManager: ?*VulkanDescriptorManager,
     shadowDescriptorSet: c.VkDescriptorSet,

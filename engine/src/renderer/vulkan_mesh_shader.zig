@@ -48,6 +48,27 @@ pub export fn vk_mesh_shader_init(s: ?*types.VulkanState) callconv(.c) bool {
     return true;
 }
 
+fn invalidate_pending_sets(vs: *types.VulkanState) void {
+    if (vs.pending_cleanup_lists != null) {
+        const frames = if (vs.sync.max_frames_in_flight > 0) vs.sync.max_frames_in_flight else 3;
+        log.cardinal_log_debug("Invalidating pending descriptor sets", .{});
+        var f: u32 = 0;
+        var cleared_count: u32 = 0;
+        while (f < frames) : (f += 1) {
+            if (vs.pending_cleanup_lists.?[f] != null) {
+                var i: u32 = 0;
+                while (i < vs.pending_cleanup_counts.?[f]) : (i += 1) {
+                    if ((vs.pending_cleanup_lists.?[f].?)[i].descriptor_set != null) {
+                        (vs.pending_cleanup_lists.?[f].?)[i].descriptor_set = null;
+                        cleared_count += 1;
+                    }
+                }
+            }
+        }
+        log.cardinal_log_debug("Invalidated {d} sets", .{cleared_count});
+    }
+}
+
 pub export fn vk_mesh_shader_cleanup(s: ?*types.VulkanState) callconv(.c) void {
     if (s == null) return;
     const vs = s.?;
@@ -243,6 +264,24 @@ pub export fn vk_mesh_shader_create_pipeline(s: ?*types.VulkanState, config: ?*c
              return desc_builder.build(mgr, vulkan_state.context.device, &vulkan_state.allocator, vulkan_state, max_sets, true);
         }
     }.f;
+
+    // Cleanup existing managers if any
+    if (pipe.set0_manager != null or pipe.set1_manager != null) {
+        // Invalidate pending sets that might reference the old managers
+        invalidate_pending_sets(vs);
+
+        const mem_alloc = memory.cardinal_get_allocator_for_category(.RENDERER);
+        if (pipe.set0_manager != null) {
+            vk_desc_mgr.vk_descriptor_manager_destroy(pipe.set0_manager);
+            memory.cardinal_free(mem_alloc, @as(?*anyopaque, @ptrCast(pipe.set0_manager)));
+            pipe.set0_manager = null;
+        }
+        if (pipe.set1_manager != null) {
+            vk_desc_mgr.vk_descriptor_manager_destroy(pipe.set1_manager);
+            memory.cardinal_free(mem_alloc, @as(?*anyopaque, @ptrCast(pipe.set1_manager)));
+            pipe.set1_manager = null;
+        }
+    }
 
     if (!create_manager(allocator, &set0_bindings, &pipe.set0_manager, vs, 1000)) return false;
     if (!create_manager(allocator, &set1_bindings, &pipe.set1_manager, vs, 1000)) return false;
@@ -445,26 +484,7 @@ pub export fn vk_mesh_shader_destroy_pipeline(s: ?*types.VulkanState, pipeline: 
     // Invalidate pending descriptor sets associated with this pipeline's pool
     // This prevents VUID-vkFreeDescriptorSets-pDescriptorSets-parent when pending cleanups
     // are processed after the pool has been destroyed and recreated.
-    if (vs.pending_cleanup_lists != null) {
-        const frames = if (vs.sync.max_frames_in_flight > 0) vs.sync.max_frames_in_flight else 3;
-        log.cardinal_log_debug("vk_mesh_shader_destroy_pipeline: Clearing pending descriptor sets. frames={d}", .{frames});
-        var f: u32 = 0;
-        var cleared_count: u32 = 0;
-        while (f < frames) : (f += 1) {
-            if (vs.pending_cleanup_lists.?[f] != null) {
-                var i: u32 = 0;
-                while (i < vs.pending_cleanup_counts.?[f]) : (i += 1) {
-                    if ((vs.pending_cleanup_lists.?[f].?)[i].descriptor_set != null) {
-                        (vs.pending_cleanup_lists.?[f].?)[i].descriptor_set = null;
-                        cleared_count += 1;
-                    }
-                }
-            }
-        }
-        log.cardinal_log_debug("vk_mesh_shader_destroy_pipeline: Cleared {d} sets", .{cleared_count});
-    } else {
-        log.cardinal_log_debug("vk_mesh_shader_destroy_pipeline: pending_cleanup_lists is null", .{});
-    }
+    invalidate_pending_sets(vs);
 
     if (pipe.pipeline != null) {
         c.vkDestroyPipeline(vs.context.device, pipe.pipeline, null);

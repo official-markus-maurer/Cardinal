@@ -22,8 +22,11 @@ layout(push_constant) uniform PushConstants {
     layout(offset = 152) uint cascadeIndex;
 } pushConstants;
 
+layout(location = 0) out vec2 fragTexCoord;
+
 void main() {
     vec3 finalPosition = inPosition;
+    fragTexCoord = inTexCoord;
     
     if (pushConstants.hasSkeleton == 1) {
         mat4 boneTransform = mat4(0.0);

@@ -108,6 +108,14 @@ if ($LASTEXITCODE -eq 0) {
     Write-Host "[ERROR] Failed to compile shadow fragment shader"
 }
 
+Write-Host "Compiling shadow alpha fragment shader..."
+glslc --target-env=vulkan1.1 shadow_alpha.frag -o "$outputDir\shadow_alpha.frag.spv"
+if ($LASTEXITCODE -eq 0) {
+    Write-Host "[OK] Shadow alpha fragment shader compiled successfully"
+} else {
+    Write-Host "[ERROR] Failed to compile shadow alpha fragment shader"
+}
+
 Write-Host "Shader compilation complete!"
 
 # Return to original directory

@@ -330,7 +330,7 @@ pub fn vk_shadow_render(s: *types.VulkanState, cmd: c.VkCommandBuffer) void {
         // c.vkCmdSetDepthBias(cmd, 1.25, 0.0, 1.75);
         c.vkCmdSetDepthBias(cmd, 0.0, 0.0, 0.0);
 
-        // Bind Pipeline
+        // Bind Pipeline (Opaque)
         c.vkCmdBindPipeline(cmd, c.VK_PIPELINE_BIND_POINT_GRAPHICS, pipe.shadowPipeline);
 
         // Bind Descriptor Set
@@ -356,7 +356,7 @@ pub fn vk_shadow_render(s: *types.VulkanState, cmd: c.VkCommandBuffer) void {
         c.vkCmdBindVertexBuffers(cmd, 0, 1, &vertexBuffers, &offsets);
         c.vkCmdBindIndexBuffer(cmd, pipe.indexBuffer, 0, c.VK_INDEX_TYPE_UINT32);
 
-        // Loop Meshes
+        // --- Pass 1: Opaque Meshes ---
         var indexOffset: u32 = 0;
         var m_i: u32 = 0;
         var drawn_count: u32 = 0;
@@ -368,22 +368,19 @@ pub fn vk_shadow_render(s: *types.VulkanState, cmd: c.VkCommandBuffer) void {
                 continue;
             }
 
-            // Skip transparent objects for shadow map?
-            // For now, render everything to ensure we see shadows.
-            // TODO: Ideally we need a separate shader for alpha-tested shadows.
+            var is_alpha_tested = false;
+            if (mesh.material_index < scn.material_count) {
+                const mat = &scn.materials.?[mesh.material_index];
+                if (mat.alpha_mode == scene.CardinalAlphaMode.MASK) {
+                    is_alpha_tested = true;
+                }
+            }
 
-            // var is_opaque = true;
-            // if (mesh.material_index < scn.material_count) {
-            //     const mat = &scn.materials.?[mesh.material_index];
-            //     if (mat.alpha_mode != scene.CardinalAlphaMode.OPAQUE) {
-            //         is_opaque = false;
-            //     }
-            // }
-
-            // if (!is_opaque) {
-            //     indexOffset += mesh.index_count;
-            //     continue;
-            // }
+            if (is_alpha_tested) {
+                // Skip alpha tested meshes in this pass
+                indexOffset += mesh.index_count;
+                continue;
+            }
 
             if (mesh.vertex_count == 0 or !mesh.visible) {
                 indexOffset += mesh.index_count;
@@ -425,7 +422,7 @@ pub fn vk_shadow_render(s: *types.VulkanState, cmd: c.VkCommandBuffer) void {
             const casPtr = @as([*]const u8, @ptrCast(&cascadeIdx));
             @memcpy(pushData[152..156], casPtr[0..4]);
 
-            c.vkCmdPushConstants(cmd, pipe.shadowPipelineLayout, c.VK_SHADER_STAGE_VERTEX_BIT, 0, 156, &pushData);
+            c.vkCmdPushConstants(cmd, pipe.shadowPipelineLayout, c.VK_SHADER_STAGE_VERTEX_BIT | c.VK_SHADER_STAGE_FRAGMENT_BIT, 0, 156, &pushData);
 
             // Validate index buffer bounds
             if (indexOffset + mesh.index_count > pipe.totalIndexCount) {
@@ -435,6 +432,102 @@ pub fn vk_shadow_render(s: *types.VulkanState, cmd: c.VkCommandBuffer) void {
             c.vkCmdDrawIndexed(cmd, mesh.index_count, 1, indexOffset, 0, 0);
 
             indexOffset += mesh.index_count;
+        }
+
+        // --- Pass 2: Alpha Tested Meshes ---
+        if (pipe.shadowAlphaPipeline != null) {
+            c.vkCmdBindPipeline(cmd, c.VK_PIPELINE_BIND_POINT_GRAPHICS, pipe.shadowAlphaPipeline);
+
+            // Re-bind descriptors (just in case pipeline bind disturbed them, though likely they are compatible)
+            // But we already bound them to the layout which is shared.
+
+            indexOffset = 0;
+            m_i = 0;
+            while (m_i < scn.mesh_count) : (m_i += 1) {
+                const mesh = &scn.meshes.?[m_i];
+
+                if (mesh.index_count == 0 or mesh.indices == null) {
+                    continue;
+                }
+
+                var is_alpha_tested = false;
+                var texture_idx: u32 = 0;
+                var alpha_cutoff: f32 = 0.5;
+
+                if (mesh.material_index < scn.material_count) {
+                    const mat = &scn.materials.?[mesh.material_index];
+                    if (mat.alpha_mode == scene.CardinalAlphaMode.MASK) {
+                        is_alpha_tested = true;
+                        texture_idx = mat.albedo_texture.index;
+                        alpha_cutoff = mat.alpha_cutoff;
+                    }
+                }
+
+                if (!is_alpha_tested) {
+                    indexOffset += mesh.index_count;
+                    continue;
+                }
+
+                if (mesh.vertex_count == 0 or !mesh.visible) {
+                    indexOffset += mesh.index_count;
+                    continue;
+                }
+
+                drawn_count += 1;
+
+                // Push Constants
+                var pushData = std.mem.zeroes([156]u8);
+
+                // Copy Model Matrix (first 64 bytes)
+                const modelPtr = @as([*]const u8, @ptrCast(&mesh.transform));
+                @memcpy(pushData[0..64], modelPtr[0..64]);
+
+                // Material Data (Offset 64)
+                // Texture Index (u32) at 64
+                const texPtr = @as([*]const u8, @ptrCast(&texture_idx));
+                @memcpy(pushData[64..68], texPtr[0..4]);
+
+                // Alpha Cutoff (f32) at 68
+                const cutPtr = @as([*]const u8, @ptrCast(&alpha_cutoff));
+                @memcpy(pushData[68..72], cutPtr[0..4]);
+
+                // Has Skeleton
+                var hasSkeleton: u32 = 0;
+                if (scn.animation_system != null and scn.skin_count > 0) {
+                    const skins = @as([*]animation.CardinalSkin, @ptrCast(@alignCast(scn.skins.?)));
+                    var skin_idx: u32 = 0;
+                    while (skin_idx < scn.skin_count) : (skin_idx += 1) {
+                        const skin = &skins[skin_idx];
+                        var mesh_idx: u32 = 0;
+                        while (mesh_idx < skin.mesh_count) : (mesh_idx += 1) {
+                            if (skin.mesh_indices.?[mesh_idx] == m_i) {
+                                hasSkeleton = 1;
+                                break;
+                            }
+                        }
+                        if (hasSkeleton == 1) break;
+                    }
+                }
+
+                const skelPtr = @as([*]const u8, @ptrCast(&hasSkeleton));
+                @memcpy(pushData[148..152], skelPtr[0..4]);
+
+                // Cascade Index
+                const cascadeIdx = @as(u32, @intCast(j_layer));
+                const casPtr = @as([*]const u8, @ptrCast(&cascadeIdx));
+                @memcpy(pushData[152..156], casPtr[0..4]);
+
+                c.vkCmdPushConstants(cmd, pipe.shadowPipelineLayout, c.VK_SHADER_STAGE_VERTEX_BIT | c.VK_SHADER_STAGE_FRAGMENT_BIT, 0, 156, &pushData);
+
+                // Validate index buffer bounds
+                if (indexOffset + mesh.index_count > pipe.totalIndexCount) {
+                    break;
+                }
+
+                c.vkCmdDrawIndexed(cmd, mesh.index_count, 1, indexOffset, 0, 0);
+
+                indexOffset += mesh.index_count;
+            }
         }
 
         if (scn.mesh_count > 0 and j_layer == 0 and drawn_count == 0) {
