@@ -1,5 +1,6 @@
 const std = @import("std");
 const builtin = @import("builtin");
+const platform = @import("platform.zig");
 const memory = @import("memory.zig");
 const ref_counting = @import("ref_counting.zig");
 const vulkan_mt = @import("../renderer/vulkan_mt.zig");
@@ -57,16 +58,6 @@ fn hash_string(str: [*:0]const u8) u32 {
         hash = ((hash << 5) +% hash) +% char;
     }
     return hash;
-}
-
-fn get_timestamp_ms() u64 {
-    if (builtin.os.tag == .windows) {
-        return c.GetTickCount64();
-    } else {
-        var ts: c.timespec = undefined;
-        _ = c.clock_gettime(c.CLOCK_MONOTONIC, &ts);
-        return @as(u64, @intCast(ts.tv_sec)) * 1000 + @as(u64, @intCast(ts.tv_nsec)) / 1000000;
-    }
 }
 
 fn find_state_tracker_unsafe(identifier: ?[*:0]const u8) ?*CardinalResourceStateTracker {
@@ -197,7 +188,7 @@ pub export fn cardinal_resource_state_register(ref_resource: ?*ref_counting.Card
     tracker.ref_resource = ref_resource;
     tracker.state = .UNLOADED;
     tracker.loading_thread_id = 0;
-    tracker.state_change_timestamp = get_timestamp_ms();
+    tracker.state_change_timestamp = platform.get_time_ms();
 
     const id_len = c.strlen(ref_resource.?.identifier) + 1;
     const id_ptr = allocator.alloc(allocator, id_len, 0);
@@ -339,7 +330,7 @@ pub export fn cardinal_resource_state_set(identifier: ?[*:0]const u8, new_state:
     }
 
     tracker.?.state = new_state;
-    tracker.?.state_change_timestamp = get_timestamp_ms();
+    tracker.?.state_change_timestamp = platform.get_time_ms();
 
     if (new_state == .LOADING) {
         tracker.?.loading_thread_id = loading_thread_id;
@@ -369,11 +360,11 @@ pub export fn cardinal_resource_state_wait_for(identifier: ?[*:0]const u8, targe
 
     vulkan_mt.cardinal_mt_mutex_lock(&tracker.?.state_mutex);
 
-    const start_time = get_timestamp_ms();
+    const start_time = platform.get_time_ms();
 
     while (tracker.?.state != target_state) {
         if (timeout_ms > 0) {
-            const elapsed = get_timestamp_ms() - start_time;
+            const elapsed = platform.get_time_ms() - start_time;
             if (elapsed >= timeout_ms) {
                 vulkan_mt.cardinal_mt_mutex_unlock(&tracker.?.state_mutex);
                 std.log.warn("Timeout waiting for resource '{s}' to reach state {d}", .{ if (identifier) |id| std.mem.span(id) else "null", @intFromEnum(target_state) });
@@ -413,7 +404,7 @@ pub export fn cardinal_resource_state_try_acquire_loading(identifier: ?[*:0]cons
     if (tracker.?.state == .UNLOADED or tracker.?.state == .ERROR) {
         tracker.?.state = .LOADING;
         tracker.?.loading_thread_id = loading_thread_id;
-        tracker.?.state_change_timestamp = get_timestamp_ms();
+        tracker.?.state_change_timestamp = platform.get_time_ms();
         vulkan_mt.cardinal_mt_cond_broadcast(&tracker.?.state_changed);
         acquired = true;
     }

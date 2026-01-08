@@ -150,13 +150,22 @@ pub fn vk_create_simple_pipelines(s: *types.VulkanState, pipelineCache: c.VkPipe
     }
 
     // Create UV pipeline
-    if (!create_simple_pipeline_from_json(s, "assets/pipelines/debug_uv.json", &s.pipelines.uv_pipeline, &s.pipelines.uv_pipeline_layout, pipelineCache)) {
+    const pipeline_dir_span = std.mem.span(@as([*:0]const u8, @ptrCast(&s.config.pipeline_dir)));
+    const renderer_allocator = memory.cardinal_get_allocator_for_category(.RENDERER).as_allocator();
+    
+    const uv_path = std.fmt.allocPrint(renderer_allocator, "{s}/debug_uv.json", .{pipeline_dir_span}) catch return false;
+    defer renderer_allocator.free(uv_path);
+
+    if (!create_simple_pipeline_from_json(s, uv_path, &s.pipelines.uv_pipeline, &s.pipelines.uv_pipeline_layout, pipelineCache)) {
         log.cardinal_log_error("Failed to create UV pipeline", .{});
         return false;
     }
 
     // Create wireframe pipeline
-    if (!create_simple_pipeline_from_json(s, "assets/pipelines/debug_wireframe.json", &s.pipelines.wireframe_pipeline, &s.pipelines.wireframe_pipeline_layout, pipelineCache)) {
+    const wireframe_path = std.fmt.allocPrint(renderer_allocator, "{s}/debug_wireframe.json", .{pipeline_dir_span}) catch return false;
+    defer renderer_allocator.free(wireframe_path);
+
+    if (!create_simple_pipeline_from_json(s, wireframe_path, &s.pipelines.wireframe_pipeline, &s.pipelines.wireframe_pipeline_layout, pipelineCache)) {
         log.cardinal_log_error("Failed to create wireframe pipeline", .{});
         return false;
     }

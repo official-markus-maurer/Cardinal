@@ -1,6 +1,7 @@
 const std = @import("std");
 const builtin = @import("builtin");
 const log = @import("../../core/log.zig");
+const platform = @import("../../core/platform.zig");
 const types = @import("../vulkan_types.zig");
 
 const tex_utils_log = log.ScopedLogger("TEX_UTILS");
@@ -42,14 +43,6 @@ var g_pending_image_cleanups: ?*ImageCleanup = null;
 var g_pending_cmd_cleanups: ?*CommandBufferCleanup = null;
 var g_cleanup_system_initialized: bool = false;
 var g_is_shutting_down: bool = false;
-
-fn get_current_thread_id() u32 {
-    if (builtin.os.tag == .windows) {
-        return c.GetCurrentThreadId();
-    } else {
-        return @intCast(c.syscall(c.SYS_gettid));
-    }
-}
 
 pub fn add_staging_buffer_cleanup(allocator: ?*types.VulkanAllocator, buffer: c.VkBuffer, memory: c.VkDeviceMemory, allocation: c.VmaAllocation, device: c.VkDevice, timeline_value: u64) void {
     if (g_is_shutting_down) {
@@ -327,7 +320,7 @@ pub fn record_texture_copy_commands(commandBuffer: c.VkCommandBuffer, stagingBuf
     dependencyInfo.imageMemoryBarrierCount = 1;
     dependencyInfo.pImageMemoryBarriers = &barrier;
 
-    const thread_id = get_current_thread_id();
+    const thread_id = platform.get_current_thread_id();
     const vk_barrier_validation = @import("../vulkan_barrier_validation.zig");
 
     // ...

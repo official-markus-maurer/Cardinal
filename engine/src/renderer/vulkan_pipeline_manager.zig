@@ -127,21 +127,21 @@ fn destroy_pipeline_cache(manager: *VulkanPipelineManager) void {
         // Save cache
         var size: usize = 0;
         if (c.vkGetPipelineCacheData(s.context.device, manager.pipeline_cache, &size, null) == c.VK_SUCCESS) {
-             if (size > 0) {
-                 const alloc = memory.cardinal_get_allocator_for_category(.RENDERER).as_allocator();
-                 if (alloc.alloc(u8, size)) |buf| {
-                     defer alloc.free(buf);
-                     if (c.vkGetPipelineCacheData(s.context.device, manager.pipeline_cache, &size, buf.ptr) == c.VK_SUCCESS) {
-                         if (std.fs.cwd().createFile("pipeline_cache.bin", .{})) |file| {
-                             defer file.close();
-                             _ = file.writeAll(buf) catch {};
-                             log.cardinal_log_info("[PIPELINE_MANAGER] Saved pipeline cache ({d} bytes)", .{size});
-                         } else |_| {
-                             log.cardinal_log_warn("[PIPELINE_MANAGER] Failed to create cache file", .{});
-                         }
-                     }
-                 } else |_| {}
-             }
+            if (size > 0) {
+                const alloc = memory.cardinal_get_allocator_for_category(.RENDERER).as_allocator();
+                if (alloc.alloc(u8, size)) |buf| {
+                    defer alloc.free(buf);
+                    if (c.vkGetPipelineCacheData(s.context.device, manager.pipeline_cache, &size, buf.ptr) == c.VK_SUCCESS) {
+                        if (std.fs.cwd().createFile("pipeline_cache.bin", .{})) |file| {
+                            defer file.close();
+                            _ = file.writeAll(buf) catch {};
+                            log.cardinal_log_info("[PIPELINE_MANAGER] Saved pipeline cache ({d} bytes)", .{size});
+                        } else |_| {
+                            log.cardinal_log_warn("[PIPELINE_MANAGER] Failed to create cache file", .{});
+                        }
+                    }
+                } else |_| {}
+            }
         }
 
         c.vkDestroyPipelineCache(s.context.device, manager.pipeline_cache, null);
@@ -316,9 +316,22 @@ export fn vulkan_pipeline_manager_recreate_all(manager: ?*VulkanPipelineManager,
 
     if (m.mesh_shader_pipeline_enabled and s.context.supports_mesh_shader) {
         var config = std.mem.zeroes(types.MeshShaderPipelineConfig);
-        config.task_shader_path = "shaders/mesh_task.spv";
-        config.mesh_shader_path = "shaders/mesh.spv";
-        config.fragment_shader_path = "shaders/mesh_frag.spv";
+
+        const shader_dir_span = std.mem.span(@as([*:0]const u8, @ptrCast(&s.config.shader_dir)));
+        const renderer_allocator = memory.cardinal_get_allocator_for_category(.RENDERER).as_allocator();
+
+        const task_path = std.fmt.allocPrint(renderer_allocator, "{s}/mesh_task.spv\x00", .{shader_dir_span}) catch return false;
+        defer renderer_allocator.free(task_path);
+
+        const mesh_path = std.fmt.allocPrint(renderer_allocator, "{s}/mesh.spv\x00", .{shader_dir_span}) catch return false;
+        defer renderer_allocator.free(mesh_path);
+
+        const frag_path = std.fmt.allocPrint(renderer_allocator, "{s}/mesh_frag.spv\x00", .{shader_dir_span}) catch return false;
+        defer renderer_allocator.free(frag_path);
+
+        config.task_shader_path = @ptrCast(task_path.ptr);
+        config.mesh_shader_path = @ptrCast(mesh_path.ptr);
+        config.fragment_shader_path = @ptrCast(frag_path.ptr);
         config.topology = c.VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST;
         config.polygon_mode = c.VK_POLYGON_MODE_FILL;
         config.cull_mode = c.VK_CULL_MODE_BACK_BIT;

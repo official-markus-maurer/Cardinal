@@ -3,6 +3,7 @@ const builtin = @import("builtin");
 const log = @import("../core/log.zig");
 const types = @import("vulkan_types.zig");
 const vk_barrier_validation = @import("vulkan_barrier_validation.zig");
+const platform = @import("../core/platform.zig");
 
 const c = @import("vulkan_c.zig").c;
 
@@ -43,7 +44,7 @@ pub export fn vk_create_enhanced_image_barrier(transfer_info: ?*const types.VkQu
     out_barrier.?.image = image;
     out_barrier.?.subresourceRange = subresource_range;
 
-    log.cardinal_log_debug("[Thread {d}] Enhanced image barrier: queue families {d}->{d}, stages 0x{x}->0x{x}", .{ get_current_thread_id(), transfer_info.?.src_queue_family, transfer_info.?.dst_queue_family, transfer_info.?.src_stage_mask, transfer_info.?.dst_stage_mask });
+    log.cardinal_log_debug("[Thread {d}] Enhanced image barrier: queue families {d}->{d}, stages 0x{x}->0x{x}", .{ platform.get_current_thread_id(), transfer_info.?.src_queue_family, transfer_info.?.dst_queue_family, transfer_info.?.src_stage_mask, transfer_info.?.dst_stage_mask });
 
     return true;
 }
@@ -74,7 +75,7 @@ pub export fn vk_create_enhanced_buffer_barrier(transfer_info: ?*const types.VkQ
     out_barrier.?.offset = offset;
     out_barrier.?.size = size;
 
-    log.cardinal_log_debug("[Thread {d}] Enhanced buffer barrier: queue families {d}->{d}, stages 0x{x}->0x{x}", .{ get_current_thread_id(), transfer_info.?.src_queue_family, transfer_info.?.dst_queue_family, transfer_info.?.src_stage_mask, transfer_info.?.dst_stage_mask });
+    log.cardinal_log_debug("[Thread {d}] Enhanced buffer barrier: queue families {d}->{d}, stages 0x{x}->0x{x}", .{ platform.get_current_thread_id(), transfer_info.?.src_queue_family, transfer_info.?.dst_queue_family, transfer_info.?.src_stage_mask, transfer_info.?.dst_stage_mask });
 
     return true;
 }
@@ -111,10 +112,10 @@ pub export fn vk_record_enhanced_ownership_transfer(cmd: c.VkCommandBuffer, tran
     dependency_info.bufferMemoryBarrierCount = buffer_barrier_count;
     dependency_info.pBufferMemoryBarriers = buffer_barriers;
 
-    log.cardinal_log_debug("[Thread {d}] Recording enhanced ownership transfer: {d} images, {d} buffers", .{ get_current_thread_id(), image_barrier_count, buffer_barrier_count });
+    log.cardinal_log_debug("[Thread {d}] Recording enhanced ownership transfer: {d} images, {d} buffers", .{ platform.get_current_thread_id(), image_barrier_count, buffer_barrier_count });
 
     // Validate the pipeline barrier before execution
-    if (!vk_barrier_validation.cardinal_barrier_validation_validate_pipeline_barrier(&dependency_info, cmd, get_current_thread_id())) {
+    if (!vk_barrier_validation.cardinal_barrier_validation_validate_pipeline_barrier(&dependency_info, cmd, platform.get_current_thread_id())) {
         log.cardinal_log_warn("[MAINTENANCE8_SYNC] Pipeline barrier validation failed for enhanced ownership transfer", .{});
     }
 

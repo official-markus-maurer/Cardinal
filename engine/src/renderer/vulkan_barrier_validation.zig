@@ -1,6 +1,7 @@
 const std = @import("std");
 const builtin = @import("builtin");
 const log = @import("../core/log.zig");
+const platform = @import("../core/platform.zig");
 const memory = @import("../core/memory.zig");
 const types = @import("vulkan_types.zig");
 
@@ -19,14 +20,6 @@ var g_race_conditions: u32 = 0;
 var g_validation_mutex: if (builtin.os.tag == .windows) c.CRITICAL_SECTION else c.pthread_mutex_t = undefined;
 
 // Helpers
-fn get_current_thread_id() u32 {
-    if (builtin.os.tag == .windows) {
-        return c.GetCurrentThreadId();
-    } else {
-        return @intCast(c.syscall(c.SYS_gettid));
-    }
-}
-
 fn get_timestamp() u64 {
     if (builtin.os.tag == .windows) {
         var counter: c.LARGE_INTEGER = undefined;
@@ -173,7 +166,7 @@ pub export fn cardinal_barrier_validation_track_access(resource_id: u64, resourc
     access.stage_mask = stage_mask;
     access.access_mask = access_mask;
     access.thread_id = thread_id;
-    access.timestamp = get_timestamp();
+    access.timestamp = platform.get_time_ns();
     access.command_buffer = command_buffer;
 
     g_validation_context.access_count += 1;
@@ -311,7 +304,7 @@ pub fn cardinal_barrier_validation_validate_secondary_recording(context: ?*const
         return false;
     }
 
-    const thread_id = get_current_thread_id();
+    const thread_id = platform.get_current_thread_id();
     const cmd_buffer_id = @intFromPtr(ctx.command_buffer);
 
     _ = cardinal_barrier_validation_track_access(cmd_buffer_id, types.CardinalResourceType.CARDINAL_RESOURCE_DESCRIPTOR_SET, types.CardinalResourceAccessType.CARDINAL_ACCESS_WRITE, c.VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT, c.VK_ACCESS_2_MEMORY_WRITE_BIT, thread_id, ctx.command_buffer);

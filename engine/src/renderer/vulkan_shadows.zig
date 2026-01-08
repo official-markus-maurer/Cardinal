@@ -74,13 +74,13 @@ pub fn vk_shadow_render(s: *types.VulkanState, cmd: c.VkCommandBuffer) void {
     const view = math.Mat4.fromArray(ubo.view);
     const proj = math.Mat4.fromArray(ubo.proj);
 
-    var cascadeSplits = [_]f32{0} ** 4;
-    var lightSpaceMatrices = [_]math.Mat4{mat4_identity()} ** 4;
+    var cascadeSplits = [_]f32{0} ** types.MAX_SHADOW_CASCADES;
+    var lightSpaceMatrices = [_]math.Mat4{mat4_identity()} ** types.MAX_SHADOW_CASCADES;
 
-    const nearClip: f32 = 0.1;
+    const nearClip: f32 = s.config.shadow_near_clip;
 
     // Extract far plane from projection matrix: far = proj[14] / (1.0 + proj[10])
-    var farClip: f32 = 1000.0;
+    var farClip: f32 = s.config.shadow_far_clip;
     const p10 = proj.data[10];
     const p14 = proj.data[14];
     if (@abs(1.0 + p10) > 0.001) {
@@ -93,12 +93,13 @@ pub fn vk_shadow_render(s: *types.VulkanState, cmd: c.VkCommandBuffer) void {
     const range = maxZ - minZ;
 
     const lambda: f32 = s.config.shadow_split_lambda;
+    const cascade_count = @min(s.config.shadow_cascade_count, types.MAX_SHADOW_CASCADES);
 
     var lastSplitDist: f32 = 0.0;
 
     var j: usize = 0;
-    while (j < s.config.shadow_cascade_count) : (j += 1) {
-        const p = @as(f32, @floatFromInt(j + 1)) / @as(f32, @floatFromInt(s.config.shadow_cascade_count));
+    while (j < cascade_count) : (j += 1) {
+        const p = @as(f32, @floatFromInt(j + 1)) / @as(f32, @floatFromInt(cascade_count));
         const logC = minZ * std.math.pow(f32, ratio, p);
         const uniC = minZ + range * p;
         const d = lambda * logC + (1.0 - lambda) * uniC;
@@ -245,7 +246,7 @@ pub fn vk_shadow_render(s: *types.VulkanState, cmd: c.VkCommandBuffer) void {
         barrier.subresourceRange.baseMipLevel = 0;
         barrier.subresourceRange.levelCount = 1;
         barrier.subresourceRange.baseArrayLayer = 0;
-        barrier.subresourceRange.layerCount = s.config.shadow_cascade_count;
+        barrier.subresourceRange.layerCount = cascade_count;
 
         var dep = std.mem.zeroes(c.VkDependencyInfo);
         dep.sType = c.VK_STRUCTURE_TYPE_DEPENDENCY_INFO;
@@ -553,7 +554,7 @@ pub fn vk_shadow_render(s: *types.VulkanState, cmd: c.VkCommandBuffer) void {
         barrier.subresourceRange.baseMipLevel = 0;
         barrier.subresourceRange.levelCount = 1;
         barrier.subresourceRange.baseArrayLayer = 0;
-        barrier.subresourceRange.layerCount = s.config.shadow_cascade_count;
+        barrier.subresourceRange.layerCount = cascade_count;
 
         var dep = std.mem.zeroes(c.VkDependencyInfo);
         dep.sType = c.VK_STRUCTURE_TYPE_DEPENDENCY_INFO;

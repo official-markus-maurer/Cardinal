@@ -2,11 +2,12 @@ const std = @import("std");
 const errors = @import("errors.zig");
 
 pub const ModuleFn = *const fn (ctx: ?*anyopaque) anyerror!void;
+pub const ModuleUpdateFn = *const fn (ctx: ?*anyopaque, delta_time: f32) anyerror!void;
 
 pub const Module = struct {
     name: []const u8,
     init_fn: ?ModuleFn = null,
-    update_fn: ?ModuleFn = null,
+    update_fn: ?ModuleUpdateFn = null,
     shutdown_fn: ?ModuleFn = null,
     ctx: ?*anyopaque = null,
 };
@@ -44,10 +45,10 @@ pub const ModuleManager = struct {
         self.initialized = true;
     }
 
-    pub fn update(self: *ModuleManager) !void {
+    pub fn update(self: *ModuleManager, delta_time: f32) !void {
         for (self.modules.items) |mod| {
             if (mod.update_fn) |func| {
-                func(mod.ctx) catch |err| {
+                func(mod.ctx, delta_time) catch |err| {
                     std.log.err("Error updating module {s}: {}", .{mod.name, err});
                     return err;
                 };

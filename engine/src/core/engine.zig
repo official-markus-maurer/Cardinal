@@ -7,6 +7,7 @@ const resource_state = @import("resource_state.zig");
 const async_loader = @import("async_loader.zig");
 const window = @import("window.zig");
 const module = @import("module.zig");
+const platform = @import("platform.zig");
 const events = @import("events.zig");
 const input = @import("input.zig");
 const stack_allocator = @import("stack_allocator.zig");
@@ -27,6 +28,9 @@ pub const CardinalEngine = struct {
 
     frame_allocator: stack_allocator.StackAllocator = undefined,
     frame_memory: []u8 = undefined,
+
+    // Time tracking
+    last_frame_time: u64 = 0,
 
     // Track initialization state
     memory_initialized: bool = false,
@@ -52,6 +56,7 @@ pub const CardinalEngine = struct {
             .config = config_manager.config,
             .window = null,
             .renderer = .{ ._opaque = null },
+            .last_frame_time = platform.get_time_ns(),
         };
         errdefer {
             self.deinit();
@@ -113,6 +118,14 @@ pub const CardinalEngine = struct {
     }
 
     pub fn update(self: *CardinalEngine) !void {
+        // Calculate delta time
+        const current_time = platform.get_time_ns();
+        const dt_ns = current_time - self.last_frame_time;
+        self.last_frame_time = current_time;
+
+        // Convert to seconds (f32)
+        const delta_time = @as(f32, @floatFromInt(dt_ns)) / 1_000_000_000.0;
+
         // Reset frame allocator at the beginning of the frame
         self.frame_allocator.reset();
 
@@ -120,7 +133,7 @@ pub const CardinalEngine = struct {
             window.cardinal_window_poll(win);
             input.update(win);
         }
-        try self.module_manager.update();
+        try self.module_manager.update(delta_time);
     }
 
     pub fn shouldClose(self: *CardinalEngine) bool {

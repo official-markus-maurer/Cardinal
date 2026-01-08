@@ -190,7 +190,10 @@ pub export fn vk_mesh_shader_create_pipeline(s: ?*types.VulkanState, config: ?*c
     // Load PSO JSON
     var builder = vk_pso.PipelineBuilder.init(allocator, vs.context.device, pipeline_cache);
     
-    var parsed = vk_pso.PipelineBuilder.load_from_json(allocator, "assets/pipelines/mesh_shader.json") catch |err| {
+    const pipeline_dir_span = std.mem.span(@as([*:0]const u8, @ptrCast(&vs.config.pipeline_dir)));
+    const mesh_pipeline_path = std.fmt.allocPrint(allocator, "{s}/mesh_shader.json", .{pipeline_dir_span}) catch return false;
+
+    var parsed = vk_pso.PipelineBuilder.load_from_json(allocator, mesh_pipeline_path) catch |err| {
         log.cardinal_log_error("Failed to load mesh pipeline JSON: {s}", .{@errorName(err)});
         return false;
     };

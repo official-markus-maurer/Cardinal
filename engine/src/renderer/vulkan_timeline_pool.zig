@@ -1,6 +1,7 @@
 const std = @import("std");
 const builtin = @import("builtin");
 const log = @import("../core/log.zig");
+const platform = @import("../core/platform.zig");
 const types = @import("vulkan_timeline_types.zig");
 
 const c = types.c;
@@ -227,7 +228,7 @@ pub export fn vulkan_timeline_pool_allocate(pool: *types.VulkanTimelinePool, all
         if (create_timeline_semaphore(pool.device, &pool.entries[new_index].semaphore)) {
             pool.entries[new_index].last_signaled_value = 0;
             pool.entries[new_index].in_use = true;
-            pool.entries[new_index].creation_time = get_current_time_ns();
+            pool.entries[new_index].creation_time = platform.get_time_ns();
 
             allocation.semaphore = pool.entries[new_index].semaphore;
             allocation.pool_index = new_index;

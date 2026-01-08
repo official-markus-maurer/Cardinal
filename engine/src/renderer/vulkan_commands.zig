@@ -1,6 +1,7 @@
 const std = @import("std");
 const builtin = @import("builtin");
 const log = @import("../core/log.zig");
+const platform = @import("../core/platform.zig");
 const math = @import("../core/math.zig");
 const memory = @import("../core/memory.zig");
 const types = @import("vulkan_types.zig");
@@ -19,15 +20,6 @@ const stack_allocator = @import("../core/stack_allocator.zig");
 const cmd_log = log.ScopedLogger("COMMANDS");
 
 const c = @import("vulkan_c.zig").c;
-
-// Helper to get current thread ID
-fn get_current_thread_id() u32 {
-    if (builtin.os.tag == .windows) {
-        return c.GetCurrentThreadId();
-    } else {
-        return @intCast(c.syscall(c.SYS_gettid));
-    }
-}
 
 // Internal helpers
 
@@ -224,7 +216,7 @@ fn begin_command_buffer(s: *types.VulkanState, cmd: c.VkCommandBuffer) bool {
 }
 
 fn transition_images(s: *types.VulkanState, cmd: c.VkCommandBuffer, image_index: u32, use_depth: bool) void {
-    const thread_id = get_current_thread_id();
+    const thread_id = platform.get_current_thread_id();
 
     // Depth transition
     if (use_depth and !s.swapchain.depth_layout_initialized) {
@@ -338,13 +330,6 @@ pub fn begin_dynamic_rendering(s: *types.VulkanState, cmd: c.VkCommandBuffer, im
 
     s.context.vkCmdBeginRendering.?(cmd, &renderingInfo);
 
-    // Set viewport/scissor only if not using secondary buffers (as they usually set their own or inherit?
-    // Actually, dynamic rendering with secondary buffers might expect viewport to be set in secondary buffers or inherited.
-    // But vkCmdSetViewport is not allowed in Secondary buffer if it inherits?
-    // Secondary buffers record their own commands.
-    // If we use secondary buffers, we don't need to set viewport in primary buffer UNLESS we are using it for inheritance?
-    // But let's keep it simple: always set it if flags == 0 (Inline).
-    // If flags != 0, we are just executing secondary buffers, so no inline commands allowed.
     if (flags == 0) {
         var vp = std.mem.zeroes(c.VkViewport);
         vp.x = 0;
@@ -396,7 +381,7 @@ fn end_recording(s: *types.VulkanState, cmd: c.VkCommandBuffer, image_index: u32
     dep.imageMemoryBarrierCount = 1;
     dep.pImageMemoryBarriers = &barrier;
 
-    const thread_id = get_current_thread_id();
+    const thread_id = platform.get_current_thread_id();
     if (!vk_barrier_validation.cardinal_barrier_validation_validate_pipeline_barrier(&dep, cmd, thread_id)) {
         log.cardinal_log_warn("[CMD] Pipeline barrier validation failed for swapchain present transition", .{});
     }
@@ -715,12 +700,6 @@ pub export fn vk_record_cmd(s: ?*types.VulkanState, image_index: u32) callconv(.
     log.cardinal_log_info("[CMD] Frame {d}: Recording command buffer {any} (buffer {d}) for image {d}", .{ vs.sync.current_frame, cmd, vs.commands.current_buffer_index, image_index });
 
     if (!validate_swapchain_image(vs, image_index)) return;
-
-    // log.cardinal_log_debug("[DEBUG] Swapchain Image [{d}]: {any}", .{image_index, vs.swapchain.images.?[image_index]});
-    // log.cardinal_log_debug("[DEBUG] Current Scene: {any}", .{vs.current_scene});
-    // if (vs.pipelines.use_pbr_pipeline) {
-    //     log.cardinal_log_debug("[DEBUG] Shadow Map Image: {any}", .{vs.pipelines.pbr_pipeline.shadowMapImage});
-    // }
 
     if (!begin_command_buffer(vs, cmd)) return;
 

@@ -7,6 +7,7 @@ const types = @import("vulkan_types.zig");
 const vk_commands = @import("vulkan_commands.zig");
 const vk_pipeline = @import("vulkan_pipeline.zig");
 const vk_mesh_shader = @import("vulkan_mesh_shader.zig");
+const platform = @import("../core/platform.zig");
 
 const swap_log = log.ScopedLogger("SWAPCHAIN");
 
@@ -14,22 +15,12 @@ const c = @import("vulkan_c.zig").c;
 
 // Helper functions
 
-fn get_current_time_ms() u64 {
-    if (builtin.os.tag == .windows) {
-        return c.GetTickCount64();
-    } else {
-        var ts: c.struct_timespec = undefined;
-        _ = c.clock_gettime(c.CLOCK_MONOTONIC, &ts);
-        return @as(u64, @intCast(ts.tv_sec)) * 1000 + @as(u64, @intCast(ts.tv_nsec)) / 1000000;
-    }
-}
-
 fn should_throttle_recreation(s: *types.VulkanState) bool {
     if (!s.swapchain.frame_pacing_enabled) {
         return false;
     }
 
-    const current_time = get_current_time_ms();
+    const current_time = platform.get_time_ms();
     const time_since_last = current_time - s.swapchain.last_recreation_time;
 
     // Throttle if less than 100ms since last recreation and we've had multiple failures
@@ -134,9 +125,9 @@ fn choose_present_mode(modes: [*]const c.VkPresentModeKHR, count: u32) c.VkPrese
 }
 
 fn wait_device_idle_for_swapchain(s: *types.VulkanState) bool {
-    const t_idle0 = get_current_time_ms();
+    const t_idle0 = platform.get_time_ms();
     const res = c.vkDeviceWaitIdle(s.context.device);
-    const dt = get_current_time_ms() - t_idle0;
+    const dt = platform.get_time_ms() - t_idle0;
 
     if (dt > 200) {
         log.cardinal_log_warn("[WATCHDOG] Swapchain create: device wait idle duration {d} ms", .{dt});
@@ -493,7 +484,7 @@ pub export fn vk_create_swapchain(s: ?*types.VulkanState) callconv(.c) bool {
     }
 
     vs.swapchain.recreation_pending = false;
-    vs.swapchain.last_recreation_time = get_current_time_ms();
+    vs.swapchain.last_recreation_time = platform.get_time_ms();
     vs.swapchain.recreation_count += 1;
     vs.swapchain.consecutive_recreation_failures = 0;
     vs.swapchain.frame_pacing_enabled = true;
@@ -546,14 +537,14 @@ pub export fn vk_recreate_swapchain(s: ?*types.VulkanState) callconv(.c) bool {
 
     log.cardinal_log_info("[SWAPCHAIN] Starting swapchain recreation", .{});
 
-    vs.swapchain.last_recreation_time = get_current_time_ms();
+    vs.swapchain.last_recreation_time = platform.get_time_ms();
 
     var backup: SwapchainBackupState = undefined;
     backup_swapchain_state(vs, &backup);
 
-    const t_idle0 = get_current_time_ms();
+    const t_idle0 = platform.get_time_ms();
     const idle_result = c.vkDeviceWaitIdle(vs.context.device);
-    const idle_dt = get_current_time_ms() - t_idle0;
+    const idle_dt = platform.get_time_ms() - t_idle0;
 
     if (idle_dt > 200) {
         log.cardinal_log_warn("[WATCHDOG] Swapchain recreate: device wait idle duration {d} ms", .{idle_dt});

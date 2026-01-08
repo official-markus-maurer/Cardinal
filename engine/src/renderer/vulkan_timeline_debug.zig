@@ -1,6 +1,7 @@
 const std = @import("std");
 const builtin = @import("builtin");
 const log = @import("../core/log.zig");
+const platform = @import("../core/platform.zig");
 const memory = @import("../core/memory.zig");
 const types = @import("vulkan_timeline_types.zig");
 
@@ -68,30 +69,11 @@ fn debug_mutex_unlock(mutex: ?*anyopaque) void {
 }
 
 pub export fn vulkan_timeline_debug_get_timestamp_ns() callconv(.c) u64 {
-    if (builtin.os.tag == .windows) {
-        var frequency: c.LARGE_INTEGER = undefined;
-        var counter: c.LARGE_INTEGER = undefined;
-        _ = c.QueryPerformanceFrequency(&frequency);
-        _ = c.QueryPerformanceCounter(&counter);
-        return @intCast(@divTrunc(counter.QuadPart * 1000000000, frequency.QuadPart));
-    } else {
-        var ts: c.timespec = undefined;
-        _ = c.clock_gettime(c.CLOCK_MONOTONIC, &ts);
-        return @as(u64, @intCast(ts.tv_sec)) * 1000000000 + @as(u64, @intCast(ts.tv_nsec));
-    }
+    return platform.get_time_ns();
 }
 
 pub export fn vulkan_timeline_debug_get_thread_id() callconv(.c) u32 {
-    if (builtin.os.tag == .windows) {
-        return c.GetCurrentThreadId();
-    } else {
-        // SYS_gettid might not be available directly in all libc bindings
-        // Using pthread_self might be safer but returns pointer/opaque
-        // C code used syscall(c.SYS_gettid), let's try to mimic
-        // Note: SYS_gettid might be missing in some libc imports or named differently
-        // If it fails compilation, we might need another way or just use 0
-        return @intCast(c.syscall(c.SYS_gettid));
-    }
+    return platform.get_current_thread_id();
 }
 
 pub export fn vulkan_timeline_debug_event_type_to_string(type_enum: types.VulkanTimelineEventType) callconv(.c) [*c]const u8 {

@@ -415,7 +415,8 @@ fn update_pbr_descriptor_sets(pipeline: *types.VulkanPBRPipeline, vulkan_state: 
 
     // Update Shadow UBO (Binding 9)
     if (pipeline.shadowUBO != null) {
-        const shadowUBOSize = @sizeOf(math.Mat4) * vulkan_state.?.config.shadow_cascade_count + @sizeOf(f32) * 4;
+        const cascade_count = @min(vulkan_state.?.config.shadow_cascade_count, types.MAX_SHADOW_CASCADES);
+        const shadowUBOSize = @sizeOf(math.Mat4) * @as(u64, cascade_count) + @sizeOf(f32) * 4;
         if (!descriptor_mgr.vk_descriptor_manager_update_buffer(dm, set, 9, pipeline.shadowUBO, 0, shadowUBOSize)) {
             log.cardinal_log_error("Failed to update shadow UBO descriptor", .{});
             return false;
@@ -523,7 +524,7 @@ pub export fn vk_pbr_load_scene(pipeline: ?*types.VulkanPBRPipeline, device: c.V
 fn create_shadow_resources(pipeline: *types.VulkanPBRPipeline, device: c.VkDevice, allocator: *types.VulkanAllocator, vulkan_state: ?*types.VulkanState) bool {
     const config = &vulkan_state.?.config;
     const shadow_map_size = config.shadow_map_size;
-    const shadow_cascade_count = config.shadow_cascade_count;
+    const shadow_cascade_count = @min(config.shadow_cascade_count, types.MAX_SHADOW_CASCADES);
     const shadow_format = config.shadow_map_format;
 
     // Create Shadow Image (2D Array)
@@ -599,7 +600,7 @@ fn create_shadow_resources(pipeline: *types.VulkanPBRPipeline, device: c.VkDevic
 
     // Create Shadow UBO
     var bufferInfo = std.mem.zeroes(buffer_mgr.VulkanBufferCreateInfo);
-    bufferInfo.size = @sizeOf(math.Mat4) * shadow_cascade_count + @sizeOf(f32) * 4; // Matrices + Splits
+    bufferInfo.size = @sizeOf(math.Mat4) * @as(u64, shadow_cascade_count) + @sizeOf(f32) * 4; // Matrices + Splits
     bufferInfo.usage = c.VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT;
     bufferInfo.properties = c.VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | c.VK_MEMORY_PROPERTY_HOST_COHERENT_BIT;
     bufferInfo.persistentlyMapped = true;
@@ -648,7 +649,8 @@ fn create_shadow_pipeline(pipeline: *types.VulkanPBRPipeline, device: c.VkDevice
 
     // Update Set
     // Binding 0
-    const shadowUBOSize = @sizeOf(math.Mat4) * vulkan_state.?.config.shadow_cascade_count + @sizeOf(f32) * 4;
+    const cascade_count = @min(vulkan_state.?.config.shadow_cascade_count, types.MAX_SHADOW_CASCADES);
+    const shadowUBOSize = @sizeOf(math.Mat4) * @as(u64, cascade_count) + @sizeOf(f32) * 4;
     if (!descriptor_mgr.vk_descriptor_manager_update_buffer(pipeline.shadowDescriptorManager, pipeline.shadowDescriptorSet, 0, pipeline.shadowUBO, 0, shadowUBOSize)) {
         log.cardinal_log_error("Failed to update shadow UBO descriptor", .{});
         return false;

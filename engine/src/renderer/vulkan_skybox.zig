@@ -76,7 +76,11 @@ pub fn vk_skybox_pipeline_init(pipeline: *types.SkyboxPipeline, device: c.VkDevi
     const renderer_allocator = mem_alloc.as_allocator();
     var builder = vk_pso.PipelineBuilder.init(renderer_allocator, device, null);
     
-    var parsed = vk_pso.PipelineBuilder.load_from_json(renderer_allocator, "assets/pipelines/skybox.json") catch |err| {
+    const pipeline_dir = if (vulkan_state) |vs| std.mem.span(@as([*:0]const u8, @ptrCast(&vs.config.pipeline_dir))) else "assets/pipelines";
+    const skybox_path = std.fmt.allocPrint(renderer_allocator, "{s}/skybox.json", .{pipeline_dir}) catch return false;
+    defer renderer_allocator.free(skybox_path);
+
+    var parsed = vk_pso.PipelineBuilder.load_from_json(renderer_allocator, skybox_path) catch |err| {
         skybox_log.err("Failed to load skybox pipeline JSON: {s}", .{@errorName(err)});
         return false;
     };
