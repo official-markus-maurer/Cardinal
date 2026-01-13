@@ -10,24 +10,9 @@ This document outlines the roadmap for the Cardinal Engine, focusing on robustne
     - Enable finer-grained concurrency.
     - Avoid blocking worker threads during dependency waits.
 - [ ] **Concurrency Safety**: Replace volatile flags with `std.atomic.Value` in `vulkan_texture_manager.zig` to ensure thread safety across architectures.
-- [ ] **Allocator Optimization**: Implement `resize` in `CardinalAllocator` wrapper (`memory.zig`) to support in-place reallocation.
-- [ ] **Pool Allocator**: Implement `reset` in `PoolAllocator` (`pool_allocator.zig`) to allow efficient reuse of all blocks.
-- [ ] **Editor Memory**: Use `ArenaAllocator` for temporary string allocations in `editor_layer.zig` (e.g. filenames) to reduce manual `free` calls.
-
-### Maintenance & Code Quality
-- [x] **Stale TODOs**: Audit codebase for stale TODO comments (e.g. `events.zig`, `render_graph.zig`) and implement or remove them.
-- [x] **Error Handling**: Ensure `VulkanTextureManager` handles null `SyncManager` gracefully to prevent crashes or resource leaks.
-- [x] **Portability**: Refactor `log.zig` to use Zig standard library I/O instead of C `stdio.h` to reduce dependencies and improve cross-platform support.
-- [x] **Windowing**: Replace platform-specific mutexes in `window.zig` with `std.Thread.Mutex`.
-- [x] **Ref Counting**: Use `std.hash.Wyhash` instead of custom hash function in `ref_counting.zig`.
-- [x] **Internal APIs**: Remove unnecessary `callconv(.c)` from internal Zig functions in `model_manager.zig` and other managers.
-- [x] **Async Loader**: Decouple `async_loader.zig` from hardcoded C externs by using function pointers or interfaces.
-- [x] **Job System Integration**: Fully migrate `AsyncLoader` to use `JobSystem`'s dependency management, removing legacy dependency graph structures.
-
-### Math Library (Optimization)
-- [x] **SIMD Alignment**: Optimize `Vec3` by adding padding (16-byte alignment) to enable efficient SIMD loads/stores similar to `Vec4`.
-- [x] **Missing Types**: Implement `Mat3` (for normal matrices) and `Ray` structs.
-- [x] **Missing Operations**: Implement `Mat4`, `Quat` (quaternions), `lerp`, `slerp`, `reflect` in `math.zig`.
+- [x] **Allocator Optimization**: Implement `resize` in `CardinalAllocator` wrapper (`memory.zig`) to support in-place reallocation.
+- [x] **Pool Allocator**: Implement `reset` in `PoolAllocator` (`pool_allocator.zig`) to allow efficient reuse of all blocks.
+- [x] **Editor Memory**: Use `ArenaAllocator` for temporary string allocations in `editor_layer.zig` (e.g. filenames) to reduce manual `free` calls.
 
 ## 2. Data & Assets
 
@@ -47,8 +32,8 @@ This document outlines the roadmap for the Cardinal Engine, focusing on robustne
 ## 3. Rendering (Vulkan)
 - [ ] **IBL**: Implement Environment Maps, Irradiance Maps, and Prefiltered Specular maps.
 - [ ] **Ambient Occlusion**: SSAO or HBAO.
-- [ ] **Swapchain**: Improve `choose_surface_format` in `vulkan_swapchain.zig` to expose HDR configuration via `config.zig` instead of just environment variables.
-- [ ] **Command Buffers**: Rename `secondary_buffers` in `vulkan_commands.zig` to `alternate_primary_buffers` to avoid confusion with actual secondary command buffers.
+- [x] **Swapchain**: Improve `choose_surface_format` in `vulkan_swapchain.zig` to expose HDR configuration via `config.zig` instead of just environment variables.
+- [x] **Command Buffers**: Rename `secondary_buffers` in `vulkan_commands.zig` to `alternate_primary_buffers` to avoid confusion with actual secondary command buffers.
 - [ ] **Pipeline Cache**: Add header/checksum validation for `pipeline_cache.bin` in `vulkan_pipeline_manager.zig` to prevent loading corrupted caches.
 - [ ] **Memory Tracking**: Remove unused debug wrappers in `vulkan_allocator.zig` or integrate them with a proper memory tracking system.
 - [ ] **Compute**: Remove unnecessary `callconv(.c)` export from internal `vk_compute` functions in `vulkan_compute.zig`.

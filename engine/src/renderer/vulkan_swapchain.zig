@@ -52,13 +52,13 @@ fn should_throttle_recreation(s: *types.VulkanState) bool {
     return false;
 }
 
-fn choose_surface_format(formats: [*]const c.VkSurfaceFormatKHR, count: u32) c.VkSurfaceFormatKHR {
+fn choose_surface_format(formats: [*]const c.VkSurfaceFormatKHR, count: u32, prefer_hdr_config: bool) c.VkSurfaceFormatKHR {
     if (count == 0) {
         return std.mem.zeroes(c.VkSurfaceFormatKHR);
     }
 
-    // Allow opting into HDR via environment variable CARDINAL_PREFER_HDR
-    var prefer_hdr = false;
+    // Allow opting into HDR via environment variable CARDINAL_PREFER_HDR or config
+    var prefer_hdr = prefer_hdr_config;
     const env_hdr = c.getenv("CARDINAL_PREFER_HDR");
     if (env_hdr != null) {
         const h = env_hdr[0];
@@ -171,7 +171,7 @@ fn get_surface_details(s: *types.VulkanState, caps: *c.VkSurfaceCapabilitiesKHR,
         log.cardinal_log_error("[SWAPCHAIN] Failed to retrieve surface formats", .{});
         return false;
     }
-    out_fmt.* = choose_surface_format(fmts, count);
+    out_fmt.* = choose_surface_format(fmts, count, s.config.prefer_hdr);
 
     if (c.vkGetPhysicalDeviceSurfacePresentModesKHR(s.context.physical_device, s.context.surface, &count, null) != c.VK_SUCCESS or count == 0) {
         log.cardinal_log_error("[SWAPCHAIN] Failed to get present modes", .{});

@@ -7,60 +7,6 @@ const job_log = log.ScopedLogger("JOB_SYSTEM");
 
 // --- Types ---
 
-const CardinalAllocatorWrapper = struct {
-    backing: ?*memory.CardinalAllocator,
-
-    const vtable = std.mem.Allocator.VTable{
-        .alloc = alloc,
-        .resize = resize,
-        .free = free,
-        .remap = remap,
-    };
-
-    fn alloc(ctx: *anyopaque, len: usize, ptr_align: std.mem.Alignment, ret_addr: usize) ?[*]u8 {
-        _ = ret_addr;
-        const self: *CardinalAllocatorWrapper = @ptrCast(@alignCast(ctx));
-        if (self.backing == null) return null;
-        const alignment = ptr_align.toByteUnits();
-        const ptr = self.backing.?.alloc(self.backing.?, len, alignment);
-        return @as(?[*]u8, @ptrCast(ptr));
-    }
-
-    fn resize(ctx: *anyopaque, buf: []u8, buf_align: std.mem.Alignment, new_len: usize, ret_addr: usize) bool {
-        _ = ctx;
-        _ = buf;
-        _ = buf_align;
-        _ = new_len;
-        _ = ret_addr;
-        return false;
-    }
-
-    fn free(ctx: *anyopaque, buf: []u8, buf_align: std.mem.Alignment, ret_addr: usize) void {
-        _ = ret_addr;
-        _ = buf_align;
-        const self: *CardinalAllocatorWrapper = @ptrCast(@alignCast(ctx));
-        if (self.backing) |backing| {
-            backing.free(backing, buf.ptr);
-        }
-    }
-
-    fn remap(ctx: *anyopaque, memory_slice: []u8, alignment: std.mem.Alignment, new_len: usize, ret_addr: usize) ?[*]u8 {
-        _ = ctx;
-        _ = memory_slice;
-        _ = alignment;
-        _ = new_len;
-        _ = ret_addr;
-        return null;
-    }
-
-    fn allocator(self: *CardinalAllocatorWrapper) std.mem.Allocator {
-        return .{
-            .ptr = self,
-            .vtable = &vtable,
-        };
-    }
-};
-
 pub const JobPriority = enum(c_int) {
     LOW = 0,
     NORMAL = 1,
@@ -138,7 +84,7 @@ const JobSystemState = struct {
     next_job_id: u32,
     state_mutex: std.Thread.Mutex,
 
-    allocator_wrapper: CardinalAllocatorWrapper,
+    allocator: std.mem.Allocator,
     job_pool: pool_allocator.PoolAllocator(Job),
     dependency_pool: pool_allocator.PoolAllocator(DependencyNode),
 };
@@ -316,9 +262,9 @@ pub fn init(config: ?*const JobSystemConfig) bool {
     g_job_system.next_job_id = 0;
 
     const allocator = memory.cardinal_get_allocator_for_category(.ENGINE);
-    g_job_system.allocator_wrapper = CardinalAllocatorWrapper{ .backing = allocator };
-    g_job_system.job_pool = pool_allocator.PoolAllocator(Job).init(g_job_system.allocator_wrapper.allocator());
-    g_job_system.dependency_pool = pool_allocator.PoolAllocator(DependencyNode).init(g_job_system.allocator_wrapper.allocator());
+    g_job_system.allocator = allocator.as_allocator();
+    g_job_system.job_pool = pool_allocator.PoolAllocator(Job).init(g_job_system.allocator);
+    g_job_system.dependency_pool = pool_allocator.PoolAllocator(DependencyNode).init(g_job_system.allocator);
 
     const workers = memory.cardinal_alloc(allocator, @sizeOf(WorkerThread) * g_job_system.config.worker_thread_count);
     if (workers == null) return false;

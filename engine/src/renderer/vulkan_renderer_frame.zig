@@ -621,7 +621,7 @@ pub export fn cardinal_renderer_draw_frame(renderer: ?*types.CardinalRenderer) c
     const cmd_buf = if (s.commands.current_buffer_index == 0)
         s.commands.buffers.?[s.sync.current_frame]
     else
-        s.commands.secondary_buffers.?[s.sync.current_frame];
+        s.commands.alternate_primary_buffers.?[s.sync.current_frame];
 
     if (cmd_buf == null)
         return;

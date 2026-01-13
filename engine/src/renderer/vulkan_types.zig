@@ -494,7 +494,7 @@ pub const VulkanCommands = extern struct {
     buffers: ?[*]c.VkCommandBuffer,
     // Note: These are allocated as VK_COMMAND_BUFFER_LEVEL_PRIMARY and used as alternate primary buffers.
     // Do not confuse with actual secondary command buffers (VK_COMMAND_BUFFER_LEVEL_SECONDARY).
-    secondary_buffers: ?[*]c.VkCommandBuffer,
+    alternate_primary_buffers: ?[*]c.VkCommandBuffer,
     current_buffer_index: u32,
     scene_secondary_buffers: ?[*]c.VkCommandBuffer,
 };
@@ -867,6 +867,8 @@ pub const RendererConfig = extern struct {
     shadow_split_lambda: f32 = 0.95,
     shadow_near_clip: f32 = 0.1,
     shadow_far_clip: f32 = 1000.0,
+
+    prefer_hdr: bool = false,
 
     // Asset Paths
     shader_dir: [64]u8,

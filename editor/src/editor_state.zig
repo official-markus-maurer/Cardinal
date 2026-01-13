@@ -15,9 +15,9 @@ const c = @import("c.zig").c;
 pub const AssetState = struct {
     entries: std.ArrayListUnmanaged(AssetEntry) = .{},
     filtered_entries: std.ArrayListUnmanaged(AssetEntry) = .{},
-    current_dir: [:0]u8,
-    assets_dir: [:0]u8,
-    search_filter: []u8,
+    current_dir: [:0]u8 = undefined,
+    assets_dir: [:0]u8 = undefined,
+    search_filter: []u8 = undefined,
     show_folders_only: bool = false,
     show_gltf_only: bool = false,
     show_textures_only: bool = false,
@@ -56,6 +56,10 @@ pub const EditorState = struct {
     window: *window.CardinalWindow = undefined,
     descriptor_pool: c.VkDescriptorPool = null,
 
+    // Temporary Arena
+    arena: std.heap.ArenaAllocator = undefined,
+    arena_allocator: std.mem.Allocator = undefined,
+
     // Config
     config_manager: engine.config.ConfigManager = undefined,
 
@@ -87,7 +91,7 @@ pub const EditorState = struct {
     show_memory_stats: bool = false,
 
     // Assets
-    assets: AssetState = undefined,
+    assets: AssetState = .{},
 
     // Camera & Light
     camera: types.CardinalCamera = undefined,

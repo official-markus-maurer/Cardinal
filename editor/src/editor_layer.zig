@@ -50,9 +50,8 @@ fn check_loading_status() void {
                 const path = info.path;
                 const filename = std.fs.path.basename(path);
 
-                const filename_z_alloc = allocator.dupeZ(u8, filename) catch null;
-                const filename_z = if (filename_z_alloc) |p| p else "unknown";
-                defer if (filename_z_alloc) |p| allocator.free(p);
+                // Use Arena for temporary filename
+                const filename_z = state.arena_allocator.dupeZ(u8, filename) catch "unknown";
 
                 const model_id = model_manager.cardinal_model_manager_add_scene(&state.model_manager, &loaded_scene, path, filename_z);
 
@@ -265,27 +264,32 @@ pub fn init(win_ptr: *window.CardinalWindow, rnd_ptr: *types.CardinalRenderer) b
         return true;
     }
 
-    state = EditorState{
-        .window = win_ptr,
-        .renderer = rnd_ptr,
-        .camera = .{
-            .position = .{ .x = 0.0, .y = 0.0, .z = 2.0 },
-            .target = .{ .x = 0.0, .y = 0.0, .z = 0.0 },
-            .up = .{ .x = 0.0, .y = 1.0, .z = 0.0 },
-            .fov = 65.0,
-            .aspect = 16.0 / 9.0,
-            .near_plane = 0.1,
-            .far_plane = 100.0,
-        },
-        .light = .{
-            .direction = .{ .x = -0.3, .y = -0.7, .z = -0.5 },
-            .position = .{ .x = 0.0, .y = 0.0, .z = 0.0 },
-            .color = .{ .x = 1.0, .y = 1.0, .z = 0.95 },
-            .intensity = 1.0,
-            .ambient = .{ .x = 0.1, .y = 0.1, .z = 0.1 },
-            .range = 100.0,
-            .type = 0, // Directional
-        },
+    // Initialize state with defaults
+    state = .{};
+
+    // Initialize Arena
+    state.arena = std.heap.ArenaAllocator.init(allocator);
+    state.arena_allocator = state.arena.allocator();
+
+    state.window = win_ptr;
+    state.renderer = rnd_ptr;
+    state.camera = .{
+        .position = .{ .x = 0.0, .y = 2.0, .z = 5.0 },
+        .target = .{ .x = 0.0, .y = 0.0, .z = 0.0 },
+        .up = .{ .x = 0.0, .y = 1.0, .z = 0.0 },
+        .fov = 65.0,
+        .aspect = 16.0 / 9.0,
+        .near_plane = 0.1,
+        .far_plane = 100.0,
+    };
+    state.light = .{
+        .direction = .{ .x = -0.3, .y = -0.7, .z = -0.5 },
+        .position = .{ .x = 0.0, .y = 0.0, .z = 0.0 },
+        .color = .{ .x = 1.0, .y = 1.0, .z = 0.95 },
+        .intensity = 1.0,
+        .ambient = .{ .x = 0.1, .y = 0.1, .z = 0.1 },
+        .range = 100.0,
+        .type = 0, // Directional
     };
 
     if (!model_manager.cardinal_model_manager_init(&state.model_manager)) return false;

@@ -61,29 +61,27 @@ fn allocate_command_buffers(s: *types.VulkanState) bool {
     }
     cmd_log.warn("Allocated {d} primary command buffers", .{s.sync.max_frames_in_flight});
 
-    // Secondary buffers (Alternate Primary Buffers)
-    // Note: These are named 'secondary_buffers' but are allocated as PRIMARY buffers.
+    // Alternate Primary Buffers
+    // Note: These are allocated as PRIMARY buffers.
     // They serve as an alternate set of primary command buffers (e.g., for double buffering
     // logic or separate submissions), distinct from Vulkan's VK_COMMAND_BUFFER_LEVEL_SECONDARY.
     const sec_buffers_ptr = memory.cardinal_alloc(mem_alloc, s.sync.max_frames_in_flight * @sizeOf(c.VkCommandBuffer));
     if (sec_buffers_ptr == null) return false;
-    s.commands.secondary_buffers = @as([*]c.VkCommandBuffer, @ptrCast(@alignCast(sec_buffers_ptr)));
+    s.commands.alternate_primary_buffers = @as([*]c.VkCommandBuffer, @ptrCast(@alignCast(sec_buffers_ptr)));
 
     i = 0;
     while (i < s.sync.max_frames_in_flight) : (i += 1) {
         var ai = std.mem.zeroes(c.VkCommandBufferAllocateInfo);
         ai.sType = c.VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO;
         ai.commandPool = s.commands.pools.?[i];
-        // Explicitly allocating as PRIMARY despite the variable name 'secondary_buffers'.
-        // These are used as an alternate set of primary buffers, not as nested command buffers.
         ai.level = c.VK_COMMAND_BUFFER_LEVEL_PRIMARY;
         ai.commandBufferCount = 1;
 
-        if (c.vkAllocateCommandBuffers(s.context.device, &ai, &s.commands.secondary_buffers.?[i]) != c.VK_SUCCESS) {
+        if (c.vkAllocateCommandBuffers(s.context.device, &ai, &s.commands.alternate_primary_buffers.?[i]) != c.VK_SUCCESS) {
             return false;
         }
     }
-    cmd_log.warn("Allocated {d} alternate primary command buffers (secondary_buffers)", .{s.sync.max_frames_in_flight});
+    cmd_log.warn("Allocated {d} alternate primary command buffers", .{s.sync.max_frames_in_flight});
 
     // Scene secondary buffers (real secondary level)
     const scene_sec_ptr = memory.cardinal_alloc(mem_alloc, s.sync.max_frames_in_flight * @sizeOf(c.VkCommandBuffer));
@@ -166,11 +164,11 @@ fn select_command_buffer(s: *types.VulkanState) c.VkCommandBuffer {
         }
         return s.commands.buffers.?[s.sync.current_frame];
     } else {
-        if (s.commands.secondary_buffers == null) {
-            log.cardinal_log_error("[CMD] Frame {d}: secondary_command_buffers array is null", .{s.sync.current_frame});
+        if (s.commands.alternate_primary_buffers == null) {
+            log.cardinal_log_error("[CMD] Frame {d}: alternate_primary_buffers array is null", .{s.sync.current_frame});
             return null;
         }
-        return s.commands.secondary_buffers.?[s.sync.current_frame];
+        return s.commands.alternate_primary_buffers.?[s.sync.current_frame];
     }
 }
 
@@ -675,9 +673,9 @@ pub export fn vk_destroy_commands_sync(s: ?*types.VulkanState) callconv(.c) void
         vs.commands.buffers = null;
     }
 
-    if (vs.commands.secondary_buffers != null) {
-        memory.cardinal_free(mem_alloc, @as(?*anyopaque, @ptrCast(vs.commands.secondary_buffers)));
-        vs.commands.secondary_buffers = null;
+    if (vs.commands.alternate_primary_buffers != null) {
+        memory.cardinal_free(mem_alloc, @as(?*anyopaque, @ptrCast(vs.commands.alternate_primary_buffers)));
+        vs.commands.alternate_primary_buffers = null;
     }
 
     if (vs.commands.scene_secondary_buffers != null) {

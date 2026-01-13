@@ -52,7 +52,8 @@ pub const ConfigManager = struct {
     pub fn load(self: *ConfigManager) !void {
         const file = std.fs.cwd().openFile(self.config_path, .{}) catch |err| {
             if (err == error.FileNotFound) {
-                log.cardinal_log_info("Config file not found, using defaults", .{});
+                log.cardinal_log_info("Config file not found, creating with defaults", .{});
+                try self.save();
                 return;
             }
             return err;
@@ -73,6 +74,7 @@ pub const ConfigManager = struct {
             shadow_split_lambda: ?f32 = null,
             shadow_near_clip: ?f32 = null,
             shadow_far_clip: ?f32 = null,
+            prefer_hdr: ?bool = null,
             max_lights: ?u32 = null,
             max_frames_in_flight: ?u32 = null,
             timeline_max_ahead: ?u64 = null,
@@ -121,6 +123,7 @@ pub const ConfigManager = struct {
             if (r.shadow_split_lambda) |v| self.config.renderer.shadow_split_lambda = v;
             if (r.shadow_near_clip) |v| self.config.renderer.shadow_near_clip = v;
             if (r.shadow_far_clip) |v| self.config.renderer.shadow_far_clip = v;
+            if (r.prefer_hdr) |v| self.config.renderer.prefer_hdr = v;
             if (r.max_lights) |v| self.config.renderer.max_lights = v;
             if (r.max_frames_in_flight) |v| self.config.renderer.max_frames_in_flight = v;
             if (r.timeline_max_ahead) |v| self.config.renderer.timeline_max_ahead = v;
@@ -148,6 +151,9 @@ pub const ConfigManager = struct {
         }
 
         log.cardinal_log_info("Config loaded from {s}", .{self.config_path});
+
+        // Save back to ensure new fields are populated, while preserving unknown fields
+        try self.save_merged(content);
     }
 
     pub fn save(self: *ConfigManager) !void {
@@ -161,6 +167,147 @@ pub const ConfigManager = struct {
         try file.writeAll(list.items);
 
         log.cardinal_log_info("Config saved to {s}", .{self.config_path});
+    }
+
+    fn save_merged(self: *ConfigManager, original_content: []const u8) !void {
+        // Parse original content into a ValueTree to preserve structure/comments
+        var tree = try std.json.parseFromSlice(std.json.Value, self.allocator, original_content, .{});
+        defer tree.deinit();
+
+        if (tree.value != .object) {
+            // If not an object, just overwrite
+            try self.save();
+            return;
+        }
+
+        // Merge current config into the tree
+        try merge_struct_into_value(self.allocator, &tree.value, self.config);
+
+        // Save the merged tree
+        const file = try std.fs.cwd().createFile(self.config_path, .{});
+        defer file.close();
+
+        var list = std.ArrayListUnmanaged(u8){};
+        defer list.deinit(self.allocator);
+
+        try list.writer(self.allocator).print("{f}", .{std.json.fmt(tree.value, .{ .whitespace = .indent_4 })});
+        try file.writeAll(list.items);
+
+        log.cardinal_log_info("Config saved (merged) to {s}", .{self.config_path});
+    }
+
+    fn merge_struct_into_value(allocator: std.mem.Allocator, value: *std.json.Value, struct_val: anytype) !void {
+        const T = @TypeOf(struct_val);
+        const type_info = @typeInfo(T);
+
+        if (type_info != .@"struct") return;
+        if (value.* != .object) return;
+
+        inline for (type_info.@"struct".fields) |field| {
+            const field_name = field.name;
+            const field_val = @field(struct_val, field.name);
+            const FieldType = field.type;
+
+            // Check if field exists
+            if (value.object.get(field_name)) |_| {
+                // Recursively merge if both are objects/structs
+                if (@typeInfo(FieldType) == .@"struct") {
+                    // We need a pointer to the existing value to modify it
+                    if (value.object.getPtr(field_name)) |ptr| {
+                        try merge_struct_into_value(allocator, ptr, field_val);
+                    }
+                }
+            } else {
+                // Field missing, add it
+                // We need to convert the field value to a std.json.Value
+                // This implies full serialization of the field value to Value
+                // For simplicity, we can just let std.json.fmt handle it if we could,
+                // but we need to insert into the map.
+
+                // Construct a json string for just this field
+                // var temp_list = std.ArrayList(u8).init(allocator);
+                // defer temp_list.deinit();
+                // try std.json.stringify(field_val, .{}, temp_list.writer());
+
+                // Parse it back into a Value
+                // Note: we are abandoning this complex parse path for manual add_missing_field below.
+
+                try add_missing_field(allocator, value, field_name, field_val);
+            }
+        }
+    }
+
+    fn add_missing_field(allocator: std.mem.Allocator, object: *std.json.Value, name: []const u8, val: anytype) !void {
+        const T = @TypeOf(val);
+        var json_val: std.json.Value = undefined;
+
+        switch (@typeInfo(T)) {
+            .bool => json_val = .{ .bool = val },
+            .int, .comptime_int => json_val = .{ .integer = @intCast(val) },
+            .float, .comptime_float => json_val = .{ .float = @floatCast(val) },
+            .pointer => |ptr| {
+                if (ptr.size == .slice and ptr.child == u8) {
+                    // String
+                    const dup = try allocator.dupe(u8, val);
+                    json_val = .{ .string = dup };
+                } else if (ptr.size == .one and @typeInfo(ptr.child) == .array) {
+                    // Pointer to array (string literal often comes as *const [N:0]u8)
+                    const slice = val[0..];
+                    if (@typeInfo(ptr.child).array.child == u8) {
+                        const dup = try allocator.dupe(u8, slice);
+                        json_val = .{ .string = dup };
+                    } else {
+                        // Other array pointer
+                        return; // Skip complex types for now to avoid crashes
+                    }
+                } else {
+                    return; // Skip other pointers
+                }
+            },
+            .array => |arr| {
+                if (arr.child == u8) {
+                    const dup = try allocator.dupe(u8, &val);
+                    json_val = .{ .string = dup };
+                } else {
+                    // Handle numeric arrays (e.g. colors)
+                    var list = std.array_list.Managed(std.json.Value).init(allocator);
+                    errdefer list.deinit();
+                    for (val) |item| {
+                        try list.append(try create_simple_value(allocator, item));
+                    }
+                    json_val = .{ .array = list };
+                }
+            },
+            .@"struct" => {
+                // Create empty object and recurse
+                var map = std.json.ObjectMap.init(allocator);
+                errdefer map.deinit();
+                var obj_val = std.json.Value{ .object = map };
+                try merge_struct_into_value(allocator, &obj_val, val);
+                json_val = obj_val;
+            },
+            .optional => {
+                if (val) |v| {
+                    try add_missing_field(allocator, object, name, v);
+                }
+                return;
+            },
+            else => return, // Skip unsupported
+        }
+
+        const key_dup = try allocator.dupe(u8, name);
+        try object.object.put(key_dup, json_val);
+    }
+
+    fn create_simple_value(allocator: std.mem.Allocator, val: anytype) !std.json.Value {
+        _ = allocator; // Unused for simple values
+        const T = @TypeOf(val);
+        switch (@typeInfo(T)) {
+            .bool => return .{ .bool = val },
+            .int, .comptime_int => return .{ .integer = @intCast(val) },
+            .float, .comptime_float => return .{ .float = @floatCast(val) },
+            else => return .{ .null = {} },
+        }
     }
 
     pub fn setAssetsPath(self: *ConfigManager, new_path: []const u8) !void {

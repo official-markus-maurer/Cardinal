@@ -11,6 +11,7 @@ const c = @cImport({
 extern "c" fn _aligned_malloc(size: usize, alignment: usize) ?*anyopaque;
 extern "c" fn _aligned_free(ptr: ?*anyopaque) void;
 extern "c" fn posix_memalign(memptr: *?*anyopaque, alignment: usize, size: usize) c_int;
+extern "c" fn _expand(memblock: ?*anyopaque, size: usize) ?*anyopaque;
 
 // Windows Stack Trace
 extern "kernel32" fn RtlCaptureStackBackTrace(
@@ -85,11 +86,61 @@ pub const CardinalAllocator = extern struct {
 
     fn wrap_resize(ctx: *anyopaque, buf: []u8, buf_align: std.mem.Alignment, new_len: usize, ret_addr: usize) bool {
         _ = ret_addr;
-        _ = buf_align;
-        _ = ctx;
-        _ = buf;
-        _ = new_len;
-        return false;
+        const self: *CardinalAllocator = @ptrCast(@alignCast(ctx));
+        const alignment = buf_align.toByteUnits();
+
+        switch (self.type) {
+            .DYNAMIC => {
+                // On Windows, try _expand for unaligned allocations (malloc based)
+                if (builtin.os.tag == .windows) {
+                    const max_align = @alignOf(c_longdouble);
+                    if (alignment <= max_align) {
+                        // Check if it was aligned-allocated (which we can't _expand)
+                        // We can check our tracking info
+                        if (find_alloc(buf.ptr)) |info| {
+                            if (info.is_aligned) return false; // _aligned_malloc used
+
+                            // Try _expand
+                            if (_expand(buf.ptr, new_len)) |_| {
+                                // Success! Update tracking
+                                // We need to update size in map.
+                                // We can't easily modify map value in place without lock, so use untrack/track
+                                var old_size: usize = 0;
+                                var is_aligned: bool = false;
+                                if (untrack_alloc(buf.ptr, &old_size, &is_aligned)) {
+                                    track_alloc(buf.ptr, new_len, is_aligned);
+                                    // Update stats
+                                    stats_on_free(self.category, old_size);
+                                    stats_on_alloc(self.category, new_len);
+                                }
+                                return true;
+                            }
+                        }
+                    }
+                }
+                return false;
+            },
+            .LINEAR => {
+                const state: *LinearState = @ptrCast(@alignCast(self.state));
+                const buf_end = @intFromPtr(buf.ptr) + buf.len;
+                const top = @intFromPtr(state.buffer) + state.offset;
+
+                if (buf_end == top) {
+                    // This is the last allocation, we can resize in place
+                    const new_top = @intFromPtr(buf.ptr) + new_len;
+                    // Check capacity
+                    if (new_top <= @intFromPtr(state.buffer) + state.capacity) {
+                        state.offset = new_top - @intFromPtr(state.buffer);
+                        return true;
+                    }
+                } else if (new_len <= buf.len) {
+                    // Shrinking internal allocation: allowed but wastes memory
+                    return true;
+                }
+                return false;
+            },
+            else => return false,
+        }
     }
 
     fn wrap_remap(ctx: *anyopaque, memory: []u8, alignment: std.mem.Alignment, new_len: usize, ret_addr: usize) ?[*]u8 {
