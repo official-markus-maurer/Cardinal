@@ -228,10 +228,64 @@ fn find_model_index(manager: *const CardinalModelManager, model_id: u32) i32 {
     return -1;
 }
 
+fn cleanup_combined_scene(manager: *CardinalModelManager) void {
+    const s = &manager.combined_scene;
+    const allocator = memory.cardinal_get_allocator_for_category(.ASSETS);
+
+    // Free Meshes Array (but NOT contents as they are shared)
+    if (s.meshes) |meshes| {
+        memory.cardinal_free(allocator, @ptrCast(meshes));
+    }
+
+    // Free Materials Array
+    if (s.materials) |mats| {
+        memory.cardinal_free(allocator, @ptrCast(mats));
+    }
+
+    // Free Textures Array
+    if (s.textures) |texs| {
+        var i: u32 = 0;
+        while (i < s.texture_count) : (i += 1) {
+            if (texs[i].ref_resource) |r| ref_counting.cardinal_ref_release(r);
+            if (texs[i].path) |p| memory.cardinal_free(allocator, @ptrCast(p));
+
+            // If we allocated data in rebuild (no ref), we must free it
+            if (texs[i].ref_resource == null and texs[i].data != null) {
+                memory.cardinal_free(allocator, @ptrCast(texs[i].data));
+            }
+        }
+        memory.cardinal_free(allocator, @ptrCast(texs));
+    }
+
+    // Free Nodes Arrays (but NOT nodes themselves as they are shared)
+    if (s.root_nodes) |nodes| memory.cardinal_free(allocator, @ptrCast(nodes));
+    if (s.all_nodes) |nodes| memory.cardinal_free(allocator, @ptrCast(nodes));
+
+    // Lights
+    if (s.lights) |lights| memory.cardinal_free(allocator, @ptrCast(lights));
+
+    // Skins (Deep Copied -> Destroy)
+    if (s.skins) |skins_opaque| {
+        const skins: [*]animation.CardinalSkin = @ptrCast(@alignCast(skins_opaque));
+        var i: u32 = 0;
+        while (i < s.skin_count) : (i += 1) {
+            animation.cardinal_skin_destroy(&skins[i]);
+        }
+        memory.cardinal_free(allocator, @ptrCast(skins));
+    }
+
+    // Animation System (Deep Copied -> Destroy)
+    if (s.animation_system) |sys| {
+        animation.cardinal_animation_system_destroy(@ptrCast(@alignCast(sys)));
+    }
+
+    // Reset struct
+    @memset(@as([*]u8, @ptrCast(s))[0..@sizeOf(scene.CardinalScene)], 0);
+}
+
 fn rebuild_combined_scene(manager: *CardinalModelManager) void {
-    // Clear existing combined scene
-    scene.cardinal_scene_destroy(&manager.combined_scene);
-    @memset(@as([*]u8, @ptrCast(&manager.combined_scene))[0..@sizeOf(scene.CardinalScene)], 0);
+    // Clean up existing combined scene safely (without destroying shared data)
+    cleanup_combined_scene(manager);
 
     var total_meshes: u32 = 0;
     var total_materials: u32 = 0;
@@ -568,7 +622,82 @@ fn rebuild_combined_scene(manager: *CardinalModelManager) void {
             const skins_ptr = memory.cardinal_calloc(allocator, sys.skin_count, @sizeOf(animation.CardinalSkin));
             if (skins_ptr) |sp| {
                 const dst_skins = @as([*]animation.CardinalSkin, @ptrCast(@alignCast(sp)));
-                @memcpy(dst_skins[0..sys.skin_count], sys.skins.?[0..sys.skin_count]);
+
+                var skin_copy_idx: u32 = 0;
+                while (skin_copy_idx < sys.skin_count) : (skin_copy_idx += 1) {
+                    const src_skin = &sys.skins.?[skin_copy_idx];
+                    const dst_skin = &dst_skins[skin_copy_idx];
+
+                    // Shallow copy struct first
+                    dst_skin.* = src_skin.*;
+
+                    // Deep copy name
+                    if (src_skin.name) |n| {
+                        const len = std.mem.len(n);
+                        const n_ptr = memory.cardinal_alloc(allocator, len + 1);
+                        if (n_ptr) |np| {
+                            @memcpy(@as([*]u8, @ptrCast(np))[0..len], @as([*]const u8, @ptrCast(n))[0..len]);
+                            @as([*]u8, @ptrCast(np))[len] = 0;
+                            dst_skin.name = @ptrCast(np);
+                        } else {
+                            dst_skin.name = null;
+                        }
+                    } else {
+                        dst_skin.name = null;
+                    }
+
+                    // Deep copy bones
+                    if (src_skin.bone_count > 0 and src_skin.bones != null) {
+                        const bones_ptr = memory.cardinal_alloc(allocator, src_skin.bone_count * @sizeOf(animation.CardinalBone));
+                        if (bones_ptr) |bp| {
+                            dst_skin.bones = @ptrCast(@alignCast(bp));
+                            @memcpy(dst_skin.bones.?[0..src_skin.bone_count], src_skin.bones.?[0..src_skin.bone_count]);
+
+                            // Deep copy bone names
+                            var b: u32 = 0;
+                            while (b < src_skin.bone_count) : (b += 1) {
+                                const src_bone = &src_skin.bones.?[b];
+                                const dst_bone = &dst_skin.bones.?[b];
+
+                                if (src_bone.name) |bn| {
+                                    const blen = std.mem.len(bn);
+                                    const bn_ptr = memory.cardinal_alloc(allocator, blen + 1);
+                                    if (bn_ptr) |bnp| {
+                                        @memcpy(@as([*]u8, @ptrCast(bnp))[0..blen], @as([*]const u8, @ptrCast(bn))[0..blen]);
+                                        @as([*]u8, @ptrCast(bnp))[blen] = 0;
+                                        dst_bone.name = @ptrCast(bnp);
+                                    } else {
+                                        dst_bone.name = null;
+                                    }
+                                } else {
+                                    dst_bone.name = null;
+                                }
+                            }
+                        } else {
+                            dst_skin.bones = null;
+                            dst_skin.bone_count = 0;
+                        }
+                    } else {
+                        dst_skin.bones = null;
+                        dst_skin.bone_count = 0;
+                    }
+
+                    // Deep copy mesh indices
+                    if (src_skin.mesh_count > 0 and src_skin.mesh_indices != null) {
+                        const mi_ptr = memory.cardinal_alloc(allocator, src_skin.mesh_count * @sizeOf(u32));
+                        if (mi_ptr) |mip| {
+                            dst_skin.mesh_indices = @ptrCast(@alignCast(mip));
+                            @memcpy(dst_skin.mesh_indices.?[0..src_skin.mesh_count], src_skin.mesh_indices.?[0..src_skin.mesh_count]);
+                        } else {
+                            dst_skin.mesh_indices = null;
+                            dst_skin.mesh_count = 0;
+                        }
+                    } else {
+                        dst_skin.mesh_indices = null;
+                        dst_skin.mesh_count = 0;
+                    }
+                }
+
                 manager.combined_scene.skins = @ptrCast(dst_skins);
             }
         }
@@ -636,8 +765,7 @@ pub export fn cardinal_model_manager_destroy(manager: ?*CardinalModelManager) ca
     }
 
     // Destroy combined scene to release references
-    if (mgr.combined_scene.root_nodes) |ptr| memory.cardinal_free(allocator, @ptrCast(ptr));
-    scene.cardinal_scene_destroy(&mgr.combined_scene);
+    cleanup_combined_scene(mgr);
 
     @memset(@as([*]u8, @ptrCast(mgr))[0..@sizeOf(CardinalModelManager)], 0);
     log.cardinal_log_debug("Model manager destroyed", .{});

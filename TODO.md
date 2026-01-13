@@ -16,8 +16,8 @@ This document outlines the roadmap for the Cardinal Engine, focusing on robustne
 
 ### Code Cleanup & Refactoring
 - [ ] **Code Deduplication**:
-    - [ ] **Module System**: Add explicit dependency management or validation to `module.zig` (currently relies on manual registration order).
-    - [ ] **Reference Counting**: Add weak reference support or cycle detection to `ref_counting.zig` to prevent leaks from circular dependencies.
+    - [x] **Module System**: Add explicit dependency management or validation to `module.zig` (currently relies on manual registration order).
+    - [x] **Reference Counting**: Add weak reference support or cycle detection to `ref_counting.zig` to prevent leaks from circular dependencies.
     - [ ] **Handle System**: Implement a generic `HandleManager` to centralize safe handle generation (index + generation) instead of ad-hoc logic per resource type.
 - [ ] **Vulkan Optimization**:
     - [ ] Verify `CardinalLight` and `CardinalCamera` struct alignment for UBO compatibility (std140).

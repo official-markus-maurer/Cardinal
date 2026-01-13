@@ -17,6 +17,7 @@ var g_registry_mutex: std.Thread.Mutex = .{};
 pub const CardinalRefCountedResource = extern struct {
     resource: ?*anyopaque,
     ref_count: u32,
+    weak_count: u32,
     destructor: ?*const fn (?*anyopaque) callconv(.c) void,
     identifier: ?[*:0]u8,
     resource_size: usize,
@@ -99,22 +100,29 @@ fn remove_resource(identifier: ?[*:0]const u8) bool {
                     destructor(res);
                 }
             }
+            curr.resource = null;
 
             const allocator = memory.cardinal_get_allocator_for_category(.ENGINE);
 
-            // Free the identifier and the ref counted wrapper
-            memory.cardinal_free(allocator, curr.identifier);
-            memory.cardinal_free(allocator, curr);
+            // Decrement weak count (releasing the strong ref's hold on the block)
+            const old_weak = @atomicRmw(u32, &curr.weak_count, .Sub, 1, .seq_cst);
+            if (old_weak == 1) {
+                // We were the last ones holding the block
+                memory.cardinal_free(allocator, curr.identifier);
+                memory.cardinal_free(allocator, curr);
+                ref_log.debug("Successfully removed and freed resource '{s}'", .{identifier.?});
+            } else {
+                ref_log.debug("Removed resource '{s}' from registry, but block kept alive (weak_count={d})", .{ identifier.?, old_weak - 1 });
+            }
 
             _ = @atomicRmw(u32, &g_registry.total_resources, .Sub, 1, .seq_cst);
-            ref_log.debug("Successfully removed and freed resource '{s}'", .{identifier.?});
             return true;
         }
         prev = curr;
         current = curr.next;
     }
     ref_log.warn("Failed to find resource '{s}' in registry for removal!", .{identifier.?});
-    
+
     // Debug: print registry contents to help diagnose
     ref_log.warn("Registry state at failure:", .{});
     var i: usize = 0;
@@ -122,11 +130,11 @@ fn remove_resource(identifier: ?[*:0]const u8) bool {
         var current_node = g_registry.buckets.?[i];
         while (current_node) |node| {
             const node_id = if (node.identifier) |id| id else "null";
-            ref_log.warn("  - Bucket {d}: '{s}' (ref: {d})", .{i, node_id, @atomicLoad(u32, &node.ref_count, .seq_cst)});
+            ref_log.warn("  - Bucket {d}: '{s}' (ref: {d})", .{ i, node_id, @atomicLoad(u32, &node.ref_count, .seq_cst) });
             current_node = node.next;
         }
     }
-    
+
     return false;
 }
 
@@ -189,7 +197,7 @@ pub export fn cardinal_ref_counting_shutdown() callconv(.c) void {
                 }
             }
             if (curr.identifier) |id| {
-                 memory.cardinal_free(allocator, id);
+                memory.cardinal_free(allocator, id);
             }
             memory.cardinal_free(allocator, curr);
 
@@ -240,6 +248,7 @@ pub export fn cardinal_ref_create(identifier: ?[*:0]const u8, resource: ?*anyopa
 
     ref_resource.resource = resource;
     ref_resource.ref_count = 1;
+    ref_resource.weak_count = 1; // Strong ref counts as 1 weak ref
     ref_resource.destructor = destructor;
     ref_resource.resource_size = resource_size;
     ref_resource.next = null;
@@ -301,18 +310,29 @@ pub export fn cardinal_ref_release(ref_resource: ?*CardinalRefCountedResource) c
     if (new_count == 0) {
         ref_log.debug("Resource '{s}' ref_count reached 0, cleaning up", .{res.identifier.?});
         if (!remove_resource(res.identifier)) {
-             // If not found in registry (orphan), we must free it manually to prevent leaks
+            // Check if it was resurrected (ref_count > 0)
+            if (@atomicLoad(u32, &res.ref_count, .seq_cst) > 0) {
+                ref_log.debug("Resource '{s}' resurrected during release, skipping cleanup", .{res.identifier.?});
+                return;
+            }
+
+            // If not found in registry (orphan), we must free it manually to prevent leaks
             ref_log.warn("Cleaning up orphan resource '{s}' (not in registry)", .{res.identifier.?});
-            
+
             if (res.destructor) |destructor| {
                 if (res.resource) |r| {
                     destructor(r);
                 }
             }
-            
-            const allocator = memory.cardinal_get_allocator_for_category(.ENGINE);
-            memory.cardinal_free(allocator, res.identifier);
-            memory.cardinal_free(allocator, res);
+            res.resource = null;
+
+            // Decrement weak count
+            const old_weak = @atomicRmw(u32, &res.weak_count, .Sub, 1, .seq_cst);
+            if (old_weak == 1) {
+                const allocator = memory.cardinal_get_allocator_for_category(.ENGINE);
+                memory.cardinal_free(allocator, res.identifier);
+                memory.cardinal_free(allocator, res);
+            }
         }
     }
 }
@@ -356,10 +376,44 @@ pub export fn cardinal_ref_debug_print_resources() callconv(.c) void {
         if (current != null) {
             std.log.info("Bucket {d}:", .{i});
             while (current) |curr| {
-                std.log.info("  - '{s}': ref_count={d}, size={d} bytes", .{ curr.identifier.?, curr.ref_count, curr.resource_size });
+                std.log.info("  - '{s}': ref_count={d}, weak_count={d}, size={d} bytes", .{ curr.identifier.?, curr.ref_count, curr.weak_count, curr.resource_size });
                 current = curr.next;
             }
         }
     }
     std.log.info("=== End Debug Info ===", .{});
+}
+
+pub export fn cardinal_weak_ref_acquire(ref_resource: ?*CardinalRefCountedResource) callconv(.c) void {
+    if (ref_resource == null) return;
+    _ = @atomicRmw(u32, &ref_resource.?.weak_count, .Add, 1, .seq_cst);
+}
+
+pub export fn cardinal_weak_ref_release(ref_resource: ?*CardinalRefCountedResource) callconv(.c) void {
+    if (ref_resource == null) return;
+    const res = ref_resource.?;
+    const old_weak = @atomicRmw(u32, &res.weak_count, .Sub, 1, .seq_cst);
+    if (old_weak == 1) {
+        // We were the last one holding the block (and strong refs are gone)
+        const allocator = memory.cardinal_get_allocator_for_category(.ENGINE);
+        memory.cardinal_free(allocator, res.identifier);
+        memory.cardinal_free(allocator, res);
+    }
+}
+
+pub export fn cardinal_weak_ref_lock(ref_resource: ?*CardinalRefCountedResource) callconv(.c) ?*CardinalRefCountedResource {
+    if (ref_resource == null) return null;
+    const res = ref_resource.?;
+
+    var count = @atomicLoad(u32, &res.ref_count, .seq_cst);
+    while (count > 0) {
+        const old = @cmpxchgWeak(u32, &res.ref_count, count, count + 1, .seq_cst, .seq_cst);
+        if (old) |val| {
+            count = val; // Retry with new value
+        } else {
+            // Success
+            return res;
+        }
+    }
+    return null;
 }

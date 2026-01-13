@@ -298,6 +298,13 @@ pub export fn vk_buffer_upload_data(buffer_ptr: ?*VulkanBuffer, device: c.VkDevi
         // Zig pointer arithmetic needs casting to byte pointer first
         const mappedBytes = @as([*]u8, @ptrCast(mapped));
         mappedData = @ptrCast(mappedBytes + offset);
+        
+        // Ensure we don't write past buffer bounds
+        if (offset + size > buffer.size) {
+            log.cardinal_log_error("Buffer upload overflow: offset={d}, size={d}, buffer size={d}", .{ offset, size, buffer.size });
+            return false;
+        }
+
         @memcpy(@as([*]u8, @ptrCast(mappedData))[0..size], @as([*]const u8, @ptrCast(data))[0..size]);
     } else {
         if (allocator) |alloc| {
@@ -309,6 +316,14 @@ pub export fn vk_buffer_upload_data(buffer_ptr: ?*VulkanBuffer, device: c.VkDevi
 
             const mappedBytes = @as([*]u8, @ptrCast(mappedData));
             const offsetPtr = mappedBytes + offset;
+            
+            // Ensure we don't write past buffer bounds
+            if (offset + size > buffer.size) {
+                 log.cardinal_log_error("Buffer upload overflow: offset={d}, size={d}, buffer size={d}", .{ offset, size, buffer.size });
+                 vk_allocator.vk_allocator_unmap_memory(alloc, buffer.allocation);
+                 return false;
+            }
+
             @memcpy(@as([*]u8, @ptrCast(offsetPtr))[0..size], @as([*]const u8, @ptrCast(data))[0..size]);
             vk_allocator.vk_allocator_unmap_memory(alloc, buffer.allocation);
         } else {
