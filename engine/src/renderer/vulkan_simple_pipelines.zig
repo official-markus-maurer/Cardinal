@@ -101,8 +101,14 @@ fn create_simple_pipeline_from_json(s: *types.VulkanState, json_path: []const u8
     var descriptor = parsed.value;
     
     // Override rendering formats
-    const colorFormat = s.swapchain.format;
-    descriptor.rendering.color_formats = &.{colorFormat};
+    const colorFormat: c.VkFormat = c.VK_FORMAT_R16G16B16A16_SFLOAT;
+    
+    // Allocate formats array on heap to be safe
+    const formats = renderer_allocator.alloc(c.VkFormat, 1) catch return false;
+    formats[0] = colorFormat;
+    descriptor.rendering.color_formats = formats;
+    defer renderer_allocator.free(formats);
+
     descriptor.rendering.depth_format = s.swapchain.depth_format;
 
     // Create pipeline layout with push constants
@@ -235,6 +241,7 @@ pub fn render_simple(s: *types.VulkanState, commandBufferHandle: c.VkCommandBuff
     const pipe = &s.pipelines.pbr_pipeline;
 
     if (pipe.vertexBuffer == null or pipe.indexBuffer == null) return;
+    if (s.pipelines.simple_descriptor_set == null) return;
 
     const cmd = wrappers.CommandBuffer.init(commandBufferHandle);
 

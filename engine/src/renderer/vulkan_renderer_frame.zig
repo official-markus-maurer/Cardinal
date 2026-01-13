@@ -13,6 +13,7 @@ const vk_sync_manager = @import("vulkan_sync_manager.zig");
 const vk_pbr = @import("vulkan_pbr.zig");
 const vk_mesh_shader = @import("vulkan_mesh_shader.zig");
 const vk_simple_pipelines = @import("vulkan_simple_pipelines.zig");
+const vk_post_process = @import("vulkan_post_process.zig");
 const vk_renderer = @import("vulkan_renderer.zig");
 const vk_texture_manager = @import("vulkan_texture_manager.zig");
 const vk_buffer_utils = @import("util/vulkan_buffer_utils.zig");
@@ -94,6 +95,7 @@ fn vk_recover_from_device_loss(s: *types.VulkanState) bool {
         s.pipelines.use_mesh_shader_pipeline = false;
     }
     vk_simple_pipelines.vk_destroy_simple_pipelines(s);
+    vk_post_process.vk_post_process_destroy(s);
     vk_pipeline.vk_destroy_pipeline(s);
 
     // Destroy swapchain
@@ -124,6 +126,12 @@ fn vk_recover_from_device_loss(s: *types.VulkanState) bool {
     // Recreate simple pipelines
     if (success and !vk_simple_pipelines.vk_create_simple_pipelines(s, null)) {
         failure_point = "simple pipelines";
+        success = false;
+    }
+
+    // Recreate post process pipeline
+    if (success and !vk_post_process.vk_post_process_init(s)) {
+        failure_point = "post process pipeline";
         success = false;
     }
 

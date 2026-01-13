@@ -116,6 +116,25 @@ if ($LASTEXITCODE -eq 0) {
     Write-Host "[ERROR] Failed to compile shadow alpha fragment shader"
 }
 
+# Compile PostProcess shaders
+Write-Host "Compiling PostProcess vertex shader..."
+glslc --target-env=vulkan1.1 postprocess.vert -o "$outputDir\postprocess.vert.spv"
+if ($LASTEXITCODE -eq 0) {
+    Write-Host "[OK] PostProcess vertex shader compiled successfully"
+} else {
+    Write-Host "[ERROR] Failed to compile PostProcess vertex shader"
+}
+
+Write-Host "Compiling PostProcess fragment shader..."
+glslc --target-env=vulkan1.1 postprocess.frag -o "$outputDir\postprocess.frag.spv"
+if ($LASTEXITCODE -eq 0) {
+    Write-Host "[OK] PostProcess fragment shader compiled successfully"
+} else {
+    Write-Host "[ERROR] Failed to compile PostProcess fragment shader"
+}
+
+Write-Host "Compiling skybox vertex shader..."
+
 Write-Host "Shader compilation complete!"
 
 # Return to original directory

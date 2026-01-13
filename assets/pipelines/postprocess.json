@@ -1,0 +1,42 @@
+{
+    "name": "PostProcess",
+    "vertex_shader": {
+        "path": "assets/shaders/postprocess.vert.spv",
+        "stage": 1
+    },
+    "fragment_shader": {
+        "path": "assets/shaders/postprocess.frag.spv",
+        "stage": 16
+    },
+    "vertex_input": {
+        "use_standard_layout": false
+    },
+    "input_assembly": {
+        "topology": "triangle_list"
+    },
+    "rasterization": {
+        "cull_mode": "none",
+        "front_face": "counter_clockwise"
+    },
+    "multisampling": {
+        "rasterization_samples": 1
+    },
+    "depth_stencil": {
+        "depth_test_enable": false,
+        "depth_write_enable": false
+    },
+    "color_blend": {
+        "logic_op_enable": false,
+        "attachments": [
+            {
+                "blend_enable": false,
+                "color_write_mask": 15
+            }
+        ]
+    },
+    "dynamic_states": [ 0, 1 ],
+    "rendering": {
+        "color_formats": [],
+        "depth_format": 0
+    }
+}

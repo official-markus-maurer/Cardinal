@@ -30,6 +30,7 @@ const ref_counting = @import("../core/ref_counting.zig");
 const asset_manager = @import("../assets/asset_manager.zig");
 const transform = @import("../core/transform.zig");
 const render_graph = @import("render_graph.zig");
+const vk_post_process = @import("vulkan_post_process.zig");
 
 // Helper to cast opaque pointer to VulkanState
 fn get_state(renderer: ?*types.CardinalRenderer) ?*types.VulkanState {
@@ -47,6 +48,7 @@ fn pbr_pass_callback(cmd: c.VkCommandBuffer, state: *types.VulkanState) void {
     clears[1].depthStencil.stencil = 0;
 
     var depth_view: ?c.VkImageView = null;
+    var color_view: ?c.VkImageView = null;
     var use_depth = false;
 
     if (state.render_graph) |rg_ptr| {
@@ -54,6 +56,9 @@ fn pbr_pass_callback(cmd: c.VkCommandBuffer, state: *types.VulkanState) void {
         if (rg.resources.get(types.RESOURCE_ID_DEPTHBUFFER)) |res| {
             depth_view = res.image_view;
             use_depth = (depth_view != null);
+        }
+        if (rg.resources.get(types.RESOURCE_ID_HDR_COLOR)) |res| {
+            color_view = res.image_view;
         }
     }
 
@@ -64,7 +69,7 @@ fn pbr_pass_callback(cmd: c.VkCommandBuffer, state: *types.VulkanState) void {
     const use_secondary = (state.commands.scene_secondary_buffers != null);
     const flags: c.VkRenderingFlags = if (use_secondary) c.VK_RENDERING_CONTENTS_SECONDARY_COMMAND_BUFFERS_BIT else 0;
 
-    if (vk_commands.begin_dynamic_rendering(state, cmd, state.current_image_index, use_depth, depth_view, &clears, true, flags)) {
+    if (vk_commands.begin_dynamic_rendering_ext(state, cmd, state.current_image_index, use_depth, depth_view, color_view, &clears, true, flags)) {
         if (use_depth and depth_view != null) {
             // Log the image view used for rendering
             // log.cardinal_log_error("PBR Pass: Rendering with Depth View {any}", .{depth_view.?});
@@ -76,6 +81,28 @@ fn pbr_pass_callback(cmd: c.VkCommandBuffer, state: *types.VulkanState) void {
             vk_commands.vk_record_scene_content(state, cmd);
         }
 
+        vk_commands.end_dynamic_rendering(state, cmd);
+    }
+}
+
+fn post_process_pass_callback(cmd: c.VkCommandBuffer, state: *types.VulkanState) void {
+    var clears: [1]c.VkClearValue = undefined;
+    clears[0].color.float32[0] = 0.0;
+    clears[0].color.float32[1] = 0.0;
+    clears[0].color.float32[2] = 0.0;
+    clears[0].color.float32[3] = 1.0;
+
+    // Render to Swapchain (Backbuffer)
+    // begin_dynamic_rendering_ext defaults to swapchain view if color_view is null
+    if (vk_commands.begin_dynamic_rendering_ext(state, cmd, state.current_image_index, false, null, null, &clears, true, 0)) {
+        if (state.render_graph) |rg_ptr| {
+            const rg = @as(*render_graph.RenderGraph, @ptrCast(@alignCast(rg_ptr)));
+            if (rg.resources.get(types.RESOURCE_ID_HDR_COLOR)) |res| {
+                if (res.image_view) |view| {
+                    vk_post_process.render(state, cmd, view);
+                }
+            }
+        }
         vk_commands.end_dynamic_rendering(state, cmd);
     }
 }
@@ -370,9 +397,9 @@ pub export fn cardinal_renderer_create(out_renderer: ?*types.CardinalRenderer, w
         var pass = render_graph.RenderPass.init(renderer_alloc, "PBR Pass", pbr_pass_callback);
 
         // Define outputs for automatic barriers
-        // Backbuffer (Color Attachment)
+        // HDR Color (Color Attachment)
         pass.add_output(renderer_alloc, .{
-            .id = types.RESOURCE_ID_BACKBUFFER,
+            .id = types.RESOURCE_ID_HDR_COLOR,
             .type = .Image,
             .access_mask = c.VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT | c.VK_ACCESS_2_COLOR_ATTACHMENT_READ_BIT,
             .stage_mask = c.VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT,
@@ -394,6 +421,31 @@ pub export fn cardinal_renderer_create(out_renderer: ?*types.CardinalRenderer, w
 
         rg.add_pass(pass) catch {
             log.cardinal_log_error("Failed to add PBR pass", .{});
+        };
+
+        // Add Post Process Pass
+        var pp_pass = render_graph.RenderPass.init(renderer_alloc, "PostProcess Pass", post_process_pass_callback);
+
+        pp_pass.add_input(renderer_alloc, .{
+            .id = types.RESOURCE_ID_HDR_COLOR,
+            .type = .Image,
+            .access_mask = c.VK_ACCESS_2_SHADER_READ_BIT,
+            .stage_mask = c.VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT,
+            .layout = c.VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+            .aspect_mask = c.VK_IMAGE_ASPECT_COLOR_BIT,
+        }) catch {};
+
+        pp_pass.add_output(renderer_alloc, .{
+            .id = types.RESOURCE_ID_BACKBUFFER,
+            .type = .Image,
+            .access_mask = c.VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT | c.VK_ACCESS_2_COLOR_ATTACHMENT_READ_BIT,
+            .stage_mask = c.VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT,
+            .layout = c.VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
+            .aspect_mask = c.VK_IMAGE_ASPECT_COLOR_BIT,
+        }) catch {};
+
+        rg.add_pass(pp_pass) catch {
+            log.cardinal_log_error("Failed to add PostProcess pass", .{});
         };
 
         rg.compile() catch {
@@ -459,6 +511,11 @@ pub export fn cardinal_renderer_create(out_renderer: ?*types.CardinalRenderer, w
         return false;
     }
     log.cardinal_log_warn("renderer_create: swapchain created", .{});
+
+    if (!vk_post_process.vk_post_process_init(s)) {
+        log.cardinal_log_error("Failed to initialize post process pipeline", .{});
+        return false;
+    }
 
     if (!vk_pipeline.vk_create_pipeline(@ptrCast(@alignCast(s)))) {
         log.cardinal_log_error("vk_create_pipeline failed", .{});
@@ -738,6 +795,11 @@ pub export fn cardinal_renderer_destroy(renderer: ?*types.CardinalRenderer) call
     vk_mesh_shader.vk_mesh_shader_cleanup(@ptrCast(s));
     s.pipelines.use_mesh_shader_pipeline = false;
 
+    // Destroy Post Process pipeline
+    log.cardinal_log_debug("[DESTROY] Destroying Post Process pipeline", .{});
+    vk_post_process.vk_post_process_destroy(s);
+    s.pipelines.use_post_process = false;
+
     log.cardinal_log_debug("[DESTROY] Destroying base pipeline resources", .{});
     vk_pipeline.vk_destroy_pipeline(@ptrCast(s));
     vk_swapchain.vk_destroy_swapchain(@ptrCast(s));
@@ -971,10 +1033,12 @@ pub export fn cardinal_renderer_enable_pbr(renderer: ?*types.CardinalRenderer, e
 
     if (enable and !s.pipelines.use_pbr_pipeline) {
         if (s.pipelines.pbr_pipeline.initialized) {
+            // Wait for device idle before destroying pipeline resources
+            _ = c.vkDeviceWaitIdle(s.context.device);
             vk_pbr.vk_pbr_pipeline_destroy(@ptrCast(&s.pipelines.pbr_pipeline), @ptrCast(s.context.device), @ptrCast(&s.allocator));
         }
 
-        if (vk_pbr.vk_pbr_pipeline_create(@ptrCast(&s.pipelines.pbr_pipeline), s.context.device, s.context.physical_device, s.swapchain.format, s.swapchain.depth_format, s.commands.pools.?[0], s.context.graphics_queue, @ptrCast(&s.allocator), @ptrCast(s), null)) {
+        if (vk_pbr.vk_pbr_pipeline_create(@ptrCast(&s.pipelines.pbr_pipeline), s.context.device, s.context.physical_device, c.VK_FORMAT_R16G16B16A16_SFLOAT, s.swapchain.depth_format, s.commands.pools.?[0], s.context.graphics_queue, @ptrCast(&s.allocator), @ptrCast(s), null)) {
             s.pipelines.use_pbr_pipeline = true;
 
             if (s.current_scene != null) {
@@ -988,6 +1052,8 @@ pub export fn cardinal_renderer_enable_pbr(renderer: ?*types.CardinalRenderer, e
             log.cardinal_log_error("Failed to enable PBR pipeline", .{});
         }
     } else if (!enable and s.pipelines.use_pbr_pipeline) {
+        // Wait for device idle before destroying pipeline resources
+        _ = c.vkDeviceWaitIdle(s.context.device);
         vk_pbr.vk_pbr_pipeline_destroy(@ptrCast(&s.pipelines.pbr_pipeline), @ptrCast(s.context.device), @ptrCast(&s.allocator));
         s.pipelines.use_pbr_pipeline = false;
         log.cardinal_log_info("PBR pipeline disabled", .{});
@@ -1035,13 +1101,15 @@ pub export fn cardinal_renderer_enable_mesh_shader(renderer: ?*types.CardinalRen
         config.depth_write_enable = true;
         config.depth_compare_op = c.VK_COMPARE_OP_LESS;
 
-        if (vk_mesh_shader.vk_mesh_shader_create_pipeline(@ptrCast(@alignCast(s)), @ptrCast(&config), s.swapchain.format, s.swapchain.depth_format, @ptrCast(&s.pipelines.mesh_shader_pipeline), null)) {
+        if (vk_mesh_shader.vk_mesh_shader_create_pipeline(@ptrCast(@alignCast(s)), @ptrCast(&config), @as(c.VkFormat, c.VK_FORMAT_R16G16B16A16_SFLOAT), s.swapchain.depth_format, @ptrCast(&s.pipelines.mesh_shader_pipeline), null)) {
             s.pipelines.use_mesh_shader_pipeline = true;
             log.cardinal_log_info("Mesh shader pipeline enabled", .{});
         } else {
             log.cardinal_log_error("Failed to enable mesh shader pipeline", .{});
         }
     } else if (!enable and s.pipelines.use_mesh_shader_pipeline) {
+        // Wait for device idle before destroying pipeline resources
+        _ = c.vkDeviceWaitIdle(s.context.device);
         vk_mesh_shader.vk_mesh_shader_destroy_pipeline(@ptrCast(@alignCast(s)), @ptrCast(&s.pipelines.mesh_shader_pipeline));
         s.pipelines.use_mesh_shader_pipeline = false;
         log.cardinal_log_info("Mesh shader pipeline disabled", .{});

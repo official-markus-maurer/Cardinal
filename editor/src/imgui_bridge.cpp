@@ -112,14 +112,10 @@ bool imgui_bridge_impl_vulkan_init(ImGuiBridgeVulkanInitInfo *info) {
     init_info.PipelineInfoMain.PipelineRenderingCreateInfo
         .colorAttachmentCount = 1;
 
-    static VkFormat color_format; // Static to ensure pointer validity during
-                                  // init? Copy happens inside?
-    // ImGui copies the values, so local address is fine, but let's be safe.
-    // Actually ImGui_ImplVulkan_Init copies the struct, but
-    // pColorAttachmentFormats is a pointer. We need to ensure the pointed
-    // memory is valid. Wait, ImGui implementation might just read it during
-    // Init. Let's assume it reads it.
-    VkFormat color_formats[1] = {(VkFormat)info->color_attachment_format};
+    // Static array to keep memory valid during Init call
+    static VkFormat color_formats[1];
+    color_formats[0] = (VkFormat)info->color_attachment_format;
+    
     init_info.PipelineInfoMain.PipelineRenderingCreateInfo
         .pColorAttachmentFormats = color_formats;
     init_info.PipelineInfoMain.PipelineRenderingCreateInfo

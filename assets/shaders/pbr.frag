@@ -474,17 +474,9 @@ void main() {
     vec3 ambient = totalAmbient * albedo * ao;
     
     // Combine lighting components
-    vec3 color = ambient + Lo;
+    vec3 color = ambient + Lo + emissive;
     
-    // Add emissive contribution AFTER tone mapping to preserve bright emissive materials
-    // Apply improved tone mapping (ACES approximation)
-    color = color / (color + vec3(1.0));
-    
-    // Add emissive after tone mapping to ensure it remains bright
-    color += emissive * 5.0; // Boost emissive to make it glow
-    
-    // Apply gamma correction
-    color = pow(color, vec3(1.0/2.2));
-    
+    // Output Linear HDR color
+    // Tone mapping and gamma correction are handled in post-process pass
     outColor = vec4(color, alpha);
 }

@@ -293,6 +293,7 @@ pub const RenderGraph = @import("render_graph.zig").RenderGraph;
 // Resource IDs for RenderGraph
 pub const RESOURCE_ID_BACKBUFFER: u64 = 1;
 pub const RESOURCE_ID_DEPTHBUFFER: u64 = 2;
+pub const RESOURCE_ID_HDR_COLOR: u64 = 3;
 
 pub const VulkanDescriptorManager = extern struct {
     bindings: ?[*]const VulkanDescriptorBinding,
@@ -747,13 +748,24 @@ pub const SkyboxPipeline = extern struct {
     initialized: bool,
 };
 
+pub const PostProcessPipeline = extern struct {
+    pipeline: c.VkPipeline,
+    pipelineLayout: c.VkPipelineLayout,
+    descriptorManager: ?*VulkanDescriptorManager,
+    descriptorSet: c.VkDescriptorSet,
+    initialized: bool,
+    sampler: c.VkSampler,
+};
+
 pub const VulkanPipelines = extern struct {
     mesh_shader_pipeline: MeshShaderPipeline,
     simple_descriptor_manager: ?*VulkanDescriptorManager,
     pbr_pipeline: VulkanPBRPipeline,
     skybox_pipeline: SkyboxPipeline,
+    post_process_pipeline: PostProcessPipeline,
     use_pbr_pipeline: bool,
     use_skybox_pipeline: bool,
+    use_post_process: bool,
 
     use_mesh_shader_pipeline: bool,
     compute_shader_initialized: bool,
@@ -833,9 +845,9 @@ pub const VulkanPBRPipeline = extern struct {
 pub const RendererConfig = extern struct {
     // PBR Settings
     pbr_clear_color: [4]f32 = .{ 0.05, 0.05, 0.08, 1.0 },
-    pbr_ambient_color: [4]f32 = .{ 0.2, 0.2, 0.2, 100.0 }, // xyz=color, w=range
+    pbr_ambient_color: [4]f32 = .{ 0.1, 0.1, 0.1, 100.0 }, // xyz=color, w=range
     pbr_default_light_direction: [4]f32 = .{ -0.5, -1.0, -0.3, 0.0 }, // xyz=dir, w=type
-    pbr_default_light_color: [4]f32 = .{ 1.0, 1.0, 1.0, 2.5 }, // xyz=color, w=intensity
+    pbr_default_light_color: [4]f32 = .{ 1.0, 1.0, 1.0, 1.0 }, // xyz=color, w=intensity
 
     // Shadow Settings
     shadow_map_format: c.VkFormat = c.VK_FORMAT_D32_SFLOAT,

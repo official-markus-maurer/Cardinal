@@ -16,8 +16,6 @@ This document outlines the roadmap for the Cardinal Engine, focusing on robustne
 
 ### Code Cleanup & Refactoring
 - [ ] **Code Deduplication**:
-    - [x] **Module System**: Add explicit dependency management or validation to `module.zig` (currently relies on manual registration order).
-    - [x] **Reference Counting**: Add weak reference support or cycle detection to `ref_counting.zig` to prevent leaks from circular dependencies.
     - [ ] **Handle System**: Implement a generic `HandleManager` to centralize safe handle generation (index + generation) instead of ad-hoc logic per resource type.
 - [ ] **Vulkan Optimization**:
     - [ ] Verify `CardinalLight` and `CardinalCamera` struct alignment for UBO compatibility (std140).
@@ -50,8 +48,10 @@ This document outlines the roadmap for the Cardinal Engine, focusing on robustne
 - [ ] **Ambient Occlusion**: SSAO or HBAO.
 
 ### Post-Processing
-- [ ] **Render Graph Integration**: Implement post-processing effects as `RenderPass` nodes.
-- [ ] **Effects**: Bloom, Tone Mapping (ACES/Filmic), Gamma Correction, Chromatic Aberration.
+- [x] **Render Graph Integration**: Implement post-processing effects as `RenderPass` nodes.
+    - [x] **Render Graph Integration**: Implemented basic RenderPass system and integrated into `vulkan_renderer.zig`.
+- [x] **Effects**: Bloom, Tone Mapping (ACES/Filmic), Gamma Correction, Chromatic Aberration.
+    - [x] **Tone Mapping & Gamma**: Implemented ACES Tone Mapping and Gamma Correction in `postprocess.frag`.
 
 ### Optimization
 - [ ] **GPU Culling**: Implement GPU-driven frustum and occlusion culling using Mesh Shaders or Compute Shaders.

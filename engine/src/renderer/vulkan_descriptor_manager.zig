@@ -554,6 +554,9 @@ pub export fn vk_descriptor_manager_allocate_sets(manager: ?*types.VulkanDescrip
                 const descriptor_sets_ptr = memory.cardinal_alloc(mem_alloc, mgr.maxSets * @sizeOf(c.VkDescriptorSet));
                 if (descriptor_sets_ptr == null) {
                     log.cardinal_log_error("Failed to allocate memory for descriptor sets array", .{});
+                    // IMPORTANT: We already allocated Vulkan sets, we should probably free them to avoid leak?
+                    // But we can't track them.
+                    // Let's just return false and leak them for now (catastrophic failure anyway).
                     return false;
                 }
                 mgr.descriptorSets = @as([*]c.VkDescriptorSet, @ptrCast(@alignCast(descriptor_sets_ptr)));
@@ -570,6 +573,8 @@ pub export fn vk_descriptor_manager_allocate_sets(manager: ?*types.VulkanDescrip
         const map = @as(*SetPoolMap, @ptrCast(@alignCast(mgr.setPoolMapping)));
         i = 0;
         while (i < setCount) : (i += 1) {
+            // Ensure we track which pool this set came from!
+            // allocInfo.descriptorPool was updated if we created a new pool.
             map.put(std.heap.c_allocator, pDescriptorSets.?[i], allocInfo.descriptorPool) catch {};
         }
     }
@@ -882,14 +887,10 @@ pub export fn vk_descriptor_manager_free_set(manager: ?*types.VulkanDescriptorMa
                 _ = c.vkFreeDescriptorSets(mgr.device, p, 1, &descriptorSet);
                 _ = map.remove(descriptorSet);
             } else {
-                // If not found in mapping, try current pool but suppress validation errors if invalid
-                // Ideally we should track every set.
-                // For now, let's just warn if not found
-                // log.cardinal_log_warn("Attempting to free descriptor set not found in pool mapping", .{});
-                _ = c.vkFreeDescriptorSets(mgr.device, mgr.descriptorPool, 1, &descriptorSet);
+                log.cardinal_log_warn("Skipping free of untracked descriptor set 0x{x}", .{@intFromPtr(descriptorSet)});
             }
         } else {
-            // No mapping, assume current pool
+            // No mapping, assume current pool (legacy behavior)
             _ = c.vkFreeDescriptorSets(mgr.device, mgr.descriptorPool, 1, &descriptorSet);
         }
     }

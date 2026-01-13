@@ -294,6 +294,10 @@ fn transition_images(s: *types.VulkanState, cmd: c.VkCommandBuffer, image_index:
 }
 
 pub fn begin_dynamic_rendering(s: *types.VulkanState, cmd: c.VkCommandBuffer, image_index: u32, use_depth: bool, depth_view: ?c.VkImageView, clears: [*]const c.VkClearValue, should_clear: bool, flags: c.VkRenderingFlags) bool {
+    return begin_dynamic_rendering_ext(s, cmd, image_index, use_depth, depth_view, null, clears, should_clear, flags);
+}
+
+pub fn begin_dynamic_rendering_ext(s: *types.VulkanState, cmd: c.VkCommandBuffer, image_index: u32, use_depth: bool, depth_view: ?c.VkImageView, color_view: ?c.VkImageView, clears: [*]const c.VkClearValue, should_clear: bool, flags: c.VkRenderingFlags) bool {
     if (s.context.vkCmdBeginRendering == null or s.context.vkCmdEndRendering == null or s.context.vkCmdPipelineBarrier2 == null) {
         log.cardinal_log_error("[CMD] Frame {d}: Dynamic rendering functions not loaded", .{s.sync.current_frame});
         return false;
@@ -301,7 +305,7 @@ pub fn begin_dynamic_rendering(s: *types.VulkanState, cmd: c.VkCommandBuffer, im
 
     var colorAttachment = std.mem.zeroes(c.VkRenderingAttachmentInfo);
     colorAttachment.sType = c.VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO;
-    colorAttachment.imageView = s.swapchain.image_views.?[image_index];
+    colorAttachment.imageView = if (color_view) |cv| cv else s.swapchain.image_views.?[image_index];
     colorAttachment.imageLayout = c.VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
     colorAttachment.loadOp = if (should_clear) c.VK_ATTACHMENT_LOAD_OP_CLEAR else c.VK_ATTACHMENT_LOAD_OP_LOAD;
     colorAttachment.storeOp = c.VK_ATTACHMENT_STORE_OP_STORE;
@@ -461,7 +465,7 @@ pub fn vk_record_scene_with_secondary_buffers(s: *types.VulkanState, primary_cmd
     }
 
     // Prepare Inheritance
-    const color_format = s.swapchain.format;
+    const color_format: c.VkFormat = c.VK_FORMAT_R16G16B16A16_SFLOAT;
     const depth_format = s.swapchain.depth_format;
 
     var inheritance_rendering_info = std.mem.zeroes(c.VkCommandBufferInheritanceRenderingInfo);
@@ -734,6 +738,16 @@ pub export fn vk_record_cmd(s: ?*types.VulkanState, image_index: u32) callconv(.
             // preventing layout mismatches and validation errors.
             rg.register_image(types.RESOURCE_ID_DEPTHBUFFER, vs.swapchain.depth_image) catch {};
         }
+
+        // Update HDR Color Transient Image
+        const hdr_desc = render_graph.ImageDesc{
+            .format = c.VK_FORMAT_R16G16B16A16_SFLOAT,
+            .width = vs.swapchain.extent.width,
+            .height = vs.swapchain.extent.height,
+            .usage = c.VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | c.VK_IMAGE_USAGE_SAMPLED_BIT,
+            .aspect_mask = c.VK_IMAGE_ASPECT_COLOR_BIT,
+        };
+        rg.update_transient_image(types.RESOURCE_ID_HDR_COLOR, hdr_desc, vs) catch {};
 
         // Update Initial States
         var bb_state = render_graph.ResourceState{

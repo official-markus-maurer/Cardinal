@@ -165,7 +165,7 @@ fn draw_pbr_settings_panel() void {
                 }
 
                 if (c.imgui_bridge_color_edit3("Color", @ptrCast(&state.light.color), 0)) light_changed = true;
-                if (c.imgui_bridge_slider_float("Intensity", &state.light.intensity, 0.0, 5000.0, "%.2f")) light_changed = true;
+                if (c.imgui_bridge_slider_float("Intensity", &state.light.intensity, 0.0, 20.0, "%.2f")) light_changed = true;
                 if (c.imgui_bridge_color_edit3("Ambient", @ptrCast(&state.light.ambient), 0)) light_changed = true;
 
                 if (light_changed and state.pbr_enabled) {
@@ -281,8 +281,8 @@ pub fn init(win_ptr: *window.CardinalWindow, rnd_ptr: *types.CardinalRenderer) b
             .direction = .{ .x = -0.3, .y = -0.7, .z = -0.5 },
             .position = .{ .x = 0.0, .y = 0.0, .z = 0.0 },
             .color = .{ .x = 1.0, .y = 1.0, .z = 0.95 },
-            .intensity = 8.0,
-            .ambient = .{ .x = 0.3, .y = 0.3, .z = 0.35 },
+            .intensity = 1.0,
+            .ambient = .{ .x = 0.1, .y = 0.1, .z = 0.1 },
             .range = 100.0,
             .type = 0, // Directional
         },

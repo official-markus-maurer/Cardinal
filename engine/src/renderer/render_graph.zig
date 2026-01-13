@@ -312,6 +312,14 @@ pub const RenderGraph = struct {
                  res.allocation = null;
                  res.memory = null;
                  res.image_view = null;
+
+                 // Reset state to UNDEFINED since we destroyed the underlying resource
+                 if (self.resource_states.getPtr(id)) |res_state| {
+                     res_state.layout = c.VK_IMAGE_LAYOUT_UNDEFINED;
+                     res_state.access_mask = c.VK_ACCESS_2_NONE;
+                     res_state.stage_mask = c.VK_PIPELINE_STAGE_2_TOP_OF_PIPE_BIT;
+                     res_state.queue_family = c.VK_QUEUE_FAMILY_IGNORED;
+                 }
              }
         }
         
@@ -344,6 +352,14 @@ pub const RenderGraph = struct {
                  res.handle = null;
                  res.allocation = null;
                  res.memory = null;
+
+                 // Reset state to UNDEFINED
+                 if (self.resource_states.getPtr(res.id)) |res_state| {
+                     res_state.layout = c.VK_IMAGE_LAYOUT_UNDEFINED;
+                     res_state.access_mask = c.VK_ACCESS_2_NONE;
+                     res_state.stage_mask = c.VK_PIPELINE_STAGE_2_TOP_OF_PIPE_BIT;
+                     res_state.queue_family = c.VK_QUEUE_FAMILY_IGNORED;
+                 }
             }
         }
 
@@ -588,6 +604,14 @@ pub const RenderGraph = struct {
                             var image: c.VkImage = null;
                             var memory: c.VkDeviceMemory = null;
                             var allocation: c.VmaAllocation = null;
+
+                            // If we allocate a fresh image, we MUST ensure the logical state tracks it as UNDEFINED
+                            if (self.resource_states.getPtr(res.id)) |res_state| {
+                                res_state.layout = c.VK_IMAGE_LAYOUT_UNDEFINED;
+                                res_state.access_mask = c.VK_ACCESS_2_NONE;
+                                res_state.stage_mask = c.VK_PIPELINE_STAGE_2_TOP_OF_PIPE_BIT;
+                                res_state.queue_family = c.VK_QUEUE_FAMILY_IGNORED;
+                            }
 
                             if (vk_allocator.vk_allocator_allocate_image(&state.allocator, &imageInfo, &image, &memory, &allocation, c.VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT)) {
                                 res.handle = .{ .Image = image };
