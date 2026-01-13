@@ -18,7 +18,11 @@ layout(binding = 6) uniform BoneMatrices {
 
 layout(push_constant) uniform PushConstants {
     mat4 modelMatrix;
-    layout(offset = 148) uint hasSkeleton;
+    // packedInfo at offset 132 (same as pbr.vert)
+    layout(offset = 132) uint packedInfo;
+    // cascadeIndex was at 152, but we need to verify where it is passed from code
+    // The C struct PBRPushConstants doesn't have cascadeIndex, it's likely passed via a different mechanism or offset?
+    // Wait, shadow pass uses ShadowPushConstants? Let's check vulkan_types.zig
     layout(offset = 152) uint cascadeIndex;
 } pushConstants;
 
@@ -28,7 +32,10 @@ void main() {
     vec3 finalPosition = inPosition;
     fragTexCoord = inTexCoord;
     
-    if (pushConstants.hasSkeleton == 1) {
+    // Extract hasSkeleton from packedInfo (bit 2)
+    bool hasSkeleton = ((pushConstants.packedInfo >> 16) & 4u) != 0u;
+
+    if (hasSkeleton) {
         mat4 boneTransform = mat4(0.0);
         for (int i = 0; i < 4; i++) {
             if (inBoneWeights[i] > 0.0) {

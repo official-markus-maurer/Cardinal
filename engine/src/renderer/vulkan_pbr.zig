@@ -823,6 +823,10 @@ pub export fn vk_pbr_pipeline_create(pipeline: ?*types.VulkanPBRPipeline, device
             if (reflect.push_constant_size > 0) {
                 pc.stageFlags |= reflect.push_constant_stages;
                 if (reflect.push_constant_size > pc.size) pc.size = reflect.push_constant_size;
+            } else {
+                // If reflection fails to find push constants, assume max size needed
+                pc.stageFlags |= stage;
+                if (@sizeOf(types.PBRPushConstants) > pc.size) pc.size = @sizeOf(types.PBRPushConstants);
             }
 
             for (reflect.resources.items) |res| {
@@ -1213,7 +1217,6 @@ pub export fn vk_pbr_render(pipeline: ?*types.VulkanPBRPipeline, commandBuffer: 
         material_utils.vk_material_setup_push_constants(@ptrCast(&pushConstants), @ptrCast(mesh), @ptrCast(scn), @ptrCast(@alignCast(tm_opaque)));
 
         if (scn.animation_system != null and scn.skin_count > 0) {
-            const anim_system = @as(*animation.CardinalAnimationSystem, @ptrCast(@alignCast(scn.animation_system.?)));
             const skins = @as([*]animation.CardinalSkin, @ptrCast(@alignCast(scn.skins.?)));
 
             var skin_idx: u32 = 0;
@@ -1222,14 +1225,15 @@ pub export fn vk_pbr_render(pipeline: ?*types.VulkanPBRPipeline, commandBuffer: 
                 var mesh_idx: u32 = 0;
                 while (mesh_idx < skin.mesh_count) : (mesh_idx += 1) {
                     if (skin.mesh_indices.?[mesh_idx] == i) {
-                        pushConstants.flags |= 4;
-                        if (anim_system.bone_matrices != null) {
-                            @memcpy(@as([*]u8, @ptrCast(pipe.boneMatricesBufferMapped))[0 .. anim_system.bone_matrix_count * 16 * @sizeOf(f32)], @as([*]const u8, @ptrCast(anim_system.bone_matrices))[0 .. anim_system.bone_matrix_count * 16 * @sizeOf(f32)]);
-                        }
+                        // Set bit 2 of flags in packedInfo
+                        // flags is in upper 16 bits of packedInfo
+                        // Bit 2 corresponds to (1 << 2) = 4
+                        // Shifted by 16: (4 << 16)
+                        pushConstants.packedInfo |= (4 << 16);
                         break;
                     }
                 }
-                if ((pushConstants.flags & 4) != 0) break;
+                if ((pushConstants.packedInfo & (4 << 16)) != 0) break;
             }
         }
 
@@ -1325,7 +1329,6 @@ pub export fn vk_pbr_render(pipeline: ?*types.VulkanPBRPipeline, commandBuffer: 
         material_utils.vk_material_setup_push_constants(@ptrCast(&pushConstants), @ptrCast(mesh), @ptrCast(scn), @ptrCast(@alignCast(tm_opaque)));
 
         if (scn.animation_system != null and scn.skin_count > 0) {
-            const anim_system = @as(*animation.CardinalAnimationSystem, @ptrCast(@alignCast(scn.animation_system.?)));
             const skins = @as([*]animation.CardinalSkin, @ptrCast(@alignCast(scn.skins.?)));
 
             var skin_idx: u32 = 0;
@@ -1334,14 +1337,16 @@ pub export fn vk_pbr_render(pipeline: ?*types.VulkanPBRPipeline, commandBuffer: 
                 var mesh_idx: u32 = 0;
                 while (mesh_idx < skin.mesh_count) : (mesh_idx += 1) {
                     if (skin.mesh_indices.?[mesh_idx] == i) {
-                        pushConstants.flags |= 4;
-                        if (anim_system.bone_matrices != null) {
-                            @memcpy(@as([*]u8, @ptrCast(pipe.boneMatricesBufferMapped))[0 .. anim_system.bone_matrix_count * 16 * @sizeOf(f32)], @as([*]const u8, @ptrCast(anim_system.bone_matrices))[0 .. anim_system.bone_matrix_count * 16 * @sizeOf(f32)]);
-                        }
+                        // Set bit 2 of flags in packedInfo
+                        // flags is in upper 16 bits of packedInfo
+                        // Bit 2 corresponds to (1 << 2) = 4
+                        // Shifted by 16: (4 << 16)
+                        pushConstants.packedInfo |= (4 << 16);
+                        
                         break;
                     }
                 }
-                if ((pushConstants.flags & 4) != 0) break;
+                if ((pushConstants.packedInfo & (4 << 16)) != 0) break;
             }
         }
 

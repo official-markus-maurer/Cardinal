@@ -88,7 +88,7 @@ pub const CardinalMaterial = extern struct {
     ao_texture: handles.TextureHandle,
     emissive_texture: handles.TextureHandle,
 
-    albedo_factor: [3]f32,
+    albedo_factor: [4]f32,
     metallic_factor: f32,
     roughness_factor: f32,
     emissive_factor: [3]f32,
@@ -349,7 +349,7 @@ pub export fn cardinal_scene_node_update_transforms(node: ?*CardinalSceneNode, p
     const n = node.?;
 
     if (parent_world_transform) |pwt| {
-        transform_math.cardinal_matrix_multiply(&n.local_transform, pwt, &n.world_transform);
+        transform_math.cardinal_matrix_multiply(pwt, &n.local_transform, &n.world_transform);
     } else {
         n.world_transform = n.local_transform;
     }

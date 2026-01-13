@@ -92,6 +92,18 @@ pub const CardinalAnimationSystem = extern struct {
     state_count: u32,
     bone_matrices: ?[*]f32,
     bone_matrix_count: u32,
+    blend_states: ?[*]CardinalBlendState,
+    blend_state_capacity: u32,
+};
+
+const CardinalBlendState = extern struct {
+    translation: [3]f32,
+    rotation: [4]f32,
+    scale: [3]f32,
+    weight_t: f32,
+    weight_r: f32,
+    weight_s: f32,
+    flags: u32, // 1 = touched
 };
 
 // Helper function to find keyframe indices for interpolation
@@ -284,6 +296,9 @@ pub export fn cardinal_animation_system_create(max_animations: u32, max_skins: u
     system.state_count = 0;
 
     system.bone_matrix_count = 256; // Standard max bones
+    system.blend_states = null;
+    system.blend_state_capacity = 0;
+
     const bone_matrices_ptr = memory.cardinal_alloc(allocator, system.bone_matrix_count * 16 * @sizeOf(f32));
     if (bone_matrices_ptr) |ptr| {
         system.bone_matrices = @ptrCast(@alignCast(ptr));
@@ -563,25 +578,68 @@ pub export fn cardinal_animation_set_speed(system: ?*CardinalAnimationSystem, an
     return false;
 }
 
-pub export fn cardinal_animation_system_update(system: ?*CardinalAnimationSystem, all_nodes: ?[*]?*scene.CardinalSceneNode, all_node_count: u32, delta_time: f32) callconv(.c) void {
-    if (system == null) return;
+pub export fn cardinal_animation_set_time(system: ?*CardinalAnimationSystem, animation_index: u32, time: f32) callconv(.c) bool {
+    if (system == null) return false;
 
     var i: u32 = 0;
     while (i < system.?.state_count) : (i += 1) {
-        const state = &system.?.states.?[i];
+        if (system.?.states.?[i].animation_index == animation_index) {
+            system.?.states.?[i].current_time = time;
+            return true;
+        }
+    }
+
+    return false;
+}
+
+pub export fn cardinal_animation_system_update(system: ?*CardinalAnimationSystem, all_nodes: ?[*]?*scene.CardinalSceneNode, all_node_count: u32, delta_time: f32) callconv(.c) void {
+    if (system == null) return;
+    const sys = system.?;
+
+    // Resize blend buffer if needed
+    if (sys.blend_state_capacity < all_node_count) {
+        const allocator = memory.cardinal_get_allocator_for_category(.ENGINE);
+        if (sys.blend_states) |ptr| memory.cardinal_free(allocator, ptr);
+
+        sys.blend_state_capacity = all_node_count + 100; // Buffer
+        const ptr = memory.cardinal_calloc(allocator, sys.blend_state_capacity, @sizeOf(CardinalBlendState));
+        if (ptr) |p| {
+            sys.blend_states = @ptrCast(@alignCast(p));
+        } else {
+            sys.blend_state_capacity = 0;
+            return;
+        }
+    }
+
+    // Reset blend states
+    if (sys.blend_states) |states| {
+        // We only need to clear flags, but memset is fast enough
+        _ = c.memset(states, 0, sys.blend_state_capacity * @sizeOf(CardinalBlendState));
+    }
+
+    var i: u32 = 0;
+    while (i < sys.state_count) : (i += 1) {
+        const state = &sys.states.?[i];
 
         if (!state.is_playing) continue;
 
-        const animation = &system.?.animations.?[state.animation_index];
+        const animation = &sys.animations.?[state.animation_index];
 
         state.current_time += delta_time * state.playback_speed;
 
+        if (std.math.isNan(state.current_time)) {
+            state.current_time = 0.0;
+        }
+
         if (state.current_time >= animation.duration) {
             if (state.is_looping) {
-                state.current_time = @mod(state.current_time, animation.duration);
+                if (animation.duration > FLT_EPSILON) {
+                    state.current_time = @mod(state.current_time, animation.duration);
+                } else {
+                    state.current_time = 0.0;
+                }
             } else {
                 state.current_time = animation.duration;
-                state.is_playing = false;
             }
         }
 
@@ -591,8 +649,11 @@ pub export fn cardinal_animation_system_update(system: ?*CardinalAnimationSystem
             const sampler = &animation.samplers.?[channel.sampler_index];
 
             if (all_nodes == null or channel.target.node_index >= all_node_count) continue;
-            const node = all_nodes.?[channel.target.node_index];
-            if (node == null) continue;
+            // Only skip if node is null, but we need to accumulate anyway
+            if (all_nodes.?[channel.target.node_index] == null) continue;
+
+            const node_idx = channel.target.node_index;
+            const blend_state = &sys.blend_states.?[node_idx];
 
             var result: [4]f32 = undefined;
             var component_count: u32 = 3;
@@ -601,22 +662,112 @@ pub export fn cardinal_animation_system_update(system: ?*CardinalAnimationSystem
             }
 
             if (cardinal_animation_interpolate(sampler.interpolation, state.current_time, sampler.input, sampler.output, sampler.input_count, component_count, &result)) {
-                var translation: [3]f32 = undefined;
-                var rotation: [4]f32 = undefined;
-                var scale: [3]f32 = undefined;
-                _ = transform.cardinal_matrix_decompose(&node.?.local_transform, &translation, &rotation, &scale);
+                // Accumulate
+                const weight = state.blend_weight;
+                if (weight <= 0.001) continue;
+
+                blend_state.flags = 1; // Mark as touched
 
                 switch (channel.target.path) {
-                    .TRANSLATION => @memcpy(&translation, result[0..3]),
-                    .ROTATION => @memcpy(&rotation, &result),
-                    .SCALE => @memcpy(&scale, result[0..3]),
+                    .TRANSLATION => {
+                        blend_state.weight_t += weight;
+                        blend_state.translation[0] += result[0] * weight;
+                        blend_state.translation[1] += result[1] * weight;
+                        blend_state.translation[2] += result[2] * weight;
+                    },
+                    .ROTATION => {
+                        // For quaternions, check dot product to avoid taking long path
+                        if (blend_state.weight_r > 0) {
+                            const dot = blend_state.rotation[0] * result[0] +
+                                blend_state.rotation[1] * result[1] +
+                                blend_state.rotation[2] * result[2] +
+                                blend_state.rotation[3] * result[3];
+                            if (dot < 0) {
+                                blend_state.rotation[0] -= result[0] * weight;
+                                blend_state.rotation[1] -= result[1] * weight;
+                                blend_state.rotation[2] -= result[2] * weight;
+                                blend_state.rotation[3] -= result[3] * weight;
+                            } else {
+                                blend_state.rotation[0] += result[0] * weight;
+                                blend_state.rotation[1] += result[1] * weight;
+                                blend_state.rotation[2] += result[2] * weight;
+                                blend_state.rotation[3] += result[3] * weight;
+                            }
+                        } else {
+                            blend_state.rotation[0] += result[0] * weight;
+                            blend_state.rotation[1] += result[1] * weight;
+                            blend_state.rotation[2] += result[2] * weight;
+                            blend_state.rotation[3] += result[3] * weight;
+                        }
+                        blend_state.weight_r += weight;
+                    },
+                    .SCALE => {
+                        blend_state.weight_s += weight;
+                        blend_state.scale[0] += result[0] * weight;
+                        blend_state.scale[1] += result[1] * weight;
+                        blend_state.scale[2] += result[2] * weight;
+                    },
                     else => {},
                 }
-
-                var new_transform: [16]f32 = undefined;
-                transform.cardinal_matrix_from_trs(&translation, &rotation, &scale, &new_transform);
-                scene.cardinal_scene_node_set_local_transform(node, &new_transform);
             }
+        }
+    }
+
+    // Apply accumulated results
+    if (sys.blend_states) |states| {
+        var n_idx: u32 = 0;
+        while (n_idx < all_node_count) : (n_idx += 1) {
+            const blend_state = &states[n_idx];
+            if (blend_state.flags == 0) continue;
+
+            const node = all_nodes.?[n_idx];
+            if (node == null) continue;
+            const scene_node = node.?;
+
+            // Get current transform for fallback
+            var current_t: [3]f32 = undefined;
+            var current_r: [4]f32 = undefined;
+            var current_s: [3]f32 = undefined;
+
+            const local_matrix = &scene_node.local_transform;
+            _ = transform.cardinal_matrix_decompose(local_matrix, &current_t, &current_r, &current_s);
+
+            var t: [3]f32 = undefined;
+            if (blend_state.weight_t > FLT_EPSILON) {
+                const inv_weight = 1.0 / blend_state.weight_t;
+                t[0] = blend_state.translation[0] * inv_weight;
+                t[1] = blend_state.translation[1] * inv_weight;
+                t[2] = blend_state.translation[2] * inv_weight;
+            } else {
+                t = current_t;
+            }
+
+            var s: [3]f32 = undefined;
+            if (blend_state.weight_s > FLT_EPSILON) {
+                const inv_weight = 1.0 / blend_state.weight_s;
+                s[0] = blend_state.scale[0] * inv_weight;
+                s[1] = blend_state.scale[1] * inv_weight;
+                s[2] = blend_state.scale[2] * inv_weight;
+            } else {
+                s = current_s;
+            }
+
+            var r: [4]f32 = undefined;
+            if (blend_state.weight_r > FLT_EPSILON) {
+                r[0] = blend_state.rotation[0];
+                r[1] = blend_state.rotation[1];
+                r[2] = blend_state.rotation[2];
+                r[3] = blend_state.rotation[3];
+            } else {
+                r = current_r;
+            }
+            // Always normalize the result rotation to prevent scaling artifacts
+            transform.cardinal_quaternion_normalize(&r);
+
+            // Apply to node
+            var new_transform: [16]f32 = undefined;
+            transform.cardinal_matrix_from_trs(&t, &r, &s, &new_transform);
+            scene.cardinal_scene_node_set_local_transform(node, &new_transform);
         }
     }
 }
@@ -659,4 +810,119 @@ pub export fn cardinal_skin_destroy(skin: ?*CardinalSkin) callconv(.c) void {
 
     if (skin.?.mesh_indices) |ptr| memory.cardinal_free(allocator, ptr);
     _ = c.memset(skin, 0, @sizeOf(CardinalSkin));
+}
+
+fn rdp_simplify(times: [*]f32, values: [*]f32, component_count: u32, first: usize, last: usize, tolerance_sq: f32, kept_indices: []bool) !void {
+    var max_dist_sq: f32 = 0;
+    var index: usize = 0;
+
+    const t_start = times[first];
+    const t_end = times[last];
+    const range = t_end - t_start;
+
+    var i: usize = first + 1;
+    while (i < last) : (i += 1) {
+        const t = times[i];
+        var factor: f32 = 0;
+        if (range > 1e-6) {
+            factor = (t - t_start) / range;
+        }
+
+        var dist_sq: f32 = 0;
+        var comp_i: u32 = 0;
+        while (comp_i < component_count) : (comp_i += 1) {
+            const v = values[i * component_count + comp_i];
+            const v1 = values[first * component_count + comp_i];
+            const v2 = values[last * component_count + comp_i];
+            const v_interp = v1 + (v2 - v1) * factor;
+            const d = v - v_interp;
+            dist_sq += d * d;
+        }
+
+        if (dist_sq > max_dist_sq) {
+            max_dist_sq = dist_sq;
+            index = i;
+        }
+    }
+
+    if (max_dist_sq > tolerance_sq) {
+        kept_indices[index] = true;
+        try rdp_simplify(times, values, component_count, first, index, tolerance_sq, kept_indices);
+        try rdp_simplify(times, values, component_count, index, last, tolerance_sq, kept_indices);
+    }
+}
+
+pub export fn cardinal_animation_optimize(animation: ?*CardinalAnimation, tolerance: f32) callconv(.c) void {
+    if (animation == null) return;
+    const anim = animation.?;
+    const allocator = memory.cardinal_get_allocator_for_category(.ENGINE);
+
+    var i: u32 = 0;
+    while (i < anim.sampler_count) : (i += 1) {
+        const sampler = &anim.samplers.?[i];
+
+        // Only optimize LINEAR interpolation
+        if (sampler.interpolation != .LINEAR) continue;
+        if (sampler.input_count <= 2) continue;
+
+        const component_count = sampler.output_count / sampler.input_count;
+        if (component_count == 0) continue;
+
+        var kept_indices = std.ArrayListUnmanaged(bool){};
+        defer kept_indices.deinit(allocator.as_allocator());
+        kept_indices.ensureTotalCapacity(allocator.as_allocator(), sampler.input_count) catch continue;
+
+        // Initialize: keep first and last, others false
+        kept_indices.appendNTimes(allocator.as_allocator(), false, sampler.input_count) catch continue;
+        kept_indices.items[0] = true;
+        kept_indices.items[sampler.input_count - 1] = true;
+
+        rdp_simplify(sampler.input.?, sampler.output.?, component_count, 0, sampler.input_count - 1, tolerance * tolerance, kept_indices.items) catch continue;
+
+        // Count new size
+        var new_count: u32 = 0;
+        for (kept_indices.items) |keep| {
+            if (keep) new_count += 1;
+        }
+
+        if (new_count < sampler.input_count) {
+            // Allocate new buffers
+            const new_input = memory.cardinal_alloc(allocator, new_count * @sizeOf(f32));
+            const new_output = memory.cardinal_alloc(allocator, new_count * component_count * @sizeOf(f32));
+
+            if (new_input != null and new_output != null) {
+                const ni: [*]f32 = @ptrCast(@alignCast(new_input));
+                const no: [*]f32 = @ptrCast(@alignCast(new_output));
+
+                var dst_idx: u32 = 0;
+                var src_idx: u32 = 0;
+                while (src_idx < sampler.input_count) : (src_idx += 1) {
+                    if (kept_indices.items[src_idx]) {
+                        ni[dst_idx] = sampler.input.?[src_idx];
+
+                        var c_idx: u32 = 0;
+                        while (c_idx < component_count) : (c_idx += 1) {
+                            no[dst_idx * component_count + c_idx] = sampler.output.?[src_idx * component_count + c_idx];
+                        }
+
+                        dst_idx += 1;
+                    }
+                }
+
+                // Free old buffers
+                if (sampler.input) |ptr| memory.cardinal_free(allocator, ptr);
+                if (sampler.output) |ptr| memory.cardinal_free(allocator, ptr);
+
+                sampler.input = ni;
+                sampler.output = no;
+                sampler.input_count = new_count;
+                sampler.output_count = new_count * component_count;
+
+                std.log.debug("Optimized sampler {d}: {d} -> {d} frames", .{ i, kept_indices.items.len, new_count });
+            } else {
+                if (new_input) |ptr| memory.cardinal_free(allocator, ptr);
+                if (new_output) |ptr| memory.cardinal_free(allocator, ptr);
+            }
+        }
+    }
 }

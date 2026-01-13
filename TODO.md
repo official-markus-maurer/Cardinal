@@ -15,11 +15,7 @@ This document outlines the roadmap for the Cardinal Engine, focusing on robustne
 - [ ] **Missing Operations**: Implement `Mat4`, `Quat` (quaternions), `lerp`, `slerp`, `reflect` in `math.zig`.
 
 ### Code Cleanup & Refactoring
-- [x] **Code Deduplication**:
-    - [x] Consolidate `get_current_thread_id` (found in `vulkan_commands.zig` and `texture_loader.zig`) into a shared `core/platform.zig` helper.
-    - [x] Consolidate platform-specific time logic (found in `vulkan_swapchain.zig` and likely others) into `core/platform.zig`.
-- [ ] **Engine Core**:
-    - [x] Implement **Delta Time** calculation in `CardinalEngine.update` and pass it to subsystems (`engine.zig`). Currently, the engine lacks a standardized time step.
+- [ ] **Code Deduplication**:
     - [ ] **Module System**: Add explicit dependency management or validation to `module.zig` (currently relies on manual registration order).
     - [ ] **Reference Counting**: Add weak reference support or cycle detection to `ref_counting.zig` to prevent leaks from circular dependencies.
     - [ ] **Handle System**: Implement a generic `HandleManager` to centralize safe handle generation (index + generation) instead of ad-hoc logic per resource type.
@@ -70,10 +66,6 @@ This document outlines the roadmap for the Cardinal Engine, focusing on robustne
     - Rigid Body Dynamics
     - Character Controllers
     - Collision Events
-
-### Animation
-- [ ] **State Machines**: Implement Animation Blend Trees / State Machines for character logic.
-- [ ] **Compression**: Implement animation compression (e.g., ACL) to reduce memory footprint.
 
 ### Scripting
 - [ ] **Scripting Language**: Integrate a scripting layer (e.g., **Lua**, **C#**, or **Wren**) to allow gameplay logic without recompiling the engine.

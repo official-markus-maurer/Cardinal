@@ -24,9 +24,9 @@ layout(binding = 6) uniform BoneMatrices {
 // Push constants for per-mesh data
 layout(push_constant) uniform PushConstants {
     mat4 modelMatrix;
-    // Material data occupies 64 bytes (offsets 64-128) in fragment shader
-    // hasSkeleton is at offset 148 in C struct (due to std430 alignment padding)
-    layout(offset = 148) uint hasSkeleton; 
+    // Material data occupies remaining space (offset 64+)
+    // packedInfo is at offset 132 (64 + 68)
+    layout(offset = 132) uint packedInfo; 
 } pushConstants;
 
 // Output to fragment shader
@@ -40,8 +40,11 @@ void main() {
     vec3 finalPosition = inPosition;
     vec3 finalNormal = inNormal;
     
+    // Extract hasSkeleton from packedInfo (bit 2, which is 4)
+    bool hasSkeleton = ((pushConstants.packedInfo >> 16) & 4u) != 0u;
+
     // Apply skeletal animation if mesh has a skeleton
-    if (pushConstants.hasSkeleton == 1) {
+    if (hasSkeleton) {
         // Calculate bone transformation matrix
         mat4 boneTransform = mat4(0.0);
         

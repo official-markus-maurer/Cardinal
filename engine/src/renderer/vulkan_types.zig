@@ -205,16 +205,14 @@ pub const PBRPushConstants = extern struct {
     modelMatrix: math.Mat4,
 
     // Material data (offset 64)
-    // vec4 albedoAndMetallic;
-    albedoFactor: [3]f32,
-    metallicFactor: f32,
+    albedoFactor: [4]f32, // RGBA
 
     // vec4 emissiveAndRoughness;
     emissiveFactor: [3]f32,
     roughnessFactor: f32,
 
-    normalScale: f32,
-    aoStrength: f32,
+    // vec4 metallicNormalAO;
+    metallicNormalAO: [4]f32, // x=metallic, y=normalScale, z=aoStrength, w=alphaCutoff
 
     albedoTextureIndex: u32,
     normalTextureIndex: u32,
@@ -222,25 +220,20 @@ pub const PBRPushConstants = extern struct {
     aoTextureIndex: u32,
     emissiveTextureIndex: u32,
 
-    flags: u32,
-    alphaCutoff: f32,
+    packedInfo: u32, // Bits 0-15: uvSetIndices, Bits 16-31: flags
 
-    uvSetIndices: u32, // Packed UV indices (3 bits per texture)
+    // Padding to align textureTransforms to 16 bytes (std430 alignment for vec4 array)
+    // packedInfo ends at offset 136. textureTransforms needs to start at 144.
+    _padding: [2]u32,
 
-    albedoTransform: PBRTextureTransform,
-    _padding1: f32,
-
-    normalTransform: PBRTextureTransform,
-    _padding2: f32,
-
-    metallicRoughnessTransform: PBRTextureTransform,
-    _padding3: f32,
-
-    aoTransform: PBRTextureTransform,
-    _padding4: f32,
-
-    emissiveTransform: PBRTextureTransform,
-    _padding5: f32,
+    // Packed texture transforms: xy = offset, zw = scale
+    textureTransforms: [5][4]f32,
+    // Texture rotations
+    textureRotations: [5]f32,
+    
+    // Padding to match shader size (252 bytes reported by validation)
+    // Current size: 244 bytes. Add 12 bytes to reach 256 (safe max).
+    _padding_end: [3]u32,
 };
 
 pub const MeshShaderUniformBuffer = extern struct {

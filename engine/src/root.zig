@@ -12,6 +12,7 @@ pub const resource_state = @import("core/resource_state.zig");
 pub const transform = @import("core/transform.zig");
 pub const math = @import("core/math.zig");
 pub const animation = @import("core/animation.zig");
+pub const animation_controller = @import("core/animation_controller.zig");
 pub const ref_counting = @import("core/ref_counting.zig");
 pub const job_system = @import("core/job_system.zig");
 pub const async_loader = @import("core/async_loader.zig");
@@ -62,6 +63,7 @@ comptime {
     _ = resource_state;
     _ = transform;
     _ = animation;
+    _ = animation_controller;
     _ = ref_counting;
     _ = async_loader;
     _ = texture_loader;
@@ -112,6 +114,7 @@ test {
     _ = resource_state;
     _ = transform;
     _ = animation;
+    _ = animation_controller;
     _ = ref_counting;
     _ = async_loader;
     _ = texture_loader;

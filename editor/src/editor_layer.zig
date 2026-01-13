@@ -71,6 +71,11 @@ fn check_loading_status() void {
                         if (initialized) {
                             state.pending_scene = state.combined_scene;
                             state.scene_upload_pending = true;
+                            // Reset animation selection when new scene is loaded
+                            state.selected_animation = -1;
+                            state.animation_time = 0.0;
+                            state.animation_playing = false;
+
                             log.cardinal_log_info("[EDITOR] Deferred scene upload scheduled", .{});
                         }
 
@@ -175,7 +180,7 @@ fn draw_pbr_settings_panel() void {
 
                 if (state.material_override_enabled) {
                     c.imgui_bridge_separator();
-                    _ = c.imgui_bridge_color_edit3("Albedo Factor", &state.material_albedo, 0);
+                    _ = c.imgui_bridge_color_edit3("Albedo Factor", @ptrCast(&state.material_albedo), 0);
                     _ = c.imgui_bridge_slider_float("Metallic Factor", &state.material_metallic, 0.0, 1.0, "%.3f");
                     _ = c.imgui_bridge_slider_float("Roughness Factor", &state.material_roughness, 0.0, 1.0, "%.3f");
                     _ = c.imgui_bridge_color_edit3("Emissive Factor", &state.material_emissive, 0);
@@ -514,6 +519,65 @@ pub fn update() void {
         const anim_sys = @as(*animation.CardinalAnimationSystem, @ptrCast(@alignCast(anim_sys_opaque)));
 
         animation.cardinal_animation_system_update(anim_sys, state.combined_scene.all_nodes, state.combined_scene.all_node_count, dt);
+
+        // Propagate animation changes to world transforms
+        // We iterate through models to apply model transforms and update mesh transforms
+        if (state.model_manager.models) |models| {
+            var mesh_offset: u32 = 0;
+            var m_idx: u32 = 0;
+            while (m_idx < state.model_manager.model_count) : (m_idx += 1) {
+                const model = &models[m_idx];
+                if (!model.visible or model.is_loading) continue;
+
+                const scn = &model.scene;
+
+                // 1. Update root nodes with model transform
+                // This propagates down the hierarchy, updating world_transform for all nodes
+                if (scn.root_nodes) |roots| {
+                    var r: u32 = 0;
+                    while (r < scn.root_node_count) : (r += 1) {
+                        // Pass model transform as parent to bake it into world transform
+                        scene.cardinal_scene_node_update_transforms(roots[r], &model.transform);
+                    }
+                }
+
+                // 2. Update mesh transforms from node world transforms
+                // We need to iterate nodes that have meshes
+                if (scn.all_nodes) |nodes| {
+                    var n: u32 = 0;
+                    while (n < scn.all_node_count) : (n += 1) {
+                        if (nodes[n]) |node| {
+                            if (node.mesh_count > 0 and node.mesh_indices != null) {
+                                var m: u32 = 0;
+                                while (m < node.mesh_count) : (m += 1) {
+                                    const mesh_idx = node.mesh_indices.?[m];
+                                    const combined_idx = mesh_offset + mesh_idx;
+
+                                    if (combined_idx < state.combined_scene.mesh_count) {
+                                        const mesh = &state.combined_scene.meshes.?[combined_idx];
+                                        // Update mesh transform to match node world transform
+                                        // Note: model transform is already baked into node world transform by step 1
+                                        @memcpy(&mesh.transform, &node.world_transform);
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+
+                mesh_offset += scn.mesh_count;
+            }
+        }
+
+        // Update skinning matrices
+        if (anim_sys.skin_count > 0 and anim_sys.skins != null and anim_sys.bone_matrices != null) {
+            const nodes_ptr = @as(?[*]?*const scene.CardinalSceneNode, @ptrCast(state.combined_scene.all_nodes));
+            var s_idx: u32 = 0;
+            while (s_idx < anim_sys.skin_count) : (s_idx += 1) {
+                const skin = &anim_sys.skins.?[s_idx];
+                _ = animation.cardinal_skin_update_bone_matrices(skin, nodes_ptr, anim_sys.bone_matrices);
+            }
+        }
 
         // Sync editor animation time with animation system state
         if (state.selected_animation >= 0 and state.selected_animation < anim_sys.animation_count) {

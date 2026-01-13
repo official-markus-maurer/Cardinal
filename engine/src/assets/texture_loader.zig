@@ -30,6 +30,7 @@ extern fn stbi_failure_reason() ?[*]const u8;
 extern fn stbi_set_flip_vertically_on_load(flag_true_if_should_flip: c_int) void;
 extern fn stbi_is_hdr(filename: [*]const u8) c_int;
 extern fn stbi_loadf(filename: [*]const u8, x: *c_int, y: *c_int, channels_in_file: *c_int, desired_channels: c_int) ?[*]f32;
+extern fn stbi_load_from_memory(buffer: [*]const u8, len: c_int, x: *c_int, y: *c_int, channels_in_file: *c_int, desired_channels: c_int) ?[*]u8;
 
 // TinyEXR functions
 extern fn LoadEXR(out_rgba: *?[*]f32, width: *c_int, height: *c_int, filename: [*]const u8, err: *?[*]const u8) c_int;
@@ -179,6 +180,40 @@ pub export fn texture_load_from_disk(path: [*:0]const u8, out_texture: *TextureD
     out_texture.height = @intCast(h);
     out_texture.channels = 4;
     out_texture.is_hdr = is_hdr;
+
+    return true;
+}
+
+pub export fn texture_load_from_memory(data: [*]const u8, size: usize, out_texture: *TextureData) bool {
+    var w: c_int = 0;
+    var h: c_int = 0;
+    var c: c_int = 0;
+    
+    // stbi_load_from_memory returns *u8, but we cast to ?*anyopaque for generic handling if needed,
+    // though here we know it's u8 data.
+    const pixels = stbi_load_from_memory(data, @intCast(size), &w, &h, &c, 4);
+    
+    if (pixels == null) {
+        const reason = stbi_failure_reason();
+        log.cardinal_log_error("[CRITICAL] Failed to load texture from memory", .{});
+        if (reason) |r| {
+             const r_c: [*:0]const u8 = @ptrCast(r);
+             log.cardinal_log_error("[CRITICAL] STB failure reason: {s}", .{std.mem.span(r_c)});
+        }
+        return false;
+    }
+
+    if (w <= 0 or h <= 0 or w > 16384 or h > 16384) {
+        log.cardinal_log_error("[CRITICAL] Invalid dimensions from memory load: {d}x{d}", .{ w, h });
+        stbi_image_free(pixels);
+        return false;
+    }
+
+    out_texture.data = @ptrCast(pixels);
+    out_texture.width = @intCast(w);
+    out_texture.height = @intCast(h);
+    out_texture.channels = 4;
+    out_texture.is_hdr = false; // TODO: support HDR from memory if needed
 
     return true;
 }

@@ -389,6 +389,17 @@ pub fn vk_shadow_render(s: *types.VulkanState, cmd: c.VkCommandBuffer) void {
             drawn_count += 1;
 
             // Push Constants
+            // Layout (total 236 bytes aligned to maxPushConstantSize):
+            // 0..64: Model Matrix (mat4)
+            // 64..132: Material Data (PBR material data - not fully used here but space reserved)
+            // 132..136: packedInfo (flags including hasSkeleton)
+            // 136..152: Padding/Reserved
+            // 152..156: Cascade Index
+            
+            // We need to construct this carefully to match PBR pipeline layout
+            // Shadow push constant range in shader: 0..156 (covering model, flags, cascade)
+            // But pipeline layout might be bigger (236)
+            
             var pushData = std.mem.zeroes([156]u8);
 
             // Copy Model Matrix (first 64 bytes)
@@ -396,7 +407,7 @@ pub fn vk_shadow_render(s: *types.VulkanState, cmd: c.VkCommandBuffer) void {
             @memcpy(pushData[0..64], modelPtr[0..64]);
 
             // Has Skeleton
-            var hasSkeleton: u32 = 0;
+            var packedInfo: u32 = 0;
             if (scn.animation_system != null and scn.skin_count > 0) {
                 const skins = @as([*]animation.CardinalSkin, @ptrCast(@alignCast(scn.skins.?)));
                 var skin_idx: u32 = 0;
@@ -405,16 +416,17 @@ pub fn vk_shadow_render(s: *types.VulkanState, cmd: c.VkCommandBuffer) void {
                     var mesh_idx: u32 = 0;
                     while (mesh_idx < skin.mesh_count) : (mesh_idx += 1) {
                         if (skin.mesh_indices.?[mesh_idx] == m_i) {
-                            hasSkeleton = 1;
+                            // Set bit 2 (value 4) in upper 16 bits
+                            packedInfo |= (4 << 16);
                             break;
                         }
                     }
-                    if (hasSkeleton == 1) break;
+                    if ((packedInfo & (4 << 16)) != 0) break;
                 }
             }
 
-            const skelPtr = @as([*]const u8, @ptrCast(&hasSkeleton));
-            @memcpy(pushData[148..152], skelPtr[0..4]);
+            const infoPtr = @as([*]const u8, @ptrCast(&packedInfo));
+            @memcpy(pushData[132..136], infoPtr[0..4]);
 
             // Cascade Index
             const cascadeIdx = @as(u32, @intCast(j_layer));

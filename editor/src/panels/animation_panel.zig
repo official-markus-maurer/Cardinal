@@ -18,6 +18,12 @@ pub fn draw_animation_panel(state: *editor_state.EditorState) void {
                 c.imgui_bridge_text("Animations (%d)", anim_sys.animation_count);
                 c.imgui_bridge_separator();
 
+                // Auto-select first animation if none selected
+                if (state.selected_animation == -1 and anim_sys.animation_count > 0) {
+                    state.selected_animation = 0;
+                    state.animation_time = 0.0;
+                }
+
                 if (c.imgui_bridge_begin_child("##animation_list", 0, 120, true, 0)) {
                     var i: u32 = 0;
                     while (i < anim_sys.animation_count) : (i += 1) {
@@ -53,6 +59,8 @@ pub fn draw_animation_panel(state: *editor_state.EditorState) void {
                         if (c.imgui_bridge_button("Play")) {
                             state.animation_playing = true;
                             _ = animation.cardinal_animation_play(anim_sys, @intCast(state.selected_animation), state.animation_looping, 1.0);
+                            // Restore speed from UI (as play() resets it to 1.0)
+                            _ = animation.cardinal_animation_set_speed(anim_sys, @intCast(state.selected_animation), state.animation_speed);
                         }
                     }
 
@@ -83,12 +91,18 @@ pub fn draw_animation_panel(state: *editor_state.EditorState) void {
                         if (state.animation_time < 0.0) state.animation_time = 0.0;
                         if (state.animation_time > current_anim.duration) {
                             if (state.animation_looping) {
-                                state.animation_time = @mod(state.animation_time, current_anim.duration);
+                                if (current_anim.duration > 0.000001) {
+                                    state.animation_time = @mod(state.animation_time, current_anim.duration);
+                                } else {
+                                    state.animation_time = 0.0;
+                                }
                             } else {
                                 state.animation_time = current_anim.duration;
                                 state.animation_playing = false;
                             }
                         }
+                        // Update engine time immediately
+                        _ = animation.cardinal_animation_set_time(anim_sys, @intCast(state.selected_animation), state.animation_time);
                     }
 
                     c.imgui_bridge_separator();

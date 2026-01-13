@@ -37,27 +37,17 @@ struct TextureTransform {
 
 // Material structure
 struct Material {
-    vec4 albedoAndMetallic;
+    vec4 albedo;
     vec4 emissiveAndRoughness;
-    float normalScale;
-    float aoStrength;
+    vec4 metallicNormalAO; // x=metallic, y=normalScale, z=aoStrength, w=alphaCutoff
     uint albedoTextureIndex;
     uint normalTextureIndex;
     uint metallicRoughnessTextureIndex;
     uint aoTextureIndex;
     uint emissiveTextureIndex;
-    uint flags; // Packed flags: 0-1=alphaMode, 2=hasSkeleton, 3=supportsDescriptorIndexing
-    float alphaCutoff;
-    uint uvSetIndices; // Packed UV indices (3 bits each)
-    TextureTransform albedoTransform;
-    float _padding1;
-    TextureTransform normalTransform;
-    float _padding2;
-    TextureTransform metallicRoughnessTransform;
-    float _padding3;
-    TextureTransform aoTransform;
-    float _padding4;
-    TextureTransform emissiveTransform;
+    uint packedInfo; // Bits 0-15: uvSetIndices, Bits 16-31: flags
+    vec4 textureTransforms[5]; // xy = offset, zw = scale
+    float textureRotations[5]; // Array of rotations
 };
 
 // Push constants for per-mesh material properties
@@ -159,8 +149,13 @@ float ShadowCalculation(vec3 worldPos, vec3 N, vec3 L) {
 }
 
 
-// Function to apply texture transform (scale, offset, rotation)
-vec2 applyTextureTransform(vec2 uv, TextureTransform transform) {
+// Helper function to apply texture transform (scale, offset, rotation)
+vec2 applyTextureTransform(vec2 uv, uint texIndex) {
+    vec4 transform = material.textureTransforms[texIndex];
+    float rotation = material.textureRotations[texIndex];
+    vec2 offset = transform.xy;
+    vec2 scale = transform.zw;
+
     // Apply transformations in correct order: translate to origin, scale, rotate, translate back, apply offset
     vec2 transformedUV = uv;
     
@@ -169,12 +164,12 @@ vec2 applyTextureTransform(vec2 uv, TextureTransform transform) {
     transformedUV -= center;
     
     // Apply scale
-    transformedUV *= transform.scale;
+    transformedUV *= scale;
     
     // Apply rotation
-    if (transform.rotation != 0.0) {
-        float cosR = cos(transform.rotation);
-        float sinR = sin(transform.rotation);
+    if (rotation != 0.0) {
+        float cosR = cos(rotation);
+        float sinR = sin(rotation);
         mat2 rotMatrix = mat2(cosR, -sinR, sinR, cosR);
         transformedUV = rotMatrix * transformedUV;
     }
@@ -183,7 +178,7 @@ vec2 applyTextureTransform(vec2 uv, TextureTransform transform) {
     transformedUV += center;
     
     // Apply offset (no Y-flip adjustment needed as textures are already flipped during loading)
-    transformedUV += transform.offset;
+    transformedUV += offset;
     
     return transformedUV;
 }
@@ -206,7 +201,8 @@ vec2 getUV(uint uvIndex) {
 // Utility: unpack UV index from packed uint
 uint getUVIndex(uint textureSlot) {
     // textureSlot: 0=Albedo, 1=Normal, 2=MR, 3=AO, 4=Emissive
-    return (material.uvSetIndices >> (textureSlot * 3)) & 0x7;
+    uint uvSetIndices = material.packedInfo & 0xFFFFu;
+    return (uvSetIndices >> (textureSlot * 3)) & 0x7;
 }
 
 // Utility: sample from descriptor array with non-uniform index
@@ -216,15 +212,18 @@ vec4 sampleArray(uint idx, vec2 uv) {
 
 // Helper to unpack flags
 uint getAlphaMode() {
-    return material.flags & 3u;
+    uint flags = material.packedInfo >> 16;
+    return flags & 3u;
 }
 
 bool hasSkeleton() {
-    return (material.flags & 4u) != 0u;
+    uint flags = material.packedInfo >> 16;
+    return (flags & 4u) != 0u;
 }
 
 bool supportsDescriptorIndexing() {
-    return (material.flags & 8u) != 0u;
+    uint flags = material.packedInfo >> 16;
+    return (flags & 8u) != 0u;
 }
 
 // Helper to decide if we should use descriptor array
@@ -250,7 +249,7 @@ vec3 getNormalFromMap(vec2 uv) {
     }
     
     vec3 tangentNormal = nrm * 2.0 - 1.0;
-    tangentNormal.xy *= material.normalScale;
+    tangentNormal.xy *= material.metallicNormalAO.y;
     
     // Enhanced derivative calculations with quad control
     vec3 Q1 = dFdxFine(fragWorldPos);
@@ -309,15 +308,15 @@ vec3 fresnelSchlick(float cosTheta, vec3 F0) {
 
 void main() {
     // Apply texture transforms to UV coordinates
-    vec2 albedoUV = applyTextureTransform(getUV(getUVIndex(0)), material.albedoTransform);
-    vec2 normalUV = applyTextureTransform(getUV(getUVIndex(1)), material.normalTransform);
-    vec2 metallicRoughnessUV = applyTextureTransform(getUV(getUVIndex(2)), material.metallicRoughnessTransform);
-    vec2 aoUV = applyTextureTransform(getUV(getUVIndex(3)), material.aoTransform);
-    vec2 emissiveUV = applyTextureTransform(getUV(getUVIndex(4)), material.emissiveTransform);
+    vec2 albedoUV = applyTextureTransform(getUV(getUVIndex(0)), 0);
+    vec2 normalUV = applyTextureTransform(getUV(getUVIndex(1)), 1);
+    vec2 metallicRoughnessUV = applyTextureTransform(getUV(getUVIndex(2)), 2);
+    vec2 aoUV = applyTextureTransform(getUV(getUVIndex(3)), 3);
+    vec2 emissiveUV = applyTextureTransform(getUV(getUVIndex(4)), 4);
     
     // Enhanced material property sampling with quad control
     vec4 albedoSample = vec4(1.0);
-    vec3 albedo = vec3(material.albedoAndMetallic.xyz);
+    vec3 albedo = vec3(material.albedo.xyz);
     if (!isNoTex(material.albedoTextureIndex)) {
         if (canUseArray(material.albedoTextureIndex)) {
             // Use enhanced derivatives for transformed UV coordinates
@@ -333,12 +332,13 @@ void main() {
     }
 
     // Alpha Handling
-    float alpha = albedoSample.a;
+    float alpha = albedoSample.a * material.albedo.a;
     
     // MASK mode (1): Discard if alpha is below cutoff
     uint alphaMode = getAlphaMode();
     if (alphaMode == 1) {
-        if (alpha < material.alphaCutoff) {
+        float cutoff = material.metallicNormalAO.w;
+        if (alpha < cutoff) {
             discard;
         }
         alpha = 1.0; // Treat as opaque after mask test
@@ -362,10 +362,10 @@ void main() {
             vec2 dy = dFdyFine(metallicRoughnessUV);
             metallicRoughness = textureGrad(metallicRoughnessMap, metallicRoughnessUV, dx, dy).rgb;
         }
-        metallic = metallicRoughness.b * material.albedoAndMetallic.w;
+        metallic = metallicRoughness.b * material.metallicNormalAO.x;
         roughness = metallicRoughness.g * material.emissiveAndRoughness.w;
     } else {
-        metallic = material.albedoAndMetallic.w;
+        metallic = material.metallicNormalAO.x;
         roughness = material.emissiveAndRoughness.w;
     }
     
@@ -382,7 +382,7 @@ void main() {
         }
     }
     // Apply AO strength factor
-    ao = mix(1.0, ao, material.aoStrength);
+    ao = mix(1.0, ao, material.metallicNormalAO.z);
     
     vec3 emissive = vec3(material.emissiveAndRoughness.xyz);
     if (!isNoTex(material.emissiveTextureIndex)) {

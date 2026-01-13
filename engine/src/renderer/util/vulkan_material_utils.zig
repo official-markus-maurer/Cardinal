@@ -13,15 +13,20 @@ fn set_default_material_properties(pushConstants: *types.PBRPushConstants, hasTe
     pushConstants.albedoFactor[0] = 1.0;
     pushConstants.albedoFactor[1] = 1.0;
     pushConstants.albedoFactor[2] = 1.0;
-    pushConstants.metallicFactor = 0.0;
+    pushConstants.albedoFactor[3] = 1.0;
+    pushConstants.metallicNormalAO[0] = 0.0; // Metallic
+    pushConstants.metallicNormalAO[1] = 1.0; // Normal Scale
+    pushConstants.metallicNormalAO[2] = 1.0; // AO Strength
+    pushConstants.metallicNormalAO[3] = 0.5; // Alpha Cutoff (default 0.5)
     pushConstants.emissiveFactor[0] = 0.0;
     pushConstants.emissiveFactor[1] = 0.0;
     pushConstants.emissiveFactor[2] = 0.0;
     pushConstants.roughnessFactor = 0.5;
-    pushConstants.normalScale = 1.0;
-    pushConstants.aoStrength = 1.0;
-    pushConstants.flags = 0; // OPAQUE (0) | No Skeleton (0) | No Indexing (0)
-    pushConstants.alphaCutoff = 0.5;
+    
+    // Packed info: flags (upper 16 bits) | uvSetIndices (lower 16 bits)
+    // Flags default: OPAQUE (0) | No Skeleton (0) | No Indexing (0)
+    // UV Sets default: 0
+    pushConstants.packedInfo = 0;
 
     pushConstants.albedoTextureIndex = c.UINT32_MAX;
     pushConstants.normalTextureIndex = c.UINT32_MAX;
@@ -32,34 +37,14 @@ fn set_default_material_properties(pushConstants: *types.PBRPushConstants, hasTe
     _ = hasTextures;
 
     // Default texture transforms (identity)
-    pushConstants.albedoTransform.scale.x = 1.0;
-    pushConstants.albedoTransform.scale.y = 1.0;
-    pushConstants.normalTransform.scale.x = 1.0;
-    pushConstants.normalTransform.scale.y = 1.0;
-    pushConstants.metallicRoughnessTransform.scale.x = 1.0;
-    pushConstants.metallicRoughnessTransform.scale.y = 1.0;
-    pushConstants.aoTransform.scale.x = 1.0;
-    pushConstants.aoTransform.scale.y = 1.0;
-    pushConstants.emissiveTransform.scale.x = 1.0;
-    pushConstants.emissiveTransform.scale.y = 1.0;
-
-    // Set default offsets and rotations to zero
-    pushConstants.albedoTransform.offset.x = 0.0;
-    pushConstants.albedoTransform.offset.y = 0.0;
-    pushConstants.normalTransform.offset.x = 0.0;
-    pushConstants.normalTransform.offset.y = 0.0;
-    pushConstants.metallicRoughnessTransform.offset.x = 0.0;
-    pushConstants.metallicRoughnessTransform.offset.y = 0.0;
-    pushConstants.aoTransform.offset.x = 0.0;
-    pushConstants.aoTransform.offset.y = 0.0;
-    pushConstants.emissiveTransform.offset.x = 0.0;
-    pushConstants.emissiveTransform.offset.y = 0.0;
-
-    pushConstants.albedoTransform.rotation = 0.0;
-    pushConstants.normalTransform.rotation = 0.0;
-    pushConstants.metallicRoughnessTransform.rotation = 0.0;
-    pushConstants.aoTransform.rotation = 0.0;
-    pushConstants.emissiveTransform.rotation = 0.0;
+    var i: u32 = 0;
+    while (i < 5) : (i += 1) {
+        pushConstants.textureTransforms[i][0] = 0.0; // Offset X
+        pushConstants.textureTransforms[i][1] = 0.0; // Offset Y
+        pushConstants.textureTransforms[i][2] = 1.0; // Scale X
+        pushConstants.textureTransforms[i][3] = 1.0; // Scale Y
+        pushConstants.textureRotations[i] = 0.0;
+    }
 }
 
 fn resolve_texture_index(textureHandle: handles.TextureHandle, manager: ?*const types.VulkanTextureManager) u32 {
@@ -94,56 +79,58 @@ fn set_texture_indices(pushConstants: *types.PBRPushConstants, material: *const 
 
 fn set_texture_transforms(pushConstants: *types.PBRPushConstants, material: *const types.CardinalMaterial) void {
     // Albedo
-    pushConstants.albedoTransform.offset.x = material.albedo_transform.offset[0];
-    pushConstants.albedoTransform.offset.y = material.albedo_transform.offset[1];
-    pushConstants.albedoTransform.scale.x = material.albedo_transform.scale[0];
-    pushConstants.albedoTransform.scale.y = material.albedo_transform.scale[1];
-    pushConstants.albedoTransform.rotation = material.albedo_transform.rotation;
+    pushConstants.textureTransforms[0][0] = material.albedo_transform.offset[0];
+    pushConstants.textureTransforms[0][1] = material.albedo_transform.offset[1];
+    pushConstants.textureTransforms[0][2] = material.albedo_transform.scale[0];
+    pushConstants.textureTransforms[0][3] = material.albedo_transform.scale[1];
+    pushConstants.textureRotations[0] = material.albedo_transform.rotation;
 
     // Normal
-    pushConstants.normalTransform.offset.x = material.normal_transform.offset[0];
-    pushConstants.normalTransform.offset.y = material.normal_transform.offset[1];
-    pushConstants.normalTransform.scale.x = material.normal_transform.scale[0];
-    pushConstants.normalTransform.scale.y = material.normal_transform.scale[1];
-    pushConstants.normalTransform.rotation = material.normal_transform.rotation;
+    pushConstants.textureTransforms[1][0] = material.normal_transform.offset[0];
+    pushConstants.textureTransforms[1][1] = material.normal_transform.offset[1];
+    pushConstants.textureTransforms[1][2] = material.normal_transform.scale[0];
+    pushConstants.textureTransforms[1][3] = material.normal_transform.scale[1];
+    pushConstants.textureRotations[1] = material.normal_transform.rotation;
 
     // Metallic Roughness
-    pushConstants.metallicRoughnessTransform.offset.x = material.metallic_roughness_transform.offset[0];
-    pushConstants.metallicRoughnessTransform.offset.y = material.metallic_roughness_transform.offset[1];
-    pushConstants.metallicRoughnessTransform.scale.x = material.metallic_roughness_transform.scale[0];
-    pushConstants.metallicRoughnessTransform.scale.y = material.metallic_roughness_transform.scale[1];
-    pushConstants.metallicRoughnessTransform.rotation = material.metallic_roughness_transform.rotation;
+    pushConstants.textureTransforms[2][0] = material.metallic_roughness_transform.offset[0];
+    pushConstants.textureTransforms[2][1] = material.metallic_roughness_transform.offset[1];
+    pushConstants.textureTransforms[2][2] = material.metallic_roughness_transform.scale[0];
+    pushConstants.textureTransforms[2][3] = material.metallic_roughness_transform.scale[1];
+    pushConstants.textureRotations[2] = material.metallic_roughness_transform.rotation;
 
     // AO
-    pushConstants.aoTransform.offset.x = material.ao_transform.offset[0];
-    pushConstants.aoTransform.offset.y = material.ao_transform.offset[1];
-    pushConstants.aoTransform.scale.x = material.ao_transform.scale[0];
-    pushConstants.aoTransform.scale.y = material.ao_transform.scale[1];
-    pushConstants.aoTransform.rotation = material.ao_transform.rotation;
+    pushConstants.textureTransforms[3][0] = material.ao_transform.offset[0];
+    pushConstants.textureTransforms[3][1] = material.ao_transform.offset[1];
+    pushConstants.textureTransforms[3][2] = material.ao_transform.scale[0];
+    pushConstants.textureTransforms[3][3] = material.ao_transform.scale[1];
+    pushConstants.textureRotations[3] = material.ao_transform.rotation;
 
     // Emissive
-    pushConstants.emissiveTransform.offset.x = material.emissive_transform.offset[0];
-    pushConstants.emissiveTransform.offset.y = material.emissive_transform.offset[1];
-    pushConstants.emissiveTransform.scale.x = material.emissive_transform.scale[0];
-    pushConstants.emissiveTransform.scale.y = material.emissive_transform.scale[1];
-    pushConstants.emissiveTransform.rotation = material.emissive_transform.rotation;
+    pushConstants.textureTransforms[4][0] = material.emissive_transform.offset[0];
+    pushConstants.textureTransforms[4][1] = material.emissive_transform.offset[1];
+    pushConstants.textureTransforms[4][2] = material.emissive_transform.scale[0];
+    pushConstants.textureTransforms[4][3] = material.emissive_transform.scale[1];
+    pushConstants.textureRotations[4] = material.emissive_transform.rotation;
 }
 
 fn set_material_properties(pushConstants: *types.PBRPushConstants, material: *const types.CardinalMaterial) void {
-    @memcpy(pushConstants.albedoFactor[0..3], material.albedo_factor[0..3]);
-    pushConstants.metallicFactor = material.metallic_factor;
+    @memcpy(pushConstants.albedoFactor[0..4], material.albedo_factor[0..4]);
     @memcpy(pushConstants.emissiveFactor[0..3], material.emissive_factor[0..3]);
     pushConstants.roughnessFactor = material.roughness_factor;
-    pushConstants.normalScale = material.normal_scale;
-    pushConstants.aoStrength = material.ao_strength;
+    pushConstants.metallicNormalAO[0] = material.metallic_factor;
+    pushConstants.metallicNormalAO[1] = material.normal_scale;
+    pushConstants.metallicNormalAO[2] = material.ao_strength;
+    pushConstants.metallicNormalAO[3] = material.alpha_cutoff;
 
-    // Pack flags
-    pushConstants.flags = 0;
-    pushConstants.flags |= (@as(u32, @intCast(@intFromEnum(material.alpha_mode))) & 3); // Bits 0-1: Alpha Mode
+    // Pack flags and UV indices into packedInfo
+    // Bits 0-15: UV indices
+    // Bits 16-31: Flags
+    
+    var flags: u32 = 0;
+    flags |= (@as(u32, @intCast(@intFromEnum(material.alpha_mode))) & 3); // Bits 0-1: Alpha Mode
     // Skeleton bit (bit 2) will be set in vk_pbr_render
     // Descriptor indexing bit (bit 3) is set below
-
-    pushConstants.alphaCutoff = material.alpha_cutoff;
 
     // Pack UV indices (3 bits each)
     // 0: Albedo, 1: Normal, 2: MR, 3: AO, 4: Emissive
@@ -153,7 +140,8 @@ fn set_material_properties(pushConstants: *types.PBRPushConstants, material: *co
     packedUVs |= (@as(u32, material.uv_indices[2]) & 0x7) << 6;
     packedUVs |= (@as(u32, material.uv_indices[3]) & 0x7) << 9;
     packedUVs |= (@as(u32, material.uv_indices[4]) & 0x7) << 12;
-    pushConstants.uvSetIndices = packedUVs;
+    
+    pushConstants.packedInfo = (flags << 16) | (packedUVs & 0xFFFF);
 }
 
 pub export fn vk_material_setup_push_constants(pushConstants: ?*types.PBRPushConstants, mesh: ?*const types.CardinalMesh, scene: ?*const types.CardinalScene, textureManager: ?*const types.VulkanTextureManager) callconv(.c) void {
@@ -181,7 +169,10 @@ pub export fn vk_material_setup_push_constants(pushConstants: ?*types.PBRPushCon
 
         // Set descriptor indexing flag
         if (hasTextures) {
-            pc.flags |= 8; // Bit 3
+            // Flag is in upper 16 bits of packedInfo
+            // Bit 3 corresponds to (1 << 3) = 8
+            // Shifted by 16: (8 << 16)
+            pc.packedInfo |= (8 << 16); 
         }
     } else {
         set_default_material_properties(pc, hasTextures);

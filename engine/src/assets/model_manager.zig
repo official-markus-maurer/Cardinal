@@ -6,6 +6,7 @@ const log = @import("../core/log.zig");
 const ref_counting = @import("../core/ref_counting.zig");
 const async_loader = @import("../core/async_loader.zig");
 const texture_loader = @import("texture_loader.zig");
+const animation = @import("../core/animation.zig");
 
 const model_log = log.ScopedLogger("MODEL");
 
@@ -138,6 +139,23 @@ fn generate_model_name(file_path: ?[*:0]const u8) ?[*:0]u8 {
     return @as([*:0]u8, @ptrCast(name_ptr));
 }
 
+fn optimize_scene_animations(scn: *scene.CardinalScene) void {
+    if (scn.animation_system) |sys_opaque| {
+        // Cast the opaque pointer to the actual animation system type
+        const sys = @as(*animation.CardinalAnimationSystem, @ptrCast(@alignCast(sys_opaque)));
+
+        // We can check if animations array exists
+        if (sys.animations) |anims| {
+            var i: u32 = 0;
+            while (i < sys.animation_count) : (i += 1) {
+                // Apply RDP optimization with a small tolerance
+                // 0.0001 seems reasonable for visual fidelity while reducing redundant keys
+                animation.cardinal_animation_optimize(&anims[i], 0.0001);
+            }
+        }
+    }
+}
+
 fn calculate_scene_bounds(scn: *const scene.CardinalScene, bbox_min: *[3]f32, bbox_max: *[3]f32) void {
     if (scn.mesh_count == 0) {
         bbox_min.* = .{ 0, 0, 0 };
@@ -218,6 +236,9 @@ fn rebuild_combined_scene(manager: *CardinalModelManager) void {
     var total_meshes: u32 = 0;
     var total_materials: u32 = 0;
     var total_textures: u32 = 0;
+    var total_nodes: u32 = 0;
+    var total_animations: u32 = 0;
+    var total_skins: u32 = 0;
 
     const models = if (manager.models) |m| m else {
         manager.scene_dirty = false;
@@ -231,6 +252,13 @@ fn rebuild_combined_scene(manager: *CardinalModelManager) void {
             total_meshes += model.scene.mesh_count;
             total_materials += model.scene.material_count;
             total_textures += model.scene.texture_count;
+            total_nodes += model.scene.all_node_count;
+
+            if (model.scene.animation_system) |sys_opaque| {
+                const sys = @as(*animation.CardinalAnimationSystem, @ptrCast(@alignCast(sys_opaque)));
+                total_animations += sys.animation_count;
+                total_skins += sys.skin_count;
+            }
         }
     }
 
@@ -248,22 +276,32 @@ fn rebuild_combined_scene(manager: *CardinalModelManager) void {
     }
     const materials_ptr = memory.cardinal_calloc(allocator, total_materials, @sizeOf(scene.CardinalMaterial));
     const textures_ptr = memory.cardinal_calloc(allocator, total_textures, @sizeOf(scene.CardinalTexture));
+    const nodes_ptr = memory.cardinal_calloc(allocator, total_nodes, @sizeOf(?*scene.CardinalSceneNode));
 
-    if (meshes_ptr == null or materials_ptr == null or textures_ptr == null) {
+    if (meshes_ptr == null or materials_ptr == null or textures_ptr == null or (total_nodes > 0 and nodes_ptr == null)) {
         log.cardinal_log_error("Failed to allocate memory for combined scene", .{});
         if (meshes_ptr) |p| memory.cardinal_free(allocator, p);
         if (materials_ptr) |p| memory.cardinal_free(allocator, p);
         if (textures_ptr) |p| memory.cardinal_free(allocator, p);
+        if (nodes_ptr) |p| memory.cardinal_free(allocator, p);
         return;
     }
 
     manager.combined_scene.meshes = @ptrCast(@alignCast(meshes_ptr));
     manager.combined_scene.materials = @ptrCast(@alignCast(materials_ptr));
     manager.combined_scene.textures = @ptrCast(@alignCast(textures_ptr));
+    manager.combined_scene.all_nodes = @ptrCast(@alignCast(nodes_ptr));
+    manager.combined_scene.all_node_count = total_nodes;
+
+    // Allocate animation system if needed
+    if (total_animations > 0 or total_skins > 0) {
+        manager.combined_scene.animation_system = @ptrCast(animation.cardinal_animation_system_create(total_animations, total_skins));
+    }
 
     var mesh_offset: u32 = 0;
     var material_offset: u32 = 0;
     var texture_offset: u32 = 0;
+    var node_offset: u32 = 0;
 
     i = 0;
     while (i < manager.model_count) : (i += 1) {
@@ -272,7 +310,7 @@ fn rebuild_combined_scene(manager: *CardinalModelManager) void {
 
         const scn = &model.scene;
 
-        // Copy meshes with transformed vertices
+        // Copy meshes (No baking vertices, just transform matrix)
         if (scn.meshes) |src_meshes| {
             var m: u32 = 0;
             while (m < scn.mesh_count) : (m += 1) {
@@ -288,46 +326,12 @@ fn rebuild_combined_scene(manager: *CardinalModelManager) void {
                     continue;
                 }
 
+                // Shallow copy mesh data (vertices/indices pointers are shared)
                 dst_mesh.* = src_mesh.*;
                 dst_mesh.material_index += material_offset;
 
-                // Copy and transform vertices
-                const vertices_ptr = memory.cardinal_alloc(allocator, src_mesh.vertex_count * @sizeOf(scene.CardinalVertex));
-                if (vertices_ptr) |vp| {
-                    const dst_vertices: [*]scene.CardinalVertex = @ptrCast(@alignCast(vp));
-                    dst_mesh.vertices = dst_vertices;
-
-                    var v: u32 = 0;
-                    while (v < src_mesh.vertex_count) : (v += 1) {
-                        dst_vertices[v] = src_mesh.vertices.?[v];
-
-                        // Transform position
-                        const pos = [3]f32{ src_mesh.vertices.?[v].px, src_mesh.vertices.?[v].py, src_mesh.vertices.?[v].pz };
-                        var transformed_pos: [3]f32 = undefined;
-                        transform_math.cardinal_transform_point(&model.transform, &pos, &transformed_pos);
-
-                        dst_vertices[v].px = transformed_pos[0];
-                        dst_vertices[v].py = transformed_pos[1];
-                        dst_vertices[v].pz = transformed_pos[2];
-
-                        // Transform normal
-                        const normal = [3]f32{ src_mesh.vertices.?[v].nx, src_mesh.vertices.?[v].ny, src_mesh.vertices.?[v].nz };
-                        var transformed_normal: [3]f32 = undefined;
-                        transform_math.cardinal_transform_normal(&model.transform, &normal, &transformed_normal);
-
-                        dst_vertices[v].nx = transformed_normal[0];
-                        dst_vertices[v].ny = transformed_normal[1];
-                        dst_vertices[v].nz = transformed_normal[2];
-                    }
-                }
-
-                // Copy indices
-                const indices_ptr = memory.cardinal_alloc(allocator, src_mesh.index_count * @sizeOf(u32));
-                if (indices_ptr) |ip| {
-                    const dst_indices: [*]u32 = @ptrCast(@alignCast(ip));
-                    dst_mesh.indices = dst_indices;
-                    @memcpy(dst_indices[0..src_mesh.index_count], src_mesh.indices.?[0..src_mesh.index_count]);
-                }
+                // Apply model transform to mesh transform
+                transform_math.cardinal_matrix_multiply(&model.transform, &src_mesh.transform, &dst_mesh.transform);
             }
         }
 
@@ -448,17 +452,131 @@ fn rebuild_combined_scene(manager: *CardinalModelManager) void {
             }
         }
 
+        // Copy Nodes
+        if (scn.all_nodes) |src_nodes| {
+            // Shallow copy node pointers
+            @memcpy(manager.combined_scene.all_nodes.?[node_offset .. node_offset + scn.all_node_count], src_nodes[0..scn.all_node_count]);
+        }
+
+        // Copy Root Nodes
+        if (scn.root_nodes) |src_roots| {
+            if (manager.combined_scene.root_nodes) |dst_roots| {
+                @memcpy(dst_roots[manager.combined_scene.root_node_count .. manager.combined_scene.root_node_count + scn.root_node_count], src_roots[0..scn.root_node_count]);
+                manager.combined_scene.root_node_count += scn.root_node_count;
+            }
+        }
+
+        // Copy Animation System Data
+        if (scn.animation_system != null and manager.combined_scene.animation_system != null) {
+            const src_sys = @as(*animation.CardinalAnimationSystem, @ptrCast(@alignCast(scn.animation_system.?)));
+            const dst_sys = @as(*animation.CardinalAnimationSystem, @ptrCast(@alignCast(manager.combined_scene.animation_system.?)));
+
+            // Copy Animations
+            var anim_idx: u32 = 0;
+            while (anim_idx < src_sys.animation_count) : (anim_idx += 1) {
+                // We need to create a temporary copy to adjust indices before adding
+                var anim = src_sys.animations.?[anim_idx];
+
+                // Deep copy channels to adjust indices
+                if (anim.channel_count > 0) {
+                    const channels_ptr = memory.cardinal_alloc(allocator, anim.channel_count * @sizeOf(animation.CardinalAnimationChannel));
+                    if (channels_ptr) |cp| {
+                        const channels = @as([*]animation.CardinalAnimationChannel, @ptrCast(@alignCast(cp)));
+                        @memcpy(channels[0..anim.channel_count], anim.channels.?[0..anim.channel_count]);
+
+                        // Adjust node indices
+                        var c_idx: u32 = 0;
+                        while (c_idx < anim.channel_count) : (c_idx += 1) {
+                            channels[c_idx].target.node_index += node_offset;
+                        }
+
+                        anim.channels = channels;
+                        _ = animation.cardinal_animation_system_add_animation(dst_sys, &anim);
+                        memory.cardinal_free(allocator, cp);
+                    } else {
+                        // Fallback: add as is (will point to wrong nodes)
+                        _ = animation.cardinal_animation_system_add_animation(dst_sys, &anim);
+                    }
+                } else {
+                    _ = animation.cardinal_animation_system_add_animation(dst_sys, &anim);
+                }
+            }
+
+            // Copy Skins
+            var skin_idx: u32 = 0;
+            while (skin_idx < src_sys.skin_count) : (skin_idx += 1) {
+                var skin = src_sys.skins.?[skin_idx];
+
+                // We need to adjust mesh_indices and bone node indices
+                // Skin structure is complex, might need deep copy of arrays if we can't modify in place.
+                // cardinal_animation_system_add_skin makes a deep copy.
+                // So we can allocate temps, modify, add, free.
+
+                var new_mesh_indices: ?[*]u32 = null;
+                var new_bones: ?[*]animation.CardinalBone = null;
+
+                // Adjust Mesh Indices
+                if (skin.mesh_count > 0 and skin.mesh_indices != null) {
+                    const mi_ptr = memory.cardinal_alloc(allocator, skin.mesh_count * @sizeOf(u32));
+                    if (mi_ptr) |mip| {
+                        new_mesh_indices = @ptrCast(@alignCast(mip));
+                        @memcpy(new_mesh_indices.?[0..skin.mesh_count], skin.mesh_indices.?[0..skin.mesh_count]);
+
+                        var m: u32 = 0;
+                        while (m < skin.mesh_count) : (m += 1) {
+                            new_mesh_indices.?[m] += mesh_offset;
+                        }
+                        skin.mesh_indices = new_mesh_indices;
+                    }
+                }
+
+                // Adjust Bones
+                if (skin.bone_count > 0 and skin.bones != null) {
+                    const b_ptr = memory.cardinal_alloc(allocator, skin.bone_count * @sizeOf(animation.CardinalBone));
+                    if (b_ptr) |bp| {
+                        new_bones = @ptrCast(@alignCast(bp));
+                        @memcpy(new_bones.?[0..skin.bone_count], skin.bones.?[0..skin.bone_count]);
+
+                        var b: u32 = 0;
+                        while (b < skin.bone_count) : (b += 1) {
+                            new_bones.?[b].node_index += node_offset;
+                        }
+                        skin.bones = new_bones;
+                    }
+                }
+
+                _ = animation.cardinal_animation_system_add_skin(dst_sys, &skin);
+
+                if (new_mesh_indices) |ptr| memory.cardinal_free(allocator, ptr);
+                if (new_bones) |ptr| memory.cardinal_free(allocator, ptr);
+            }
+        }
+
         mesh_offset += scn.mesh_count;
         material_offset += scn.material_count;
         texture_offset += scn.texture_count;
+        node_offset += scn.all_node_count;
     }
 
     manager.combined_scene.mesh_count = total_meshes;
     manager.combined_scene.material_count = total_materials;
     manager.combined_scene.texture_count = total_textures;
+    manager.combined_scene.skin_count = total_skins;
+    if (manager.combined_scene.animation_system) |sys_opaque| {
+        const sys = @as(*animation.CardinalAnimationSystem, @ptrCast(@alignCast(sys_opaque)));
+        if (sys.skin_count > 0) {
+            const skins_ptr = memory.cardinal_calloc(allocator, sys.skin_count, @sizeOf(animation.CardinalSkin));
+            if (skins_ptr) |sp| {
+                const dst_skins = @as([*]animation.CardinalSkin, @ptrCast(@alignCast(sp)));
+                @memcpy(dst_skins[0..sys.skin_count], sys.skins.?[0..sys.skin_count]);
+                manager.combined_scene.skins = @ptrCast(dst_skins);
+            }
+        }
+    }
+
     manager.scene_dirty = false;
 
-    log.cardinal_log_debug("Rebuilt combined scene: {d} meshes, {d} materials, {d} textures", .{ total_meshes, total_materials, total_textures });
+    log.cardinal_log_debug("Rebuilt combined scene: {d} meshes, {d} materials, {d} textures, {d} nodes, {d} anims", .{ total_meshes, total_materials, total_textures, total_nodes, total_animations });
 }
 
 fn free_model_load_task(task: *async_loader.CardinalAsyncTask) void {
@@ -518,6 +636,7 @@ pub export fn cardinal_model_manager_destroy(manager: ?*CardinalModelManager) ca
     }
 
     // Destroy combined scene to release references
+    if (mgr.combined_scene.root_nodes) |ptr| memory.cardinal_free(allocator, @ptrCast(ptr));
     scene.cardinal_scene_destroy(&mgr.combined_scene);
 
     @memset(@as([*]u8, @ptrCast(mgr))[0..@sizeOf(CardinalModelManager)], 0);
@@ -739,6 +858,7 @@ pub export fn cardinal_model_manager_add_scene(manager: ?*CardinalModelManager, 
     model.scene = in_scene.?.*;
     @memset(@as([*]u8, @ptrCast(in_scene.?))[0..@sizeOf(scene.CardinalScene)], 0);
 
+    optimize_scene_animations(&model.scene);
     calculate_scene_bounds(&model.scene, &model.bbox_min, &model.bbox_max);
 
     mgr.model_count += 1;

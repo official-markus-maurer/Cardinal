@@ -112,7 +112,7 @@ pub const EditorState = struct {
 
     // Material Override
     material_override_enabled: bool = false,
-    material_albedo: [3]f32 = .{ 1.0, 1.0, 1.0 },
+    material_albedo: [4]f32 = .{ 1.0, 1.0, 1.0, 1.0 },
     material_metallic: f32 = 0.0,
     material_roughness: f32 = 0.5,
     material_emissive: [3]f32 = .{ 0.0, 0.0, 0.0 },
