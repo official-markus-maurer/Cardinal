@@ -114,18 +114,26 @@ pub export fn vulkan_resource_manager_destroy_pipelines(manager: ?*VulkanResourc
 
         // Destroy PBR buffers
         const pbr = &s.pipelines.pbr_pipeline;
-        if (pbr.uniformBuffer != null) {
-            vulkan_resource_manager_destroy_buffer(manager, pbr.uniformBuffer, pbr.uniformBufferAllocation);
-            pbr.uniformBuffer = null;
+        var i: u32 = 0;
+        while (i < types.MAX_FRAMES_IN_FLIGHT) : (i += 1) {
+            if (pbr.uniformBuffers[i] != null) {
+                vulkan_resource_manager_destroy_buffer(manager, pbr.uniformBuffers[i], pbr.uniformBuffersAllocation[i]);
+                pbr.uniformBuffers[i] = null;
+            }
+            if (pbr.lightingBuffers[i] != null) {
+                vulkan_resource_manager_destroy_buffer(manager, pbr.lightingBuffers[i], pbr.lightingBuffersAllocation[i]);
+                pbr.lightingBuffers[i] = null;
+            }
+            if (pbr.boneMatricesBuffers[i] != null) {
+                vulkan_resource_manager_destroy_buffer(manager, pbr.boneMatricesBuffers[i], pbr.boneMatricesBuffersAllocation[i]);
+                pbr.boneMatricesBuffers[i] = null;
+            }
+            if (pbr.shadowUBOs[i] != null) {
+                vulkan_resource_manager_destroy_buffer(manager, pbr.shadowUBOs[i], pbr.shadowUBOsAllocation[i]);
+                pbr.shadowUBOs[i] = null;
+            }
         }
-        if (pbr.lightingBuffer != null) {
-            vulkan_resource_manager_destroy_buffer(manager, pbr.lightingBuffer, pbr.lightingBufferAllocation);
-            pbr.lightingBuffer = null;
-        }
-        if (pbr.boneMatricesBuffer != null) {
-            vulkan_resource_manager_destroy_buffer(manager, pbr.boneMatricesBuffer, pbr.boneMatricesBufferAllocation);
-            pbr.boneMatricesBuffer = null;
-        }
+
         if (pbr.vertexBuffer != null) {
             vulkan_resource_manager_destroy_buffer(manager, pbr.vertexBuffer, pbr.vertexBufferAllocation);
             pbr.vertexBuffer = null;
@@ -133,10 +141,6 @@ pub export fn vulkan_resource_manager_destroy_pipelines(manager: ?*VulkanResourc
         if (pbr.indexBuffer != null) {
             vulkan_resource_manager_destroy_buffer(manager, pbr.indexBuffer, pbr.indexBufferAllocation);
             pbr.indexBuffer = null;
-        }
-        if (pbr.shadowUBO != null) {
-            vulkan_resource_manager_destroy_buffer(manager, pbr.shadowUBO, pbr.shadowUBOAllocation);
-            pbr.shadowUBO = null;
         }
 
         // Descriptor manager should also be destroyed if it exists

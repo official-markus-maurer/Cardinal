@@ -145,6 +145,8 @@ pub const CardinalMesh = extern struct {
     visible: bool,
     morph_targets: ?[*]CardinalMorphTarget,
     morph_target_count: u32,
+    bounding_box_min: [3]f32,
+    bounding_box_max: [3]f32,
 };
 
 pub const CardinalSceneNode = extern struct {

@@ -497,7 +497,8 @@ pub export fn vk_descriptor_manager_allocate_sets(manager: ?*types.VulkanDescrip
             }
             // Cast index to pseudo-handle
             // VkDescriptorSet is a pointer, so we cast the index to a pointer
-            pDescriptorSets.?[i] = @ptrFromInt(setIndex);
+            // We offset by 1 to ensure we never return NULL (0) which is considered an invalid handle
+            pDescriptorSets.?[i] = @ptrFromInt(setIndex + 1);
         }
         return true;
     }
@@ -601,7 +602,11 @@ pub export fn vk_descriptor_manager_update_buffer(manager: ?*types.VulkanDescrip
     }
 
     if (mgr.useDescriptorBuffers) {
-        const setIndex = @as(u32, @intCast(@intFromPtr(set)));
+        // Adjust for 1-based index
+        const setHandle = @as(u32, @intCast(@intFromPtr(set)));
+        if (setHandle == 0) return false;
+        const setIndex = setHandle - 1;
+
         if (dtype != c.VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER and dtype != c.VK_DESCRIPTOR_TYPE_STORAGE_BUFFER) {
             log.cardinal_log_warn("Descriptor buffer update only implemented for UNIFORM_BUFFER and STORAGE_BUFFER", .{});
             return false;
@@ -677,7 +682,11 @@ pub export fn vk_descriptor_manager_update_image(manager: ?*types.VulkanDescript
     if (dtype == c.VK_DESCRIPTOR_TYPE_MAX_ENUM) return false;
 
     if (mgr.useDescriptorBuffers) {
-        const setIndex = @as(u32, @intCast(@intFromPtr(set)));
+        // Adjust for 1-based index
+        const setHandle = @as(u32, @intCast(@intFromPtr(set)));
+        if (setHandle == 0) return false;
+        const setIndex = setHandle - 1;
+
         if (dtype != c.VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER) return false;
         if (mgr.vulkan_state == null) return false;
         const vs = @as(*types.VulkanState, @ptrCast(@alignCast(mgr.vulkan_state)));
@@ -722,7 +731,11 @@ pub export fn vk_descriptor_manager_update_image(manager: ?*types.VulkanDescript
 // Internal helper for textures update
 fn update_textures_internal(manager: *types.VulkanDescriptorManager, set: c.VkDescriptorSet, binding: u32, imageViews: [*]c.VkImageView, samplers: ?[*]c.VkSampler, singleSampler: c.VkSampler, imageLayout: c.VkImageLayout, count: u32, dtype: c.VkDescriptorType) bool {
     if (manager.useDescriptorBuffers) {
-        const setIndex = @as(u32, @intCast(@intFromPtr(set)));
+        // Adjust for 1-based index
+        const setHandle = @as(u32, @intCast(@intFromPtr(set)));
+        if (setHandle == 0) return false;
+        const setIndex = setHandle - 1;
+
         if (manager.vulkan_state == null) return false;
         const vs = @as(*types.VulkanState, @ptrCast(@alignCast(manager.vulkan_state)));
 
@@ -829,8 +842,14 @@ pub export fn vk_descriptor_manager_bind_sets(manager: ?*types.VulkanDescriptorM
                 // Extract index from pseudo-handle if provided, otherwise fallback to assuming linear mapping (legacy/risky)
                 // But for descriptor buffers as implemented in allocate_sets, we MUST have the handle.
                 if (pDescriptorSets) |sets| {
-                    const setIndex = @intFromPtr(sets[i]);
-                    offsets.?[i] = mgr.descriptorSetSize * @as(u32, @intCast(setIndex));
+                    const setHandle = @intFromPtr(sets[i]);
+                    // Adjust for 1-based index
+                    if (setHandle > 0) {
+                        const setIndex = setHandle - 1;
+                        offsets.?[i] = mgr.descriptorSetSize * @as(u32, @intCast(setIndex));
+                    } else {
+                        offsets.?[i] = 0; // Invalid handle
+                    }
                 } else {
                     offsets.?[i] = mgr.descriptorSetSize * (firstSet + i);
                 }
@@ -875,9 +894,12 @@ pub export fn vk_descriptor_manager_free_set(manager: ?*types.VulkanDescriptorMa
 
     if (mgr.useDescriptorBuffers) {
         if (mgr.freeIndices != null and mgr.freeCount < mgr.freeCapacity) {
-            const setIndex = @as(u32, @intCast(@intFromPtr(descriptorSet)));
-            mgr.freeIndices.?[mgr.freeCount] = setIndex;
-            mgr.freeCount += 1;
+            const setHandle = @as(u32, @intCast(@intFromPtr(descriptorSet)));
+            if (setHandle > 0) {
+                const setIndex = setHandle - 1;
+                mgr.freeIndices.?[mgr.freeCount] = setIndex;
+                mgr.freeCount += 1;
+            }
         }
     } else {
         if (mgr.setPoolMapping != null) {
@@ -890,8 +912,9 @@ pub export fn vk_descriptor_manager_free_set(manager: ?*types.VulkanDescriptorMa
                 log.cardinal_log_warn("Skipping free of untracked descriptor set 0x{x}", .{@intFromPtr(descriptorSet)});
             }
         } else {
-            // No mapping, assume current pool (legacy behavior)
-            _ = c.vkFreeDescriptorSets(mgr.device, mgr.descriptorPool, 1, &descriptorSet);
+            // No mapping available - this should not happen if initialized correctly
+            // We cannot safely assume mgr.descriptorPool is the correct pool if multiple pools were used
+            log.cardinal_log_error("Attempted to free descriptor set 0x{x} but setPoolMapping is null", .{@intFromPtr(descriptorSet)});
         }
     }
 }

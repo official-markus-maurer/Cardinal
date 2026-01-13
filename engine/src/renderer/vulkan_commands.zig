@@ -405,36 +405,44 @@ fn end_recording(s: *types.VulkanState, cmd: c.VkCommandBuffer, image_index: u32
 
 fn vk_update_frame_uniforms(s: *types.VulkanState) void {
     if (s.pipelines.use_pbr_pipeline and s.pipelines.pbr_pipeline.initialized) {
-        var ubo: types.PBRUniformBufferObject = undefined;
-        @memcpy(@as([*]u8, @ptrCast(&ubo))[0..@sizeOf(types.PBRUniformBufferObject)], @as([*]u8, @ptrCast(s.pipelines.pbr_pipeline.uniformBufferMapped))[0..@sizeOf(types.PBRUniformBufferObject)]);
-
-        var lighting: types.PBRLightingBuffer = undefined;
-        @memcpy(@as([*]u8, @ptrCast(&lighting))[0..@sizeOf(types.PBRLightingBuffer)], @as([*]u8, @ptrCast(s.pipelines.pbr_pipeline.lightingBufferMapped))[0..@sizeOf(types.PBRLightingBuffer)]);
-
-        vk_pbr.vk_pbr_update_uniforms(&s.pipelines.pbr_pipeline, &ubo, &lighting);
+        vk_pbr.vk_pbr_update_uniforms(&s.pipelines.pbr_pipeline, &s.pipelines.pbr_pipeline.current_ubo, &s.pipelines.pbr_pipeline.current_lighting, s.sync.current_frame);
 
         // Update simple uniforms using PBR data if in UV/Wireframe mode
         if (s.current_rendering_mode == .UV or s.current_rendering_mode == .WIREFRAME) {
-            vk_simple_pipelines.update_simple_uniforms(s, &ubo.model, &ubo.view, &ubo.proj);
+            vk_simple_pipelines.update_simple_uniforms(s, &s.pipelines.pbr_pipeline.current_ubo.model, &s.pipelines.pbr_pipeline.current_ubo.view, &s.pipelines.pbr_pipeline.current_ubo.proj, &s.pipelines.pbr_pipeline.current_ubo.viewPos);
         }
     }
 }
 
 pub fn vk_record_scene_content(s: *types.VulkanState, cmd: c.VkCommandBuffer) void {
+    // log.cardinal_log_debug("vk_record_scene_content: Mode {any}", .{s.current_rendering_mode});
+    
     switch (s.current_rendering_mode) {
         types.CardinalRenderingMode.NORMAL => {
             if (s.pipelines.use_pbr_pipeline and s.pipelines.pbr_pipeline.initialized) {
-                vk_pbr.vk_pbr_render(&s.pipelines.pbr_pipeline, cmd, s.current_scene);
+                vk_pbr.vk_pbr_render(&s.pipelines.pbr_pipeline, cmd, s.current_scene, s.sync.current_frame);
             }
         },
         types.CardinalRenderingMode.UV => {
             if (s.pipelines.uv_pipeline != null and s.pipelines.use_pbr_pipeline and s.pipelines.pbr_pipeline.initialized) {
                 vk_simple_pipelines.render_simple(s, cmd, s.pipelines.uv_pipeline, s.pipelines.uv_pipeline_layout);
+            } else {
+                log.cardinal_log_error("UV Mode skip: uv_pipe={any}, use_pbr={any}, pbr_init={any}", .{
+                    s.pipelines.uv_pipeline,
+                    s.pipelines.use_pbr_pipeline,
+                    s.pipelines.pbr_pipeline.initialized
+                });
             }
         },
         types.CardinalRenderingMode.WIREFRAME => {
             if (s.pipelines.wireframe_pipeline != null and s.pipelines.use_pbr_pipeline and s.pipelines.pbr_pipeline.initialized) {
                 vk_simple_pipelines.render_simple(s, cmd, s.pipelines.wireframe_pipeline, s.pipelines.wireframe_pipeline_layout);
+            } else {
+                log.cardinal_log_error("Wireframe Mode skip: wf_pipe={any}, use_pbr={any}, pbr_init={any}", .{
+                    s.pipelines.wireframe_pipeline,
+                    s.pipelines.use_pbr_pipeline,
+                    s.pipelines.pbr_pipeline.initialized
+                });
             }
         },
         types.CardinalRenderingMode.DEBUG => {
@@ -778,8 +786,8 @@ pub export fn vk_record_cmd(s: ?*types.VulkanState, image_index: u32) callconv(.
 
     // Skybox Rendering
     if (vs.pipelines.use_skybox_pipeline and vs.pipelines.skybox_pipeline.initialized and vs.pipelines.skybox_pipeline.texture.is_allocated) {
-        if (vs.pipelines.use_pbr_pipeline and vs.pipelines.pbr_pipeline.uniformBufferMapped != null) {
-            const ubo = @as(*types.PBRUniformBufferObject, @ptrCast(@alignCast(vs.pipelines.pbr_pipeline.uniformBufferMapped)));
+        if (vs.pipelines.use_pbr_pipeline and vs.pipelines.pbr_pipeline.uniformBuffersMapped[vs.sync.current_frame] != null) {
+            const ubo = @as(*types.PBRUniformBufferObject, @ptrCast(@alignCast(vs.pipelines.pbr_pipeline.uniformBuffersMapped[vs.sync.current_frame])));
 
             if (begin_dynamic_rendering(vs, cmd, image_index, use_depth, null, &clears, false, 0)) {
                 var view: math.Mat4 = undefined;
@@ -790,6 +798,17 @@ pub export fn vk_record_cmd(s: ?*types.VulkanState, image_index: u32) callconv(.
                 end_dynamic_rendering(vs, cmd);
             }
         }
+    }
+
+    // Transparent Pass (if any)
+    // For now, we don't have a separate transparent pass structure in this simple renderer,
+    // but we should handle it if we add transparency support.
+
+    // ------------------------------------------------------------------------------------------------
+    // Lighting Debug Rendering (Visualizes light positions)
+    // ------------------------------------------------------------------------------------------------
+    const lighting_buffer = if (vs.pipelines.use_pbr_pipeline) vs.pipelines.pbr_pipeline.lightingBuffers[vs.sync.current_frame] else null;
+    if (vs.pipelines.use_pbr_pipeline and lighting_buffer != null and vs.pipelines.pbr_pipeline.debug_flags > 0.0) {
     }
 
     if (vs.ui_record_callback != null) {
@@ -814,7 +833,7 @@ pub export fn vk_prepare_mesh_shader_rendering(s: ?*types.VulkanState) callconv(
         return;
     }
 
-    const lighting_buffer = if (vs.pipelines.use_pbr_pipeline) vs.pipelines.pbr_pipeline.lightingBuffer else null;
+    const lighting_buffer = if (vs.pipelines.use_pbr_pipeline) vs.pipelines.pbr_pipeline.lightingBuffers[vs.sync.current_frame] else null;
 
     var texture_views: ?[*]c.VkImageView = null;
     var samplers: ?[*]c.VkSampler = null;

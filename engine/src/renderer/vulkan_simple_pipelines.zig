@@ -18,6 +18,8 @@ const SimpleUniformBufferObject = extern struct {
     model: [16]f32,
     view: [16]f32,
     proj: [16]f32,
+    viewPos: [3]f32,
+    debugFlags: f32,
 };
 
 fn create_simple_descriptor_resources(s: *types.VulkanState) bool {
@@ -48,10 +50,19 @@ fn create_simple_descriptor_resources(s: *types.VulkanState) bool {
         return false;
     }
 
+    // Safety check: verify allocation succeeded
+    if (s.pipelines.simple_descriptor_set == null) {
+        log.cardinal_log_error("Simple descriptor set allocation returned null handle", .{});
+        return false;
+    }
+
+    // Debug log the handle
+    log.cardinal_log_info("Allocated simple_descriptor_set handle: {any}", .{s.pipelines.simple_descriptor_set});
+
     // Update Set
     if (!descriptor_mgr.vk_descriptor_manager_update_buffer(s.pipelines.simple_descriptor_manager, s.pipelines.simple_descriptor_set, 0, s.pipelines.simple_uniform_buffer, 0, @sizeOf(SimpleUniformBufferObject))) {
-         log.cardinal_log_error("Failed to update simple UBO descriptor", .{});
-         return false;
+        log.cardinal_log_error("Failed to update simple UBO descriptor", .{});
+        return false;
     }
 
     return true;
@@ -86,23 +97,21 @@ fn create_simple_uniform_buffer(s: *types.VulkanState) bool {
     return true;
 }
 
-
-
 fn create_simple_pipeline_from_json(s: *types.VulkanState, json_path: []const u8, pipeline: *c.VkPipeline, pipelineLayout: *c.VkPipelineLayout, pipelineCache: c.VkPipelineCache) bool {
     const renderer_allocator = memory.cardinal_get_allocator_for_category(.RENDERER).as_allocator();
     var builder = vk_pso.PipelineBuilder.init(renderer_allocator, s.context.device, pipelineCache);
-    
+
     var parsed = vk_pso.PipelineBuilder.load_from_json(renderer_allocator, json_path) catch |err| {
-        log.cardinal_log_error("Failed to load pipeline JSON '{s}': {s}", .{json_path, @errorName(err)});
+        log.cardinal_log_error("Failed to load pipeline JSON '{s}': {s}", .{ json_path, @errorName(err) });
         return false;
     };
     defer parsed.deinit();
 
     var descriptor = parsed.value;
-    
+
     // Override rendering formats
     const colorFormat: c.VkFormat = c.VK_FORMAT_R16G16B16A16_SFLOAT;
-    
+
     // Allocate formats array on heap to be safe
     const formats = renderer_allocator.alloc(c.VkFormat, 1) catch return false;
     formats[0] = colorFormat;
@@ -111,11 +120,23 @@ fn create_simple_pipeline_from_json(s: *types.VulkanState, json_path: []const u8
 
     descriptor.rendering.depth_format = s.swapchain.depth_format;
 
+    // Explicitly set dynamic states if not present (though JSON should have them)
+    // s.context.vkCmdSetViewport and Scissor are called in render_simple if we are using dynamic rendering without secondary buffers?
+    // Actually, render_simple assumes viewport is set.
+    // If we are in secondary buffer, it inherits or sets it.
+
+    // Ensure viewport and scissor are dynamic
+    // descriptor.dynamic_states is a slice, we can't easily append to it if it's not on heap or fixed size.
+    // But PipelineBuilder.load_from_json should have set it up.
+
     // Create pipeline layout with push constants
     var pushConstantRange = std.mem.zeroes(c.VkPushConstantRange);
     pushConstantRange.stageFlags = c.VK_SHADER_STAGE_VERTEX_BIT | c.VK_SHADER_STAGE_FRAGMENT_BIT;
     pushConstantRange.offset = 0;
     pushConstantRange.size = @sizeOf(types.PBRPushConstants);
+
+    // Ensure size is valid (should be 256)
+    if (pushConstantRange.size < 256) pushConstantRange.size = 256;
 
     var pipelineLayoutInfo = std.mem.zeroes(c.VkPipelineLayoutCreateInfo);
     pipelineLayoutInfo.sType = c.VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO;
@@ -158,7 +179,7 @@ pub fn vk_create_simple_pipelines(s: *types.VulkanState, pipelineCache: c.VkPipe
     // Create UV pipeline
     const pipeline_dir_span = std.mem.span(@as([*:0]const u8, @ptrCast(&s.config.pipeline_dir)));
     const renderer_allocator = memory.cardinal_get_allocator_for_category(.RENDERER).as_allocator();
-    
+
     const uv_path = std.fmt.allocPrint(renderer_allocator, "{s}/debug_uv.json", .{pipeline_dir_span}) catch return false;
     defer renderer_allocator.free(uv_path);
 
@@ -166,6 +187,7 @@ pub fn vk_create_simple_pipelines(s: *types.VulkanState, pipelineCache: c.VkPipe
         log.cardinal_log_error("Failed to create UV pipeline", .{});
         return false;
     }
+    log.cardinal_log_info("Created UV pipeline handle: {any}", .{s.pipelines.uv_pipeline});
 
     // Create wireframe pipeline
     const wireframe_path = std.fmt.allocPrint(renderer_allocator, "{s}/debug_wireframe.json", .{pipeline_dir_span}) catch return false;
@@ -175,6 +197,7 @@ pub fn vk_create_simple_pipelines(s: *types.VulkanState, pipelineCache: c.VkPipe
         log.cardinal_log_error("Failed to create wireframe pipeline", .{});
         return false;
     }
+    log.cardinal_log_info("Created Wireframe pipeline handle: {any}", .{s.pipelines.wireframe_pipeline});
 
     log.cardinal_log_info("Simple pipelines created successfully", .{});
     return true;
@@ -221,40 +244,83 @@ pub fn vk_destroy_simple_pipelines(s: *types.VulkanState) void {
     }
 }
 
-pub fn update_simple_uniforms(s: *types.VulkanState, model: *const [16]f32, view: *const [16]f32, proj: *const [16]f32) void {
-    if (s.pipelines.simple_uniform_buffer_mapped == null) return;
+pub fn update_simple_uniforms(s: *types.VulkanState, model: *const [16]f32, view: *const [16]f32, proj: *const [16]f32, viewPos: *const [3]f32) void {
+    if (s.pipelines.simple_uniform_buffer_mapped == null) {
+        log.cardinal_log_error("update_simple_uniforms: Buffer not mapped!", .{});
+        return;
+    }
+
+    // log.cardinal_log_debug("update_simple_uniforms: Updating UBO. ViewPos: {d},{d},{d}", .{viewPos[0], viewPos[1], viewPos[2]});
+    log.cardinal_log_info("update_simple_uniforms: Updating UBO. ViewPos: {d},{d},{d}", .{ viewPos[0], viewPos[1], viewPos[2] });
 
     var ubo: SimpleUniformBufferObject = undefined;
     @memcpy(&ubo.model, model);
     @memcpy(&ubo.view, view);
     @memcpy(&ubo.proj, proj);
+    @memcpy(&ubo.viewPos, viewPos);
+    ubo.debugFlags = 0.0;
 
     @memcpy(@as([*]u8, @ptrCast(s.pipelines.simple_uniform_buffer_mapped))[0..@sizeOf(SimpleUniformBufferObject)], @as([*]const u8, @ptrCast(&ubo))[0..@sizeOf(SimpleUniformBufferObject)]);
 }
 
 pub fn render_simple(s: *types.VulkanState, commandBufferHandle: c.VkCommandBuffer, pipeline: c.VkPipeline, pipelineLayout: c.VkPipelineLayout) void {
-    if (s.current_scene == null) return;
+    // log.cardinal_log_debug("render_simple: Called", .{});
+    log.cardinal_log_info("render_simple: Called", .{});
+    if (s.current_scene == null) {
+        log.cardinal_log_error("render_simple: No scene", .{});
+        return;
+    }
     const scn = s.current_scene.?;
 
     // Use PBR buffers if available
-    if (!s.pipelines.use_pbr_pipeline or !s.pipelines.pbr_pipeline.initialized) return;
+    if (!s.pipelines.use_pbr_pipeline or !s.pipelines.pbr_pipeline.initialized) {
+        log.cardinal_log_error("render_simple: PBR pipeline not initialized", .{});
+        return;
+    }
     const pipe = &s.pipelines.pbr_pipeline;
 
-    if (pipe.vertexBuffer == null or pipe.indexBuffer == null) return;
-    if (s.pipelines.simple_descriptor_set == null) return;
+    if (pipe.vertexBuffer == null or pipe.indexBuffer == null) {
+        log.cardinal_log_error("render_simple: Buffers null", .{});
+        return;
+    }
+    if (s.pipelines.simple_descriptor_set == null) {
+        log.cardinal_log_error("render_simple: Descriptor set null", .{});
+        return;
+    }
 
     const cmd = wrappers.CommandBuffer.init(commandBufferHandle);
 
     cmd.bindPipeline(c.VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline);
-    
+
     var descriptorSets = [_]c.VkDescriptorSet{s.pipelines.simple_descriptor_set};
     // Use manager bind function to handle descriptor buffers transparently
     descriptor_mgr.vk_descriptor_manager_bind_sets(s.pipelines.simple_descriptor_manager, commandBufferHandle, pipelineLayout, 0, 1, &descriptorSets, 0, null);
 
+    // Dynamic State: Viewport and Scissor
+    // If not using secondary command buffers, we must set them.
+    // vk_record_cmd sets them initially, but if they were changed by another pipeline, we should reset them?
+    // Actually, dynamic rendering in Vulkan requires setting them if dynamic state is enabled.
+    // The previous code in vk_record_cmd sets them, so we might be safe.
+    // However, to be doubly sure for debugging:
+    var vp = std.mem.zeroes(c.VkViewport);
+    vp.x = 0;
+    vp.y = 0;
+    vp.width = @floatFromInt(s.swapchain.extent.width);
+    vp.height = @floatFromInt(s.swapchain.extent.height);
+    vp.minDepth = 0.0;
+    vp.maxDepth = 1.0;
+    c.vkCmdSetViewport(commandBufferHandle, 0, 1, &vp);
+
+    var sc = std.mem.zeroes(c.VkRect2D);
+    sc.offset.x = 0;
+    sc.offset.y = 0;
+    sc.extent = s.swapchain.extent;
+    c.vkCmdSetScissor(commandBufferHandle, 0, 1, &sc);
+
     var vertexBuffers = [_]c.VkBuffer{pipe.vertexBuffer};
     var offsets = [_]c.VkDeviceSize{0};
     cmd.bindVertexBuffers(0, &vertexBuffers, &offsets);
-    
+
     cmd.bindIndexBuffer(pipe.indexBuffer, 0, c.VK_INDEX_TYPE_UINT32);
 
     // Render each mesh using offsets
@@ -277,8 +343,12 @@ pub fn render_simple(s: *types.VulkanState, commandBufferHandle: c.VkCommandBuff
             cmd.pushConstants(pipelineLayout, c.VK_SHADER_STAGE_VERTEX_BIT | c.VK_SHADER_STAGE_FRAGMENT_BIT, 0, @sizeOf(types.PBRPushConstants), &pushConstants);
 
             if (mesh.index_count > 0) {
+                // log.cardinal_log_debug("DrawIndexed: {d} indices", .{mesh.index_count});
+                log.cardinal_log_info("DrawIndexed: {d} indices", .{mesh.index_count});
                 cmd.drawIndexed(mesh.index_count, 1, indexOffset, 0, 0);
             } else {
+                // log.cardinal_log_debug("Draw: {d} vertices", .{mesh.vertex_count});
+                log.cardinal_log_info("Draw: {d} vertices", .{mesh.vertex_count});
                 cmd.draw(mesh.vertex_count, 1, 0, 0);
             }
             indexOffset += mesh.index_count;

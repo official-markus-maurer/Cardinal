@@ -59,12 +59,20 @@ fn create_pbr_descriptor_manager(pipeline: *types.VulkanPBRPipeline, device: c.V
     const prefer_descriptor_buffers = true;
     log.cardinal_log_info("Creating PBR descriptor manager with {d} max sets (prefer buffers: {s})", .{ 1000, if (prefer_descriptor_buffers) "true" else "false" });
 
-    if (!builder.build(pipeline.descriptorManager.?, device, @ptrCast(allocator), @ptrCast(vulkan_state), 1000, prefer_descriptor_buffers)) {
+    if (!builder.build(pipeline.descriptorManager.?, device, @ptrCast(allocator), @ptrCast(vulkan_state), types.MAX_FRAMES_IN_FLIGHT, prefer_descriptor_buffers)) {
         log.cardinal_log_error("Failed to create descriptor manager!", .{});
         memory.cardinal_free(mem_alloc, pipeline.descriptorManager);
         pipeline.descriptorManager = null;
         return false;
     }
+
+    // Allocate sets immediately
+    var sets: [types.MAX_FRAMES_IN_FLIGHT]c.VkDescriptorSet = undefined;
+    if (!descriptor_mgr.vk_descriptor_manager_allocate_sets(pipeline.descriptorManager, types.MAX_FRAMES_IN_FLIGHT, &sets)) {
+        log.cardinal_log_error("Failed to allocate descriptor sets", .{});
+        return false;
+    }
+
     return true;
 }
 
@@ -190,65 +198,69 @@ fn create_pbr_graphics_pipeline(pipeline: *types.VulkanPBRPipeline, device: c.Vk
 }
 
 fn create_pbr_uniform_buffers(pipeline: *types.VulkanPBRPipeline, device: c.VkDevice, allocator: *types.VulkanAllocator) bool {
-    // UBO
-    var uboInfo = std.mem.zeroes(buffer_mgr.VulkanBufferCreateInfo);
-    uboInfo.size = @sizeOf(types.PBRUniformBufferObject);
-    uboInfo.usage = c.VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT;
-    uboInfo.properties = c.VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | c.VK_MEMORY_PROPERTY_HOST_COHERENT_BIT;
-    uboInfo.persistentlyMapped = true;
-
-    var uboBuffer: buffer_mgr.VulkanBuffer = undefined;
-    if (!buffer_mgr.vk_buffer_create(&uboBuffer, device, allocator, &uboInfo)) return false;
-    pipeline.uniformBuffer = uboBuffer.handle;
-    pipeline.uniformBufferMemory = uboBuffer.memory;
-    pipeline.uniformBufferAllocation = uboBuffer.allocation;
-    pipeline.uniformBufferMapped = uboBuffer.mapped;
-
-    // Lighting
-    var lightInfo = std.mem.zeroes(buffer_mgr.VulkanBufferCreateInfo);
-    lightInfo.size = @sizeOf(types.PBRLightingBuffer);
-    lightInfo.usage = c.VK_BUFFER_USAGE_STORAGE_BUFFER_BIT;
-    lightInfo.properties = c.VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | c.VK_MEMORY_PROPERTY_HOST_COHERENT_BIT;
-    lightInfo.persistentlyMapped = true;
-
-    var lightBuffer: buffer_mgr.VulkanBuffer = undefined;
-    if (!buffer_mgr.vk_buffer_create(&lightBuffer, device, allocator, &lightInfo)) {
-        buffer_mgr.vk_buffer_destroy(&uboBuffer, device, allocator, null);
-        return false;
-    }
-    pipeline.lightingBuffer = lightBuffer.handle;
-    pipeline.lightingBufferMemory = lightBuffer.memory;
-    pipeline.lightingBufferAllocation = lightBuffer.allocation;
-    pipeline.lightingBufferMapped = lightBuffer.mapped;
-
-    // Bone matrices
-    pipeline.maxBones = 256;
-    var boneInfo = std.mem.zeroes(buffer_mgr.VulkanBufferCreateInfo);
-    boneInfo.size = pipeline.maxBones * 16 * @sizeOf(f32);
-    boneInfo.usage = c.VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT;
-    boneInfo.properties = c.VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | c.VK_MEMORY_PROPERTY_HOST_COHERENT_BIT;
-    boneInfo.persistentlyMapped = true;
-
-    var boneBuffer: buffer_mgr.VulkanBuffer = undefined;
-    if (!buffer_mgr.vk_buffer_create(&boneBuffer, device, allocator, &boneInfo)) {
-        buffer_mgr.vk_buffer_destroy(&lightBuffer, device, allocator, null);
-        buffer_mgr.vk_buffer_destroy(&uboBuffer, device, allocator, null);
-        return false;
-    }
-    pipeline.boneMatricesBuffer = boneBuffer.handle;
-    pipeline.boneMatricesBufferMemory = boneBuffer.memory;
-    pipeline.boneMatricesBufferAllocation = boneBuffer.allocation;
-    pipeline.boneMatricesBufferMapped = boneBuffer.mapped;
-
-    // Init bone matrices to identity
-    const boneMatrices = @as([*]f32, @ptrCast(@alignCast(pipeline.boneMatricesBufferMapped)));
     var i: u32 = 0;
-    while (i < pipeline.maxBones) : (i += 1) {
-        @memset(boneMatrices[i * 16 .. (i + 1) * 16], 0);
-        boneMatrices[i * 16 + 0] = 1.0;
-        boneMatrices[i * 16 + 5] = 1.0;
-        boneMatrices[i * 16 + 10] = 1.0;
-        boneMatrices[i * 16 + 15] = 1.0;
+    while (i < types.MAX_FRAMES_IN_FLIGHT) : (i += 1) {
+        // UBO
+        var uboInfo = std.mem.zeroes(buffer_mgr.VulkanBufferCreateInfo);
+        uboInfo.size = @sizeOf(types.PBRUniformBufferObject);
+        uboInfo.usage = c.VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT;
+        uboInfo.properties = c.VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | c.VK_MEMORY_PROPERTY_HOST_COHERENT_BIT;
+        uboInfo.persistentlyMapped = true;
+
+        var uboBuffer: buffer_mgr.VulkanBuffer = undefined;
+        if (!buffer_mgr.vk_buffer_create(&uboBuffer, device, allocator, &uboInfo)) return false;
+        pipeline.uniformBuffers[i] = uboBuffer.handle;
+        pipeline.uniformBuffersMemory[i] = uboBuffer.memory;
+        pipeline.uniformBuffersAllocation[i] = uboBuffer.allocation;
+        pipeline.uniformBuffersMapped[i] = uboBuffer.mapped;
+
+        // Lighting
+        var lightInfo = std.mem.zeroes(buffer_mgr.VulkanBufferCreateInfo);
+        lightInfo.size = @sizeOf(types.PBRLightingBuffer);
+        lightInfo.usage = c.VK_BUFFER_USAGE_STORAGE_BUFFER_BIT;
+        lightInfo.properties = c.VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | c.VK_MEMORY_PROPERTY_HOST_COHERENT_BIT;
+        lightInfo.persistentlyMapped = true;
+
+        var lightBuffer: buffer_mgr.VulkanBuffer = undefined;
+        if (!buffer_mgr.vk_buffer_create(&lightBuffer, device, allocator, &lightInfo)) {
+            // Cleanup UBO for this frame
+            buffer_mgr.vk_buffer_destroy(&uboBuffer, device, allocator, null);
+            return false;
+        }
+        pipeline.lightingBuffers[i] = lightBuffer.handle;
+        pipeline.lightingBuffersMemory[i] = lightBuffer.memory;
+        pipeline.lightingBuffersAllocation[i] = lightBuffer.allocation;
+        pipeline.lightingBuffersMapped[i] = lightBuffer.mapped;
+
+        // Bone matrices
+        pipeline.maxBones = 256;
+        var boneInfo = std.mem.zeroes(buffer_mgr.VulkanBufferCreateInfo);
+        boneInfo.size = pipeline.maxBones * 16 * @sizeOf(f32);
+        boneInfo.usage = c.VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT;
+        boneInfo.properties = c.VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | c.VK_MEMORY_PROPERTY_HOST_COHERENT_BIT;
+        boneInfo.persistentlyMapped = true;
+
+        var boneBuffer: buffer_mgr.VulkanBuffer = undefined;
+        if (!buffer_mgr.vk_buffer_create(&boneBuffer, device, allocator, &boneInfo)) {
+            buffer_mgr.vk_buffer_destroy(&lightBuffer, device, allocator, null);
+            buffer_mgr.vk_buffer_destroy(&uboBuffer, device, allocator, null);
+            return false;
+        }
+        pipeline.boneMatricesBuffers[i] = boneBuffer.handle;
+        pipeline.boneMatricesBuffersMemory[i] = boneBuffer.memory;
+        pipeline.boneMatricesBuffersAllocation[i] = boneBuffer.allocation;
+        pipeline.boneMatricesBuffersMapped[i] = boneBuffer.mapped;
+
+        // Init bone matrices to identity
+        const boneMatrices = @as([*]f32, @ptrCast(@alignCast(pipeline.boneMatricesBuffersMapped[i])));
+        var b: u32 = 0;
+        while (b < pipeline.maxBones) : (b += 1) {
+            @memset(boneMatrices[b * 16 .. (b + 1) * 16], 0);
+            boneMatrices[b * 16 + 0] = 1.0;
+            boneMatrices[b * 16 + 5] = 1.0;
+            boneMatrices[b * 16 + 10] = 1.0;
+            boneMatrices[b * 16 + 15] = 1.0;
+        }
     }
 
     return true;
@@ -261,7 +273,12 @@ fn initialize_pbr_defaults(pipeline: *types.VulkanPBRPipeline, config: *const ty
     defaultLighting.lights[0].lightColor = config.pbr_default_light_color;
     defaultLighting.lights[0].ambientColor = config.pbr_ambient_color;
 
-    @memcpy(@as([*]u8, @ptrCast(pipeline.lightingBufferMapped))[0..@sizeOf(types.PBRLightingBuffer)], @as([*]const u8, @ptrCast(&defaultLighting))[0..@sizeOf(types.PBRLightingBuffer)]);
+    var i: u32 = 0;
+    while (i < types.MAX_FRAMES_IN_FLIGHT) : (i += 1) {
+        if (pipeline.lightingBuffersMapped[i]) |ptr| {
+            @memcpy(@as([*]u8, @ptrCast(ptr))[0..@sizeOf(types.PBRLightingBuffer)], @as([*]const u8, @ptrCast(&defaultLighting))[0..@sizeOf(types.PBRLightingBuffer)]);
+        }
+    }
 }
 
 fn create_pbr_mesh_buffers(pipeline: *types.VulkanPBRPipeline, device: c.VkDevice, allocator: *types.VulkanAllocator, commandPool: c.VkCommandPool, graphicsQueue: c.VkQueue, scene_data: *const scene.CardinalScene, vulkan_state: ?*types.VulkanState) bool {
@@ -352,72 +369,68 @@ fn create_pbr_mesh_buffers(pipeline: *types.VulkanPBRPipeline, device: c.VkDevic
 
 fn update_pbr_descriptor_sets(pipeline: *types.VulkanPBRPipeline, vulkan_state: ?*types.VulkanState) bool {
     const dm = @as(*types.VulkanDescriptorManager, @ptrCast(@alignCast(pipeline.descriptorManager)));
-    const setIndex = if (dm.descriptorSetCount > 0)
-        dm.descriptorSetCount - 1
-    else
-        0;
 
-    var set: c.VkDescriptorSet = null;
-    if (dm.useDescriptorBuffers) {
-        set = @ptrFromInt(setIndex);
-    } else if (dm.descriptorSets) |sets| {
-        set = sets[setIndex];
-    } else {
-        return false;
-    }
-
-    // Update uniform buffer (binding 0)
-    if (!descriptor_mgr.vk_descriptor_manager_update_buffer(dm, set, 0, pipeline.uniformBuffer, 0, @sizeOf(types.PBRUniformBufferObject))) {
-        log.cardinal_log_error("Failed to update uniform buffer descriptor", .{});
-        return false;
-    }
-
-    // Update bone matrices buffer (binding 6)
-    if (!descriptor_mgr.vk_descriptor_manager_update_buffer(dm, set, 6, pipeline.boneMatricesBuffer, 0, @sizeOf(f32) * 16 * pipeline.maxBones)) {
-        log.cardinal_log_error("Failed to update bone matrices buffer descriptor", .{});
-        return false;
-    }
-
-    // Update placeholder textures for fixed bindings 1-5
-    var b: u32 = 1;
-    while (b <= 5) : (b += 1) {
-        const placeholderView = if (pipeline.textureManager.?.textureCount > 0)
-            pipeline.textureManager.?.textures.?[0].view
-        else
-            null;
-        const placeholderSampler = if (pipeline.textureManager.?.textureCount > 0)
-            pipeline.textureManager.?.textures.?[0].sampler
-        else
-            pipeline.textureManager.?.defaultSampler;
-
-        if (!descriptor_mgr.vk_descriptor_manager_update_image(dm, set, b, placeholderView, placeholderSampler, c.VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL)) {
-            log.cardinal_log_error("Failed to update image descriptor for binding {d}", .{b});
+    var i: u32 = 0;
+    while (i < types.MAX_FRAMES_IN_FLIGHT) : (i += 1) {
+        var set: c.VkDescriptorSet = null;
+        if (dm.useDescriptorBuffers) {
+            // Pseudo-handle for descriptor buffers must be 1-based to avoid NULL handle
+            set = @ptrFromInt(i + 1);
+        } else if (dm.descriptorSets) |sets| {
+            set = sets[i];
+        } else {
             return false;
         }
-    }
 
-    // Note: Material data is passed via Push Constants, so no binding 7 update needed.
-    // Binding 9 (Texture Array) is now handled via bindless descriptor set (Set 1), managed by BindlessTexturePool.
-
-    // Update lighting buffer (binding 8)
-    if (!descriptor_mgr.vk_descriptor_manager_update_buffer(dm, set, 8, pipeline.lightingBuffer, 0, @sizeOf(types.PBRLightingBuffer))) {
-        log.cardinal_log_error("Failed to update lighting buffer descriptor", .{});
-        return false;
-    }
-
-    // Update Shadow Map (Binding 7)
-    if (pipeline.shadowMapView != null) {
-        if (!descriptor_mgr.vk_descriptor_manager_update_image(dm, set, 7, pipeline.shadowMapView, pipeline.shadowMapSampler, c.VK_IMAGE_LAYOUT_DEPTH_STENCIL_READ_ONLY_OPTIMAL)) {
-            log.cardinal_log_error("Failed to update shadow map descriptor", .{});
+        // Update uniform buffer (binding 0)
+        if (!descriptor_mgr.vk_descriptor_manager_update_buffer(dm, set, 0, pipeline.uniformBuffers[i], 0, @sizeOf(types.PBRUniformBufferObject))) {
+            log.cardinal_log_error("Failed to update uniform buffer descriptor", .{});
             return false;
         }
-    }
 
-    // Update Shadow UBO (Binding 9)
-    if (pipeline.shadowUBO != null) {
+        // Update bone matrices buffer (binding 6)
+        if (!descriptor_mgr.vk_descriptor_manager_update_buffer(dm, set, 6, pipeline.boneMatricesBuffers[i], 0, @sizeOf(f32) * 16 * pipeline.maxBones)) {
+            log.cardinal_log_error("Failed to update bone matrices buffer descriptor", .{});
+            return false;
+        }
+
+        // Update placeholder textures for fixed bindings 1-5
+        var b: u32 = 1;
+        while (b <= 5) : (b += 1) {
+            const placeholderView = if (pipeline.textureManager.?.textureCount > 0)
+                pipeline.textureManager.?.textures.?[0].view
+            else
+                null;
+            const placeholderSampler = if (pipeline.textureManager.?.textureCount > 0)
+                pipeline.textureManager.?.textures.?[0].sampler
+            else
+                pipeline.textureManager.?.defaultSampler;
+
+            if (!descriptor_mgr.vk_descriptor_manager_update_image(dm, set, b, placeholderView, placeholderSampler, c.VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL)) {
+                log.cardinal_log_error("Failed to update image descriptor for binding {d}", .{b});
+                return false;
+            }
+        }
+
+        // Update lighting buffer (binding 8)
+        if (!descriptor_mgr.vk_descriptor_manager_update_buffer(dm, set, 8, pipeline.lightingBuffers[i], 0, @sizeOf(types.PBRLightingBuffer))) {
+            log.cardinal_log_error("Failed to update lighting buffer descriptor", .{});
+            return false;
+        }
+
+        // Update Shadow Map (Binding 7)
+        if (pipeline.shadowMapView != null) {
+            if (!descriptor_mgr.vk_descriptor_manager_update_image(dm, set, 7, pipeline.shadowMapView, pipeline.shadowMapSampler, c.VK_IMAGE_LAYOUT_DEPTH_STENCIL_READ_ONLY_OPTIMAL)) {
+                log.cardinal_log_error("Failed to update shadow map descriptor", .{});
+                return false;
+            }
+        }
+
+        // Update Shadow UBO (Binding 9)
+        // Shadow UBO is per frame now
         const cascade_count = @min(vulkan_state.?.config.shadow_cascade_count, types.MAX_SHADOW_CASCADES);
         const shadowUBOSize = @sizeOf(math.Mat4) * @as(u64, cascade_count) + @sizeOf(f32) * 4;
-        if (!descriptor_mgr.vk_descriptor_manager_update_buffer(dm, set, 9, pipeline.shadowUBO, 0, shadowUBOSize)) {
+        if (!descriptor_mgr.vk_descriptor_manager_update_buffer(dm, set, 9, pipeline.shadowUBOs[i], 0, shadowUBOSize)) {
             log.cardinal_log_error("Failed to update shadow UBO descriptor", .{});
             return false;
         }
@@ -570,12 +583,12 @@ fn create_shadow_resources(pipeline: *types.VulkanPBRPipeline, device: c.VkDevic
     }
 
     // Create Per-Cascade Views
-    var i: u32 = 0;
-    while (i < shadow_cascade_count) : (i += 1) {
-        viewInfo.subresourceRange.baseArrayLayer = i;
+    var cascade_idx: u32 = 0;
+    while (cascade_idx < shadow_cascade_count) : (cascade_idx += 1) {
+        viewInfo.subresourceRange.baseArrayLayer = cascade_idx;
         viewInfo.subresourceRange.layerCount = 1;
-        if (c.vkCreateImageView(device, &viewInfo, null, &pipeline.shadowCascadeViews[i]) != c.VK_SUCCESS) {
-            log.cardinal_log_error("Failed to create shadow cascade view {d}", .{i});
+        if (c.vkCreateImageView(device, &viewInfo, null, &pipeline.shadowCascadeViews[cascade_idx]) != c.VK_SUCCESS) {
+            log.cardinal_log_error("Failed to create shadow cascade view {d}", .{cascade_idx});
             return false;
         }
     }
@@ -598,20 +611,23 @@ fn create_shadow_resources(pipeline: *types.VulkanPBRPipeline, device: c.VkDevic
         return false;
     }
 
-    // Create Shadow UBO
-    var bufferInfo = std.mem.zeroes(buffer_mgr.VulkanBufferCreateInfo);
-    bufferInfo.size = @sizeOf(math.Mat4) * @as(u64, shadow_cascade_count) + @sizeOf(f32) * 4; // Matrices + Splits
-    bufferInfo.usage = c.VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT;
-    bufferInfo.properties = c.VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | c.VK_MEMORY_PROPERTY_HOST_COHERENT_BIT;
-    bufferInfo.persistentlyMapped = true;
+    // Create Shadow UBOs
+    var i: u32 = 0;
+    while (i < types.MAX_FRAMES_IN_FLIGHT) : (i += 1) {
+        var bufferInfo = std.mem.zeroes(buffer_mgr.VulkanBufferCreateInfo);
+        bufferInfo.size = @sizeOf(math.Mat4) * @as(u64, shadow_cascade_count) + @sizeOf(f32) * 4; // Matrices + Splits
+        bufferInfo.usage = c.VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT;
+        bufferInfo.properties = c.VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | c.VK_MEMORY_PROPERTY_HOST_COHERENT_BIT;
+        bufferInfo.persistentlyMapped = true;
 
-    var shadowBuffer: buffer_mgr.VulkanBuffer = undefined;
-    if (!buffer_mgr.vk_buffer_create(&shadowBuffer, device, allocator, &bufferInfo)) return false;
+        var shadowBuffer: buffer_mgr.VulkanBuffer = undefined;
+        if (!buffer_mgr.vk_buffer_create(&shadowBuffer, device, allocator, &bufferInfo)) return false;
 
-    pipeline.shadowUBO = shadowBuffer.handle;
-    pipeline.shadowUBOMemory = shadowBuffer.memory;
-    pipeline.shadowUBOAllocation = shadowBuffer.allocation;
-    pipeline.shadowUBOMapped = shadowBuffer.mapped;
+        pipeline.shadowUBOs[i] = shadowBuffer.handle;
+        pipeline.shadowUBOsMemory[i] = shadowBuffer.memory;
+        pipeline.shadowUBOsAllocation[i] = shadowBuffer.allocation;
+        pipeline.shadowUBOsMapped[i] = shadowBuffer.mapped;
+    }
 
     return true;
 }
@@ -636,30 +652,33 @@ fn create_shadow_pipeline(pipeline: *types.VulkanPBRPipeline, device: c.VkDevice
     // Binding 6: Bone Matrices
     desc_builder.add_binding(6, c.VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, 1, c.VK_SHADER_STAGE_VERTEX_BIT) catch return false;
 
-    if (!desc_builder.build(pipeline.shadowDescriptorManager.?, device, allocator, vulkan_state, 1, true)) {
+    if (!desc_builder.build(pipeline.shadowDescriptorManager.?, device, allocator, vulkan_state, types.MAX_FRAMES_IN_FLIGHT, true)) {
         log.cardinal_log_error("Failed to build shadow descriptor manager", .{});
         return false;
     }
 
-    // Allocate Set
-    if (!descriptor_mgr.vk_descriptor_manager_allocate_sets(pipeline.shadowDescriptorManager, 1, @as([*]c.VkDescriptorSet, @ptrCast(&pipeline.shadowDescriptorSet)))) {
-        log.cardinal_log_error("Failed to allocate shadow descriptor set", .{});
+    // Allocate Sets
+    if (!descriptor_mgr.vk_descriptor_manager_allocate_sets(pipeline.shadowDescriptorManager, types.MAX_FRAMES_IN_FLIGHT, &pipeline.shadowDescriptorSets)) {
+        log.cardinal_log_error("Failed to allocate shadow descriptor sets", .{});
         return false;
     }
 
-    // Update Set
-    // Binding 0
-    const cascade_count = @min(vulkan_state.?.config.shadow_cascade_count, types.MAX_SHADOW_CASCADES);
-    const shadowUBOSize = @sizeOf(math.Mat4) * @as(u64, cascade_count) + @sizeOf(f32) * 4;
-    if (!descriptor_mgr.vk_descriptor_manager_update_buffer(pipeline.shadowDescriptorManager, pipeline.shadowDescriptorSet, 0, pipeline.shadowUBO, 0, shadowUBOSize)) {
-        log.cardinal_log_error("Failed to update shadow UBO descriptor", .{});
-        return false;
-    }
+    // Update Sets
+    var i: u32 = 0;
+    while (i < types.MAX_FRAMES_IN_FLIGHT) : (i += 1) {
+        // Binding 0
+        const cascade_count = @min(vulkan_state.?.config.shadow_cascade_count, types.MAX_SHADOW_CASCADES);
+        const shadowUBOSize = @sizeOf(math.Mat4) * @as(u64, cascade_count) + @sizeOf(f32) * 4;
+        if (!descriptor_mgr.vk_descriptor_manager_update_buffer(pipeline.shadowDescriptorManager, pipeline.shadowDescriptorSets[i], 0, pipeline.shadowUBOs[i], 0, shadowUBOSize)) {
+            log.cardinal_log_error("Failed to update shadow UBO descriptor", .{});
+            return false;
+        }
 
-    // Binding 6
-    if (!descriptor_mgr.vk_descriptor_manager_update_buffer(pipeline.shadowDescriptorManager, pipeline.shadowDescriptorSet, 6, pipeline.boneMatricesBuffer, 0, pipeline.maxBones * 16 * @sizeOf(f32))) {
-        log.cardinal_log_error("Failed to update bone matrices descriptor", .{});
-        return false;
+        // Binding 6
+        if (!descriptor_mgr.vk_descriptor_manager_update_buffer(pipeline.shadowDescriptorManager, pipeline.shadowDescriptorSets[i], 6, pipeline.boneMatricesBuffers[i], 0, pipeline.maxBones * 16 * @sizeOf(f32))) {
+            log.cardinal_log_error("Failed to update bone matrices descriptor", .{});
+            return false;
+        }
     }
 
     // Push Constant Range
@@ -970,20 +989,39 @@ pub export fn vk_pbr_pipeline_destroy(pipeline: ?*types.VulkanPBRPipeline, devic
         vk_allocator.vk_allocator_free_buffer(alloc, pipe.indexBuffer, pipe.indexBufferAllocation);
     }
 
-    if (pipe.uniformBuffer != null or pipe.uniformBufferMemory != null) {
-        if (pipe.uniformBufferMapped != null) {
-            vk_allocator.vk_allocator_unmap_memory(alloc, pipe.uniformBufferAllocation);
-            pipe.uniformBufferMapped = null;
+    var frame_idx: u32 = 0;
+    while (frame_idx < types.MAX_FRAMES_IN_FLIGHT) : (frame_idx += 1) {
+        if (pipe.uniformBuffers[frame_idx] != null or pipe.uniformBuffersMemory[frame_idx] != null) {
+            if (pipe.uniformBuffersMapped[frame_idx] != null) {
+                vk_allocator.vk_allocator_unmap_memory(alloc, pipe.uniformBuffersAllocation[frame_idx]);
+                pipe.uniformBuffersMapped[frame_idx] = null;
+            }
+            vk_allocator.vk_allocator_free_buffer(alloc, pipe.uniformBuffers[frame_idx], pipe.uniformBuffersAllocation[frame_idx]);
         }
-        vk_allocator.vk_allocator_free_buffer(alloc, pipe.uniformBuffer, pipe.uniformBufferAllocation);
-    }
 
-    if (pipe.lightingBuffer != null or pipe.lightingBufferMemory != null) {
-        if (pipe.lightingBufferMapped != null) {
-            vk_allocator.vk_allocator_unmap_memory(alloc, pipe.lightingBufferAllocation);
-            pipe.lightingBufferMapped = null;
+        if (pipe.lightingBuffers[frame_idx] != null or pipe.lightingBuffersMemory[frame_idx] != null) {
+            if (pipe.lightingBuffersMapped[frame_idx] != null) {
+                vk_allocator.vk_allocator_unmap_memory(alloc, pipe.lightingBuffersAllocation[frame_idx]);
+                pipe.lightingBuffersMapped[frame_idx] = null;
+            }
+            vk_allocator.vk_allocator_free_buffer(alloc, pipe.lightingBuffers[frame_idx], pipe.lightingBuffersAllocation[frame_idx]);
         }
-        vk_allocator.vk_allocator_free_buffer(alloc, pipe.lightingBuffer, pipe.lightingBufferAllocation);
+
+        if (pipe.boneMatricesBuffers[frame_idx] != null or pipe.boneMatricesBuffersMemory[frame_idx] != null) {
+            if (pipe.boneMatricesBuffersMapped[frame_idx] != null) {
+                vk_allocator.vk_allocator_unmap_memory(alloc, pipe.boneMatricesBuffersAllocation[frame_idx]);
+                pipe.boneMatricesBuffersMapped[frame_idx] = null;
+            }
+            vk_allocator.vk_allocator_free_buffer(alloc, pipe.boneMatricesBuffers[frame_idx], pipe.boneMatricesBuffersAllocation[frame_idx]);
+        }
+
+        if (pipe.shadowUBOs[frame_idx] != null or pipe.shadowUBOsMemory[frame_idx] != null) {
+            if (pipe.shadowUBOsMapped[frame_idx] != null) {
+                vk_allocator.vk_allocator_unmap_memory(alloc, pipe.shadowUBOsAllocation[frame_idx]);
+                pipe.shadowUBOsMapped[frame_idx] = null;
+            }
+            vk_allocator.vk_allocator_free_buffer(alloc, pipe.shadowUBOs[frame_idx], pipe.shadowUBOsAllocation[frame_idx]);
+        }
     }
 
     if (pipe.descriptorManager != null) {
@@ -1037,40 +1075,36 @@ pub export fn vk_pbr_pipeline_destroy(pipeline: ?*types.VulkanPBRPipeline, devic
         c.vkDestroySampler(device, pipe.shadowMapSampler, null);
     }
 
-    if (pipe.shadowUBO != null or pipe.shadowUBOMemory != null) {
-        if (pipe.shadowUBOMapped != null) {
-            vk_allocator.vk_allocator_unmap_memory(alloc, pipe.shadowUBOAllocation);
-            pipe.shadowUBOMapped = null;
-        }
-        vk_allocator.vk_allocator_free_buffer(alloc, pipe.shadowUBO, pipe.shadowUBOAllocation);
-    }
-
-    if (pipe.boneMatricesBuffer != null or pipe.boneMatricesBufferMemory != null) {
-        if (pipe.boneMatricesBufferMapped != null) {
-            vk_allocator.vk_allocator_unmap_memory(alloc, pipe.boneMatricesBufferAllocation);
-            pipe.boneMatricesBufferMapped = null;
-        }
-        vk_allocator.vk_allocator_free_buffer(alloc, pipe.boneMatricesBuffer, pipe.boneMatricesBufferAllocation);
-    }
-
     @memset(@as([*]u8, @ptrCast(pipe))[0..@sizeOf(types.VulkanPBRPipeline)], 0);
     log.cardinal_log_info("PBR pipeline destroyed", .{});
 }
 
-pub export fn vk_pbr_update_uniforms(pipeline: ?*types.VulkanPBRPipeline, ubo: ?*const types.PBRUniformBufferObject, lighting: ?*const types.PBRLightingBuffer) callconv(.c) void {
+pub export fn vk_pbr_update_uniforms(pipeline: ?*types.VulkanPBRPipeline, ubo: ?*const types.PBRUniformBufferObject, lighting: ?*const types.PBRLightingBuffer, frame_index: u32) callconv(.c) void {
     if (pipeline == null or !pipeline.?.initialized) return;
     const pipe = pipeline.?;
+    const frame = if (frame_index >= types.MAX_FRAMES_IN_FLIGHT) 0 else frame_index;
 
-    if (ubo != null) {
-        @memcpy(@as([*]u8, @ptrCast(pipe.uniformBufferMapped))[0..@sizeOf(types.PBRUniformBufferObject)], @as([*]const u8, @ptrCast(ubo))[0..@sizeOf(types.PBRUniformBufferObject)]);
+    if (ubo != null and pipe.uniformBuffersMapped[frame] != null) {
+        @memcpy(@as([*]u8, @ptrCast(pipe.uniformBuffersMapped[frame]))[0..@sizeOf(types.PBRUniformBufferObject)], @as([*]const u8, @ptrCast(ubo))[0..@sizeOf(types.PBRUniformBufferObject)]);
     }
 
-    if (lighting != null) {
-        @memcpy(@as([*]u8, @ptrCast(pipe.lightingBufferMapped))[0..@sizeOf(types.PBRLightingBuffer)], @as([*]const u8, @ptrCast(lighting))[0..@sizeOf(types.PBRLightingBuffer)]);
+    if (lighting != null and pipe.lightingBuffersMapped[frame] != null) {
+        @memcpy(@as([*]u8, @ptrCast(pipe.lightingBuffersMapped[frame]))[0..@sizeOf(types.PBRLightingBuffer)], @as([*]const u8, @ptrCast(lighting))[0..@sizeOf(types.PBRLightingBuffer)]);
     }
 }
 
-pub export fn vk_pbr_render(pipeline: ?*types.VulkanPBRPipeline, commandBuffer: c.VkCommandBuffer, scene_data: ?*const scene.CardinalScene) callconv(.c) void {
+const SortItem = struct {
+    index: u32,
+    distSq: f32,
+    indexOffset: u32,
+
+    pub fn lessThan(context: void, lhs: @This(), rhs: @This()) bool {
+        _ = context;
+        return lhs.distSq > rhs.distSq; // Far to Near (Descending)
+    }
+};
+
+pub export fn vk_pbr_render(pipeline: ?*types.VulkanPBRPipeline, commandBuffer: c.VkCommandBuffer, scene_data: ?*const scene.CardinalScene, frame_index: u32) callconv(.c) void {
     if (pipeline == null or !pipeline.?.initialized or scene_data == null) {
         // log.cardinal_log_warn("vk_pbr_render skipped: pipeline or scene null", .{});
         return;
@@ -1078,6 +1112,7 @@ pub export fn vk_pbr_render(pipeline: ?*types.VulkanPBRPipeline, commandBuffer: 
     const pipe = pipeline.?;
     const scn = scene_data.?;
     const cmd = wrappers.CommandBuffer.init(commandBuffer);
+    const frame = if (frame_index >= types.MAX_FRAMES_IN_FLIGHT) 0 else frame_index;
 
     if (pipe.vertexBuffer == null or pipe.indexBuffer == null) {
         log.cardinal_log_warn("vk_pbr_render skipped: vertex/index buffer null", .{});
@@ -1094,17 +1129,11 @@ pub export fn vk_pbr_render(pipeline: ?*types.VulkanPBRPipeline, commandBuffer: 
         const dm = @as(*types.VulkanDescriptorManager, @ptrCast(pipe.descriptorManager));
 
         if (dm.useDescriptorBuffers) {
-            if (dm.descriptorSetCount > 0) {
-                const setIndex = dm.descriptorSetCount - 1;
-                descriptorSet = @ptrFromInt(setIndex);
-            } else {
-                log.cardinal_log_warn("vk_pbr_render skipped: no descriptor sets (buffer mode)", .{});
-                return;
-            }
+            // Pseudo-handle for descriptor buffers must be 1-based to avoid NULL handle
+            descriptorSet = @ptrFromInt(frame + 1);
         } else {
-            if (dm.descriptorSets != null and dm.descriptorSetCount > 0) {
-                const setIndex = dm.descriptorSetCount - 1;
-                descriptorSet = dm.descriptorSets.?[setIndex];
+            if (dm.descriptorSets != null and dm.descriptorSetCount > frame) {
+                descriptorSet = dm.descriptorSets.?[frame];
             } else {
                 log.cardinal_log_warn("vk_pbr_render skipped: no descriptor sets", .{});
                 return;
@@ -1298,12 +1327,21 @@ pub export fn vk_pbr_render(pipeline: ?*types.VulkanPBRPipeline, commandBuffer: 
     // Apply depth bias for transparent materials too (to prevent z-fighting with coplanar opaque surfaces)
     c.vkCmdSetDepthBias(commandBuffer, -16.0, 0.0, -8.0);
 
-    indexOffset = 0;
+    // Sort Transparent Meshes (Back-to-Front)
+    const mem_alloc = memory.cardinal_get_allocator_for_category(.RENDERER);
+    const allocator = mem_alloc.as_allocator();
+    var transparent_meshes = std.ArrayListUnmanaged(SortItem){};
+    defer transparent_meshes.deinit(allocator);
+
+    const ubo = @as(*types.PBRUniformBufferObject, @ptrCast(@alignCast(pipe.uniformBuffersMapped[frame])));
+    const camPos = math.Vec3.fromArray(ubo.viewPos);
+
+    var currentIndexOffset: u32 = 0;
     i = 0;
     while (i < scn.mesh_count) : (i += 1) {
         const mesh = &scn.meshes.?[i];
-        var is_blend = false;
 
+        var is_blend = false;
         if (mesh.material_index < scn.material_count) {
             const mat = &scn.materials.?[mesh.material_index];
             if (mat.alpha_mode == scene.CardinalAlphaMode.BLEND) {
@@ -1311,18 +1349,38 @@ pub export fn vk_pbr_render(pipeline: ?*types.VulkanPBRPipeline, commandBuffer: 
             }
         }
 
-        if (!is_blend) {
-            indexOffset += mesh.index_count;
-            continue;
+        if (is_blend) {
+            if (mesh.vertices != null and mesh.vertex_count > 0 and mesh.indices != null and mesh.index_count > 0 and mesh.visible) {
+                // Calculate world space center using bounding box if available, otherwise transform origin
+                // AABB is in local space, so transform it to world space
+                const min = math.Vec3.fromArray(mesh.bounding_box_min);
+                const max = math.Vec3.fromArray(mesh.bounding_box_max);
+                const centerLocal = min.add(max).mul(0.5);
+
+                // Transform center to world space
+                // Matrix is Column-Major:
+                // x = m[0]*v.x + m[4]*v.y + m[8]*v.z + m[12]
+                // y = m[1]*v.x + m[5]*v.y + m[9]*v.z + m[13]
+                // z = m[2]*v.x + m[6]*v.y + m[10]*v.z + m[14]
+
+                const m = mesh.transform;
+                const wx = m[0] * centerLocal.x + m[4] * centerLocal.y + m[8] * centerLocal.z + m[12];
+                const wy = m[1] * centerLocal.x + m[5] * centerLocal.y + m[9] * centerLocal.z + m[13];
+                const wz = m[2] * centerLocal.x + m[6] * centerLocal.y + m[10] * centerLocal.z + m[14];
+                const centerWorld = math.Vec3{ .x = wx, .y = wy, .z = wz };
+
+                const distSq = centerWorld.sub(camPos).lengthSq();
+                transparent_meshes.append(allocator, .{ .index = i, .distSq = distSq, .indexOffset = currentIndexOffset }) catch {};
+            }
         }
 
-        if (mesh.vertices == null or mesh.vertex_count == 0 or mesh.indices == null or mesh.index_count == 0 or mesh.index_count > 1000000000) {
-            continue;
-        }
-        if (!mesh.visible) {
-            indexOffset += mesh.index_count;
-            continue;
-        }
+        currentIndexOffset += mesh.index_count;
+    }
+
+    std.sort.block(SortItem, transparent_meshes.items, {}, SortItem.lessThan);
+
+    for (transparent_meshes.items) |item| {
+        const mesh = &scn.meshes.?[item.index];
 
         var pushConstants = std.mem.zeroes(types.PBRPushConstants);
         const tm_opaque: ?*const anyopaque = if (pipe.textureManager) |tm| @ptrCast(tm) else null;
@@ -1336,13 +1394,8 @@ pub export fn vk_pbr_render(pipeline: ?*types.VulkanPBRPipeline, commandBuffer: 
                 const skin = &skins[skin_idx];
                 var mesh_idx: u32 = 0;
                 while (mesh_idx < skin.mesh_count) : (mesh_idx += 1) {
-                    if (skin.mesh_indices.?[mesh_idx] == i) {
-                        // Set bit 2 of flags in packedInfo
-                        // flags is in upper 16 bits of packedInfo
-                        // Bit 2 corresponds to (1 << 2) = 4
-                        // Shifted by 16: (4 << 16)
+                    if (skin.mesh_indices.?[mesh_idx] == item.index) {
                         pushConstants.packedInfo |= (4 << 16);
-                        
                         break;
                     }
                 }
@@ -1352,9 +1405,8 @@ pub export fn vk_pbr_render(pipeline: ?*types.VulkanPBRPipeline, commandBuffer: 
 
         cmd.pushConstants(pipe.pipelineLayout, c.VK_SHADER_STAGE_VERTEX_BIT | c.VK_SHADER_STAGE_FRAGMENT_BIT, 0, @sizeOf(types.PBRPushConstants), &pushConstants);
 
-        if (indexOffset + mesh.index_count > pipe.totalIndexCount) break;
+        if (item.indexOffset + mesh.index_count > pipe.totalIndexCount) continue;
 
-        cmd.drawIndexed(mesh.index_count, 1, indexOffset, 0, 0);
-        indexOffset += mesh.index_count;
+        cmd.drawIndexed(mesh.index_count, 1, item.indexOffset, 0, 0);
     }
 }

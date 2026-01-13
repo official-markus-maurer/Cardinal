@@ -13,44 +13,25 @@ layout(binding = 0) uniform UniformBufferObject {
     vec3 viewPos;
 } ubo;
 
-// Texture transform structure (same as PBR pipeline)
-struct TextureTransform {
-    vec2 offset;
-    vec2 scale;
-    float rotation;
-};
-
-// Material structure for UV visualization (simplified from PBR)
+// Material structure
 struct Material {
-    vec3 albedoFactor;
-    float metallicFactor;
-    vec3 emissiveFactor;
-    float roughnessFactor;
-    float normalScale;
-    float aoStrength;
+    vec4 albedo;
+    vec4 emissiveAndRoughness;
+    vec4 metallicNormalAO; // x=metallic, y=normalScale, z=aoStrength, w=alphaCutoff
     uint albedoTextureIndex;
     uint normalTextureIndex;
     uint metallicRoughnessTextureIndex;
     uint aoTextureIndex;
     uint emissiveTextureIndex;
-    uint supportsDescriptorIndexing;
-    uint hasSkeleton;
-    uint _padding0;
-    TextureTransform albedoTransform;
-    float _padding1;
-    TextureTransform normalTransform;
-    float _padding2;
-    TextureTransform metallicRoughnessTransform;
-    float _padding3;
-    TextureTransform aoTransform;
-    float _padding4;
-    TextureTransform emissiveTransform;
+    uint packedInfo; // Bits 0-15: uvSetIndices, Bits 16-31: flags
+    vec4 textureTransforms[5]; // xy = offset, zw = scale
+    float textureRotations[5]; // Array of rotations
 };
 
 // Push constants for per-mesh data (matching PBRPushConstants)
-layout(push_constant) uniform PushConstants {
-    mat4 modelMatrix;
-    Material material;
+layout(push_constant, std430) uniform PushConstants {
+    layout(offset = 0) mat4 modelMatrix;
+    layout(offset = 64) Material material;
 } pushConstants;
 
 // Output to fragment shader

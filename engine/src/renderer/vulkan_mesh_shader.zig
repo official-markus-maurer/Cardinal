@@ -903,9 +903,11 @@ pub export fn vk_mesh_shader_record_frame(s: ?*types.VulkanState, cmd: c.VkComma
 
                 if (vk_mesh_shader_create_draw_data(vs, meshlets, meshlet_count, mesh.vertices, mesh.vertex_count * @sizeOf(scene.CardinalVertex), @ptrCast(mesh.indices), mesh.index_count, &draw_data)) {
 
+                    const frame = if (vs.sync.current_frame >= types.MAX_FRAMES_IN_FLIGHT) 0 else vs.sync.current_frame;
+
                     // Update Uniform Buffer
-                    if (vs.pipelines.use_pbr_pipeline and vs.pipelines.pbr_pipeline.uniformBufferMapped != null) {
-                        const pbrUbo = @as(*types.PBRUniformBufferObject, @ptrCast(@alignCast(vs.pipelines.pbr_pipeline.uniformBufferMapped)));
+                    if (vs.pipelines.use_pbr_pipeline and vs.pipelines.pbr_pipeline.uniformBuffersMapped[frame] != null) {
+                        const pbrUbo = @as(*types.PBRUniformBufferObject, @ptrCast(@alignCast(vs.pipelines.pbr_pipeline.uniformBuffersMapped[frame])));
                         var meshUbo = std.mem.zeroes(types.MeshShaderUniformBuffer);
 
                         @memcpy(meshUbo.model[0..16], mesh.transform[0..16]);
@@ -921,7 +923,7 @@ pub export fn vk_mesh_shader_record_frame(s: ?*types.VulkanState, cmd: c.VkComma
                     // Update descriptors
                     // const material_buffer = if (vs.pipelines.use_pbr_pipeline) vs.pipelines.pbr_pipeline.materialBuffer else null;
                     // const material_buffer: c.VkBuffer = null; // Removed from pipeline
-                    const lighting_buffer = if (vs.pipelines.use_pbr_pipeline) vs.pipelines.pbr_pipeline.lightingBuffer else null;
+                    const lighting_buffer = if (vs.pipelines.use_pbr_pipeline) vs.pipelines.pbr_pipeline.lightingBuffers[frame] else null;
 
                     var texture_views: ?[*]c.VkImageView = null;
                     var samplers: ?[*]c.VkSampler = null;

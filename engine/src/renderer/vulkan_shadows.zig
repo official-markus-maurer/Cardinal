@@ -34,13 +34,14 @@ pub fn vk_shadow_render(s: *types.VulkanState, cmd: c.VkCommandBuffer) void {
         return;
     }
 
-    if (pipe.lightingBufferMapped == null or pipe.uniformBufferMapped == null) {
+    const frame_check = if (s.sync.current_frame >= types.MAX_FRAMES_IN_FLIGHT) 0 else s.sync.current_frame;
+    if (pipe.lightingBuffersMapped[frame_check] == null or pipe.uniformBuffersMapped[frame_check] == null) {
         log.cardinal_log_warn("Shadow: Buffers not mapped", .{});
         return;
     }
 
-    const ubo = @as(*types.PBRUniformBufferObject, @ptrCast(@alignCast(pipe.uniformBufferMapped)));
-    const lighting = @as(*types.PBRLightingBuffer, @ptrCast(@alignCast(pipe.lightingBufferMapped)));
+    const ubo = @as(*types.PBRUniformBufferObject, @ptrCast(@alignCast(pipe.uniformBuffersMapped[frame_check])));
+    const lighting = @as(*types.PBRLightingBuffer, @ptrCast(@alignCast(pipe.lightingBuffersMapped[frame_check])));
 
     if (lighting.count == 0) {
         log.cardinal_log_warn("Shadow: No lights in lighting buffer", .{});
@@ -140,16 +141,34 @@ pub fn vk_shadow_render(s: *types.VulkanState, cmd: c.VkCommandBuffer) void {
 
         const worldCorners = [8]math.Vec3{ cornersNear[0], cornersNear[1], cornersNear[2], cornersNear[3], cornersFar[0], cornersFar[1], cornersFar[2], cornersFar[3] };
 
-        // Calculate Centroid and Radius
+        // Calculate Centroid (in World Space) for positioning
         var center = math.Vec3.zero();
         for (worldCorners) |wc| {
             center = center.add(wc);
         }
         center = center.mul(1.0 / 8.0);
 
+        // Calculate Radius in View Space (Stable)
+        // We use identity camera frame to calculate the frustum slice in View Space
+        const zeroPos = math.Vec3.zero();
+        const identFwd = math.Vec3{ .x = 0, .y = 0, .z = -1 };
+        const identRight = math.Vec3{ .x = 1, .y = 0, .z = 0 };
+        const identUp = math.Vec3{ .x = 0, .y = 1, .z = 0 };
+
+        const vsCornersNear = getCornersAtDist(lastSplitDist, zeroPos, identFwd, identRight, identUp, tanHalfFov, aspect);
+        const vsCornersFar = getCornersAtDist(d, zeroPos, identFwd, identRight, identUp, tanHalfFov, aspect);
+
+        const vsCorners = [8]math.Vec3{ vsCornersNear[0], vsCornersNear[1], vsCornersNear[2], vsCornersNear[3], vsCornersFar[0], vsCornersFar[1], vsCornersFar[2], vsCornersFar[3] };
+
+        var vsCenter = math.Vec3.zero();
+        for (vsCorners) |vc| {
+            vsCenter = vsCenter.add(vc);
+        }
+        vsCenter = vsCenter.mul(1.0 / 8.0);
+
         var radius: f32 = 0.0;
-        for (worldCorners) |wc| {
-            const d2 = wc.sub(center).lengthSq();
+        for (vsCorners) |vc| {
+            const d2 = vc.sub(vsCenter).lengthSq();
             radius = @max(radius, d2);
         }
         radius = std.math.sqrt(radius);
@@ -195,8 +214,18 @@ pub fn vk_shadow_render(s: *types.VulkanState, cmd: c.VkCommandBuffer) void {
         const worldUnitsPerTexel = (2.0 * radius) / shadowMapWidth;
 
         // Snap centerLS to texel grid
-        centerLS.x = @floor(centerLS.x / worldUnitsPerTexel) * worldUnitsPerTexel;
-        centerLS.y = @floor(centerLS.y / worldUnitsPerTexel) * worldUnitsPerTexel;
+        // To stabilize, we must ensure that the 'minX' and 'minY' of the projection align with the texel grid.
+        // lightProjFinal = ortho(minX, maxX, ...)
+        // minX = centerLS.x - radius
+        // We want (centerLS.x - radius) to be a multiple of worldUnitsPerTexel.
+        // centerLS.x = floor( (centerLS.x - radius) / worldUnitsPerTexel ) * worldUnitsPerTexel + radius;
+        // This ensures the left edge of the box is snapped.
+
+        const snappedX = @floor((centerLS.x - radius) / worldUnitsPerTexel) * worldUnitsPerTexel + radius;
+        const snappedY = @floor((centerLS.y - radius) / worldUnitsPerTexel) * worldUnitsPerTexel + radius;
+
+        centerLS.x = snappedX;
+        centerLS.y = snappedY;
 
         const lightView = baseLightView;
 
@@ -219,7 +248,8 @@ pub fn vk_shadow_render(s: *types.VulkanState, cmd: c.VkCommandBuffer) void {
     }
 
     // Upload matrices
-    if (pipe.shadowUBOMapped) |ptr| {
+    const frame = if (s.sync.current_frame >= types.MAX_FRAMES_IN_FLIGHT) 0 else s.sync.current_frame;
+    if (pipe.shadowUBOsMapped[frame]) |ptr| {
         const matricesPtr = @as([*]math.Mat4, @ptrCast(@alignCast(ptr)));
         @memcpy(matricesPtr[0..4], lightSpaceMatrices[0..4]);
 
@@ -272,7 +302,7 @@ pub fn vk_shadow_render(s: *types.VulkanState, cmd: c.VkCommandBuffer) void {
     }
 
     // Check descriptors upfront
-    if (pipe.shadowDescriptorSet == null and pipe.shadowDescriptorManager == null) {
+    if (pipe.shadowDescriptorSets[frame_check] == null and pipe.shadowDescriptorManager == null) {
         log.cardinal_log_error("Shadow: Shadow descriptor set is null (and no manager)", .{});
         return;
     }
@@ -335,16 +365,16 @@ pub fn vk_shadow_render(s: *types.VulkanState, cmd: c.VkCommandBuffer) void {
         // Bind Descriptor Set
         if (pipe.shadowDescriptorManager) |mgr| {
             var sets: ?[*]const c.VkDescriptorSet = null;
-            var descriptorSets = [_]c.VkDescriptorSet{pipe.shadowDescriptorSet};
+            var descriptorSets = [_]c.VkDescriptorSet{pipe.shadowDescriptorSets[frame_check]};
 
             const use_buffers = mgr.useDescriptorBuffers;
-            if (use_buffers or (pipe.shadowDescriptorSet != null and @intFromPtr(pipe.shadowDescriptorSet) != 0)) {
+            if (use_buffers or (pipe.shadowDescriptorSets[frame_check] != null and @intFromPtr(pipe.shadowDescriptorSets[frame_check]) != 0)) {
                 sets = &descriptorSets;
             }
             descriptor_mgr.vk_descriptor_manager_bind_sets(mgr, cmd, pipe.shadowPipelineLayout, 0, 1, sets, 0, null);
         } else {
-            if (pipe.shadowDescriptorSet != null and @intFromPtr(pipe.shadowDescriptorSet) != 0) {
-                const descriptorSets = [_]c.VkDescriptorSet{pipe.shadowDescriptorSet};
+            if (pipe.shadowDescriptorSets[frame_check] != null and @intFromPtr(pipe.shadowDescriptorSets[frame_check]) != 0) {
+                const descriptorSets = [_]c.VkDescriptorSet{pipe.shadowDescriptorSets[frame_check]};
                 c.vkCmdBindDescriptorSets(cmd, c.VK_PIPELINE_BIND_POINT_GRAPHICS, pipe.shadowPipelineLayout, 0, 1, &descriptorSets, 0, null);
             }
         }
@@ -395,11 +425,11 @@ pub fn vk_shadow_render(s: *types.VulkanState, cmd: c.VkCommandBuffer) void {
             // 132..136: packedInfo (flags including hasSkeleton)
             // 136..152: Padding/Reserved
             // 152..156: Cascade Index
-            
+
             // We need to construct this carefully to match PBR pipeline layout
             // Shadow push constant range in shader: 0..156 (covering model, flags, cascade)
             // But pipeline layout might be bigger (236)
-            
+
             var pushData = std.mem.zeroes([156]u8);
 
             // Copy Model Matrix (first 64 bytes)

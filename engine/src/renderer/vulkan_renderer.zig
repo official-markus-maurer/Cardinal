@@ -249,7 +249,8 @@ fn init_sync_manager(s: *types.VulkanState) bool {
 
 fn init_pbr_pipeline_helper(s: *types.VulkanState) void {
     s.pipelines.use_pbr_pipeline = false;
-    if (vk_pbr.vk_pbr_pipeline_create(@ptrCast(&s.pipelines.pbr_pipeline), s.context.device, s.context.physical_device, s.swapchain.format, s.swapchain.depth_format, s.commands.pools.?[0], s.context.graphics_queue, @ptrCast(&s.allocator), @ptrCast(s), null)) {
+    // PBR Pipeline renders to HDR attachment (Float16), not directly to swapchain
+    if (vk_pbr.vk_pbr_pipeline_create(@ptrCast(&s.pipelines.pbr_pipeline), s.context.device, s.context.physical_device, c.VK_FORMAT_R16G16B16A16_SFLOAT, s.swapchain.depth_format, s.commands.pools.?[0], s.context.graphics_queue, @ptrCast(&s.allocator), @ptrCast(s), null)) {
         s.pipelines.use_pbr_pipeline = true;
         log.cardinal_log_info("renderer_create: PBR pipeline", .{});
     } else {
@@ -829,6 +830,9 @@ pub export fn cardinal_renderer_destroy(renderer: ?*types.CardinalRenderer) call
     // Destroy shader cache
     vk_pso.vk_pso_cleanup_shader_cache(s.context.device);
 
+    // Shutdown pending texture/buffer cleanups
+    vk_texture_utils.shutdown_staging_buffer_cleanups(&s.allocator);
+
     // Shutdown VMA allocator before destroying device
     vk_allocator.vk_allocator_shutdown(&s.allocator);
 
@@ -904,12 +908,8 @@ pub export fn cardinal_renderer_set_camera(renderer: ?*types.CardinalRenderer, c
     // Set debug flags from pipeline state
     ubo.debugFlags = s.pipelines.pbr_pipeline.debug_flags;
 
-    // Update the uniform buffer
-    @memcpy(@as([*]u8, @ptrCast(s.pipelines.pbr_pipeline.uniformBufferMapped))[0..@sizeOf(types.PBRUniformBufferObject)], @as([*]const u8, @ptrCast(&ubo))[0..@sizeOf(types.PBRUniformBufferObject)]);
-
-    // Also invoke the centralized PBR uniform updater
-    // Pass null for lighting as we are only updating camera (UBO)
-    vk_pbr.vk_pbr_update_uniforms(@ptrCast(&s.pipelines.pbr_pipeline), @ptrCast(&ubo), null);
+    // Update the stored UBO state
+    s.pipelines.pbr_pipeline.current_ubo = ubo;
 }
 
 pub export fn cardinal_renderer_set_debug_flags(renderer: ?*types.CardinalRenderer, flags: f32) callconv(.c) void {
@@ -920,19 +920,7 @@ pub export fn cardinal_renderer_set_debug_flags(renderer: ?*types.CardinalRender
 
     // Update stored state
     s.pipelines.pbr_pipeline.debug_flags = flags;
-
-    // Update UBO immediately
-    if (s.pipelines.pbr_pipeline.uniformBufferMapped != null) {
-        var ubo: types.PBRUniformBufferObject = undefined;
-        @memcpy(@as([*]u8, @ptrCast(&ubo))[0..@sizeOf(types.PBRUniformBufferObject)], @as([*]const u8, @ptrCast(s.pipelines.pbr_pipeline.uniformBufferMapped))[0..@sizeOf(types.PBRUniformBufferObject)]);
-
-        ubo.debugFlags = flags;
-
-        @memcpy(@as([*]u8, @ptrCast(s.pipelines.pbr_pipeline.uniformBufferMapped))[0..@sizeOf(types.PBRUniformBufferObject)], @as([*]const u8, @ptrCast(&ubo))[0..@sizeOf(types.PBRUniformBufferObject)]);
-
-        // Propagate to centralized updater
-        vk_pbr.vk_pbr_update_uniforms(@ptrCast(&s.pipelines.pbr_pipeline), @ptrCast(&ubo), null);
-    }
+    s.pipelines.pbr_pipeline.current_ubo.debugFlags = flags;
 }
 
 pub export fn cardinal_renderer_set_lights(renderer: ?*types.CardinalRenderer, lights: ?[*]const types.PBRLight, count: u32) callconv(.c) void {
@@ -953,10 +941,8 @@ pub export fn cardinal_renderer_set_lights(renderer: ?*types.CardinalRenderer, l
         }
     }
 
-    // Update buffer
-    @memcpy(@as([*]u8, @ptrCast(s.pipelines.pbr_pipeline.lightingBufferMapped))[0..@sizeOf(types.PBRLightingBuffer)], @as([*]const u8, @ptrCast(&lighting))[0..@sizeOf(types.PBRLightingBuffer)]);
-
-    vk_pbr.vk_pbr_update_uniforms(@ptrCast(&s.pipelines.pbr_pipeline), null, @ptrCast(&lighting));
+    // Update stored lighting state
+    s.pipelines.pbr_pipeline.current_lighting = lighting;
 }
 
 pub export fn cardinal_renderer_set_lighting(renderer: ?*types.CardinalRenderer, light: ?*const types.CardinalLight) callconv(.c) void {
@@ -993,13 +979,8 @@ pub export fn cardinal_renderer_set_lighting(renderer: ?*types.CardinalRenderer,
     lighting.lights[0].ambientColor[2] = l.ambient.z;
     lighting.lights[0].ambientColor[3] = l.range;
 
-    // Update the lighting buffer
-    @memcpy(@as([*]u8, @ptrCast(s.pipelines.pbr_pipeline.lightingBufferMapped))[0..@sizeOf(types.PBRLightingBuffer)], @as([*]const u8, @ptrCast(&lighting))[0..@sizeOf(types.PBRLightingBuffer)]);
-
-    // Also invoke the centralized PBR uniform updater
-    var ubo: types.PBRUniformBufferObject = undefined;
-    @memcpy(@as([*]u8, @ptrCast(&ubo))[0..@sizeOf(types.PBRUniformBufferObject)], @as([*]const u8, @ptrCast(s.pipelines.pbr_pipeline.uniformBufferMapped))[0..@sizeOf(types.PBRUniformBufferObject)]);
-    vk_pbr.vk_pbr_update_uniforms(@ptrCast(&s.pipelines.pbr_pipeline), @ptrCast(&ubo), @ptrCast(&lighting));
+    // Update stored lighting state
+    s.pipelines.pbr_pipeline.current_lighting = lighting;
 }
 
 pub export fn cardinal_renderer_set_skybox_from_data(renderer: ?*types.CardinalRenderer, data: ?*texture_loader.TextureData) callconv(.c) bool {
@@ -1504,6 +1485,18 @@ pub export fn cardinal_renderer_set_rendering_mode(renderer: ?*types.CardinalRen
         cardinal_renderer_enable_mesh_shader(renderer, true);
     } else if (mode != .MESH_SHADER and previous_mode == .MESH_SHADER) {
         cardinal_renderer_enable_mesh_shader(renderer, false);
+    }
+
+    // Fix for UV/Wireframe mode when pipelines are missing (e.g. after post-process toggle or resize)
+    if (mode == .UV or mode == .WIREFRAME) {
+        if (s.pipelines.uv_pipeline == null or s.pipelines.wireframe_pipeline == null) {
+            log.cardinal_log_warn("UV/Wireframe pipelines missing, attempting to recreate...", .{});
+            // Ensure clean state to avoid leaks
+            vk_simple_pipelines.vk_destroy_simple_pipelines(s);
+            if (!vk_simple_pipelines.vk_create_simple_pipelines(s, null)) {
+                log.cardinal_log_error("Failed to recreate simple pipelines for mode {any}", .{mode});
+            }
+        }
     }
 
     log.cardinal_log_info("Rendering mode changed to: {d}", .{@intFromEnum(mode)});

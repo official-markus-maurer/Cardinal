@@ -9,6 +9,7 @@ const math = @import("../core/math.zig");
 pub const CARDINAL_MAX_SECONDARY_COMMAND_BUFFERS = 512;
 pub const CARDINAL_MAX_MT_THREADS = 16;
 pub const MAX_SHADOW_CASCADES = 8;
+pub const MAX_FRAMES_IN_FLIGHT = 3;
 
 // Forward declarations for external types
 pub const CardinalWindow = window.CardinalWindow;
@@ -792,38 +793,39 @@ pub const VulkanPBRPipeline = extern struct {
     textureManager: ?*VulkanTextureManager,
 
     // Buffers
-    uniformBuffer: c.VkBuffer,
-    uniformBufferMemory: c.VkDeviceMemory,
-    uniformBufferAllocation: c.VmaAllocation,
-    uniformBufferMapped: ?*anyopaque,
+    uniformBuffers: [MAX_FRAMES_IN_FLIGHT]c.VkBuffer,
+    uniformBuffersMemory: [MAX_FRAMES_IN_FLIGHT]c.VkDeviceMemory,
+    uniformBuffersAllocation: [MAX_FRAMES_IN_FLIGHT]c.VmaAllocation,
+    uniformBuffersMapped: [MAX_FRAMES_IN_FLIGHT]?*anyopaque,
 
-    lightingBuffer: c.VkBuffer,
-    lightingBufferMemory: c.VkDeviceMemory,
-    lightingBufferAllocation: c.VmaAllocation,
-    lightingBufferMapped: ?*anyopaque,
+    lightingBuffers: [MAX_FRAMES_IN_FLIGHT]c.VkBuffer,
+    lightingBuffersMemory: [MAX_FRAMES_IN_FLIGHT]c.VkDeviceMemory,
+    lightingBuffersAllocation: [MAX_FRAMES_IN_FLIGHT]c.VmaAllocation,
+    lightingBuffersMapped: [MAX_FRAMES_IN_FLIGHT]?*anyopaque,
 
     // Shadow Mapping
     shadowPipeline: c.VkPipeline,
     shadowAlphaPipeline: c.VkPipeline,
     shadowPipelineLayout: c.VkPipelineLayout,
     shadowDescriptorManager: ?*VulkanDescriptorManager,
-    shadowDescriptorSet: c.VkDescriptorSet,
+    shadowDescriptorSets: [MAX_FRAMES_IN_FLIGHT]c.VkDescriptorSet,
     shadowMapImage: c.VkImage,
     shadowMapMemory: c.VkDeviceMemory,
     shadowMapAllocation: c.VmaAllocation,
     shadowMapView: c.VkImageView,
     shadowCascadeViews: [4]c.VkImageView, // SHADOW_CASCADE_COUNT
     shadowMapSampler: c.VkSampler,
-    shadowUBO: c.VkBuffer,
-    shadowUBOMemory: c.VkDeviceMemory,
-    shadowUBOAllocation: c.VmaAllocation,
-    shadowUBOMapped: ?*anyopaque,
+    
+    shadowUBOs: [MAX_FRAMES_IN_FLIGHT]c.VkBuffer,
+    shadowUBOsMemory: [MAX_FRAMES_IN_FLIGHT]c.VkDeviceMemory,
+    shadowUBOsAllocation: [MAX_FRAMES_IN_FLIGHT]c.VmaAllocation,
+    shadowUBOsMapped: [MAX_FRAMES_IN_FLIGHT]?*anyopaque,
 
     // Bone Matrices
-    boneMatricesBuffer: c.VkBuffer,
-    boneMatricesBufferMemory: c.VkDeviceMemory,
-    boneMatricesBufferAllocation: c.VmaAllocation,
-    boneMatricesBufferMapped: ?*anyopaque,
+    boneMatricesBuffers: [MAX_FRAMES_IN_FLIGHT]c.VkBuffer,
+    boneMatricesBuffersMemory: [MAX_FRAMES_IN_FLIGHT]c.VkDeviceMemory,
+    boneMatricesBuffersAllocation: [MAX_FRAMES_IN_FLIGHT]c.VmaAllocation,
+    boneMatricesBuffersMapped: [MAX_FRAMES_IN_FLIGHT]?*anyopaque,
     maxBones: u32,
 
     // Common
@@ -840,6 +842,10 @@ pub const VulkanPBRPipeline = extern struct {
     pipelineBlend: c.VkPipeline,
 
     debug_flags: f32,
+    
+    // Staging state for multi-buffered updates
+    current_ubo: PBRUniformBufferObject,
+    current_lighting: PBRLightingBuffer,
 };
 
 pub const RendererConfig = extern struct {
