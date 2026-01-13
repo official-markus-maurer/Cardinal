@@ -232,9 +232,12 @@ pub const PBRPushConstants = extern struct {
     // Texture rotations
     textureRotations: [5]f32,
     
+    // Emissive strength
+    emissiveStrength: f32,
+
     // Padding to match shader size (252 bytes reported by validation)
-    // Current size: 244 bytes. Add 12 bytes to reach 256 (safe max).
-    _padding_end: [3]u32,
+    // Current size: 248 bytes. Add 8 bytes to reach 256 (safe max).
+    _padding_end: [2]u32,
 };
 
 pub const MeshShaderUniformBuffer = extern struct {

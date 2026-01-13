@@ -21,6 +21,7 @@ fn set_default_material_properties(pushConstants: *types.PBRPushConstants, hasTe
     pushConstants.emissiveFactor[0] = 0.0;
     pushConstants.emissiveFactor[1] = 0.0;
     pushConstants.emissiveFactor[2] = 0.0;
+    pushConstants.emissiveStrength = 1.0;
     pushConstants.roughnessFactor = 0.5;
     
     // Packed info: flags (upper 16 bits) | uvSetIndices (lower 16 bits)
@@ -117,6 +118,7 @@ fn set_texture_transforms(pushConstants: *types.PBRPushConstants, material: *con
 fn set_material_properties(pushConstants: *types.PBRPushConstants, material: *const types.CardinalMaterial) void {
     @memcpy(pushConstants.albedoFactor[0..4], material.albedo_factor[0..4]);
     @memcpy(pushConstants.emissiveFactor[0..3], material.emissive_factor[0..3]);
+    pushConstants.emissiveStrength = material.emissive_strength;
     pushConstants.roughnessFactor = material.roughness_factor;
     pushConstants.metallicNormalAO[0] = material.metallic_factor;
     pushConstants.metallicNormalAO[1] = material.normal_scale;

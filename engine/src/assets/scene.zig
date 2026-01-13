@@ -92,6 +92,7 @@ pub const CardinalMaterial = extern struct {
     metallic_factor: f32,
     roughness_factor: f32,
     emissive_factor: [3]f32,
+    emissive_strength: f32,
     normal_scale: f32,
     ao_strength: f32,
 

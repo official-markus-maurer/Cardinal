@@ -17,11 +17,6 @@ This document outlines the roadmap for the Cardinal Engine, focusing on robustne
 ### Code Cleanup & Refactoring
 - [ ] **Code Deduplication**:
     - [ ] **Handle System**: Implement a generic `HandleManager` to centralize safe handle generation (index + generation) instead of ad-hoc logic per resource type.
-- [x] **Vulkan Optimization**:
-    - [x] Verify `CardinalLight` and `CardinalCamera` struct alignment for UBO compatibility (std140). (Handled via manual packing in PBR pipeline)
-    - [x] **Pipeline Cache**: Implement persistence (save/load `VkPipelineCache` to disk) to improve startup times (`vulkan_pipeline.zig`/`vulkan_pso.zig`).
-- [ ] **Texture Loader**:
-    - [x] Verify and address "not yet ported" C header dependencies. (Replaced manual C declarations with Zig module import in `texture_loader.zig`)
 
 ## 2. Data & Assets
 
@@ -38,13 +33,10 @@ This document outlines the roadmap for the Cardinal Engine, focusing on robustne
 
 ## 3. Rendering (Vulkan)
 
-### Core Architecture
-- [x] **Pipeline Caching**: Implement `VkPipelineCache` serialization.
-
 ### Lighting & Materials
 - [ ] **IBL**: Implement Environment Maps, Irradiance Maps, and Prefiltered Specular maps.
-- [ ] **Advanced Shadows**: Cascade Shadow Maps (CSM) refinement and Soft Shadows (PCF/PCSS).
-- [ ] **Emissive Strength**: Support `KHR_materials_emissive_strength`.
+- [x] **Advanced Shadows**: Cascade Shadow Maps (CSM) refinement and Soft Shadows (PCF/PCSS). (Implemented Rotated Poisson Disk PCF)
+- [x] **Emissive Strength**: Support `KHR_materials_emissive_strength`.
 - [ ] **Ambient Occlusion**: SSAO or HBAO.
 
 ### Optimization

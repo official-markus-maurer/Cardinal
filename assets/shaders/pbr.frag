@@ -48,6 +48,8 @@ struct Material {
     uint packedInfo; // Bits 0-15: uvSetIndices, Bits 16-31: flags
     vec4 textureTransforms[5]; // xy = offset, zw = scale
     float textureRotations[5]; // Array of rotations
+    float emissiveStrength;
+    vec2 _padding;
 };
 
 // Push constants for per-mesh material properties
@@ -75,6 +77,33 @@ layout(binding = 9) uniform ShadowUBO {
     mat4 lightSpaceMatrices[4];
     vec4 cascadeSplits; 
 } shadowData;
+
+// Poisson Disk Sampling (16 samples)
+const vec2 poissonDisk[16] = vec2[](
+   vec2( -0.94201624, -0.39906216 ),
+   vec2( 0.94558609, -0.76890725 ),
+   vec2( -0.094184101, -0.92938870 ),
+   vec2( 0.34495938, 0.29387760 ),
+   vec2( -0.91588581, 0.45771432 ),
+   vec2( -0.81544232, -0.87912464 ),
+   vec2( -0.38277543, 0.27676845 ),
+   vec2( 0.97484398, 0.75648379 ),
+   vec2( 0.44323325, -0.97511554 ),
+   vec2( 0.53742981, -0.47373420 ),
+   vec2( -0.26496911, -0.41893023 ),
+   vec2( 0.79197514, 0.19090188 ),
+   vec2( -0.24188840, 0.99706507 ),
+   vec2( -0.81409955, 0.91437590 ),
+   vec2( 0.19984126, 0.78641367 ),
+   vec2( 0.14383161, -0.14100790 )
+);
+
+// High-frequency noise for dithering
+float InterleavedGradientNoise(vec2 position_screen)
+{
+    vec3 magic = vec3(0.06711056, 0.00583715, 52.9829189);
+    return fract(magic.z * fract(dot(position_screen, magic.xy)));
+}
 
 float ShadowCalculation(vec3 worldPos, vec3 N, vec3 L) {
     // Ensure normal and light direction are normalized for accurate bias calculation
@@ -108,13 +137,21 @@ float ShadowCalculation(vec3 worldPos, vec3 N, vec3 L) {
     
     float shadow = 0.0;
     vec2 texelSize = 1.0 / vec2(textureSize(shadowMap, 0));
-    for(int x = -1; x <= 1; ++x) {
-        for(int y = -1; y <= 1; ++y) {
-             float pcfDepth = texture(shadowMap, vec4(projCoords.xy + vec2(x, y) * texelSize, layer, projCoords.z - bias)); 
-             shadow += pcfDepth;
-        }
+    
+    // Random rotation for PCF kernel
+    float noise = InterleavedGradientNoise(gl_FragCoord.xy);
+    float angle = noise * 6.28318530718;
+    float s = sin(angle);
+    float c = cos(angle);
+    mat2 rot = mat2(c, -s, s, c);
+    
+    float filterRadius = 2.5; // Softness radius
+    
+    for(int i = 0; i < 16; ++i) {
+        vec2 offset = rot * poissonDisk[i] * filterRadius * texelSize;
+        shadow += texture(shadowMap, vec4(projCoords.xy + offset, layer, projCoords.z - bias));
     }
-    shadow /= 9.0;
+    shadow /= 16.0;
     
     // Cascade Blending
     if (layer < 3) {
@@ -132,13 +169,11 @@ float ShadowCalculation(vec3 worldPos, vec3 N, vec3 L) {
             float biasNext = baseBias * (float(nextLayer) * 0.1 + 1.0);
             float shadowNext = 0.0;
             
-            for(int x = -1; x <= 1; ++x) {
-                for(int y = -1; y <= 1; ++y) {
-                     float pcfDepth = texture(shadowMap, vec4(projCoordsNext.xy + vec2(x, y) * texelSize, nextLayer, projCoordsNext.z - biasNext)); 
-                     shadowNext += pcfDepth;
-                }
+            for(int i = 0; i < 16; ++i) {
+                vec2 offset = rot * poissonDisk[i] * filterRadius * texelSize;
+                shadowNext += texture(shadowMap, vec4(projCoordsNext.xy + offset, nextLayer, projCoordsNext.z - biasNext));
             }
-            shadowNext /= 9.0;
+            shadowNext /= 16.0;
             
             float t = smoothstep(blendOverlap, 0.0, distToEdge);
             shadow = mix(shadow, shadowNext, t);
@@ -397,6 +432,9 @@ void main() {
         }
     }
     
+    // Apply emissive strength
+    emissive *= material.emissiveStrength;
+
     // Get normal from normal map
     vec3 N = getNormalFromMap(normalUV);
     vec3 V = normalize(fragViewPos - fragWorldPos);

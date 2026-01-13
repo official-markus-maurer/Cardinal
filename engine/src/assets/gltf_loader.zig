@@ -1162,6 +1162,7 @@ pub export fn cardinal_gltf_load_scene(path: [*:0]const u8, out_scene: *scene.Ca
             card_mat.metallic_factor = 0.0;
             card_mat.roughness_factor = 0.5;
             card_mat.emissive_factor = .{ 0, 0, 0 };
+            card_mat.emissive_strength = 1.0;
             card_mat.normal_scale = 1.0;
             card_mat.ao_strength = 1.0;
 
@@ -1279,6 +1280,10 @@ pub export fn cardinal_gltf_load_scene(path: [*:0]const u8, out_scene: *scene.Ca
                 card_mat.emissive_factor[0] = mat.emissive_factor[0];
                 card_mat.emissive_factor[1] = mat.emissive_factor[1];
                 card_mat.emissive_factor[2] = mat.emissive_factor[2];
+            }
+
+            if (mat.has_emissive_strength != 0) {
+                card_mat.emissive_strength = mat.emissive_strength.emissive_strength;
             }
 
             var temp_material: scene.CardinalMaterial = undefined;
