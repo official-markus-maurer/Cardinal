@@ -279,6 +279,36 @@ pub export fn vk_bindless_texture_pool_destroy(pool: ?*types.BindlessTexturePool
     log.cardinal_log_info("Bindless texture pool destroyed", .{});
 }
 
+pub export fn vk_bindless_texture_pool_reset(pool: ?*types.BindlessTexturePool) callconv(.c) void {
+    if (pool == null) return;
+    const p = pool.?;
+
+    var i: u32 = 0;
+    while (i < p.max_textures) : (i += 1) {
+        if (p.textures.?[i].is_allocated) {
+            // Free resource if owned
+            if (p.textures.?[i].owns_resources) {
+                vk_bindless_texture_free(p, i);
+            } else {
+                // Just mark as free
+                p.textures.?[i].is_allocated = false;
+                p.textures.?[i].image = null;
+                p.textures.?[i].image_view = null; // Corrected field name from view to image_view
+                p.textures.?[i].sampler = null;
+            }
+        }
+    }
+
+    // Reset free indices
+    p.free_count = p.max_textures;
+    i = 0;
+    while (i < p.max_textures) : (i += 1) {
+        p.free_indices.?[i] = p.max_textures - 1 - i;
+    }
+
+    log.cardinal_log_info("Bindless texture pool reset", .{});
+}
+
 pub export fn vk_bindless_texture_allocate(pool: ?*types.BindlessTexturePool, create_info: ?*const types.BindlessTextureCreateInfo, out_index: ?*u32) callconv(.c) bool {
     if (pool == null or create_info == null or out_index == null) {
         log.cardinal_log_error("Invalid parameters for bindless texture allocation", .{});

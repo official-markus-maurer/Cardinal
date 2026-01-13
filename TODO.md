@@ -15,8 +15,8 @@ This document outlines the roadmap for the Cardinal Engine, focusing on robustne
 - [ ] **Missing Operations**: Implement `Mat4`, `Quat` (quaternions), `lerp`, `slerp`, `reflect` in `math.zig`.
 
 ### Code Cleanup & Refactoring
-- [ ] **Code Deduplication**:
-    - [ ] **Handle System**: Implement a generic `HandleManager` to centralize safe handle generation (index + generation) instead of ad-hoc logic per resource type.
+- [x] **Code Deduplication**:
+    - [x] **Handle System**: Implement a generic `HandleManager` to centralize safe handle generation (index + generation) instead of ad-hoc logic per resource type.
 
 ## 2. Data & Assets
 

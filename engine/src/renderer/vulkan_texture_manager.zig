@@ -366,12 +366,29 @@ pub fn vk_texture_manager_load_scene_textures(manager: *types.VulkanTextureManag
     // Clear existing textures (except placeholder)
     vk_texture_manager_clear_textures(manager);
 
+    // Reset bindless pool to free all indices
+    // This is safe because we just cleared all textures that were using these indices
+    vk_descriptor_indexing.vk_bindless_texture_pool_reset(&manager.bindless_pool);
+
     // Ensure we have a placeholder texture at index 0
     if (!manager.hasPlaceholder) {
         var placeholder_index: u32 = 0;
         if (!vk_texture_manager_create_placeholder(manager, &placeholder_index)) {
             tex_mgr_log.err("Failed to create placeholder texture", .{});
             return false;
+        }
+    } else {
+        // Re-register existing placeholder (index 0) because we reset the pool
+        // manager.textures[0] is still valid from clear_textures logic
+        if (manager.textureCount > 0 and manager.bindless_pool.textures != null) {
+            const tex = &manager.textures.?[0];
+            var bindless_idx: u32 = 0;
+            if (vk_descriptor_indexing.vk_bindless_texture_register_existing(&manager.bindless_pool, tex.image, tex.view, tex.sampler, &bindless_idx)) {
+                tex.bindless_index = bindless_idx;
+                _ = vk_descriptor_indexing.vk_bindless_texture_flush_updates(&manager.bindless_pool);
+            } else {
+                tex_mgr_log.err("Failed to re-register placeholder texture after pool reset", .{});
+            }
         }
     }
 
@@ -961,12 +978,14 @@ pub fn vk_texture_manager_update_textures(manager: *types.VulkanTextureManager) 
                 if (manager.bindless_pool.textures != null) {
                     var bindless_idx: u32 = 0;
                     if (vk_descriptor_indexing.vk_bindless_texture_register_existing(&manager.bindless_pool, tex.image, tex.view, tex.sampler, &bindless_idx)) {
+                        const old_idx = tex.bindless_index;
                         tex.bindless_index = bindless_idx;
                         _ = vk_descriptor_indexing.vk_bindless_texture_flush_updates(&manager.bindless_pool);
+                        tex_mgr_log.info("Async texture upload complete. Texture ptr: {*}, Old Index: {d}, New Index: {d}", .{tex, old_idx, bindless_idx});
+                    } else {
+                        tex_mgr_log.err("Failed to register bindless texture after async upload", .{});
                     }
                 }
-
-                tex_mgr_log.info("Async texture upload complete for texture", .{});
             } else {
                 // Task failed OR batch submit failed
                 if (ctx.success) {
@@ -1011,7 +1030,7 @@ pub fn vk_texture_manager_update_textures(manager: *types.VulkanTextureManager) 
             const state = if (res.identifier != null) resource_state.cardinal_resource_state_get(res.identifier.?) else .ERROR;
 
             if (state == .LOADED) {
-                tex_mgr_log.debug("Texture {d} loaded (id: {s}), queuing async upload", .{ i, if (res.identifier) |id| std.mem.span(id) else "null" });
+                tex_mgr_log.info("Texture {d} loaded (id: {s}), queuing async upload", .{ i, if (res.identifier) |id| std.mem.span(id) else "null" });
                 const data = @as(*texture_loader.TextureData, @ptrCast(@alignCast(res.resource.?)));
 
                 // Allocate context

@@ -587,17 +587,14 @@ pub export fn cardinal_renderer_draw_frame(renderer: ?*types.CardinalRenderer) c
         vk_commands.vk_prepare_mesh_shader_rendering(@ptrCast(s));
     }
 
-    const frame_base = s.sync.current_frame_value;
     var signal_after_render: u64 = 0;
 
-    if (s.sync_manager != null) {
-        const sm = s.sync_manager;
-        signal_after_render = vk_sync_manager.vulkan_sync_manager_get_next_timeline_value(sm);
-    } else {
-        signal_after_render = frame_base + 1;
-    }
-
     if (s.swapchain.headless_mode) {
+        if (s.sync_manager != null) {
+            signal_after_render = vk_sync_manager.vulkan_sync_manager_get_next_timeline_value(s.sync_manager);
+        } else {
+            signal_after_render = s.sync.current_frame_value + 1;
+        }
         render_frame_headless(s, signal_after_render);
         return;
     }
@@ -605,6 +602,19 @@ pub export fn cardinal_renderer_draw_frame(renderer: ?*types.CardinalRenderer) c
     var image_index: u32 = 0;
     if (!acquire_next_image(s, &image_index))
         return;
+
+    // Update textures (process async uploads)
+    // This MUST happen before we reserve the timeline value for the frame signal,
+    // because update_textures might submit its own command buffer and advance the timeline.
+    if (s.pipelines.use_pbr_pipeline and s.pipelines.pbr_pipeline.textureManager != null) {
+        vk_texture_manager.vk_texture_manager_update_textures(s.pipelines.pbr_pipeline.textureManager.?);
+    }
+
+    if (s.sync_manager != null) {
+        signal_after_render = vk_sync_manager.vulkan_sync_manager_get_next_timeline_value(s.sync_manager);
+    } else {
+        signal_after_render = s.sync.current_frame_value + 1;
+    }
 
     vk_commands.vk_record_cmd(@ptrCast(s), image_index);
 

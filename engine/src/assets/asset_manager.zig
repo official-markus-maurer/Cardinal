@@ -1,5 +1,6 @@
 const std = @import("std");
 const handles = @import("../core/handles.zig");
+const handle_manager = @import("../core/handle_manager.zig");
 const scene = @import("scene.zig");
 const texture_loader = @import("texture_loader.zig");
 const memory = @import("../core/memory.zig");
@@ -22,19 +23,18 @@ fn AssetStorage(comptime T: type, comptime Handle: type) type {
         const Self = @This();
         const Entry = struct {
             data: T,
-            generation: u32,
             ref_count: u32,
             path: ?[]const u8,
         };
 
         entries: std.ArrayListUnmanaged(Entry),
-        free_indices: std.ArrayListUnmanaged(u32),
+        handle_manager: handle_manager.HandleManager,
         allocator: std.mem.Allocator,
 
         pub fn init(allocator: std.mem.Allocator) Self {
             return .{
                 .entries = .{},
-                .free_indices = .{},
+                .handle_manager = handle_manager.HandleManager.init(allocator),
                 .allocator = allocator,
             };
         }
@@ -47,7 +47,7 @@ fn AssetStorage(comptime T: type, comptime Handle: type) type {
                 }
             }
             self.entries.deinit(self.allocator);
-            self.free_indices.deinit(self.allocator);
+            self.handle_manager.deinit();
         }
 
         pub const AddResult = struct {
@@ -56,31 +56,27 @@ fn AssetStorage(comptime T: type, comptime Handle: type) type {
         };
 
         pub fn add(self: *Self, data: T, path: ?[]const u8) !AddResult {
-            var index: u32 = 0;
-            var generation: u32 = 1;
             var stored_path: ?[]const u8 = null;
 
             if (path) |p| {
                 stored_path = try self.allocator.dupe(u8, p);
             }
 
-            if (self.free_indices.items.len > 0) {
-                index = self.free_indices.pop();
-                generation = self.entries.items[index].generation + 1;
-                // Avoid 0 generation
-                if (generation == 0) generation = 1;
+            const allocation = try self.handle_manager.allocate();
+            const index = allocation.index;
+            const generation = allocation.generation;
 
+            if (index < self.entries.items.len) {
+                // Reuse existing slot
                 self.entries.items[index] = .{
                     .data = data,
-                    .generation = generation,
                     .ref_count = 1,
                     .path = stored_path,
                 };
             } else {
-                index = @intCast(self.entries.items.len);
+                // Append new slot
                 try self.entries.append(self.allocator, .{
                     .data = data,
-                    .generation = generation,
                     .ref_count = 1,
                     .path = stored_path,
                 });
@@ -93,10 +89,9 @@ fn AssetStorage(comptime T: type, comptime Handle: type) type {
         }
 
         pub fn get(self: *Self, handle: Handle) ?*T {
+            if (!self.handle_manager.is_valid(handle.index, handle.generation)) return null;
             if (handle.index >= self.entries.items.len) return null;
-            const entry = &self.entries.items[handle.index];
-            if (entry.generation != handle.generation) return null;
-            return &entry.data;
+            return &self.entries.items[handle.index].data;
         }
 
         pub const ReleaseResult = struct {
@@ -106,10 +101,11 @@ fn AssetStorage(comptime T: type, comptime Handle: type) type {
         };
 
         pub fn release(self: *Self, handle: Handle) ReleaseResult {
+            if (!self.handle_manager.is_valid(handle.index, handle.generation)) return .{ .destroyed = false, .path = null, .data = null };
             if (handle.index >= self.entries.items.len) return .{ .destroyed = false, .path = null, .data = null };
+            
             var entry = &self.entries.items[handle.index];
-            if (entry.generation != handle.generation) return .{ .destroyed = false, .path = null, .data = null };
-
+            
             if (entry.ref_count > 0) {
                 entry.ref_count -= 1;
             }
@@ -121,16 +117,16 @@ fn AssetStorage(comptime T: type, comptime Handle: type) type {
                 entry.path = null;
 
                 // Add to free list
-                self.free_indices.append(self.allocator, handle.index) catch {};
+                _ = self.handle_manager.free(handle.index, handle.generation);
                 return .{ .destroyed = true, .path = p, .data = d };
             }
             return .{ .destroyed = false, .path = null, .data = null };
         }
 
         pub fn acquire(self: *Self, handle: Handle) void {
+            if (!self.handle_manager.is_valid(handle.index, handle.generation)) return;
             if (handle.index >= self.entries.items.len) return;
             var entry = &self.entries.items[handle.index];
-            if (entry.generation != handle.generation) return;
             entry.ref_count += 1;
         }
     };
