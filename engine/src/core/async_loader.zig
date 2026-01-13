@@ -9,14 +9,23 @@ const ref_counting = @import("ref_counting.zig");
 const scene = @import("../assets/scene.zig");
 const job_system = @import("job_system.zig");
 
-// --- External Dependencies ---
-extern fn texture_load_with_ref_counting(file_path: [*:0]const u8, out_texture: ?*anyopaque) callconv(.c) ?*ref_counting.CardinalRefCountedResource;
-extern fn texture_data_free(data: ?*anyopaque) callconv(.c) void;
+// --- Function Pointers ---
+pub const Loaders = struct {
+    pub var texture_load_fn: ?*const fn (file_path: ?[*]const u8, out_texture: ?*anyopaque) callconv(.c) ?*ref_counting.CardinalRefCountedResource = null;
+    pub var scene_load_fn: ?*const fn (file_path: ?[*:0]const u8, scene: ?*scene.CardinalScene) callconv(.c) bool = null;
+};
 
-extern fn cardinal_scene_load(file_path: [*:0]const u8, scene: ?*scene.CardinalScene) callconv(.c) bool;
+pub export fn cardinal_async_register_texture_loader(
+    load_fn: *const fn (?[*]const u8, ?*anyopaque) callconv(.c) ?*ref_counting.CardinalRefCountedResource
+) callconv(.c) void {
+    Loaders.texture_load_fn = load_fn;
+}
 
-// material_load_with_ref_counting removed - legacy system
-extern fn material_data_free(material: ?*scene.CardinalMaterial) callconv(.c) void;
+pub export fn cardinal_async_register_scene_loader(
+    load_fn: *const fn (?[*:0]const u8, ?*scene.CardinalScene) callconv(.c) bool
+) callconv(.c) void {
+    Loaders.scene_load_fn = load_fn;
+}
 
 // --- Enums and Structs ---
 
@@ -47,11 +56,6 @@ pub const CardinalAsyncTaskType = enum(c_int) {
 pub const CardinalAsyncTaskFunc = ?*const fn (task: ?*CardinalAsyncTask, user_data: ?*anyopaque) callconv(.c) bool;
 pub const CardinalAsyncCallback = ?*const fn (task: ?*CardinalAsyncTask, user_data: ?*anyopaque) callconv(.c) void;
 
-pub const CardinalAsyncDependencyNode = extern struct {
-    task: *CardinalAsyncTask,
-    next: ?*CardinalAsyncDependencyNode,
-};
-
 pub const CardinalAsyncTask = extern struct {
     id: u32,
     type: CardinalAsyncTaskType,
@@ -72,10 +76,6 @@ pub const CardinalAsyncTask = extern struct {
 
     next: ?*CardinalAsyncTask, // Used to store pointer to underlying Job
     submit_time: u64,
-
-    // Dependency Graph (Maintained for legacy API structure, but logic delegated to JobSystem)
-    dependency_count: u32,
-    dependents_head: ?*CardinalAsyncDependencyNode,
 };
 
 pub const CardinalAsyncLoaderConfig = extern struct {
@@ -189,9 +189,14 @@ fn execute_texture_load_task(task: *CardinalAsyncTask) bool {
 
     async_log.debug("Loading texture: {s}", .{task.file_path.?});
 
+    if (Loaders.texture_load_fn == null) {
+        async_log.err("Texture loader not registered", .{});
+        return false;
+    }
+
     var texture_data: scene.CardinalTexture = undefined;
 
-    const ref_resource = texture_load_with_ref_counting(task.file_path.?, &texture_data);
+    const ref_resource = Loaders.texture_load_fn.?(task.file_path.?, &texture_data);
 
     if (ref_resource == null) {
         const allocator = memory.cardinal_get_allocator_for_category(.ENGINE);
@@ -226,7 +231,7 @@ fn execute_scene_load_task(task: *CardinalAsyncTask) bool {
     }
     const scene_obj = @as(*scene.CardinalScene, @ptrCast(@alignCast(scene_ptr)));
 
-    if (!cardinal_scene_load(task.file_path.?, scene_obj)) {
+    if (!Loaders.scene_load_fn.?(task.file_path.?, scene_obj)) {
         memory.cardinal_free(allocator, scene_ptr);
         return false;
     }
@@ -439,20 +444,7 @@ pub export fn cardinal_async_add_dependency(dependent: ?*CardinalAsyncTask, depe
     const job_dependency = @as(*job_system.Job, @ptrCast(t_dependency.next));
 
     if (job_system.add_dependency(job_dependent, job_dependency)) {
-        t_dependent.dependency_count += 1;
-
-        // Populate the dependents list in the dependency task to mirror JobSystem
-        const allocator = memory.cardinal_get_allocator_for_category(.ENGINE);
-        const node_ptr = memory.cardinal_alloc(allocator, @sizeOf(CardinalAsyncDependencyNode));
-        if (node_ptr) |ptr| {
-            const node = @as(*CardinalAsyncDependencyNode, @ptrCast(@alignCast(ptr)));
-            node.task = t_dependent;
-            node.next = t_dependency.dependents_head;
-            t_dependency.dependents_head = node;
-        } else {
-            async_log.warn("Failed to allocate dependency node for legacy tracking", .{});
-        }
-
+        // Legacy tracking removed
         return true;
     }
 
@@ -687,15 +679,6 @@ pub export fn cardinal_async_free_task(task: ?*CardinalAsyncTask) callconv(.c) v
                 job_system.free_job(job);
             }
         }
-
-        // Free dependency nodes
-        var node = t.dependents_head;
-        while (node) |n| {
-            const next = n.next;
-            memory.cardinal_free(allocator, n);
-            node = next;
-        }
-        t.dependents_head = null;
 
         if (t.result_data) |data| {
             if (t.type == .SCENE_LOAD) {

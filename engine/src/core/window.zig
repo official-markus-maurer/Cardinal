@@ -23,13 +23,13 @@ pub const CardinalWindowConfig = extern struct {
     resizable: bool,
 };
 
-pub const CardinalWindow = extern struct {
+pub const CardinalWindow = struct {
     handle: ?*c.GLFWwindow,
     width: u32,
     height: u32,
     should_close: bool,
     // Mutex
-    mutex: if (builtin.os.tag == .windows) c.CRITICAL_SECTION else c.pthread_mutex_t,
+    mutex: std.Thread.Mutex,
 
     resize_pending: bool,
     new_width: u32,
@@ -165,16 +165,8 @@ pub export fn cardinal_window_create(config: *const CardinalWindowConfig) callco
     _ = c.glfwSetMouseButtonCallback(handle, mouse_button_callback);
     _ = c.glfwSetCursorPosCallback(handle, cursor_pos_callback);
 
-    if (builtin.os.tag == .windows) {
-        c.InitializeCriticalSection(&win.mutex);
-    } else {
-        if (c.pthread_mutex_init(&win.mutex, null) != 0) {
-            std.log.err("Failed to initialize window mutex", .{});
-            c.glfwDestroyWindow(handle);
-            c.free(win);
-            return null;
-        }
-    }
+    // Init mutex
+    win.mutex = .{};
 
     std.log.info("cardinal_window_create: success", .{});
     return win;
@@ -182,20 +174,12 @@ pub export fn cardinal_window_create(config: *const CardinalWindowConfig) callco
 
 pub export fn cardinal_window_poll(window: ?*CardinalWindow) callconv(.c) void {
     if (window) |win| {
-        if (builtin.os.tag == .windows) {
-            c.EnterCriticalSection(&win.mutex);
-        } else {
-            _ = c.pthread_mutex_lock(&win.mutex);
-        }
+        win.mutex.lock();
 
         c.glfwPollEvents();
         win.should_close = (c.glfwWindowShouldClose(win.handle) != 0);
 
-        if (builtin.os.tag == .windows) {
-            c.LeaveCriticalSection(&win.mutex);
-        } else {
-            _ = c.pthread_mutex_unlock(&win.mutex);
-        }
+        win.mutex.unlock();
     }
 }
 
@@ -208,11 +192,7 @@ pub export fn cardinal_window_should_close(window: ?*const CardinalWindow) callc
 
 pub export fn cardinal_window_destroy(window: ?*CardinalWindow) callconv(.c) void {
     if (window) |win| {
-        if (builtin.os.tag == .windows) {
-            c.EnterCriticalSection(&win.mutex);
-        } else {
-            _ = c.pthread_mutex_lock(&win.mutex);
-        }
+        win.mutex.lock();
 
         if (win.handle) |h| {
             c.glfwDestroyWindow(h);
@@ -220,13 +200,8 @@ pub export fn cardinal_window_destroy(window: ?*CardinalWindow) callconv(.c) voi
         }
         c.glfwTerminate();
 
-        if (builtin.os.tag == .windows) {
-            c.LeaveCriticalSection(&win.mutex);
-            c.DeleteCriticalSection(&win.mutex);
-        } else {
-            _ = c.pthread_mutex_unlock(&win.mutex);
-            _ = c.pthread_mutex_destroy(&win.mutex);
-        }
+        win.mutex.unlock();
+        // No destroy needed for std.Thread.Mutex
 
         c.free(win);
     }

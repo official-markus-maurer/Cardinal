@@ -1,5 +1,17 @@
 const std = @import("std");
 
+pub fn lerp(a: f32, b: f32, t: f32) f32 {
+    return a + (b - a) * t;
+}
+
+pub fn toRadians(degrees: f32) f32 {
+    return degrees * (std.math.pi / 180.0);
+}
+
+pub fn toDegrees(radians: f32) f32 {
+    return radians * (180.0 / std.math.pi);
+}
+
 pub const Vec2 = extern struct {
     x: f32,
     y: f32,
@@ -33,6 +45,7 @@ pub const Vec3 = extern struct {
     x: f32,
     y: f32,
     z: f32,
+    _pad: f32 = 0,
 
     pub fn zero() Vec3 {
         return .{ .x = 0, .y = 0, .z = 0 };
@@ -43,45 +56,47 @@ pub const Vec3 = extern struct {
     }
 
     pub fn add(self: Vec3, other: Vec3) Vec3 {
-        const v1 = @Vector(4, f32){ self.x, self.y, self.z, 0 };
-        const v2 = @Vector(4, f32){ other.x, other.y, other.z, 0 };
+        const v1: @Vector(4, f32) = @bitCast(self);
+        const v2: @Vector(4, f32) = @bitCast(other);
         const res = v1 + v2;
         return .{ .x = res[0], .y = res[1], .z = res[2] };
     }
 
     pub fn sub(self: Vec3, other: Vec3) Vec3 {
-        const v1 = @Vector(4, f32){ self.x, self.y, self.z, 0 };
-        const v2 = @Vector(4, f32){ other.x, other.y, other.z, 0 };
+        const v1: @Vector(4, f32) = @bitCast(self);
+        const v2: @Vector(4, f32) = @bitCast(other);
         const res = v1 - v2;
         return .{ .x = res[0], .y = res[1], .z = res[2] };
     }
 
     pub fn mul(self: Vec3, s: f32) Vec3 {
-        const v1 = @Vector(4, f32){ self.x, self.y, self.z, 0 };
+        const v1: @Vector(4, f32) = @bitCast(self);
         const v_s = @as(@Vector(4, f32), @splat(s));
         const res = v1 * v_s;
         return .{ .x = res[0], .y = res[1], .z = res[2] };
     }
 
     pub fn dot(self: Vec3, other: Vec3) f32 {
-        const v1 = @Vector(4, f32){ self.x, self.y, self.z, 0 };
-        const v2 = @Vector(4, f32){ other.x, other.y, other.z, 0 };
-        const mul_res = v1 * v2;
+        const v1: @Vector(4, f32) = @bitCast(self);
+        const v2: @Vector(4, f32) = @bitCast(other);
+        // Mask out the w component (padding) to ensure it doesn't affect dot product
+        const mask = @Vector(4, f32){ 1, 1, 1, 0 };
+        const mul_res = v1 * v2 * mask;
         return @reduce(.Add, mul_res);
     }
 
     pub fn cross(self: Vec3, other: Vec3) Vec3 {
         // cross(a, b) = a.yzx * b.zxy - a.zxy * b.yzx
-        const v1 = @Vector(4, f32){ self.x, self.y, self.z, 0 };
-        const v2 = @Vector(4, f32){ other.x, other.y, other.z, 0 };
-        
+        const v1: @Vector(4, f32) = @bitCast(self);
+        const v2: @Vector(4, f32) = @bitCast(other);
+
         // yzx: mask 1, 2, 0, 3
         const v1_yzx = @shuffle(f32, v1, undefined, @Vector(4, i32){ 1, 2, 0, 3 });
         const v2_zxy = @shuffle(f32, v2, undefined, @Vector(4, i32){ 2, 0, 1, 3 });
-        
+
         const v1_zxy = @shuffle(f32, v1, undefined, @Vector(4, i32){ 2, 0, 1, 3 });
         const v2_yzx = @shuffle(f32, v2, undefined, @Vector(4, i32){ 1, 2, 0, 3 });
-        
+
         const res = v1_yzx * v2_zxy - v1_zxy * v2_yzx;
         return .{ .x = res[0], .y = res[1], .z = res[2] };
     }
@@ -177,43 +192,112 @@ pub const Quat = extern struct {
         // z = w1z2 + x1y2 - y1x2 + z1w2
 
         const q2 = @as(@Vector(4, f32), @bitCast(other));
-        
+
         const x1 = @as(@Vector(4, f32), @splat(self.x));
         const y1 = @as(@Vector(4, f32), @splat(self.y));
         const z1 = @as(@Vector(4, f32), @splat(self.z));
         const w1 = @as(@Vector(4, f32), @splat(self.w));
-        
+
         // Term 1: w1 * q2
         var res = w1 * q2;
-        
+
         // Term 2: x1 * (w2, -z2, y2, -x2)
         // q2 is (x2, y2, z2, w2) -> swizzle 3, 2, 1, 0
         var t2 = @shuffle(f32, q2, undefined, @Vector(4, i32){ 3, 2, 1, 0 });
         t2 = t2 * @Vector(4, f32){ 1, -1, 1, -1 };
         res = res + x1 * t2;
-        
+
         // Term 3: y1 * (z2, w2, -x2, -y2)
         // q2 -> swizzle 2, 3, 0, 1
         var t3 = @shuffle(f32, q2, undefined, @Vector(4, i32){ 2, 3, 0, 1 });
         t3 = t3 * @Vector(4, f32){ 1, 1, -1, -1 };
         res = res + y1 * t3;
-        
+
         // Term 4: z1 * (-y2, x2, w2, -z2)
         // q2 -> swizzle 1, 0, 3, 2
         var t4 = @shuffle(f32, q2, undefined, @Vector(4, i32){ 1, 0, 3, 2 });
         t4 = t4 * @Vector(4, f32){ -1, 1, 1, -1 };
         res = res + z1 * t4;
-        
+
         return @bitCast(res);
     }
 
     pub fn toArray(self: Quat) [4]f32 {
         return .{ self.x, self.y, self.z, self.w };
     }
-    
+
     // Add bitcast helper for Quat if needed
     pub fn toVec4(self: Quat) Vec4 {
         return @bitCast(self);
+    }
+
+    pub fn dot(self: Quat, other: Quat) f32 {
+        const v1: @Vector(4, f32) = @bitCast(self);
+        const v2: @Vector(4, f32) = @bitCast(other);
+        return @reduce(.Add, v1 * v2);
+    }
+
+    pub fn normalize(self: Quat) Quat {
+        const len_sq = self.dot(self);
+        if (len_sq > 0) {
+            const len = std.math.sqrt(len_sq);
+            const v: @Vector(4, f32) = @bitCast(self);
+            return @bitCast(v / @as(@Vector(4, f32), @splat(len)));
+        }
+        return self;
+    }
+
+    pub fn conjugate(self: Quat) Quat {
+        return .{ .x = -self.x, .y = -self.y, .z = -self.z, .w = self.w };
+    }
+
+    pub fn fromAxisAngle(axis: Vec3, angle_radians: f32) Quat {
+        const half_angle = angle_radians * 0.5;
+        const s = std.math.sin(half_angle);
+        const c = std.math.cos(half_angle);
+        return .{
+            .x = axis.x * s,
+            .y = axis.y * s,
+            .z = axis.z * s,
+            .w = c,
+        };
+    }
+
+    pub fn slerp(a: Quat, b: Quat, t: f32) Quat {
+        var cos_theta = a.dot(b);
+        var target = b;
+
+        // If dot product is negative, reverse one quaternion to take the shorter path
+        if (cos_theta < 0.0) {
+            target = .{ .x = -b.x, .y = -b.y, .z = -b.z, .w = -b.w };
+            cos_theta = -cos_theta;
+        }
+
+        const DOT_THRESHOLD = 0.9995;
+        if (cos_theta > DOT_THRESHOLD) {
+            // If inputs are very close, use linear interpolation (and normalize)
+            const v_a: @Vector(4, f32) = @bitCast(a);
+            const v_b: @Vector(4, f32) = @bitCast(target);
+            const v_res = v_a + (v_b - v_a) * @as(@Vector(4, f32), @splat(t));
+            const res: Quat = @bitCast(v_res);
+            return res.normalize();
+        }
+
+        const angle = std.math.acos(cos_theta);
+        const sin_angle = std.math.sin(angle);
+        
+        // Avoid division by zero
+        if (std.math.approxEqAbs(f32, sin_angle, 0.0, 1e-6)) {
+             return a;
+        }
+
+        const w1 = std.math.sin((1.0 - t) * angle) / sin_angle;
+        const w2 = std.math.sin(t * angle) / sin_angle;
+
+        const v_a: @Vector(4, f32) = @bitCast(a);
+        const v_b: @Vector(4, f32) = @bitCast(target);
+        
+        return @bitCast(v_a * @as(@Vector(4, f32), @splat(w1)) + v_b * @as(@Vector(4, f32), @splat(w2)));
     }
 };
 
@@ -234,7 +318,7 @@ pub const Mat4 = extern struct {
     // result = self * other
     pub fn mul(self: Mat4, other: Mat4) Mat4 {
         var result = Mat4{ .data = undefined };
-        
+
         // Columns of self (A)
         const a0: @Vector(4, f32) = self.data[0..4].*;
         const a1: @Vector(4, f32) = self.data[4..8].*;
@@ -246,20 +330,20 @@ pub const Mat4 = extern struct {
             // Computing Column i of Result
             // Res_col_i = A * Col_i(B)
             // Res_col_i = B_0i * A_col0 + B_1i * A_col1 + B_2i * A_col2 + B_3i * A_col3
-            
+
             const b_col_offset = i * 4;
             const b_col = other.data[b_col_offset..];
-            
+
             const b0 = @as(@Vector(4, f32), @splat(b_col[0]));
             const b1 = @as(@Vector(4, f32), @splat(b_col[1]));
             const b2 = @as(@Vector(4, f32), @splat(b_col[2]));
             const b3 = @as(@Vector(4, f32), @splat(b_col[3]));
-            
+
             const res_col = a0 * b0 + a1 * b1 + a2 * b2 + a3 * b3;
-            
+
             result.data[b_col_offset..][0..4].* = res_col;
         }
-        
+
         return result;
     }
 
@@ -269,14 +353,14 @@ pub const Mat4 = extern struct {
         const y_splat = @as(@Vector(4, f32), @splat(p.y));
         const z_splat = @as(@Vector(4, f32), @splat(p.z));
         const w_splat = @as(@Vector(4, f32), @splat(1.0));
-        
+
         const col0: @Vector(4, f32) = self.data[0..4].*;
         const col1: @Vector(4, f32) = self.data[4..8].*;
         const col2: @Vector(4, f32) = self.data[8..12].*;
         const col3: @Vector(4, f32) = self.data[12..16].*;
-        
+
         const res = x_splat * col0 + y_splat * col1 + z_splat * col2 + w_splat * col3;
-        
+
         return .{ .x = res[0], .y = res[1], .z = res[2] };
     }
 
@@ -285,13 +369,13 @@ pub const Mat4 = extern struct {
         const x_splat = @as(@Vector(4, f32), @splat(v.x));
         const y_splat = @as(@Vector(4, f32), @splat(v.y));
         const z_splat = @as(@Vector(4, f32), @splat(v.z));
-        
+
         const col0: @Vector(4, f32) = self.data[0..4].*;
         const col1: @Vector(4, f32) = self.data[4..8].*;
         const col2: @Vector(4, f32) = self.data[8..12].*;
-        
+
         const res = x_splat * col0 + y_splat * col1 + z_splat * col2;
-        
+
         return .{ .x = res[0], .y = res[1], .z = res[2] };
     }
 
@@ -384,7 +468,7 @@ pub const Mat4 = extern struct {
         const row2_zxy = @shuffle(f32, row2, undefined, @Vector(4, i32){ 2, 0, 1, 3 });
         const row1_zxy = @shuffle(f32, row1, undefined, @Vector(4, i32){ 2, 0, 1, 3 });
         const row2_yzx = @shuffle(f32, row2, undefined, @Vector(4, i32){ 1, 2, 0, 3 });
-        
+
         const cross_res = row1_yzx * row2_zxy - row1_zxy * row2_yzx;
         const det = @reduce(.Add, row0 * cross_res * mask);
 
@@ -443,19 +527,19 @@ pub const Mat4 = extern struct {
         @memset(&m.data, 0);
 
         const tan_half_fov = std.math.tan(fov_y_radians * 0.5);
-        
+
         m.data[0] = 1.0 / (aspect * tan_half_fov);
         m.data[5] = -1.0 / tan_half_fov; // Flip Y for Vulkan (if convention requires it) - vulkan_renderer uses this
         m.data[10] = z_far / (z_near - z_far);
         m.data[11] = -1.0;
         m.data[14] = (z_near * z_far) / (z_near - z_far);
-        
+
         return m;
     }
 
     pub fn ortho(left: f32, right: f32, bottom: f32, top: f32, z_near: f32, z_far: f32) Mat4 {
         var m = Mat4.identity();
-        
+
         m.data[0] = 2.0 / (right - left);
         m.data[5] = 2.0 / (bottom - top); // Flip Y for Vulkan (top is usually -Y in clip space if Y is down? No, standard Vulkan Y is down)
         // vulkan_shadows uses 2/(top-bottom) then negates m.data[5] in comment, but actually uses 2/(top-bottom).
@@ -463,12 +547,12 @@ pub const Mat4 = extern struct {
         // x: [left, right] -> [-1, 1]
         // y: [top, bottom] -> [-1, 1] (Y down in Vulkan)
         // z: [near, far] -> [0, 1]
-        
+
         m.data[10] = 1.0 / (z_far - z_near);
         m.data[12] = -(right + left) / (right - left);
         m.data[13] = -(bottom + top) / (bottom - top);
         m.data[14] = -z_near / (z_far - z_near);
-        
+
         return m;
     }
 
@@ -493,7 +577,7 @@ pub const Mat4 = extern struct {
         m.data[12] = -s.dot(eye);
         m.data[13] = -u.dot(eye);
         m.data[14] = f.dot(eye);
-        
+
         return m;
     }
 
@@ -590,30 +674,39 @@ pub const Mat4 = extern struct {
 
         const mask0 = @Vector(4, i32){ 0, ~@as(i32, 0), 1, ~@as(i32, 1) };
         const mask1 = @Vector(4, i32){ 2, ~@as(i32, 2), 3, ~@as(i32, 3) };
-        
+
         const tmp0_v = @shuffle(f32, row0, row1, mask0); // 0, 4, 1, 5
         const tmp1_v = @shuffle(f32, row0, row1, mask1); // 2, 6, 3, 7
         const tmp2_v = @shuffle(f32, row2, row3, mask0); // 8, 12, 9, 13
         const tmp3_v = @shuffle(f32, row2, row3, mask1); // 10, 14, 11, 15
-        
+
         // result row0: 0, 4, 8, 12 -> from tmp0_v (0, 4, 1, 5) and tmp2_v (8, 12, 9, 13).
         const res0 = @shuffle(f32, tmp0_v, tmp2_v, @Vector(4, i32){ 0, 1, ~@as(i32, 0), ~@as(i32, 1) });
-        
+
         // result row1: 1, 5, 9, 13 -> from tmp0_v (0, 4, 1, 5) and tmp2_v (8, 12, 9, 13).
         const res1 = @shuffle(f32, tmp0_v, tmp2_v, @Vector(4, i32){ 2, 3, ~@as(i32, 2), ~@as(i32, 3) });
-        
+
         // result row2: 2, 6, 10, 14 -> from tmp1_v (2, 6, 3, 7) and tmp3_v (10, 14, 11, 15).
         const res2 = @shuffle(f32, tmp1_v, tmp3_v, @Vector(4, i32){ 0, 1, ~@as(i32, 0), ~@as(i32, 1) });
-        
+
         // result row3: 3, 7, 11, 15 -> from tmp1_v (2, 6, 3, 7) and tmp3_v (10, 14, 11, 15).
         const res3 = @shuffle(f32, tmp1_v, tmp3_v, @Vector(4, i32){ 2, 3, ~@as(i32, 2), ~@as(i32, 3) });
-        
+
         var result = Mat4{ .data = undefined };
         result.data[0..4].* = res0;
         result.data[4..8].* = res1;
         result.data[8..12].* = res2;
         result.data[12..16].* = res3;
-        
+
         return result;
+    }
+};
+
+pub const Ray = extern struct {
+    origin: Vec3,
+    direction: Vec3,
+
+    pub fn at(self: Ray, t: f32) Vec3 {
+        return self.origin.add(self.direction.mul(t));
     }
 };

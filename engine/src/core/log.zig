@@ -4,7 +4,6 @@ const memory = @import("memory.zig");
 const c = @cImport({
     @cInclude("stdarg.h");
     @cInclude("string.h");
-    @cInclude("stdio.h");
 });
 
 // Manual enum definition matching C
@@ -17,25 +16,8 @@ pub const CardinalLogLevel = enum(c_int) {
     FATAL = 5,
 };
 
-// Manual stdio definitions
-const FILE = opaque {};
-extern fn fopen(filename: [*:0]const u8, mode: [*:0]const u8) ?*FILE;
-extern fn fclose(stream: *FILE) c_int;
-extern fn fprintf(stream: *FILE, format: [*:0]const u8, ...) c_int;
-extern fn printf(format: [*:0]const u8, ...) c_int;
-extern fn fflush(stream: *FILE) c_int;
-extern fn snprintf(s: [*]u8, n: usize, format: [*:0]const u8, ...) c_int;
+// Extern vsnprintf (standard C, but we removed stdio.h)
 extern fn vsnprintf(s: [*]u8, n: usize, format: [*:0]const u8, arg: c.va_list) c_int;
-
-// MSVC specific for stdout/stderr
-extern fn __acrt_iob_func(index: c_uint) *FILE;
-
-fn get_stdout() *FILE {
-    return __acrt_iob_func(1);
-}
-fn get_stderr() *FILE {
-    return __acrt_iob_func(2);
-}
 
 // Global state
 var min_log_level: CardinalLogLevel = .WARN;
@@ -43,9 +25,9 @@ var min_log_level: CardinalLogLevel = .WARN;
 // Sink Interface
 pub const CardinalLogSink = extern struct {
     // Updated signature: added category and json_fields
-    log_func: *const fn(user_data: ?*anyopaque, level: CardinalLogLevel, category: [*:0]const u8, json_fields: ?[*:0]const u8, file: [*:0]const u8, line: c_int, msg: [*:0]const u8) callconv(.c) void,
-    flush_func: ?*const fn(user_data: ?*anyopaque) callconv(.c) void,
-    destroy_func: ?*const fn(user_data: ?*anyopaque) callconv(.c) void,
+    log_func: *const fn (user_data: ?*anyopaque, level: CardinalLogLevel, category: [*:0]const u8, json_fields: ?[*:0]const u8, file: [*:0]const u8, line: c_int, msg: [*:0]const u8) callconv(.c) void,
+    flush_func: ?*const fn (user_data: ?*anyopaque) callconv(.c) void,
+    destroy_func: ?*const fn (user_data: ?*anyopaque) callconv(.c) void,
     user_data: ?*anyopaque,
 };
 
@@ -69,15 +51,26 @@ fn getLevelStr(level: CardinalLogLevel) [:0]const u8 {
 fn console_sink_log(_: ?*anyopaque, level: CardinalLogLevel, category: [*:0]const u8, json_fields: ?[*:0]const u8, file: [*:0]const u8, line: c_int, msg: [*:0]const u8) callconv(.c) void {
     const level_str = getLevelStr(level);
     const use_stderr = @intFromEnum(level) >= @intFromEnum(CardinalLogLevel.ERROR);
-    const stream = if (use_stderr) get_stderr() else get_stdout();
-    
+
+    const file_span = std.mem.span(file);
+    const cat_span = std.mem.span(category);
+    const msg_span = std.mem.span(msg);
+
     // Format: file(line): [LEVEL][CATEGORY] msg {json}
-    _ = fprintf(stream, "%s(%d): [%s][%s] %s", file, line, level_str.ptr, category, msg);
-    
-    if (json_fields) |json| {
-        _ = fprintf(stream, " %s", json);
+    if (use_stderr) {
+        std.debug.print("{s}({d}): [{s}][{s}] {s}", .{ file_span, line, level_str, cat_span, msg_span });
+        if (json_fields) |json| {
+            std.debug.print(" {s}", .{std.mem.span(json)});
+        }
+        std.debug.print("\n", .{});
+    } else {
+        // Use std.debug.print for all output to avoid issues with std.io.getStdOut in some Zig versions/targets
+        std.debug.print("{s}({d}): [{s}][{s}] {s}", .{ file_span, line, level_str, cat_span, msg_span });
+        if (json_fields) |json| {
+            std.debug.print(" {s}", .{std.mem.span(json)});
+        }
+        std.debug.print("\n", .{});
     }
-    _ = fprintf(stream, "\n");
 }
 
 fn console_sink_flush(_: ?*anyopaque) callconv(.c) void {
@@ -103,12 +96,12 @@ fn file_sink_log(user_data: ?*anyopaque, level: CardinalLogLevel, category: [*:0
         const data: *FileSinkData = @ptrCast(@alignCast(ptr));
         const file_obj = std.fs.File{ .handle = data.file_handle };
         const level_str = getLevelStr(level);
-        
+
         var buf: [4096]u8 = undefined;
         var fbs = std.io.fixedBufferStream(&buf);
         const writer = fbs.writer();
 
-        writer.print("{s}({d}): [{s}][{s}] {s}", .{std.mem.span(file), line, level_str, std.mem.span(category), std.mem.span(msg)}) catch return;
+        writer.print("{s}({d}): [{s}][{s}] {s}", .{ std.mem.span(file), line, level_str, std.mem.span(category), std.mem.span(msg) }) catch return;
         if (json_fields) |json| {
             writer.print(" {s}", .{std.mem.span(json)}) catch return;
         }
@@ -121,7 +114,6 @@ fn file_sink_log(user_data: ?*anyopaque, level: CardinalLogLevel, category: [*:0
 fn file_sink_flush(user_data: ?*anyopaque) callconv(.c) void {
     if (user_data) |ptr| {
         const data: *FileSinkData = @ptrCast(@alignCast(ptr));
-        // We can't easily sync a raw handle without std.fs.File.sync, which is available
         const file_obj = std.fs.File{ .handle = data.file_handle };
         file_obj.sync() catch {};
     }
@@ -173,7 +165,7 @@ pub export fn cardinal_log_init() void {
 
 pub export fn cardinal_log_init_with_level(level: CardinalLogLevel) void {
     min_log_level = level;
-    
+
     g_sinks_mutex.lock();
     defer g_sinks_mutex.unlock();
 
@@ -194,7 +186,7 @@ pub export fn cardinal_log_init_with_level(level: CardinalLogLevel) void {
     g_initialized = true;
 
     const msg = "==== Cardinal Log Start ====";
-    
+
     // Initial log
     // We can't use standard log machinery easily here without a dummy file/line
     // So we just iterate sinks manually
@@ -211,7 +203,7 @@ pub export fn cardinal_log_shutdown() void {
     defer g_sinks_mutex.unlock();
 
     const msg = "==== Cardinal Log End ====";
-     for (g_sinks) |s| {
+    for (g_sinks) |s| {
         if (s) |sink| {
             sink.log_func(sink.user_data, .INFO, "GENERAL", null, "log.zig", 0, msg);
             if (sink.flush_func) |flush| flush(sink.user_data);
@@ -260,7 +252,7 @@ pub export fn cardinal_log_parse_level(level_str_input: ?[*:0]const u8) Cardinal
 
 pub export fn cardinal_log_add_sink(sink_ptr: ?*CardinalLogSink) void {
     if (sink_ptr == null) return;
-    
+
     g_sinks_mutex.lock();
     defer g_sinks_mutex.unlock();
 
@@ -294,7 +286,7 @@ pub export fn cardinal_log_remove_sink(sink_ptr: ?*CardinalLogSink) void {
 
 pub export fn cardinal_log_destroy_sink(sink_ptr: ?*CardinalLogSink) void {
     if (sink_ptr == null) return;
-    
+
     // Remove if attached
     cardinal_log_remove_sink(sink_ptr);
 
@@ -355,7 +347,7 @@ fn log_internal(comptime level: CardinalLogLevel, category: []const u8, fields: 
     if (@TypeOf(fields) != void and @TypeOf(fields) != @TypeOf(null)) {
         var fbs = std.io.fixedBufferStream(&json_buffer);
         fbs.writer().print("{f}", .{std.json.fmt(fields, .{})}) catch {};
-        
+
         // Manually write null terminator if space allows
         if (fbs.pos < json_buffer.len) {
             json_buffer[fbs.pos] = 0;
@@ -378,13 +370,13 @@ fn log_internal(comptime level: CardinalLogLevel, category: []const u8, fields: 
             break;
         }
     }
-    
+
     // Convert slice to null-terminated for C interop
     var filename_buf: [256]u8 = undefined;
     const len = @min(final_filename_slice.len, 255);
     @memcpy(filename_buf[0..len], final_filename_slice[0..len]);
     filename_buf[len] = 0;
-    
+
     g_sinks_mutex.lock();
     defer g_sinks_mutex.unlock();
 

@@ -35,12 +35,8 @@ var g_registry_initialized: bool = false;
 
 // Simple hash function for string identifiers
 fn hash_string(str: [*:0]const u8) u32 {
-    var hash: u32 = 5381;
-    var ptr = str;
-    while (ptr[0] != 0) : (ptr += 1) {
-        hash = ((hash << 5) +% hash) +% ptr[0]; // hash * 33 + c
-    }
-    return hash;
+    const slice = std.mem.span(str);
+    return @truncate(std.hash.Wyhash.hash(0, slice));
 }
 
 // Find a resource in the registry by identifier

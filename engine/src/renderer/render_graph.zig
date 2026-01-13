@@ -645,9 +645,24 @@ pub const RenderGraph = struct {
                              res.allocation = pooled.allocation;
                              res.memory = pooled.memory;
                          } else {
-                              // Buffer allocation (implement if needed, for now placeholder as before)
-                              // TODO: Implement actual buffer allocation
-                          }
+                            var bufferInfo = std.mem.zeroes(c.VkBufferCreateInfo);
+                            bufferInfo.sType = c.VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO;
+                            bufferInfo.size = buf_desc.size;
+                            bufferInfo.usage = buf_desc.usage;
+                            bufferInfo.sharingMode = c.VK_SHARING_MODE_EXCLUSIVE;
+
+                            var buffer: c.VkBuffer = null;
+                            var memory: c.VkDeviceMemory = null;
+                            var allocation: c.VmaAllocation = null;
+
+                            if (vk_allocator.vk_allocator_allocate_buffer(&state.allocator, &bufferInfo, &buffer, &memory, &allocation, c.VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, false, null)) {
+                                res.handle = .{ .Buffer = buffer };
+                                res.allocation = allocation;
+                                res.memory = memory;
+                            } else {
+                                log.cardinal_log_error("RG: Failed to allocate transient buffer {d}", .{res.id});
+                            }
+                        }
                      }
                  }
             }

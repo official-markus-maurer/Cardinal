@@ -12,6 +12,7 @@ const events = @import("events.zig");
 const input = @import("input.zig");
 const stack_allocator = @import("stack_allocator.zig");
 const texture_loader = @import("../assets/texture_loader.zig");
+const loader_mod = @import("../assets/loader.zig");
 const mesh_loader = @import("../assets/mesh_loader.zig");
 const vulkan_renderer = @import("../renderer/vulkan_renderer.zig");
 const vulkan_types = @import("../renderer/vulkan_types.zig");
@@ -199,6 +200,12 @@ pub const CardinalEngine = struct {
             log.cardinal_log_error("Failed to initialize async loader system", .{});
             return error.AsyncLoaderInitFailed;
         }
+
+        // Register loaders
+        const texture_load_fn: *const fn (?[*]const u8, ?*anyopaque) callconv(.c) ?*ref_counting.CardinalRefCountedResource = @ptrCast(&texture_loader.texture_load_with_ref_counting);
+        async_loader.cardinal_async_register_texture_loader(texture_load_fn);
+        async_loader.cardinal_async_register_scene_loader(loader_mod.cardinal_scene_load);
+
         self.async_loader_initialized = true;
         log.cardinal_log_info("Async loader system initialized successfully", .{});
 

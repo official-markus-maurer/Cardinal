@@ -931,6 +931,11 @@ pub fn vk_texture_manager_update_textures(manager: *types.VulkanTextureManager) 
             memory.cardinal_free(mem_alloc, ptr);
         }
 
+        // If no sync manager, wait for the batch to complete before processing cleanups
+        if (submit_success and manager.syncManager == null) {
+            _ = c.vkQueueWaitIdle(manager.graphicsQueue);
+        }
+
         // Process results for all completed tasks
         var iter = completed_list;
         while (iter) |ctx| {
@@ -942,10 +947,8 @@ pub fn vk_texture_manager_update_textures(manager: *types.VulkanTextureManager) 
                 if (manager.syncManager != null) {
                     vk_texture_utils.add_staging_buffer_cleanup(manager.allocator, ctx.staging_buffer, ctx.staging_memory, ctx.staging_allocation, manager.device, signal_val);
                 } else {
-                    // If no sync manager, we wait idle (already handled partially by submit logic blocking? No.)
-                    // TODO: Use a sync manager for this.
-                    // But if not, we leak or block.
-                    // Assuming sync manager exists for now as per original code.
+                    // We have already waited idle above, so we can free immediately.
+                    vk_allocator.vk_allocator_free_buffer(manager.allocator, ctx.staging_buffer, ctx.staging_allocation);
                 }
 
                 // Update managed texture
@@ -1010,14 +1013,19 @@ pub fn vk_texture_manager_update_textures(manager: *types.VulkanTextureManager) 
         }
 
         // Cleanup the primary command buffer used for the batch
-        if (primary_cmd != null) {
-            if (submit_success and manager.syncManager != null) {
-                vk_texture_utils.add_command_buffer_cleanup(primary_cmd, manager.commandPool, manager.device, signal_val);
-            } else {
-                c.vkFreeCommandBuffers(manager.device, manager.commandPool, 1, &primary_cmd);
+            if (primary_cmd != null) {
+                if (submit_success) {
+                    if (manager.syncManager != null) {
+                        vk_texture_utils.add_command_buffer_cleanup(primary_cmd, manager.commandPool, manager.device, signal_val);
+                    } else {
+                         // We already waited idle if syncManager is null
+                        c.vkFreeCommandBuffers(manager.device, manager.commandPool, 1, &primary_cmd);
+                    }
+                } else {
+                    c.vkFreeCommandBuffers(manager.device, manager.commandPool, 1, &primary_cmd);
+                }
             }
         }
-    }
 
     // 2. Check for new updates
     var i: u32 = 1;

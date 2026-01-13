@@ -67,7 +67,7 @@ pub fn unsubscribe(event_id: EventId, callback: EventHandler) void {
 }
 
 pub fn publish(event_id: EventId, data: ?*const anyopaque) void {
-    // TODO: Use a stack buffer for small listener counts to avoid allocation
+    // Use a stack buffer for small listener counts to avoid allocation
     const MAX_STACK_LISTENERS = 64;
     var stack_buffer: [MAX_STACK_LISTENERS]Listener = undefined;
 

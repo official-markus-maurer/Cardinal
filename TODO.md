@@ -9,19 +9,32 @@ This document outlines the roadmap for the Cardinal Engine, focusing on robustne
     - Switch to a **Fiber-based** architecture (Naughty Dog / GDC 2015 style).
     - Enable finer-grained concurrency.
     - Avoid blocking worker threads during dependency waits.
+- [ ] **Concurrency Safety**: Replace volatile flags with `std.atomic.Value` in `vulkan_texture_manager.zig` to ensure thread safety across architectures.
+- [ ] **Allocator Optimization**: Implement `resize` in `CardinalAllocator` wrapper (`memory.zig`) to support in-place reallocation.
+- [ ] **Pool Allocator**: Implement `reset` in `PoolAllocator` (`pool_allocator.zig`) to allow efficient reuse of all blocks.
+- [ ] **Editor Memory**: Use `ArenaAllocator` for temporary string allocations in `editor_layer.zig` (e.g. filenames) to reduce manual `free` calls.
+
+### Maintenance & Code Quality
+- [x] **Stale TODOs**: Audit codebase for stale TODO comments (e.g. `events.zig`, `render_graph.zig`) and implement or remove them.
+- [x] **Error Handling**: Ensure `VulkanTextureManager` handles null `SyncManager` gracefully to prevent crashes or resource leaks.
+- [x] **Portability**: Refactor `log.zig` to use Zig standard library I/O instead of C `stdio.h` to reduce dependencies and improve cross-platform support.
+- [x] **Windowing**: Replace platform-specific mutexes in `window.zig` with `std.Thread.Mutex`.
+- [x] **Ref Counting**: Use `std.hash.Wyhash` instead of custom hash function in `ref_counting.zig`.
+- [x] **Internal APIs**: Remove unnecessary `callconv(.c)` from internal Zig functions in `model_manager.zig` and other managers.
+- [x] **Async Loader**: Decouple `async_loader.zig` from hardcoded C externs by using function pointers or interfaces.
+- [x] **Job System Integration**: Fully migrate `AsyncLoader` to use `JobSystem`'s dependency management, removing legacy dependency graph structures.
 
 ### Math Library (Optimization)
-- [ ] **Missing Types**: Implement `Mat3` (for normal matrices) and `Ray` structs.
-- [ ] **Missing Operations**: Implement `Mat4`, `Quat` (quaternions), `lerp`, `slerp`, `reflect` in `math.zig`.
-
-### Code Cleanup & Refactoring
-- [x] **Code Deduplication**:
-    - [x] **Handle System**: Implement a generic `HandleManager` to centralize safe handle generation (index + generation) instead of ad-hoc logic per resource type.
+- [x] **SIMD Alignment**: Optimize `Vec3` by adding padding (16-byte alignment) to enable efficient SIMD loads/stores similar to `Vec4`.
+- [x] **Missing Types**: Implement `Mat3` (for normal matrices) and `Ray` structs.
+- [x] **Missing Operations**: Implement `Mat4`, `Quat` (quaternions), `lerp`, `slerp`, `reflect` in `math.zig`.
 
 ## 2. Data & Assets
 
 ### Asset System
 - [ ] **Asset Database**: Implement a metadata system (`.meta` files) to store import settings and GUIDs for assets, decoupling file paths from asset identity.
+- [ ] **Texture Loading**: Support HDR texture loading directly from memory in `texture_loader.zig`.
+- [ ] **Thread Safety**: Fix double-checked locking in `gltf_loader.zig` (texture cache) using `std.once`.
 - [ ] **Hot-Reloading**: Generic hot-reloading support for all asset types.
 - [ ] **Shader Compilation**: Integrate runtime shader compilation (e.g., shaderc or slang) to compile `.glsl` to `.spv` on the fly.
 
@@ -32,15 +45,20 @@ This document outlines the roadmap for the Cardinal Engine, focusing on robustne
 - [ ] **Scene Serialization**: Robust save/load system using a schema-based format (JSON/Binary) that supports versioning.
 
 ## 3. Rendering (Vulkan)
-
-### Lighting & Materials
 - [ ] **IBL**: Implement Environment Maps, Irradiance Maps, and Prefiltered Specular maps.
-- [x] **Advanced Shadows**: Cascade Shadow Maps (CSM) refinement and Soft Shadows (PCF/PCSS). (Implemented Rotated Poisson Disk PCF)
-- [x] **Emissive Strength**: Support `KHR_materials_emissive_strength`.
 - [ ] **Ambient Occlusion**: SSAO or HBAO.
+- [ ] **Swapchain**: Improve `choose_surface_format` in `vulkan_swapchain.zig` to expose HDR configuration via `config.zig` instead of just environment variables.
+- [ ] **Command Buffers**: Rename `secondary_buffers` in `vulkan_commands.zig` to `alternate_primary_buffers` to avoid confusion with actual secondary command buffers.
+- [ ] **Pipeline Cache**: Add header/checksum validation for `pipeline_cache.bin` in `vulkan_pipeline_manager.zig` to prevent loading corrupted caches.
+- [ ] **Memory Tracking**: Remove unused debug wrappers in `vulkan_allocator.zig` or integrate them with a proper memory tracking system.
+- [ ] **Compute**: Remove unnecessary `callconv(.c)` export from internal `vk_compute` functions in `vulkan_compute.zig`.
+- [ ] **Shadows**: Implement light culling or better light selection in `vulkan_shadows.zig` (currently picks the first directional light).
 
 ### Optimization
 - [ ] **GPU Culling**: Implement GPU-driven frustum and occlusion culling using Mesh Shaders or Compute Shaders.
+- [x] **Render Graph**: Implement transient buffer allocation fallback in `render_graph.zig` (currently a placeholder TODO).
+- [ ] **Descriptor Management**: Fix mismatch in `vulkan_pbr.zig` between logged max sets (1000) and actual allocation (`MAX_FRAMES_IN_FLIGHT`).
+- [ ] **Descriptor Builder**: Optimize `DescriptorBuilder` in `vulkan_descriptor_manager.zig` to reuse the binding array instead of reallocating.
 
 ### Debugging
 - [ ] **Timeline Debug Config**: Make `VULKAN_TIMELINE_DEBUG_MAX_EVENTS` configurable or dynamic (`vulkan_timeline_types.zig`).
@@ -74,6 +92,7 @@ This document outlines the roadmap for the Cardinal Engine, focusing on robustne
 ### UI/UX
 - [ ] **Asset Browser**: Thumbnail generation and drag-and-drop support.
 - [ ] **Inspector**: Generic reflection-based property editing for components.
+- [ ] **Transform Editing**: Support full TRS (Translate, Rotate, Scale) editing in `inspector.zig` instead of simplified uniform scale.
 - [ ] **Multiple Windows**: Support for detaching editor panels (ImGui Viewports).
 - [ ] **Grid & Axes**: Visual reference guides.
 
@@ -83,5 +102,6 @@ This document outlines the roadmap for the Cardinal Engine, focusing on robustne
 - [ ] **Gamepad Support**: Full gamepad polling and vibration support.
 
 ### OS Integration
+- [ ] **Cross-Platform Build**: Abstract platform-specific sources in `build.zig` to support Linux and macOS.
 - [ ] **High DPI**: Proper scaling support for high-resolution displays.
 - [ ] **File System**: Abstract file system operations to support virtual paths (`asset://textures/logo.png`).
