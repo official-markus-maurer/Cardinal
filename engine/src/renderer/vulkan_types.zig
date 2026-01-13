@@ -784,6 +784,8 @@ pub const VulkanPipelines = extern struct {
     compute_descriptor_pool: c.VkDescriptorPool,
     compute_command_pool: c.VkCommandPool,
     compute_command_buffer: c.VkCommandBuffer,
+
+    pipeline_cache: c.VkPipelineCache,
 };
 
 pub const VulkanPBRPipeline = extern struct {

@@ -17,11 +17,11 @@ This document outlines the roadmap for the Cardinal Engine, focusing on robustne
 ### Code Cleanup & Refactoring
 - [ ] **Code Deduplication**:
     - [ ] **Handle System**: Implement a generic `HandleManager` to centralize safe handle generation (index + generation) instead of ad-hoc logic per resource type.
-- [ ] **Vulkan Optimization**:
-    - [ ] Verify `CardinalLight` and `CardinalCamera` struct alignment for UBO compatibility (std140).
-    - [ ] **Pipeline Cache**: Implement persistence (save/load `VkPipelineCache` to disk) to improve startup times (`vulkan_pipeline.zig`/`vulkan_pso.zig`).
+- [x] **Vulkan Optimization**:
+    - [x] Verify `CardinalLight` and `CardinalCamera` struct alignment for UBO compatibility (std140). (Handled via manual packing in PBR pipeline)
+    - [x] **Pipeline Cache**: Implement persistence (save/load `VkPipelineCache` to disk) to improve startup times (`vulkan_pipeline.zig`/`vulkan_pso.zig`).
 - [ ] **Texture Loader**:
-    - [ ] Verify and address "not yet ported" C header dependencies.
+    - [x] Verify and address "not yet ported" C header dependencies. (Replaced manual C declarations with Zig module import in `texture_loader.zig`)
 
 ## 2. Data & Assets
 
@@ -39,19 +39,13 @@ This document outlines the roadmap for the Cardinal Engine, focusing on robustne
 ## 3. Rendering (Vulkan)
 
 ### Core Architecture
-- [ ] **Pipeline Caching**: Implement `VkPipelineCache` serialization.
+- [x] **Pipeline Caching**: Implement `VkPipelineCache` serialization.
 
 ### Lighting & Materials
 - [ ] **IBL**: Implement Environment Maps, Irradiance Maps, and Prefiltered Specular maps.
 - [ ] **Advanced Shadows**: Cascade Shadow Maps (CSM) refinement and Soft Shadows (PCF/PCSS).
 - [ ] **Emissive Strength**: Support `KHR_materials_emissive_strength`.
 - [ ] **Ambient Occlusion**: SSAO or HBAO.
-
-### Post-Processing
-- [x] **Render Graph Integration**: Implement post-processing effects as `RenderPass` nodes.
-    - [x] **Render Graph Integration**: Implemented basic RenderPass system and integrated into `vulkan_renderer.zig`.
-- [x] **Effects**: Bloom, Tone Mapping (ACES/Filmic), Gamma Correction, Chromatic Aberration.
-    - [x] **Tone Mapping & Gamma**: Implemented ACES Tone Mapping and Gamma Correction in `postprocess.frag`.
 
 ### Optimization
 - [ ] **GPU Culling**: Implement GPU-driven frustum and occlusion culling using Mesh Shaders or Compute Shaders.

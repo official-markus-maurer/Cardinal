@@ -12,3 +12,6 @@ cardinal_debug.log
 # Zig build artifacts
 .zig-cache/
 zig-out/
+
+# Others
+pipeline_cache.bin

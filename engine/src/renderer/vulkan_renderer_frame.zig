@@ -137,7 +137,7 @@ fn vk_recover_from_device_loss(s: *types.VulkanState) bool {
 
     // Recreate PBR pipeline if it was enabled
     if (success and stored_scene != null) {
-        if (!vk_pbr.vk_pbr_pipeline_create(&s.pipelines.pbr_pipeline, s.context.device, s.context.physical_device, s.swapchain.format, s.swapchain.depth_format, s.commands.pools.?[0], s.context.graphics_queue, &s.allocator, s, null)) {
+        if (!vk_pbr.vk_pbr_pipeline_create(&s.pipelines.pbr_pipeline, s.context.device, s.context.physical_device, s.swapchain.format, s.swapchain.depth_format, s.commands.pools.?[0], s.context.graphics_queue, &s.allocator, s, s.pipelines.pipeline_cache)) {
             failure_point = "PBR pipeline";
             success = false;
         } else {

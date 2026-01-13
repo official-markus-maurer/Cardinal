@@ -3,6 +3,7 @@ const log = @import("../core/log.zig");
 const types = @import("vulkan_types.zig");
 const vk_allocator = @import("vulkan_allocator.zig");
 const c = @import("vulkan_c.zig").c;
+const memory = @import("../core/memory.zig");
 
 const pipe_log = log.ScopedLogger("PIPELINE");
 
@@ -98,9 +99,78 @@ fn destroy_depth_resources(s: *types.VulkanState) void {
     s.swapchain.depth_layout_initialized = false;
 }
 
+fn create_pipeline_cache(s: *types.VulkanState) bool {
+    var cache_info = std.mem.zeroes(c.VkPipelineCacheCreateInfo);
+    cache_info.sType = c.VK_STRUCTURE_TYPE_PIPELINE_CACHE_CREATE_INFO;
+
+    // Try to load cache
+    var file_buffer: []u8 = &[_]u8{};
+    const file = std.fs.cwd().openFile("pipeline_cache.bin", .{}) catch null;
+    if (file) |f| {
+        defer f.close();
+        if (f.stat()) |stat| {
+            if (stat.size > 0) {
+                const alloc = memory.cardinal_get_allocator_for_category(.RENDERER).as_allocator();
+                if (alloc.alloc(u8, stat.size)) |buf| {
+                    if (f.readAll(buf)) |read_bytes| {
+                        if (read_bytes == stat.size) {
+                            cache_info.initialDataSize = stat.size;
+                            cache_info.pInitialData = buf.ptr;
+                            file_buffer = buf;
+                            pipe_log.info("Loading pipeline cache ({d} bytes)", .{stat.size});
+                        }
+                    } else |_| {}
+                } else |_| {}
+            }
+        } else |_| {}
+    }
+    defer if (file_buffer.len > 0) {
+        const alloc = memory.cardinal_get_allocator_for_category(.RENDERER).as_allocator();
+        alloc.free(file_buffer);
+    };
+
+    if (c.vkCreatePipelineCache(s.context.device, &cache_info, null, &s.pipelines.pipeline_cache) != c.VK_SUCCESS) {
+        pipe_log.err("Failed to create pipeline cache", .{});
+        return false;
+    }
+    return true;
+}
+
+fn destroy_pipeline_cache(s: *types.VulkanState) void {
+    if (s.pipelines.pipeline_cache != null) {
+        // Save cache
+        var size: usize = 0;
+        if (c.vkGetPipelineCacheData(s.context.device, s.pipelines.pipeline_cache, &size, null) == c.VK_SUCCESS) {
+            if (size > 0) {
+                const alloc = memory.cardinal_get_allocator_for_category(.RENDERER).as_allocator();
+                if (alloc.alloc(u8, size)) |buf| {
+                    defer alloc.free(buf);
+                    if (c.vkGetPipelineCacheData(s.context.device, s.pipelines.pipeline_cache, &size, buf.ptr) == c.VK_SUCCESS) {
+                        if (std.fs.cwd().createFile("pipeline_cache.bin", .{})) |file| {
+                            defer file.close();
+                            _ = file.writeAll(buf) catch {};
+                            pipe_log.info("Saved pipeline cache ({d} bytes)", .{size});
+                        } else |_| {
+                            pipe_log.warn("Failed to create cache file", .{});
+                        }
+                    }
+                } else |_| {}
+            }
+        }
+
+        c.vkDestroyPipelineCache(s.context.device, s.pipelines.pipeline_cache, null);
+        s.pipelines.pipeline_cache = null;
+    }
+}
+
 pub export fn vk_create_pipeline(s: ?*types.VulkanState) callconv(.c) bool {
     if (s == null) return false;
     const vs = s.?;
+
+    // Create Pipeline Cache
+    if (!create_pipeline_cache(vs)) {
+        return false;
+    }
 
     log.cardinal_log_info("pipeline: create depth resources", .{});
     if (!create_depth_resources(vs)) {
@@ -122,6 +192,7 @@ pub export fn vk_destroy_pipeline(s: ?*types.VulkanState) callconv(.c) void {
         // Continue with destruction anyway to prevent resource leaks
     }
 
+    destroy_pipeline_cache(vs);
     destroy_depth_resources(vs);
 
     log.cardinal_log_info("pipeline: pipeline resources destroyed", .{});

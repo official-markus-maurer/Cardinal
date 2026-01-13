@@ -3,25 +3,9 @@ const memory = @import("../core/memory.zig");
 const log = @import("../core/log.zig");
 const ref_counting = @import("../core/ref_counting.zig");
 const async_loader = @import("../core/async_loader.zig");
+const resource_state = @import("../core/resource_state.zig");
 
 const texture_log = log.ScopedLogger("TEXTURE");
-
-// Import C functions from resource_state.h (not yet ported)
-const CardinalResourceState = enum(c_int) {
-    UNKNOWN = 0,
-    LOADING = 1,
-    LOADED = 2,
-    ERROR = 3,
-};
-
-// Opaque types for C pointers
-const CardinalResourceStateTracker = opaque {};
-
-extern fn cardinal_resource_state_get(identifier: [*]const u8) CardinalResourceState;
-extern fn cardinal_resource_state_wait_for(identifier: [*]const u8, state: CardinalResourceState, timeout_ms: u32) bool;
-extern fn cardinal_resource_state_register(resource: *ref_counting.CardinalRefCountedResource) ?*CardinalResourceStateTracker;
-extern fn cardinal_resource_state_try_acquire_loading(identifier: [*]const u8, thread_id: u32) bool;
-extern fn cardinal_resource_state_set(identifier: [*]const u8, state: CardinalResourceState, thread_id: u32) void;
 
 // Import STB functions
 extern fn stbi_load(filename: [*]const u8, x: *c_int, y: *c_int, channels_in_file: *c_int, desired_channels: c_int) ?[*]u8;
@@ -278,10 +262,10 @@ fn texture_load_async_func(task: ?*async_loader.CardinalAsyncTask, user_data: ?*
         const existing_data = @as(*TextureData, @ptrCast(@alignCast(resource.resource.?)));
         existing_data.* = tex_data;
         
-        cardinal_resource_state_set(resource.identifier.?, .LOADED, loading_thread_id);
+        _ = resource_state.cardinal_resource_state_set(resource.identifier.?, .LOADED, loading_thread_id);
         return true;
     } else {
-        cardinal_resource_state_set(resource.identifier.?, .ERROR, loading_thread_id);
+        _ = resource_state.cardinal_resource_state_set(resource.identifier.?, .ERROR, loading_thread_id);
         return false;
     }
 }
@@ -614,7 +598,7 @@ pub export fn texture_load_with_ref_counting(filepath: ?[*]const u8, out_texture
 
     texture_log.debug("Texture load request: {s} (raw: {s})", .{path, raw_path});
 
-    const state = cardinal_resource_state_get(path_c);
+    const state = resource_state.cardinal_resource_state_get(path_c);
 
     if (state == .LOADED) {
         if (texture_cache_get(path)) |res| {
@@ -642,7 +626,7 @@ pub export fn texture_load_with_ref_counting(filepath: ?[*]const u8, out_texture
         }
         
         // Short wait to handle race condition where registration is finishing
-        if (cardinal_resource_state_wait_for(path_c, .LOADED, 10)) {
+        if (resource_state.cardinal_resource_state_wait_for(path_c, .LOADED, 10)) {
              if (texture_cache_get(path)) |res| {
                 const existing: *TextureData = @ptrCast(@alignCast(res.resource.?));
                 out_texture.?.* = existing.*;
@@ -670,7 +654,7 @@ pub export fn texture_load_with_ref_counting(filepath: ?[*]const u8, out_texture
     const temp_ref_opt = ref_counting.cardinal_ref_create(path_c_id, tex_data, @sizeOf(TextureData), texture_data_destructor);
 
     if (temp_ref_opt) |temp_ref| {
-        if (cardinal_resource_state_register(temp_ref) == null) {
+        if (resource_state.cardinal_resource_state_register(temp_ref) == null) {
             // Recursion here is dangerous if register fails repeatedly. 
             // Instead of recursive call, return null to avoid stack overflow.
             log.cardinal_log_error("[TEXTURE] Failed to register resource state for {s}", .{path});
@@ -683,7 +667,7 @@ pub export fn texture_load_with_ref_counting(filepath: ?[*]const u8, out_texture
         _ = texture_cache_put(path, temp_ref);
         
         // Set state to LOADING
-        if (cardinal_resource_state_try_acquire_loading(temp_ref.identifier.?, thread_id)) {
+        if (resource_state.cardinal_resource_state_try_acquire_loading(temp_ref.identifier.?, thread_id)) {
             // Create context for async task
             const ctx_ptr = memory.cardinal_alloc(allocator, @sizeOf(TextureLoadContext));
             if (ctx_ptr) |cp| {
@@ -702,7 +686,7 @@ pub export fn texture_load_with_ref_counting(filepath: ?[*]const u8, out_texture
                     memory.cardinal_free(allocator, ctx);
                     // Release the ref we added for the task
                     _ = @atomicRmw(u32, &temp_ref.ref_count, .Sub, 1, .seq_cst);
-                    cardinal_resource_state_set(temp_ref.identifier.?, .ERROR, thread_id);
+                    _ = resource_state.cardinal_resource_state_set(temp_ref.identifier.?, .ERROR, thread_id);
                 }
             } else {
                     // Fallback: synchronous load or error? 
@@ -711,7 +695,7 @@ pub export fn texture_load_with_ref_counting(filepath: ?[*]const u8, out_texture
                     // We should probably revert state or load synchronously.
                     // For now, let's just log error and set to ERROR.
                     log.cardinal_log_error("[TEXTURE] Failed to allocate context for async load", .{});
-                    cardinal_resource_state_set(temp_ref.identifier.?, .ERROR, thread_id);
+                    _ = resource_state.cardinal_resource_state_set(temp_ref.identifier.?, .ERROR, thread_id);
             }
         }
         
