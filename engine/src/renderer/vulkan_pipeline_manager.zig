@@ -80,6 +80,14 @@ fn get_state(manager: *VulkanPipelineManager) *types.VulkanState {
     return manager.vulkan_state.?;
 }
 
+const CACHE_HEADER_MAGIC: u32 = 0xCAD10001;
+
+const CacheHeader = extern struct {
+    magic: u32,
+    checksum: u64,
+    size: u64,
+};
+
 // Internal helper functions
 fn create_pipeline_cache(manager: *VulkanPipelineManager) bool {
     var cache_info = std.mem.zeroes(c.VkPipelineCacheCreateInfo);
@@ -93,18 +101,69 @@ fn create_pipeline_cache(manager: *VulkanPipelineManager) bool {
     if (file) |f| {
         defer f.close();
         if (f.stat()) |stat| {
-            if (stat.size > 0) {
-                const alloc = memory.cardinal_get_allocator_for_category(.RENDERER).as_allocator();
-                if (alloc.alloc(u8, stat.size)) |buf| {
-                    if (f.readAll(buf)) |read_bytes| {
-                        if (read_bytes == stat.size) {
-                            cache_info.initialDataSize = stat.size;
-                            cache_info.pInitialData = buf.ptr;
-                            file_buffer = buf;
-                            log.cardinal_log_info("[PIPELINE_MANAGER] Loading pipeline cache ({d} bytes)", .{stat.size});
-                        }
-                    } else |_| {}
-                } else |_| {}
+            if (stat.size > @sizeOf(CacheHeader)) {
+                // Read header first
+                var header: CacheHeader = undefined;
+                const header_read = f.readAll(std.mem.asBytes(&header)) catch 0;
+
+                if (header_read == @sizeOf(CacheHeader)) {
+                    // 1. Validate Header
+                    var valid = true;
+                    const data_size = stat.size - @sizeOf(CacheHeader);
+
+                    if (header.magic != CACHE_HEADER_MAGIC) {
+                        log.cardinal_log_warn("[PIPELINE_MANAGER] Cache header magic mismatch", .{});
+                        valid = false;
+                    } else if (header.size != data_size) {
+                        log.cardinal_log_warn("[PIPELINE_MANAGER] Cache size mismatch", .{});
+                        valid = false;
+                    }
+
+                    if (valid) {
+                        const alloc = memory.cardinal_get_allocator_for_category(.RENDERER).as_allocator();
+                        if (alloc.alloc(u8, data_size)) |buf| {
+                            if (f.readAll(buf)) |read_bytes| {
+                                if (read_bytes == data_size) {
+                                    // 2. Validate Checksum
+                                    const checksum = std.hash.Wyhash.hash(0, buf);
+                                    if (checksum != header.checksum) {
+                                        log.cardinal_log_warn("[PIPELINE_MANAGER] Cache checksum mismatch", .{});
+                                        valid = false;
+                                    }
+
+                                    // 3. Validate Vulkan Device UUID
+                                    if (valid and buf.len >= 16 + c.VK_UUID_SIZE) {
+                                        var props: c.VkPhysicalDeviceProperties = undefined;
+                                        c.vkGetPhysicalDeviceProperties(s.context.physical_device, &props);
+
+                                        const cache_vendor_id = std.mem.readInt(u32, buf[8..12], .little);
+                                        const cache_device_id = std.mem.readInt(u32, buf[12..16], .little);
+                                        const cache_uuid = buf.ptr + 16;
+
+                                        if (cache_vendor_id != props.vendorID or cache_device_id != props.deviceID) {
+                                            log.cardinal_log_warn("[PIPELINE_MANAGER] Cache device mismatch (Vendor/Device ID)", .{});
+                                            valid = false;
+                                        } else if (!std.mem.eql(u8, cache_uuid[0..c.VK_UUID_SIZE], props.pipelineCacheUUID[0..c.VK_UUID_SIZE])) {
+                                            log.cardinal_log_warn("[PIPELINE_MANAGER] Cache UUID mismatch", .{});
+                                            valid = false;
+                                        }
+                                    }
+
+                                    if (valid) {
+                                        cache_info.initialDataSize = buf.len;
+                                        cache_info.pInitialData = buf.ptr;
+                                        file_buffer = buf;
+                                        log.cardinal_log_info("[PIPELINE_MANAGER] Loading pipeline cache ({d} bytes)", .{buf.len});
+                                    } else {
+                                        alloc.free(buf);
+                                    }
+                                }
+                            } else |_| {
+                                alloc.free(buf);
+                            }
+                        } else |_| {}
+                    }
+                }
             }
         } else |_| {}
     }
@@ -134,6 +193,16 @@ fn destroy_pipeline_cache(manager: *VulkanPipelineManager) void {
                     if (c.vkGetPipelineCacheData(s.context.device, manager.pipeline_cache, &size, buf.ptr) == c.VK_SUCCESS) {
                         if (std.fs.cwd().createFile("pipeline_cache.bin", .{})) |file| {
                             defer file.close();
+
+                            // Calculate checksum
+                            const checksum = std.hash.Wyhash.hash(0, buf);
+                            const header = CacheHeader{
+                                .magic = CACHE_HEADER_MAGIC,
+                                .checksum = checksum,
+                                .size = size,
+                            };
+
+                            _ = file.writeAll(std.mem.asBytes(&header)) catch {};
                             _ = file.writeAll(buf) catch {};
                             log.cardinal_log_info("[PIPELINE_MANAGER] Saved pipeline cache ({d} bytes)", .{size});
                         } else |_| {

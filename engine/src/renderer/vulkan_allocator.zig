@@ -10,39 +10,6 @@ const vma_log = log.ScopedLogger("VMA");
 // (VMA copies them, but just to be safe and avoid stack issues)
 var g_vulkan_functions: c.VmaVulkanFunctions = undefined;
 
-// Debug wrapper for vkAllocateMemory
-var real_vkAllocateMemory: c.PFN_vkAllocateMemory = null;
-var real_vkFreeMemory: c.PFN_vkFreeMemory = null;
-var real_vkBindBufferMemory: c.PFN_vkBindBufferMemory = null;
-
-fn debug_vkAllocateMemory(device: c.VkDevice, pAllocateInfo: ?*const c.VkMemoryAllocateInfo, pAllocator: ?*const c.VkAllocationCallbacks, pMemory: ?*c.VkDeviceMemory) callconv(.c) c.VkResult {
-    if (real_vkAllocateMemory) |func| {
-        const res = func(device, pAllocateInfo, pAllocator, pMemory);
-        if (res == c.VK_SUCCESS and pMemory != null) {
-            vma_log.warn("vkAllocateMemory success, handle: {any}", .{pMemory.?.*});
-        } else {
-            vma_log.err("vkAllocateMemory failed: {d}", .{res});
-        }
-        return res;
-    }
-    return c.VK_ERROR_INITIALIZATION_FAILED;
-}
-
-fn debug_vkFreeMemory(device: c.VkDevice, memory: c.VkDeviceMemory, pAllocator: ?*const c.VkAllocationCallbacks) callconv(.c) void {
-    if (real_vkFreeMemory) |func| {
-        vma_log.warn("vkFreeMemory called, handle: {any}", .{memory});
-        func(device, memory, pAllocator);
-    }
-}
-
-fn debug_vkBindBufferMemory(device: c.VkDevice, buffer: c.VkBuffer, memory: c.VkDeviceMemory, memoryOffset: c.VkDeviceSize) callconv(.c) c.VkResult {
-    if (real_vkBindBufferMemory) |func| {
-        vma_log.warn("vkBindBufferMemory called. Buffer: {any}, Memory: {any}, Offset: {d}", .{ buffer, memory, memoryOffset });
-        return func(device, buffer, memory, memoryOffset);
-    }
-    return c.VK_ERROR_INITIALIZATION_FAILED;
-}
-
 pub export fn vk_allocator_init(alloc: ?*types.VulkanAllocator, instance: c.VkInstance, phys: c.VkPhysicalDevice, dev: c.VkDevice, bufReq: c.PFN_vkGetDeviceBufferMemoryRequirements, imgReq: c.PFN_vkGetDeviceImageMemoryRequirements, bufDevAddr: c.PFN_vkGetBufferDeviceAddress, bufReqKHR: c.PFN_vkGetDeviceBufferMemoryRequirementsKHR, imgReqKHR: c.PFN_vkGetDeviceImageMemoryRequirementsKHR, supports_maintenance8: bool) callconv(.c) bool {
     if (alloc == null or phys == null or dev == null or instance == null) {
         vma_log.err("Invalid parameters for allocator init", .{});
@@ -74,19 +41,16 @@ pub export fn vk_allocator_init(alloc: ?*types.VulkanAllocator, instance: c.VkIn
     if (g_vulkan_functions.vkGetPhysicalDeviceMemoryProperties2KHR == null) vma_log.err("Failed to load vkGetPhysicalDeviceMemoryProperties2", .{});
 
     // Device functions
-    // real_vkAllocateMemory = @ptrCast(c.vkGetDeviceProcAddr(dev, "vkAllocateMemory"));
-    g_vulkan_functions.vkAllocateMemory = @ptrCast(c.vkGetDeviceProcAddr(dev, "vkAllocateMemory")); // debug_vkAllocateMemory;
+    g_vulkan_functions.vkAllocateMemory = @ptrCast(c.vkGetDeviceProcAddr(dev, "vkAllocateMemory"));
 
-    // real_vkFreeMemory = @ptrCast(c.vkGetDeviceProcAddr(dev, "vkFreeMemory"));
-    g_vulkan_functions.vkFreeMemory = @ptrCast(c.vkGetDeviceProcAddr(dev, "vkFreeMemory")); // debug_vkFreeMemory;
+    g_vulkan_functions.vkFreeMemory = @ptrCast(c.vkGetDeviceProcAddr(dev, "vkFreeMemory"));
 
     g_vulkan_functions.vkMapMemory = @ptrCast(c.vkGetDeviceProcAddr(dev, "vkMapMemory"));
     g_vulkan_functions.vkUnmapMemory = @ptrCast(c.vkGetDeviceProcAddr(dev, "vkUnmapMemory"));
     g_vulkan_functions.vkFlushMappedMemoryRanges = @ptrCast(c.vkGetDeviceProcAddr(dev, "vkFlushMappedMemoryRanges"));
     g_vulkan_functions.vkInvalidateMappedMemoryRanges = @ptrCast(c.vkGetDeviceProcAddr(dev, "vkInvalidateMappedMemoryRanges"));
 
-    // real_vkBindBufferMemory = @ptrCast(c.vkGetDeviceProcAddr(dev, "vkBindBufferMemory"));
-    g_vulkan_functions.vkBindBufferMemory = @ptrCast(c.vkGetDeviceProcAddr(dev, "vkBindBufferMemory")); // debug_vkBindBufferMemory;
+    g_vulkan_functions.vkBindBufferMemory = @ptrCast(c.vkGetDeviceProcAddr(dev, "vkBindBufferMemory"));
 
     // IMPORTANT: VMA requires vkBindBufferMemory2KHR if VK_KHR_bind_memory2 is enabled, 
     // or if the Vulkan version is >= 1.1. 

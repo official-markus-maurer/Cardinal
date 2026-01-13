@@ -55,7 +55,7 @@
         "_comment_system": "Renderer system limits.",
         "max_lights": 128,
         "max_frames_in_flight": 3,
-        "prefer_hdr": true,
+        "prefer_hdr": false,
         "timeline_max_ahead": 1000000
     },
     "window_title": "Cardinal Editor"

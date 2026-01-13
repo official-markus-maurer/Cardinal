@@ -34,6 +34,10 @@ pub const DescriptorBuilder = struct {
         self.bindings.deinit(self.allocator);
     }
 
+    pub fn clear(self: *DescriptorBuilder) void {
+        self.bindings.clearRetainingCapacity();
+    }
+
     pub fn add_binding(self: *DescriptorBuilder, binding: u32, descriptor_type: c.VkDescriptorType, count: u32, stage_flags: c.VkShaderStageFlags) !void {
         try self.bindings.append(self.allocator, .{
             .binding = binding,

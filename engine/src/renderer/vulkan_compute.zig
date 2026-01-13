@@ -6,7 +6,7 @@ const types = @import("vulkan_types.zig");
 const c = @import("vulkan_c.zig").c;
 const shader_utils = @import("util/vulkan_shader_utils.zig");
 
-pub export fn vk_compute_init(vulkan_state: ?*types.VulkanState) callconv(.c) bool {
+pub fn vk_compute_init(vulkan_state: ?*types.VulkanState) bool {
     if (vulkan_state == null) {
         log.cardinal_log_error("[COMPUTE] Invalid vulkan state for compute initialization", .{});
         return false;
@@ -16,7 +16,7 @@ pub export fn vk_compute_init(vulkan_state: ?*types.VulkanState) callconv(.c) bo
     return true;
 }
 
-pub export fn vk_compute_cleanup(vulkan_state: ?*types.VulkanState) callconv(.c) void {
+pub fn vk_compute_cleanup(vulkan_state: ?*types.VulkanState) void {
     if (vulkan_state == null) {
         return;
     }
@@ -24,7 +24,7 @@ pub export fn vk_compute_cleanup(vulkan_state: ?*types.VulkanState) callconv(.c)
     log.cardinal_log_info("[COMPUTE] Compute shader support cleaned up", .{});
 }
 
-pub export fn vk_compute_validate_config(vulkan_state: ?*types.VulkanState, config: ?*const types.ComputePipelineConfig) callconv(.c) bool {
+pub fn vk_compute_validate_config(vulkan_state: ?*types.VulkanState, config: ?*const types.ComputePipelineConfig) bool {
     if (vulkan_state == null or config == null) {
         log.cardinal_log_error("[COMPUTE] Invalid parameters for config validation", .{});
         return false;
@@ -64,7 +64,7 @@ pub export fn vk_compute_validate_config(vulkan_state: ?*types.VulkanState, conf
     return true;
 }
 
-pub export fn vk_compute_create_descriptor_layout(vulkan_state: ?*types.VulkanState, bindings: ?*const c.VkDescriptorSetLayoutBinding, binding_count: u32, layout: ?*c.VkDescriptorSetLayout) callconv(.c) bool {
+pub fn vk_compute_create_descriptor_layout(vulkan_state: ?*types.VulkanState, bindings: ?*const c.VkDescriptorSetLayoutBinding, binding_count: u32, layout: ?*c.VkDescriptorSetLayout) bool {
     if (vulkan_state == null or bindings == null or binding_count == 0 or layout == null) {
         log.cardinal_log_error("[COMPUTE] Invalid parameters for descriptor layout creation", .{});
         return false;
@@ -85,7 +85,7 @@ pub export fn vk_compute_create_descriptor_layout(vulkan_state: ?*types.VulkanSt
     return true;
 }
 
-pub export fn vk_compute_create_pipeline(vulkan_state: ?*types.VulkanState, config: ?*const types.ComputePipelineConfig, pipeline: ?*types.ComputePipeline) callconv(.c) bool {
+pub fn vk_compute_create_pipeline(vulkan_state: ?*types.VulkanState, config: ?*const types.ComputePipelineConfig, pipeline: ?*types.ComputePipeline) bool {
     if (vulkan_state == null or config == null or pipeline == null) {
         log.cardinal_log_error("[COMPUTE] Invalid parameters for compute pipeline creation", .{});
         return false;
@@ -303,7 +303,7 @@ pub export fn vk_compute_create_pipeline(vulkan_state: ?*types.VulkanState, conf
     return true;
 }
 
-pub export fn vk_compute_destroy_pipeline(vulkan_state: ?*types.VulkanState, pipeline: ?*types.ComputePipeline) callconv(.c) void {
+pub fn vk_compute_destroy_pipeline(vulkan_state: ?*types.VulkanState, pipeline: ?*types.ComputePipeline) void {
     if (vulkan_state == null or pipeline == null or !pipeline.?.initialized) {
         return;
     }
@@ -331,7 +331,7 @@ pub export fn vk_compute_destroy_pipeline(vulkan_state: ?*types.VulkanState, pip
     log.cardinal_log_debug("[COMPUTE] Destroyed compute pipeline", .{});
 }
 
-pub export fn vk_compute_dispatch(cmd_buffer: c.VkCommandBuffer, pipeline: ?*const types.ComputePipeline, dispatch_info: ?*const types.ComputeDispatchInfo) callconv(.c) void {
+pub fn vk_compute_dispatch(cmd_buffer: c.VkCommandBuffer, pipeline: ?*const types.ComputePipeline, dispatch_info: ?*const types.ComputeDispatchInfo) void {
     if (cmd_buffer == null or pipeline == null or dispatch_info == null or !pipeline.?.initialized) {
         log.cardinal_log_error("[COMPUTE] Invalid parameters for compute dispatch", .{});
         return;
@@ -356,7 +356,7 @@ pub export fn vk_compute_dispatch(cmd_buffer: c.VkCommandBuffer, pipeline: ?*con
     c.vkCmdDispatch(cmd_buffer, info.group_count_x, info.group_count_y, info.group_count_z);
 }
 
-pub export fn vk_compute_memory_barrier(cmd_buffer: c.VkCommandBuffer, barrier: ?*const types.ComputeMemoryBarrier) callconv(.c) void {
+pub fn vk_compute_memory_barrier(cmd_buffer: c.VkCommandBuffer, barrier: ?*const types.ComputeMemoryBarrier) void {
     if (cmd_buffer == null or barrier == null) {
         log.cardinal_log_error("[COMPUTE] Invalid parameters for memory barrier", .{});
         return;
@@ -371,7 +371,7 @@ pub export fn vk_compute_memory_barrier(cmd_buffer: c.VkCommandBuffer, barrier: 
     c.vkCmdPipelineBarrier(cmd_buffer, b.src_stage_mask, b.dst_stage_mask, 0, 1, &memory_barrier, 0, null, 0, null);
 }
 
-pub export fn vk_compute_calculate_workgroups(total_work_items: u32, local_size: u32) callconv(.c) u32 {
+pub fn vk_compute_calculate_workgroups(total_work_items: u32, local_size: u32) u32 {
     if (local_size == 0) {
         log.cardinal_log_error("[COMPUTE] Local size cannot be zero", .{});
         return 0;

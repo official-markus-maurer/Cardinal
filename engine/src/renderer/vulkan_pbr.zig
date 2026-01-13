@@ -57,7 +57,7 @@ fn create_pbr_descriptor_manager(pipeline: *types.VulkanPBRPipeline, device: c.V
     }
 
     const prefer_descriptor_buffers = true;
-    log.cardinal_log_info("Creating PBR descriptor manager with {d} max sets (prefer buffers: {s})", .{ 1000, if (prefer_descriptor_buffers) "true" else "false" });
+    log.cardinal_log_info("Creating PBR descriptor manager with {d} max sets (prefer buffers: {s})", .{ types.MAX_FRAMES_IN_FLIGHT, if (prefer_descriptor_buffers) "true" else "false" });
 
     if (!builder.build(pipeline.descriptorManager.?, device, @ptrCast(allocator), @ptrCast(vulkan_state), types.MAX_FRAMES_IN_FLIGHT, prefer_descriptor_buffers)) {
         log.cardinal_log_error("Failed to create descriptor manager!", .{});

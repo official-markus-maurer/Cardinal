@@ -48,19 +48,26 @@ pub fn vk_shadow_render(s: *types.VulkanState, cmd: c.VkCommandBuffer) void {
         return;
     }
 
-    // Find first directional light
+    // Find best directional light (highest intensity)
     var lightDir: math.Vec3 = math.Vec3.zero();
+    var bestIntensity: f32 = -1.0;
     var found = false;
     var i: u32 = 0;
     while (i < lighting.count) : (i += 1) {
         const l_type = lighting.lights[i].lightDirection[3];
         // Tolerance check for float equality
         if (l_type > -0.1 and l_type < 0.1) { // Directional (approx 0.0)
-            lightDir = math.Vec3{ .x = lighting.lights[i].lightDirection[0], .y = lighting.lights[i].lightDirection[1], .z = lighting.lights[i].lightDirection[2] };
-            found = true;
-            log.cardinal_log_info("Shadow: Found directional light {d}: ({d:.2}, {d:.2}, {d:.2})", .{ i, lightDir.x, lightDir.y, lightDir.z });
-            break;
+            const intensity = lighting.lights[i].lightColor[3];
+            if (intensity > bestIntensity) {
+                bestIntensity = intensity;
+                lightDir = math.Vec3{ .x = lighting.lights[i].lightDirection[0], .y = lighting.lights[i].lightDirection[1], .z = lighting.lights[i].lightDirection[2] };
+                found = true;
+            }
         }
+    }
+
+    if (found) {
+        log.cardinal_log_info("Shadow: Using directional light with intensity {d:.2}: ({d:.2}, {d:.2}, {d:.2})", .{ bestIntensity, lightDir.x, lightDir.y, lightDir.z });
     }
 
     if (!found) {

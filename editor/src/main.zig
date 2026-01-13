@@ -39,9 +39,10 @@ pub fn main() !u8 {
     defer log.cardinal_log_shutdown();
     defer memory.cardinal_memory_shutdown();
 
-    const config = EditorConfig{
+    var config = EditorConfig{
         .window_title = "Cardinal Editor",
     };
+    config.renderer.prefer_hdr = false;
 
     var app = EditorApp.create(allocator, config) catch |err| {
         log.cardinal_log_error("Failed to initialize editor application: {}", .{err});
