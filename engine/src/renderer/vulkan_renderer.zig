@@ -892,7 +892,7 @@ pub export fn cardinal_renderer_set_camera(renderer: ?*types.CardinalRenderer, c
     var ubo = std.mem.zeroes(types.PBRUniformBufferObject);
 
     // Create model matrix (identity for now)
-    transform.cardinal_matrix_identity(&ubo.model);
+    // transform.cardinal_matrix_identity(&ubo.model);
 
     // Create view matrix
     create_view_matrix(@ptrCast(&cam.position), @ptrCast(&cam.target), @ptrCast(&cam.up), &ubo.view);
@@ -907,6 +907,9 @@ pub export fn cardinal_renderer_set_camera(renderer: ?*types.CardinalRenderer, c
 
     // Set debug flags from pipeline state
     ubo.debugFlags = s.pipelines.pbr_pipeline.debug_flags;
+    
+    // Set ambient color from config
+    ubo.ambientColor = s.config.pbr_ambient_color;
 
     // Update the stored UBO state
     s.pipelines.pbr_pipeline.current_ubo = ubo;
@@ -973,11 +976,11 @@ pub export fn cardinal_renderer_set_lighting(renderer: ?*types.CardinalRenderer,
     lighting.lights[0].lightColor[2] = l.color.z;
     lighting.lights[0].lightColor[3] = l.intensity;
 
-    // Set ambient color and range
-    lighting.lights[0].ambientColor[0] = l.ambient.x;
-    lighting.lights[0].ambientColor[1] = l.ambient.y;
-    lighting.lights[0].ambientColor[2] = l.ambient.z;
-    lighting.lights[0].ambientColor[3] = l.range;
+    // Set light params
+    lighting.lights[0].params[0] = l.range;
+    lighting.lights[0].params[1] = @cos(l.inner_cone);
+    lighting.lights[0].params[2] = @cos(l.outer_cone);
+    lighting.lights[0].params[3] = 0.0;
 
     // Update stored lighting state
     s.pipelines.pbr_pipeline.current_lighting = lighting;

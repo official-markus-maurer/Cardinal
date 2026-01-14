@@ -289,6 +289,8 @@ pub fn init(win_ptr: *window.CardinalWindow, rnd_ptr: *types.CardinalRenderer) b
         .intensity = 1.0,
         .ambient = .{ .x = 0.1, .y = 0.1, .z = 0.1 },
         .range = 100.0,
+        .inner_cone = 0.0,
+        .outer_cone = 0.0,
         .type = 0, // Directional
     };
 
@@ -747,7 +749,7 @@ pub fn process_pending_uploads() void {
                 pbr_lights[light_count].lightDirection = .{ state.light.direction.x, state.light.direction.y, state.light.direction.z, 0.0 };
                 pbr_lights[light_count].lightPosition = .{ state.light.position.x, state.light.position.y, state.light.position.z, 0.0 };
                 pbr_lights[light_count].lightColor = .{ state.light.color.x, state.light.color.y, state.light.color.z, state.light.intensity };
-                pbr_lights[light_count].ambientColor = .{ state.light.ambient.x, state.light.ambient.y, state.light.ambient.z, state.light.range };
+                pbr_lights[light_count].params = .{ state.light.range, @cos(state.light.inner_cone), @cos(state.light.outer_cone), 0.0 };
                 light_count += 1;
             }
 
@@ -779,7 +781,8 @@ pub fn process_pending_uploads() void {
                     pbr_lights[light_count].lightDirection = .{ dir.x, dir.y, dir.z, @floatFromInt(@intFromEnum(sl.type)) };
                     pbr_lights[light_count].lightPosition = .{ pos.x, pos.y, pos.z, 0.0 };
                     pbr_lights[light_count].lightColor = .{ sl.color[0], sl.color[1], sl.color[2], intensity };
-                    pbr_lights[light_count].ambientColor = .{ 0.0, 0.0, 0.0, sl.range }; // No ambient for additional lights
+                    // Set params (range, inner, outer)
+                    pbr_lights[light_count].params = .{ sl.range, @cos(sl.inner_cone_angle), @cos(sl.outer_cone_angle), 0.0 };
 
                     light_count += 1;
                 }

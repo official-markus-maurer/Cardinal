@@ -271,7 +271,8 @@ fn initialize_pbr_defaults(pipeline: *types.VulkanPBRPipeline, config: *const ty
     defaultLighting.count = 1;
     defaultLighting.lights[0].lightDirection = config.pbr_default_light_direction;
     defaultLighting.lights[0].lightColor = config.pbr_default_light_color;
-    defaultLighting.lights[0].ambientColor = config.pbr_ambient_color;
+    defaultLighting.lights[0].params[0] = config.pbr_ambient_color[3]; // Range from config
+    // Cones are 0.0 by default (Directional)
 
     var i: u32 = 0;
     while (i < types.MAX_FRAMES_IN_FLIGHT) : (i += 1) {
@@ -394,9 +395,11 @@ fn update_pbr_descriptor_sets(pipeline: *types.VulkanPBRPipeline, vulkan_state: 
             return false;
         }
 
-        // Update placeholder textures for fixed bindings 1-5
-        var b: u32 = 1;
-        while (b <= 5) : (b += 1) {
+        // Update placeholder textures for fixed bindings 1-5 (Albedo, Normal, MetallicRoughness, AO, Emissive)
+        const BINDING_ALBEDO = 1;
+        const BINDING_EMISSIVE = 5;
+        var b: u32 = BINDING_ALBEDO;
+        while (b <= BINDING_EMISSIVE) : (b += 1) {
             const placeholderView = if (pipeline.textureManager.?.textureCount > 0)
                 pipeline.textureManager.?.textures.?[0].view
             else

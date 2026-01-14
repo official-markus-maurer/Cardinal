@@ -29,15 +29,9 @@ This document outlines the roadmap for the Cardinal Engine, focusing on robustne
 ## 3. Rendering (Vulkan)
 - [ ] **IBL**: Implement Environment Maps, Irradiance Maps, and Prefiltered Specular maps.
 - [ ] **Ambient Occlusion**: SSAO or HBAO.
-- [x] **Pipeline Cache**: Add header/checksum validation for `pipeline_cache.bin` in `vulkan_pipeline_manager.zig` to prevent loading corrupted caches.
-- [x] **Memory Tracking**: Remove unused debug wrappers in `vulkan_allocator.zig` or integrate them with a proper memory tracking system.
-- [x] **Compute**: Remove unnecessary `callconv(.c)` export from internal `vk_compute` functions in `vulkan_compute.zig`.
-- [x] **Shadows**: Implement light culling or better light selection in `vulkan_shadows.zig` (currently picks the first directional light).
 
 ### Optimization
 - [ ] **GPU Culling**: Implement GPU-driven frustum and occlusion culling using Mesh Shaders or Compute Shaders.
-- [x] **Descriptor Management**: Fix mismatch in `vulkan_pbr.zig` between logged max sets (1000) and actual allocation (`MAX_FRAMES_IN_FLIGHT`).
-- [x] **Descriptor Builder**: Optimize `DescriptorBuilder` in `vulkan_descriptor_manager.zig` to reuse the binding array instead of reallocating.
 
 ### Debugging
 - [ ] **Timeline Debug Config**: Make `VULKAN_TIMELINE_DEBUG_MAX_EVENTS` configurable or dynamic (`vulkan_timeline_types.zig`).

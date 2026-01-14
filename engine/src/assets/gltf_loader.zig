@@ -317,7 +317,10 @@ fn load_texture_with_fallback(original_uri: [*:0]const u8, base_path: [*:0]const
         ref_resource = try_texture_path(std.mem.span(original_uri), &tex_data);
         if (ref_resource != null) {
             cache_texture_path(base, uri, uri);
-            const path = std.fmt.bufPrintZ(&texture_path_buf, "{s}", .{uri}) catch unreachable;
+            const path = std.fmt.bufPrintZ(&texture_path_buf, "{s}", .{uri}) catch |err| {
+                gltf_log.err("Failed to format absolute texture path '{s}': {s}", .{ uri, @errorName(err) });
+                return create_fallback_texture(out_texture);
+            };
             // Success logic duplicated below, maybe use a label block
             out_texture.data = tex_data.data;
             out_texture.width = tex_data.width;

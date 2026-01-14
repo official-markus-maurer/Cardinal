@@ -9,10 +9,10 @@ layout(location = 3) in vec3 fragViewPos;
 layout(location = 4) in vec2 fragTexCoord1;
 
 layout(binding = 0) uniform UniformBufferObject {
-    mat4 model;
     mat4 view;
     mat4 proj;
     vec4 viewPosAndDebug; // xyz = viewPos, w = debugFlags
+    vec4 ambientColor;
 } ubo;
 
 // Output color
@@ -61,7 +61,7 @@ layout(push_constant, std430) uniform PushConstants {
 struct Light {
     vec4 lightDirection; // w = type (0=Directional, 1=Point, 2=Spot)
     vec4 lightColor;     // w = intensity
-    vec4 ambientColor;   // w = range
+    vec4 params;         // x = range, y = innerConeCos, z = outerConeCos
     vec4 lightPosition;  // w = unused
 };
 
@@ -445,22 +445,21 @@ void main() {
     
     // Reflectance equation
     vec3 Lo = vec3(0.0);
-    vec3 totalAmbient = vec3(0.0);
     
     for (uint i = 0; i < lighting.lightCount; i++) {
         Light light = lighting.lights[i];
 
-        // Directional light calculation
+        // Light calculation
         vec3 L;
         float attenuation = 1.0;
         int type = int(light.lightDirection.w);
 
-        if (type == 1) { // Point Light
+        if (type != 0) { // Point (1) or Spot (2)
             vec3 L_unnormalized = light.lightPosition.xyz - fragWorldPos;
             float dist = length(L_unnormalized);
             L = normalize(L_unnormalized);
             
-            float range = light.ambientColor.w;
+            float range = light.params.x;
             if (range > 0.0) {
                 float distSq = dist * dist;
                 // Standard inverse square falloff
@@ -474,7 +473,16 @@ void main() {
                  // If range is 0 or infinite, just inverse square
                  attenuation = 1.0 / max(dist * dist, 0.01);
             }
-        } else { // Directional (default)
+
+            if (type == 2) { // Spot Light
+                 float theta = dot(L, normalize(-light.lightDirection.xyz));
+                 float innerCos = light.params.y;
+                 float outerCos = light.params.z;
+                 float epsilon = innerCos - outerCos;
+                 float spotIntensity = clamp((theta - outerCos) / max(epsilon, 0.001), 0.0, 1.0);
+                 attenuation *= spotIntensity;
+            }
+        } else { // Directional
             L = normalize(-light.lightDirection.xyz);
         }
 
@@ -503,13 +511,10 @@ void main() {
         
         float NdotL = max(dot(N, L), 0.0);
         Lo += (kD * albedo / PI + specular) * radiance * NdotL * (1.0 - shadow);
-        
-        // Accumulate ambient
-        totalAmbient += light.ambientColor.rgb;
     }
     
     // Ambient lighting
-    vec3 ambient = totalAmbient * albedo * ao;
+    vec3 ambient = ubo.ambientColor.rgb * albedo * ao;
     
     // Combine lighting components
     vec3 color = ambient + Lo + emissive;

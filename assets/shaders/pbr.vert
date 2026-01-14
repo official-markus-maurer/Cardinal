@@ -10,10 +10,10 @@ layout(location = 5) in vec2 inTexCoord1;
 
 // Uniform buffer for camera and transform data
 layout(binding = 0) uniform UniformBufferObject {
-    mat4 model;
     mat4 view;
     mat4 proj;
     vec4 viewPosAndDebug; // xyz = viewPos, w = debugFlags
+    vec4 ambientColor;
 } ubo;
 
 // Bone matrices uniform buffer for skeletal animation

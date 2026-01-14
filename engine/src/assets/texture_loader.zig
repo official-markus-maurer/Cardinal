@@ -15,10 +15,14 @@ extern fn stbi_set_flip_vertically_on_load(flag_true_if_should_flip: c_int) void
 extern fn stbi_is_hdr(filename: [*]const u8) c_int;
 extern fn stbi_loadf(filename: [*]const u8, x: *c_int, y: *c_int, channels_in_file: *c_int, desired_channels: c_int) ?[*]f32;
 extern fn stbi_load_from_memory(buffer: [*]const u8, len: c_int, x: *c_int, y: *c_int, channels_in_file: *c_int, desired_channels: c_int) ?[*]u8;
+extern fn stbi_is_hdr_from_memory(buffer: [*]const u8, len: c_int) c_int;
+extern fn stbi_loadf_from_memory(buffer: [*]const u8, len: c_int, x: *c_int, y: *c_int, channels_in_file: *c_int, desired_channels: c_int) ?[*]f32;
 
 // TinyEXR functions
 extern fn LoadEXR(out_rgba: *?[*]f32, width: *c_int, height: *c_int, filename: [*]const u8, err: *?[*]const u8) c_int;
 extern fn IsEXR(filename: [*]const u8) c_int;
+extern fn LoadEXRFromMemory(out_rgba: *?[*]f32, width: *c_int, height: *c_int, memory: [*]const u8, size: usize, err: *?[*]const u8) c_int;
+extern fn IsEXRFromMemory(memory: [*]const u8, size: usize) c_int;
 extern fn FreeEXRErrorMessage(msg: [*]const u8) void;
 
 // System calls for thread ID
@@ -85,104 +89,95 @@ var g_placeholder_texture = TextureData{
 };
 
 pub export fn texture_load_from_disk(path: [*:0]const u8, out_texture: *TextureData) bool {
-    const filename_c = path;
-    
-    // Check for EXR explicitly first
-    const span = std.mem.span(filename_c);
-    const has_exr_extension = (span.len > 4 and std.ascii.eqlIgnoreCase(span[span.len - 4 ..], ".exr"));
+    const filename_slice = std.mem.span(path);
 
-    var is_exr = false;
-    if (has_exr_extension) {
-        is_exr = (IsEXR(filename_c) != 0);
-        
-        // Fallback: If IsEXR failed, but extension suggests EXR, check magic bytes manually.
-        // This handles cases where IsEXR might fail on valid files (e.g. path encoding issues).
-        if (!is_exr) {
-            // Try to open and check magic bytes: 0x76, 0x2f, 0x31, 0x01
-            if (std.fs.cwd().openFile(span, .{})) |file| {
-                defer file.close();
-                var magic: [4]u8 = undefined;
-                if (file.read(&magic)) |read_bytes| {
-                    if (read_bytes == 4 and magic[0] == 0x76 and magic[1] == 0x2f and magic[2] == 0x31 and magic[3] == 0x01) {
-                        log.cardinal_log_warn("IsEXR returned false but magic bytes match. Forcing EXR path for: {s}", .{span});
-                        is_exr = true;
-                    }
-                } else |_| {}
-            } else |_| {}
-        }
-    }
+    // Use std.fs to read file into memory (handles Unicode paths on Windows)
+    const allocator = memory.cardinal_get_allocator_for_category(.ASSETS).as_allocator();
 
-    // If not EXR, check if STB thinks it's HDR (e.g. .hdr file)
-    const is_stb_hdr = if (!is_exr) (stbi_is_hdr(filename_c) != 0) else false;
-    
-    const is_hdr = is_exr or is_stb_hdr;
+    // Handle absolute vs relative paths
+    var file_buffer: []u8 = undefined;
 
-    var w: c_int = 0;
-    var h: c_int = 0;
-    var c: c_int = 0;
-    var data: ?*anyopaque = null;
-
-    if (is_exr) {
-        var exr_data: ?[*]f32 = null;
-        var err: ?[*]const u8 = null;
-        const res = LoadEXR(&exr_data, &w, &h, filename_c, &err);
-        if (res != 0) {
-            if (err) |e| {
-                const e_span = @as([*:0]const u8, @ptrCast(e));
-                log.cardinal_log_error("[CRITICAL] TinyEXR failed: {s}", .{std.mem.span(e_span)});
-                FreeEXRErrorMessage(e);
-            }
+    if (std.fs.path.isAbsolute(filename_slice)) {
+        var file = std.fs.openFileAbsolute(filename_slice, .{}) catch |err| {
+            log.cardinal_log_error("[CRITICAL] Failed to open file '{s}': {s}", .{ filename_slice, @errorName(err) });
             return false;
-        }
-        data = @ptrCast(exr_data);
-        c = 4; // TinyEXR loads as RGBA
-    } else if (is_stb_hdr) {
-         const ptr = stbi_loadf(filename_c, &w, &h, &c, 4);
-         data = @ptrCast(ptr);
+        };
+        defer file.close();
+
+        file_buffer = file.readToEndAlloc(allocator, 4 * 1024 * 1024 * 1024) catch |err| {
+            log.cardinal_log_error("[CRITICAL] Failed to read file '{s}': {s}", .{ filename_slice, @errorName(err) });
+            return false;
+        };
     } else {
-        data = stbi_load(filename_c, &w, &h, &c, 4);
+        file_buffer = std.fs.cwd().readFileAlloc(allocator, filename_slice, 4 * 1024 * 1024 * 1024) catch |err| {
+            log.cardinal_log_error("[CRITICAL] Failed to read file '{s}': {s}", .{ filename_slice, @errorName(err) });
+            return false;
+        };
     }
+    defer allocator.free(file_buffer);
 
-    if (data == null) {
-        const reason = stbi_failure_reason();
-        log.cardinal_log_error("[CRITICAL] Failed to load image: {s}", .{std.mem.span(path)});
-        if (reason) |r| {
-            const r_c: [*:0]const u8 = @ptrCast(r);
-            log.cardinal_log_error("[CRITICAL] STB failure reason: {s}", .{std.mem.span(r_c)});
-        }
-        return false;
-    }
-
-    if (w <= 0 or h <= 0 or w > 16384 or h > 16384) {
-        log.cardinal_log_error("[CRITICAL] Invalid dimensions: {d}x{d} for {s}", .{ w, h, std.mem.span(path) });
-        stbi_image_free(data);
-        return false;
-    }
-
-    out_texture.data = @ptrCast(data);
-    out_texture.width = @intCast(w);
-    out_texture.height = @intCast(h);
-    out_texture.channels = 4;
-    out_texture.is_hdr = is_hdr;
-
-    return true;
+    return texture_load_from_memory(file_buffer.ptr, file_buffer.len, out_texture);
 }
 
 pub export fn texture_load_from_memory(data: [*]const u8, size: usize, out_texture: *TextureData) bool {
     var w: c_int = 0;
     var h: c_int = 0;
     var c: c_int = 0;
-    
-    // stbi_load_from_memory returns *u8, but we cast to ?*anyopaque for generic handling if needed,
-    // though here we know it's u8 data.
-    const pixels = stbi_load_from_memory(data, @intCast(size), &w, &h, &c, 4);
-    
+
+    // Check for EXR
+    // Note: IsEXRFromMemory seems to return true for PNGs/others in some cases, so we enforce the magic byte check.
+    // Magic bytes: 0x76, 0x2f, 0x31, 0x01
+    var is_exr = false;
+    if (size >= 4) {
+        if (data[0] == 0x76 and data[1] == 0x2f and data[2] == 0x31 and data[3] == 0x01) {
+            is_exr = true;
+        }
+    }
+
+    if (is_exr) {
+        var exr_data: ?[*]f32 = null;
+        var err: ?[*]const u8 = null;
+        const res = LoadEXRFromMemory(&exr_data, &w, &h, data, size, &err);
+
+        if (res != 0) {
+            if (err) |e| {
+                const e_span = @as([*:0]const u8, @ptrCast(e));
+                log.cardinal_log_error("[CRITICAL] TinyEXR memory load failed: {s}", .{std.mem.span(e_span)});
+                FreeEXRErrorMessage(e);
+            }
+            return false;
+        }
+
+        if (w <= 0 or h <= 0 or w > 16384 or h > 16384) {
+            log.cardinal_log_error("[CRITICAL] Invalid dimensions from EXR memory load: {d}x{d}", .{ w, h });
+            if (exr_data) |ptr| std.c.free(ptr); // TinyEXR uses malloc/free
+            return false;
+        }
+
+        out_texture.data = @ptrCast(exr_data);
+        out_texture.width = @intCast(w);
+        out_texture.height = @intCast(h);
+        out_texture.channels = 4;
+        out_texture.is_hdr = true;
+        return true;
+    }
+
+    // Check for HDR (stb)
+    const is_hdr = (stbi_is_hdr_from_memory(data, @intCast(size)) != 0);
+
+    var pixels: ?*anyopaque = null;
+    if (is_hdr) {
+        pixels = @ptrCast(stbi_loadf_from_memory(data, @intCast(size), &w, &h, &c, 4));
+    } else {
+        pixels = @ptrCast(stbi_load_from_memory(data, @intCast(size), &w, &h, &c, 4));
+    }
+
     if (pixels == null) {
         const reason = stbi_failure_reason();
         log.cardinal_log_error("[CRITICAL] Failed to load texture from memory", .{});
         if (reason) |r| {
-             const r_c: [*:0]const u8 = @ptrCast(r);
-             log.cardinal_log_error("[CRITICAL] STB failure reason: {s}", .{std.mem.span(r_c)});
+            const r_c: [*:0]const u8 = @ptrCast(r);
+            log.cardinal_log_error("[CRITICAL] STB failure reason: {s}", .{std.mem.span(r_c)});
         }
         return false;
     }
@@ -197,7 +192,7 @@ pub export fn texture_load_from_memory(data: [*]const u8, size: usize, out_textu
     out_texture.width = @intCast(w);
     out_texture.height = @intCast(h);
     out_texture.channels = 4;
-    out_texture.is_hdr = false; // TODO: support HDR from memory if needed
+    out_texture.is_hdr = is_hdr;
 
     return true;
 }
@@ -208,17 +203,17 @@ fn normalize_path(allocator: *memory.CardinalAllocator, path: []const u8) ?[]u8 
         const slice = @as([*]u8, @ptrCast(ptr))[0..path.len];
         @memcpy(slice, path);
         @as([*]u8, @ptrCast(ptr))[path.len] = 0; // Null terminate
-        
+
         for (slice) |*c| {
             if (c.* == '\\') c.* = '/';
         }
-        
+
         // Remove /./ from path
         var write_idx: usize = 0;
         var read_idx: usize = 0;
         while (read_idx < slice.len) {
             // Check for /./
-            if (read_idx + 2 < slice.len and slice[read_idx] == '/' and slice[read_idx+1] == '.' and slice[read_idx+2] == '/') {
+            if (read_idx + 2 < slice.len and slice[read_idx] == '/' and slice[read_idx + 1] == '.' and slice[read_idx + 2] == '/') {
                 read_idx += 2; // Skip /., keep the last / (which will be copied in next iter)
                 continue;
             }
@@ -226,7 +221,7 @@ fn normalize_path(allocator: *memory.CardinalAllocator, path: []const u8) ?[]u8 
             write_idx += 1;
             read_idx += 1;
         }
-        
+
         // Null terminate at new length
         @as([*]u8, @ptrCast(ptr))[write_idx] = 0;
         return @as([*]u8, @ptrCast(ptr))[0..write_idx];
@@ -242,18 +237,18 @@ const TextureLoadContext = struct {
 fn texture_load_async_func(task: ?*async_loader.CardinalAsyncTask, user_data: ?*anyopaque) callconv(.c) bool {
     _ = task;
     if (user_data == null) return false;
-    
+
     const context = @as(*TextureLoadContext, @ptrCast(@alignCast(user_data)));
     const resource = context.resource;
     const loading_thread_id = context.loading_thread_id;
-    
+
     // Ensure we clean up context and release resource reference at the end
     defer {
         const allocator = memory.cardinal_get_allocator_for_category(.ASSETS);
         memory.cardinal_free(allocator, context);
         ref_counting.cardinal_ref_release(resource);
     }
-    
+
     if (resource.identifier == null) return false;
     const path: [*:0]const u8 = @ptrCast(resource.identifier);
 
@@ -261,7 +256,7 @@ fn texture_load_async_func(task: ?*async_loader.CardinalAsyncTask, user_data: ?*
     if (texture_load_from_disk(path, &tex_data)) {
         const existing_data = @as(*TextureData, @ptrCast(@alignCast(resource.resource.?)));
         existing_data.* = tex_data;
-        
+
         _ = resource_state.cardinal_resource_state_set(resource.identifier.?, .LOADED, loading_thread_id);
         return true;
     } else {
@@ -575,7 +570,6 @@ pub export fn texture_data_free(texture: ?*TextureData) void {
     t.channels = 0;
 }
 
-
 pub export fn texture_load_with_ref_counting(filepath: ?[*]const u8, out_texture: ?*TextureData) ?*ref_counting.CardinalRefCountedResource {
     if (filepath == null or out_texture == null) return null;
     const filename_c: [*:0]const u8 = @ptrCast(filepath.?);
@@ -584,19 +578,19 @@ pub export fn texture_load_with_ref_counting(filepath: ?[*]const u8, out_texture
     if (!g_texture_cache.initialized) {
         _ = texture_cache_initialize(256);
     }
-    
+
     // Normalize path
     const allocator = memory.cardinal_get_allocator_for_category(.ASSETS);
     const normalized_path_slice = normalize_path(allocator, raw_path);
     if (normalized_path_slice == null) return null;
     defer memory.cardinal_free(allocator, @ptrCast(normalized_path_slice.?.ptr));
-    
+
     // Create null-terminated pointer for C APIs
     const path = normalized_path_slice.?;
     // We can cast ptr because we allocated size+1 and null terminated it in normalize_path
     const path_c: [*:0]const u8 = @ptrCast(path.ptr);
 
-    texture_log.debug("Texture load request: {s} (raw: {s})", .{path, raw_path});
+    texture_log.debug("Texture load request: {s} (raw: {s})", .{ path, raw_path });
 
     const state = resource_state.cardinal_resource_state_get(path_c);
 
@@ -620,18 +614,18 @@ pub export fn texture_load_with_ref_counting(filepath: ?[*]const u8, out_texture
     if (state == .LOADING) {
         // Check cache for placeholder
         if (texture_cache_get(path)) |res| {
-             const existing: *TextureData = @ptrCast(@alignCast(res.resource.?));
-             out_texture.?.* = existing.*;
-             return res;
+            const existing: *TextureData = @ptrCast(@alignCast(res.resource.?));
+            out_texture.?.* = existing.*;
+            return res;
         }
-        
+
         // Short wait to handle race condition where registration is finishing
         if (resource_state.cardinal_resource_state_wait_for(path_c, .LOADED, 10)) {
-             if (texture_cache_get(path)) |res| {
+            if (texture_cache_get(path)) |res| {
                 const existing: *TextureData = @ptrCast(@alignCast(res.resource.?));
                 out_texture.?.* = existing.*;
                 return res;
-             }
+            }
         }
     }
 
@@ -655,17 +649,17 @@ pub export fn texture_load_with_ref_counting(filepath: ?[*]const u8, out_texture
 
     if (temp_ref_opt) |temp_ref| {
         if (resource_state.cardinal_resource_state_register(temp_ref) == null) {
-            // Recursion here is dangerous if register fails repeatedly. 
+            // Recursion here is dangerous if register fails repeatedly.
             // Instead of recursive call, return null to avoid stack overflow.
             log.cardinal_log_error("[TEXTURE] Failed to register resource state for {s}", .{path});
             // Release the ref we just created (which will trigger removal from registry and destructor)
             ref_counting.cardinal_ref_release(temp_ref);
             return null;
         }
-        
+
         // Cache it immediately so others find it
         _ = texture_cache_put(path, temp_ref);
-        
+
         // Set state to LOADING
         if (resource_state.cardinal_resource_state_try_acquire_loading(temp_ref.identifier.?, thread_id)) {
             // Create context for async task
@@ -677,7 +671,7 @@ pub export fn texture_load_with_ref_counting(filepath: ?[*]const u8, out_texture
 
                 // Increment ref count for the task (released in task)
                 _ = @atomicRmw(u32, &temp_ref.ref_count, .Add, 1, .seq_cst);
-                
+
                 // Launch Async Task
                 const task = async_loader.cardinal_async_submit_custom_task(texture_load_async_func, ctx, .NORMAL, texture_load_task_cleanup, null);
                 if (task == null) {
@@ -689,16 +683,16 @@ pub export fn texture_load_with_ref_counting(filepath: ?[*]const u8, out_texture
                     _ = resource_state.cardinal_resource_state_set(temp_ref.identifier.?, .ERROR, thread_id);
                 }
             } else {
-                    // Fallback: synchronous load or error? 
-                    // If we fail to allocate context, we can't submit task properly.
-                    // But we already set state to LOADING. 
-                    // We should probably revert state or load synchronously.
-                    // For now, let's just log error and set to ERROR.
-                    log.cardinal_log_error("[TEXTURE] Failed to allocate context for async load", .{});
-                    _ = resource_state.cardinal_resource_state_set(temp_ref.identifier.?, .ERROR, thread_id);
+                // Fallback: synchronous load or error?
+                // If we fail to allocate context, we can't submit task properly.
+                // But we already set state to LOADING.
+                // We should probably revert state or load synchronously.
+                // For now, let's just log error and set to ERROR.
+                log.cardinal_log_error("[TEXTURE] Failed to allocate context for async load", .{});
+                _ = resource_state.cardinal_resource_state_set(temp_ref.identifier.?, .ERROR, thread_id);
             }
         }
-        
+
         out_texture.?.* = tex_data.*;
         return temp_ref;
     } else {

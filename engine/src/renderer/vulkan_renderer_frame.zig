@@ -164,9 +164,18 @@ fn vk_recover_from_device_loss(s: *types.VulkanState) bool {
         var mesh_path: [512]u8 = undefined;
         var frag_path: [512]u8 = undefined;
 
-        _ = std.fmt.bufPrintZ(&task_path, "{s}/task.task.spv", .{shaders_dir}) catch unreachable;
-        _ = std.fmt.bufPrintZ(&mesh_path, "{s}/mesh.mesh.spv", .{shaders_dir}) catch unreachable;
-        _ = std.fmt.bufPrintZ(&frag_path, "{s}/mesh.frag.spv", .{shaders_dir}) catch unreachable;
+        _ = std.fmt.bufPrintZ(&task_path, "{s}/task.task.spv", .{shaders_dir}) catch |err| {
+            log.cardinal_log_error("Failed to format task shader path: {s}", .{@errorName(err)});
+            success = false;
+        };
+        _ = std.fmt.bufPrintZ(&mesh_path, "{s}/mesh.mesh.spv", .{shaders_dir}) catch |err| {
+            log.cardinal_log_error("Failed to format mesh shader path: {s}", .{@errorName(err)});
+            success = false;
+        };
+        _ = std.fmt.bufPrintZ(&frag_path, "{s}/mesh.frag.spv", .{shaders_dir}) catch |err| {
+            log.cardinal_log_error("Failed to format fragment shader path: {s}", .{@errorName(err)});
+            success = false;
+        };
 
         config.task_shader_path = @ptrCast(&task_path);
         config.mesh_shader_path = @ptrCast(&mesh_path);

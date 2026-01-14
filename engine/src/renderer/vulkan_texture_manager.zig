@@ -163,7 +163,7 @@ fn upload_texture_task(data: ?*anyopaque) callconv(.c) void {
     begin_info.sType = c.VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
     begin_info.flags = c.VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
 
-    // Fix: Secondary command buffers MUST have inheritance info
+    // Secondary command buffers MUST have inheritance info
     var inheritance = std.mem.zeroes(c.VkCommandBufferInheritanceInfo);
     inheritance.sType = c.VK_STRUCTURE_TYPE_COMMAND_BUFFER_INHERITANCE_INFO;
     begin_info.pInheritanceInfo = &inheritance;

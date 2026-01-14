@@ -407,7 +407,8 @@ fn vk_update_frame_uniforms(s: *types.VulkanState) void {
 
         // Update simple uniforms using PBR data if in UV/Wireframe mode
         if (s.current_rendering_mode == .UV or s.current_rendering_mode == .WIREFRAME) {
-            vk_simple_pipelines.update_simple_uniforms(s, &s.pipelines.pbr_pipeline.current_ubo.model, &s.pipelines.pbr_pipeline.current_ubo.view, &s.pipelines.pbr_pipeline.current_ubo.proj, &s.pipelines.pbr_pipeline.current_ubo.viewPos);
+            var model = [_]f32{ 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1 };
+            vk_simple_pipelines.update_simple_uniforms(s, &model, &s.pipelines.pbr_pipeline.current_ubo.view, &s.pipelines.pbr_pipeline.current_ubo.proj, &s.pipelines.pbr_pipeline.current_ubo.viewPos);
         }
     }
 }

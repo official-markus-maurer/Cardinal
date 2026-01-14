@@ -71,6 +71,8 @@ pub const CardinalLight = extern struct {
     intensity: f32,
     ambient: math.Vec3,
     range: f32,
+    inner_cone: f32,
+    outer_cone: f32,
     type: i32, // 0=Directional, 1=Point, 2=Spot
 };
 
@@ -164,17 +166,17 @@ pub const PBRTextureTransform = extern struct {
 };
 
 pub const PBRUniformBufferObject = extern struct {
-    model: [16]f32,
     view: [16]f32,
     proj: [16]f32,
     viewPos: [3]f32,
     debugFlags: f32,
+    ambientColor: [4]f32,
 };
 
 pub const PBRLight = extern struct {
     lightDirection: [4]f32, // w = type (0=Directional, 1=Point, 2=Spot)
     lightColor: [4]f32, // w = intensity
-    ambientColor: [4]f32, // w = range
+    params: [4]f32, // x = range, y = innerConeCos, z = outerConeCos, w = unused
     lightPosition: [4]f32, // xyz = position, w = unused
 };
 
@@ -231,7 +233,7 @@ pub const PBRPushConstants = extern struct {
     textureTransforms: [5][4]f32,
     // Texture rotations
     textureRotations: [5]f32,
-    
+
     // Emissive strength
     emissiveStrength: f32,
 
@@ -820,7 +822,7 @@ pub const VulkanPBRPipeline = extern struct {
     shadowMapView: c.VkImageView,
     shadowCascadeViews: [4]c.VkImageView, // SHADOW_CASCADE_COUNT
     shadowMapSampler: c.VkSampler,
-    
+
     shadowUBOs: [MAX_FRAMES_IN_FLIGHT]c.VkBuffer,
     shadowUBOsMemory: [MAX_FRAMES_IN_FLIGHT]c.VkDeviceMemory,
     shadowUBOsAllocation: [MAX_FRAMES_IN_FLIGHT]c.VmaAllocation,
@@ -847,7 +849,7 @@ pub const VulkanPBRPipeline = extern struct {
     pipelineBlend: c.VkPipeline,
 
     debug_flags: f32,
-    
+
     // Staging state for multi-buffered updates
     current_ubo: PBRUniformBufferObject,
     current_lighting: PBRLightingBuffer,
