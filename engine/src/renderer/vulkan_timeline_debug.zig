@@ -99,6 +99,15 @@ pub export fn vulkan_timeline_debug_init(debug_ctx: *types.VulkanTimelineDebugCo
         return false;
     }
 
+    // Allocate pool
+    const allocator = memory.cardinal_get_allocator_for_category(.RENDERER);
+    const ptr = memory.cardinal_alloc(allocator, @sizeOf(types.VulkanTimelineDebugEvent) * 1024); // Start with 1024 events
+    if (ptr == null) {
+        tl_dbg_log.err("Failed to allocate event pool", .{});
+        debug_mutex_destroy(&debug_ctx.mutex);
+        return false;
+    }
+
     @atomicStore(u32, &debug_ctx.event_write_index, 0, .seq_cst);
     @atomicStore(u32, &debug_ctx.event_count, 0, .seq_cst);
 
@@ -403,30 +412,46 @@ pub export fn vulkan_timeline_debug_get_events(debug_ctx: *types.VulkanTimelineD
     return true;
 }
 
+pub export fn vulkan_timeline_debug_dump_events(debug_ctx: *types.VulkanTimelineDebugContext, count: u32) callconv(.c) void {
+    if (!debug_ctx.enabled) return;
+
+    tl_dbg_log.info("=== Timeline Event Dump ({d} events) ===", .{count});
+
+    debug_mutex_lock(debug_ctx.mutex);
+    defer debug_mutex_unlock(debug_ctx.mutex);
+
+    const event_count = vulkan_timeline_debug_get_event_count(debug_ctx);
+    const dump_count = if (count > event_count) event_count else count;
+    const current_index = @atomicLoad(u32, &debug_ctx.event_write_index, .seq_cst);
+
+    var i: u32 = 0;
+    while (i < dump_count) : (i += 1) {
+        const idx = (current_index + types.VULKAN_TIMELINE_DEBUG_MAX_EVENTS - 1 - i) % types.VULKAN_TIMELINE_DEBUG_MAX_EVENTS;
+        const event = &debug_ctx.events[idx];
+
+        const type_str = std.mem.span(vulkan_timeline_debug_event_type_to_string(event.type));
+        tl_dbg_log.info("[{d}] {s} val={d} thread={d} time={d}", .{ i, type_str, event.timeline_value, event.thread_id, event.timestamp_ns });
+    }
+
+    tl_dbg_log.info("===================", .{});
+}
+
 pub export fn vulkan_timeline_debug_print_performance_report(debug_ctx: *types.VulkanTimelineDebugContext) callconv(.c) void {
     var metrics: types.VulkanTimelinePerformanceMetrics = undefined;
     if (!vulkan_timeline_debug_get_performance_metrics(debug_ctx, &metrics)) return;
 
+    const avg_wait = if (metrics.total_waits > 0) metrics.total_wait_time_ns / metrics.total_waits else 0;
+    const successes = if (metrics.total_waits >= (metrics.timeout_count + metrics.error_count)) metrics.total_waits - metrics.timeout_count - metrics.error_count else 0;
+
     tl_dbg_log.info("=== Performance Report ===", .{});
-    tl_dbg_log.info("Total waits: {d}", .{metrics.total_waits});
-    tl_dbg_log.info("Total signals: {d}", .{metrics.total_signals});
-
-    if (metrics.total_waits > 0) {
-        const avg_wait = metrics.total_wait_time_ns / metrics.total_waits;
-        tl_dbg_log.info("Average wait time: {d} ns ({d:.3} ms)", .{ avg_wait, @as(f64, @floatFromInt(avg_wait)) / 1000000.0 });
-        tl_dbg_log.info("Max wait time: {d} ns ({d:.3} ms)", .{ metrics.max_wait_time_ns, @as(f64, @floatFromInt(metrics.max_wait_time_ns)) / 1000000.0 });
-    }
-
-    if (metrics.total_signals > 0) {
-        const avg_signal = metrics.total_signal_time_ns / metrics.total_signals;
-        tl_dbg_log.info("Average signal time: {d} ns ({d:.3} ms)", .{ avg_signal, @as(f64, @floatFromInt(avg_signal)) / 1000000.0 });
-        tl_dbg_log.info("Max signal time: {d} ns ({d:.3} ms)", .{ metrics.max_signal_time_ns, @as(f64, @floatFromInt(metrics.max_signal_time_ns)) / 1000000.0 });
-    }
-
-    tl_dbg_log.info("Timeouts: {d}", .{metrics.timeout_count});
-    tl_dbg_log.info("Errors: {d}", .{metrics.error_count});
-    tl_dbg_log.info("Recoveries: {d}", .{metrics.recovery_count});
-    tl_dbg_log.info("=========================", .{});
+    tl_dbg_log.info("Avg wait time: {d} ns", .{avg_wait});
+    tl_dbg_log.info("Max wait time: {d} ns", .{metrics.max_wait_time_ns});
+    tl_dbg_log.info("Wait count: {d}", .{metrics.total_waits});
+    tl_dbg_log.info("Signal count: {d}", .{metrics.total_signals});
+    tl_dbg_log.info("Wait failures: {d}", .{metrics.error_count});
+    tl_dbg_log.info("Wait timeouts: {d}", .{metrics.timeout_count});
+    tl_dbg_log.info("Wait successes: {d}", .{successes});
+    tl_dbg_log.info("===================", .{});
 }
 
 pub export fn vulkan_timeline_debug_print_event_summary(debug_ctx: *types.VulkanTimelineDebugContext) callconv(.c) void {
@@ -460,20 +485,20 @@ pub export fn vulkan_timeline_debug_print_event_summary(debug_ctx: *types.Vulkan
         }
     }
 
-    log.cardinal_log_info("[TIMELINE_DEBUG] ===================", .{});
+    tl_dbg_log.info("===================", .{});
 }
 
 pub export fn vulkan_timeline_debug_print_state_report(debug_ctx: *types.VulkanTimelineDebugContext) callconv(.c) void {
     var snapshot: types.VulkanTimelineStateSnapshot = undefined;
     if (!vulkan_timeline_debug_get_last_snapshot(debug_ctx, &snapshot)) return;
 
-    log.cardinal_log_info("[TIMELINE_DEBUG] === State Report ===", .{});
-    log.cardinal_log_info("[TIMELINE_DEBUG] Current value: {d}", .{snapshot.current_value});
-    log.cardinal_log_info("[TIMELINE_DEBUG] Last signaled: {d}", .{snapshot.last_signaled_value});
-    log.cardinal_log_info("[TIMELINE_DEBUG] Next expected: {d}", .{snapshot.next_expected_value});
-    log.cardinal_log_info("[TIMELINE_DEBUG] Pending signals: {d}", .{snapshot.pending_signals});
-    log.cardinal_log_info("[TIMELINE_DEBUG] Pending waits: {d}", .{snapshot.pending_waits});
-    log.cardinal_log_info("[TIMELINE_DEBUG] Valid: {s}", .{if (snapshot.is_valid) "true" else "false"});
+    tl_dbg_log.info("=== State Report ===", .{});
+    tl_dbg_log.info("Current value: {d}", .{snapshot.current_value});
+    tl_dbg_log.info("Last signaled: {d}", .{snapshot.last_signaled_value});
+    tl_dbg_log.info("Next expected: {d}", .{snapshot.next_expected_value});
+    tl_dbg_log.info("Pending signals: {d}", .{snapshot.pending_signals});
+    tl_dbg_log.info("Pending waits: {d}", .{snapshot.pending_waits});
+    tl_dbg_log.info("Valid: {s}", .{if (snapshot.is_valid) "true" else "false"});
     if (!snapshot.is_valid) {
         tl_dbg_log.info("Last error: {d}", .{snapshot.last_error});
     }
@@ -483,13 +508,13 @@ pub export fn vulkan_timeline_debug_print_state_report(debug_ctx: *types.VulkanT
 // Export functions (simplified)
 pub export fn vulkan_timeline_debug_export_events_csv(debug_ctx: *types.VulkanTimelineDebugContext, filename: [*c]const u8) callconv(.c) bool {
     if (filename == null) {
-        log.cardinal_log_error("[TIMELINE_DEBUG] Invalid filename for CSV export", .{});
+        tl_dbg_log.err("Invalid filename for CSV export", .{});
         return false;
     }
     const fname = std.mem.span(filename);
 
     const file = std.fs.cwd().createFile(fname, .{}) catch |err| {
-        log.cardinal_log_error("[TIMELINE_DEBUG] Failed to open file for CSV export: {s} (error: {any})", .{ fname, err });
+        tl_dbg_log.err("Failed to open file for CSV export: {s} (error: {any})", .{ fname, err });
         return false;
     };
     defer file.close();
@@ -515,7 +540,7 @@ pub export fn vulkan_timeline_debug_export_events_csv(debug_ctx: *types.VulkanTi
         }
     }
 
-    log.cardinal_log_info("[TIMELINE_DEBUG] Events exported to CSV: {s}", .{fname});
+    tl_dbg_log.info("Events exported to CSV: {s}", .{fname});
     return true;
 }
 

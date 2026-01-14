@@ -243,7 +243,6 @@ pub fn update_simple_uniforms(s: *types.VulkanState, model: *const [16]f32, view
         return;
     }
 
-    // log.cardinal_log_debug("update_simple_uniforms: Updating UBO. ViewPos: {d},{d},{d}", .{viewPos[0], viewPos[1], viewPos[2]});
     simple_log.info("update_simple_uniforms: Updating UBO. ViewPos: {d},{d},{d}", .{ viewPos[0], viewPos[1], viewPos[2] });
 
     var ubo: SimpleUniformBufferObject = undefined;
@@ -257,7 +256,6 @@ pub fn update_simple_uniforms(s: *types.VulkanState, model: *const [16]f32, view
 }
 
 pub fn render_simple(s: *types.VulkanState, commandBufferHandle: c.VkCommandBuffer, pipeline: c.VkPipeline, pipelineLayout: c.VkPipelineLayout) void {
-    // log.cardinal_log_debug("render_simple: Called", .{});
     simple_log.info("render_simple: Called", .{});
     if (s.current_scene == null) {
         simple_log.err("render_simple: No scene", .{});
@@ -273,7 +271,7 @@ pub fn render_simple(s: *types.VulkanState, commandBufferHandle: c.VkCommandBuff
     const pipe = &s.pipelines.pbr_pipeline;
 
     if (pipe.vertexBuffer == null or pipe.indexBuffer == null) {
-        log.cardinal_log_error("render_simple: Buffers null", .{});
+        simple_log.err("render_simple: Buffers null", .{});
         return;
     }
     if (s.pipelines.simple_descriptor_set == null) {
@@ -329,11 +327,9 @@ pub fn render_simple(s: *types.VulkanState, commandBufferHandle: c.VkCommandBuff
             cmd.pushConstants(pipelineLayout, c.VK_SHADER_STAGE_VERTEX_BIT | c.VK_SHADER_STAGE_FRAGMENT_BIT, 0, @sizeOf(types.PBRPushConstants), &pushConstants);
 
             if (mesh.index_count > 0) {
-                // log.cardinal_log_debug("DrawIndexed: {d} indices", .{mesh.index_count});
                 simple_log.info("DrawIndexed: {d} indices", .{mesh.index_count});
                 cmd.drawIndexed(mesh.index_count, 1, indexOffset, 0, 0);
             } else {
-                // log.cardinal_log_debug("Draw: {d} vertices", .{mesh.vertex_count});
                 simple_log.info("Draw: {d} vertices", .{mesh.vertex_count});
                 cmd.draw(mesh.vertex_count, 1, 0, 0);
             }

@@ -1,8 +1,11 @@
 const std = @import("std");
 const builtin = @import("builtin");
+const log = @import("log.zig");
 const platform = @import("platform.zig");
 const memory = @import("memory.zig");
 const ref_counting = @import("ref_counting.zig");
+
+const rs_log = log.ScopedLogger("RESOURCE_STATE");
 const vulkan_mt = @import("../renderer/vulkan_mt.zig");
 const types = @import("../renderer/vulkan_types.zig");
 
@@ -79,7 +82,7 @@ fn find_state_tracker_unsafe(identifier: ?[*:0]const u8) ?*CardinalResourceState
 // Exports
 pub export fn cardinal_resource_state_init(bucket_count: usize) callconv(.c) bool {
     if (g_state_registry.initialized) {
-        std.log.warn("Resource state tracking system already initialized", .{});
+        rs_log.warn("Resource state tracking system already initialized", .{});
         return true;
     }
 
@@ -93,12 +96,12 @@ pub export fn cardinal_resource_state_init(bucket_count: usize) callconv(.c) boo
         g_state_registry.buckets = @ptrCast(@alignCast(p));
         _ = c.memset(p, 0, size);
     } else {
-        std.log.err("Failed to allocate memory for resource state registry buckets", .{});
+        rs_log.err("Failed to allocate memory for resource state registry buckets", .{});
         return false;
     }
 
     if (!vulkan_mt.cardinal_mt_mutex_init(&g_state_registry.registry_mutex)) {
-        std.log.err("Failed to initialize resource state registry mutex", .{});
+        rs_log.err("Failed to initialize resource state registry mutex", .{});
         allocator.free(allocator, ptr);
         return false;
     }
@@ -107,14 +110,14 @@ pub export fn cardinal_resource_state_init(bucket_count: usize) callconv(.c) boo
     g_state_registry.total_tracked_resources = 0;
     g_state_registry.initialized = true;
 
-    std.log.info("Resource state tracking system initialized with {d} buckets", .{count});
+    rs_log.info("Resource state tracking system initialized with {d} buckets", .{count});
     return true;
 }
 
 pub export fn cardinal_resource_state_shutdown() callconv(.c) void {
     if (!g_state_registry.initialized) return;
 
-    std.log.info("Shutting down resource state tracking system...", .{});
+    rs_log.info("Shutting down resource state tracking system...", .{});
 
     vulkan_mt.cardinal_mt_mutex_lock(&g_state_registry.registry_mutex);
 
@@ -127,7 +130,7 @@ pub export fn cardinal_resource_state_shutdown() callconv(.c) void {
             const next = curr.next;
 
             const id_str: []const u8 = if (curr.identifier) |id| std.mem.span(id) else "null";
-            std.log.debug("Cleaning up state tracker for resource '{s}'", .{id_str});
+            rs_log.debug("Cleaning up state tracker for resource '{s}'", .{id_str});
 
             vulkan_mt.cardinal_mt_mutex_destroy(&curr.state_mutex);
             vulkan_mt.cardinal_mt_cond_destroy(&curr.state_changed);
@@ -149,20 +152,20 @@ pub export fn cardinal_resource_state_shutdown() callconv(.c) void {
 
     g_state_registry.initialized = false;
 
-    std.log.info("Resource state tracking system shutdown complete", .{});
+    rs_log.info("Resource state tracking system shutdown complete", .{});
 }
 
 pub export fn cardinal_resource_state_register(ref_resource: ?*ref_counting.CardinalRefCountedResource) callconv(.c) ?*CardinalResourceStateTracker {
     if (!g_state_registry.initialized) {
-        std.log.err("Resource state registry not initialized", .{});
+        rs_log.err("Resource state registry not initialized", .{});
         return null;
     }
     if (ref_resource == null) {
-        std.log.err("ref_resource is NULL", .{});
+        rs_log.err("ref_resource is NULL", .{});
         return null;
     }
     if (ref_resource.?.identifier == null) {
-        std.log.err("ref_resource->identifier is NULL", .{});
+        rs_log.err("ref_resource->identifier is NULL", .{});
         return null;
     }
 
@@ -178,7 +181,7 @@ pub export fn cardinal_resource_state_register(ref_resource: ?*ref_counting.Card
 
     const tracker_ptr = allocator.alloc(allocator, @sizeOf(CardinalResourceStateTracker), 0);
     if (tracker_ptr == null) {
-        std.log.err("Failed to allocate memory for resource state tracker", .{});
+        rs_log.err("Failed to allocate memory for resource state tracker", .{});
         vulkan_mt.cardinal_mt_mutex_unlock(&g_state_registry.registry_mutex);
         return null;
     }
@@ -193,7 +196,7 @@ pub export fn cardinal_resource_state_register(ref_resource: ?*ref_counting.Card
     const id_len = c.strlen(ref_resource.?.identifier) + 1;
     const id_ptr = allocator.alloc(allocator, id_len, 0);
     if (id_ptr == null) {
-        std.log.err("Failed to allocate memory for resource identifier copy", .{});
+        rs_log.err("Failed to allocate memory for resource identifier copy", .{});
         allocator.free(allocator, tracker);
         vulkan_mt.cardinal_mt_mutex_unlock(&g_state_registry.registry_mutex);
         return null;
@@ -202,7 +205,7 @@ pub export fn cardinal_resource_state_register(ref_resource: ?*ref_counting.Card
     _ = c.strcpy(tracker.identifier, ref_resource.?.identifier);
 
     if (!vulkan_mt.cardinal_mt_mutex_init(&tracker.state_mutex)) {
-        std.log.err("Failed to initialize state tracker mutex", .{});
+        rs_log.err("Failed to initialize state tracker mutex", .{});
         allocator.free(allocator, tracker.identifier);
         allocator.free(allocator, tracker);
         vulkan_mt.cardinal_mt_mutex_unlock(&g_state_registry.registry_mutex);
@@ -210,7 +213,7 @@ pub export fn cardinal_resource_state_register(ref_resource: ?*ref_counting.Card
     }
 
     if (!vulkan_mt.cardinal_mt_cond_init(&tracker.state_changed)) {
-        std.log.err("Failed to initialize state tracker condition variable", .{});
+        rs_log.err("Failed to initialize state tracker condition variable", .{});
         vulkan_mt.cardinal_mt_mutex_destroy(&tracker.state_mutex);
         allocator.free(allocator, tracker.identifier);
         allocator.free(allocator, tracker);
@@ -226,7 +229,7 @@ pub export fn cardinal_resource_state_register(ref_resource: ?*ref_counting.Card
 
     vulkan_mt.cardinal_mt_mutex_unlock(&g_state_registry.registry_mutex);
 
-    std.log.debug("Registered resource state tracker for '{s}'", .{std.mem.span(ref_resource.?.identifier.?)});
+    rs_log.debug("Registered resource state tracker for '{s}'", .{std.mem.span(ref_resource.?.identifier.?)});
     return tracker;
 }
 
@@ -254,7 +257,7 @@ pub export fn cardinal_resource_state_unregister(identifier: ?[*:0]const u8) cal
             g_state_registry.total_tracked_resources -= 1;
 
             const id_str: []const u8 = if (identifier) |id| std.mem.span(id) else "null";
-            std.log.debug("Unregistered resource state tracker for '{s}'", .{id_str});
+            rs_log.debug("Unregistered resource state tracker for '{s}'", .{id_str});
             break;
         }
         current_ptr_ptr = &current.next;
@@ -294,7 +297,7 @@ pub export fn cardinal_resource_state_set(identifier: ?[*:0]const u8, new_state:
 
     if (tracker == null) {
         const id_str: []const u8 = if (identifier) |id| std.mem.span(id) else "null";
-        std.log.err("Cannot set state for untracked resource '{s}'", .{id_str});
+        rs_log.err("Cannot set state for untracked resource '{s}'", .{id_str});
         return false;
     }
 
@@ -324,7 +327,7 @@ pub export fn cardinal_resource_state_set(identifier: ?[*:0]const u8, new_state:
     }
 
     if (!valid_transition) {
-        std.log.err("Invalid state transition for resource '{s}': {d} -> {d}", .{ if (identifier) |id| std.mem.span(id) else "null", @intFromEnum(old_state), @intFromEnum(new_state) });
+        rs_log.err("Invalid state transition for resource '{s}': {d} -> {d}", .{ if (identifier) |id| std.mem.span(id) else "null", @intFromEnum(old_state), @intFromEnum(new_state) });
         vulkan_mt.cardinal_mt_mutex_unlock(&tracker.?.state_mutex);
         return false;
     }
@@ -341,7 +344,7 @@ pub export fn cardinal_resource_state_set(identifier: ?[*:0]const u8, new_state:
     vulkan_mt.cardinal_mt_cond_broadcast(&tracker.?.state_changed);
     vulkan_mt.cardinal_mt_mutex_unlock(&tracker.?.state_mutex);
 
-    std.log.debug("Resource '{s}' state changed: {d} -> {d} (thread {d})", .{ if (identifier) |id| std.mem.span(id) else "null", @intFromEnum(old_state), @intFromEnum(new_state), loading_thread_id });
+    rs_log.debug("Resource '{s}' state changed: {d} -> {d} (thread {d})", .{ if (identifier) |id| std.mem.span(id) else "null", @intFromEnum(old_state), @intFromEnum(new_state), loading_thread_id });
     return true;
 }
 
@@ -367,7 +370,7 @@ pub export fn cardinal_resource_state_wait_for(identifier: ?[*:0]const u8, targe
             const elapsed = platform.get_time_ms() - start_time;
             if (elapsed >= timeout_ms) {
                 vulkan_mt.cardinal_mt_mutex_unlock(&tracker.?.state_mutex);
-                std.log.warn("Timeout waiting for resource '{s}' to reach state {d}", .{ if (identifier) |id| std.mem.span(id) else "null", @intFromEnum(target_state) });
+                rs_log.warn("Timeout waiting for resource '{s}' to reach state {d}", .{ if (identifier) |id| std.mem.span(id) else "null", @intFromEnum(target_state) });
                 return false;
             }
 
@@ -412,7 +415,7 @@ pub export fn cardinal_resource_state_try_acquire_loading(identifier: ?[*:0]cons
     vulkan_mt.cardinal_mt_mutex_unlock(&tracker.?.state_mutex);
 
     if (acquired) {
-        std.log.debug("Thread {d} acquired loading access for resource '{s}'", .{ loading_thread_id, if (identifier) |id| std.mem.span(id) else "null" });
+        rs_log.debug("Thread {d} acquired loading access for resource '{s}'", .{ loading_thread_id, if (identifier) |id| std.mem.span(id) else "null" });
     }
 
     return acquired;

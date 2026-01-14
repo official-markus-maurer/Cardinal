@@ -3,6 +3,9 @@ const builtin = @import("builtin");
 const transform = @import("transform.zig");
 const scene = @import("../assets/scene.zig");
 const memory = @import("memory.zig");
+const log = @import("log.zig");
+
+const anim_log = log.ScopedLogger("ANIMATION");
 
 const c = @cImport({
     @cInclude("stdlib.h");
@@ -265,7 +268,7 @@ pub export fn cardinal_animation_system_create(max_animations: u32, max_skins: u
     const allocator = memory.cardinal_get_allocator_for_category(.ENGINE);
     const system_ptr = memory.cardinal_calloc(allocator, 1, @sizeOf(CardinalAnimationSystem));
     if (system_ptr == null) {
-        std.log.err("Failed to allocate animation system", .{});
+        anim_log.err("Failed to allocate animation system", .{});
         return null;
     }
     const system: *CardinalAnimationSystem = @ptrCast(@alignCast(system_ptr));
@@ -273,7 +276,7 @@ pub export fn cardinal_animation_system_create(max_animations: u32, max_skins: u
     if (max_animations > 0) {
         const animations_ptr = memory.cardinal_calloc(allocator, max_animations, @sizeOf(CardinalAnimation));
         if (animations_ptr == null) {
-            std.log.err("Failed to allocate animations array", .{});
+            anim_log.err("Failed to allocate animations array", .{});
             memory.cardinal_free(allocator, system);
             return null;
         }
@@ -283,7 +286,7 @@ pub export fn cardinal_animation_system_create(max_animations: u32, max_skins: u
     if (max_skins > 0) {
         const skins_ptr = memory.cardinal_calloc(allocator, max_skins, @sizeOf(CardinalSkin));
         if (skins_ptr == null) {
-            std.log.err("Failed to allocate skins array", .{});
+            anim_log.err("Failed to allocate skins array", .{});
             if (system.animations) |ptr| memory.cardinal_free(allocator, ptr);
             memory.cardinal_free(allocator, system);
             return null;
@@ -312,11 +315,11 @@ pub export fn cardinal_animation_system_create(max_animations: u32, max_skins: u
             matrix[15] = 1.0;
         }
     } else {
-        std.log.err("Failed to allocate bone matrices buffer", .{});
+        anim_log.err("Failed to allocate bone matrices buffer", .{});
         system.bone_matrix_count = 0;
     }
 
-    std.log.info("Animation system created with capacity for {d} animations and {d} skins", .{ max_animations, max_skins });
+    anim_log.info("Animation system created with capacity for {d} animations and {d} skins", .{ max_animations, max_skins });
     return system;
 }
 
@@ -367,7 +370,7 @@ pub export fn cardinal_animation_system_destroy(system: ?*CardinalAnimationSyste
     if (system.?.bone_matrices) |ptr| memory.cardinal_free(allocator, ptr);
     memory.cardinal_free(allocator, system);
 
-    std.log.debug("Animation system destroyed", .{});
+    anim_log.debug("Animation system destroyed", .{});
 }
 
 pub export fn cardinal_animation_system_add_animation(system: ?*CardinalAnimationSystem, animation: ?*const CardinalAnimation) callconv(.c) u32 {
@@ -433,7 +436,7 @@ pub export fn cardinal_animation_system_add_animation(system: ?*CardinalAnimatio
     }
 
     system.?.animation_count += 1;
-    std.log.debug("Added animation '{s}' at index {d}", .{ if (dest.name) |n| std.mem.span(n) else "Unnamed", index });
+    anim_log.debug("Added animation '{s}' at index {d}", .{ if (dest.name) |n| std.mem.span(n) else "Unnamed", index });
     return index;
 }
 
@@ -494,7 +497,7 @@ pub export fn cardinal_animation_system_add_skin(system: ?*CardinalAnimationSyst
     }
 
     system.?.skin_count += 1;
-    std.log.debug("Added skin '{s}' with {d} bones at index {d}", .{ if (dest.name) |n| std.mem.span(n) else "Unnamed", dest.bone_count, index });
+    anim_log.debug("Added skin '{s}' with {d} bones at index {d}", .{ if (dest.name) |n| std.mem.span(n) else "Unnamed", dest.bone_count, index });
     return index;
 }
 
@@ -528,7 +531,7 @@ pub export fn cardinal_animation_play(system: ?*CardinalAnimationSystem, animati
     state.?.blend_weight = blend_weight;
     state.?.playback_speed = 1.0;
 
-    std.log.debug("Started animation {d} with blend weight {d:.2}", .{ animation_index, blend_weight });
+    anim_log.debug("Started animation {d} with blend weight {d:.2}", .{ animation_index, blend_weight });
     return true;
 }
 
@@ -539,7 +542,7 @@ pub export fn cardinal_animation_pause(system: ?*CardinalAnimationSystem, animat
     while (i < system.?.state_count) : (i += 1) {
         if (system.?.states.?[i].animation_index == animation_index) {
             system.?.states.?[i].is_playing = false;
-            std.log.debug("Paused animation {d}", .{animation_index});
+            anim_log.debug("Paused animation {d}", .{animation_index});
             return true;
         }
     }
@@ -555,7 +558,7 @@ pub export fn cardinal_animation_stop(system: ?*CardinalAnimationSystem, animati
         if (system.?.states.?[i].animation_index == animation_index) {
             system.?.states.?[i].is_playing = false;
             system.?.states.?[i].current_time = 0.0;
-            std.log.debug("Stopped animation {d}", .{animation_index});
+            anim_log.debug("Stopped animation {d}", .{animation_index});
             return true;
         }
     }
@@ -570,7 +573,7 @@ pub export fn cardinal_animation_set_speed(system: ?*CardinalAnimationSystem, an
     while (i < system.?.state_count) : (i += 1) {
         if (system.?.states.?[i].animation_index == animation_index) {
             system.?.states.?[i].playback_speed = speed;
-            std.log.debug("Set animation {d} speed to {d:.2}", .{ animation_index, speed });
+            anim_log.debug("Set animation {d} speed to {d:.2}", .{ animation_index, speed });
             return true;
         }
     }
@@ -918,7 +921,7 @@ pub export fn cardinal_animation_optimize(animation: ?*CardinalAnimation, tolera
                 sampler.input_count = new_count;
                 sampler.output_count = new_count * component_count;
 
-                std.log.debug("Optimized sampler {d}: {d} -> {d} frames", .{ i, kept_indices.items.len, new_count });
+                anim_log.debug("Optimized sampler {d}: {d} -> {d} frames", .{ i, kept_indices.items.len, new_count });
             } else {
                 if (new_input) |ptr| memory.cardinal_free(allocator, ptr);
                 if (new_output) |ptr| memory.cardinal_free(allocator, ptr);

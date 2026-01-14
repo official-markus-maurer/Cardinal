@@ -53,7 +53,7 @@ fn end_single_time_commands(device: c.VkDevice, commandPool: c.VkCommandPool, qu
     const timeline_value = vk_sync_manager.vulkan_sync_manager_get_next_timeline_value(&vulkan_state.sync);
 
     if (timeline_value == 0) {
-        log.cardinal_log_error("[BUFFER_MANAGER] Failed to get valid timeline value (got 0)", .{});
+        buf_log.err("[BUFFER_MANAGER] Failed to get valid timeline value (got 0)", .{});
         c.vkFreeCommandBuffers(device, commandPool, 1, &commandBuffer);
         return;
     }
@@ -64,12 +64,12 @@ fn end_single_time_commands(device: c.VkDevice, commandPool: c.VkCommandPool, qu
         defer vk_sync_manager.vulkan_sync_manager_unlock_shared();
 
         if (vulkan_state.sync.timeline_semaphore == null) {
-            log.cardinal_log_error("[BUFFER_MANAGER] Timeline semaphore is NULL!", .{});
+            buf_log.err("[BUFFER_MANAGER] Timeline semaphore is NULL!", .{});
             c.vkFreeCommandBuffers(device, commandPool, 1, &commandBuffer);
             return;
         }
 
-        log.cardinal_log_debug("[BUFFER_MANAGER] Using timeline value: {d}", .{timeline_value});
+        buf_log.debug("[BUFFER_MANAGER] Using timeline value: {d}", .{timeline_value});
 
         // Submit command buffer with timeline semaphore signaling
         var cmd_buffer_info = std.mem.zeroes(c.VkCommandBufferSubmitInfo);
@@ -82,7 +82,7 @@ fn end_single_time_commands(device: c.VkDevice, commandPool: c.VkCommandPool, qu
         signal_semaphore_info.value = timeline_value;
         signal_semaphore_info.stageMask = c.VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT;
 
-        log.cardinal_log_debug("[BUFFER_MANAGER] About to submit with semaphore {any}, value {d}", .{ vulkan_state.sync.timeline_semaphore, timeline_value });
+        buf_log.debug("About to submit with semaphore {any}, value {d}", .{ vulkan_state.sync.timeline_semaphore, timeline_value });
 
         var submit_info = std.mem.zeroes(c.VkSubmitInfo2);
         submit_info.sType = c.VK_STRUCTURE_TYPE_SUBMIT_INFO_2;
@@ -91,15 +91,15 @@ fn end_single_time_commands(device: c.VkDevice, commandPool: c.VkCommandPool, qu
         submit_info.signalSemaphoreInfoCount = 1;
         submit_info.pSignalSemaphoreInfos = &signal_semaphore_info;
 
-        log.cardinal_log_info("[BUFFER_MANAGER] CMD_SUBMIT: Submitting command buffer {any} with timeline value {d}", .{ commandBuffer, timeline_value });
+        buf_log.info("CMD_SUBMIT: Submitting command buffer {any} with timeline value {d}", .{ commandBuffer, timeline_value });
 
         const submit_result = vulkan_state.context.vkQueueSubmit2.?(queue, 1, &submit_info, null);
         if (submit_result != c.VK_SUCCESS) {
-            log.cardinal_log_error("[BUFFER_MANAGER] CMD_SUBMIT_FAILED: Failed to submit command buffer {any}: {d}", .{ commandBuffer, submit_result });
-            log.cardinal_log_warn("[BUFFER_MANAGER] CMD_LEAK_WARNING: Command buffer {any} may leak due to submit failure - cannot free while potentially in pending state", .{commandBuffer});
+            buf_log.err("CMD_SUBMIT_FAILED: Failed to submit command buffer {any}: {d}", .{ commandBuffer, submit_result });
+            buf_log.warn("CMD_LEAK_WARNING: Command buffer {any} may leak due to submit failure - cannot free while potentially in pending state", .{commandBuffer});
             return;
         }
-        log.cardinal_log_info("[BUFFER_MANAGER] CMD_SUBMIT_SUCCESS: Command buffer {any} submitted with timeline value {d}", .{ commandBuffer, timeline_value });
+        buf_log.info("CMD_SUBMIT_SUCCESS: Command buffer {any} submitted with timeline value {d}", .{ commandBuffer, timeline_value });
     }
 
     // Wait for completion using timeline semaphore with reasonable timeout
@@ -108,30 +108,30 @@ fn end_single_time_commands(device: c.VkDevice, commandPool: c.VkCommandPool, qu
     const wait_error = vk_sync_manager.vulkan_sync_manager_wait_timeline_safe(&vulkan_state.sync, timeline_value, 10000000000, &error_info); // 10 second timeout
 
     if (wait_error != types.VulkanTimelineError.NONE) {
-        log.cardinal_log_error("[BUFFER_MANAGER] CMD_WAIT_FAILED: {s}", .{error_info.error_message});
-        log.cardinal_log_warn("[BUFFER_MANAGER] CMD_LEAK_WARNING: Command buffer {any} may leak due to wait failure", .{commandBuffer});
+        buf_log.err("CMD_WAIT_FAILED: {s}", .{error_info.error_message});
+        buf_log.warn("CMD_LEAK_WARNING: Command buffer {any} may leak due to wait failure", .{commandBuffer});
         return;
     }
 
-    log.cardinal_log_info("[BUFFER_MANAGER] CMD_WAIT_SUCCESS: Command buffer {any} completed (timeline value {d})", .{ commandBuffer, timeline_value });
+    buf_log.info("CMD_WAIT_SUCCESS: Command buffer {any} completed (timeline value {d})", .{ commandBuffer, timeline_value });
 
     // Update VulkanState timeline tracking to maintain coordination
     if (timeline_value > vulkan_state.sync.current_frame_value) {
         vulkan_state.sync.current_frame_value = timeline_value;
-        log.cardinal_log_info("[BUFFER_MANAGER] TIMELINE_UPDATE: Updated current_frame_value to {d} for cmd {any}", .{ timeline_value, commandBuffer });
+        buf_log.info("TIMELINE_UPDATE: Updated current_frame_value to {d} for cmd {any}", .{ timeline_value, commandBuffer });
     }
 
     // Free the command buffer after completion
-    log.cardinal_log_info("[BUFFER_MANAGER] CMD_FREE: Freeing command buffer {any}", .{commandBuffer});
+    buf_log.info("CMD_FREE: Freeing command buffer {any}", .{commandBuffer});
     c.vkFreeCommandBuffers(device, commandPool, 1, &commandBuffer);
-    log.cardinal_log_info("[BUFFER_MANAGER] CMD_FREE_SUCCESS: Command buffer {any} freed", .{commandBuffer});
-    log.cardinal_log_info("[BUFFER_MANAGER] CMD_COMPLETE: Buffer operation completed successfully with timeline value {d}", .{timeline_value});
+    buf_log.info("CMD_FREE_SUCCESS: Command buffer {any} freed", .{commandBuffer});
+    buf_log.info("CMD_COMPLETE: Buffer operation completed successfully with timeline value {d}", .{timeline_value});
 }
 
 pub export fn vk_buffer_create(buffer_ptr: ?*VulkanBuffer, device: c.VkDevice, allocator_ptr: ?*types.VulkanAllocator, createInfo_ptr: ?*const VulkanBufferCreateInfo) callconv(.c) bool {
     // Basic validation
     if (device == null or allocator_ptr == null or createInfo_ptr == null or buffer_ptr == null) {
-        log.cardinal_log_error("Invalid parameters for buffer creation", .{});
+        buf_log.err("Invalid parameters for buffer creation", .{});
         return false;
     }
 
@@ -140,7 +140,7 @@ pub export fn vk_buffer_create(buffer_ptr: ?*VulkanBuffer, device: c.VkDevice, a
     const createInfo = createInfo_ptr.?;
 
     if (createInfo.size == 0) {
-        log.cardinal_log_error("Buffer size cannot be zero", .{});
+        buf_log.err("Buffer size cannot be zero", .{});
         return false;
     }
 
@@ -162,7 +162,7 @@ pub export fn vk_buffer_create(buffer_ptr: ?*VulkanBuffer, device: c.VkDevice, a
     // Allocate buffer and memory using allocator
     // Pass persistentlyMapped as map_immediately to avoid double mapping and use VMA's internal mapping
     if (!vk_allocator.allocate_buffer(allocator, &bufferInfo, &buffer.handle, &buffer.memory, &buffer.allocation, createInfo.properties, createInfo.persistentlyMapped, &buffer.mapped)) {
-        log.cardinal_log_error("Failed to create and allocate buffer", .{});
+        buf_log.err("Failed to create and allocate buffer", .{});
         return false;
     }
 
@@ -175,11 +175,11 @@ pub export fn vk_buffer_create(buffer_ptr: ?*VulkanBuffer, device: c.VkDevice, a
     if (createInfo.persistentlyMapped and buffer.mapped == null) {
         buffer.mapped = vk_buffer_map(buffer, allocator, 0, c.VK_WHOLE_SIZE);
         if (buffer.mapped == null) {
-            log.cardinal_log_warn("Failed to persistently map buffer memory (fallback)", .{});
+            buf_log.warn("Failed to persistently map buffer memory (fallback)", .{});
         }
     }
 
-    log.cardinal_log_debug("Created buffer with size {d} bytes", .{createInfo.size});
+    buf_log.debug("Created buffer with size {d} bytes", .{createInfo.size});
     return true;
 }
 
@@ -187,18 +187,18 @@ fn wait_for_buffer_idle(buffer: *VulkanBuffer, device: c.VkDevice, vulkan_state:
     if (vulkan_state) |state| {
         // Check initialization state first to avoid spurious warnings during shutdown
         if (!state.sync.initialized) {
-            log.cardinal_log_info("[BUFFER_MANAGER] SYNC_SKIP: Sync manager not initialized, using device wait idle for buffer={any}", .{buffer.handle});
+            buf_log.info("SYNC_SKIP: Sync manager not initialized, using device wait idle for buffer={any}", .{buffer.handle});
             _ = c.vkDeviceWaitIdle(device);
             return;
         }
 
         // Use thread-safe timeline value retrieval
         var current_value: u64 = 0;
-        log.cardinal_log_info("[BUFFER_MANAGER] SYNC_CHECK: Getting timeline semaphore value for buffer={any}", .{buffer.handle});
+        buf_log.info("SYNC_CHECK: Getting timeline semaphore value for buffer={any}", .{buffer.handle});
 
         const result = vk_sync_manager.vulkan_sync_manager_get_timeline_value(&state.sync, &current_value);
 
-        log.cardinal_log_info("[BUFFER_MANAGER] SYNC_VALUE: buffer={any} semaphore_value={d} result={d}", .{ buffer.handle, current_value, result });
+        buf_log.info("SYNC_VALUE: buffer={any} semaphore_value={d} result={d}", .{ buffer.handle, current_value, result });
 
         if (result == c.VK_SUCCESS and current_value > 0) {
             // Wait for all submitted operations to complete
@@ -206,23 +206,23 @@ fn wait_for_buffer_idle(buffer: *VulkanBuffer, device: c.VkDevice, vulkan_state:
             const wait_result = vk_sync_manager.vulkan_sync_manager_wait_timeline(&state.sync, current_value, 5000000000); // 5s
 
             if (wait_result != c.VK_SUCCESS) {
-                log.cardinal_log_error("[BUFFER_MANAGER] SYNC_FAILED: Timeline semaphore wait failed for buffer={any}: {d}, falling back to device wait idle", .{ buffer.handle, wait_result });
+                buf_log.err("SYNC_FAILED: Timeline semaphore wait failed for buffer={any}: {d}, falling back to device wait idle", .{ buffer.handle, wait_result });
                 const idle_result = c.vkDeviceWaitIdle(device);
-                log.cardinal_log_info("[BUFFER_MANAGER] DEVICE_WAIT_IDLE: result={d} for buffer={any}", .{ idle_result, buffer.handle });
+                buf_log.info("DEVICE_WAIT_IDLE: result={d} for buffer={any}", .{ idle_result, buffer.handle });
             } else {
-                log.cardinal_log_info("[BUFFER_MANAGER] SYNC_SUCCESS: Timeline semaphore wait completed for buffer={any}", .{buffer.handle});
+                buf_log.info("SYNC_SUCCESS: Timeline semaphore wait completed for buffer={any}", .{buffer.handle});
             }
         } else {
             // Fallback to device wait idle if timeline semaphore query fails
-            log.cardinal_log_warn("[BUFFER_MANAGER] SYNC_FALLBACK: Failed to get timeline semaphore value (result={d}, value={d}), using device wait idle for buffer={any}", .{ result, current_value, buffer.handle });
+            buf_log.warn("SYNC_FALLBACK: Failed to get timeline semaphore value (result={d}, value={d}), using device wait idle for buffer={any}", .{ result, current_value, buffer.handle });
             const idle_result = c.vkDeviceWaitIdle(device);
-            log.cardinal_log_info("[BUFFER_MANAGER] DEVICE_WAIT_IDLE: result={d} for buffer={any}", .{ idle_result, buffer.handle });
+            buf_log.info("DEVICE_WAIT_IDLE: result={d} for buffer={any}", .{ idle_result, buffer.handle });
         }
     } else {
         // Fallback to device wait idle if no vulkan_state
-        log.cardinal_log_warn("[BUFFER_MANAGER] NO_VULKAN_STATE: Using device wait idle for buffer={any}", .{buffer.handle});
+        buf_log.warn("NO_VULKAN_STATE: Using device wait idle for buffer={any}", .{buffer.handle});
         const idle_result = c.vkDeviceWaitIdle(device);
-        log.cardinal_log_info("[BUFFER_MANAGER] DEVICE_WAIT_IDLE: result={d} for buffer={any}", .{ idle_result, buffer.handle });
+        buf_log.info("DEVICE_WAIT_IDLE: result={d} for buffer={any}", .{ idle_result, buffer.handle });
     }
 }
 
@@ -230,18 +230,18 @@ fn cleanup_buffer_resources(buffer: *VulkanBuffer, device: c.VkDevice, allocator
     _ = device;
     // Unmap if mapped
     if (buffer.mapped != null) {
-        log.cardinal_log_info("[BUFFER_MANAGER] UNMAP: Unmapping buffer={any}", .{buffer.handle});
+        buf_log.info("UNMAP: Unmapping buffer={any}", .{buffer.handle});
         vk_buffer_unmap(buffer, allocator);
-        log.cardinal_log_info("[BUFFER_MANAGER] UNMAPPED: buffer={any}", .{buffer.handle});
+        buf_log.info("UNMAPPED: buffer={any}", .{buffer.handle});
     }
 
     // Free buffer and memory
     if (allocator) |alloc| {
-        log.cardinal_log_info("[BUFFER_MANAGER] FREE_START: About to free buffer={any} allocation={any}", .{ buffer.handle, buffer.allocation });
+        buf_log.info("FREE_START: About to free buffer={any} allocation={any}", .{ buffer.handle, buffer.allocation });
         vk_allocator.free_buffer(alloc, buffer.handle, buffer.allocation);
-        log.cardinal_log_info("[BUFFER_MANAGER] FREE_COMPLETE: Freed buffer={any}", .{buffer.handle});
+        buf_log.info("FREE_COMPLETE: Freed buffer={any}", .{buffer.handle});
     } else {
-        log.cardinal_log_warn("Allocator is null, cannot free buffer memory", .{});
+        buf_log.warn("Allocator is null, cannot free buffer memory", .{});
     }
 
     // Clear structure
@@ -250,17 +250,17 @@ fn cleanup_buffer_resources(buffer: *VulkanBuffer, device: c.VkDevice, allocator
 
 pub export fn vk_buffer_destroy(buffer_ptr: ?*VulkanBuffer, device: c.VkDevice, allocator: ?*types.VulkanAllocator, vulkan_state: ?*types.VulkanState) callconv(.c) void {
     if (buffer_ptr == null) {
-        log.cardinal_log_warn("[BUFFER_MANAGER] DESTROY_SKIP: Invalid buffer pointer", .{});
+        buf_log.warn("DESTROY_SKIP: Invalid buffer pointer", .{});
         return;
     }
     const buffer = buffer_ptr.?;
 
     if (buffer.handle == null) {
-        log.cardinal_log_warn("[BUFFER_MANAGER] DESTROY_SKIP: Invalid buffer or null handle", .{});
+        buf_log.warn("DESTROY_SKIP: Invalid buffer or null handle", .{});
         return;
     }
 
-    log.cardinal_log_info("[BUFFER_MANAGER] DESTROY_START: buffer={any} handle={any} memory={any} mapped={any}", .{ buffer, buffer.handle, buffer.memory, buffer.mapped });
+    buf_log.info("DESTROY_START: buffer={any} handle={any} memory={any} mapped={any}", .{ buffer, buffer.handle, buffer.memory, buffer.mapped });
 
     // Wait for buffer to be idle
     wait_for_buffer_idle(buffer, device, vulkan_state);
@@ -268,29 +268,29 @@ pub export fn vk_buffer_destroy(buffer_ptr: ?*VulkanBuffer, device: c.VkDevice, 
     // Cleanup resources
     cleanup_buffer_resources(buffer, device, allocator);
 
-    log.cardinal_log_info("[BUFFER_MANAGER] DESTROY_COMPLETE: Buffer structure cleared", .{});
+    buf_log.info("DESTROY_COMPLETE: Buffer structure cleared", .{});
 }
 
 pub export fn vk_buffer_upload_data(buffer_ptr: ?*VulkanBuffer, device: c.VkDevice, allocator: ?*types.VulkanAllocator, data: ?*const anyopaque, size: c.VkDeviceSize, offset: c.VkDeviceSize) callconv(.c) bool {
     if (data == null or buffer_ptr == null) {
-        log.cardinal_log_error("Invalid parameters for buffer data upload", .{});
+        buf_log.err("Invalid parameters for buffer data upload", .{});
         return false;
     }
     const buffer = buffer_ptr.?;
 
     if (buffer.handle == null) {
-        log.cardinal_log_error("Invalid buffer handle for data upload", .{});
+        buf_log.err("Invalid buffer handle for data upload", .{});
         return false;
     }
 
     if (offset + size > buffer.size) {
-        log.cardinal_log_error("Upload data exceeds buffer size", .{});
+        buf_log.err("Upload data exceeds buffer size", .{});
         return false;
     }
 
     // Check if buffer is host visible
     if ((buffer.properties & c.VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT) == 0) {
-        log.cardinal_log_error("Buffer is not host visible, cannot upload data directly", .{});
+        buf_log.err("Buffer is not host visible, cannot upload data directly", .{});
         return false;
     }
 
@@ -303,7 +303,7 @@ pub export fn vk_buffer_upload_data(buffer_ptr: ?*VulkanBuffer, device: c.VkDevi
 
         // Ensure we don't write past buffer bounds
         if (offset + size > buffer.size) {
-            log.cardinal_log_error("Buffer upload overflow: offset={d}, size={d}, buffer size={d}", .{ offset, size, buffer.size });
+            buf_log.err("Buffer upload overflow: offset={d}, size={d}, buffer size={d}", .{ offset, size, buffer.size });
             return false;
         }
 
@@ -312,7 +312,7 @@ pub export fn vk_buffer_upload_data(buffer_ptr: ?*VulkanBuffer, device: c.VkDevi
         if (allocator) |alloc| {
             // Temporary mapping
             if (vk_allocator.map_memory(alloc, buffer.allocation, &mappedData) != c.VK_SUCCESS) {
-                log.cardinal_log_error("Failed to map buffer memory for data upload", .{});
+                buf_log.err("Failed to map buffer memory for data upload", .{});
                 return false;
             }
 
@@ -321,7 +321,7 @@ pub export fn vk_buffer_upload_data(buffer_ptr: ?*VulkanBuffer, device: c.VkDevi
 
             // Ensure we don't write past buffer bounds
             if (offset + size > buffer.size) {
-                log.cardinal_log_error("Buffer upload overflow: offset={d}, size={d}, buffer size={d}", .{ offset, size, buffer.size });
+                buf_log.err("Buffer upload overflow: offset={d}, size={d}, buffer size={d}", .{ offset, size, buffer.size });
                 vk_allocator.unmap_memory(alloc, buffer.allocation);
                 return false;
             }
@@ -329,7 +329,7 @@ pub export fn vk_buffer_upload_data(buffer_ptr: ?*VulkanBuffer, device: c.VkDevi
             @memcpy(@as([*]u8, @ptrCast(offsetPtr))[0..size], @as([*]const u8, @ptrCast(data))[0..size]);
             vk_allocator.unmap_memory(alloc, buffer.allocation);
         } else {
-            log.cardinal_log_error("Allocator required for temporary mapping", .{});
+            buf_log.err("Allocator required for temporary mapping", .{});
             return false;
         }
     }
@@ -354,24 +354,24 @@ pub export fn vk_buffer_upload_data(buffer_ptr: ?*VulkanBuffer, device: c.VkDevi
 pub export fn vk_buffer_map(buffer_ptr: ?*VulkanBuffer, allocator: ?*types.VulkanAllocator, offset: c.VkDeviceSize, size: c.VkDeviceSize) callconv(.c) ?*anyopaque {
     _ = offset;
     if (buffer_ptr == null or allocator == null) {
-        log.cardinal_log_error("Invalid buffer pointer or allocator for mapping", .{});
+        buf_log.err("Invalid buffer pointer or allocator for mapping", .{});
         return null;
     }
     const buffer = buffer_ptr.?;
 
     if (buffer.handle == null) {
-        log.cardinal_log_error("Invalid buffer handle for mapping", .{});
+        buf_log.err("Invalid buffer handle for mapping", .{});
         return null;
     }
 
     if ((buffer.properties & c.VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT) == 0) {
-        log.cardinal_log_error("Buffer is not host visible, cannot map", .{});
+        buf_log.err("Buffer is not host visible, cannot map", .{});
         return null;
     }
 
     var mappedData: ?*anyopaque = null;
     if (vk_allocator.map_memory(allocator, buffer.allocation, &mappedData) != c.VK_SUCCESS) {
-        log.cardinal_log_error("Failed to map buffer memory", .{});
+        buf_log.err("Failed to map buffer memory", .{});
         return null;
     }
 
@@ -414,13 +414,13 @@ pub export fn vk_buffer_create_device_local(buffer_ptr: ?*VulkanBuffer, device: 
 
     var stagingBuffer: VulkanBuffer = undefined;
     if (!vk_buffer_create(&stagingBuffer, device, allocator, &stagingInfo)) {
-        log.cardinal_log_error("Failed to create staging buffer", .{});
+        buf_log.err("Failed to create staging buffer", .{});
         return false;
     }
 
     // Upload data to staging buffer
     if (!vk_buffer_upload_data(&stagingBuffer, device, allocator, data, size, 0)) {
-        log.cardinal_log_error("Failed to upload data to staging buffer", .{});
+        buf_log.err("Failed to upload data to staging buffer", .{});
         vk_buffer_destroy(&stagingBuffer, device, allocator, vulkan_state);
         return false;
     }
@@ -433,14 +433,14 @@ pub export fn vk_buffer_create_device_local(buffer_ptr: ?*VulkanBuffer, device: 
     deviceBufferInfo.persistentlyMapped = false;
 
     if (!vk_buffer_create(buffer, device, allocator, &deviceBufferInfo)) {
-        log.cardinal_log_error("Failed to create device local buffer", .{});
+        buf_log.err("Failed to create device local buffer", .{});
         vk_buffer_destroy(&stagingBuffer, device, allocator, vulkan_state);
         return false;
     }
 
     // Copy from staging to device buffer
     if (!vk_buffer_copy(device, commandPool, queue, stagingBuffer.handle, buffer.handle, size, 0, 0, vulkan_state)) {
-        log.cardinal_log_error("Failed to copy data to device buffer", .{});
+        buf_log.err("Failed to copy data to device buffer", .{});
         vk_buffer_destroy(buffer, device, allocator, vulkan_state);
         vk_buffer_destroy(&stagingBuffer, device, allocator, vulkan_state);
         return false;
@@ -454,37 +454,37 @@ pub export fn vk_buffer_create_device_local(buffer_ptr: ?*VulkanBuffer, device: 
 
 pub export fn vk_buffer_create_vertex(buffer: ?*VulkanBuffer, device: c.VkDevice, allocator: ?*types.VulkanAllocator, commandPool: c.VkCommandPool, queue: c.VkQueue, vertices: ?*const anyopaque, vertexSize: c.VkDeviceSize, vulkan_state: ?*types.VulkanState) callconv(.c) bool {
     if (vertices == null or vertexSize == 0) {
-        log.cardinal_log_error("Invalid vertex data for buffer creation", .{});
+        buf_log.err("Invalid vertex data for buffer creation", .{});
         return false;
     }
 
     if (!vk_buffer_create_device_local(buffer, device, allocator, commandPool, queue, vertices, vertexSize, c.VK_BUFFER_USAGE_VERTEX_BUFFER_BIT, vulkan_state)) {
-        log.cardinal_log_error("Failed to create vertex buffer", .{});
+        buf_log.err("Failed to create vertex buffer", .{});
         return false;
     }
 
-    log.cardinal_log_debug("Created vertex buffer with {d} bytes", .{vertexSize});
+    buf_log.debug("Created vertex buffer with {d} bytes", .{vertexSize});
     return true;
 }
 
 pub export fn vk_buffer_create_index(buffer: ?*VulkanBuffer, device: c.VkDevice, allocator: ?*types.VulkanAllocator, commandPool: c.VkCommandPool, queue: c.VkQueue, indices: ?*const anyopaque, indexSize: c.VkDeviceSize, vulkan_state: ?*types.VulkanState) callconv(.c) bool {
     if (indices == null or indexSize == 0) {
-        log.cardinal_log_error("Invalid index data for buffer creation", .{});
+        buf_log.err("Invalid index data for buffer creation", .{});
         return false;
     }
 
     if (!vk_buffer_create_device_local(buffer, device, allocator, commandPool, queue, indices, indexSize, c.VK_BUFFER_USAGE_INDEX_BUFFER_BIT, vulkan_state)) {
-        log.cardinal_log_error("Failed to create index buffer", .{});
+        buf_log.err("Failed to create index buffer", .{});
         return false;
     }
 
-    log.cardinal_log_debug("Created index buffer with {d} bytes", .{indexSize});
+    buf_log.debug("Created index buffer with {d} bytes", .{indexSize});
     return true;
 }
 
 pub export fn vk_buffer_create_uniform(buffer: ?*VulkanBuffer, device: c.VkDevice, allocator: ?*types.VulkanAllocator, size: c.VkDeviceSize) callconv(.c) bool {
     if (size == 0) {
-        log.cardinal_log_error("Uniform buffer size cannot be zero", .{});
+        buf_log.err("Uniform buffer size cannot be zero", .{});
         return false;
     }
 
@@ -496,24 +496,24 @@ pub export fn vk_buffer_create_uniform(buffer: ?*VulkanBuffer, device: c.VkDevic
     uniformInfo.persistentlyMapped = true;
 
     if (!vk_buffer_create(buffer, device, allocator, &uniformInfo)) {
-        log.cardinal_log_error("Failed to create uniform buffer", .{});
+        buf_log.err("Failed to create uniform buffer", .{});
         return false;
     }
 
-    log.cardinal_log_debug("Created uniform buffer with {d} bytes", .{size});
+    buf_log.debug("Created uniform buffer with {d} bytes", .{size});
     return true;
 }
 
 pub export fn vk_buffer_copy(device: c.VkDevice, commandPool: c.VkCommandPool, queue: c.VkQueue, srcBuffer: c.VkBuffer, dstBuffer: c.VkBuffer, size: c.VkDeviceSize, srcOffset: c.VkDeviceSize, dstOffset: c.VkDeviceSize, vulkan_state: ?*types.VulkanState) callconv(.c) bool {
     if (srcBuffer == null or dstBuffer == null or size == 0 or vulkan_state == null) {
-        log.cardinal_log_error("Invalid parameters for buffer copy", .{});
+        buf_log.err("Invalid parameters for buffer copy", .{});
         return false;
     }
     const state = vulkan_state.?;
 
     const commandBuffer = begin_single_time_commands(device, commandPool);
     if (commandBuffer == null) {
-        log.cardinal_log_error("Failed to begin command buffer for buffer copy", .{});
+        buf_log.err("Failed to begin command buffer for buffer copy", .{});
         return false;
     }
 

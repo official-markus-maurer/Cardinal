@@ -56,6 +56,11 @@ pub const vulkan_renderer = @import("renderer/vulkan_renderer.zig");
 pub const vulkan_renderer_frame = @import("renderer/vulkan_renderer_frame.zig");
 pub const vulkan_pipeline_manager = @import("renderer/vulkan_pipeline_manager.zig");
 
+pub const ecs_entity = @import("ecs/entity.zig");
+pub const ecs_component = @import("ecs/component.zig");
+pub const ecs_registry = @import("ecs/registry.zig");
+pub const ecs_system = @import("ecs/system.zig");
+
 comptime {
     _ = log;
     _ = memory;

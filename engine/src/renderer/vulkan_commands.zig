@@ -536,7 +536,7 @@ pub export fn vk_create_commands_sync(s: ?*types.VulkanState) callconv(.c) bool 
 
     vs.commands.current_buffer_index = 0;
 
-    log.cardinal_log_warn("[INIT] Allocating swapchain_image_layout_initialized for {d} swapchain images", .{vs.swapchain.image_count});
+    cmd_log.warn("Allocating swapchain_image_layout_initialized for {d} swapchain images", .{vs.swapchain.image_count});
     const mem_alloc = memory.cardinal_get_allocator_for_category(.RENDERER);
     if (vs.swapchain.image_layout_initialized != null) {
         memory.cardinal_free(mem_alloc, vs.swapchain.image_layout_initialized);
@@ -762,7 +762,7 @@ pub export fn vk_record_cmd(s: ?*types.VulkanState, image_index: u32) callconv(.
         // Execute Graph (This inserts barriers and calls pass callback)
         rg.execute(cmd, vs);
     } else {
-        log.cardinal_log_error("[CMD] RenderGraph is null! Cannot record scene.", .{});
+        cmd_log.err("RenderGraph is null! Cannot record scene.", .{});
     }
 
     // Skybox Rendering
@@ -781,9 +781,10 @@ pub export fn vk_record_cmd(s: ?*types.VulkanState, image_index: u32) callconv(.
         }
     }
 
-    // TODO: Transparent Pass (if any)
-    // For now, we don't have a separate transparent pass structure in this simple renderer,
-    // but we should handle it if we add transparency support.
+    // Transparent Pass (if any)
+    // For now, we don't have a separate transparent pass structure in this simple renderer.
+    // Transparency is currently handled by the PBR pass (if supported) or requires a dedicated pass.
+    // Future Improvement: Implement OIT or sorted transparency pass.
 
     // Lighting Debug Rendering (Visualizes light positions)
     const lighting_buffer = if (vs.pipelines.use_pbr_pipeline) vs.pipelines.pbr_pipeline.lightingBuffers[vs.sync.current_frame] else null;

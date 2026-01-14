@@ -103,7 +103,7 @@ pub export fn cardinal_scene_load_async(path: ?[*:0]const u8, priority: async_lo
 
     const ext = find_ext(path);
     if (ext == null) {
-        log.cardinal_log_error("No file extension found in path: {s}", .{path.?});
+        loader_log.err("No file extension found in path: {s}", .{path.?});
         return null;
     }
 

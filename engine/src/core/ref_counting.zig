@@ -364,22 +364,22 @@ pub export fn cardinal_ref_debug_print_resources() callconv(.c) void {
     g_registry_mutex.lock();
     defer g_registry_mutex.unlock();
 
-    std.log.info("=== Reference Counted Resources Debug Info ===", .{});
-    std.log.info("Total resources: {d}", .{g_registry.total_resources});
-    std.log.info("Bucket count: {d}", .{g_registry.bucket_count});
+    ref_log.info("=== Reference Counted Resources Debug Info ===", .{});
+    ref_log.info("Total resources: {d}", .{g_registry.total_resources});
+    ref_log.info("Bucket count: {d}", .{g_registry.bucket_count});
 
     var i: usize = 0;
     while (i < g_registry.bucket_count) : (i += 1) {
         var current = g_registry.buckets.?[i];
         if (current != null) {
-            std.log.info("Bucket {d}:", .{i});
+            ref_log.info("Bucket {d}:", .{i});
             while (current) |curr| {
-                std.log.info("  - '{s}': ref_count={d}, weak_count={d}, size={d} bytes", .{ curr.identifier.?, curr.ref_count, curr.weak_count, curr.resource_size });
+                ref_log.info("  - '{s}': ref_count={d}, weak_count={d}, size={d} bytes", .{ curr.identifier.?, curr.ref_count, curr.weak_count, curr.resource_size });
                 current = curr.next;
             }
         }
     }
-    std.log.info("=== End Debug Info ===", .{});
+    ref_log.info("=== End Debug Info ===", .{});
 }
 
 pub export fn cardinal_weak_ref_acquire(ref_resource: ?*CardinalRefCountedResource) callconv(.c) void {

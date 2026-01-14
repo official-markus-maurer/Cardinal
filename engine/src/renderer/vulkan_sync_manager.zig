@@ -377,9 +377,12 @@ pub fn vulkan_sync_manager_get_next_timeline_value(sync_manager: ?*types.VulkanS
             base_val = current_device_value;
         }
 
-        // Debug logging for huge values
-        if (base_val > 1000000000) {
-            log.cardinal_log_warn("[SYNC_MANAGER] Huge timeline value detected: base={d}, old={d}, dev={d}, res={d}", .{ base_val, old_val, current_device_value, result });
+        if (result == c.VK_SUCCESS) {
+            // Log warning if value is extremely high (nearing u64 max / 2)
+            // This warns before the overflow logic triggers
+            if (current_device_value > 0x7FFFFFFFFFFFFFFF) {
+                sync_log.warn("Huge timeline value detected: base={d}, old={d}, dev={d}, res={d}", .{ base_val, old_val, current_device_value, result });
+            }
         }
 
         // Check for overflow risk (leaving some headroom)
@@ -398,7 +401,7 @@ pub fn vulkan_sync_manager_get_next_timeline_value(sync_manager: ?*types.VulkanS
                 // Otherwise we will loop forever using the old stale current_device_value (which was huge).
                 result = c.vkGetSemaphoreCounterValue(mgr.device, mgr.timeline_semaphore, &current_device_value);
                 if (result != c.VK_SUCCESS) {
-                    log.cardinal_log_error("[SYNC_MANAGER] Failed to get timeline value after reset: {d}", .{result});
+                    sync_log.err("Failed to get timeline value after reset: {d}", .{result});
                     return 0;
                 }
 
@@ -671,7 +674,7 @@ pub fn vulkan_sync_manager_validate_timeline_state(sync_manager: ?*types.VulkanS
     }
     const mgr = sync_manager.?;
     if (mgr.timeline_semaphore == null) {
-        log.cardinal_log_error("[SYNC_MANAGER] Invalid sync manager or timeline semaphore", .{});
+        sync_log.err("Invalid sync manager or timeline semaphore", .{});
         return false;
     }
 
@@ -679,7 +682,7 @@ pub fn vulkan_sync_manager_validate_timeline_state(sync_manager: ?*types.VulkanS
     const result = c.vkGetSemaphoreCounterValue(mgr.device, mgr.timeline_semaphore, &current_value);
 
     if (result != c.VK_SUCCESS) {
-        log.cardinal_log_error("[SYNC_MANAGER] Timeline semaphore validation failed: {d}", .{result});
+        sync_log.err("Timeline semaphore validation failed: {d}", .{result});
         return false;
     }
 
@@ -698,11 +701,11 @@ pub fn vulkan_sync_manager_recover_timeline_semaphore(sync_manager: ?*types.Vulk
     g_sync_lock.lock();
     defer g_sync_lock.unlock();
 
-    log.cardinal_log_warn("[SYNC_MANAGER] Attempting timeline semaphore recovery", .{});
+    sync_log.warn("Attempting timeline semaphore recovery", .{});
 
     if (error_info) |info| {
         if (info.error_type == types.VulkanTimelineError.DEVICE_LOST) {
-            log.cardinal_log_error("[SYNC_MANAGER] Cannot recover from device lost error", .{});
+            sync_log.err("Cannot recover from device lost error", .{});
             return false;
         }
     }
@@ -731,7 +734,7 @@ pub fn vulkan_sync_manager_recover_timeline_semaphore(sync_manager: ?*types.Vulk
     atomic(&mgr.image_available_value).store(0, .seq_cst);
     atomic(&mgr.render_complete_value).store(0, .seq_cst);
 
-    log.cardinal_log_info("[SYNC_MANAGER] Timeline semaphore recovery successful", .{});
+    sync_log.info("Timeline semaphore recovery successful", .{});
     return true;
 }
 

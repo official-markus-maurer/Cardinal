@@ -2,6 +2,8 @@ const std = @import("std");
 const c = @import("../vulkan_c.zig").c;
 const log = @import("../../core/log.zig");
 
+const reflect_log = log.ScopedLogger("SHADER_REFLECT");
+
 // SPIR-V Opcodes
 const SpvOpName = 5;
 const SpvOpMemberName = 6;
@@ -103,7 +105,7 @@ pub fn reflect_shader(allocator: std.mem.Allocator, code: []const u32, stage: c.
 
     // Basic validation
     if (code.len < 5 or code[0] != 0x07230203) {
-        log.cardinal_log_error("Invalid SPIR-V magic number", .{});
+        reflect_log.err("Invalid SPIR-V magic number", .{});
         return error.InvalidSpirv;
     }
 

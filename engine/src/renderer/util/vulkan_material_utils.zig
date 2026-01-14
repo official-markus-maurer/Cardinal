@@ -1,6 +1,7 @@
 const std = @import("std");
 const types = @import("../vulkan_types.zig");
 const handles = @import("../../core/handles.zig");
+const log = @import("../../core/log.zig");
 
 const c = @cImport({
     @cDefine("CARDINAL_ZIG_BUILD", "1");
@@ -8,6 +9,8 @@ const c = @cImport({
     @cInclude("string.h");
     @cInclude("vulkan/vulkan.h");
 });
+
+const mat_utils_log = log.ScopedLogger("MAT_UTILS");
 
 fn set_default_material_properties(pushConstants: *types.PBRPushConstants, hasTextures: bool) void {
     pushConstants.albedoFactor[0] = 1.0;
@@ -23,7 +26,7 @@ fn set_default_material_properties(pushConstants: *types.PBRPushConstants, hasTe
     pushConstants.emissiveFactor[2] = 0.0;
     pushConstants.emissiveStrength = 1.0;
     pushConstants.roughnessFactor = 0.5;
-    
+
     // Packed info: flags (upper 16 bits) | uvSetIndices (lower 16 bits)
     // Flags default: OPAQUE (0) | No Skeleton (0) | No Indexing (0)
     // UV Sets default: 0
@@ -61,7 +64,7 @@ fn resolve_texture_index(textureHandle: handles.TextureHandle, manager: ?*const 
 
     if (mappedIndex < manager.?.textureCount) {
         const tex = &manager.?.textures.?[mappedIndex];
-        // log.cardinal_log_debug("Resolving texture handle {d} -> mapped index {d}, bindless index: {d}", .{textureIndex, mappedIndex, tex.bindless_index});
+        mat_utils_log.debug("Resolving texture handle {d} -> mapped index {d}, bindless index: {d}", .{ textureIndex, mappedIndex, tex.bindless_index });
         if (tex.bindless_index != c.UINT32_MAX) {
             return tex.bindless_index;
         }
@@ -128,7 +131,7 @@ fn set_material_properties(pushConstants: *types.PBRPushConstants, material: *co
     // Pack flags and UV indices into packedInfo
     // Bits 0-15: UV indices
     // Bits 16-31: Flags
-    
+
     var flags: u32 = 0;
     flags |= (@as(u32, @intCast(@intFromEnum(material.alpha_mode))) & 3); // Bits 0-1: Alpha Mode
     // Skeleton bit (bit 2) will be set in vk_pbr_render
@@ -142,7 +145,7 @@ fn set_material_properties(pushConstants: *types.PBRPushConstants, material: *co
     packedUVs |= (@as(u32, material.uv_indices[2]) & 0x7) << 6;
     packedUVs |= (@as(u32, material.uv_indices[3]) & 0x7) << 9;
     packedUVs |= (@as(u32, material.uv_indices[4]) & 0x7) << 12;
-    
+
     pushConstants.packedInfo = (flags << 16) | (packedUVs & 0xFFFF);
 }
 
@@ -174,7 +177,7 @@ pub export fn vk_material_setup_push_constants(pushConstants: ?*types.PBRPushCon
             // Flag is in upper 16 bits of packedInfo
             // Bit 3 corresponds to (1 << 3) = 8
             // Shifted by 16: (8 << 16)
-            pc.packedInfo |= (8 << 16); 
+            pc.packedInfo |= (8 << 16);
         }
     } else {
         set_default_material_properties(pc, hasTextures);

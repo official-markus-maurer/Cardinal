@@ -3,6 +3,8 @@ const log = @import("cardinal_engine").log;
 const EditorApp = @import("app.zig").EditorApp;
 const EditorConfig = @import("app.zig").EditorConfig;
 
+const editor_log = log.ScopedLogger("EDITOR");
+
 fn print_usage(program_name: []const u8) void {
     std.debug.print("Usage: {s} [options]\n", .{program_name});
     std.debug.print("Options:\n", .{});
@@ -12,7 +14,6 @@ fn print_usage(program_name: []const u8) void {
 
 pub fn main() !u8 {
     // Initialize memory system first
-    // Note: CardinalEngine also initializes memory, but we made it idempotent.
     const memory = @import("cardinal_engine").memory;
     memory.cardinal_memory_init(1024 * 1024 * 64); // 64MB
 
@@ -45,13 +46,13 @@ pub fn main() !u8 {
     config.renderer.prefer_hdr = false;
 
     var app = EditorApp.create(allocator, config) catch |err| {
-        log.cardinal_log_error("Failed to initialize editor application: {}", .{err});
+        editor_log.err("Failed to initialize editor application: {}", .{err});
         return 255;
     };
     defer app.destroy();
 
     app.run() catch |err| {
-        log.cardinal_log_error("Runtime error: {}", .{err});
+        editor_log.err("Runtime error: {}", .{err});
         return 255;
     };
 

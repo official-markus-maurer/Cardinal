@@ -208,7 +208,7 @@ pub const CardinalEngine = struct {
         async_loader.cardinal_async_register_scene_loader(loader_mod.cardinal_scene_load);
 
         self.async_loader_initialized = true;
-        log.cardinal_log_info("Async loader system initialized successfully", .{});
+        eng_log.info("Async loader system initialized successfully", .{});
 
         _ = texture_loader.texture_cache_initialize(self.config.cache_size);
         _ = mesh_loader.mesh_cache_initialize(self.config.cache_size);

@@ -12,6 +12,8 @@ const vulkan_renderer_frame = engine.vulkan_renderer_frame;
 const types = engine.vulkan_types;
 const ref_counting = engine.ref_counting;
 
+const client_log = log.ScopedLogger("CLIENT");
+
 // Define std_options to route std.log to our logging system
 pub const std_options: std.Options = .{
     .logFn = myLogFn,
@@ -25,7 +27,7 @@ fn myLogFn(
 ) void {
     const scope_name = @tagName(scope);
     const scoped_log = log.ScopedLogger(scope_name);
-    
+
     switch (message_level) {
         .err => scoped_log.err(format, args),
         .warn => scoped_log.warn(format, args),
@@ -44,7 +46,7 @@ fn print_usage(program_name: []const u8) void {
 pub fn main() !u8 {
     // Initialize memory system first
     memory.cardinal_memory_init(1024 * 1024 * 64); // 64MB
-    
+
     // Get allocator for arguments
     const allocator = memory.cardinal_get_allocator_for_category(.ENGINE).as_allocator();
 
@@ -75,7 +77,7 @@ pub fn main() !u8 {
     };
 
     if (!async_loader.cardinal_async_loader_init(&async_config)) {
-        log.cardinal_log_error("Failed to initialize async loader", .{});
+        client_log.err("Failed to initialize async loader", .{});
         memory.cardinal_memory_shutdown();
         log.cardinal_log_shutdown();
         return 255;
@@ -85,7 +87,7 @@ pub fn main() !u8 {
     _ = texture_loader.texture_cache_initialize(1000);
     _ = mesh_loader.mesh_cache_initialize(1000);
 
-    log.cardinal_log_info("Multi-threaded engine initialized successfully", .{});
+    client_log.info("Multi-threaded engine initialized successfully", .{});
 
     const config = window.CardinalWindowConfig{
         .title = "Cardinal Client",
@@ -127,7 +129,7 @@ pub fn main() !u8 {
     vulkan_renderer.cardinal_renderer_destroy(&renderer);
     window.cardinal_window_destroy(win);
 
-    log.cardinal_log_info("Shutting down multi-threaded engine systems", .{});
+    client_log.info("Shutting down multi-threaded engine systems", .{});
 
     texture_loader.texture_cache_shutdown_system();
     mesh_loader.mesh_cache_shutdown_system();

@@ -16,18 +16,18 @@ pub export fn material_data_free(material: ?*scene.CardinalMaterial) callconv(.c
 
 pub export fn material_load_async(material_data: ?*const scene.CardinalMaterial, priority: async_loader.CardinalAsyncPriority, callback: async_loader.CardinalAsyncCallback, user_data: ?*anyopaque) callconv(.c) ?*async_loader.CardinalAsyncTask {
     if (material_data == null) {
-        log.cardinal_log_error("material_load_async: material_data is NULL", .{});
+        mat_log.err("material_load_async: material_data is NULL", .{});
         return null;
     }
 
-    log.cardinal_log_debug("[MATERIAL] Starting async load for material", .{});
+    mat_log.debug("Starting async load for material", .{});
 
     const task = async_loader.cardinal_async_load_material(@ptrCast(material_data), priority, callback, user_data);
     if (task == null) {
-        log.cardinal_log_error("Failed to create async material loading task", .{});
+        mat_log.err("Failed to create async material loading task", .{});
         return null;
     }
 
-    log.cardinal_log_debug("[MATERIAL] Async task created for material loading", .{});
+    mat_log.debug("Async task created for material loading", .{});
     return task;
 }

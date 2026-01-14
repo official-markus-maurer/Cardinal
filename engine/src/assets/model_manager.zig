@@ -501,7 +501,7 @@ fn rebuild_combined_scene(manager: *CardinalModelManager) void {
                 if (dst_texture.ref_resource == null and src_texture.ref_resource != null) {
                     model_log.warn("Texture copy failed to preserve ref_resource! Src: {*}, Dst: {*}", .{ src_texture.ref_resource, dst_texture.ref_resource });
                 } else if (dst_texture.ref_resource != null) {
-                    // log.cardinal_log_debug("[MODEL_MGR] Texture copy preserved ref_resource: {*}", .{dst_texture.ref_resource});
+                    // model_log.debug("Texture copy preserved ref_resource: {*}", .{dst_texture.ref_resource});
                 }
             }
         }
@@ -1164,7 +1164,7 @@ pub export fn cardinal_model_manager_update(manager: ?*CardinalModelManager) cal
 
                     if (!success) {
                         const model_name_str = if (model.name) |n| n else "Unnamed";
-                        log.cardinal_log_error("Failed to get scene result for model '{s}'", .{model_name_str});
+                        model_log.err("Failed to get scene result for model '{s}'", .{model_name_str});
                     }
 
                     free_model_load_task(model.load_task.?);
@@ -1173,7 +1173,7 @@ pub export fn cardinal_model_manager_update(manager: ?*CardinalModelManager) cal
                     const error_msg = async_loader.cardinal_async_get_error_message(model.load_task.?);
                     const model_name_str = if (model.name) |n| n else "Unnamed";
                     const err_str = if (error_msg) |e| e else "Unknown error";
-                    log.cardinal_log_error("Async loading failed for model '{s}': {s}", .{ model_name_str, err_str });
+                    model_log.err("Async loading failed for model '{s}': {s}", .{ model_name_str, err_str });
 
                     free_model_load_task(model.load_task.?);
                     model.load_task = null;

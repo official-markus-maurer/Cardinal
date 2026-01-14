@@ -1143,12 +1143,12 @@ pub export fn vk_pbr_render(pipeline: ?*types.VulkanPBRPipeline, commandBuffer: 
             if (dm.descriptorSets != null and dm.descriptorSetCount > frame) {
                 descriptorSet = dm.descriptorSets.?[frame];
             } else {
-                log.cardinal_log_warn("vk_pbr_render skipped: no descriptor sets", .{});
+                pbr_log.warn("vk_pbr_render skipped: no descriptor sets", .{});
                 return;
             }
         }
     } else {
-        log.cardinal_log_warn("vk_pbr_render skipped: no descriptor manager", .{});
+        pbr_log.warn("vk_pbr_render skipped: no descriptor manager", .{});
         return;
     }
 

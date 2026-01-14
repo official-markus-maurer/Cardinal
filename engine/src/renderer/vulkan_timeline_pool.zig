@@ -290,7 +290,7 @@ pub export fn vulkan_timeline_pool_cleanup_idle(pool: *types.VulkanTimelinePool,
     pool_mutex_unlock(pool.mutex);
 
     if (cleaned_up > 0) {
-        log.cardinal_log_debug("[TIMELINE_POOL] Cleaned up {d} idle semaphores", .{cleaned_up});
+        tl_pool_log.debug("Cleaned up {d} idle semaphores", .{cleaned_up});
     }
 
     return cleaned_up;
