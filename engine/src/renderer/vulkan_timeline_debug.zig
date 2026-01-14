@@ -1,6 +1,7 @@
 const std = @import("std");
 const builtin = @import("builtin");
 const log = @import("../core/log.zig");
+const tl_dbg_log = log.ScopedLogger("TL_DEBUG");
 const platform = @import("../core/platform.zig");
 const memory = @import("../core/memory.zig");
 const types = @import("vulkan_timeline_types.zig");
@@ -14,7 +15,7 @@ fn debug_mutex_init(mutex: *?*anyopaque) bool {
         const ptr = memory.cardinal_alloc(allocator, @sizeOf(c.CRITICAL_SECTION));
         if (ptr == null) return false;
         const cs = @as(*c.CRITICAL_SECTION, @ptrCast(@alignCast(ptr)));
-        
+
         c.InitializeCriticalSection(cs);
         mutex.* = cs;
         return true;
@@ -22,7 +23,7 @@ fn debug_mutex_init(mutex: *?*anyopaque) bool {
         const ptr = memory.cardinal_alloc(allocator, @sizeOf(c.pthread_mutex_t));
         if (ptr == null) return false;
         const m = @as(*c.pthread_mutex_t, @ptrCast(@alignCast(ptr)));
-        
+
         if (c.pthread_mutex_init(m, null) != 0) {
             memory.cardinal_free(allocator, m);
             return false;
@@ -94,7 +95,7 @@ pub export fn vulkan_timeline_debug_init(debug_ctx: *types.VulkanTimelineDebugCo
     @memset(@as([*]u8, @ptrCast(debug_ctx))[0..@sizeOf(types.VulkanTimelineDebugContext)], 0);
 
     if (!debug_mutex_init(&debug_ctx.mutex)) {
-        log.cardinal_log_error("[TIMELINE_DEBUG] Failed to allocate mutex", .{});
+        tl_dbg_log.err("Failed to allocate mutex", .{});
         return false;
     }
 
@@ -118,7 +119,7 @@ pub export fn vulkan_timeline_debug_init(debug_ctx: *types.VulkanTimelineDebugCo
     debug_ctx.snapshot_interval_ns = 1000000000; // 1 second
     debug_ctx.last_snapshot_time = vulkan_timeline_debug_get_timestamp_ns();
 
-    log.cardinal_log_info("[TIMELINE_DEBUG] Debug context initialized", .{});
+    tl_dbg_log.info("Debug context initialized", .{});
     return true;
 }
 
@@ -128,7 +129,7 @@ pub export fn vulkan_timeline_debug_destroy(debug_ctx: *types.VulkanTimelineDebu
     debug_mutex_destroy(&debug_ctx.mutex);
     @memset(@as([*]u8, @ptrCast(debug_ctx))[0..@sizeOf(types.VulkanTimelineDebugContext)], 0);
 
-    log.cardinal_log_info("[TIMELINE_DEBUG] Debug context destroyed", .{});
+    tl_dbg_log.info("Debug context destroyed", .{});
 }
 
 pub export fn vulkan_timeline_debug_reset(debug_ctx: *types.VulkanTimelineDebugContext) callconv(.c) void {
@@ -154,12 +155,12 @@ pub export fn vulkan_timeline_debug_reset(debug_ctx: *types.VulkanTimelineDebugC
 
     debug_mutex_unlock(debug_ctx.mutex);
 
-    log.cardinal_log_info("[TIMELINE_DEBUG] Debug context reset", .{});
+    tl_dbg_log.info("Debug context reset", .{});
 }
 
 pub export fn vulkan_timeline_debug_set_enabled(debug_ctx: *types.VulkanTimelineDebugContext, enabled: bool) callconv(.c) void {
     debug_ctx.enabled = enabled;
-    log.cardinal_log_info("[TIMELINE_DEBUG] Debug {s}", .{if (enabled) "enabled" else "disabled"});
+    tl_dbg_log.info("Debug {s}", .{if (enabled) "enabled" else "disabled"});
 }
 
 pub export fn vulkan_timeline_debug_set_event_collection(debug_ctx: *types.VulkanTimelineDebugContext, enabled: bool) callconv(.c) void {
@@ -210,7 +211,7 @@ pub export fn vulkan_timeline_debug_log_event(debug_ctx: *types.VulkanTimelineDe
     if (debug_ctx.verbose_logging) {
         const name_slice = if (name != null) std.mem.span(name) else "<unnamed>";
         const type_str = std.mem.span(vulkan_timeline_debug_event_type_to_string(type_enum));
-        log.cardinal_log_debug("[TIMELINE_DEBUG] {s}: value={d}, result={d}, thread={d}, name={s}", .{ type_str, timeline_value, result, event.thread_id, name_slice });
+        tl_dbg_log.debug("{s}: value={d}, result={d}, thread={d}, name={s}", .{ type_str, timeline_value, result, event.thread_id, name_slice });
     }
 }
 
@@ -229,10 +230,6 @@ pub export fn vulkan_timeline_debug_log_wait_end(debug_ctx: *types.VulkanTimelin
 
     var i: u32 = 0;
     while (i < types.VULKAN_TIMELINE_DEBUG_MAX_EVENTS and i < event_count) : (i += 1) {
-        // Handle wrapping manually since % operator behavior on negative numbers in C vs Zig might differ or just be safe
-        // (current_index - 1 - i) can underflow u32, but wrapping arithmetic is fine for modulo if power of 2,
-        // but MAX_EVENTS is 1000.
-        // Let's do it safely:
         const check_index = (current_index + types.VULKAN_TIMELINE_DEBUG_MAX_EVENTS - 1 - i) % types.VULKAN_TIMELINE_DEBUG_MAX_EVENTS;
         const event = &debug_ctx.events[check_index];
 
@@ -346,7 +343,7 @@ pub export fn vulkan_timeline_debug_take_snapshot(debug_ctx: *types.VulkanTimeli
     debug_mutex_unlock(debug_ctx.mutex);
 
     if (debug_ctx.verbose_logging) {
-        log.cardinal_log_debug("[TIMELINE_DEBUG] Snapshot taken: value={d}, valid={s}", .{ snapshot.current_value, if (snapshot.is_valid) "true" else "false" });
+        tl_dbg_log.debug("Snapshot taken: value={d}, valid={s}", .{ snapshot.current_value, if (snapshot.is_valid) "true" else "false" });
     }
 }
 
@@ -410,32 +407,32 @@ pub export fn vulkan_timeline_debug_print_performance_report(debug_ctx: *types.V
     var metrics: types.VulkanTimelinePerformanceMetrics = undefined;
     if (!vulkan_timeline_debug_get_performance_metrics(debug_ctx, &metrics)) return;
 
-    log.cardinal_log_info("[TIMELINE_DEBUG] === Performance Report ===", .{});
-    log.cardinal_log_info("[TIMELINE_DEBUG] Total waits: {d}", .{metrics.total_waits});
-    log.cardinal_log_info("[TIMELINE_DEBUG] Total signals: {d}", .{metrics.total_signals});
+    tl_dbg_log.info("=== Performance Report ===", .{});
+    tl_dbg_log.info("Total waits: {d}", .{metrics.total_waits});
+    tl_dbg_log.info("Total signals: {d}", .{metrics.total_signals});
 
     if (metrics.total_waits > 0) {
         const avg_wait = metrics.total_wait_time_ns / metrics.total_waits;
-        log.cardinal_log_info("[TIMELINE_DEBUG] Average wait time: {d} ns ({d:.3} ms)", .{ avg_wait, @as(f64, @floatFromInt(avg_wait)) / 1000000.0 });
-        log.cardinal_log_info("[TIMELINE_DEBUG] Max wait time: {d} ns ({d:.3} ms)", .{ metrics.max_wait_time_ns, @as(f64, @floatFromInt(metrics.max_wait_time_ns)) / 1000000.0 });
+        tl_dbg_log.info("Average wait time: {d} ns ({d:.3} ms)", .{ avg_wait, @as(f64, @floatFromInt(avg_wait)) / 1000000.0 });
+        tl_dbg_log.info("Max wait time: {d} ns ({d:.3} ms)", .{ metrics.max_wait_time_ns, @as(f64, @floatFromInt(metrics.max_wait_time_ns)) / 1000000.0 });
     }
 
     if (metrics.total_signals > 0) {
         const avg_signal = metrics.total_signal_time_ns / metrics.total_signals;
-        log.cardinal_log_info("[TIMELINE_DEBUG] Average signal time: {d} ns ({d:.3} ms)", .{ avg_signal, @as(f64, @floatFromInt(avg_signal)) / 1000000.0 });
-        log.cardinal_log_info("[TIMELINE_DEBUG] Max signal time: {d} ns ({d:.3} ms)", .{ metrics.max_signal_time_ns, @as(f64, @floatFromInt(metrics.max_signal_time_ns)) / 1000000.0 });
+        tl_dbg_log.info("Average signal time: {d} ns ({d:.3} ms)", .{ avg_signal, @as(f64, @floatFromInt(avg_signal)) / 1000000.0 });
+        tl_dbg_log.info("Max signal time: {d} ns ({d:.3} ms)", .{ metrics.max_signal_time_ns, @as(f64, @floatFromInt(metrics.max_signal_time_ns)) / 1000000.0 });
     }
 
-    log.cardinal_log_info("[TIMELINE_DEBUG] Timeouts: {d}", .{metrics.timeout_count});
-    log.cardinal_log_info("[TIMELINE_DEBUG] Errors: {d}", .{metrics.error_count});
-    log.cardinal_log_info("[TIMELINE_DEBUG] Recoveries: {d}", .{metrics.recovery_count});
-    log.cardinal_log_info("[TIMELINE_DEBUG] =========================", .{});
+    tl_dbg_log.info("Timeouts: {d}", .{metrics.timeout_count});
+    tl_dbg_log.info("Errors: {d}", .{metrics.error_count});
+    tl_dbg_log.info("Recoveries: {d}", .{metrics.recovery_count});
+    tl_dbg_log.info("=========================", .{});
 }
 
 pub export fn vulkan_timeline_debug_print_event_summary(debug_ctx: *types.VulkanTimelineDebugContext) callconv(.c) void {
     const event_count = vulkan_timeline_debug_get_event_count(debug_ctx);
-    log.cardinal_log_info("[TIMELINE_DEBUG] === Event Summary ===", .{});
-    log.cardinal_log_info("[TIMELINE_DEBUG] Total events recorded: {d}", .{event_count});
+    tl_dbg_log.info("=== Event Summary ===", .{});
+    tl_dbg_log.info("Total events recorded: {d}", .{event_count});
 
     var type_counts: [9]u32 = std.mem.zeroes([9]u32);
 
@@ -459,7 +456,7 @@ pub export fn vulkan_timeline_debug_print_event_summary(debug_ctx: *types.Vulkan
     while (i < 9) : (i += 1) {
         if (type_counts[i] > 0) {
             const type_str = std.mem.span(vulkan_timeline_debug_event_type_to_string(@as(types.VulkanTimelineEventType, @enumFromInt(i))));
-            log.cardinal_log_info("[TIMELINE_DEBUG] {s}: {d}", .{ type_str, type_counts[i] });
+            tl_dbg_log.info("{s}: {d}", .{ type_str, type_counts[i] });
         }
     }
 
@@ -478,9 +475,9 @@ pub export fn vulkan_timeline_debug_print_state_report(debug_ctx: *types.VulkanT
     log.cardinal_log_info("[TIMELINE_DEBUG] Pending waits: {d}", .{snapshot.pending_waits});
     log.cardinal_log_info("[TIMELINE_DEBUG] Valid: {s}", .{if (snapshot.is_valid) "true" else "false"});
     if (!snapshot.is_valid) {
-        log.cardinal_log_info("[TIMELINE_DEBUG] Last error: {d}", .{snapshot.last_error});
+        tl_dbg_log.info("Last error: {d}", .{snapshot.last_error});
     }
-    log.cardinal_log_info("[TIMELINE_DEBUG] =================", .{});
+    tl_dbg_log.info("=================", .{});
 }
 
 // Export functions (simplified)
@@ -527,13 +524,13 @@ pub export fn vulkan_timeline_debug_export_performance_json(debug_ctx: *types.Vu
     if (!vulkan_timeline_debug_get_performance_metrics(debug_ctx, &metrics)) return false;
 
     if (filename == null) {
-        log.cardinal_log_error("[TIMELINE_DEBUG] Invalid filename for JSON export", .{});
+        tl_dbg_log.err("Invalid filename for JSON export", .{});
         return false;
     }
     const fname = std.mem.span(filename);
 
     const file = std.fs.cwd().createFile(fname, .{}) catch |err| {
-        log.cardinal_log_error("[TIMELINE_DEBUG] Failed to open file for JSON export: {s} (error: {any})", .{ fname, err });
+        tl_dbg_log.err("Failed to open file for JSON export: {s} (error: {any})", .{ fname, err });
         return false;
     };
     defer file.close();
@@ -553,6 +550,6 @@ pub export fn vulkan_timeline_debug_export_performance_json(debug_ctx: *types.Vu
 
     file.writeAll(json_str) catch return false;
 
-    log.cardinal_log_info("[TIMELINE_DEBUG] Performance metrics exported to JSON: {s}", .{fname});
+    tl_dbg_log.info("Performance metrics exported to JSON: {s}", .{fname});
     return true;
 }

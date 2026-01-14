@@ -152,20 +152,20 @@ fn create_sync_objects(s: *types.VulkanState) bool {
     }
 
     // Initialize using centralized sync manager
-    log.cardinal_log_info("[INIT] Initializing sync objects via centralized manager", .{});
+    cmd_log.info("Initializing sync objects via centralized manager", .{});
     return vk_sync_manager.vulkan_sync_manager_init(&s.sync, s.context.device, s.context.graphics_queue, s.sync.max_frames_in_flight, s.config.timeline_max_ahead);
 }
 
 fn select_command_buffer(s: *types.VulkanState) c.VkCommandBuffer {
     if (s.commands.current_buffer_index == 0) {
         if (s.commands.buffers == null) {
-            log.cardinal_log_error("[CMD] Frame {d}: command_buffers array is null", .{s.sync.current_frame});
+            cmd_log.err("Frame {d}: command_buffers array is null", .{s.sync.current_frame});
             return null;
         }
         return s.commands.buffers.?[s.sync.current_frame];
     } else {
         if (s.commands.alternate_primary_buffers == null) {
-            log.cardinal_log_error("[CMD] Frame {d}: alternate_primary_buffers array is null", .{s.sync.current_frame});
+            cmd_log.err("Frame {d}: alternate_primary_buffers array is null", .{s.sync.current_frame});
             return null;
         }
         return s.commands.alternate_primary_buffers.?[s.sync.current_frame];
@@ -174,29 +174,29 @@ fn select_command_buffer(s: *types.VulkanState) c.VkCommandBuffer {
 
 fn validate_swapchain_image(s: *types.VulkanState, image_index: u32) bool {
     if (s.swapchain.image_count == 0 or image_index >= s.swapchain.image_count) {
-        log.cardinal_log_error("[CMD] Frame {d}: Invalid image index {d} (count {d})", .{ s.sync.current_frame, image_index, s.swapchain.image_count });
+        cmd_log.err("Frame {d}: Invalid image index {d} (count {d})", .{ s.sync.current_frame, image_index, s.swapchain.image_count });
         return false;
     }
     if (s.swapchain.images == null or s.swapchain.image_views == null) {
-        log.cardinal_log_error("[CMD] Frame {d}: Swapchain image arrays are null", .{s.sync.current_frame});
+        cmd_log.err("Frame {d}: Swapchain image arrays are null", .{s.sync.current_frame});
         return false;
     }
     if (s.swapchain.image_layout_initialized == null) {
-        log.cardinal_log_error("[CMD] Frame {d}: Image layout initialization array is null", .{s.sync.current_frame});
+        cmd_log.err("Frame {d}: Image layout initialization array is null", .{s.sync.current_frame});
         return false;
     }
     if (s.swapchain.extent.width == 0 or s.swapchain.extent.height == 0) {
-        log.cardinal_log_error("[CMD] Frame {d}: Invalid swapchain extent {d}x{d}", .{ s.sync.current_frame, s.swapchain.extent.width, s.swapchain.extent.height });
+        cmd_log.err("Frame {d}: Invalid swapchain extent {d}x{d}", .{ s.sync.current_frame, s.swapchain.extent.width, s.swapchain.extent.height });
         return false;
     }
     return true;
 }
 
 fn begin_command_buffer(s: *types.VulkanState, cmd: c.VkCommandBuffer) bool {
-    log.cardinal_log_info("[CMD] Frame {d}: Resetting command buffer {any}", .{ s.sync.current_frame, cmd });
+    cmd_log.info("Frame {d}: Resetting command buffer {any}", .{ s.sync.current_frame, cmd });
     const reset_result = c.vkResetCommandBuffer(cmd, 0);
     if (reset_result != c.VK_SUCCESS) {
-        log.cardinal_log_error("[CMD] Frame {d}: Failed to reset command buffer: {d}", .{ s.sync.current_frame, reset_result });
+        cmd_log.err("Frame {d}: Failed to reset command buffer: {d}", .{ s.sync.current_frame, reset_result });
         return false;
     }
 
@@ -204,10 +204,10 @@ fn begin_command_buffer(s: *types.VulkanState, cmd: c.VkCommandBuffer) bool {
     bi.sType = c.VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
     bi.flags = c.VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
 
-    log.cardinal_log_info("[CMD] Frame {d}: Beginning command buffer {any} with flags {d}", .{ s.sync.current_frame, cmd, bi.flags });
+    cmd_log.info("Frame {d}: Beginning command buffer {any} with flags {d}", .{ s.sync.current_frame, cmd, bi.flags });
     const begin_result = c.vkBeginCommandBuffer(cmd, &bi);
     if (begin_result != c.VK_SUCCESS) {
-        log.cardinal_log_error("[CMD] Frame {d}: Failed to begin command buffer: {d}", .{ s.sync.current_frame, begin_result });
+        cmd_log.err("Frame {d}: Failed to begin command buffer: {d}", .{ s.sync.current_frame, begin_result });
         return false;
     }
     return true;
@@ -241,7 +241,7 @@ fn transition_images(s: *types.VulkanState, cmd: c.VkCommandBuffer, image_index:
         dep.pImageMemoryBarriers = &barrier;
 
         if (!vk_barrier_validation.cardinal_barrier_validation_validate_pipeline_barrier(&dep, cmd, thread_id)) {
-            log.cardinal_log_warn("[CMD] Pipeline barrier validation failed for depth image transition", .{});
+            cmd_log.warn("Pipeline barrier validation failed for depth image transition", .{});
         }
 
         if (s.context.vkCmdPipelineBarrier2 != null) {
@@ -283,7 +283,7 @@ fn transition_images(s: *types.VulkanState, cmd: c.VkCommandBuffer, image_index:
     dep.pImageMemoryBarriers = &barrier;
 
     if (!vk_barrier_validation.cardinal_barrier_validation_validate_pipeline_barrier(&dep, cmd, thread_id)) {
-        log.cardinal_log_warn("[CMD] Pipeline barrier validation failed for swapchain image transition", .{});
+        cmd_log.warn("Pipeline barrier validation failed for swapchain image transition", .{});
     }
 
     if (s.context.vkCmdPipelineBarrier2 != null) {
@@ -297,7 +297,7 @@ pub fn begin_dynamic_rendering(s: *types.VulkanState, cmd: c.VkCommandBuffer, im
 
 pub fn begin_dynamic_rendering_ext(s: *types.VulkanState, cmd: c.VkCommandBuffer, image_index: u32, use_depth: bool, depth_view: ?c.VkImageView, color_view: ?c.VkImageView, clears: [*]const c.VkClearValue, should_clear: bool, flags: c.VkRenderingFlags) bool {
     if (s.context.vkCmdBeginRendering == null or s.context.vkCmdEndRendering == null or s.context.vkCmdPipelineBarrier2 == null) {
-        log.cardinal_log_error("[CMD] Frame {d}: Dynamic rendering functions not loaded", .{s.sync.current_frame});
+        cmd_log.err("Frame {d}: Dynamic rendering functions not loaded", .{s.sync.current_frame});
         return false;
     }
 
@@ -385,19 +385,19 @@ fn end_recording(s: *types.VulkanState, cmd: c.VkCommandBuffer, image_index: u32
 
     const thread_id = platform.get_current_thread_id();
     if (!vk_barrier_validation.cardinal_barrier_validation_validate_pipeline_barrier(&dep, cmd, thread_id)) {
-        log.cardinal_log_warn("[CMD] Pipeline barrier validation failed for swapchain present transition", .{});
+        cmd_log.warn("Pipeline barrier validation failed for swapchain present transition", .{});
     }
 
     if (s.context.vkCmdPipelineBarrier2 != null) {
         s.context.vkCmdPipelineBarrier2.?(cmd, &dep);
     }
 
-    log.cardinal_log_info("[CMD] Frame {d}: Ending command buffer {any}", .{ s.sync.current_frame, cmd });
+    cmd_log.info("Frame {d}: Ending command buffer {any}", .{ s.sync.current_frame, cmd });
     const end_result = c.vkEndCommandBuffer(cmd);
-    log.cardinal_log_info("[CMD] Frame {d}: End result: {d}", .{ s.sync.current_frame, end_result });
+    cmd_log.info("Frame {d}: End result: {d}", .{ s.sync.current_frame, end_result });
 
     if (end_result != c.VK_SUCCESS) {
-        log.cardinal_log_error("[CMD] Frame {d}: Failed to end command buffer: {d}", .{ s.sync.current_frame, end_result });
+        cmd_log.err("Frame {d}: Failed to end command buffer: {d}", .{ s.sync.current_frame, end_result });
     }
 }
 
@@ -414,8 +414,8 @@ fn vk_update_frame_uniforms(s: *types.VulkanState) void {
 }
 
 pub fn vk_record_scene_content(s: *types.VulkanState, cmd: c.VkCommandBuffer) void {
-    // log.cardinal_log_debug("vk_record_scene_content: Mode {any}", .{s.current_rendering_mode});
-    
+    // cmd_log.debug("vk_record_scene_content: Mode {any}", .{s.current_rendering_mode});
+
     switch (s.current_rendering_mode) {
         types.CardinalRenderingMode.NORMAL => {
             if (s.pipelines.use_pbr_pipeline and s.pipelines.pbr_pipeline.initialized) {
@@ -426,22 +426,14 @@ pub fn vk_record_scene_content(s: *types.VulkanState, cmd: c.VkCommandBuffer) vo
             if (s.pipelines.uv_pipeline != null and s.pipelines.use_pbr_pipeline and s.pipelines.pbr_pipeline.initialized) {
                 vk_simple_pipelines.render_simple(s, cmd, s.pipelines.uv_pipeline, s.pipelines.uv_pipeline_layout);
             } else {
-                log.cardinal_log_error("UV Mode skip: uv_pipe={any}, use_pbr={any}, pbr_init={any}", .{
-                    s.pipelines.uv_pipeline,
-                    s.pipelines.use_pbr_pipeline,
-                    s.pipelines.pbr_pipeline.initialized
-                });
+                cmd_log.err("UV Mode skip: uv_pipe={any}, use_pbr={any}, pbr_init={any}", .{ s.pipelines.uv_pipeline, s.pipelines.use_pbr_pipeline, s.pipelines.pbr_pipeline.initialized });
             }
         },
         types.CardinalRenderingMode.WIREFRAME => {
             if (s.pipelines.wireframe_pipeline != null and s.pipelines.use_pbr_pipeline and s.pipelines.pbr_pipeline.initialized) {
                 vk_simple_pipelines.render_simple(s, cmd, s.pipelines.wireframe_pipeline, s.pipelines.wireframe_pipeline_layout);
             } else {
-                log.cardinal_log_error("Wireframe Mode skip: wf_pipe={any}, use_pbr={any}, pbr_init={any}", .{
-                    s.pipelines.wireframe_pipeline,
-                    s.pipelines.use_pbr_pipeline,
-                    s.pipelines.pbr_pipeline.initialized
-                });
+                cmd_log.err("Wireframe Mode skip: wf_pipe={any}, use_pbr={any}, pbr_init={any}", .{ s.pipelines.wireframe_pipeline, s.pipelines.use_pbr_pipeline, s.pipelines.pbr_pipeline.initialized });
             }
         },
         types.CardinalRenderingMode.DEBUG => {
@@ -467,7 +459,7 @@ pub fn vk_record_scene_with_secondary_buffers(s: *types.VulkanState, primary_cmd
 
     // Reset
     if (c.vkResetCommandBuffer(sec_cmd, 0) != c.VK_SUCCESS) {
-        log.cardinal_log_error("Failed to reset secondary command buffer", .{});
+        cmd_log.err("Failed to reset secondary command buffer", .{});
         return;
     }
 
@@ -497,7 +489,7 @@ pub fn vk_record_scene_with_secondary_buffers(s: *types.VulkanState, primary_cmd
 
     // Begin Secondary
     if (c.vkBeginCommandBuffer(sec_cmd, &begin_info) != c.VK_SUCCESS) {
-        log.cardinal_log_error("Failed to begin secondary command buffer", .{});
+        cmd_log.err("Failed to begin secondary command buffer", .{});
         return;
     }
 
@@ -523,7 +515,7 @@ pub fn vk_record_scene_with_secondary_buffers(s: *types.VulkanState, primary_cmd
 
     // End Secondary
     if (c.vkEndCommandBuffer(sec_cmd) != c.VK_SUCCESS) {
-        log.cardinal_log_error("Failed to end secondary command buffer", .{});
+        cmd_log.err("Failed to end secondary command buffer", .{});
         return;
     }
 
@@ -532,7 +524,6 @@ pub fn vk_record_scene_with_secondary_buffers(s: *types.VulkanState, primary_cmd
 }
 
 // Exported functions
-
 pub export fn vk_create_commands_sync(s: ?*types.VulkanState) callconv(.c) bool {
     if (s == null) return false;
     const vs = s.?;
@@ -569,9 +560,9 @@ pub export fn vk_create_commands_sync(s: ?*types.VulkanState) callconv(.c) bool 
     }
 
     if (!vulkan_mt.cardinal_mt_subsystem_init(@ptrCast(vs), optimal_thread_count)) {
-        log.cardinal_log_warn("[INIT] Failed to initialize multi-threading subsystem, continuing without MT support", .{});
+        cmd_log.warn("Failed to initialize multi-threading subsystem, continuing without MT support", .{});
     } else {
-        log.cardinal_log_info("[INIT] Multi-threading subsystem initialized with {d} threads", .{optimal_thread_count});
+        cmd_log.info("Multi-threading subsystem initialized with {d} threads", .{optimal_thread_count});
     }
 
     return true;
@@ -587,11 +578,11 @@ pub export fn vk_recreate_images_in_flight(s: ?*types.VulkanState) callconv(.c) 
         vs.swapchain.image_layout_initialized = null;
     }
 
-    log.cardinal_log_info("[INIT] Recreating swapchain_image_layout_initialized for {d} swapchain images", .{vs.swapchain.image_count});
+    cmd_log.info("Recreating swapchain_image_layout_initialized for {d} swapchain images", .{vs.swapchain.image_count});
     const mem_alloc = memory.cardinal_get_allocator_for_category(.RENDERER);
     const layout_ptr = memory.cardinal_alloc(mem_alloc, vs.swapchain.image_count * @sizeOf(bool));
     if (layout_ptr == null) {
-        log.cardinal_log_error("[INIT] Failed to allocate swapchain_image_layout_initialized array", .{});
+        cmd_log.err("Failed to allocate swapchain_image_layout_initialized array", .{});
         return false;
     }
     @memset(@as([*]u8, @ptrCast(layout_ptr))[0..(vs.swapchain.image_count * @sizeOf(bool))], 0);
@@ -604,7 +595,7 @@ pub export fn vk_destroy_commands_sync(s: ?*types.VulkanState) callconv(.c) void
     const vs = s.?;
 
     vulkan_mt.cardinal_mt_subsystem_shutdown();
-    log.cardinal_log_info("[CLEANUP] Multi-threading subsystem shutdown completed", .{});
+    cmd_log.info("Multi-threading subsystem shutdown completed", .{});
 
     if (vs.context.device != null) {
         _ = c.vkDeviceWaitIdle(vs.context.device);
@@ -615,8 +606,6 @@ pub export fn vk_destroy_commands_sync(s: ?*types.VulkanState) callconv(.c) void
         vs.sync.timeline_semaphore = null;
     }
 
-    // Since we are destroying the semaphore, we must also reset the sync manager state
-    // to prevent use of stale handles or mismatched counters
     if (vs.sync_manager != null) {
         const sm = @as(?*types.VulkanSyncManager, @ptrCast(vs.sync_manager));
         if (sm != null) {
@@ -624,8 +613,6 @@ pub export fn vk_destroy_commands_sync(s: ?*types.VulkanState) callconv(.c) void
             sm.?.initialized = false;
         }
     } else {
-        // If sync_manager pointer is null but we are destroying s.sync (embedded),
-        // we should mark s.sync as uninitialized too.
         vs.sync.initialized = false;
     }
 
@@ -708,19 +695,19 @@ pub export fn vk_record_cmd(s: ?*types.VulkanState, image_index: u32) callconv(.
     const cmd = select_command_buffer(vs);
     if (cmd == null) return;
 
-    log.cardinal_log_info("[CMD] Frame {d}: Recording command buffer {any} (buffer {d}) for image {d}", .{ vs.sync.current_frame, cmd, vs.commands.current_buffer_index, image_index });
+    cmd_log.info("Frame {d}: Recording command buffer {any} (buffer {d}) for image {d}", .{ vs.sync.current_frame, cmd, vs.commands.current_buffer_index, image_index });
 
     if (!validate_swapchain_image(vs, image_index)) return;
 
     if (!begin_command_buffer(vs, cmd)) return;
 
-    // log.cardinal_log_debug("[DEBUG] Started command buffer", .{});
+    // cmd_log.debug("Started command buffer", .{});
 
     // Shadow Pass
     if (vs.pipelines.use_pbr_pipeline and vs.current_rendering_mode == types.CardinalRenderingMode.NORMAL) {
-        // log.cardinal_log_debug("[DEBUG] Recording Shadow Pass", .{});
+        // cmd_log.debug("Recording Shadow Pass", .{});
         vk_shadows.vk_shadow_render(vs, cmd);
-        // log.cardinal_log_debug("[DEBUG] Finished Shadow Pass", .{});
+        // cmd_log.debug("Finished Shadow Pass", .{});
     }
 
     var clears: [2]c.VkClearValue = undefined;
@@ -768,14 +755,9 @@ pub export fn vk_record_cmd(s: ?*types.VulkanState, image_index: u32) callconv(.
         } else {
             vs.swapchain.image_layout_initialized.?[image_index] = true;
         }
-        rg.set_resource_state(types.RESOURCE_ID_BACKBUFFER, bb_state) catch {};
-
-        // Note: Depth buffer state is managed internally as it is now transient.
-        // We rely on RenderGraph to track the state across frames.
-        // For the first frame, it defaults to UNDEFINED.
-        // For subsequent frames, it should be in OPTIMAL layout from the previous frame.
-        // We do NOT explicitly reset it to UNDEFINED here, as that would force a barrier every frame
-        // and might confuse validation if the image isn't actually destroyed.
+        rg.set_resource_state(types.RESOURCE_ID_BACKBUFFER, bb_state) catch |err| {
+            cmd_log.err("Failed to set backbuffer state: {s}", .{@errorName(err)});
+        };
 
         // Execute Graph (This inserts barriers and calls pass callback)
         rg.execute(cmd, vs);
@@ -799,16 +781,13 @@ pub export fn vk_record_cmd(s: ?*types.VulkanState, image_index: u32) callconv(.
         }
     }
 
-    // Transparent Pass (if any)
+    // TODO: Transparent Pass (if any)
     // For now, we don't have a separate transparent pass structure in this simple renderer,
     // but we should handle it if we add transparency support.
 
-    // ------------------------------------------------------------------------------------------------
     // Lighting Debug Rendering (Visualizes light positions)
-    // ------------------------------------------------------------------------------------------------
     const lighting_buffer = if (vs.pipelines.use_pbr_pipeline) vs.pipelines.pbr_pipeline.lightingBuffers[vs.sync.current_frame] else null;
-    if (vs.pipelines.use_pbr_pipeline and lighting_buffer != null and vs.pipelines.pbr_pipeline.debug_flags > 0.0) {
-    }
+    if (vs.pipelines.use_pbr_pipeline and lighting_buffer != null and vs.pipelines.pbr_pipeline.debug_flags > 0.0) {}
 
     if (vs.ui_record_callback != null) {
         // Load contents from previous pass (whether scene was drawn or just cleared)
@@ -883,9 +862,9 @@ pub export fn vk_prepare_mesh_shader_rendering(s: ?*types.VulkanState) callconv(
     }
 
     if (!vk_mesh_shader.vk_mesh_shader_update_descriptor_buffers(@ptrCast(vs), &vs.pipelines.mesh_shader_pipeline, null, lighting_buffer, texture_views, samplers, texture_count)) {
-        log.cardinal_log_error("[MESH_SHADER] Failed to update descriptor buffers during preparation", .{});
+        cmd_log.err("Failed to update descriptor buffers during preparation", .{});
     } else {
-        log.cardinal_log_debug("[MESH_SHADER] Updated descriptor buffers during preparation (bindless textures: {d})", .{texture_count});
+        cmd_log.debug("Updated descriptor buffers during preparation (bindless textures: {d})", .{texture_count});
     }
 
     if (vs.frame_allocator == null) {
@@ -903,7 +882,7 @@ pub export fn vk_prepare_mesh_shader_rendering(s: ?*types.VulkanState) callconv(
 pub fn vk_get_mt_command_manager() ?*types.CardinalMTCommandManager {
     // Accessing global g_cardinal_mt_subsystem from vulkan_mt.zig
     if (!vulkan_mt.g_cardinal_mt_subsystem.is_running) {
-        log.cardinal_log_warn("[MT] Multi-threading subsystem not initialized", .{});
+        cmd_log.warn("[MT] Multi-threading subsystem not initialized", .{});
         return null;
     }
     return &vulkan_mt.g_cardinal_mt_subsystem.command_manager;

@@ -4,6 +4,8 @@ const types = @import("vulkan_types.zig");
 const log = @import("../core/log.zig");
 const vk_allocator = @import("vulkan_allocator.zig");
 
+const rg_log = log.ScopedLogger("RENDER_GRAPH");
+
 // Use 64-bit ID for resources (could be a pointer or hash)
 pub const ResourceId = u64;
 
@@ -61,7 +63,7 @@ pub const RenderGraphResource = struct {
     lifecycle: ResourceLifecycle,
     desc: ?ResourceDesc, // Only for transient
     handle: ?ResourceHandle = null,
-    
+
     // Internal state for allocation
     allocation: ?c.VmaAllocation = null,
     memory: ?c.VkDeviceMemory = null,
@@ -84,8 +86,8 @@ pub const ResourceAccess = struct {
     stage_mask: c.VkPipelineStageFlags2,
     layout: c.VkImageLayout = c.VK_IMAGE_LAYOUT_UNDEFINED, // Ignored for buffers
     queue_family: u32 = c.VK_QUEUE_FAMILY_IGNORED,
-    
-    // For images, we might need subresource range. 
+
+    // For images, we might need subresource range.
     // For now, assume full resource or specific aspect.
     aspect_mask: c.VkImageAspectFlags = c.VK_IMAGE_ASPECT_COLOR_BIT,
 };
@@ -97,10 +99,10 @@ pub const RenderPass = struct {
     execute_fn: RenderPassCallback,
     inputs: std.ArrayListUnmanaged(ResourceAccess),
     outputs: std.ArrayListUnmanaged(ResourceAccess),
-    
+
     // Async Compute
     queue_family: u32 = c.VK_QUEUE_FAMILY_IGNORED,
-    
+
     // Culling
     is_active: bool = true,
     can_be_culled: bool = true, // Force active if false (e.g. swapchain present)
@@ -134,7 +136,7 @@ pub const RenderPass = struct {
 pub const RenderGraph = struct {
     passes: std.ArrayListUnmanaged(RenderPass),
     allocator: std.mem.Allocator,
-    
+
     // Track registered resources
     resources: std.AutoHashMapUnmanaged(ResourceId, RenderGraphResource),
     // Track current state of resources during execution
@@ -177,13 +179,8 @@ pub const RenderGraph = struct {
             }
         }
 
-        try self.resources.put(self.allocator, id, .{ 
-            .id = id,
-            .lifecycle = .External,
-            .desc = null,
-            .handle = .{ .Image = image } 
-        });
-        
+        try self.resources.put(self.allocator, id, .{ .id = id, .lifecycle = .External, .desc = null, .handle = .{ .Image = image } });
+
         // Initialize state if not present or handle changed
         if (handle_changed or !self.resource_states.contains(id)) {
             try self.resource_states.put(self.allocator, id, .{
@@ -195,12 +192,7 @@ pub const RenderGraph = struct {
     }
 
     pub fn register_buffer(self: *RenderGraph, id: ResourceId, buffer: c.VkBuffer) !void {
-        try self.resources.put(self.allocator, id, .{ 
-            .id = id,
-            .lifecycle = .External,
-            .desc = null,
-            .handle = .{ .Buffer = buffer } 
-        });
+        try self.resources.put(self.allocator, id, .{ .id = id, .lifecycle = .External, .desc = null, .handle = .{ .Buffer = buffer } });
 
         if (!self.resource_states.contains(id)) {
             try self.resource_states.put(self.allocator, id, .{
@@ -214,11 +206,11 @@ pub const RenderGraph = struct {
         var i: usize = 0;
         while (i < self.image_pool.items.len) : (i += 1) {
             const item = self.image_pool.items[i];
-            if (item.desc.format == desc.format and 
-                item.desc.width == desc.width and 
+            if (item.desc.format == desc.format and
+                item.desc.width == desc.width and
                 item.desc.height == desc.height and
                 item.desc.usage == desc.usage and
-                item.desc.aspect_mask == desc.aspect_mask) 
+                item.desc.aspect_mask == desc.aspect_mask)
             {
                 return self.image_pool.swapRemove(i);
             }
@@ -234,7 +226,7 @@ pub const RenderGraph = struct {
         var i: usize = 0;
         while (i < self.buffer_pool.items.len) : (i += 1) {
             const item = self.buffer_pool.items[i];
-            if (item.desc.size == desc.size and 
+            if (item.desc.size == desc.size and
                 item.desc.usage == desc.usage)
             {
                 return self.buffer_pool.swapRemove(i);
@@ -254,7 +246,7 @@ pub const RenderGraph = struct {
             .desc = .{ .Image = desc },
             .handle = null,
         });
-        
+
         if (!self.resource_states.contains(id)) {
             try self.resource_states.put(self.allocator, id, .{
                 .layout = c.VK_IMAGE_LAYOUT_UNDEFINED,
@@ -267,62 +259,62 @@ pub const RenderGraph = struct {
     pub fn update_transient_image(self: *RenderGraph, id: ResourceId, desc: ImageDesc, state: *types.VulkanState) !void {
         const existing = self.resources.getPtr(id);
         if (existing) |res| {
-             // Check if description matches
-             var match = false;
-             if (res.desc) |d| {
-                 switch (d) {
-                     .Image => |img| {
-                         match = (img.width == desc.width and img.height == desc.height and img.format == desc.format);
-                     },
-                     else => {}
-                 }
-             }
-             
-             if (match) return; // No change needed
+            // Check if description matches
+            var match = false;
+            if (res.desc) |d| {
+                switch (d) {
+                    .Image => |img| {
+                        match = (img.width == desc.width and img.height == desc.height and img.format == desc.format);
+                    },
+                    else => {},
+                }
+            }
 
-             // Release old resource to pool if allocated
-             if (res.handle != null) {
-                 switch (res.handle.?) {
-                     .Image => |image| {
-                         if (res.desc) |d| {
-                             switch (d) {
-                                 .Image => |old_desc| {
-                                     const pooled = PooledImage{
-                                         .image = image,
-                                         .allocation = res.allocation.?,
-                                         .memory = res.memory.?,
-                                         .image_view = res.image_view,
-                                         .desc = old_desc,
-                                     };
-                                     self.release_image_to_pool(pooled) catch {
-                                         // Fallback to destroy if pool fails
-                                         if (res.image_view) |view| {
-                                             c.vkDestroyImageView(state.context.device, view, null);
-                                         }
-                                         vk_allocator.vk_allocator_free_image(&state.allocator, image, res.allocation.?);
-                                     };
-                                 },
-                                 else => {}
-                             }
-                         }
-                     },
-                     else => {}
-                 }
-                 res.handle = null;
-                 res.allocation = null;
-                 res.memory = null;
-                 res.image_view = null;
+            if (match) return; // No change needed
 
-                 // Reset state to UNDEFINED since we destroyed the underlying resource
-                 if (self.resource_states.getPtr(id)) |res_state| {
-                     res_state.layout = c.VK_IMAGE_LAYOUT_UNDEFINED;
-                     res_state.access_mask = c.VK_ACCESS_2_NONE;
-                     res_state.stage_mask = c.VK_PIPELINE_STAGE_2_TOP_OF_PIPE_BIT;
-                     res_state.queue_family = c.VK_QUEUE_FAMILY_IGNORED;
-                 }
-             }
+            // Release old resource to pool if allocated
+            if (res.handle != null) {
+                switch (res.handle.?) {
+                    .Image => |image| {
+                        if (res.desc) |d| {
+                            switch (d) {
+                                .Image => |old_desc| {
+                                    const pooled = PooledImage{
+                                        .image = image,
+                                        .allocation = res.allocation.?,
+                                        .memory = res.memory.?,
+                                        .image_view = res.image_view,
+                                        .desc = old_desc,
+                                    };
+                                    self.release_image_to_pool(pooled) catch {
+                                        // Fallback to destroy if pool fails
+                                        if (res.image_view) |view| {
+                                            c.vkDestroyImageView(state.context.device, view, null);
+                                        }
+                                        vk_allocator.free_image(&state.allocator, image, res.allocation.?);
+                                    };
+                                },
+                                else => {},
+                            }
+                        }
+                    },
+                    else => {},
+                }
+                res.handle = null;
+                res.allocation = null;
+                res.memory = null;
+                res.image_view = null;
+
+                // Reset state to UNDEFINED since we destroyed the underlying resource
+                if (self.resource_states.getPtr(id)) |res_state| {
+                    res_state.layout = c.VK_IMAGE_LAYOUT_UNDEFINED;
+                    res_state.access_mask = c.VK_ACCESS_2_NONE;
+                    res_state.stage_mask = c.VK_PIPELINE_STAGE_2_TOP_OF_PIPE_BIT;
+                    res_state.queue_family = c.VK_QUEUE_FAMILY_IGNORED;
+                }
+            }
         }
-        
+
         // Update or add (overwrites desc, resets handle if we didn't already)
         // If we didn't find it, this adds it. If we found it, we freed handle so it's safe to overwrite.
         try self.add_transient_image(id, desc);
@@ -333,33 +325,33 @@ pub const RenderGraph = struct {
         while (it.next()) |entry| {
             var res = entry.value_ptr;
             if (res.lifecycle == .Transient and res.handle != null) {
-                 switch (res.handle.?) {
-                     .Image => |image| {
-                         if (res.image_view) |view| {
-                             c.vkDestroyImageView(state.context.device, view, null);
-                             res.image_view = null;
-                         }
-                         if (res.allocation) |allocation| {
-                             vk_allocator.vk_allocator_free_image(&state.allocator, image, allocation);
-                         }
-                     },
-                     .Buffer => |buffer| {
-                         if (res.allocation) |allocation| {
-                             vk_allocator.vk_allocator_free_buffer(&state.allocator, buffer, allocation);
-                         }
-                     }
-                 }
-                 res.handle = null;
-                 res.allocation = null;
-                 res.memory = null;
+                switch (res.handle.?) {
+                    .Image => |image| {
+                        if (res.image_view) |view| {
+                            c.vkDestroyImageView(state.context.device, view, null);
+                            res.image_view = null;
+                        }
+                        if (res.allocation) |allocation| {
+                            vk_allocator.free_image(&state.allocator, image, allocation);
+                        }
+                    },
+                    .Buffer => |buffer| {
+                        if (res.allocation) |allocation| {
+                            vk_allocator.free_buffer(&state.allocator, buffer, allocation);
+                        }
+                    },
+                }
+                res.handle = null;
+                res.allocation = null;
+                res.memory = null;
 
-                 // Reset state to UNDEFINED
-                 if (self.resource_states.getPtr(res.id)) |res_state| {
-                     res_state.layout = c.VK_IMAGE_LAYOUT_UNDEFINED;
-                     res_state.access_mask = c.VK_ACCESS_2_NONE;
-                     res_state.stage_mask = c.VK_PIPELINE_STAGE_2_TOP_OF_PIPE_BIT;
-                     res_state.queue_family = c.VK_QUEUE_FAMILY_IGNORED;
-                 }
+                // Reset state to UNDEFINED
+                if (self.resource_states.getPtr(res.id)) |res_state| {
+                    res_state.layout = c.VK_IMAGE_LAYOUT_UNDEFINED;
+                    res_state.access_mask = c.VK_ACCESS_2_NONE;
+                    res_state.stage_mask = c.VK_PIPELINE_STAGE_2_TOP_OF_PIPE_BIT;
+                    res_state.queue_family = c.VK_QUEUE_FAMILY_IGNORED;
+                }
             }
         }
 
@@ -369,14 +361,14 @@ pub const RenderGraph = struct {
                 c.vkDestroyImageView(state.context.device, view, null);
             }
             if (pooled.allocation) |alloc| {
-                vk_allocator.vk_allocator_free_image(&state.allocator, pooled.image, alloc);
+                vk_allocator.free_image(&state.allocator, pooled.image, alloc);
             }
         }
         self.image_pool.clearRetainingCapacity();
 
         for (self.buffer_pool.items) |pooled| {
             if (pooled.allocation) |alloc| {
-                 vk_allocator.vk_allocator_free_buffer(&state.allocator, pooled.buffer, alloc);
+                vk_allocator.free_buffer(&state.allocator, pooled.buffer, alloc);
             }
         }
         self.buffer_pool.clearRetainingCapacity();
@@ -396,7 +388,7 @@ pub const RenderGraph = struct {
         }
         self.passes.clearRetainingCapacity();
     }
-    
+
     // Culling and Planning
     pub fn compile(self: *RenderGraph) !void {
         // 1. Reset active state
@@ -418,7 +410,7 @@ pub const RenderGraph = struct {
         // 3. Mark passes reachable from active passes (or external outputs like Backbuffer)
         // For now, we assume Backbuffer (ID 1) is the main output.
         // A better way is to explicitly mark the "Present" pass or passes writing to swapchain.
-        
+
         // Let's implement a simple backward traversal
         // Queue of passes to process
         var queue = std.ArrayListUnmanaged(usize){};
@@ -433,7 +425,7 @@ pub const RenderGraph = struct {
                     break;
                 }
             }
-            
+
             if (pass.is_active or writes_backbuffer) {
                 pass.is_active = true;
                 try queue.append(self.allocator, i);
@@ -445,9 +437,9 @@ pub const RenderGraph = struct {
         while (processed_idx < queue.items.len) {
             const pass_idx = queue.items[processed_idx];
             processed_idx += 1;
-            
+
             const pass = &self.passes.items[pass_idx];
-            
+
             // For each input of this active pass, activate the producer
             for (pass.inputs.items) |input| {
                 if (producers.get(input.id)) |producer_idx| {
@@ -461,26 +453,20 @@ pub const RenderGraph = struct {
     }
 
     // Helper to insert barriers
-    fn insert_barrier(
-        cmd: c.VkCommandBuffer, 
-        handle: ResourceHandle, 
-        old_state: ResourceState, 
-        new_access: ResourceAccess,
-        state: *types.VulkanState
-    ) void {
+    fn insert_barrier(cmd: c.VkCommandBuffer, handle: ResourceHandle, old_state: ResourceState, new_access: ResourceAccess, state: *types.VulkanState) void {
         switch (handle) {
             .Image => |image| {
                 // Skip if state matches exactly and layout is same (and not undefined transition)
                 // BUT if queue families differ, we MUST insert barrier for ownership transfer
-                const queue_changed = (old_state.queue_family != c.VK_QUEUE_FAMILY_IGNORED and 
-                                      new_access.queue_family != c.VK_QUEUE_FAMILY_IGNORED and
-                                      old_state.queue_family != new_access.queue_family);
+                const queue_changed = (old_state.queue_family != c.VK_QUEUE_FAMILY_IGNORED and
+                    new_access.queue_family != c.VK_QUEUE_FAMILY_IGNORED and
+                    old_state.queue_family != new_access.queue_family);
 
                 if (!queue_changed and
-                    old_state.layout == new_access.layout and 
-                    old_state.access_mask == new_access.access_mask and 
+                    old_state.layout == new_access.layout and
+                    old_state.access_mask == new_access.access_mask and
                     old_state.stage_mask == new_access.stage_mask and
-                    old_state.layout != c.VK_IMAGE_LAYOUT_UNDEFINED) 
+                    old_state.layout != c.VK_IMAGE_LAYOUT_UNDEFINED)
                 {
                     return;
                 }
@@ -493,7 +479,7 @@ pub const RenderGraph = struct {
                 barrier.dstAccessMask = new_access.access_mask;
                 barrier.oldLayout = old_state.layout;
                 barrier.newLayout = new_access.layout;
-                
+
                 // Queue Ownership Transfer
                 if (queue_changed) {
                     barrier.srcQueueFamilyIndex = old_state.queue_family;
@@ -509,7 +495,7 @@ pub const RenderGraph = struct {
                 barrier.subresourceRange.levelCount = 1;
                 barrier.subresourceRange.baseArrayLayer = 0;
                 barrier.subresourceRange.layerCount = 1;
-                
+
                 var dependency = std.mem.zeroes(c.VkDependencyInfo);
                 dependency.sType = c.VK_STRUCTURE_TYPE_DEPENDENCY_INFO;
                 dependency.dependencyFlags = 0; // Global dependency
@@ -517,19 +503,19 @@ pub const RenderGraph = struct {
                 dependency.pImageMemoryBarriers = &barrier;
 
                 if (state.context.vkCmdPipelineBarrier2) |func| {
-                    log.cardinal_log_debug("RG: Inserting Image Barrier: {any} -> {any} (Layout: {any} -> {any})", .{old_state.stage_mask, new_access.stage_mask, old_state.layout, new_access.layout});
+                    rg_log.debug("Inserting Image Barrier: {any} -> {any} (Layout: {any} -> {any})", .{ old_state.stage_mask, new_access.stage_mask, old_state.layout, new_access.layout });
                     func(cmd, &dependency);
                 } else {
-                    log.cardinal_log_error("RG: vkCmdPipelineBarrier2 function pointer is NULL!", .{});
+                    rg_log.err("vkCmdPipelineBarrier2 function pointer is NULL!", .{});
                 }
             },
             .Buffer => |buffer| {
-                const queue_changed = (old_state.queue_family != c.VK_QUEUE_FAMILY_IGNORED and 
-                                      new_access.queue_family != c.VK_QUEUE_FAMILY_IGNORED and
-                                      old_state.queue_family != new_access.queue_family);
+                const queue_changed = (old_state.queue_family != c.VK_QUEUE_FAMILY_IGNORED and
+                    new_access.queue_family != c.VK_QUEUE_FAMILY_IGNORED and
+                    old_state.queue_family != new_access.queue_family);
 
                 if (!queue_changed and
-                    old_state.access_mask == new_access.access_mask and 
+                    old_state.access_mask == new_access.access_mask and
                     old_state.stage_mask == new_access.stage_mask)
                 {
                     return;
@@ -541,7 +527,7 @@ pub const RenderGraph = struct {
                 barrier.srcAccessMask = old_state.access_mask;
                 barrier.dstStageMask = new_access.stage_mask;
                 barrier.dstAccessMask = new_access.access_mask;
-                
+
                 if (queue_changed) {
                     barrier.srcQueueFamilyIndex = old_state.queue_family;
                     barrier.dstQueueFamilyIndex = new_access.queue_family;
@@ -563,7 +549,7 @@ pub const RenderGraph = struct {
                 if (state.context.vkCmdPipelineBarrier2) |func| {
                     func(cmd, &dependency);
                 } else {
-                    log.cardinal_log_error("RG: vkCmdPipelineBarrier2 function pointer is NULL!", .{});
+                    rg_log.err("vkCmdPipelineBarrier2 function pointer is NULL!", .{});
                 }
             },
         }
@@ -613,11 +599,11 @@ pub const RenderGraph = struct {
                                 res_state.queue_family = c.VK_QUEUE_FAMILY_IGNORED;
                             }
 
-                            if (vk_allocator.vk_allocator_allocate_image(&state.allocator, &imageInfo, &image, &memory, &allocation, c.VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT)) {
+                            if (vk_allocator.allocate_image(&state.allocator, &imageInfo, &image, &memory, &allocation, c.VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT)) {
                                 res.handle = .{ .Image = image };
                                 res.allocation = allocation;
                                 res.memory = memory;
-                                
+
                                 // Create view if needed
                                 var viewInfo = std.mem.zeroes(c.VkImageViewCreateInfo);
                                 viewInfo.sType = c.VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO;
@@ -627,7 +613,7 @@ pub const RenderGraph = struct {
                                 viewInfo.subresourceRange.aspectMask = img_desc.aspect_mask;
                                 viewInfo.subresourceRange.levelCount = 1;
                                 viewInfo.subresourceRange.layerCount = 1;
-                                
+
                                 var view: c.VkImageView = null;
                                 if (c.vkCreateImageView(state.context.device, &viewInfo, null, &view) == c.VK_SUCCESS) {
                                     res.image_view = view;
@@ -635,16 +621,16 @@ pub const RenderGraph = struct {
                                     log.cardinal_log_error("RG: Failed to create image view for transient image {d}", .{res.id});
                                 }
                             } else {
-                                log.cardinal_log_error("RG: Failed to allocate transient image {d}", .{res.id});
+                                rg_log.err("RG: Failed to allocate transient image {d}", .{res.id});
                             }
                         }
                     },
                     .Buffer => |buf_desc| {
-                         if (self.acquire_pooled_buffer(buf_desc)) |pooled| {
-                             res.handle = .{ .Buffer = pooled.buffer };
-                             res.allocation = pooled.allocation;
-                             res.memory = pooled.memory;
-                         } else {
+                        if (self.acquire_pooled_buffer(buf_desc)) |pooled| {
+                            res.handle = .{ .Buffer = pooled.buffer };
+                            res.allocation = pooled.allocation;
+                            res.memory = pooled.memory;
+                        } else {
                             var bufferInfo = std.mem.zeroes(c.VkBufferCreateInfo);
                             bufferInfo.sType = c.VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO;
                             bufferInfo.size = buf_desc.size;
@@ -655,16 +641,16 @@ pub const RenderGraph = struct {
                             var memory: c.VkDeviceMemory = null;
                             var allocation: c.VmaAllocation = null;
 
-                            if (vk_allocator.vk_allocator_allocate_buffer(&state.allocator, &bufferInfo, &buffer, &memory, &allocation, c.VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, false, null)) {
+                            if (vk_allocator.allocate_buffer(&state.allocator, &bufferInfo, &buffer, &memory, &allocation, c.VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, false, null)) {
                                 res.handle = .{ .Buffer = buffer };
                                 res.allocation = allocation;
                                 res.memory = memory;
                             } else {
-                                log.cardinal_log_error("RG: Failed to allocate transient buffer {d}", .{res.id});
+                                rg_log.err("Failed to allocate transient buffer {d}", .{res.id});
                             }
                         }
-                     }
-                 }
+                    },
+                }
             }
         }
 
@@ -677,7 +663,7 @@ pub const RenderGraph = struct {
                     if (res.handle) |handle| {
                         if (self.resource_states.get(input.id)) |current_state| {
                             insert_barrier(cmd, handle, current_state, input, state);
-                            
+
                             // Update state
                             var new_state = current_state;
                             new_state.access_mask = input.access_mask;
@@ -698,7 +684,7 @@ pub const RenderGraph = struct {
                     if (res.handle) |handle| {
                         if (self.resource_states.get(output.id)) |current_state| {
                             insert_barrier(cmd, handle, current_state, output, state);
-                            
+
                             // Update state
                             var new_state = current_state;
                             new_state.access_mask = output.access_mask;
@@ -714,9 +700,7 @@ pub const RenderGraph = struct {
             }
 
             // Execute pass
-            // log.cardinal_log_debug("Executing Pass: {s}", .{pass.name});
             pass.execute_fn(cmd, state);
         }
-        
     }
 };

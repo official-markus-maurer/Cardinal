@@ -1,6 +1,7 @@
 const std = @import("std");
 const builtin = @import("builtin");
 const log = @import("../core/log.zig");
+const barrier_log = log.ScopedLogger("BARRIER_VAL");
 const platform = @import("../core/platform.zig");
 const memory = @import("../core/memory.zig");
 const types = @import("vulkan_types.zig");
@@ -50,7 +51,7 @@ fn unlock_validation_mutex() void {
 
 pub export fn cardinal_barrier_validation_init(max_tracked_accesses: u32, strict_mode: bool) callconv(.c) bool {
     if (g_validation_initialized) {
-        log.cardinal_log_warn("[BARRIER_VALIDATION] Already initialized", .{});
+        barrier_log.warn("Already initialized", .{});
         return true;
     }
 
@@ -64,7 +65,7 @@ pub export fn cardinal_barrier_validation_init(max_tracked_accesses: u32, strict
 
     const ptr = memory.cardinal_alloc(allocator, @sizeOf(types.CardinalResourceAccess) * max_tracked_accesses);
     if (ptr == null) {
-        log.cardinal_log_error("[BARRIER_VALIDATION] Failed to allocate memory for resource tracking", .{});
+        barrier_log.err("Failed to allocate memory for resource tracking", .{});
         return false;
     }
 
@@ -80,7 +81,7 @@ pub export fn cardinal_barrier_validation_init(max_tracked_accesses: u32, strict
 
     g_validation_initialized = true;
 
-    log.cardinal_log_info("[BARRIER_VALIDATION] Initialized with {d} max accesses, strict_mode={s}", .{ max_tracked_accesses, if (strict_mode) "true" else "false" });
+    barrier_log.info("Initialized with {d} max accesses, strict_mode={s}", .{ max_tracked_accesses, if (strict_mode) "true" else "false" });
     return true;
 }
 
@@ -111,7 +112,7 @@ pub export fn cardinal_barrier_validation_shutdown() callconv(.c) void {
 
     g_validation_initialized = false;
 
-    log.cardinal_log_info("[BARRIER_VALIDATION] Shutdown complete. Stats: {d} accesses, {d} errors, {d} race conditions", .{ g_total_accesses, g_validation_errors, g_race_conditions });
+    barrier_log.info("Shutdown complete. Stats: {d} accesses, {d} errors, {d} race conditions", .{ g_total_accesses, g_validation_errors, g_race_conditions });
 }
 
 pub export fn cardinal_barrier_validation_set_enabled(enabled: bool) callconv(.c) void {
@@ -123,7 +124,7 @@ pub export fn cardinal_barrier_validation_set_enabled(enabled: bool) callconv(.c
     g_validation_context.validation_enabled = enabled;
     unlock_validation_mutex();
 
-    log.cardinal_log_debug("[BARRIER_VALIDATION] Validation {s}", .{if (enabled) "enabled" else "disabled"});
+    barrier_log.debug("Validation {s}", .{if (enabled) "enabled" else "disabled"});
 }
 
 pub export fn cardinal_barrier_validation_track_access(resource_id: u64, resource_type: types.CardinalResourceType, access_type: types.CardinalResourceAccessType, stage_mask: c.VkPipelineStageFlags2, access_mask: c.VkAccessFlags2, thread_id: u32, command_buffer: c.VkCommandBuffer) callconv(.c) bool {
@@ -139,7 +140,7 @@ pub export fn cardinal_barrier_validation_track_access(resource_id: u64, resourc
             g_validation_context.access_count = 0;
         } else {
             unlock_validation_mutex();
-            log.cardinal_log_error("[BARRIER_VALIDATION] Maximum tracked accesses exceeded", .{});
+            barrier_log.err("Maximum tracked accesses exceeded", .{});
             g_validation_errors += 1;
             return false;
         }
@@ -152,7 +153,7 @@ pub export fn cardinal_barrier_validation_track_access(resource_id: u64, resourc
 
         if (existing.resource_id == resource_id and existing.thread_id != thread_id) {
             if (access_type == types.CardinalResourceAccessType.CARDINAL_ACCESS_WRITE or existing.access_type == types.CardinalResourceAccessType.CARDINAL_ACCESS_WRITE) {
-                log.cardinal_log_warn("[BARRIER_VALIDATION] Potential race condition detected: Resource 0x{x} accessed by threads {d} and {d}", .{ resource_id, existing.thread_id, thread_id });
+                barrier_log.warn("Potential race condition detected: Resource 0x{x} accessed by threads {d} and {d}", .{ resource_id, existing.thread_id, thread_id });
                 g_race_conditions += 1;
             }
         }
@@ -184,7 +185,7 @@ pub export fn cardinal_barrier_validation_validate_memory_barrier(barrier: ?*con
     var valid = true;
 
     if (b.srcStageMask == 0 or b.dstStageMask == 0) {
-        log.cardinal_log_error("[BARRIER_VALIDATION] Invalid stage mask in memory barrier (thread {d})", .{thread_id});
+        barrier_log.err("Invalid stage mask in memory barrier (thread {d})", .{thread_id});
         g_validation_errors += 1;
         valid = false;
     }
@@ -192,10 +193,10 @@ pub export fn cardinal_barrier_validation_validate_memory_barrier(barrier: ?*con
     if ((b.srcAccessMask & c.VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT) != 0 and
         (b.srcStageMask & c.VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT) == 0)
     {
-        log.cardinal_log_warn("[BARRIER_VALIDATION] Access mask mismatch with stage mask (thread {d})", .{thread_id});
+        barrier_log.warn("Access mask mismatch with stage mask (thread {d})", .{thread_id});
     }
 
-    log.cardinal_log_debug("[BARRIER_VALIDATION] Memory barrier validated (thread {d}, cmd {*})", .{ thread_id, command_buffer });
+    barrier_log.debug("Memory barrier validated (thread {d}, cmd {*})", .{ thread_id, command_buffer });
     return valid;
 }
 
@@ -220,10 +221,10 @@ pub export fn cardinal_barrier_validation_validate_buffer_barrier(barrier: ?*con
         (b.srcQueueFamilyIndex == c.VK_QUEUE_FAMILY_IGNORED or
             b.dstQueueFamilyIndex == c.VK_QUEUE_FAMILY_IGNORED))
     {
-        log.cardinal_log_warn("[BARRIER_VALIDATION] Inconsistent queue family indices in buffer barrier (thread {d})", .{thread_id});
+        barrier_log.warn("Inconsistent queue family indices in buffer barrier (thread {d})", .{thread_id});
     }
 
-    log.cardinal_log_debug("[BARRIER_VALIDATION] Buffer barrier validated (thread {d}, buffer 0x{x})", .{ thread_id, buffer_id });
+    barrier_log.debug("Buffer barrier validated (thread {d}, buffer 0x{x})", .{ thread_id, buffer_id });
     return valid;
 }
 
@@ -245,18 +246,18 @@ pub export fn cardinal_barrier_validation_validate_image_barrier(barrier: ?*cons
     _ = cardinal_barrier_validation_track_access(image_id, types.CardinalResourceType.CARDINAL_RESOURCE_IMAGE, access_type, b.srcStageMask, b.srcAccessMask, thread_id, command_buffer);
 
     if (b.oldLayout == b.newLayout and b.oldLayout != c.VK_IMAGE_LAYOUT_GENERAL) {
-        log.cardinal_log_warn("[BARRIER_VALIDATION] Unnecessary layout transition (thread {d}, image 0x{x})", .{ thread_id, image_id });
+        barrier_log.warn("Unnecessary layout transition (thread {d}, image 0x{x})", .{ thread_id, image_id });
     }
 
     if (b.oldLayout == c.VK_IMAGE_LAYOUT_UNDEFINED and
         b.newLayout != c.VK_IMAGE_LAYOUT_PREINITIALIZED and b.srcAccessMask != 0)
     {
-        log.cardinal_log_error("[BARRIER_VALIDATION] Invalid src access mask for UNDEFINED layout (thread {d})", .{thread_id});
+        barrier_log.err("Invalid src access mask for UNDEFINED layout (thread {d})", .{thread_id});
         g_validation_errors += 1;
         valid = false;
     }
 
-    log.cardinal_log_debug("[BARRIER_VALIDATION] Image barrier validated (thread {d}, image 0x{x})", .{ thread_id, image_id });
+    barrier_log.debug("Image barrier validated (thread {d}, image 0x{x})", .{ thread_id, image_id });
     return valid;
 }
 
@@ -288,7 +289,7 @@ pub export fn cardinal_barrier_validation_validate_pipeline_barrier(dependency_i
         }
     }
 
-    log.cardinal_log_debug("[BARRIER_VALIDATION] Pipeline barrier validated (thread {d}, cmd {*}): {d} memory, {d} buffer, {d} image barriers", .{ thread_id, command_buffer, dep.memoryBarrierCount, dep.bufferMemoryBarrierCount, dep.imageMemoryBarrierCount });
+    barrier_log.debug("Pipeline barrier validated (thread {d}, cmd {*}): {d} memory, {d} buffer, {d} image barriers", .{ thread_id, command_buffer, dep.memoryBarrierCount, dep.bufferMemoryBarrierCount, dep.imageMemoryBarrierCount });
     return valid;
 }
 
@@ -299,7 +300,7 @@ pub fn cardinal_barrier_validation_validate_secondary_recording(context: ?*const
     const ctx = context.?;
 
     if (!ctx.is_recording) {
-        log.cardinal_log_error("[BARRIER_VALIDATION] Attempting to validate non-recording secondary command buffer", .{});
+        barrier_log.err("Attempting to validate non-recording secondary command buffer", .{});
         g_validation_errors += 1;
         return false;
     }
@@ -361,5 +362,5 @@ pub export fn cardinal_barrier_validation_clear_accesses() callconv(.c) void {
     g_validation_context.access_count = 0;
     unlock_validation_mutex();
 
-    log.cardinal_log_debug("[BARRIER_VALIDATION] Cleared all tracked accesses", .{});
+    barrier_log.debug("Cleared all tracked accesses", .{});
 }

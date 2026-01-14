@@ -2,10 +2,11 @@ const std = @import("std");
 const c = @import("vulkan_c.zig").c;
 const types = @import("vulkan_types.zig");
 const log = @import("../core/log.zig");
+const pso_log = log.ScopedLogger("PSO");
 const shader_utils = @import("util/vulkan_shader_utils.zig");
 const wrappers = @import("vulkan_wrappers.zig");
 
-// --- Shader Cache ---
+// Shader Cache
 var g_shader_cache: std.StringHashMap(c.VkShaderModule) = undefined;
 var g_shader_cache_mutex: std.Thread.Mutex = .{};
 var g_shader_cache_initialized: bool = false;
@@ -32,7 +33,7 @@ fn get_or_load_shader_module(device: c.VkDevice, path: []const u8) !c.VkShaderMo
 
     var module: c.VkShaderModule = undefined;
     if (!shader_utils.vk_shader_create_module(device, path_z, &module)) {
-        log.cardinal_log_error("Failed to create shader module from path: '{s}'", .{path_z});
+        pso_log.err("Failed to create shader module from path: '{s}'", .{path_z});
         return error.ShaderLoadFailed;
     }
 
@@ -42,7 +43,7 @@ fn get_or_load_shader_module(device: c.VkDevice, path: []const u8) !c.VkShaderMo
 
     try g_shader_cache.put(key, module);
 
-    log.cardinal_log_info("Loaded and cached shader: {s}", .{path});
+    pso_log.info("Loaded and cached shader: {s}", .{path});
     return module;
 }
 
@@ -52,7 +53,7 @@ pub fn vk_pso_cleanup_shader_cache(device: c.VkDevice) void {
 
     if (!g_shader_cache_initialized) return;
 
-    log.cardinal_log_info("Cleaning up shader cache ({d} modules)", .{g_shader_cache.count()});
+    pso_log.info("Cleaning up shader cache ({d} modules)", .{g_shader_cache.count()});
     const allocator = @import("../core/memory.zig").cardinal_get_allocator_for_category(.SHADERS).as_allocator();
 
     var it = g_shader_cache.iterator();
@@ -64,8 +65,7 @@ pub fn vk_pso_cleanup_shader_cache(device: c.VkDevice) void {
     g_shader_cache_initialized = false;
 }
 
-// --- Enums ---
-
+// Enums
 pub const Topology = enum {
     point_list,
     line_list,
@@ -238,8 +238,7 @@ pub const LogicOp = enum {
     }
 };
 
-// --- PSO Descriptor Structures ---
-
+// PSO Descriptor Structures
 pub const ShaderStageDescriptor = struct {
     path: []const u8,
     stage: c.VkShaderStageFlagBits = c.VK_SHADER_STAGE_ALL,
@@ -316,7 +315,6 @@ pub const ColorBlendAttachmentDescriptor = struct {
     src_alpha_blend_factor: BlendFactor = .one,
     dst_alpha_blend_factor: BlendFactor = .zero,
     alpha_blend_op: BlendOp = .add,
-    // Keep C flags for mask as it's a bitmask
     color_write_mask: c.VkColorComponentFlags = c.VK_COLOR_COMPONENT_R_BIT | c.VK_COLOR_COMPONENT_G_BIT | c.VK_COLOR_COMPONENT_B_BIT | c.VK_COLOR_COMPONENT_A_BIT,
 };
 
@@ -353,8 +351,7 @@ pub const PipelineDescriptor = struct {
     flags: c.VkPipelineCreateFlags = 0,
 };
 
-// --- Builder ---
-
+// Builder
 pub const PipelineBuilder = struct {
     allocator: std.mem.Allocator,
     device: c.VkDevice,
@@ -380,7 +377,7 @@ pub const PipelineBuilder = struct {
 
     pub fn build(self: *PipelineBuilder, descriptor: PipelineDescriptor, pipeline_layout: c.VkPipelineLayout, out_pipeline: *c.VkPipeline) !void {
         // 1. Shaders
-        log.cardinal_log_info("Building pipeline '{s}'", .{descriptor.name});
+        pso_log.info("Building pipeline '{s}'", .{descriptor.name});
 
         var shader_stages = std.ArrayListUnmanaged(c.VkPipelineShaderStageCreateInfo){};
         defer shader_stages.deinit(self.allocator);
@@ -394,7 +391,7 @@ pub const PipelineBuilder = struct {
                 } else {
                     // Use cached shader module
                     module = get_or_load_shader_module(b.device, stage_desc.path) catch |err| {
-                        log.cardinal_log_error("Failed to load shader module from path: '{s}' (err={any})", .{ stage_desc.path, err });
+                        pso_log.err("Failed to load shader module from path: '{s}' (err={any})", .{ stage_desc.path, err });
                         return error.ShaderLoadFailed;
                     };
                 }
@@ -555,7 +552,7 @@ pub const PipelineBuilder = struct {
 
         // 8. Color Blending
         if (descriptor.color_blend.attachments.len != descriptor.rendering.color_formats.len) {
-            log.cardinal_log_error("Color blend attachment count ({d}) does not match rendering color format count ({d}) for pipeline '{s}'", .{
+            pso_log.err("Color blend attachment count ({d}) does not match rendering color format count ({d}) for pipeline '{s}'", .{
                 descriptor.color_blend.attachments.len,
                 descriptor.rendering.color_formats.len,
                 descriptor.name,
@@ -634,7 +631,7 @@ pub const PipelineBuilder = struct {
 
         const result = c.vkCreateGraphicsPipelines(self.device, self.pipeline_cache, 1, &pipeline_info, null, out_pipeline);
         if (result != c.VK_SUCCESS) {
-            log.cardinal_log_error("Failed to create graphics pipeline '{s}': {d}", .{ descriptor.name, result });
+            pso_log.err("Failed to create graphics pipeline '{s}': {d}", .{ descriptor.name, result });
             return error.PipelineCreationError;
         }
     }

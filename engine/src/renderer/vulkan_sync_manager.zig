@@ -4,6 +4,8 @@ const log = @import("../core/log.zig");
 const memory = @import("../core/memory.zig");
 const types = @import("vulkan_types.zig");
 
+const sync_log = log.ScopedLogger("SYNC_MGR");
+
 const c = @import("vulkan_c.zig").c;
 
 // Global lock to protect timeline semaphore operations
@@ -26,7 +28,7 @@ pub fn vulkan_sync_manager_unlock_shared() void {
 
 pub fn vulkan_sync_manager_init(sync_manager: ?*types.VulkanSyncManager, device: c.VkDevice, graphics_queue: c.VkQueue, max_frames_in_flight: u32, max_ahead: u64) bool {
     if (sync_manager == null or device == null or max_frames_in_flight == 0) {
-        log.cardinal_log_error("[SYNC_MANAGER] Invalid parameters for initialization", .{});
+        sync_log.err("Invalid parameters for initialization", .{});
         return false;
     }
     const mgr = sync_manager.?;
@@ -47,14 +49,14 @@ pub fn vulkan_sync_manager_init(sync_manager: ?*types.VulkanSyncManager, device:
     const mem_alloc = memory.cardinal_get_allocator_for_category(.RENDERER);
     const ptr1 = memory.cardinal_calloc(mem_alloc, max_frames_in_flight, sem_size);
     if (ptr1 == null) {
-        log.cardinal_log_error("[SYNC_MANAGER] Failed to allocate image acquired semaphores", .{});
+        sync_log.err("Failed to allocate image acquired semaphores", .{});
         return false;
     }
     mgr.image_acquired_semaphores = @ptrCast(@alignCast(ptr1));
 
     const ptr2 = memory.cardinal_calloc(mem_alloc, max_frames_in_flight, sem_size);
     if (ptr2 == null) {
-        log.cardinal_log_error("[SYNC_MANAGER] Failed to allocate render finished semaphores", .{});
+        sync_log.err("Failed to allocate render finished semaphores", .{});
         memory.cardinal_free(mem_alloc, @ptrCast(mgr.image_acquired_semaphores));
         return false;
     }
@@ -62,7 +64,7 @@ pub fn vulkan_sync_manager_init(sync_manager: ?*types.VulkanSyncManager, device:
 
     const ptr3 = memory.cardinal_calloc(mem_alloc, max_frames_in_flight, fence_size);
     if (ptr3 == null) {
-        log.cardinal_log_error("[SYNC_MANAGER] Failed to allocate in-flight fences", .{});
+        sync_log.err("Failed to allocate in-flight fences", .{});
         memory.cardinal_free(mem_alloc, @ptrCast(mgr.image_acquired_semaphores));
         memory.cardinal_free(mem_alloc, @ptrCast(mgr.render_finished_semaphores));
         return false;
@@ -76,13 +78,13 @@ pub fn vulkan_sync_manager_init(sync_manager: ?*types.VulkanSyncManager, device:
         semaphore_info.sType = c.VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO;
 
         if (c.vkCreateSemaphore(device, &semaphore_info, null, &mgr.image_acquired_semaphores.?[i]) != c.VK_SUCCESS) {
-            log.cardinal_log_error("[SYNC_MANAGER] Failed to create image acquired semaphore for frame {d}", .{i});
+            sync_log.err("Failed to create image acquired semaphore for frame {d}", .{i});
             vulkan_sync_manager_destroy(mgr);
             return false;
         }
 
         if (c.vkCreateSemaphore(device, &semaphore_info, null, &mgr.render_finished_semaphores.?[i]) != c.VK_SUCCESS) {
-            log.cardinal_log_error("[SYNC_MANAGER] Failed to create render finished semaphore for frame {d}", .{i});
+            sync_log.err("Failed to create render finished semaphore for frame {d}", .{i});
             vulkan_sync_manager_destroy(mgr);
             return false;
         }
@@ -92,7 +94,7 @@ pub fn vulkan_sync_manager_init(sync_manager: ?*types.VulkanSyncManager, device:
         fence_info.flags = c.VK_FENCE_CREATE_SIGNALED_BIT;
 
         if (c.vkCreateFence(device, &fence_info, null, &mgr.in_flight_fences.?[i]) != c.VK_SUCCESS) {
-            log.cardinal_log_error("[SYNC_MANAGER] Failed to create in-flight fence for frame {d}", .{i});
+            sync_log.err("Failed to create in-flight fence for frame {d}", .{i});
             vulkan_sync_manager_destroy(mgr);
             return false;
         }
@@ -109,7 +111,7 @@ pub fn vulkan_sync_manager_init(sync_manager: ?*types.VulkanSyncManager, device:
     timeline_info.pNext = &timeline_type_info;
 
     if (c.vkCreateSemaphore(device, &timeline_info, null, &mgr.timeline_semaphore) != c.VK_SUCCESS) {
-        log.cardinal_log_error("[SYNC_MANAGER] Failed to create timeline semaphore", .{});
+        sync_log.err("Failed to create timeline semaphore", .{});
         vulkan_sync_manager_destroy(mgr);
         return false;
     }
@@ -125,7 +127,7 @@ pub fn vulkan_sync_manager_init(sync_manager: ?*types.VulkanSyncManager, device:
     _ = vulkan_sync_manager_init_value_strategy(mgr, 1, true);
 
     mgr.initialized = true;
-    log.cardinal_log_info("[SYNC_MANAGER] Initialized with {d} frames in flight", .{max_frames_in_flight});
+    sync_log.info("Initialized with {d} frames in flight", .{max_frames_in_flight});
 
     return true;
 }
@@ -139,7 +141,7 @@ pub fn vulkan_sync_manager_destroy(sync_manager: ?*types.VulkanSyncManager) void
     // Wait for device to be idle
     const res = c.vkDeviceWaitIdle(mgr.device);
     if (res != c.VK_SUCCESS) {
-        log.cardinal_log_error("[SYNC_MANAGER] vkDeviceWaitIdle failed during destruction: {d}", .{res});
+        sync_log.err("vkDeviceWaitIdle failed during destruction: {d}", .{res});
     }
 
     // Destroy timeline semaphore
@@ -184,7 +186,7 @@ pub fn vulkan_sync_manager_destroy(sync_manager: ?*types.VulkanSyncManager) void
     }
 
     mgr.initialized = false;
-    log.cardinal_log_info("[SYNC_MANAGER] Destroyed", .{});
+    sync_log.info("Destroyed", .{});
 }
 
 pub fn vulkan_sync_manager_wait_for_frame(sync_manager: ?*types.VulkanSyncManager, timeout_ns: u64) c.VkResult {
@@ -291,7 +293,7 @@ pub fn vulkan_sync_manager_wait_timeline(sync_manager: ?*types.VulkanSyncManager
     // We use a loose check without lock to avoid overhead, as exact synchronization is handled by the semaphore
     const current_atomic = atomic(&mgr.global_timeline_counter).load(.seq_cst);
     if (value > current_atomic + mgr.max_ahead_value) {
-        log.cardinal_log_warn("[SYNC_MANAGER] wait_timeline: value {d} is too far ahead of current {d}, ignoring wait", .{ value, current_atomic });
+        sync_log.warn("wait_timeline: value {d} is too far ahead of current {d}, ignoring wait", .{ value, current_atomic });
         return c.VK_SUCCESS; // Treat as if already signaled to avoid hang
     }
 
@@ -356,7 +358,7 @@ pub fn vulkan_sync_manager_get_next_timeline_value(sync_manager: ?*types.VulkanS
     defer g_sync_lock.unlockShared();
 
     if (mgr.timeline_semaphore == null) {
-        log.cardinal_log_error("[SYNC_MANAGER] Timeline semaphore is null in get_next_timeline_value", .{});
+        sync_log.err("Timeline semaphore is null in get_next_timeline_value", .{});
         return 0;
     }
 
@@ -382,7 +384,7 @@ pub fn vulkan_sync_manager_get_next_timeline_value(sync_manager: ?*types.VulkanS
 
         // Check for overflow risk (leaving some headroom)
         if (base_val >= std.math.maxInt(u64) - 1000) {
-            log.cardinal_log_warn("[SYNC_MANAGER] Timeline value approaching overflow (val={d}), triggering reset", .{base_val});
+            sync_log.warn("Timeline value approaching overflow (val={d}), triggering reset", .{base_val});
 
             // Upgrade to write lock for reset
             // We need to release shared lock first to avoid deadlock
@@ -403,7 +405,7 @@ pub fn vulkan_sync_manager_get_next_timeline_value(sync_manager: ?*types.VulkanS
                 // The loop will retry and load the new 0 value from atomic, and use the new 0 value from device.
                 continue;
             } else {
-                log.cardinal_log_error("[SYNC_MANAGER] Failed to reset timeline values during overflow check", .{});
+                sync_log.err("Failed to reset timeline values during overflow check", .{});
                 // We can't safely increment, return 0 to indicate error
                 return 0;
             }
@@ -664,7 +666,7 @@ pub fn vulkan_sync_manager_signal_timeline_safe(sync_manager: ?*types.VulkanSync
 
 pub fn vulkan_sync_manager_validate_timeline_state(sync_manager: ?*types.VulkanSyncManager) bool {
     if (sync_manager == null) {
-        log.cardinal_log_error("[SYNC_MANAGER] Invalid sync manager or timeline semaphore", .{});
+        sync_log.err("Invalid sync manager or timeline semaphore", .{});
         return false;
     }
     const mgr = sync_manager.?;
@@ -683,7 +685,7 @@ pub fn vulkan_sync_manager_validate_timeline_state(sync_manager: ?*types.VulkanS
 
     const atomic_value = atomic(&mgr.global_timeline_counter).load(.seq_cst);
     if (current_value > atomic_value + mgr.max_ahead_value) {
-        log.cardinal_log_warn("[SYNC_MANAGER] Timeline value inconsistency: semaphore={d}, atomic={d}", .{ current_value, atomic_value });
+        sync_log.warn("Timeline value inconsistency: semaphore={d}, atomic={d}", .{ current_value, atomic_value });
     }
 
     return true;
@@ -720,7 +722,7 @@ pub fn vulkan_sync_manager_recover_timeline_semaphore(sync_manager: ?*types.Vulk
     create_info.pNext = &timeline_type_info;
 
     if (c.vkCreateSemaphore(mgr.device, &create_info, null, &mgr.timeline_semaphore) != c.VK_SUCCESS) {
-        log.cardinal_log_error("[SYNC_MANAGER] Failed to recreate timeline semaphore", .{});
+        sync_log.err("Failed to recreate timeline semaphore", .{});
         return false;
     }
 
@@ -743,7 +745,7 @@ pub fn vulkan_sync_manager_init_value_strategy(sync_manager: ?*types.VulkanSyncM
     mgr.value_strategy.overflow_threshold = mgr.value_strategy.max_safe_value - (increment_step * 1000);
     mgr.value_strategy.auto_reset_enabled = auto_reset_enabled;
 
-    log.cardinal_log_info("[SYNC_MANAGER] Timeline value strategy initialized: step={d}, auto_reset={s}", .{ increment_step, if (auto_reset_enabled) "enabled" else "disabled" });
+    sync_log.info("Timeline value strategy initialized: step={d}, auto_reset={s}", .{ increment_step, if (auto_reset_enabled) "enabled" else "disabled" });
 
     return true;
 }
@@ -759,14 +761,14 @@ pub fn vulkan_sync_manager_get_optimized_next_value(sync_manager: ?*types.Vulkan
 
     if (next_value > mgr.value_strategy.overflow_threshold) {
         if (mgr.value_strategy.auto_reset_enabled) {
-            log.cardinal_log_warn("[SYNC_MANAGER] Timeline value approaching overflow, triggering reset", .{});
+            sync_log.warn("Timeline value approaching overflow, triggering reset", .{});
             if (vulkan_sync_manager_reset_timeline_values(mgr)) {
                 next_value = increment;
             } else {
-                log.cardinal_log_error("[SYNC_MANAGER] Failed to reset timeline values, continuing with risky value", .{});
+                sync_log.err("Failed to reset timeline values, continuing with risky value", .{});
             }
         } else {
-            log.cardinal_log_warn("[SYNC_MANAGER] Timeline value {d} approaching overflow threshold {d}", .{ next_value, mgr.value_strategy.overflow_threshold });
+            sync_log.warn("Timeline value {d} approaching overflow threshold {d}", .{ next_value, mgr.value_strategy.overflow_threshold });
         }
     }
 
@@ -786,7 +788,7 @@ pub fn vulkan_sync_manager_check_overflow_risk(sync_manager: ?*types.VulkanSyncM
 
     const at_risk = current_value >= threshold;
     if (at_risk) {
-        log.cardinal_log_warn("[SYNC_MANAGER] Timeline overflow risk detected: current={d}, threshold={d}", .{ current_value, threshold });
+        sync_log.warn("Timeline overflow risk detected: current={d}, threshold={d}", .{ current_value, threshold });
     }
 
     return at_risk;
@@ -814,14 +816,14 @@ pub fn vulkan_sync_manager_reset_timeline_values(sync_manager: ?*types.VulkanSyn
         return true;
     }
 
-    log.cardinal_log_info("[SYNC_MANAGER] Resetting timeline values to prevent overflow (atomic={d}, device={d})", .{ current_atomic, current_dev_val });
+    sync_log.info("Resetting timeline values to prevent overflow (atomic={d}, device={d})", .{ current_atomic, current_dev_val });
 
     // Wait for device idle to ensure no commands are using the semaphore
     // This is crucial because we are about to destroy it
     // NOTE: vkDeviceWaitIdle might fail if the device is lost, but we proceed anyway to reset state
     const wait_result = c.vkDeviceWaitIdle(mgr.device);
     if (wait_result != c.VK_SUCCESS) {
-        log.cardinal_log_warn("[SYNC_MANAGER] vkDeviceWaitIdle failed during reset: {d}", .{wait_result});
+        sync_log.warn("vkDeviceWaitIdle failed during reset: {d}", .{wait_result});
     }
 
     if (mgr.timeline_semaphore != null) {
@@ -840,7 +842,7 @@ pub fn vulkan_sync_manager_reset_timeline_values(sync_manager: ?*types.VulkanSyn
 
     const result = c.vkCreateSemaphore(mgr.device, &create_info, null, &mgr.timeline_semaphore);
     if (result != c.VK_SUCCESS) {
-        log.cardinal_log_error("[SYNC_MANAGER] Failed to recreate timeline semaphore after reset: {d}", .{result});
+        sync_log.err("Failed to recreate timeline semaphore after reset: {d}", .{result});
         return false;
     }
 
@@ -852,7 +854,7 @@ pub fn vulkan_sync_manager_reset_timeline_values(sync_manager: ?*types.VulkanSyn
 
     mgr.value_strategy.base_value = 0;
 
-    log.cardinal_log_info("[SYNC_MANAGER] Timeline values reset successfully", .{});
+    sync_log.info("Timeline values reset successfully", .{});
     return true;
 }
 
@@ -864,7 +866,7 @@ pub fn vulkan_sync_manager_optimize_value_allocation(sync_manager: ?*types.Vulka
     const at_risk = vulkan_sync_manager_check_overflow_risk(mgr, &remaining_values);
 
     if (at_risk) {
-        log.cardinal_log_info("[SYNC_MANAGER] Optimizing timeline value allocation due to overflow risk", .{});
+        sync_log.info("Optimizing timeline value allocation due to overflow risk", .{});
         if (mgr.value_strategy.auto_reset_enabled) {
             _ = vulkan_sync_manager_reset_timeline_values(mgr);
         } else {
@@ -872,7 +874,7 @@ pub fn vulkan_sync_manager_optimize_value_allocation(sync_manager: ?*types.Vulka
             const optimized_step = remaining_values / 1000;
             if (optimized_step > 0 and optimized_step < current_step) {
                 mgr.value_strategy.increment_step = optimized_step;
-                log.cardinal_log_info("[SYNC_MANAGER] Reduced increment step from {d} to {d} to optimize remaining values", .{ current_step, optimized_step });
+                sync_log.info("Reduced increment step from {d} to {d} to optimize remaining values", .{ current_step, optimized_step });
             }
         }
     } else {
@@ -880,7 +882,7 @@ pub fn vulkan_sync_manager_optimize_value_allocation(sync_manager: ?*types.Vulka
         const optimal_step = remaining_values / 100000;
         if (optimal_step > current_step * 2) {
             mgr.value_strategy.increment_step = current_step * 2;
-            log.cardinal_log_debug("[SYNC_MANAGER] Increased increment step from {d} to {d} for better performance", .{ current_step, mgr.value_strategy.increment_step });
+            sync_log.debug("Increased increment step from {d} to {d} for better performance", .{ current_step, mgr.value_strategy.increment_step });
         }
     }
 }

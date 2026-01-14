@@ -13,6 +13,8 @@ const vk_descriptor_manager = @import("vulkan_descriptor_manager.zig");
 const vk_allocator = @import("vulkan_allocator.zig");
 const vk_compute = @import("vulkan_compute.zig");
 
+const res_log = log.ScopedLogger("RES_MGR");
+
 const c = @import("vulkan_c.zig").c;
 
 pub const VulkanResourceManager = extern struct {
@@ -22,7 +24,7 @@ pub const VulkanResourceManager = extern struct {
 
 pub export fn vulkan_resource_manager_init(manager: ?*VulkanResourceManager, vulkan_state: ?*types.VulkanState) callconv(.c) c.VkResult {
     if (manager == null or vulkan_state == null) {
-        log.cardinal_log_error("[RESOURCE_MANAGER] Invalid parameters for initialization", .{});
+        res_log.err("Invalid parameters for initialization", .{});
         return c.VK_ERROR_INITIALIZATION_FAILED;
     }
     const mgr = manager.?;
@@ -31,7 +33,7 @@ pub export fn vulkan_resource_manager_init(manager: ?*VulkanResourceManager, vul
     mgr.vulkan_state = vulkan_state.?;
     mgr.initialized = true;
 
-    log.cardinal_log_debug("[RESOURCE_MANAGER] Initialized successfully", .{});
+    res_log.debug("Initialized successfully", .{});
     return c.VK_SUCCESS;
 }
 
@@ -43,7 +45,7 @@ pub export fn vulkan_resource_manager_destroy(manager: ?*VulkanResourceManager) 
     mgr.vulkan_state = null;
     mgr.initialized = false;
 
-    log.cardinal_log_debug("[RESOURCE_MANAGER] Destroyed successfully", .{});
+    res_log.debug("Destroyed successfully", .{});
 }
 
 pub export fn vulkan_resource_manager_destroy_all(manager: ?*VulkanResourceManager) callconv(.c) void {
@@ -53,7 +55,7 @@ pub export fn vulkan_resource_manager_destroy_all(manager: ?*VulkanResourceManag
 
     const s = mgr.vulkan_state.?;
 
-    log.cardinal_log_info("[RESOURCE_MANAGER] Starting complete resource destruction", .{});
+    res_log.info("Starting complete resource destruction", .{});
 
     _ = vulkan_resource_manager_wait_idle(mgr);
 
@@ -69,7 +71,7 @@ pub export fn vulkan_resource_manager_destroy_all(manager: ?*VulkanResourceManag
     vulkan_resource_manager_destroy_pipelines(mgr);
     vulkan_resource_manager_destroy_swapchain_resources(mgr);
 
-    log.cardinal_log_info("[RESOURCE_MANAGER] Complete resource destruction finished", .{});
+    res_log.info("Complete resource destruction finished", .{});
 }
 
 pub export fn vulkan_resource_manager_destroy_scene(manager: ?*VulkanResourceManager) callconv(.c) void {
@@ -79,7 +81,7 @@ pub export fn vulkan_resource_manager_destroy_scene(manager: ?*VulkanResourceMan
 
     const s = mgr.vulkan_state.?;
 
-    log.cardinal_log_debug("[RESOURCE_MANAGER] Destroying scene buffers", .{});
+    res_log.debug("Destroying scene buffers", .{});
 
     if (s.scene_meshes != null) {
         var i: u32 = 0;
@@ -109,7 +111,7 @@ pub export fn vulkan_resource_manager_destroy_pipelines(manager: ?*VulkanResourc
     const s = mgr.vulkan_state.?;
 
     if (s.pipelines.pbr_pipeline.initialized) {
-        log.cardinal_log_debug("[RESOURCE_MANAGER] Destroying PBR pipeline resources", .{});
+        res_log.debug("Destroying PBR pipeline resources", .{});
         vulkan_resource_manager_destroy_textures(manager, &s.pipelines.pbr_pipeline);
 
         // Destroy PBR buffers
@@ -145,8 +147,6 @@ pub export fn vulkan_resource_manager_destroy_pipelines(manager: ?*VulkanResourc
 
         // Descriptor manager should also be destroyed if it exists
         if (pbr.descriptorManager) |dm| {
-            // We need a function to destroy descriptor manager or just free it if it was allocated via cardinal_alloc
-            // create_pbr_descriptor_manager allocated it.
             vk_descriptor_manager.vk_descriptor_manager_destroy(dm);
             const allocator = memory.cardinal_get_allocator_for_category(.RENDERER);
             memory.cardinal_free(allocator, dm);
@@ -168,7 +168,7 @@ pub export fn vulkan_resource_manager_destroy_swapchain_resources(manager: ?*Vul
     const mgr = manager.?;
     if (!mgr.initialized or mgr.vulkan_state == null) return;
 
-    log.cardinal_log_debug("[RESOURCE_MANAGER] Destroying swapchain resources", .{});
+    res_log.debug("Destroying swapchain resources", .{});
 
     vk_swapchain.vk_destroy_swapchain(mgr.vulkan_state.?);
 }
@@ -178,7 +178,7 @@ pub export fn vulkan_resource_manager_destroy_commands_sync(manager: ?*VulkanRes
     const mgr = manager.?;
     if (!mgr.initialized or mgr.vulkan_state == null) return;
 
-    log.cardinal_log_debug("[RESOURCE_MANAGER] Destroying command buffers and synchronization objects", .{});
+    res_log.debug("Destroying command buffers and synchronization objects", .{});
 
     vk_commands.vk_destroy_commands_sync(@ptrCast(mgr.vulkan_state.?));
 }
@@ -190,7 +190,7 @@ pub export fn vulkan_resource_manager_destroy_depth_resources(manager: ?*VulkanR
 
     const s = mgr.vulkan_state.?;
 
-    log.cardinal_log_debug("[RESOURCE_MANAGER] Destroying depth resources", .{});
+    res_log.debug("Destroying depth resources", .{});
 
     if (s.swapchain.depth_image_view != null) {
         c.vkDestroyImageView(s.context.device, s.swapchain.depth_image_view, null);
@@ -209,7 +209,7 @@ pub export fn vulkan_resource_manager_destroy_textures(manager: ?*VulkanResource
     const mgr = manager.?;
     if (!mgr.initialized or mgr.vulkan_state == null) return;
 
-    log.cardinal_log_debug("[RESOURCE_MANAGER] Destroying texture resources", .{});
+    res_log.debug("Destroying texture resources", .{});
 
     _ = vulkan_resource_manager_wait_idle(mgr);
 
@@ -226,7 +226,7 @@ pub export fn vulkan_resource_manager_destroy_buffer(manager: ?*VulkanResourceMa
     if (!mgr.initialized or mgr.vulkan_state == null) return;
 
     if (buffer != null) {
-        vk_allocator.vk_allocator_free_buffer(&mgr.vulkan_state.?.allocator, buffer, allocation);
+        vk_allocator.free_buffer(&mgr.vulkan_state.?.allocator, buffer, allocation);
     }
 }
 
@@ -236,7 +236,7 @@ pub export fn vulkan_resource_manager_destroy_image(manager: ?*VulkanResourceMan
     if (!mgr.initialized or mgr.vulkan_state == null) return;
 
     if (image != null) {
-        vk_allocator.vk_allocator_free_image(&mgr.vulkan_state.?.allocator, image, allocation);
+        vk_allocator.free_image(&mgr.vulkan_state.?.allocator, image, allocation);
     }
 }
 
@@ -298,7 +298,7 @@ pub export fn vulkan_resource_manager_wait_idle(manager: ?*VulkanResourceManager
 
     const result = c.vkDeviceWaitIdle(mgr.vulkan_state.?.context.device);
     if (result != c.VK_SUCCESS) {
-        log.cardinal_log_error("[RESOURCE_MANAGER] Failed to wait for device idle: {d}", .{result});
+        res_log.err("Failed to wait for device idle: {d}", .{result});
     }
 
     return result;

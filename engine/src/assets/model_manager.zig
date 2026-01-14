@@ -326,14 +326,14 @@ fn rebuild_combined_scene(manager: *CardinalModelManager) void {
     // Allocate arrays
     const meshes_ptr = memory.cardinal_calloc(allocator, total_meshes, @sizeOf(scene.CardinalMesh));
     if (meshes_ptr) |ptr| {
-        log.cardinal_log_debug("[MODEL_MGR] Allocated combined meshes: {any} size {d}", .{ ptr, total_meshes * @sizeOf(scene.CardinalMesh) });
+        model_log.debug("Allocated combined meshes: {any} size {d}", .{ ptr, total_meshes * @sizeOf(scene.CardinalMesh) });
     }
     const materials_ptr = memory.cardinal_calloc(allocator, total_materials, @sizeOf(scene.CardinalMaterial));
     const textures_ptr = memory.cardinal_calloc(allocator, total_textures, @sizeOf(scene.CardinalTexture));
     const nodes_ptr = memory.cardinal_calloc(allocator, total_nodes, @sizeOf(?*scene.CardinalSceneNode));
 
     if (meshes_ptr == null or materials_ptr == null or textures_ptr == null or (total_nodes > 0 and nodes_ptr == null)) {
-        log.cardinal_log_error("Failed to allocate memory for combined scene", .{});
+        model_log.err("Failed to allocate memory for combined scene", .{});
         if (meshes_ptr) |p| memory.cardinal_free(allocator, p);
         if (materials_ptr) |p| memory.cardinal_free(allocator, p);
         if (textures_ptr) |p| memory.cardinal_free(allocator, p);
@@ -447,7 +447,7 @@ fn rebuild_combined_scene(manager: *CardinalModelManager) void {
                         // and will fall through to deep copy below.
                         dst_texture.ref_resource = null;
                         if (res.identifier) |id| {
-                            log.cardinal_log_warn("[MODEL_MGR] Failed to acquire ref for texture '{s}', falling back to copy", .{id});
+                            model_log.warn("Failed to acquire ref for texture '{s}', falling back to copy", .{id});
                         }
                     }
                 }
@@ -499,7 +499,7 @@ fn rebuild_combined_scene(manager: *CardinalModelManager) void {
 
                 // Debug logging
                 if (dst_texture.ref_resource == null and src_texture.ref_resource != null) {
-                    log.cardinal_log_warn("[MODEL_MGR] Texture copy failed to preserve ref_resource! Src: {*}, Dst: {*}", .{ src_texture.ref_resource, dst_texture.ref_resource });
+                    model_log.warn("Texture copy failed to preserve ref_resource! Src: {*}, Dst: {*}", .{ src_texture.ref_resource, dst_texture.ref_resource });
                 } else if (dst_texture.ref_resource != null) {
                     // log.cardinal_log_debug("[MODEL_MGR] Texture copy preserved ref_resource: {*}", .{dst_texture.ref_resource});
                 }
@@ -705,7 +705,7 @@ fn rebuild_combined_scene(manager: *CardinalModelManager) void {
 
     manager.scene_dirty = false;
 
-    log.cardinal_log_debug("Rebuilt combined scene: {d} meshes, {d} materials, {d} textures, {d} nodes, {d} anims", .{ total_meshes, total_materials, total_textures, total_nodes, total_animations });
+    model_log.debug("Rebuilt combined scene: {d} meshes, {d} materials, {d} textures, {d} nodes, {d} anims", .{ total_meshes, total_materials, total_textures, total_nodes, total_animations });
 }
 
 fn free_model_load_task(task: *async_loader.CardinalAsyncTask) void {
@@ -728,8 +728,7 @@ fn free_model_load_task(task: *async_loader.CardinalAsyncTask) void {
     async_loader.cardinal_async_free_task(task);
 }
 
-// --- Public API ---
-
+// Public API
 pub export fn cardinal_model_manager_init(manager: ?*CardinalModelManager) callconv(.c) bool {
     if (manager == null) return false;
     const mgr = manager.?;
@@ -738,7 +737,7 @@ pub export fn cardinal_model_manager_init(manager: ?*CardinalModelManager) callc
     mgr.next_id = 1;
     mgr.scene_dirty = true;
 
-    log.cardinal_log_debug("Model manager initialized", .{});
+    model_log.debug("Model manager initialized", .{});
     return true;
 }
 
@@ -768,7 +767,7 @@ pub export fn cardinal_model_manager_destroy(manager: ?*CardinalModelManager) ca
     cleanup_combined_scene(mgr);
 
     @memset(@as([*]u8, @ptrCast(mgr))[0..@sizeOf(CardinalModelManager)], 0);
-    log.cardinal_log_debug("Model manager destroyed", .{});
+    model_log.debug("Model manager destroyed", .{});
 }
 
 pub export fn cardinal_model_manager_load_model(manager: ?*CardinalModelManager, file_path: ?[*:0]const u8, name: ?[*:0]const u8) callconv(.c) u32 {
@@ -785,7 +784,7 @@ pub export fn cardinal_model_manager_load_model(manager: ?*CardinalModelManager,
     // Wait for the task chain to complete
     if (model.?.load_task) |task| {
         if (!async_loader.cardinal_async_wait_for_task(task, 0)) {
-            log.cardinal_log_error("Failed to wait for model load task for {s}", .{file_path.?});
+            model_log.err("Failed to wait for model load task for {s}", .{file_path.?});
             _ = cardinal_model_manager_remove_model(manager, id);
             return 0;
         }
@@ -812,7 +811,7 @@ pub export fn cardinal_model_manager_load_model(manager: ?*CardinalModelManager,
                     manager.?.scene_dirty = true;
 
                     const model_name_str = if (model.?.name) |n| n else "Unnamed";
-                    log.cardinal_log_info("Synchronous (via Async) loading completed for model '{s}' (ID: {d}, {d} meshes)", .{ model_name_str, model.?.id, model.?.scene.mesh_count });
+                    model_log.info("Synchronous (via Async) loading completed for model '{s}' (ID: {d}, {d} meshes)", .{ model_name_str, model.?.id, model.?.scene.mesh_count });
                 }
             }
 
@@ -827,7 +826,7 @@ pub export fn cardinal_model_manager_load_model(manager: ?*CardinalModelManager,
         } else {
             const error_msg = async_loader.cardinal_async_get_error_message(task);
             const err_str = if (error_msg) |e| e else "Unknown error";
-            log.cardinal_log_error("Model load failed: {s}", .{err_str});
+            model_log.err("Model load failed: {s}", .{err_str});
 
             free_model_load_task(task);
             model.?.load_task = null;
@@ -885,7 +884,7 @@ pub export fn cardinal_model_manager_load_model_async(manager: ?*CardinalModelMa
     // We don't set callbacks here as we'll handle everything in the chain
     const scene_task = async_loader.cardinal_async_load_scene(@ptrCast(file_path.?), @enumFromInt(priority), null, null);
     if (scene_task == null) {
-        log.cardinal_log_error("Failed to start async loading for {s}", .{file_path.?});
+        model_log.err("Failed to start async loading for {s}", .{file_path.?});
         if (model.name) |n| memory.cardinal_free(allocator, @ptrCast(n));
         if (model.file_path) |p| memory.cardinal_free(allocator, @ptrCast(p));
         return 0;
@@ -916,7 +915,7 @@ pub export fn cardinal_model_manager_load_model_async(manager: ?*CardinalModelMa
     // 4. Add Dependency
     // finalize_task depends on scene_task
     if (!async_loader.cardinal_async_add_dependency(finalize_task, scene_task)) {
-        log.cardinal_log_error("Failed to add task dependency", .{});
+        model_log.err("Failed to add task dependency", .{});
         // Cleanup is tricky here since tasks are submitted.
         // But since we just submitted them, they might be pending.
         // We'll let them run (and fail/leak?) or try to cancel.
@@ -928,7 +927,7 @@ pub export fn cardinal_model_manager_load_model_async(manager: ?*CardinalModelMa
     mgr.model_count += 1;
 
     const model_name_str = if (model.name) |n| n else "Unnamed";
-    log.cardinal_log_info("Started async loading of model '{s}' from {s} (ID: {d}) with dependency chain", .{ model_name_str, file_path.?, model.id });
+    model_log.info("Started async loading of model '{s}' from {s} (ID: {d}) with dependency chain", .{ model_name_str, file_path.?, model.id });
 
     return model.id;
 }
@@ -993,7 +992,7 @@ pub export fn cardinal_model_manager_add_scene(manager: ?*CardinalModelManager, 
     mgr.scene_dirty = true;
 
     const model_name_str = if (model.name) |n| n else "Unnamed";
-    log.cardinal_log_info("Added scene '{s}' to model manager (ID: {d}, {d} meshes)", .{ model_name_str, model.id, model.scene.mesh_count });
+    model_log.info("Added scene '{s}' to model manager (ID: {d}, {d} meshes)", .{ model_name_str, model.id, model.scene.mesh_count });
 
     return model.id;
 }
@@ -1010,7 +1009,7 @@ pub export fn cardinal_model_manager_remove_model(manager: ?*CardinalModelManage
     const model = &models[idx];
 
     const model_name_str = if (model.name) |n| n else "Unnamed";
-    log.cardinal_log_info("Removing model '{s}' (ID: {d})", .{ model_name_str, model_id });
+    model_log.info("Removing model '{s}' (ID: {d})", .{ model_name_str, model_id });
 
     const allocator = memory.cardinal_get_allocator_for_category(.ASSETS);
     if (model.name) |n| memory.cardinal_free(allocator, @ptrCast(n));
@@ -1147,9 +1146,9 @@ pub export fn cardinal_model_manager_update(manager: ?*CardinalModelManager) cal
                             mgr.scene_dirty = true;
 
                             const model_name_str = if (model.name) |n| n else "Unnamed";
-                            log.cardinal_log_info("Async loading chain completed for model '{s}' (ID: {d}, {d} meshes)", .{ model_name_str, model.id, model.scene.mesh_count });
+                            model_log.info("Async loading chain completed for model '{s}' (ID: {d}, {d} meshes)", .{ model_name_str, model.id, model.scene.mesh_count });
                         } else {
-                            log.cardinal_log_error("Finalize task completed but no result data found", .{});
+                            model_log.err("Finalize task completed but no result data found", .{});
                             success = false;
                         }
                     } else if (async_loader.cardinal_async_get_scene_result(task, &model.scene)) {
@@ -1159,7 +1158,7 @@ pub export fn cardinal_model_manager_update(manager: ?*CardinalModelManager) cal
                         mgr.scene_dirty = true;
 
                         const model_name_str = if (model.name) |n| n else "Unnamed";
-                        log.cardinal_log_info("Async loading completed for model '{s}' (ID: {d}, {d} meshes)", .{ model_name_str, model.id, model.scene.mesh_count });
+                        model_log.info("Async loading completed for model '{s}' (ID: {d}, {d} meshes)", .{ model_name_str, model.id, model.scene.mesh_count });
                         success = true;
                     }
 
@@ -1221,7 +1220,7 @@ pub export fn cardinal_model_manager_clear(manager: ?*CardinalModelManager) call
     if (manager == null) return;
     const mgr = manager.?;
 
-    log.cardinal_log_info("Clearing all models from manager", .{});
+    model_log.info("Clearing all models from manager", .{});
 
     const allocator = memory.cardinal_get_allocator_for_category(.ASSETS);
 

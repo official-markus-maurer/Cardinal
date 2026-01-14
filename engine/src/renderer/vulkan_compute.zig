@@ -6,13 +6,15 @@ const types = @import("vulkan_types.zig");
 const c = @import("vulkan_c.zig").c;
 const shader_utils = @import("util/vulkan_shader_utils.zig");
 
+const compute_log = log.ScopedLogger("COMPUTE");
+
 pub fn vk_compute_init(vulkan_state: ?*types.VulkanState) bool {
     if (vulkan_state == null) {
-        log.cardinal_log_error("[COMPUTE] Invalid vulkan state for compute initialization", .{});
+        compute_log.err("Invalid vulkan state for compute initialization", .{});
         return false;
     }
 
-    log.cardinal_log_info("[COMPUTE] Compute shader support initialized", .{});
+    compute_log.info("Compute shader support initialized", .{});
     return true;
 }
 
@@ -21,25 +23,25 @@ pub fn vk_compute_cleanup(vulkan_state: ?*types.VulkanState) void {
         return;
     }
 
-    log.cardinal_log_info("[COMPUTE] Compute shader support cleaned up", .{});
+    compute_log.info("Compute shader support cleaned up", .{});
 }
 
 pub fn vk_compute_validate_config(vulkan_state: ?*types.VulkanState, config: ?*const types.ComputePipelineConfig) bool {
     if (vulkan_state == null or config == null) {
-        log.cardinal_log_error("[COMPUTE] Invalid parameters for config validation", .{});
+        compute_log.err("Invalid parameters for config validation", .{});
         return false;
     }
     const cfg = config.?;
     const vs = vulkan_state.?;
 
     if (cfg.compute_shader_path == null or c.strlen(cfg.compute_shader_path) == 0) {
-        log.cardinal_log_error("[COMPUTE] Compute shader path is required", .{});
+        compute_log.err("Compute shader path is required", .{});
         return false;
     }
 
     // Validate local workgroup sizes
     if (cfg.local_size_x == 0 or cfg.local_size_y == 0 or cfg.local_size_z == 0) {
-        log.cardinal_log_error("[COMPUTE] Local workgroup sizes must be greater than 0", .{});
+        compute_log.err("Local workgroup sizes must be greater than 0", .{});
         return false;
     }
 
@@ -51,13 +53,13 @@ pub fn vk_compute_validate_config(vulkan_state: ?*types.VulkanState, config: ?*c
         cfg.local_size_y > properties.limits.maxComputeWorkGroupSize[1] or
         cfg.local_size_z > properties.limits.maxComputeWorkGroupSize[2])
     {
-        log.cardinal_log_error("[COMPUTE] Local workgroup sizes exceed device limits", .{});
+        compute_log.err("Local workgroup sizes exceed device limits", .{});
         return false;
     }
 
     const total_invocations = cfg.local_size_x * cfg.local_size_y * cfg.local_size_z;
     if (total_invocations > properties.limits.maxComputeWorkGroupInvocations) {
-        log.cardinal_log_error("[COMPUTE] Total workgroup invocations ({d}) exceed device limit ({d})", .{ total_invocations, properties.limits.maxComputeWorkGroupInvocations });
+        compute_log.err("Total workgroup invocations ({d}) exceed device limit ({d})", .{ total_invocations, properties.limits.maxComputeWorkGroupInvocations });
         return false;
     }
 
@@ -66,7 +68,7 @@ pub fn vk_compute_validate_config(vulkan_state: ?*types.VulkanState, config: ?*c
 
 pub fn vk_compute_create_descriptor_layout(vulkan_state: ?*types.VulkanState, bindings: ?*const c.VkDescriptorSetLayoutBinding, binding_count: u32, layout: ?*c.VkDescriptorSetLayout) bool {
     if (vulkan_state == null or bindings == null or binding_count == 0 or layout == null) {
-        log.cardinal_log_error("[COMPUTE] Invalid parameters for descriptor layout creation", .{});
+        compute_log.err("Invalid parameters for descriptor layout creation", .{});
         return false;
     }
     const vs = vulkan_state.?;
@@ -78,7 +80,7 @@ pub fn vk_compute_create_descriptor_layout(vulkan_state: ?*types.VulkanState, bi
 
     const result = c.vkCreateDescriptorSetLayout(vs.context.device, &layout_info, null, layout);
     if (result != c.VK_SUCCESS) {
-        log.cardinal_log_error("[COMPUTE] Failed to create descriptor set layout: {d}", .{result});
+        compute_log.err("Failed to create descriptor set layout: {d}", .{result});
         return false;
     }
 
@@ -87,7 +89,7 @@ pub fn vk_compute_create_descriptor_layout(vulkan_state: ?*types.VulkanState, bi
 
 pub fn vk_compute_create_pipeline(vulkan_state: ?*types.VulkanState, config: ?*const types.ComputePipelineConfig, pipeline: ?*types.ComputePipeline) bool {
     if (vulkan_state == null or config == null or pipeline == null) {
-        log.cardinal_log_error("[COMPUTE] Invalid parameters for compute pipeline creation", .{});
+        compute_log.err("Invalid parameters for compute pipeline creation", .{});
         return false;
     }
     const vs = vulkan_state.?;
@@ -111,27 +113,25 @@ pub fn vk_compute_create_pipeline(vulkan_state: ?*types.VulkanState, config: ?*c
     {
         const alloc = memory.cardinal_get_allocator_for_category(.RENDERER).as_allocator();
         const path_ptr = cfg.compute_shader_path orelse {
-             log.cardinal_log_error("[COMPUTE] Compute shader path is null", .{});
-             return false;
+            compute_log.err("Compute shader path is null", .{});
+            return false;
         };
         const code = shader_utils.vk_shader_read_file(alloc, std.mem.span(path_ptr)) catch |err| {
-             log.cardinal_log_error("[COMPUTE] Failed to read shader file: {s}", .{@errorName(err)});
-             return false;
+            compute_log.err("Failed to read shader file: {s}", .{@errorName(err)});
+            return false;
         };
         defer alloc.free(code);
 
         if (!shader_utils.vk_shader_create_module_from_code(vs.context.device, code.ptr, code.len * 4, &compute_shader)) {
-            log.cardinal_log_error("[COMPUTE] Failed to create shader module", .{});
+            compute_log.err("Failed to create shader module", .{});
             return false;
         }
 
         const reflect = shader_utils.reflection.reflect_shader(alloc, code, c.VK_SHADER_STAGE_COMPUTE_BIT) catch |err| {
-             log.cardinal_log_error("[COMPUTE] Failed to reflect shader: {s}", .{@errorName(err)});
-             c.vkDestroyShaderModule(vs.context.device, compute_shader, null);
-             return false;
+            compute_log.err("Failed to reflect shader: {s}", .{@errorName(err)});
+            c.vkDestroyShaderModule(vs.context.device, compute_shader, null);
+            return false;
         };
-        // reflect.deinit() called later or use arena? reflect_shader uses alloc.
-        // Wait, reflect_shader returns struct with resources ArrayList. I need to deinit it.
         var r = reflect; // Mutable copy to deinit
         defer r.deinit();
 
@@ -141,7 +141,7 @@ pub fn vk_compute_create_pipeline(vulkan_state: ?*types.VulkanState, config: ?*c
             push_constant_range.size = r.push_constant_size;
             // Override config if reflection found constants
             if (cfg.push_constant_size > 0 and cfg.push_constant_size > r.push_constant_size) {
-                 push_constant_range.size = cfg.push_constant_size;
+                push_constant_range.size = cfg.push_constant_size;
             }
         } else if (cfg.push_constant_size > 0) {
             push_constant_range.stageFlags = cfg.push_constant_stages;
@@ -160,7 +160,7 @@ pub fn vk_compute_create_pipeline(vulkan_state: ?*types.VulkanState, config: ?*c
 
             for (r.resources.items) |res| {
                 const entry = sets.getOrPut(res.set) catch {
-                    log.cardinal_log_error("[COMPUTE] Failed to allocate memory for set reflection", .{});
+                    compute_log.err("Failed to allocate memory for set reflection", .{});
                     return false;
                 };
                 if (!entry.found_existing) {
@@ -173,7 +173,7 @@ pub fn vk_compute_create_pipeline(vulkan_state: ?*types.VulkanState, config: ?*c
                     .stageFlags = res.stage_flags,
                     .pImmutableSamplers = null,
                 }) catch {
-                    log.cardinal_log_error("[COMPUTE] Failed to append binding from reflection", .{});
+                    compute_log.err("Failed to append binding from reflection", .{});
                     return false;
                 };
             }
@@ -185,7 +185,7 @@ pub fn vk_compute_create_pipeline(vulkan_state: ?*types.VulkanState, config: ?*c
                 while (it.next()) |k| {
                     if (k.* > max_set) max_set = k.*;
                 }
-                
+
                 reflected_layout_count = max_set + 1;
                 const layouts_ptr = memory.cardinal_alloc(memory.cardinal_get_allocator_for_category(.RENDERER), reflected_layout_count * @sizeOf(c.VkDescriptorSetLayout));
                 if (layouts_ptr == null) return false;
@@ -196,15 +196,15 @@ pub fn vk_compute_create_pipeline(vulkan_state: ?*types.VulkanState, config: ?*c
                 while (sit.next()) |entry| {
                     const set_idx = entry.key_ptr.*;
                     const bindings = entry.value_ptr.*;
-                    
+
                     var layout_info = std.mem.zeroes(c.VkDescriptorSetLayoutCreateInfo);
                     layout_info.sType = c.VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO;
                     layout_info.bindingCount = @intCast(bindings.items.len);
                     layout_info.pBindings = bindings.items.ptr;
-                    
+
                     if (c.vkCreateDescriptorSetLayout(vs.context.device, &layout_info, null, &reflected_layouts.?[set_idx]) != c.VK_SUCCESS) {
-                         log.cardinal_log_error("[COMPUTE] Failed to create descriptor set layout for set {d}", .{set_idx});
-                         return false;
+                        compute_log.err("Failed to create descriptor set layout for set {d}", .{set_idx});
+                        return false;
                     }
                 }
             }
@@ -214,7 +214,7 @@ pub fn vk_compute_create_pipeline(vulkan_state: ?*types.VulkanState, config: ?*c
     // Create pipeline layout
     var pipeline_layout_info = std.mem.zeroes(c.VkPipelineLayoutCreateInfo);
     pipeline_layout_info.sType = c.VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO;
-    
+
     if (reflected_layouts != null) {
         pipeline_layout_info.setLayoutCount = reflected_layout_count;
         pipeline_layout_info.pSetLayouts = reflected_layouts;
@@ -223,16 +223,16 @@ pub fn vk_compute_create_pipeline(vulkan_state: ?*types.VulkanState, config: ?*c
     } else {
         pipeline_layout_info.setLayoutCount = cfg.descriptor_set_count;
         pipeline_layout_info.pSetLayouts = cfg.descriptor_layouts;
-        
+
         // Copy config layouts to pipe
         if (cfg.descriptor_set_count > 0 and cfg.descriptor_layouts != null) {
-             const mem_alloc = memory.cardinal_get_allocator_for_category(.RENDERER);
-             const layouts = memory.cardinal_alloc(mem_alloc, cfg.descriptor_set_count * @sizeOf(c.VkDescriptorSetLayout));
-             if (layouts != null) {
-                 pipe.descriptor_layouts = @as([*]c.VkDescriptorSetLayout, @ptrCast(@alignCast(layouts)));
-                 @memcpy(pipe.descriptor_layouts.?[0..cfg.descriptor_set_count], cfg.descriptor_layouts.?[0..cfg.descriptor_set_count]);
-                 pipe.descriptor_set_count = cfg.descriptor_set_count;
-             }
+            const mem_alloc = memory.cardinal_get_allocator_for_category(.RENDERER);
+            const layouts = memory.cardinal_alloc(mem_alloc, cfg.descriptor_set_count * @sizeOf(c.VkDescriptorSetLayout));
+            if (layouts != null) {
+                pipe.descriptor_layouts = @as([*]c.VkDescriptorSetLayout, @ptrCast(@alignCast(layouts)));
+                @memcpy(pipe.descriptor_layouts.?[0..cfg.descriptor_set_count], cfg.descriptor_layouts.?[0..cfg.descriptor_set_count]);
+                pipe.descriptor_set_count = cfg.descriptor_set_count;
+            }
         }
     }
 
@@ -249,7 +249,7 @@ pub fn vk_compute_create_pipeline(vulkan_state: ?*types.VulkanState, config: ?*c
 
     var result = c.vkCreatePipelineLayout(vs.context.device, &pipeline_layout_info, null, &pipe.pipeline_layout);
     if (result != c.VK_SUCCESS) {
-        log.cardinal_log_error("[COMPUTE] Failed to create pipeline layout: {d}", .{result});
+        compute_log.err("Failed to create pipeline layout: {d}", .{result});
         c.vkDestroyShaderModule(vs.context.device, compute_shader, null);
         return false;
     }
@@ -270,7 +270,7 @@ pub fn vk_compute_create_pipeline(vulkan_state: ?*types.VulkanState, config: ?*c
 
     result = c.vkCreateComputePipelines(vs.context.device, null, 1, &pipeline_info, null, &pipe.pipeline);
     if (result != c.VK_SUCCESS) {
-        log.cardinal_log_error("[COMPUTE] Failed to create compute pipeline: {d}", .{result});
+        compute_log.err("Failed to create compute pipeline: {d}", .{result});
         c.vkDestroyPipelineLayout(vs.context.device, pipe.pipeline_layout, null);
         c.vkDestroyShaderModule(vs.context.device, compute_shader, null);
         return false;
@@ -288,17 +288,7 @@ pub fn vk_compute_create_pipeline(vulkan_state: ?*types.VulkanState, config: ?*c
     pipe.local_size_z = cfg.local_size_z;
     pipe.initialized = true;
 
-    // Copy descriptor layouts if provided
-    // if (cfg.descriptor_set_count > 0 and cfg.descriptor_layouts != null) {
-    //    const mem_alloc = memory.cardinal_get_allocator_for_category(.RENDERER);
-    //    const layouts = memory.cardinal_alloc(mem_alloc, cfg.descriptor_set_count * @sizeOf(c.VkDescriptorSetLayout));
-    //    if (layouts != null) {
-    //        pipe.descriptor_layouts = @as([*]c.VkDescriptorSetLayout, @ptrCast(@alignCast(layouts)));
-    //        @memcpy(@as([*]u8, @ptrCast(pipe.descriptor_layouts))[0..(cfg.descriptor_set_count * @sizeOf(c.VkDescriptorSetLayout))], @as([*]const u8, @ptrCast(cfg.descriptor_layouts))[0..(cfg.descriptor_set_count * @sizeOf(c.VkDescriptorSetLayout))]);
-    //    }
-    // }
-
-    log.cardinal_log_info("[COMPUTE] Created compute pipeline with local size ({d}, {d}, {d})", .{ cfg.local_size_x, cfg.local_size_y, cfg.local_size_z });
+    compute_log.info("Created compute pipeline with local size ({d}, {d}, {d})", .{ cfg.local_size_x, cfg.local_size_y, cfg.local_size_z });
 
     return true;
 }
@@ -328,12 +318,12 @@ pub fn vk_compute_destroy_pipeline(vulkan_state: ?*types.VulkanState, pipeline: 
 
     pipe.initialized = false;
 
-    log.cardinal_log_debug("[COMPUTE] Destroyed compute pipeline", .{});
+    compute_log.debug("Destroyed compute pipeline", .{});
 }
 
 pub fn vk_compute_dispatch(cmd_buffer: c.VkCommandBuffer, pipeline: ?*const types.ComputePipeline, dispatch_info: ?*const types.ComputeDispatchInfo) void {
     if (cmd_buffer == null or pipeline == null or dispatch_info == null or !pipeline.?.initialized) {
-        log.cardinal_log_error("[COMPUTE] Invalid parameters for compute dispatch", .{});
+        compute_log.err("Invalid parameters for compute dispatch", .{});
         return;
     }
     const pipe = pipeline.?;
@@ -358,7 +348,7 @@ pub fn vk_compute_dispatch(cmd_buffer: c.VkCommandBuffer, pipeline: ?*const type
 
 pub fn vk_compute_memory_barrier(cmd_buffer: c.VkCommandBuffer, barrier: ?*const types.ComputeMemoryBarrier) void {
     if (cmd_buffer == null or barrier == null) {
-        log.cardinal_log_error("[COMPUTE] Invalid parameters for memory barrier", .{});
+        compute_log.err("Invalid parameters for memory barrier", .{});
         return;
     }
     const b = barrier.?;
@@ -373,7 +363,7 @@ pub fn vk_compute_memory_barrier(cmd_buffer: c.VkCommandBuffer, barrier: ?*const
 
 pub fn vk_compute_calculate_workgroups(total_work_items: u32, local_size: u32) u32 {
     if (local_size == 0) {
-        log.cardinal_log_error("[COMPUTE] Local size cannot be zero", .{});
+        compute_log.err("Local size cannot be zero", .{});
         return 0;
     }
 

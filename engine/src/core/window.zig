@@ -1,5 +1,8 @@
 const std = @import("std");
+const log = @import("log.zig");
 const builtin = @import("builtin");
+
+const win_log = log.ScopedLogger("WINDOW");
 
 const c = @cImport({
     @cInclude("stdlib.h");
@@ -79,7 +82,7 @@ fn cursor_pos_callback(window: ?*c.GLFWwindow, xpos: f64, ypos: f64) callconv(.c
 }
 
 fn glfw_error_callback(error_code: c_int, description: [*c]const u8) callconv(.c) void {
-    std.log.err("GLFW error {d}: {s}", .{ error_code, if (description != null) std.mem.span(description) else "(null)" });
+    win_log.err("GLFW error {d}: {s}", .{ error_code, if (description != null) std.mem.span(description) else "(null)" });
 }
 
 fn framebuffer_resize_callback(window: ?*c.GLFWwindow, width: c_int, height: c_int) callconv(.c) void {
@@ -124,10 +127,10 @@ fn window_iconify_callback(window: ?*c.GLFWwindow, iconified: c_int) callconv(.c
 
 // Exported functions
 pub export fn cardinal_window_create(config: *const CardinalWindowConfig) callconv(.c) ?*CardinalWindow {
-    std.log.info("cardinal_window_create: begin", .{});
+    win_log.info("cardinal_window_create: begin", .{});
 
     if (c.glfwInit() == c.GLFW_FALSE) {
-        std.log.err("GLFW init failed", .{});
+        win_log.err("GLFW init failed", .{});
         return null;
     }
 
@@ -138,7 +141,7 @@ pub export fn cardinal_window_create(config: *const CardinalWindowConfig) callco
 
     const handle = c.glfwCreateWindow(@intCast(config.width), @intCast(config.height), config.title, null, null);
     if (handle == null) {
-        std.log.err("GLFW create window failed", .{});
+        win_log.err("GLFW create window failed", .{});
         c.glfwTerminate();
         return null;
     }
@@ -168,7 +171,7 @@ pub export fn cardinal_window_create(config: *const CardinalWindowConfig) callco
     // Init mutex
     win.mutex = .{};
 
-    std.log.info("cardinal_window_create: success", .{});
+    win_log.info("cardinal_window_create: success", .{});
     return win;
 }
 

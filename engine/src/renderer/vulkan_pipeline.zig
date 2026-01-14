@@ -43,7 +43,7 @@ fn create_depth_resources(s: *types.VulkanState) bool {
     imageInfo.sharingMode = c.VK_SHARING_MODE_EXCLUSIVE;
 
     // Use VulkanAllocator to allocate and bind image + memory
-    if (!vk_allocator.vk_allocator_allocate_image(&s.allocator, &imageInfo, &s.swapchain.depth_image, &s.swapchain.depth_image_memory, &s.swapchain.depth_image_allocation, c.VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT)) {
+    if (!vk_allocator.allocate_image(&s.allocator, &imageInfo, &s.swapchain.depth_image, &s.swapchain.depth_image_memory, &s.swapchain.depth_image_allocation, c.VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT)) {
         pipe_log.err("allocator failed to create depth image", .{});
         return false;
     }
@@ -63,7 +63,7 @@ fn create_depth_resources(s: *types.VulkanState) bool {
     if (c.vkCreateImageView(s.context.device, &viewInfo, null, &s.swapchain.depth_image_view) != c.VK_SUCCESS) {
         pipe_log.err("failed to create depth image view", .{});
         // Free image + memory via allocator on failure
-        vk_allocator.vk_allocator_free_image(&s.allocator, s.swapchain.depth_image, s.swapchain.depth_image_allocation);
+        vk_allocator.free_image(&s.allocator, s.swapchain.depth_image, s.swapchain.depth_image_allocation);
         s.swapchain.depth_image = null;
         s.swapchain.depth_image_memory = null;
         return false;
@@ -89,7 +89,7 @@ fn destroy_depth_resources(s: *types.VulkanState) void {
     if (s.swapchain.depth_image != null or s.swapchain.depth_image_memory != null) {
         // Ensure allocator is valid before freeing
         if (s.allocator.device != null) {
-            vk_allocator.vk_allocator_free_image(&s.allocator, s.swapchain.depth_image, s.swapchain.depth_image_allocation);
+            vk_allocator.free_image(&s.allocator, s.swapchain.depth_image, s.swapchain.depth_image_allocation);
         }
         s.swapchain.depth_image = null;
         s.swapchain.depth_image_memory = null;
@@ -172,12 +172,12 @@ pub export fn vk_create_pipeline(s: ?*types.VulkanState) callconv(.c) bool {
         return false;
     }
 
-    log.cardinal_log_info("pipeline: create depth resources", .{});
+    pipe_log.info("create depth resources", .{});
     if (!create_depth_resources(vs)) {
         return false;
     }
 
-    log.cardinal_log_info("pipeline: depth resources created - no simple triangle pipeline needed", .{});
+    pipe_log.info("pipeline: depth resources created - no simple triangle pipeline needed", .{});
     return true;
 }
 
@@ -188,12 +188,12 @@ pub export fn vk_destroy_pipeline(s: ?*types.VulkanState) callconv(.c) void {
     // Wait for device to be idle before destroying resources for thread safety
     const result = c.vkDeviceWaitIdle(vs.context.device);
     if (result != c.VK_SUCCESS) {
-        log.cardinal_log_error("pipeline: vkDeviceWaitIdle failed during destruction: {d}", .{result});
+        pipe_log.err("pipeline: vkDeviceWaitIdle failed during destruction: {d}", .{result});
         // Continue with destruction anyway to prevent resource leaks
     }
 
     destroy_pipeline_cache(vs);
     destroy_depth_resources(vs);
 
-    log.cardinal_log_info("pipeline: pipeline resources destroyed", .{});
+    pipe_log.info("pipeline resources destroyed", .{});
 }

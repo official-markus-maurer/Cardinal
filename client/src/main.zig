@@ -12,6 +12,28 @@ const vulkan_renderer_frame = engine.vulkan_renderer_frame;
 const types = engine.vulkan_types;
 const ref_counting = engine.ref_counting;
 
+// Define std_options to route std.log to our logging system
+pub const std_options: std.Options = .{
+    .logFn = myLogFn,
+};
+
+fn myLogFn(
+    comptime message_level: std.log.Level,
+    comptime scope: anytype,
+    comptime format: []const u8,
+    args: anytype,
+) void {
+    const scope_name = @tagName(scope);
+    const scoped_log = log.ScopedLogger(scope_name);
+    
+    switch (message_level) {
+        .err => scoped_log.err(format, args),
+        .warn => scoped_log.warn(format, args),
+        .info => scoped_log.info(format, args),
+        .debug => scoped_log.debug(format, args),
+    }
+}
+
 fn print_usage(program_name: []const u8) void {
     std.debug.print("Usage: {s} [options]\n", .{program_name});
     std.debug.print("Options:\n", .{});

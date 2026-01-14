@@ -1,5 +1,6 @@
 const std = @import("std");
 const log = @import("log.zig");
+const cfg_log = log.ScopedLogger("CONFIG");
 const vk_types = @import("../renderer/vulkan_types.zig");
 const c = @import("../renderer/vulkan_c.zig").c;
 
@@ -52,7 +53,7 @@ pub const ConfigManager = struct {
     pub fn load(self: *ConfigManager) !void {
         const file = std.fs.cwd().openFile(self.config_path, .{}) catch |err| {
             if (err == error.FileNotFound) {
-                log.cardinal_log_info("Config file not found, creating with defaults", .{});
+                cfg_log.info("Config file not found, creating with defaults", .{});
                 try self.save();
                 return;
             }
@@ -193,7 +194,7 @@ pub const ConfigManager = struct {
         try list.writer(self.allocator).print("{f}", .{std.json.fmt(tree.value, .{ .whitespace = .indent_4 })});
         try file.writeAll(list.items);
 
-        log.cardinal_log_info("Config saved (merged) to {s}", .{self.config_path});
+        cfg_log.info("Config saved (merged) to {s}", .{self.config_path});
     }
 
     fn merge_struct_into_value(allocator: std.mem.Allocator, value: *std.json.Value, struct_val: anytype) !void {
@@ -218,20 +219,6 @@ pub const ConfigManager = struct {
                     }
                 }
             } else {
-                // Field missing, add it
-                // We need to convert the field value to a std.json.Value
-                // This implies full serialization of the field value to Value
-                // For simplicity, we can just let std.json.fmt handle it if we could,
-                // but we need to insert into the map.
-
-                // Construct a json string for just this field
-                // var temp_list = std.ArrayList(u8).init(allocator);
-                // defer temp_list.deinit();
-                // try std.json.stringify(field_val, .{}, temp_list.writer());
-
-                // Parse it back into a Value
-                // Note: we are abandoning this complex parse path for manual add_missing_field below.
-
                 try add_missing_field(allocator, value, field_name, field_val);
             }
         }

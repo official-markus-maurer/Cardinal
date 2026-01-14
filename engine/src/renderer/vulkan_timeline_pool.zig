@@ -1,6 +1,7 @@
 const std = @import("std");
 const builtin = @import("builtin");
 const log = @import("../core/log.zig");
+const tl_pool_log = log.ScopedLogger("TL_POOL");
 const platform = @import("../core/platform.zig");
 const types = @import("vulkan_timeline_types.zig");
 
@@ -15,7 +16,7 @@ fn pool_mutex_init(mutex: *?*anyopaque) bool {
         const ptr = memory.cardinal_alloc(allocator, @sizeOf(c.CRITICAL_SECTION));
         if (ptr == null) return false;
         const cs = @as(*c.CRITICAL_SECTION, @ptrCast(@alignCast(ptr)));
-        
+
         c.InitializeCriticalSection(cs);
         mutex.* = cs;
         return true;
@@ -23,7 +24,7 @@ fn pool_mutex_init(mutex: *?*anyopaque) bool {
         const ptr = memory.cardinal_alloc(allocator, @sizeOf(c.pthread_mutex_t));
         if (ptr == null) return false;
         const m = @as(*c.pthread_mutex_t, @ptrCast(@alignCast(ptr)));
-        
+
         if (c.pthread_mutex_init(m, null) != 0) {
             memory.cardinal_free(allocator, m);
             return false;
@@ -99,7 +100,7 @@ fn create_timeline_semaphore(device: c.VkDevice, semaphore: *c.VkSemaphore) bool
 
     const result = c.vkCreateSemaphore(device, &create_info, null, semaphore);
     if (result != c.VK_SUCCESS) {
-        log.cardinal_log_error("[TIMELINE_POOL] Failed to create timeline semaphore: {d}", .{result});
+        tl_pool_log.err("Failed to create timeline semaphore: {d}", .{result});
         return false;
     }
 
@@ -119,7 +120,7 @@ pub export fn vulkan_timeline_pool_init(pool: *types.VulkanTimelinePool, device:
     // Allocate entries array
     const entries_size = @sizeOf(types.VulkanTimelinePoolEntry) * pool.max_pool_size;
     const entries_ptr = std.heap.c_allocator.alloc(u8, entries_size) catch {
-        log.cardinal_log_error("[TIMELINE_POOL] Failed to allocate pool entries", .{});
+        tl_pool_log.err("Failed to allocate pool entries", .{});
         return false;
     };
     @memset(entries_ptr, 0);
@@ -127,7 +128,7 @@ pub export fn vulkan_timeline_pool_init(pool: *types.VulkanTimelinePool, device:
 
     // Initialize mutex
     if (!pool_mutex_init(&pool.mutex)) {
-        log.cardinal_log_error("[TIMELINE_POOL] Failed to allocate mutex", .{});
+        tl_pool_log.err("Failed to allocate mutex", .{});
         std.heap.c_allocator.free(entries_ptr);
         return false;
     }
@@ -152,13 +153,13 @@ pub export fn vulkan_timeline_pool_init(pool: *types.VulkanTimelinePool, device:
             pool.entries[i].creation_time = current_time;
             pool.pool_size += 1;
         } else {
-            log.cardinal_log_warn("[TIMELINE_POOL] Failed to pre-allocate semaphore {d}", .{i});
+            tl_pool_log.warn("Failed to pre-allocate semaphore {d}", .{i});
             break;
         }
     }
 
     pool.initialized = true;
-    log.cardinal_log_info("[TIMELINE_POOL] Initialized with {d}/{d} semaphores (max: {d})", .{ pool.pool_size, initial_size, pool.max_pool_size });
+    tl_pool_log.info("Initialized with {d}/{d} semaphores (max: {d})", .{ pool.pool_size, initial_size, pool.max_pool_size });
 
     return true;
 }
@@ -184,9 +185,6 @@ pub export fn vulkan_timeline_pool_destroy(pool: *types.VulkanTimelinePool) call
     pool_mutex_destroy(&pool.mutex);
 
     // Free entries
-    // We allocated as u8 slice, but stored as pointer.
-    // Need to reconstruct slice or use free on pointer if allocator supports it (c_allocator uses free)
-    // std.heap.c_allocator.free expects slice.
     const entries_slice = @as([*]u8, @ptrCast(pool.entries))[0..(@sizeOf(types.VulkanTimelinePoolEntry) * pool.max_pool_size)];
     const allocator = memory.cardinal_get_allocator_for_category(.RENDERER).as_allocator();
     allocator.free(entries_slice);
@@ -194,7 +192,7 @@ pub export fn vulkan_timeline_pool_destroy(pool: *types.VulkanTimelinePool) call
     // Zero out struct
     _ = c.memset(pool, 0, @sizeOf(types.VulkanTimelinePool));
 
-    log.cardinal_log_info("[TIMELINE_POOL] Destroyed", .{});
+    tl_pool_log.info("Destroyed", .{});
 }
 
 pub export fn vulkan_timeline_pool_allocate(pool: *types.VulkanTimelinePool, allocation: *types.VulkanTimelinePoolAllocation) callconv(.c) bool {
@@ -330,7 +328,7 @@ pub export fn vulkan_timeline_pool_configure_cleanup(pool: *types.VulkanTimeline
     pool.max_idle_time_ns = max_idle_time_ns;
     pool_mutex_unlock(pool.mutex);
 
-    log.cardinal_log_info("[TIMELINE_POOL] Auto-cleanup {s}, max idle time: {d} ns", .{ if (enabled) "enabled" else "disabled", max_idle_time_ns });
+    tl_pool_log.info("Auto-cleanup {s}, max idle time: {d} ns", .{ if (enabled) "enabled" else "disabled", max_idle_time_ns });
 }
 
 pub export fn vulkan_timeline_pool_reset_stats(pool: *types.VulkanTimelinePool) callconv(.c) void {
@@ -343,5 +341,5 @@ pub export fn vulkan_timeline_pool_reset_stats(pool: *types.VulkanTimelinePool) 
     @atomicStore(u64, &pool.cache_hits, 0, .seq_cst);
     @atomicStore(u64, &pool.cache_misses, 0, .seq_cst);
 
-    log.cardinal_log_info("[TIMELINE_POOL] Statistics reset", .{});
+    tl_pool_log.info("Statistics reset", .{});
 }

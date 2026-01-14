@@ -305,13 +305,14 @@ pub const Mat4 = extern struct {
     data: [16]f32,
 
     pub fn identity() Mat4 {
-        var m = Mat4{ .data = undefined };
-        @memset(&m.data, 0);
-        m.data[0] = 1;
-        m.data[5] = 1;
-        m.data[10] = 1;
-        m.data[15] = 1;
-        return m;
+        return .{
+            .data = .{
+                1, 0, 0, 0,
+                0, 1, 0, 0,
+                0, 0, 1, 0,
+                0, 0, 0, 1,
+            },
+        };
     }
 
     // Column-Major Matrix Multiplication

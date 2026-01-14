@@ -5,6 +5,8 @@ const types = @import("vulkan_types.zig");
 const vk_allocator = @import("vulkan_allocator.zig");
 const vk_sync_manager = @import("vulkan_sync_manager.zig");
 
+const buf_log = log.ScopedLogger("BUF_MGR");
+
 const c = @import("vulkan_c.zig").c;
 
 pub const VulkanBuffer = types.VulkanBuffer;
@@ -37,14 +39,14 @@ fn begin_single_time_commands(device: c.VkDevice, commandPool: c.VkCommandPool) 
 
 // Helper function to end and submit a single-time command buffer with proper timeline synchronization
 fn end_single_time_commands(device: c.VkDevice, commandPool: c.VkCommandPool, queue: c.VkQueue, commandBuffer: c.VkCommandBuffer, vulkan_state: *types.VulkanState) void {
-    log.cardinal_log_info("[BUFFER_MANAGER] CMD_END_START: Ending command buffer {any}", .{commandBuffer});
+    buf_log.info("CMD_END_START: Ending command buffer {any}", .{commandBuffer});
     const result = c.vkEndCommandBuffer(commandBuffer);
     if (result != c.VK_SUCCESS) {
-        log.cardinal_log_error("[BUFFER_MANAGER] CMD_END_FAILED: Failed to end command buffer {any}: {d}", .{ commandBuffer, result });
+        buf_log.err("CMD_END_FAILED: Failed to end command buffer {any}: {d}", .{ commandBuffer, result });
         c.vkFreeCommandBuffers(device, commandPool, 1, &commandBuffer);
         return;
     }
-    log.cardinal_log_info("[BUFFER_MANAGER] CMD_END_SUCCESS: Command buffer {any} ended successfully", .{commandBuffer});
+    buf_log.info("CMD_END_SUCCESS: Command buffer {any} ended successfully", .{commandBuffer});
 
     // Get next timeline value using the centralized manager
     // This handles overflow protection and ensures uniqueness
@@ -159,7 +161,7 @@ pub export fn vk_buffer_create(buffer_ptr: ?*VulkanBuffer, device: c.VkDevice, a
 
     // Allocate buffer and memory using allocator
     // Pass persistentlyMapped as map_immediately to avoid double mapping and use VMA's internal mapping
-    if (!vk_allocator.vk_allocator_allocate_buffer(allocator, &bufferInfo, &buffer.handle, &buffer.memory, &buffer.allocation, createInfo.properties, createInfo.persistentlyMapped, &buffer.mapped)) {
+    if (!vk_allocator.allocate_buffer(allocator, &bufferInfo, &buffer.handle, &buffer.memory, &buffer.allocation, createInfo.properties, createInfo.persistentlyMapped, &buffer.mapped)) {
         log.cardinal_log_error("Failed to create and allocate buffer", .{});
         return false;
     }
@@ -236,7 +238,7 @@ fn cleanup_buffer_resources(buffer: *VulkanBuffer, device: c.VkDevice, allocator
     // Free buffer and memory
     if (allocator) |alloc| {
         log.cardinal_log_info("[BUFFER_MANAGER] FREE_START: About to free buffer={any} allocation={any}", .{ buffer.handle, buffer.allocation });
-        vk_allocator.vk_allocator_free_buffer(alloc, buffer.handle, buffer.allocation);
+        vk_allocator.free_buffer(alloc, buffer.handle, buffer.allocation);
         log.cardinal_log_info("[BUFFER_MANAGER] FREE_COMPLETE: Freed buffer={any}", .{buffer.handle});
     } else {
         log.cardinal_log_warn("Allocator is null, cannot free buffer memory", .{});
@@ -298,7 +300,7 @@ pub export fn vk_buffer_upload_data(buffer_ptr: ?*VulkanBuffer, device: c.VkDevi
         // Zig pointer arithmetic needs casting to byte pointer first
         const mappedBytes = @as([*]u8, @ptrCast(mapped));
         mappedData = @ptrCast(mappedBytes + offset);
-        
+
         // Ensure we don't write past buffer bounds
         if (offset + size > buffer.size) {
             log.cardinal_log_error("Buffer upload overflow: offset={d}, size={d}, buffer size={d}", .{ offset, size, buffer.size });
@@ -309,23 +311,23 @@ pub export fn vk_buffer_upload_data(buffer_ptr: ?*VulkanBuffer, device: c.VkDevi
     } else {
         if (allocator) |alloc| {
             // Temporary mapping
-            if (vk_allocator.vk_allocator_map_memory(alloc, buffer.allocation, &mappedData) != c.VK_SUCCESS) {
+            if (vk_allocator.map_memory(alloc, buffer.allocation, &mappedData) != c.VK_SUCCESS) {
                 log.cardinal_log_error("Failed to map buffer memory for data upload", .{});
                 return false;
             }
 
             const mappedBytes = @as([*]u8, @ptrCast(mappedData));
             const offsetPtr = mappedBytes + offset;
-            
+
             // Ensure we don't write past buffer bounds
             if (offset + size > buffer.size) {
-                 log.cardinal_log_error("Buffer upload overflow: offset={d}, size={d}, buffer size={d}", .{ offset, size, buffer.size });
-                 vk_allocator.vk_allocator_unmap_memory(alloc, buffer.allocation);
-                 return false;
+                log.cardinal_log_error("Buffer upload overflow: offset={d}, size={d}, buffer size={d}", .{ offset, size, buffer.size });
+                vk_allocator.unmap_memory(alloc, buffer.allocation);
+                return false;
             }
 
             @memcpy(@as([*]u8, @ptrCast(offsetPtr))[0..size], @as([*]const u8, @ptrCast(data))[0..size]);
-            vk_allocator.vk_allocator_unmap_memory(alloc, buffer.allocation);
+            vk_allocator.unmap_memory(alloc, buffer.allocation);
         } else {
             log.cardinal_log_error("Allocator required for temporary mapping", .{});
             return false;
@@ -368,7 +370,7 @@ pub export fn vk_buffer_map(buffer_ptr: ?*VulkanBuffer, allocator: ?*types.Vulka
     }
 
     var mappedData: ?*anyopaque = null;
-    if (vk_allocator.vk_allocator_map_memory(allocator, buffer.allocation, &mappedData) != c.VK_SUCCESS) {
+    if (vk_allocator.map_memory(allocator, buffer.allocation, &mappedData) != c.VK_SUCCESS) {
         log.cardinal_log_error("Failed to map buffer memory", .{});
         return null;
     }
@@ -391,7 +393,7 @@ pub export fn vk_buffer_unmap(buffer_ptr: ?*VulkanBuffer, allocator: ?*types.Vul
     }
 
     if (buffer.mapped != null) {
-        vk_allocator.vk_allocator_unmap_memory(allocator, buffer.allocation);
+        vk_allocator.unmap_memory(allocator, buffer.allocation);
         buffer.mapped = null;
     }
 }

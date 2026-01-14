@@ -111,7 +111,7 @@ pub fn vk_skybox_pipeline_destroy(pipeline: *types.SkyboxPipeline, device: c.VkD
     if (!pipeline.initialized) return;
 
     if (pipeline.texture.is_allocated) {
-        vk_allocator.vk_allocator_free_image(allocator, pipeline.texture.image, pipeline.texture.allocation);
+        vk_allocator.free_image(allocator, pipeline.texture.image, pipeline.texture.allocation);
         c.vkDestroyImageView(device, pipeline.texture.view, null);
         c.vkDestroySampler(device, pipeline.texture.sampler, null);
     }
@@ -137,7 +137,7 @@ pub fn vk_skybox_load_from_data(pipeline: *types.SkyboxPipeline, device: c.VkDev
 
         c.vkDestroySampler(device, pipeline.texture.sampler, null);
         c.vkDestroyImageView(device, pipeline.texture.view, null);
-        vk_allocator.vk_allocator_free_image(allocator, pipeline.texture.image, pipeline.texture.allocation);
+        vk_allocator.free_image(allocator, pipeline.texture.image, pipeline.texture.allocation);
         pipeline.texture.is_allocated = false;
     }
 

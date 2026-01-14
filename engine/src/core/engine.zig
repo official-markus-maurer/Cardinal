@@ -1,6 +1,7 @@
 const std = @import("std");
 const config_pkg = @import("config.zig");
 const log = @import("log.zig");
+const eng_log = log.ScopedLogger("ENGINE");
 const memory = @import("memory.zig");
 const ref_counting = @import("ref_counting.zig");
 const resource_state = @import("resource_state.zig");
@@ -47,7 +48,7 @@ pub const CardinalEngine = struct {
 
         var config_manager = config_pkg.ConfigManager.init(allocator, "cardinal_config.json", config);
         config_manager.load() catch |err| {
-            log.cardinal_log_warn("Failed to load config file: {}", .{err});
+            eng_log.warn("Failed to load config file: {}", .{err});
         };
 
         self.* = CardinalEngine{
@@ -142,16 +143,16 @@ pub const CardinalEngine = struct {
     }
 
     fn initSystems(self: *CardinalEngine) !void {
-        log.cardinal_log_info("Initializing memory management system...", .{});
+        eng_log.info("Initializing memory management system...", .{});
         memory.cardinal_memory_init(self.config.memory_size);
         self.memory_initialized = true;
-        log.cardinal_log_info("Memory management system initialized", .{});
+        eng_log.info("Memory management system initialized", .{});
 
         // Initialize Frame Allocator (16MB)
         const frame_mem_size = 16 * 1024 * 1024;
         self.frame_memory = try self.allocator.alloc(u8, frame_mem_size);
         self.frame_allocator = stack_allocator.StackAllocator.init(self.frame_memory);
-        log.cardinal_log_info("Frame allocator initialized with {d}MB", .{frame_mem_size / 1024 / 1024});
+        eng_log.info("Frame allocator initialized with {d}MB", .{frame_mem_size / 1024 / 1024});
 
         // Register Core Modules
         try self.module_manager.register(.{
@@ -168,26 +169,26 @@ pub const CardinalEngine = struct {
             .ctx = self,
         });
 
-        log.cardinal_log_info("Initializing reference counting system...", .{});
+        eng_log.info("Initializing reference counting system...", .{});
         if (!ref_counting.cardinal_ref_counting_init(self.config.ref_counting_buckets)) {
-            log.cardinal_log_error("Failed to initialize reference counting system", .{});
+            eng_log.err("Failed to initialize reference counting system", .{});
             return error.RefCountingInitFailed;
         }
         self.ref_counting_initialized = true;
-        log.cardinal_log_info("Reference counting system initialized", .{});
+        eng_log.info("Reference counting system initialized", .{});
 
-        log.cardinal_log_info("Initializing resource state tracking system...", .{});
+        eng_log.info("Initializing resource state tracking system...", .{});
         if (!resource_state.cardinal_resource_state_init(self.config.ref_counting_buckets)) {
-            log.cardinal_log_error("Failed to initialize resource state tracking system", .{});
+            eng_log.err("Failed to initialize resource state tracking system", .{});
             return error.ResourceStateInitFailed;
         }
         self.resource_state_initialized = true;
-        log.cardinal_log_info("Resource state tracking system initialized", .{});
+        eng_log.info("Resource state tracking system initialized", .{});
 
-        log.cardinal_log_info("Initializing async loader system...", .{});
+        eng_log.info("Initializing async loader system...", .{});
 
         // memory.cardinal_get_allocator_for_category returns a pointer, so it is assumed to be valid if init was called.
-        log.cardinal_log_info("Memory allocator check passed", .{});
+        eng_log.info("Memory allocator check passed", .{});
 
         const async_config = async_loader.CardinalAsyncLoaderConfig{
             .worker_thread_count = self.config.async_worker_threads,
@@ -195,9 +196,9 @@ pub const CardinalEngine = struct {
             .enable_priority_queue = true,
         };
 
-        log.cardinal_log_info("About to call cardinal_async_loader_init...", .{});
+        eng_log.info("About to call cardinal_async_loader_init...", .{});
         if (!async_loader.cardinal_async_loader_init(&async_config)) {
-            log.cardinal_log_error("Failed to initialize async loader system", .{});
+            eng_log.err("Failed to initialize async loader system", .{});
             return error.AsyncLoaderInitFailed;
         }
 
@@ -213,7 +214,7 @@ pub const CardinalEngine = struct {
         _ = mesh_loader.mesh_cache_initialize(self.config.cache_size);
         self.caches_initialized = true;
 
-        log.cardinal_log_info("Multi-threaded asset caches initialized successfully", .{});
+        eng_log.info("Multi-threaded asset caches initialized successfully", .{});
     }
 
     fn initWindowAndRenderer(self: *CardinalEngine) !void {
@@ -260,8 +261,6 @@ fn shutdownEvents(ctx: ?*anyopaque) !void {
 fn initInput(ctx: ?*anyopaque) !void {
     const self = @as(*CardinalEngine, @ptrCast(@alignCast(ctx)));
     input.init(self.allocator);
-    // Note: We don't register input actions here anymore, the application should do it.
-    // Or we can register default actions.
     input.pushLayer("Base", false);
 }
 

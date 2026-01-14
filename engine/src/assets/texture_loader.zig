@@ -99,18 +99,18 @@ pub export fn texture_load_from_disk(path: [*:0]const u8, out_texture: *TextureD
 
     if (std.fs.path.isAbsolute(filename_slice)) {
         var file = std.fs.openFileAbsolute(filename_slice, .{}) catch |err| {
-            log.cardinal_log_error("[CRITICAL] Failed to open file '{s}': {s}", .{ filename_slice, @errorName(err) });
+            texture_log.err("Failed to open file '{s}': {s}", .{ filename_slice, @errorName(err) });
             return false;
         };
         defer file.close();
 
         file_buffer = file.readToEndAlloc(allocator, 4 * 1024 * 1024 * 1024) catch |err| {
-            log.cardinal_log_error("[CRITICAL] Failed to read file '{s}': {s}", .{ filename_slice, @errorName(err) });
+            texture_log.err("Failed to read file '{s}': {s}", .{ filename_slice, @errorName(err) });
             return false;
         };
     } else {
         file_buffer = std.fs.cwd().readFileAlloc(allocator, filename_slice, 4 * 1024 * 1024 * 1024) catch |err| {
-            log.cardinal_log_error("[CRITICAL] Failed to read file '{s}': {s}", .{ filename_slice, @errorName(err) });
+            texture_log.err("Failed to read file '{s}': {s}", .{ filename_slice, @errorName(err) });
             return false;
         };
     }
@@ -142,14 +142,14 @@ pub export fn texture_load_from_memory(data: [*]const u8, size: usize, out_textu
         if (res != 0) {
             if (err) |e| {
                 const e_span = @as([*:0]const u8, @ptrCast(e));
-                log.cardinal_log_error("[CRITICAL] TinyEXR memory load failed: {s}", .{std.mem.span(e_span)});
+                texture_log.err("TinyEXR memory load failed: {s}", .{std.mem.span(e_span)});
                 FreeEXRErrorMessage(e);
             }
             return false;
         }
 
         if (w <= 0 or h <= 0 or w > 16384 or h > 16384) {
-            log.cardinal_log_error("[CRITICAL] Invalid dimensions from EXR memory load: {d}x{d}", .{ w, h });
+            texture_log.err("Invalid dimensions from EXR memory load: {d}x{d}", .{ w, h });
             if (exr_data) |ptr| std.c.free(ptr); // TinyEXR uses malloc/free
             return false;
         }
@@ -174,16 +174,16 @@ pub export fn texture_load_from_memory(data: [*]const u8, size: usize, out_textu
 
     if (pixels == null) {
         const reason = stbi_failure_reason();
-        log.cardinal_log_error("[CRITICAL] Failed to load texture from memory", .{});
+        texture_log.err("Failed to load texture from memory", .{});
         if (reason) |r| {
             const r_c: [*:0]const u8 = @ptrCast(r);
-            log.cardinal_log_error("[CRITICAL] STB failure reason: {s}", .{std.mem.span(r_c)});
+            texture_log.err("STB failure reason: {s}", .{std.mem.span(r_c)});
         }
         return false;
     }
 
     if (w <= 0 or h <= 0 or w > 16384 or h > 16384) {
-        log.cardinal_log_error("[CRITICAL] Invalid dimensions from memory load: {d}x{d}", .{ w, h });
+        texture_log.err("Invalid dimensions from memory load: {d}x{d}", .{ w, h });
         stbi_image_free(pixels);
         return false;
     }
@@ -419,7 +419,7 @@ fn texture_cache_get(filepath: []const u8) ?*ref_counting.CardinalRefCountedReso
         if (tex.ref_resource) |res| {
             // Increment ref count
             _ = @atomicRmw(u32, &res.ref_count, .Add, 1, .seq_cst);
-            log.cardinal_log_debug("[TEXTURE] Cache hit from AssetManager for {s}", .{filepath});
+            texture_log.debug("Cache hit from AssetManager for {s}", .{filepath});
             return res;
         }
     }
@@ -439,7 +439,7 @@ fn texture_cache_get(filepath: []const u8) ?*ref_counting.CardinalRefCountedReso
             _ = @atomicRmw(u32, &current.resource.ref_count, .Add, 1, .seq_cst);
             g_texture_cache.cache_hits += 1;
 
-            log.cardinal_log_debug("[TEXTURE] Cache hit for {s} (memory usage: {d} bytes)", .{ filepath, current.memory_usage });
+            texture_log.debug("Cache hit for {s} (memory usage: {d} bytes)", .{ filepath, current.memory_usage });
             return current.resource;
         }
     }
@@ -469,7 +469,7 @@ fn texture_cache_put(filepath: []const u8, resource: *ref_counting.CardinalRefCo
         g_texture_cache.entry_count -= 1;
         g_texture_cache.evictions += 1;
 
-        log.cardinal_log_debug("[TEXTURE] Evicted {s} (freed {d} bytes, total: {d}/{d} bytes)", .{ to_remove.filepath, to_remove.memory_usage, g_texture_cache.total_memory_usage, g_texture_cache.max_memory_usage });
+        texture_log.debug("Evicted {s} (freed {d} bytes, total: {d}/{d} bytes)", .{ to_remove.filepath, to_remove.memory_usage, g_texture_cache.total_memory_usage, g_texture_cache.max_memory_usage });
 
         const allocator = memory.cardinal_get_allocator_for_category(.ASSETS);
         memory.cardinal_free(allocator, @ptrCast(@constCast(to_remove.filepath.ptr)));
@@ -482,7 +482,7 @@ fn texture_cache_put(filepath: []const u8, resource: *ref_counting.CardinalRefCo
     // Allocate new entry
     const entry_ptr = memory.cardinal_alloc(allocator, @sizeOf(TextureCacheEntry));
     if (entry_ptr == null) {
-        log.cardinal_log_error("[TEXTURE] Failed to allocate cache entry for {s}", .{filepath});
+        texture_log.err("Failed to allocate cache entry for {s}", .{filepath});
         return false;
     }
     const new_entry: *TextureCacheEntry = @ptrCast(@alignCast(entry_ptr));
@@ -490,7 +490,7 @@ fn texture_cache_put(filepath: []const u8, resource: *ref_counting.CardinalRefCo
     // Copy filepath
     const filepath_ptr = memory.cardinal_alloc(allocator, filepath.len + 1);
     if (filepath_ptr == null) {
-        log.cardinal_log_error("[TEXTURE] Failed to allocate filepath for {s}", .{filepath});
+        texture_log.err("Failed to allocate filepath for {s}", .{filepath});
         memory.cardinal_free(allocator, entry_ptr);
         return false;
     }
@@ -522,7 +522,7 @@ fn texture_cache_put(filepath: []const u8, resource: *ref_counting.CardinalRefCo
     g_texture_cache.entry_count += 1;
     g_texture_cache.total_memory_usage += texture_memory;
 
-    log.cardinal_log_debug("[TEXTURE] Cached {s} ({d} bytes, total: {d}/{d} bytes)", .{ filepath, texture_memory, g_texture_cache.total_memory_usage, g_texture_cache.max_memory_usage });
+    texture_log.debug("Cached {s} ({d} bytes, total: {d}/{d} bytes)", .{ filepath, texture_memory, g_texture_cache.total_memory_usage, g_texture_cache.max_memory_usage });
 
     return true;
 }
@@ -530,35 +530,35 @@ fn texture_cache_put(filepath: []const u8, resource: *ref_counting.CardinalRefCo
 // Destructor
 export fn texture_data_destructor(resource: ?*anyopaque) callconv(.c) void {
     if (resource == null) {
-        log.cardinal_log_warn("[CLEANUP] texture_data_destructor called with NULL resource", .{});
+        texture_log.warn("texture_data_destructor called with NULL resource", .{});
         return;
     }
 
     const texture: *TextureData = @ptrCast(@alignCast(resource));
-    log.cardinal_log_debug("[CLEANUP] Destroying texture data at {*} (size: {d}x{d}, {d} channels)", .{ texture, texture.width, texture.height, texture.channels });
+    texture_log.debug("Destroying texture data at {*} (size: {d}x{d}, {d} channels)", .{ texture, texture.width, texture.height, texture.channels });
 
     if (texture.data) |data| {
-        log.cardinal_log_debug("[CLEANUP] Freeing texture pixel data at {*}", .{data});
+        texture_log.debug("Freeing texture pixel data at {*}", .{data});
         stbi_image_free(data);
         texture.data = null;
-        log.cardinal_log_debug("[CLEANUP] Texture pixel data freed and nullified", .{});
+        texture_log.debug("Texture pixel data freed and nullified", .{});
     } else {
-        log.cardinal_log_warn("[CLEANUP] Texture data already NULL during destruction", .{});
+        texture_log.warn("Texture data already NULL during destruction", .{});
     }
 
     const allocator = memory.cardinal_get_allocator_for_category(.ASSETS);
     memory.cardinal_free(allocator, texture);
-    log.cardinal_log_debug("[CLEANUP] Texture structure freed", .{});
+    texture_log.debug("Texture structure freed", .{});
 }
 
 pub export fn texture_data_free(texture: ?*TextureData) void {
     if (texture == null) {
-        log.cardinal_log_warn("[CLEANUP] texture_data_free called with NULL texture", .{});
+        texture_log.warn("texture_data_free called with NULL texture", .{});
         return;
     }
     const t = texture.?;
 
-    log.cardinal_log_debug("[CLEANUP] Freeing texture data at {*}", .{t});
+    texture_log.debug("Freeing texture data at {*}", .{t});
 
     if (t.data) |data| {
         stbi_image_free(data);
@@ -598,7 +598,7 @@ pub export fn texture_load_with_ref_counting(filepath: ?[*]const u8, out_texture
         if (texture_cache_get(path)) |res| {
             const existing: *TextureData = @ptrCast(@alignCast(res.resource.?));
             out_texture.?.* = existing.*;
-            log.cardinal_log_debug("[TEXTURE] Reusing loaded texture: {s} (ref_count={d})", .{ path, res.ref_count });
+            texture_log.debug("Reusing loaded texture: {s} (ref_count={d})", .{ path, res.ref_count });
             return res;
         }
 
@@ -606,7 +606,7 @@ pub export fn texture_load_with_ref_counting(filepath: ?[*]const u8, out_texture
             const existing: *TextureData = @ptrCast(@alignCast(res.resource.?));
             out_texture.?.* = existing.*;
             _ = texture_cache_put(path, res);
-            log.cardinal_log_debug("[TEXTURE] Reusing registry texture: {s}", .{path});
+            texture_log.debug("Reusing registry texture: {s}", .{path});
             return res;
         }
     }
@@ -637,7 +637,7 @@ pub export fn texture_load_with_ref_counting(filepath: ?[*]const u8, out_texture
     // Allocate TextureData first
     const data_ptr = memory.cardinal_alloc(allocator, @sizeOf(TextureData));
     if (data_ptr == null) {
-        log.cardinal_log_error("[TEXTURE] Failed to allocate TextureData for {s}", .{path});
+        texture_log.err("Failed to allocate TextureData for {s}", .{path});
         return null;
     }
     const tex_data = @as(*TextureData, @ptrCast(@alignCast(data_ptr)));
@@ -683,12 +683,7 @@ pub export fn texture_load_with_ref_counting(filepath: ?[*]const u8, out_texture
                     _ = resource_state.cardinal_resource_state_set(temp_ref.identifier.?, .ERROR, thread_id);
                 }
             } else {
-                // Fallback: synchronous load or error?
-                // If we fail to allocate context, we can't submit task properly.
-                // But we already set state to LOADING.
-                // We should probably revert state or load synchronously.
-                // For now, let's just log error and set to ERROR.
-                log.cardinal_log_error("[TEXTURE] Failed to allocate context for async load", .{});
+                texture_log.err("Failed to allocate context for async load", .{});
                 _ = resource_state.cardinal_resource_state_set(temp_ref.identifier.?, .ERROR, thread_id);
             }
         }

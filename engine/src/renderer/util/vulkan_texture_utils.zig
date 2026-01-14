@@ -47,7 +47,7 @@ var g_is_shutting_down: bool = false;
 pub fn add_staging_buffer_cleanup(allocator: ?*types.VulkanAllocator, buffer: c.VkBuffer, memory: c.VkDeviceMemory, allocation: c.VmaAllocation, device: c.VkDevice, timeline_value: u64) void {
     if (g_is_shutting_down) {
         tex_utils_log.debug("Immediate cleanup of staging buffer {any} due to shutdown", .{buffer});
-        vk_allocator.vk_allocator_free_buffer(allocator, buffer, allocation);
+        vk_allocator.free_buffer(allocator, buffer, allocation);
         return;
     }
 
@@ -75,7 +75,7 @@ pub fn add_staging_buffer_cleanup(allocator: ?*types.VulkanAllocator, buffer: c.
 pub fn add_image_cleanup(allocator: ?*types.VulkanAllocator, image: c.VkImage, allocation: c.VmaAllocation, timeline_value: u64) void {
     if (g_is_shutting_down) {
         tex_utils_log.debug("Immediate cleanup of image {any} due to shutdown", .{image});
-        vk_allocator.vk_allocator_free_image(allocator, image, allocation);
+        vk_allocator.free_image(allocator, image, allocation);
         return;
     }
 
@@ -108,7 +108,7 @@ pub fn process_staging_buffer_cleanups(sync_manager: ?*types.VulkanSyncManager, 
         if (vk_sync_manager.vulkan_sync_manager_is_timeline_value_reached(@ptrCast(sync_manager), cleanup.timeline_value, &reached) == c.VK_SUCCESS and reached) {
             tex_utils_log.debug("Cleaning up completed staging buffer {any} (timeline: {d})", .{ cleanup.buffer, cleanup.timeline_value });
 
-            vk_allocator.vk_allocator_free_buffer(allocator, cleanup.buffer, cleanup.allocation);
+            vk_allocator.free_buffer(allocator, cleanup.buffer, cleanup.allocation);
 
             current.* = cleanup.next;
 
@@ -127,7 +127,7 @@ pub fn process_staging_buffer_cleanups(sync_manager: ?*types.VulkanSyncManager, 
         if (vk_sync_manager.vulkan_sync_manager_is_timeline_value_reached(@ptrCast(sync_manager), cleanup.timeline_value, &reached) == c.VK_SUCCESS and reached) {
             tex_utils_log.debug("Cleaning up completed image {any} (timeline: {d})", .{ cleanup.image, cleanup.timeline_value });
 
-            vk_allocator.vk_allocator_free_image(allocator, cleanup.image, cleanup.allocation);
+            vk_allocator.free_image(allocator, cleanup.image, cleanup.allocation);
 
             current_img.* = cleanup.next;
 
@@ -196,7 +196,7 @@ pub fn shutdown_staging_buffer_cleanups(allocator: *types.VulkanAllocator) void 
     while (current) |cleanup| {
         const next = cleanup.next;
         tex_utils_log.debug("Force cleaning up staging buffer {any} on shutdown", .{cleanup.buffer});
-        vk_allocator.vk_allocator_free_buffer(allocator, cleanup.buffer, cleanup.allocation);
+        vk_allocator.free_buffer(allocator, cleanup.buffer, cleanup.allocation);
 
         const mem_alloc = @import("../../core/memory.zig").cardinal_get_allocator_for_category(.RENDERER);
         const mem_utils = @import("../../core/memory.zig");
@@ -210,7 +210,7 @@ pub fn shutdown_staging_buffer_cleanups(allocator: *types.VulkanAllocator) void 
     while (current_img) |cleanup| {
         const next = cleanup.next;
         tex_utils_log.debug("Force cleaning up image {any} on shutdown", .{cleanup.image});
-        vk_allocator.vk_allocator_free_image(allocator, cleanup.image, cleanup.allocation);
+        vk_allocator.free_image(allocator, cleanup.image, cleanup.allocation);
 
         const mem_alloc = @import("../../core/memory.zig").cardinal_get_allocator_for_category(.RENDERER);
         const mem_utils = @import("../../core/memory.zig");
@@ -250,22 +250,22 @@ pub fn create_staging_buffer_with_data(allocator: ?*types.VulkanAllocator, devic
     bufferInfo.sharingMode = c.VK_SHARING_MODE_EXCLUSIVE;
 
     // Use VMA to allocate buffer
-    if (!vk_allocator.vk_allocator_allocate_buffer(allocator, &bufferInfo, outBuffer, outMemory, outAllocation, c.VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | c.VK_MEMORY_PROPERTY_HOST_COHERENT_BIT, false, null)) {
+    if (!vk_allocator.allocate_buffer(allocator, &bufferInfo, outBuffer, outMemory, outAllocation, c.VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | c.VK_MEMORY_PROPERTY_HOST_COHERENT_BIT, false, null)) {
         tex_utils_log.err("Failed to create staging buffer with VMA", .{});
         return false;
     }
 
     var data: ?*anyopaque = null;
-    if (vk_allocator.vk_allocator_map_memory(allocator, outAllocation.*, &data) != c.VK_SUCCESS) {
+    if (vk_allocator.map_memory(allocator, outAllocation.*, &data) != c.VK_SUCCESS) {
         tex_utils_log.err("Failed to map staging buffer memory", .{});
-        vk_allocator.vk_allocator_free_buffer(allocator, outBuffer.*, outAllocation.*);
+        vk_allocator.free_buffer(allocator, outBuffer.*, outAllocation.*);
         return false;
     }
 
     const src_data = @as([*]const u8, @ptrCast(texture.data));
     @memcpy(@as([*]u8, @ptrCast(data.?))[0..imageSize], src_data[0..imageSize]);
 
-    vk_allocator.vk_allocator_unmap_memory(allocator, outAllocation.*);
+    vk_allocator.unmap_memory(allocator, outAllocation.*);
     return true;
 }
 
@@ -287,7 +287,7 @@ pub fn create_image_and_memory(allocator: ?*types.VulkanAllocator, device: c.VkD
     imageInfo.sharingMode = c.VK_SHARING_MODE_EXCLUSIVE;
 
     // const vk_allocator = @import("../vulkan_allocator.zig");
-    if (!vk_allocator.vk_allocator_allocate_image(allocator, &imageInfo, outImage, outMemory, outAllocation, c.VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT)) {
+    if (!vk_allocator.allocate_image(allocator, &imageInfo, outImage, outMemory, outAllocation, c.VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT)) {
         tex_utils_log.err("Failed to allocate texture image with VMA", .{});
         return false;
     }
@@ -449,7 +449,7 @@ pub export fn vk_texture_create_from_data(allocator: ?*types.VulkanAllocator, de
     const format: c.VkFormat = if (texture.?.is_hdr) c.VK_FORMAT_R32G32B32A32_SFLOAT else c.VK_FORMAT_R8G8B8A8_SRGB;
 
     if (!create_image_and_memory(allocator, device, texture.?.width, texture.?.height, format, textureImage.?, textureImageMemory.?, textureAllocation.?)) {
-        vk_allocator.vk_allocator_free_buffer(allocator, stagingBuffer, stagingBufferAllocation);
+        vk_allocator.free_buffer(allocator, stagingBuffer, stagingBufferAllocation);
         return false;
     }
 
@@ -474,8 +474,8 @@ pub export fn vk_texture_create_from_data(allocator: ?*types.VulkanAllocator, de
     if (!submit_texture_upload(device, graphicsQueue, commandBuffer, sync_manager, outTimelineValue)) {
         tex_utils_log.err("Failed to submit texture upload", .{});
         c.vkFreeCommandBuffers(device, commandPool, 1, &commandBuffer);
-        vk_allocator.vk_allocator_free_buffer(allocator, stagingBuffer, stagingBufferAllocation);
-        vk_allocator.vk_allocator_free_image(allocator, textureImage.?.*, textureAllocation.?.*);
+        vk_allocator.free_buffer(allocator, stagingBuffer, stagingBufferAllocation);
+        vk_allocator.free_image(allocator, textureImage.?.*, textureAllocation.?.*);
         return false;
     }
 
@@ -485,12 +485,12 @@ pub export fn vk_texture_create_from_data(allocator: ?*types.VulkanAllocator, de
         add_staging_buffer_cleanup(allocator, stagingBuffer, stagingBufferMemory, stagingBufferAllocation, device, outTimelineValue.?.*);
         process_staging_buffer_cleanups(sync_manager, allocator);
     } else {
-        vk_allocator.vk_allocator_free_buffer(allocator, stagingBuffer, stagingBufferAllocation);
+        vk_allocator.free_buffer(allocator, stagingBuffer, stagingBufferAllocation);
     }
 
     if (!create_texture_image_view(device, textureImage.?.*, textureImageView.?, format)) {
         // const vk_allocator = @import("../vulkan_allocator.zig");
-        vk_allocator.vk_allocator_free_image(allocator, textureImage.?.*, textureAllocation.?.*);
+        vk_allocator.free_image(allocator, textureImage.?.*, textureAllocation.?.*);
         return false;
     }
 

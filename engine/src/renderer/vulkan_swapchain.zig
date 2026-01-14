@@ -130,15 +130,15 @@ fn wait_device_idle_for_swapchain(s: *types.VulkanState) bool {
     const dt = platform.get_time_ms() - t_idle0;
 
     if (dt > 200) {
-        log.cardinal_log_warn("[WATCHDOG] Swapchain create: device wait idle duration {d} ms", .{dt});
+        swap_log.warn("[WATCHDOG] Swapchain create: device wait idle duration {d} ms", .{dt});
     }
 
     if (res == c.VK_ERROR_DEVICE_LOST) {
-        log.cardinal_log_error("[SWAPCHAIN] Device lost during swapchain creation", .{});
+        swap_log.err("Device lost during swapchain creation", .{});
         s.recovery.device_lost = true;
         return false;
     } else if (res != c.VK_SUCCESS) {
-        log.cardinal_log_error("[SWAPCHAIN] Device not ready for swapchain creation: {d}", .{res});
+        swap_log.err("Device not ready for swapchain creation: {d}", .{res});
         return false;
     }
     return true;
@@ -146,18 +146,18 @@ fn wait_device_idle_for_swapchain(s: *types.VulkanState) bool {
 
 fn get_surface_details(s: *types.VulkanState, caps: *c.VkSurfaceCapabilitiesKHR, out_fmt: *c.VkSurfaceFormatKHR, out_mode: *c.VkPresentModeKHR) bool {
     if (c.vkGetPhysicalDeviceSurfaceCapabilitiesKHR(s.context.physical_device, s.context.surface, caps) != c.VK_SUCCESS) {
-        log.cardinal_log_error("[SWAPCHAIN] Failed to get surface capabilities", .{});
+        swap_log.err("Failed to get surface capabilities", .{});
         return false;
     }
 
     if (caps.minImageCount == 0 or caps.maxImageExtent.width == 0 or caps.maxImageExtent.height == 0) {
-        log.cardinal_log_error("[SWAPCHAIN] Invalid surface capabilities detected", .{});
+        swap_log.err("Invalid surface capabilities detected", .{});
         return false;
     }
 
     var count: u32 = 0;
     if (c.vkGetPhysicalDeviceSurfaceFormatsKHR(s.context.physical_device, s.context.surface, &count, null) != c.VK_SUCCESS or count == 0) {
-        log.cardinal_log_error("[SWAPCHAIN] Failed to get surface formats", .{});
+        swap_log.err("Failed to get surface formats", .{});
         return false;
     }
 
@@ -168,13 +168,13 @@ fn get_surface_details(s: *types.VulkanState, caps: *c.VkSurfaceCapabilitiesKHR,
     defer memory.cardinal_free(mem_alloc, fmts_ptr);
 
     if (c.vkGetPhysicalDeviceSurfaceFormatsKHR(s.context.physical_device, s.context.surface, &count, fmts) != c.VK_SUCCESS) {
-        log.cardinal_log_error("[SWAPCHAIN] Failed to retrieve surface formats", .{});
+        swap_log.err("Failed to retrieve surface formats", .{});
         return false;
     }
     out_fmt.* = choose_surface_format(fmts, count, s.config.prefer_hdr);
 
     if (c.vkGetPhysicalDeviceSurfacePresentModesKHR(s.context.physical_device, s.context.surface, &count, null) != c.VK_SUCCESS or count == 0) {
-        log.cardinal_log_error("[SWAPCHAIN] Failed to get present modes", .{});
+        swap_log.err("Failed to get present modes", .{});
         return false;
     }
 
@@ -184,7 +184,7 @@ fn get_surface_details(s: *types.VulkanState, caps: *c.VkSurfaceCapabilitiesKHR,
     defer memory.cardinal_free(mem_alloc, modes_ptr);
 
     if (c.vkGetPhysicalDeviceSurfacePresentModesKHR(s.context.physical_device, s.context.surface, &count, modes) != c.VK_SUCCESS) {
-        log.cardinal_log_error("[SWAPCHAIN] Failed to retrieve present modes", .{});
+        swap_log.err("Failed to retrieve present modes", .{});
         return false;
     }
     out_mode.* = choose_present_mode(modes, count);
@@ -226,7 +226,7 @@ fn create_swapchain_object(s: *types.VulkanState, caps: *const c.VkSurfaceCapabi
         image_count = caps.maxImageCount;
     }
 
-    log.cardinal_log_info("[SWAPCHAIN] Creating swapchain: {d}x{d}, {d} images, format {d}", .{ extent.width, extent.height, image_count, fmt.format });
+    swap_log.info("Creating swapchain: {d}x{d}, {d} images, format {d}", .{ extent.width, extent.height, image_count, fmt.format });
 
     var sci = std.mem.zeroes(c.VkSwapchainCreateInfoKHR);
     sci.sType = c.VK_STRUCTURE_TYPE_SWAPCHAIN_CREATE_INFO_KHR;
@@ -253,7 +253,7 @@ fn create_swapchain_object(s: *types.VulkanState, caps: *const c.VkSurfaceCapabi
 
     const res = c.vkCreateSwapchainKHR(s.context.device, &sci, null, &s.swapchain.handle);
     if (res != c.VK_SUCCESS) {
-        log.cardinal_log_error("[SWAPCHAIN] Failed to create swapchain: {d}", .{res});
+        swap_log.err("Failed to create swapchain: {d}", .{res});
         if (res == c.VK_ERROR_DEVICE_LOST) {
             s.recovery.device_lost = true;
         }
@@ -267,7 +267,7 @@ fn create_swapchain_object(s: *types.VulkanState, caps: *const c.VkSurfaceCapabi
 
 fn retrieve_swapchain_images(s: *types.VulkanState) bool {
     if (c.vkGetSwapchainImagesKHR(s.context.device, s.swapchain.handle, &s.swapchain.image_count, null) != c.VK_SUCCESS or s.swapchain.image_count == 0) {
-        log.cardinal_log_error("[SWAPCHAIN] Failed to get image count", .{});
+        swap_log.err("Failed to get image count", .{});
         return false;
     }
 
@@ -277,7 +277,7 @@ fn retrieve_swapchain_images(s: *types.VulkanState) bool {
     s.swapchain.images = @as([*]c.VkImage, @ptrCast(@alignCast(images_ptr)));
 
     if (c.vkGetSwapchainImagesKHR(s.context.device, s.swapchain.handle, &s.swapchain.image_count, s.swapchain.images.?) != c.VK_SUCCESS) {
-        log.cardinal_log_error("[SWAPCHAIN] Failed to get images", .{});
+        swap_log.err("Failed to get images", .{});
         return false;
     }
     return true;
@@ -306,7 +306,7 @@ fn create_swapchain_image_views(s: *types.VulkanState) bool {
         iv.subresourceRange.layerCount = 1;
 
         if (c.vkCreateImageView(s.context.device, &iv, null, &s.swapchain.image_views.?[i]) != c.VK_SUCCESS) {
-            log.cardinal_log_error("[SWAPCHAIN] Failed to create image view {d}", .{i});
+            swap_log.err("Failed to create image view {d}", .{i});
             var j: u32 = 0;
             while (j < i) : (j += 1) {
                 c.vkDestroyImageView(s.context.device, s.swapchain.image_views.?[j], null);
@@ -357,7 +357,7 @@ fn restore_swapchain_state(s: *types.VulkanState, backup: *const SwapchainBackup
 }
 
 fn handle_recreation_failure(s: *types.VulkanState, old_state: *const SwapchainBackupState) bool {
-    log.cardinal_log_error("[SWAPCHAIN] Recreation failed", .{});
+    swap_log.err("Recreation failed", .{});
     s.swapchain.consecutive_recreation_failures += 1;
 
     // Cleanup new swapchain if it exists
@@ -436,10 +436,10 @@ fn recreate_mesh_shader_pipeline_logic(s: *types.VulkanState) bool {
     config.max_primitives_per_meshlet = 126;
 
     if (!vk_mesh_shader.vk_mesh_shader_create_pipeline(@ptrCast(s), &config, s.swapchain.format, s.swapchain.depth_format, @ptrCast(&s.pipelines.mesh_shader_pipeline), null)) {
-        log.cardinal_log_error("[SWAPCHAIN] Failed to recreate mesh shader pipeline", .{});
+        swap_log.err("Failed to recreate mesh shader pipeline", .{});
         return false;
     }
-    log.cardinal_log_info("[SWAPCHAIN] Mesh shader pipeline recreated successfully", .{});
+    swap_log.info("Mesh shader pipeline recreated successfully", .{});
     return true;
 }
 
@@ -447,7 +447,7 @@ fn recreate_mesh_shader_pipeline_logic(s: *types.VulkanState) bool {
 
 pub export fn vk_create_swapchain(s: ?*types.VulkanState) callconv(.c) bool {
     if (s == null or s.?.context.device == null or s.?.context.physical_device == null or s.?.context.surface == null) {
-        log.cardinal_log_error("[SWAPCHAIN] Invalid VulkanState or missing required components", .{});
+        swap_log.err("Invalid VulkanState or missing required components", .{});
         return false;
     }
     const vs = s.?;
@@ -462,7 +462,7 @@ pub export fn vk_create_swapchain(s: ?*types.VulkanState) callconv(.c) bool {
 
     const extent = select_swapchain_extent(vs, &caps);
     if (extent.width == 0 or extent.height == 0) {
-        log.cardinal_log_warn("[SWAPCHAIN] Invalid swapchain extent: {d}x{d} (minimized?), skipping creation", .{ extent.width, extent.height });
+        swap_log.warn("Invalid swapchain extent: {d}x{d} (minimized?), skipping creation", .{ extent.width, extent.height });
         return false;
     }
 
@@ -489,7 +489,7 @@ pub export fn vk_create_swapchain(s: ?*types.VulkanState) callconv(.c) bool {
     vs.swapchain.consecutive_recreation_failures = 0;
     vs.swapchain.frame_pacing_enabled = true;
 
-    log.cardinal_log_info("[SWAPCHAIN] Successfully created swapchain with {d} images ({d}x{d})", .{ vs.swapchain.image_count, vs.swapchain.extent.width, vs.swapchain.extent.height });
+    swap_log.info("Successfully created swapchain with {d} images ({d}x{d})", .{ vs.swapchain.image_count, vs.swapchain.extent.width, vs.swapchain.extent.height });
     return true;
 }
 
@@ -523,19 +523,19 @@ pub export fn vk_destroy_swapchain(s: ?*types.VulkanState) callconv(.c) void {
 
 pub export fn vk_recreate_swapchain(s: ?*types.VulkanState) callconv(.c) bool {
     if (s == null) {
-        log.cardinal_log_error("[SWAPCHAIN] Invalid VulkanState for recreation", .{});
+        swap_log.err("Invalid VulkanState for recreation", .{});
         return false;
     }
     const vs = s.?;
 
     if (vs.context.device == null) {
-        log.cardinal_log_error("[SWAPCHAIN] No valid device for swapchain recreation", .{});
+        swap_log.err("No valid device for swapchain recreation", .{});
         return false;
     }
 
     if (should_throttle_recreation(vs)) return false;
 
-    log.cardinal_log_info("[SWAPCHAIN] Starting swapchain recreation", .{});
+    swap_log.info("Starting swapchain recreation", .{});
 
     vs.swapchain.last_recreation_time = platform.get_time_ms();
 
@@ -547,13 +547,13 @@ pub export fn vk_recreate_swapchain(s: ?*types.VulkanState) callconv(.c) bool {
     const idle_dt = platform.get_time_ms() - t_idle0;
 
     if (idle_dt > 200) {
-        log.cardinal_log_warn("[WATCHDOG] Swapchain recreate: device wait idle duration {d} ms", .{idle_dt});
+        swap_log.warn("[WATCHDOG] Swapchain recreate: device wait idle duration {d} ms", .{idle_dt});
     }
 
     if (idle_result != c.VK_SUCCESS) {
-        log.cardinal_log_error("[SWAPCHAIN] Failed to wait for device idle: {d}", .{idle_result});
+        swap_log.err("Failed to wait for device idle: {d}", .{idle_result});
         if (idle_result == c.VK_ERROR_DEVICE_LOST) {
-            log.cardinal_log_error("[SWAPCHAIN] Device lost during recreation wait", .{});
+            swap_log.err("Device lost during recreation wait", .{});
             vs.recovery.device_lost = true;
         }
         restore_swapchain_state(vs, &backup);
@@ -595,7 +595,7 @@ pub export fn vk_recreate_swapchain(s: ?*types.VulkanState) callconv(.c) bool {
 
     vs.swapchain.consecutive_recreation_failures = 0;
 
-    log.cardinal_log_info("[SWAPCHAIN] Successfully recreated swapchain: {d}x{d} -> {d}x{d}", .{ backup.extent.width, backup.extent.height, vs.swapchain.extent.width, vs.swapchain.extent.height });
+    swap_log.info("Successfully recreated swapchain: {d}x{d} -> {d}x{d}", .{ backup.extent.width, backup.extent.height, vs.swapchain.extent.width, vs.swapchain.extent.height });
 
     if (vs.recovery.recovery_complete_callback) |cb| {
         cb(vs.recovery.callback_user_data, true);

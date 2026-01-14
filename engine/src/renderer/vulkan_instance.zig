@@ -129,15 +129,15 @@ pub export fn vk_reset_validation_stats() callconv(.c) void {
 
 pub export fn vk_log_validation_stats() callconv(.c) void {
     if (g_validation_stats.total_messages == 0) {
-        log.cardinal_log_info("[VALIDATION] No validation messages received", .{});
+        vk_log.info("[VALIDATION] No validation messages received", .{});
         return;
     }
 
-    log.cardinal_log_info("[VALIDATION] Statistics Summary:", .{});
-    log.cardinal_log_info("[VALIDATION]   Total messages: {d}", .{g_validation_stats.total_messages});
-    log.cardinal_log_info("[VALIDATION]   Errors: {d}, Warnings: {d}, Info: {d}", .{ g_validation_stats.error_count, g_validation_stats.warning_count, g_validation_stats.info_count });
-    log.cardinal_log_info("[VALIDATION]   By type - Validation: {d}, Performance: {d}, General: {d}", .{ g_validation_stats.validation_count, g_validation_stats.performance_count, g_validation_stats.general_count });
-    log.cardinal_log_info("[VALIDATION]   Filtered messages: {d}", .{g_validation_stats.filtered_count});
+    vk_log.info("[VALIDATION] Statistics Summary:", .{});
+    vk_log.info("[VALIDATION]   Total messages: {d}", .{g_validation_stats.total_messages});
+    vk_log.info("[VALIDATION]   Errors: {d}, Warnings: {d}, Info: {d}", .{ g_validation_stats.error_count, g_validation_stats.warning_count, g_validation_stats.info_count });
+    vk_log.info("[VALIDATION]   By type - Validation: {d}, Performance: {d}, General: {d}", .{ g_validation_stats.validation_count, g_validation_stats.performance_count, g_validation_stats.general_count });
+    vk_log.info("[VALIDATION]   Filtered messages: {d}", .{g_validation_stats.filtered_count});
 }
 
 // Layer settings definitions if missing
@@ -173,7 +173,7 @@ fn setup_app_info(ai: *c.VkApplicationInfo) void {
     ai.pEngineName = "Cardinal";
     ai.engineVersion = c.VK_MAKE_VERSION(1, 0, 0);
     ai.apiVersion = c.VK_MAKE_API_VERSION(0, 1, 3, 0);
-    log.cardinal_log_info("[INSTANCE] Using Vulkan API version 1.3", .{});
+    vk_log.info("[INSTANCE] Using Vulkan API version 1.3", .{});
 }
 
 fn get_instance_extensions(out_extensions: *[*c]const [*c]const u8, out_count: *u32, out_allocated: *bool) bool {
@@ -183,16 +183,16 @@ fn get_instance_extensions(out_extensions: *[*c]const [*c]const u8, out_count: *
     out_allocated.* = false;
 
     if (glfw_exts == null) {
-        log.cardinal_log_info("[INSTANCE] GLFW instance extensions unavailable (headless or no GLFW)", .{});
+        vk_log.info("[INSTANCE] GLFW instance extensions unavailable (headless or no GLFW)", .{});
         out_count.* = 0;
         out_extensions.* = null;
         return true;
     }
 
-    log.cardinal_log_info("[INSTANCE] GLFW requires {d} extensions", .{glfw_count});
+    vk_log.info("[INSTANCE] GLFW requires {d} extensions", .{glfw_count});
     var i: u32 = 0;
     while (i < glfw_count) : (i += 1) {
-        log.cardinal_log_info("[INSTANCE] GLFW extension {d}: {s}", .{ i, std.mem.span(glfw_exts[i]) });
+        vk_log.info("[INSTANCE] GLFW extension {d}: {s}", .{ i, std.mem.span(glfw_exts[i]) });
     }
 
     if (!validation_enabled()) {
@@ -235,12 +235,12 @@ fn get_instance_extensions(out_extensions: *[*c]const [*c]const u8, out_count: *
     if (need_debug_utils) {
         exts_ptr[current] = c.VK_EXT_DEBUG_UTILS_EXTENSION_NAME;
         current += 1;
-        log.cardinal_log_info("[INSTANCE] Adding debug utils extension", .{});
+        vk_log.info("[INSTANCE] Adding debug utils extension", .{});
     }
     if (need_layer_settings) {
         exts_ptr[current] = "VK_EXT_layer_settings"; // Macro might not be available
         current += 1;
-        log.cardinal_log_info("[INSTANCE] Adding layer settings extension", .{});
+        vk_log.info("[INSTANCE] Adding layer settings extension", .{});
     }
 
     out_extensions.* = @ptrCast(@alignCast(exts));
@@ -256,10 +256,10 @@ fn configure_validation(ci: *c.VkInstanceCreateInfo, layers: [*]const [*c]const 
         return;
     }
 
-    log.cardinal_log_info("[INSTANCE] Validation enabled - enabling validation layers", .{});
+    vk_log.info("[INSTANCE] Validation enabled - enabling validation layers", .{});
     ci.enabledLayerCount = 1;
     ci.ppEnabledLayerNames = layers;
-    log.cardinal_log_info("[INSTANCE] Enabling validation layer: {s}", .{std.mem.span(layers[0])});
+    vk_log.info("[INSTANCE] Enabling validation layer: {s}", .{std.mem.span(layers[0])});
 
     debug_ci.sType = c.VK_STRUCTURE_TYPE_DEBUG_UTILS_MESSENGER_CREATE_INFO_EXT;
     debug_ci.messageSeverity = select_debug_severity_from_log_level();
@@ -280,11 +280,11 @@ fn configure_validation(ci: *c.VkInstanceCreateInfo, layers: [*]const [*c]const 
 
     _ = layer_settings_ci;
 
-    log.cardinal_log_info("[INSTANCE] Debug messenger configured (layer settings skipped)", .{});
+    vk_log.info("[INSTANCE] Debug messenger configured (layer settings skipped)", .{});
 }
 
 pub export fn vk_create_instance(s: ?*types.VulkanState) callconv(.c) bool {
-    log.cardinal_log_info("[INSTANCE] Starting Vulkan instance creation", .{});
+    vk_log.info("[INSTANCE] Starting Vulkan instance creation", .{});
     if (s == null) return false;
     const vs = s.?;
 
@@ -298,10 +298,10 @@ pub export fn vk_create_instance(s: ?*types.VulkanState) callconv(.c) bool {
         return false;
     }
 
-    log.cardinal_log_info("[INSTANCE] Final extension count: {d}", .{extension_count});
+    vk_log.info("[INSTANCE] Final extension count: {d}", .{extension_count});
     var i: u32 = 0;
     while (i < extension_count) : (i += 1) {
-        log.cardinal_log_info("[INSTANCE] Extension {d}: {s}", .{ i, if (extensions[i] != null) std.mem.span(extensions[i]) else "(null)" });
+        vk_log.info("[INSTANCE] Extension {d}: {s}", .{ i, if (extensions[i] != null) std.mem.span(extensions[i]) else "(null)" });
     }
 
     const layers = [_][*c]const u8{"VK_LAYER_KHRONOS_validation"};
@@ -317,7 +317,7 @@ pub export fn vk_create_instance(s: ?*types.VulkanState) callconv(.c) bool {
 
     configure_validation(&ci, &layers, &debug_ci, &layer_settings_ci, &settings);
 
-    log.cardinal_log_info("[INSTANCE] Creating Vulkan instance...", .{});
+    vk_log.info("[INSTANCE] Creating Vulkan instance...", .{});
     const result = c.vkCreateInstance(&ci, null, &vs.context.instance);
 
     if (extensions_allocated) {
@@ -326,10 +326,10 @@ pub export fn vk_create_instance(s: ?*types.VulkanState) callconv(.c) bool {
     }
 
     if (result != c.VK_SUCCESS) {
-        log.cardinal_log_error("[INSTANCE] vkCreateInstance failed with result: {d}", .{result});
+        vk_log.err("[INSTANCE] vkCreateInstance failed with result: {d}", .{result});
         return false;
     }
-    log.cardinal_log_info("[INSTANCE] Instance creation result: {d}", .{result});
+    vk_log.info("[INSTANCE] Instance creation result: {d}", .{result});
 
     if (validation_enabled()) {
         const dfunc = @as(c.PFN_vkCreateDebugUtilsMessengerEXT, @ptrCast(c.vkGetInstanceProcAddr(vs.context.instance, "vkCreateDebugUtilsMessengerEXT")));
@@ -338,21 +338,21 @@ pub export fn vk_create_instance(s: ?*types.VulkanState) callconv(.c) bool {
         }
     }
 
-    log.cardinal_log_info("[INSTANCE] Vulkan instance created successfully", .{});
+    vk_log.info("[INSTANCE] Vulkan instance created successfully", .{});
     return true;
 }
 
 pub export fn vk_pick_physical_device(s: ?*types.VulkanState) callconv(.c) bool {
-    log.cardinal_log_info("[DEVICE] Starting physical device selection", .{});
+    vk_log.info("[DEVICE] Starting physical device selection", .{});
     if (s == null) return false;
     const vs = s.?;
 
     var count: u32 = 0;
     var result = c.vkEnumeratePhysicalDevices(vs.context.instance, &count, null);
-    log.cardinal_log_info("[DEVICE] Found {d} physical devices, enumerate result: {d}", .{ count, result });
+    vk_log.info("[DEVICE] Found {d} physical devices, enumerate result: {d}", .{ count, result });
 
     if (count == 0) {
-        log.cardinal_log_error("[DEVICE] No physical devices found!", .{});
+        vk_log.err("[DEVICE] No physical devices found!", .{});
         return false;
     }
 
@@ -363,26 +363,65 @@ pub export fn vk_pick_physical_device(s: ?*types.VulkanState) callconv(.c) bool 
     defer memory.cardinal_free(mem_alloc, devices);
 
     result = c.vkEnumeratePhysicalDevices(vs.context.instance, &count, devices_ptr);
-    log.cardinal_log_info("[DEVICE] Enumerate devices result: {d}", .{result});
+    vk_log.info("[DEVICE] Enumerate devices result: {d}", .{result});
 
-    vs.context.physical_device = devices_ptr[0];
+    // Score devices to find the best one
+    var best_score: i32 = -1;
+    var best_device: ?c.VkPhysicalDevice = null;
 
-    var props: c.VkPhysicalDeviceProperties = undefined;
-    c.vkGetPhysicalDeviceProperties(vs.context.physical_device, &props);
+    var i: u32 = 0;
+    while (i < count) : (i += 1) {
+        const device = devices_ptr[i];
+        var props: c.VkPhysicalDeviceProperties = undefined;
+        var feats: c.VkPhysicalDeviceFeatures = undefined;
+        c.vkGetPhysicalDeviceProperties(device, &props);
+        c.vkGetPhysicalDeviceFeatures(device, &feats);
 
-    log.cardinal_log_info("[DEVICE] Selected device: {s} (API {d}.{d}.{d}, Driver {d}.{d}.{d})", .{ std.mem.sliceTo(&props.deviceName, 0), c.VK_VERSION_MAJOR(props.apiVersion), c.VK_VERSION_MINOR(props.apiVersion), c.VK_VERSION_PATCH(props.apiVersion), c.VK_VERSION_MAJOR(props.driverVersion), c.VK_VERSION_MINOR(props.driverVersion), c.VK_VERSION_PATCH(props.driverVersion) });
+        var score: i32 = 0;
+
+        // Discrete GPUs have a significant performance advantage
+        if (props.deviceType == c.VK_PHYSICAL_DEVICE_TYPE_DISCRETE_GPU) {
+            score += 1000;
+        }
+
+        // Maximum possible texture size affects graphics quality
+        score += @intCast(props.limits.maxImageDimension2D);
+
+        // Application can't function without geometry shaders
+        if (feats.geometryShader == 0) {
+            score = 0;
+        }
+
+        vk_log.info("[DEVICE] Candidate {d}: {s} (Score: {d})", .{ i, std.mem.sliceTo(&props.deviceName, 0), score });
+
+        if (score > best_score) {
+            best_score = score;
+            best_device = device;
+        }
+    }
+
+    if (best_device) |device| {
+        vs.context.physical_device = device;
+        var props: c.VkPhysicalDeviceProperties = undefined;
+        c.vkGetPhysicalDeviceProperties(device, &props);
+        vk_log.info("[DEVICE] Selected best device: {s}", .{std.mem.sliceTo(&props.deviceName, 0)});
+    } else {
+        // Fallback to first device if no suitable device found (unlikely if count > 0)
+        vs.context.physical_device = devices_ptr[0];
+        vk_log.warn("[DEVICE] No suitable device found by score, falling back to first device", .{});
+    }
 
     return vs.context.physical_device != null;
 }
 
 pub export fn vk_create_device(s: ?*types.VulkanState) callconv(.c) bool {
-    log.cardinal_log_info("[DEVICE] Starting logical device creation", .{});
+    vk_log.info("[DEVICE] Starting logical device creation", .{});
     if (s == null) return false;
     const vs = s.?;
 
     var qf_count: u32 = 0;
     c.vkGetPhysicalDeviceQueueFamilyProperties(vs.context.physical_device, &qf_count, null);
-    log.cardinal_log_info("[DEVICE] Found {d} queue families", .{qf_count});
+    vk_log.info("[DEVICE] Found {d} queue families", .{qf_count});
 
     const mem_alloc = memory.cardinal_get_allocator_for_category(.RENDERER);
     const qfp = memory.cardinal_alloc(mem_alloc, @sizeOf(c.VkQueueFamilyProperties) * qf_count);
@@ -400,7 +439,7 @@ pub export fn vk_create_device(s: ?*types.VulkanState) callconv(.c) bool {
             break;
         }
     }
-    log.cardinal_log_info("[DEVICE] Selected graphics family: {d}", .{vs.context.graphics_queue_family});
+    vk_log.info("[DEVICE] Selected graphics family: {d}", .{vs.context.graphics_queue_family});
 
     var prio: f32 = 1.0;
     var qci = std.mem.zeroes(c.VkDeviceQueueCreateInfo);
@@ -414,16 +453,16 @@ pub export fn vk_create_device(s: ?*types.VulkanState) callconv(.c) bool {
     const apiVersion = physicalDeviceProperties.apiVersion;
     const majorVersion = c.VK_VERSION_MAJOR(apiVersion);
     const minorVersion = c.VK_VERSION_MINOR(apiVersion);
-    log.cardinal_log_info("[DEVICE] Physical device supports Vulkan {d}.{d}.{d}", .{ majorVersion, minorVersion, c.VK_VERSION_PATCH(apiVersion) });
+    vk_log.info("[DEVICE] Physical device supports Vulkan {d}.{d}.{d}", .{ majorVersion, minorVersion, c.VK_VERSION_PATCH(apiVersion) });
 
     const vulkan_14_supported = (majorVersion > 1) or (majorVersion == 1 and minorVersion >= 4);
     const vulkan_12_supported = (majorVersion > 1) or (majorVersion == 1 and minorVersion >= 2);
 
     if (!vulkan_14_supported) {
-        log.cardinal_log_error("[DEVICE] Vulkan 1.4 core is required but not supported (found {d}.{d})", .{ majorVersion, minorVersion });
+        vk_log.err("[DEVICE] Vulkan 1.4 core is required but not supported (found {d}.{d})", .{ majorVersion, minorVersion });
         return false;
     }
-    log.cardinal_log_info("[DEVICE] Vulkan 1.4 core support confirmed", .{});
+    vk_log.info("[DEVICE] Vulkan 1.4 core support confirmed", .{});
 
     var extension_count: u32 = 0;
     _ = c.vkEnumerateDeviceExtensionProperties(vs.context.physical_device, null, &extension_count, null);
@@ -446,43 +485,43 @@ pub export fn vk_create_device(s: ?*types.VulkanState) callconv(.c) bool {
         const extName = &available_extensions_ptr[i].extensionName;
         if (c.strcmp(extName, c.VK_KHR_MAINTENANCE_8_EXTENSION_NAME) == 0) {
             maintenance8_available = true;
-            log.cardinal_log_info("[DEVICE] VK_KHR_maintenance8 extension available", .{});
+            vk_log.info("[DEVICE] VK_KHR_maintenance8 extension available", .{});
         } else if (c.strcmp(extName, c.VK_EXT_MESH_SHADER_EXTENSION_NAME) == 0) {
             mesh_shader_available = true;
-            log.cardinal_log_info("[DEVICE] VK_EXT_mesh_shader extension available", .{});
+            vk_log.info("[DEVICE] VK_EXT_mesh_shader extension available", .{});
         } else if (c.strcmp(extName, c.VK_KHR_FRAGMENT_SHADING_RATE_EXTENSION_NAME) == 0) {
             fragment_shading_rate_available = true;
-            log.cardinal_log_info("[DEVICE] VK_KHR_fragment_shading_rate extension available", .{});
+            vk_log.info("[DEVICE] VK_KHR_fragment_shading_rate extension available", .{});
         } else if (c.strcmp(extName, c.VK_EXT_DESCRIPTOR_INDEXING_EXTENSION_NAME) == 0) {
             descriptor_indexing_available = true;
-            log.cardinal_log_info("[DEVICE] VK_EXT_descriptor_indexing extension available", .{});
+            vk_log.info("[DEVICE] VK_EXT_descriptor_indexing extension available", .{});
         } else if (c.strcmp(extName, c.VK_EXT_DESCRIPTOR_BUFFER_EXTENSION_NAME) == 0) {
             descriptor_buffer_available = true;
-            log.cardinal_log_info("[DEVICE] VK_EXT_descriptor_buffer extension available", .{});
+            vk_log.info("[DEVICE] VK_EXT_descriptor_buffer extension available", .{});
         } else if (c.strcmp(extName, c.VK_KHR_SHADER_QUAD_CONTROL_EXTENSION_NAME) == 0) {
             shader_quad_control_available = true;
-            log.cardinal_log_info("[DEVICE] VK_KHR_shader_quad_control extension available", .{});
+            vk_log.info("[DEVICE] VK_KHR_shader_quad_control extension available", .{});
         } else if (c.strcmp(extName, c.VK_KHR_SHADER_MAXIMAL_RECONVERGENCE_EXTENSION_NAME) == 0) {
             shader_maximal_reconvergence_available = true;
-            log.cardinal_log_info("[DEVICE] VK_KHR_shader_maximal_reconvergence extension available", .{});
+            vk_log.info("[DEVICE] VK_KHR_shader_maximal_reconvergence extension available", .{});
         }
     }
 
     if (!maintenance8_available) {
-        log.cardinal_log_info("[DEVICE] VK_KHR_maintenance8 extension not available, using maintenance4 fallback", .{});
+        vk_log.info("[DEVICE] VK_KHR_maintenance8 extension not available, using maintenance4 fallback", .{});
     }
 
     if (!mesh_shader_available) {
-        log.cardinal_log_info("[DEVICE] VK_EXT_mesh_shader extension not available, using traditional vertex pipeline", .{});
+        vk_log.info("[DEVICE] VK_EXT_mesh_shader extension not available, using traditional vertex pipeline", .{});
     }
 
     if (mesh_shader_available and !fragment_shading_rate_available) {
-        log.cardinal_log_error("[DEVICE] VK_EXT_mesh_shader requires VK_KHR_fragment_shading_rate but it's not available", .{});
+        vk_log.err("[DEVICE] VK_EXT_mesh_shader requires VK_KHR_fragment_shading_rate but it's not available", .{});
         mesh_shader_available = false;
     }
 
     if (shader_quad_control_available and !shader_maximal_reconvergence_available) {
-        log.cardinal_log_error("[DEVICE] VK_KHR_shader_quad_control requires VK_KHR_shader_maximal_reconvergence but it's not available", .{});
+        vk_log.err("[DEVICE] VK_KHR_shader_quad_control requires VK_KHR_shader_maximal_reconvergence but it's not available", .{});
         shader_quad_control_available = false;
     }
 
@@ -492,13 +531,13 @@ pub export fn vk_create_device(s: ?*types.VulkanState) callconv(.c) bool {
     if (!vs.swapchain.headless_mode) {
         device_extensions[enabled_extension_count] = c.VK_KHR_SWAPCHAIN_EXTENSION_NAME;
         enabled_extension_count += 1;
-        log.cardinal_log_info("[DEVICE] Enabling VK_KHR_swapchain extension", .{});
+        vk_log.info("[DEVICE] Enabling VK_KHR_swapchain extension", .{});
     }
 
     if (maintenance8_available) {
         device_extensions[enabled_extension_count] = c.VK_KHR_MAINTENANCE_8_EXTENSION_NAME;
         enabled_extension_count += 1;
-        log.cardinal_log_info("[DEVICE] Enabling VK_KHR_maintenance8 extension", .{});
+        vk_log.info("[DEVICE] Enabling VK_KHR_maintenance8 extension", .{});
     }
 
     if (mesh_shader_available) {
@@ -506,29 +545,29 @@ pub export fn vk_create_device(s: ?*types.VulkanState) callconv(.c) bool {
         enabled_extension_count += 1;
         device_extensions[enabled_extension_count] = c.VK_EXT_MESH_SHADER_EXTENSION_NAME;
         enabled_extension_count += 1;
-        log.cardinal_log_info("[DEVICE] Enabling VK_KHR_fragment_shading_rate + VK_EXT_mesh_shader", .{});
+        vk_log.info("[DEVICE] Enabling VK_KHR_fragment_shading_rate + VK_EXT_mesh_shader", .{});
     }
 
     if (descriptor_indexing_available) {
-        log.cardinal_log_info("[DEVICE] VK_EXT_descriptor_indexing available (promoted to Vulkan 1.2), enabling features only", .{});
+        vk_log.info("[DEVICE] VK_EXT_descriptor_indexing available (promoted to Vulkan 1.2), enabling features only", .{});
     }
 
     if (descriptor_buffer_available) {
         device_extensions[enabled_extension_count] = c.VK_EXT_DESCRIPTOR_BUFFER_EXTENSION_NAME;
         enabled_extension_count += 1;
-        log.cardinal_log_info("[DEVICE] Enabling VK_EXT_descriptor_buffer extension", .{});
+        vk_log.info("[DEVICE] Enabling VK_EXT_descriptor_buffer extension", .{});
     }
 
     if (shader_maximal_reconvergence_available) {
         device_extensions[enabled_extension_count] = c.VK_KHR_SHADER_MAXIMAL_RECONVERGENCE_EXTENSION_NAME;
         enabled_extension_count += 1;
-        log.cardinal_log_info("[DEVICE] Enabling VK_KHR_shader_maximal_reconvergence extension", .{});
+        vk_log.info("[DEVICE] Enabling VK_KHR_shader_maximal_reconvergence extension", .{});
     }
 
     if (shader_quad_control_available) {
         device_extensions[enabled_extension_count] = c.VK_KHR_SHADER_QUAD_CONTROL_EXTENSION_NAME;
         enabled_extension_count += 1;
-        log.cardinal_log_info("[DEVICE] Enabling VK_KHR_shader_quad_control extension", .{});
+        vk_log.info("[DEVICE] Enabling VK_KHR_shader_quad_control extension", .{});
     }
 
     var shaderQuadControlFeatures = std.mem.zeroes(c.VkPhysicalDeviceShaderQuadControlFeaturesKHR);
@@ -589,7 +628,7 @@ pub export fn vk_create_device(s: ?*types.VulkanState) callconv(.c) bool {
     deviceFeatures2.pNext = &vulkan12Features;
 
     c.vkGetPhysicalDeviceFeatures2(vs.context.physical_device, &deviceFeatures2);
-    log.cardinal_log_info("[DEVICE] Queried Vulkan 1.2, 1.3 and 1.4 features", .{});
+    vk_log.info("[DEVICE] Queried Vulkan 1.2, 1.3 and 1.4 features", .{});
 
     var subgroupProperties = std.mem.zeroes(c.VkPhysicalDeviceSubgroupProperties);
     subgroupProperties.sType = c.VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SUBGROUP_PROPERTIES;
@@ -599,21 +638,21 @@ pub export fn vk_create_device(s: ?*types.VulkanState) callconv(.c) bool {
     props2.pNext = &subgroupProperties;
     c.vkGetPhysicalDeviceProperties2(vs.context.physical_device, &props2);
 
-    log.cardinal_log_info("[DEVICE] Subgroup properties: size={d}", .{subgroupProperties.subgroupSize});
+    vk_log.info("[DEVICE] Subgroup properties: size={d}", .{subgroupProperties.subgroupSize});
 
     if ((subgroupProperties.supportedOperations & c.VK_SUBGROUP_FEATURE_BALLOT_BIT) == 0) {
-        log.cardinal_log_error("[DEVICE] Subgroup ballot operations are required but not supported", .{});
+        vk_log.err("[DEVICE] Subgroup ballot operations are required but not supported", .{});
         return false;
     }
 
     if (vulkan13Features.dynamicRendering == c.VK_FALSE or vulkan13Features.synchronization2 == c.VK_FALSE or vulkan13Features.maintenance4 == c.VK_FALSE) {
-        log.cardinal_log_error("[DEVICE] Required Vulkan 1.3 features not supported", .{});
+        vk_log.err("[DEVICE] Required Vulkan 1.3 features not supported", .{});
         return false;
     }
 
     if (maintenance8_available) {
         maintenance8Features.maintenance8 = c.VK_TRUE;
-        log.cardinal_log_info("[DEVICE] VK_KHR_maintenance8 features enabled", .{});
+        vk_log.info("[DEVICE] VK_KHR_maintenance8 features enabled", .{});
     }
 
     if (mesh_shader_available) {
@@ -621,9 +660,9 @@ pub export fn vk_create_device(s: ?*types.VulkanState) callconv(.c) bool {
         fragmentShadingRateFeatures.primitiveFragmentShadingRate = c.VK_TRUE;
         meshShaderFeatures.meshShader = c.VK_TRUE;
         if (meshShaderFeatures.taskShader == c.VK_TRUE) {
-            log.cardinal_log_info("[DEVICE] VK_EXT_mesh_shader features enabled: meshShader + taskShader", .{});
+            vk_log.info("[DEVICE] VK_EXT_mesh_shader features enabled: meshShader + taskShader", .{});
         } else {
-            log.cardinal_log_info("[DEVICE] VK_EXT_mesh_shader features enabled: meshShader only", .{});
+            vk_log.info("[DEVICE] VK_EXT_mesh_shader features enabled: meshShader only", .{});
         }
     }
 
@@ -636,33 +675,33 @@ pub export fn vk_create_device(s: ?*types.VulkanState) callconv(.c) bool {
         vulkan12Features.shaderUniformBufferArrayNonUniformIndexing = c.VK_TRUE;
         vulkan12Features.shaderStorageBufferArrayNonUniformIndexing = c.VK_TRUE;
         vulkan12Features.shaderStorageImageArrayNonUniformIndexing = c.VK_TRUE;
-        log.cardinal_log_info("[DEVICE] VK_EXT_descriptor_indexing features enabled", .{});
+        vk_log.info("[DEVICE] VK_EXT_descriptor_indexing features enabled", .{});
     }
 
     if (descriptor_buffer_available) {
         descriptorBufferFeatures.descriptorBuffer = c.VK_TRUE;
         if (descriptorBufferFeatures.descriptorBufferImageLayoutIgnored == c.VK_TRUE) {
-            log.cardinal_log_info("[DEVICE] VK_EXT_descriptor_buffer: descriptorBuffer + descriptorBufferImageLayoutIgnored", .{});
+            vk_log.info("[DEVICE] VK_EXT_descriptor_buffer: descriptorBuffer + descriptorBufferImageLayoutIgnored", .{});
         } else {
-            log.cardinal_log_info("[DEVICE] VK_EXT_descriptor_buffer: descriptorBuffer only", .{});
+            vk_log.info("[DEVICE] VK_EXT_descriptor_buffer: descriptorBuffer only", .{});
         }
         if (descriptorBufferFeatures.descriptorBufferPushDescriptors == c.VK_TRUE) {
-            log.cardinal_log_info("[DEVICE] VK_EXT_descriptor_buffer push descriptors enabled", .{});
+            vk_log.info("[DEVICE] VK_EXT_descriptor_buffer push descriptors enabled", .{});
         }
     }
 
     if (shader_quad_control_available) {
         shaderQuadControlFeatures.shaderQuadControl = c.VK_TRUE;
-        log.cardinal_log_info("[DEVICE] VK_KHR_shader_quad_control features enabled", .{});
+        vk_log.info("[DEVICE] VK_KHR_shader_quad_control features enabled", .{});
     }
 
     if (shader_maximal_reconvergence_available) {
         shaderMaximalReconvergenceFeatures.shaderMaximalReconvergence = c.VK_TRUE;
-        log.cardinal_log_info("[DEVICE] VK_KHR_shader_maximal_reconvergence features enabled", .{});
+        vk_log.info("[DEVICE] VK_KHR_shader_maximal_reconvergence features enabled", .{});
     }
 
     if (vulkan12Features.bufferDeviceAddress == c.VK_FALSE) {
-        log.cardinal_log_error("[DEVICE] bufferDeviceAddress is required but not supported", .{});
+        vk_log.err("[DEVICE] bufferDeviceAddress is required but not supported", .{});
         return false;
     }
     vulkan12Features.bufferDeviceAddress = c.VK_TRUE;
@@ -671,10 +710,10 @@ pub export fn vk_create_device(s: ?*types.VulkanState) callconv(.c) bool {
     vulkan13Features.synchronization2 = c.VK_TRUE;
     vulkan13Features.maintenance4 = c.VK_TRUE;
 
-    if (vulkan14Features.globalPriorityQuery == c.VK_TRUE) log.cardinal_log_info("[DEVICE] Vulkan 1.4 globalPriorityQuery: enabled", .{});
-    if (vulkan14Features.shaderSubgroupRotate == c.VK_TRUE) log.cardinal_log_info("[DEVICE] Vulkan 1.4 shaderSubgroupRotate: enabled", .{});
-    if (vulkan14Features.shaderFloatControls2 == c.VK_TRUE) log.cardinal_log_info("[DEVICE] Vulkan 1.4 shaderFloatControls2: enabled", .{});
-    if (vulkan14Features.shaderExpectAssume == c.VK_TRUE) log.cardinal_log_info("[DEVICE] Vulkan 1.4 shaderExpectAssume: enabled", .{});
+    if (vulkan14Features.globalPriorityQuery == c.VK_TRUE) vk_log.info("[DEVICE] Vulkan 1.4 globalPriorityQuery: enabled", .{});
+    if (vulkan14Features.shaderSubgroupRotate == c.VK_TRUE) vk_log.info("[DEVICE] Vulkan 1.4 shaderSubgroupRotate: enabled", .{});
+    if (vulkan14Features.shaderFloatControls2 == c.VK_TRUE) vk_log.info("[DEVICE] Vulkan 1.4 shaderFloatControls2: enabled", .{});
+    if (vulkan14Features.shaderExpectAssume == c.VK_TRUE) vk_log.info("[DEVICE] Vulkan 1.4 shaderExpectAssume: enabled", .{});
 
     deviceFeatures2.pNext = &vulkan12Features;
 
@@ -686,14 +725,14 @@ pub export fn vk_create_device(s: ?*types.VulkanState) callconv(.c) bool {
     dci.ppEnabledExtensionNames = &device_extensions;
     dci.pNext = &deviceFeatures2;
 
-    log.cardinal_log_info("[DEVICE] Enabling {d} device extension(s)", .{dci.enabledExtensionCount});
+    vk_log.info("[DEVICE] Enabling {d} device extension(s)", .{dci.enabledExtensionCount});
     i = 0;
     while (i < dci.enabledExtensionCount) : (i += 1) {
-        log.cardinal_log_info("[DEVICE] Device extension {d}: {s}", .{ i, std.mem.span(device_extensions[i]) });
+        vk_log.info("[DEVICE] Device extension {d}: {s}", .{ i, std.mem.span(device_extensions[i]) });
     }
 
     const result = c.vkCreateDevice(vs.context.physical_device, &dci, null, &vs.context.device);
-    log.cardinal_log_info("[DEVICE] Device creation result: {d}", .{result});
+    vk_log.info("[DEVICE] Device creation result: {d}", .{result});
 
     if (result != c.VK_SUCCESS) {
         return false;
@@ -774,17 +813,17 @@ pub export fn vk_create_device(s: ?*types.VulkanState) callconv(.c) bool {
         vs.context.supports_descriptor_buffer = false;
     }
 
-    if (!vk_allocator.vk_allocator_init(&vs.allocator, vs.context.instance, vs.context.physical_device, vs.context.device, vs.context.vkGetDeviceBufferMemoryRequirements, vs.context.vkGetDeviceImageMemoryRequirements, vs.context.vkGetBufferDeviceAddress, vs.context.vkGetDeviceBufferMemoryRequirementsKHR, vs.context.vkGetDeviceImageMemoryRequirementsKHR, vs.context.supports_maintenance8)) {
-        log.cardinal_log_error("[DEVICE] Failed to initialize VulkanAllocator", .{});
+    if (!vk_allocator.init(&vs.allocator, vs.context.instance, vs.context.physical_device, vs.context.device, vs.context.vkGetDeviceBufferMemoryRequirements, vs.context.vkGetDeviceImageMemoryRequirements, vs.context.vkGetBufferDeviceAddress, vs.context.vkGetDeviceBufferMemoryRequirementsKHR, vs.context.vkGetDeviceImageMemoryRequirementsKHR, vs.context.supports_maintenance8)) {
+        vk_log.err("[DEVICE] Failed to initialize VulkanAllocator", .{});
         return false;
     }
 
-    log.cardinal_log_info("[DEVICE] VulkanAllocator initialized", .{});
+    vk_log.info("[DEVICE] VulkanAllocator initialized", .{});
     return true;
 }
 
 pub export fn vk_create_surface(s: ?*types.VulkanState, win: ?*window.CardinalWindow) callconv(.c) bool {
-    log.cardinal_log_info("[SURFACE] Creating surface from window", .{});
+    vk_log.info("[SURFACE] Creating surface from window", .{});
     if (s == null or win == null) return false;
     const vs = s.?;
 
@@ -800,12 +839,12 @@ pub export fn vk_create_surface(s: ?*types.VulkanState, win: ?*window.CardinalWi
     hwnd_ptr.* = @intFromPtr(native_handle);
 
     const result = c.vkCreateWin32SurfaceKHR(vs.context.instance, &sci, null, &vs.context.surface);
-    log.cardinal_log_info("[SURFACE] Surface create result: {d}", .{result});
+    vk_log.info("[SURFACE] Surface create result: {d}", .{result});
     return result == c.VK_SUCCESS;
 }
 
 pub export fn vk_destroy_device_objects(s: ?*types.VulkanState) callconv(.c) void {
-    log.cardinal_log_info("[DESTROY] Destroying device objects and cleanup", .{});
+    vk_log.info("[DESTROY] Destroying device objects and cleanup", .{});
     if (s == null) return;
     const vs = s.?;
 
@@ -813,7 +852,7 @@ pub export fn vk_destroy_device_objects(s: ?*types.VulkanState) callconv(.c) voi
         _ = c.vkDeviceWaitIdle(vs.context.device);
     }
 
-    vk_allocator.vk_allocator_shutdown(&vs.allocator);
+    vk_allocator.shutdown(&vs.allocator);
 
     if (vs.context.device != null) {
         c.vkDestroyDevice(vs.context.device, null);
@@ -861,6 +900,6 @@ pub export fn vk_recreate_debug_messenger(s: ?*types.VulkanState) callconv(.c) v
         ci.pfnUserCallback = debug_callback;
 
         const r = func(vs.context.instance, &ci, null, &vs.context.debug_messenger);
-        log.cardinal_log_info("[INSTANCE] Recreated debug messenger (result={d})", .{r});
+        vk_log.info("[INSTANCE] Recreated debug messenger (result={d})", .{r});
     }
 }

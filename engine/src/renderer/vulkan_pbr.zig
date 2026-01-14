@@ -23,13 +23,15 @@ const animation = @import("../core/animation.zig");
 
 const c = @import("vulkan_c.zig").c;
 
+const pbr_log = log.ScopedLogger("PBR");
+
 // Helper functions
 
 fn create_pbr_descriptor_manager(pipeline: *types.VulkanPBRPipeline, device: c.VkDevice, allocator: *types.VulkanAllocator, vulkan_state: ?*types.VulkanState, bindings_map: *std.AutoHashMap(u32, c.VkDescriptorSetLayoutBinding)) bool {
     const mem_alloc = memory.cardinal_get_allocator_for_category(.RENDERER);
     const ptr = memory.cardinal_alloc(mem_alloc, @sizeOf(types.VulkanDescriptorManager));
     if (ptr == null) {
-        log.cardinal_log_error("Failed to allocate memory for descriptor manager", .{});
+        pbr_log.err("Failed to allocate memory for descriptor manager", .{});
         return false;
     }
     pipeline.descriptorManager = @as(*types.VulkanDescriptorManager, @ptrCast(@alignCast(ptr)));
@@ -50,17 +52,17 @@ fn create_pbr_descriptor_manager(pipeline: *types.VulkanPBRPipeline, device: c.V
     }
 
     if (!bindings_added) {
-        log.cardinal_log_error("Failed to add bindings to descriptor builder", .{});
+        pbr_log.err("Failed to add bindings to descriptor builder", .{});
         memory.cardinal_free(mem_alloc, pipeline.descriptorManager);
         pipeline.descriptorManager = null;
         return false;
     }
 
     const prefer_descriptor_buffers = true;
-    log.cardinal_log_info("Creating PBR descriptor manager with {d} max sets (prefer buffers: {s})", .{ types.MAX_FRAMES_IN_FLIGHT, if (prefer_descriptor_buffers) "true" else "false" });
+    pbr_log.info("Creating PBR descriptor manager with {d} max sets (prefer buffers: {s})", .{ types.MAX_FRAMES_IN_FLIGHT, if (prefer_descriptor_buffers) "true" else "false" });
 
     if (!builder.build(pipeline.descriptorManager.?, device, @ptrCast(allocator), @ptrCast(vulkan_state), types.MAX_FRAMES_IN_FLIGHT, prefer_descriptor_buffers)) {
-        log.cardinal_log_error("Failed to create descriptor manager!", .{});
+        pbr_log.err("Failed to create descriptor manager!", .{});
         memory.cardinal_free(mem_alloc, pipeline.descriptorManager);
         pipeline.descriptorManager = null;
         return false;
@@ -69,7 +71,10 @@ fn create_pbr_descriptor_manager(pipeline: *types.VulkanPBRPipeline, device: c.V
     // Allocate sets immediately
     var sets: [types.MAX_FRAMES_IN_FLIGHT]c.VkDescriptorSet = undefined;
     if (!descriptor_mgr.vk_descriptor_manager_allocate_sets(pipeline.descriptorManager, types.MAX_FRAMES_IN_FLIGHT, &sets)) {
-        log.cardinal_log_error("Failed to allocate descriptor sets", .{});
+        pbr_log.err("Failed to allocate descriptor sets", .{});
+        descriptor_mgr.vk_descriptor_manager_destroy(pipeline.descriptorManager);
+        memory.cardinal_free(mem_alloc, pipeline.descriptorManager);
+        pipeline.descriptorManager = null;
         return false;
     }
 
@@ -80,7 +85,7 @@ fn create_pbr_texture_manager(pipeline: *types.VulkanPBRPipeline, device: c.VkDe
     const mem_alloc = memory.cardinal_get_allocator_for_category(.RENDERER);
     const ptr = memory.cardinal_alloc(mem_alloc, @sizeOf(types.VulkanTextureManager));
     if (ptr == null) {
-        log.cardinal_log_error("Failed to allocate texture manager for PBR pipeline", .{});
+        pbr_log.err("Failed to allocate texture manager for PBR pipeline", .{});
         return false;
     }
     pipeline.textureManager = @as(*types.VulkanTextureManager, @ptrCast(@alignCast(ptr)));
@@ -102,7 +107,7 @@ fn create_pbr_texture_manager(pipeline: *types.VulkanPBRPipeline, device: c.VkDe
     textureConfig.initialCapacity = 16;
 
     if (!vk_texture_mgr.vk_texture_manager_init(pipeline.textureManager.?, &textureConfig)) {
-        log.cardinal_log_error("Failed to initialize texture manager for PBR pipeline", .{});
+        pbr_log.err("Failed to initialize texture manager for PBR pipeline", .{});
         memory.cardinal_free(mem_alloc, pipeline.textureManager);
         pipeline.textureManager = null;
         return false;
@@ -116,18 +121,18 @@ fn create_pbr_pipeline_layout(pipeline: *types.VulkanPBRPipeline, device: c.VkDe
     var layoutCount: u32 = 1;
 
     if (pipeline.textureManager != null) {
-        log.cardinal_log_info("PBR: Checking bindless pool...", .{});
+        pbr_log.info("Checking bindless pool...", .{});
         // Always try to use bindless layout if pool is valid, even if no textures yet
         const bindlessLayout = vk_descriptor_indexing.vk_bindless_texture_get_layout(&pipeline.textureManager.?.bindless_pool);
         if (bindlessLayout != null) {
-            log.cardinal_log_info("PBR: Bindless layout found and added to pipeline layout at index 1. Handle: 0x{x}", .{@intFromPtr(bindlessLayout)});
+            pbr_log.info("Bindless layout found and added to pipeline layout at index 1. Handle: 0x{x}", .{@intFromPtr(bindlessLayout)});
             descriptorLayouts[1] = bindlessLayout;
             layoutCount = 2;
         } else {
-            log.cardinal_log_error("PBR: Bindless pool exists but layout is NULL!", .{});
+            pbr_log.err("Bindless pool exists but layout is NULL!", .{});
         }
     } else {
-        log.cardinal_log_error("PBR: Texture manager is NULL, cannot add bindless layout!", .{});
+        pbr_log.err("Texture manager is NULL, cannot add bindless layout!", .{});
     }
 
     const device_wrapper = wrappers.Device.init(device);
@@ -135,7 +140,7 @@ fn create_pbr_pipeline_layout(pipeline: *types.VulkanPBRPipeline, device: c.VkDe
     const pushConstantRanges = [_]c.VkPushConstantRange{pushConstantRange.*};
 
     pipeline.pipelineLayout = device_wrapper.createPipelineLayout(setLayouts, &pushConstantRanges) catch |err| {
-        log.cardinal_log_error("Failed to create PBR pipeline layout: {s}", .{@errorName(err)});
+        pbr_log.err("Failed to create PBR pipeline layout: {s}", .{@errorName(err)});
         return false;
     };
     return true;
@@ -146,7 +151,7 @@ fn create_pbr_graphics_pipeline(pipeline: *types.VulkanPBRPipeline, device: c.Vk
     var builder = vk_pso.PipelineBuilder.init(renderer_allocator, device, pipelineCache);
 
     var parsed = vk_pso.PipelineBuilder.load_from_json(renderer_allocator, json_path) catch |err| {
-        log.cardinal_log_error("Failed to load pipeline JSON '{s}': {s}", .{ json_path, @errorName(err) });
+        pbr_log.err("Failed to load pipeline JSON '{s}': {s}", .{ json_path, @errorName(err) });
         return false;
     };
     defer parsed.deinit();
@@ -293,7 +298,7 @@ fn create_pbr_mesh_buffers(pipeline: *types.VulkanPBRPipeline, device: c.VkDevic
     }
 
     if (totalVertices == 0) {
-        log.cardinal_log_warn("Scene has no vertices", .{});
+        pbr_log.warn("Scene has no vertices", .{});
         return true;
     }
 
@@ -302,7 +307,7 @@ fn create_pbr_mesh_buffers(pipeline: *types.VulkanPBRPipeline, device: c.VkDevic
     const mem_alloc = memory.cardinal_get_allocator_for_category(.RENDERER);
     const vertexData = memory.cardinal_alloc(mem_alloc, vertexBufferSize);
     if (vertexData == null) {
-        log.cardinal_log_error("Failed to allocate memory for vertex data", .{});
+        pbr_log.err("Failed to allocate memory for vertex data", .{});
         return false;
     }
     defer memory.cardinal_free(mem_alloc, vertexData);
@@ -321,11 +326,11 @@ fn create_pbr_mesh_buffers(pipeline: *types.VulkanPBRPipeline, device: c.VkDevic
 
     // Create vertex buffer using staging buffer
     if (!buffer_utils.vk_buffer_create_with_staging(allocator, device, commandPool, graphicsQueue, vertexData, vertexBufferSize, c.VK_BUFFER_USAGE_VERTEX_BUFFER_BIT, &pipeline.vertexBuffer, &pipeline.vertexBufferMemory, &pipeline.vertexBufferAllocation, vulkan_state)) {
-        log.cardinal_log_error("Failed to create PBR vertex buffer with staging", .{});
+        pbr_log.err("Failed to create vertex buffer with staging", .{});
         return false;
     }
 
-    log.cardinal_log_debug("Vertex buffer created with staging: {d} vertices", .{totalVertices});
+    pbr_log.debug("Vertex buffer created with staging: {d} vertices", .{totalVertices});
 
     // Create index buffer if we have indices
     if (totalIndices > 0) {
@@ -333,7 +338,7 @@ fn create_pbr_mesh_buffers(pipeline: *types.VulkanPBRPipeline, device: c.VkDevic
 
         const indexData = memory.cardinal_alloc(mem_alloc, indexBufferSize);
         if (indexData == null) {
-            log.cardinal_log_error("Failed to allocate memory for index data", .{});
+            pbr_log.err("Failed to allocate memory for index data", .{});
             return false;
         }
         defer memory.cardinal_free(mem_alloc, indexData);
@@ -357,12 +362,12 @@ fn create_pbr_mesh_buffers(pipeline: *types.VulkanPBRPipeline, device: c.VkDevic
 
         // Create index buffer using staging buffer
         if (!buffer_utils.vk_buffer_create_with_staging(allocator, device, commandPool, graphicsQueue, indexData, indexBufferSize, c.VK_BUFFER_USAGE_INDEX_BUFFER_BIT, &pipeline.indexBuffer, &pipeline.indexBufferMemory, &pipeline.indexBufferAllocation, vulkan_state)) {
-            log.cardinal_log_error("Failed to create PBR index buffer with staging", .{});
+            pbr_log.err("Failed to create index buffer with staging", .{});
             return false;
         }
 
         pipeline.totalIndexCount = totalIndices;
-        log.cardinal_log_debug("Index buffer created with staging: {d} indices", .{totalIndices});
+        pbr_log.debug("Index buffer created with staging: {d} indices", .{totalIndices});
     }
 
     return true;
@@ -385,13 +390,13 @@ fn update_pbr_descriptor_sets(pipeline: *types.VulkanPBRPipeline, vulkan_state: 
 
         // Update uniform buffer (binding 0)
         if (!descriptor_mgr.vk_descriptor_manager_update_buffer(dm, set, 0, pipeline.uniformBuffers[i], 0, @sizeOf(types.PBRUniformBufferObject))) {
-            log.cardinal_log_error("Failed to update uniform buffer descriptor", .{});
+            pbr_log.err("Failed to update uniform buffer descriptor", .{});
             return false;
         }
 
         // Update bone matrices buffer (binding 6)
         if (!descriptor_mgr.vk_descriptor_manager_update_buffer(dm, set, 6, pipeline.boneMatricesBuffers[i], 0, @sizeOf(f32) * 16 * pipeline.maxBones)) {
-            log.cardinal_log_error("Failed to update bone matrices buffer descriptor", .{});
+            pbr_log.err("Failed to update bone matrices buffer descriptor", .{});
             return false;
         }
 
@@ -410,21 +415,21 @@ fn update_pbr_descriptor_sets(pipeline: *types.VulkanPBRPipeline, vulkan_state: 
                 pipeline.textureManager.?.defaultSampler;
 
             if (!descriptor_mgr.vk_descriptor_manager_update_image(dm, set, b, placeholderView, placeholderSampler, c.VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL)) {
-                log.cardinal_log_error("Failed to update image descriptor for binding {d}", .{b});
+                pbr_log.err("Failed to update image descriptor for binding {d}", .{b});
                 return false;
             }
         }
 
         // Update lighting buffer (binding 8)
         if (!descriptor_mgr.vk_descriptor_manager_update_buffer(dm, set, 8, pipeline.lightingBuffers[i], 0, @sizeOf(types.PBRLightingBuffer))) {
-            log.cardinal_log_error("Failed to update lighting buffer descriptor", .{});
+            pbr_log.err("Failed to update lighting buffer descriptor", .{});
             return false;
         }
 
         // Update Shadow Map (Binding 7)
         if (pipeline.shadowMapView != null) {
             if (!descriptor_mgr.vk_descriptor_manager_update_image(dm, set, 7, pipeline.shadowMapView, pipeline.shadowMapSampler, c.VK_IMAGE_LAYOUT_DEPTH_STENCIL_READ_ONLY_OPTIMAL)) {
-                log.cardinal_log_error("Failed to update shadow map descriptor", .{});
+                pbr_log.err("Failed to update shadow map descriptor", .{});
                 return false;
             }
         }
@@ -434,7 +439,7 @@ fn update_pbr_descriptor_sets(pipeline: *types.VulkanPBRPipeline, vulkan_state: 
         const cascade_count = @min(vulkan_state.?.config.shadow_cascade_count, types.MAX_SHADOW_CASCADES);
         const shadowUBOSize = @sizeOf(math.Mat4) * @as(u64, cascade_count) + @sizeOf(f32) * 4;
         if (!descriptor_mgr.vk_descriptor_manager_update_buffer(dm, set, 9, pipeline.shadowUBOs[i], 0, shadowUBOSize)) {
-            log.cardinal_log_error("Failed to update shadow UBO descriptor", .{});
+            pbr_log.err("Failed to update shadow UBO descriptor", .{});
             return false;
         }
     }
@@ -448,16 +453,16 @@ pub export fn vk_pbr_load_scene(pipeline: ?*types.VulkanPBRPipeline, device: c.V
     _ = physicalDevice;
 
     if (pipeline == null or !pipeline.?.initialized) {
-        log.cardinal_log_warn("PBR pipeline not initialized", .{});
+        pbr_log.warn("Pipeline not initialized", .{});
         return true;
     }
     const pipe = pipeline.?;
     const alloc = allocator.?;
 
     if (scene_data) |scn| {
-        log.cardinal_log_info("Loading PBR scene: {d} meshes", .{scn.mesh_count});
+        pbr_log.info("Loading scene: {d} meshes", .{scn.mesh_count});
     } else {
-        log.cardinal_log_info("Clearing PBR scene (null scene)", .{});
+        pbr_log.info("Clearing scene (null scene)", .{});
     }
 
     // Clean up previous buffers if they exist (after ensuring GPU idle)
@@ -468,13 +473,13 @@ pub export fn vk_pbr_load_scene(pipeline: ?*types.VulkanPBRPipeline, device: c.V
     }
 
     if (pipe.vertexBuffer != null or pipe.vertexBufferMemory != null) {
-        vk_allocator.vk_allocator_free_buffer(alloc, pipe.vertexBuffer, pipe.vertexBufferAllocation);
+        vk_allocator.free_buffer(alloc, pipe.vertexBuffer, pipe.vertexBufferAllocation);
         pipe.vertexBuffer = null;
         pipe.vertexBufferMemory = null;
         pipe.vertexBufferAllocation = null;
     }
     if (pipe.indexBuffer != null or pipe.indexBufferMemory != null) {
-        vk_allocator.vk_allocator_free_buffer(alloc, pipe.indexBuffer, pipe.indexBufferAllocation);
+        vk_allocator.free_buffer(alloc, pipe.indexBuffer, pipe.indexBufferAllocation);
         pipe.indexBuffer = null;
         pipe.indexBufferMemory = null;
         pipe.indexBufferAllocation = null;
@@ -486,7 +491,7 @@ pub export fn vk_pbr_load_scene(pipeline: ?*types.VulkanPBRPipeline, device: c.V
     const scn = scene_data.?;
 
     if (scn.mesh_count == 0) {
-        log.cardinal_log_info("PBR scene cleared (no meshes)", .{});
+        pbr_log.info("Scene cleared (no meshes)", .{});
         return true;
     }
 
@@ -500,12 +505,12 @@ pub export fn vk_pbr_load_scene(pipeline: ?*types.VulkanPBRPipeline, device: c.V
 
     // Load scene textures using texture manager
     if (!vk_texture_mgr.vk_texture_manager_load_scene_textures(pipe.textureManager.?, scn)) {
-        log.cardinal_log_error("Failed to load scene textures using texture manager", .{});
+        pbr_log.err("Failed to load scene textures using texture manager", .{});
         return false;
     }
 
     if (pipe.textureManager != null) {
-        log.cardinal_log_info("Loaded {d} textures using texture manager", .{pipe.textureManager.?.textureCount});
+        pbr_log.info("Loaded {d} textures using texture manager", .{pipe.textureManager.?.textureCount});
     }
 
     // Reset descriptor pool to reclaim sets from previous scene loads
@@ -517,14 +522,14 @@ pub export fn vk_pbr_load_scene(pipeline: ?*types.VulkanPBRPipeline, device: c.V
     const dm = @as(*types.VulkanDescriptorManager, @ptrCast(pipe.descriptorManager));
 
     if (!descriptor_mgr.vk_descriptor_manager_allocate(dm)) {
-        log.cardinal_log_error("Failed to allocate descriptor set", .{});
+        pbr_log.err("Failed to allocate descriptor set", .{});
         return false;
     }
 
     // Wait for graphics queue to complete before updating descriptor sets
     const result = c.vkQueueWaitIdle(graphicsQueue);
     if (result != c.VK_SUCCESS) {
-        log.cardinal_log_warn("Graphics queue wait idle failed before descriptor update: {d}", .{result});
+        pbr_log.warn("Graphics queue wait idle failed before descriptor update: {d}", .{result});
         return false;
     }
 
@@ -533,7 +538,7 @@ pub export fn vk_pbr_load_scene(pipeline: ?*types.VulkanPBRPipeline, device: c.V
         return false;
     }
 
-    log.cardinal_log_info("PBR scene loaded successfully", .{});
+    pbr_log.info("Scene loaded successfully", .{});
     return true;
 }
 
@@ -564,7 +569,7 @@ fn create_shadow_resources(pipeline: *types.VulkanPBRPipeline, device: c.VkDevic
     allocInfo.flags = c.VMA_ALLOCATION_CREATE_DEDICATED_MEMORY_BIT;
 
     if (c.vmaCreateImage(allocator.handle, &imageInfo, &allocInfo, &pipeline.shadowMapImage, &pipeline.shadowMapAllocation, null) != c.VK_SUCCESS) {
-        log.cardinal_log_error("Failed to create shadow map image", .{});
+        pbr_log.err("Failed to create shadow map image", .{});
         return false;
     }
 
@@ -581,7 +586,7 @@ fn create_shadow_resources(pipeline: *types.VulkanPBRPipeline, device: c.VkDevic
     viewInfo.subresourceRange.layerCount = shadow_cascade_count;
 
     if (c.vkCreateImageView(device, &viewInfo, null, &pipeline.shadowMapView) != c.VK_SUCCESS) {
-        log.cardinal_log_error("Failed to create shadow map view", .{});
+        pbr_log.err("Failed to create shadow map view", .{});
         return false;
     }
 
@@ -591,7 +596,7 @@ fn create_shadow_resources(pipeline: *types.VulkanPBRPipeline, device: c.VkDevic
         viewInfo.subresourceRange.baseArrayLayer = cascade_idx;
         viewInfo.subresourceRange.layerCount = 1;
         if (c.vkCreateImageView(device, &viewInfo, null, &pipeline.shadowCascadeViews[cascade_idx]) != c.VK_SUCCESS) {
-            log.cardinal_log_error("Failed to create shadow cascade view {d}", .{cascade_idx});
+            pbr_log.err("Failed to create shadow cascade view {d}", .{cascade_idx});
             return false;
         }
     }
@@ -610,7 +615,7 @@ fn create_shadow_resources(pipeline: *types.VulkanPBRPipeline, device: c.VkDevic
     samplerInfo.compareOp = c.VK_COMPARE_OP_LESS;
 
     if (c.vkCreateSampler(device, &samplerInfo, null, &pipeline.shadowMapSampler) != c.VK_SUCCESS) {
-        log.cardinal_log_error("Failed to create shadow map sampler", .{});
+        pbr_log.err("Failed to create shadow map sampler", .{});
         return false;
     }
 
@@ -641,7 +646,7 @@ fn create_shadow_pipeline(pipeline: *types.VulkanPBRPipeline, device: c.VkDevice
     const mem_alloc = memory.cardinal_get_allocator_for_category(.RENDERER);
     const ptr = memory.cardinal_alloc(mem_alloc, @sizeOf(types.VulkanDescriptorManager));
     if (ptr == null) {
-        log.cardinal_log_error("Failed to allocate memory for shadow descriptor manager", .{});
+        pbr_log.err("Failed to allocate memory for shadow descriptor manager", .{});
         return false;
     }
     pipeline.shadowDescriptorManager = @as(*types.VulkanDescriptorManager, @ptrCast(@alignCast(ptr)));
@@ -656,13 +661,13 @@ fn create_shadow_pipeline(pipeline: *types.VulkanPBRPipeline, device: c.VkDevice
     desc_builder.add_binding(6, c.VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, 1, c.VK_SHADER_STAGE_VERTEX_BIT) catch return false;
 
     if (!desc_builder.build(pipeline.shadowDescriptorManager.?, device, allocator, vulkan_state, types.MAX_FRAMES_IN_FLIGHT, true)) {
-        log.cardinal_log_error("Failed to build shadow descriptor manager", .{});
+        pbr_log.err("Failed to build shadow descriptor manager", .{});
         return false;
     }
 
     // Allocate Sets
     if (!descriptor_mgr.vk_descriptor_manager_allocate_sets(pipeline.shadowDescriptorManager, types.MAX_FRAMES_IN_FLIGHT, &pipeline.shadowDescriptorSets)) {
-        log.cardinal_log_error("Failed to allocate shadow descriptor sets", .{});
+        pbr_log.err("Failed to allocate shadow descriptor sets", .{});
         return false;
     }
 
@@ -673,13 +678,13 @@ fn create_shadow_pipeline(pipeline: *types.VulkanPBRPipeline, device: c.VkDevice
         const cascade_count = @min(vulkan_state.?.config.shadow_cascade_count, types.MAX_SHADOW_CASCADES);
         const shadowUBOSize = @sizeOf(math.Mat4) * @as(u64, cascade_count) + @sizeOf(f32) * 4;
         if (!descriptor_mgr.vk_descriptor_manager_update_buffer(pipeline.shadowDescriptorManager, pipeline.shadowDescriptorSets[i], 0, pipeline.shadowUBOs[i], 0, shadowUBOSize)) {
-            log.cardinal_log_error("Failed to update shadow UBO descriptor", .{});
+            pbr_log.err("Failed to update shadow UBO descriptor", .{});
             return false;
         }
 
         // Binding 6
         if (!descriptor_mgr.vk_descriptor_manager_update_buffer(pipeline.shadowDescriptorManager, pipeline.shadowDescriptorSets[i], 6, pipeline.boneMatricesBuffers[i], 0, pipeline.maxBones * 16 * @sizeOf(f32))) {
-            log.cardinal_log_error("Failed to update bone matrices descriptor", .{});
+            pbr_log.err("Failed to update bone matrices descriptor", .{});
             return false;
         }
     }
@@ -712,7 +717,7 @@ fn create_shadow_pipeline(pipeline: *types.VulkanPBRPipeline, device: c.VkDevice
     pipelineLayoutInfo.pPushConstantRanges = &pushConstantRange;
 
     if (c.vkCreatePipelineLayout(device, &pipelineLayoutInfo, null, &pipeline.shadowPipelineLayout) != c.VK_SUCCESS) {
-        log.cardinal_log_error("Failed to create shadow pipeline layout", .{});
+        pbr_log.err("Failed to create shadow pipeline layout", .{});
         return false;
     }
 
@@ -724,7 +729,7 @@ fn create_shadow_pipeline(pipeline: *types.VulkanPBRPipeline, device: c.VkDevice
     defer renderer_allocator.free(shadow_path);
 
     var parsed = vk_pso.PipelineBuilder.load_from_json(renderer_allocator, shadow_path) catch |err| {
-        log.cardinal_log_error("Failed to load shadow pipeline JSON: {s}", .{@errorName(err)});
+        pbr_log.err("Failed to load shadow pipeline JSON: {s}", .{@errorName(err)});
         return false;
     };
     defer parsed.deinit();
@@ -746,7 +751,7 @@ fn create_shadow_pipeline(pipeline: *types.VulkanPBRPipeline, device: c.VkDevice
     }
 
     builder.build(descriptor, pipeline.shadowPipelineLayout, &pipeline.shadowPipeline) catch |err| {
-        log.cardinal_log_error("Failed to build shadow pipeline: {s}", .{@errorName(err)});
+        pbr_log.err("Failed to build shadow pipeline: {s}", .{@errorName(err)});
         return false;
     };
 
@@ -755,7 +760,7 @@ fn create_shadow_pipeline(pipeline: *types.VulkanPBRPipeline, device: c.VkDevice
     defer renderer_allocator.free(shadow_alpha_path);
 
     var parsedAlpha = vk_pso.PipelineBuilder.load_from_json(renderer_allocator, shadow_alpha_path) catch |err| {
-        log.cardinal_log_error("Failed to load shadow alpha pipeline JSON: {s}", .{@errorName(err)});
+        pbr_log.err("Failed to load shadow alpha pipeline JSON: {s}", .{@errorName(err)});
         // Don't fail completely, just skip alpha shadows
         return true;
     };
@@ -777,7 +782,7 @@ fn create_shadow_pipeline(pipeline: *types.VulkanPBRPipeline, device: c.VkDevice
     }
 
     builder.build(descAlpha, pipeline.shadowPipelineLayout, &pipeline.shadowAlphaPipeline) catch |err| {
-        log.cardinal_log_error("Failed to build shadow alpha pipeline: {s}", .{@errorName(err)});
+        pbr_log.err("Failed to build shadow alpha pipeline: {s}", .{@errorName(err)});
         // Don't fail completely
     };
 
@@ -790,14 +795,14 @@ pub export fn vk_pbr_pipeline_create(pipeline: ?*types.VulkanPBRPipeline, device
     const pipe = pipeline.?;
     const alloc = allocator.?;
 
-    log.cardinal_log_debug("Starting PBR pipeline creation", .{});
+    pbr_log.debug("Starting PBR pipeline creation", .{});
 
     @memset(@as([*]u8, @ptrCast(pipe))[0..@sizeOf(types.VulkanPBRPipeline)], 0);
 
     pipe.supportsDescriptorIndexing = true;
     pipe.totalIndexCount = 0;
 
-    log.cardinal_log_info("[PBR] Descriptor indexing support: enabled", .{});
+    pbr_log.info("Descriptor indexing support: enabled", .{});
 
     // Allocator for reflection data
     const renderer_allocator = memory.cardinal_get_allocator_for_category(.RENDERER).as_allocator();
@@ -828,17 +833,17 @@ pub export fn vk_pbr_pipeline_create(pipeline: ?*types.VulkanPBRPipeline, device
             const path_slice = std.mem.span(@as([*:0]const u8, @ptrCast(&path)));
 
             const code = shader_utils.vk_shader_read_file(allocator_ref, path_slice) catch |err| {
-                log.cardinal_log_error("Failed to read shader {s}: {s}", .{ path_slice, @errorName(err) });
+                pbr_log.err("Failed to read shader {s}: {s}", .{ path_slice, @errorName(err) });
                 return false;
             };
 
             if (!shader_utils.vk_shader_create_module_from_code(dev, code.ptr, code.len * 4, module_out)) {
-                log.cardinal_log_error("Failed to create shader module for {s}", .{path_slice});
+                pbr_log.err("Failed to create shader module for {s}", .{path_slice});
                 return false;
             }
 
             const reflect = shader_utils.reflection.reflect_shader(allocator_ref, code, stage) catch |err| {
-                log.cardinal_log_error("Failed to reflect shader {s}: {s}", .{ path_slice, @errorName(err) });
+                pbr_log.err("Failed to reflect shader {s}: {s}", .{ path_slice, @errorName(err) });
                 return false;
             };
 
@@ -897,13 +902,13 @@ pub export fn vk_pbr_pipeline_create(pipeline: ?*types.VulkanPBRPipeline, device
     if (!create_pbr_descriptor_manager(pipe, device, alloc, vulkan_state, &set0_bindings)) {
         return false;
     }
-    log.cardinal_log_debug("Descriptor manager created successfully", .{});
+    pbr_log.debug("Descriptor manager created successfully", .{});
 
     if (!create_pbr_texture_manager(pipe, device, alloc, commandPool, graphicsQueue, vulkan_state)) {
         vk_pbr_pipeline_destroy(pipeline, device, allocator);
         return false;
     }
-    log.cardinal_log_debug("Texture manager initialized successfully", .{});
+    pbr_log.debug("Texture manager initialized successfully", .{});
 
     if (!create_pbr_pipeline_layout(pipe, device, &pushConstantRange)) {
         vk_pbr_pipeline_destroy(pipeline, device, allocator);
@@ -936,7 +941,7 @@ pub export fn vk_pbr_pipeline_create(pipeline: ?*types.VulkanPBRPipeline, device
     dev.destroyShaderModule(vertShader);
     dev.destroyShaderModule(fragShader);
 
-    log.cardinal_log_debug("PBR graphics pipelines created", .{});
+    pbr_log.debug("PBR graphics pipelines created", .{});
 
     if (!create_pbr_uniform_buffers(pipe, device, alloc)) {
         vk_pbr_pipeline_destroy(pipeline, device, allocator);
@@ -945,13 +950,13 @@ pub export fn vk_pbr_pipeline_create(pipeline: ?*types.VulkanPBRPipeline, device
 
     // Initialize Shadow Maps
     if (!create_shadow_resources(pipe, device, alloc, vulkan_state)) {
-        log.cardinal_log_error("Failed to create shadow resources", .{});
+        pbr_log.err("Failed to create shadow resources", .{});
         vk_pbr_pipeline_destroy(pipeline, device, allocator);
         return false;
     }
 
     if (!create_shadow_pipeline(pipe, device, alloc, vulkan_state)) {
-        log.cardinal_log_error("Failed to create shadow pipeline", .{});
+        pbr_log.err("Failed to create shadow pipeline", .{});
         vk_pbr_pipeline_destroy(pipeline, device, allocator);
         return false;
     }
@@ -959,23 +964,23 @@ pub export fn vk_pbr_pipeline_create(pipeline: ?*types.VulkanPBRPipeline, device
     initialize_pbr_defaults(pipe, &vulkan_state.?.config);
 
     pipe.initialized = true;
-    log.cardinal_log_info("PBR pipeline created successfully", .{});
+    pbr_log.info("PBR pipeline created successfully", .{});
     return true;
 }
 
 pub export fn vk_pbr_pipeline_destroy(pipeline: ?*types.VulkanPBRPipeline, device: c.VkDevice, allocator: ?*types.VulkanAllocator) callconv(.c) void {
     if (pipeline == null) {
-        log.cardinal_log_error("vk_pbr_pipeline_destroy called with null pipeline", .{});
+        pbr_log.err("vk_pbr_pipeline_destroy called with null pipeline", .{});
         return;
     }
     if (!pipeline.?.initialized) {
-        log.cardinal_log_warn("vk_pbr_pipeline_destroy called on uninitialized pipeline (cleaning up partial resources)", .{});
+        pbr_log.warn("vk_pbr_pipeline_destroy called on uninitialized pipeline (cleaning up partial resources)", .{});
         // Continue cleanup even if not initialized, to handle partial failures
     }
     const pipe = pipeline.?;
     const alloc = allocator.?;
 
-    log.cardinal_log_debug("vk_pbr_pipeline_destroy: start", .{});
+    pbr_log.debug("vk_pbr_pipeline_destroy: start", .{});
 
     if (pipe.textureManager != null) {
         const mem_alloc = memory.cardinal_get_allocator_for_category(.RENDERER);
@@ -985,45 +990,45 @@ pub export fn vk_pbr_pipeline_destroy(pipeline: ?*types.VulkanPBRPipeline, devic
     }
 
     if (pipe.vertexBuffer != null or pipe.vertexBufferMemory != null) {
-        vk_allocator.vk_allocator_free_buffer(alloc, pipe.vertexBuffer, pipe.vertexBufferAllocation);
+        vk_allocator.free_buffer(alloc, pipe.vertexBuffer, pipe.vertexBufferAllocation);
     }
 
     if (pipe.indexBuffer != null or pipe.indexBufferMemory != null) {
-        vk_allocator.vk_allocator_free_buffer(alloc, pipe.indexBuffer, pipe.indexBufferAllocation);
+        vk_allocator.free_buffer(alloc, pipe.indexBuffer, pipe.indexBufferAllocation);
     }
 
     var frame_idx: u32 = 0;
     while (frame_idx < types.MAX_FRAMES_IN_FLIGHT) : (frame_idx += 1) {
         if (pipe.uniformBuffers[frame_idx] != null or pipe.uniformBuffersMemory[frame_idx] != null) {
             if (pipe.uniformBuffersMapped[frame_idx] != null) {
-                vk_allocator.vk_allocator_unmap_memory(alloc, pipe.uniformBuffersAllocation[frame_idx]);
+                vk_allocator.unmap_memory(alloc, pipe.uniformBuffersAllocation[frame_idx]);
                 pipe.uniformBuffersMapped[frame_idx] = null;
             }
-            vk_allocator.vk_allocator_free_buffer(alloc, pipe.uniformBuffers[frame_idx], pipe.uniformBuffersAllocation[frame_idx]);
+            vk_allocator.free_buffer(alloc, pipe.uniformBuffers[frame_idx], pipe.uniformBuffersAllocation[frame_idx]);
         }
 
         if (pipe.lightingBuffers[frame_idx] != null or pipe.lightingBuffersMemory[frame_idx] != null) {
             if (pipe.lightingBuffersMapped[frame_idx] != null) {
-                vk_allocator.vk_allocator_unmap_memory(alloc, pipe.lightingBuffersAllocation[frame_idx]);
+                vk_allocator.unmap_memory(alloc, pipe.lightingBuffersAllocation[frame_idx]);
                 pipe.lightingBuffersMapped[frame_idx] = null;
             }
-            vk_allocator.vk_allocator_free_buffer(alloc, pipe.lightingBuffers[frame_idx], pipe.lightingBuffersAllocation[frame_idx]);
+            vk_allocator.free_buffer(alloc, pipe.lightingBuffers[frame_idx], pipe.lightingBuffersAllocation[frame_idx]);
         }
 
         if (pipe.boneMatricesBuffers[frame_idx] != null or pipe.boneMatricesBuffersMemory[frame_idx] != null) {
             if (pipe.boneMatricesBuffersMapped[frame_idx] != null) {
-                vk_allocator.vk_allocator_unmap_memory(alloc, pipe.boneMatricesBuffersAllocation[frame_idx]);
+                vk_allocator.unmap_memory(alloc, pipe.boneMatricesBuffersAllocation[frame_idx]);
                 pipe.boneMatricesBuffersMapped[frame_idx] = null;
             }
-            vk_allocator.vk_allocator_free_buffer(alloc, pipe.boneMatricesBuffers[frame_idx], pipe.boneMatricesBuffersAllocation[frame_idx]);
+            vk_allocator.free_buffer(alloc, pipe.boneMatricesBuffers[frame_idx], pipe.boneMatricesBuffersAllocation[frame_idx]);
         }
 
         if (pipe.shadowUBOs[frame_idx] != null or pipe.shadowUBOsMemory[frame_idx] != null) {
             if (pipe.shadowUBOsMapped[frame_idx] != null) {
-                vk_allocator.vk_allocator_unmap_memory(alloc, pipe.shadowUBOsAllocation[frame_idx]);
+                vk_allocator.unmap_memory(alloc, pipe.shadowUBOsAllocation[frame_idx]);
                 pipe.shadowUBOsMapped[frame_idx] = null;
             }
-            vk_allocator.vk_allocator_free_buffer(alloc, pipe.shadowUBOs[frame_idx], pipe.shadowUBOsAllocation[frame_idx]);
+            vk_allocator.free_buffer(alloc, pipe.shadowUBOs[frame_idx], pipe.shadowUBOsAllocation[frame_idx]);
         }
     }
 
@@ -1072,14 +1077,14 @@ pub export fn vk_pbr_pipeline_destroy(pipeline: ?*types.VulkanPBRPipeline, devic
         c.vkDestroyImageView(device, pipe.shadowMapView, null);
     }
     if (pipe.shadowMapImage != null) {
-        vk_allocator.vk_allocator_free_image(alloc, pipe.shadowMapImage, pipe.shadowMapAllocation);
+        vk_allocator.free_image(alloc, pipe.shadowMapImage, pipe.shadowMapAllocation);
     }
     if (pipe.shadowMapSampler != null) {
         c.vkDestroySampler(device, pipe.shadowMapSampler, null);
     }
 
     @memset(@as([*]u8, @ptrCast(pipe))[0..@sizeOf(types.VulkanPBRPipeline)], 0);
-    log.cardinal_log_info("PBR pipeline destroyed", .{});
+    pbr_log.info("PBR pipeline destroyed", .{});
 }
 
 pub export fn vk_pbr_update_uniforms(pipeline: ?*types.VulkanPBRPipeline, ubo: ?*const types.PBRUniformBufferObject, lighting: ?*const types.PBRLightingBuffer, frame_index: u32) callconv(.c) void {
@@ -1109,7 +1114,7 @@ const SortItem = struct {
 
 pub export fn vk_pbr_render(pipeline: ?*types.VulkanPBRPipeline, commandBuffer: c.VkCommandBuffer, scene_data: ?*const scene.CardinalScene, frame_index: u32) callconv(.c) void {
     if (pipeline == null or !pipeline.?.initialized or scene_data == null) {
-        // log.cardinal_log_warn("vk_pbr_render skipped: pipeline or scene null", .{});
+        // pbr_log.warn("vk_pbr_render skipped: pipeline or scene null", .{});
         return;
     }
     const pipe = pipeline.?;
@@ -1118,7 +1123,7 @@ pub export fn vk_pbr_render(pipeline: ?*types.VulkanPBRPipeline, commandBuffer: 
     const frame = if (frame_index >= types.MAX_FRAMES_IN_FLIGHT) 0 else frame_index;
 
     if (pipe.vertexBuffer == null or pipe.indexBuffer == null) {
-        log.cardinal_log_warn("vk_pbr_render skipped: vertex/index buffer null", .{});
+        pbr_log.warn("vk_pbr_render skipped: vertex/index buffer null", .{});
         return;
     }
 
@@ -1154,7 +1159,7 @@ pub export fn vk_pbr_render(pipeline: ?*types.VulkanPBRPipeline, commandBuffer: 
     }
 
     if (!use_buffers and (descriptorSet == null or @intFromPtr(descriptorSet) == 0)) {
-        log.cardinal_log_error("vk_pbr_render: descriptorSet is NULL or invalid!", .{});
+        pbr_log.err("vk_pbr_render: descriptorSet is NULL or invalid!", .{});
         return;
     }
 
@@ -1278,8 +1283,6 @@ pub export fn vk_pbr_render(pipeline: ?*types.VulkanPBRPipeline, commandBuffer: 
         indexOffset += mesh.index_count;
     }
 
-    // if (drawn_count > 0) log.cardinal_log_debug("PBR Render: Drawn {d} opaque meshes", .{drawn_count});
-
     // Pass 2: Blend
     cmd.bindPipeline(c.VK_PIPELINE_BIND_POINT_GRAPHICS, pipe.pipelineBlend);
 
@@ -1373,7 +1376,9 @@ pub export fn vk_pbr_render(pipeline: ?*types.VulkanPBRPipeline, commandBuffer: 
                 const centerWorld = math.Vec3{ .x = wx, .y = wy, .z = wz };
 
                 const distSq = centerWorld.sub(camPos).lengthSq();
-                transparent_meshes.append(allocator, .{ .index = i, .distSq = distSq, .indexOffset = currentIndexOffset }) catch {};
+                transparent_meshes.append(allocator, .{ .index = i, .distSq = distSq, .indexOffset = currentIndexOffset }) catch |err| {
+                    pbr_log.err("Failed to append transparent mesh: {s}", .{@errorName(err)});
+                };
             }
         }
 

@@ -10,7 +10,7 @@ const vma_log = log.ScopedLogger("VMA");
 // (VMA copies them, but just to be safe and avoid stack issues)
 var g_vulkan_functions: c.VmaVulkanFunctions = undefined;
 
-pub export fn vk_allocator_init(alloc: ?*types.VulkanAllocator, instance: c.VkInstance, phys: c.VkPhysicalDevice, dev: c.VkDevice, bufReq: c.PFN_vkGetDeviceBufferMemoryRequirements, imgReq: c.PFN_vkGetDeviceImageMemoryRequirements, bufDevAddr: c.PFN_vkGetBufferDeviceAddress, bufReqKHR: c.PFN_vkGetDeviceBufferMemoryRequirementsKHR, imgReqKHR: c.PFN_vkGetDeviceImageMemoryRequirementsKHR, supports_maintenance8: bool) callconv(.c) bool {
+pub export fn init(alloc: ?*types.VulkanAllocator, instance: c.VkInstance, phys: c.VkPhysicalDevice, dev: c.VkDevice, bufReq: c.PFN_vkGetDeviceBufferMemoryRequirements, imgReq: c.PFN_vkGetDeviceImageMemoryRequirements, bufDevAddr: c.PFN_vkGetBufferDeviceAddress, bufReqKHR: c.PFN_vkGetDeviceBufferMemoryRequirementsKHR, imgReqKHR: c.PFN_vkGetDeviceImageMemoryRequirementsKHR, supports_maintenance8: bool) callconv(.c) bool {
     if (alloc == null or phys == null or dev == null or instance == null) {
         vma_log.err("Invalid parameters for allocator init", .{});
         return false;
@@ -52,8 +52,8 @@ pub export fn vk_allocator_init(alloc: ?*types.VulkanAllocator, instance: c.VkIn
 
     g_vulkan_functions.vkBindBufferMemory = @ptrCast(c.vkGetDeviceProcAddr(dev, "vkBindBufferMemory"));
 
-    // IMPORTANT: VMA requires vkBindBufferMemory2KHR if VK_KHR_bind_memory2 is enabled, 
-    // or if the Vulkan version is >= 1.1. 
+    // IMPORTANT: VMA requires vkBindBufferMemory2KHR if VK_KHR_bind_memory2 is enabled,
+    // or if the Vulkan version is >= 1.1.
     // If it's NULL, VMA might crash when trying to call it via internal logic if it detects 1.1+.
     g_vulkan_functions.vkBindBufferMemory2KHR = @ptrCast(c.vkGetDeviceProcAddr(dev, "vkBindBufferMemory2"));
     if (g_vulkan_functions.vkBindBufferMemory2KHR == null) g_vulkan_functions.vkBindBufferMemory2KHR = @ptrCast(c.vkGetDeviceProcAddr(dev, "vkBindBufferMemory2KHR"));
@@ -72,14 +72,14 @@ pub export fn vk_allocator_init(alloc: ?*types.VulkanAllocator, instance: c.VkIn
 
     g_vulkan_functions.vkGetBufferMemoryRequirements2KHR = @ptrCast(c.vkGetDeviceProcAddr(dev, "vkGetBufferMemoryRequirements2"));
     if (g_vulkan_functions.vkGetBufferMemoryRequirements2KHR == null) g_vulkan_functions.vkGetBufferMemoryRequirements2KHR = @ptrCast(c.vkGetDeviceProcAddr(dev, "vkGetBufferMemoryRequirements2KHR"));
-    if (g_vulkan_functions.vkGetBufferMemoryRequirements2KHR == null) log.cardinal_log_error("Failed to load vkGetBufferMemoryRequirements2", .{});
+    if (g_vulkan_functions.vkGetBufferMemoryRequirements2KHR == null) vma_log.err("Failed to load vkGetBufferMemoryRequirements2", .{});
 
     g_vulkan_functions.vkGetImageMemoryRequirements2KHR = @ptrCast(c.vkGetDeviceProcAddr(dev, "vkGetImageMemoryRequirements2"));
     if (g_vulkan_functions.vkGetImageMemoryRequirements2KHR == null) g_vulkan_functions.vkGetImageMemoryRequirements2KHR = @ptrCast(c.vkGetDeviceProcAddr(dev, "vkGetImageMemoryRequirements2KHR"));
-    if (g_vulkan_functions.vkGetImageMemoryRequirements2KHR == null) log.cardinal_log_error("Failed to load vkGetImageMemoryRequirements2", .{});
+    if (g_vulkan_functions.vkGetImageMemoryRequirements2KHR == null) vma_log.err("Failed to load vkGetImageMemoryRequirements2", .{});
 
     // We already loaded bind functions above
-    
+
     g_vulkan_functions.vkGetDeviceBufferMemoryRequirements = bufReq;
     g_vulkan_functions.vkGetDeviceImageMemoryRequirements = imgReq;
 
@@ -90,8 +90,8 @@ pub export fn vk_allocator_init(alloc: ?*types.VulkanAllocator, instance: c.VkIn
         } else if (@hasField(c.VmaVulkanFunctions, "vkGetBufferDeviceAddressKHR")) {
             @field(g_vulkan_functions, "vkGetBufferDeviceAddressKHR") = bufDevAddr;
         } else {
-              log.cardinal_log_debug("VmaVulkanFunctions missing vkGetBufferDeviceAddress field - VMA will load it internally if needed", .{});
-         }
+            vma_log.debug("VmaVulkanFunctions missing vkGetBufferDeviceAddress field - VMA will load it internally if needed", .{});
+        }
     }
 
     var allocatorInfo = std.mem.zeroes(c.VmaAllocatorCreateInfo);
@@ -113,16 +113,16 @@ pub export fn vk_allocator_init(alloc: ?*types.VulkanAllocator, instance: c.VkIn
     const result = c.vmaCreateAllocator(&allocatorInfo, &vma_alloc);
 
     if (result != c.VK_SUCCESS) {
-        log.cardinal_log_error("Failed to create VMA allocator: {d}", .{result});
+        vma_log.err("Failed to create VMA allocator: {d}", .{result});
         return false;
     }
 
     allocator.handle = vma_alloc;
-    log.cardinal_log_info("VMA Allocator initialized", .{});
+    vma_log.info("VMA Allocator initialized", .{});
     return true;
 }
 
-pub export fn vk_allocator_shutdown(alloc: ?*types.VulkanAllocator) callconv(.c) void {
+pub export fn shutdown(alloc: ?*types.VulkanAllocator) callconv(.c) void {
     if (alloc == null) return;
     const allocator = alloc.?;
     if (allocator.handle != null) {
@@ -155,7 +155,7 @@ fn get_vma_flags(props: c.VkMemoryPropertyFlags) c.VmaAllocationCreateFlags {
     return flags;
 }
 
-pub export fn vk_allocator_allocate_image(alloc: ?*types.VulkanAllocator, image_ci: ?*const c.VkImageCreateInfo, out_image: ?*c.VkImage, out_memory: ?*c.VkDeviceMemory, out_allocation: ?*c.VmaAllocation, required_props: c.VkMemoryPropertyFlags) callconv(.c) bool {
+pub export fn allocate_image(alloc: ?*types.VulkanAllocator, image_ci: ?*const c.VkImageCreateInfo, out_image: ?*c.VkImage, out_memory: ?*c.VkDeviceMemory, out_allocation: ?*c.VmaAllocation, required_props: c.VkMemoryPropertyFlags) callconv(.c) bool {
     if (alloc == null or image_ci == null or out_image == null or out_allocation == null) return false;
 
     var allocInfo = std.mem.zeroes(c.VmaAllocationCreateInfo);
@@ -166,7 +166,7 @@ pub export fn vk_allocator_allocate_image(alloc: ?*types.VulkanAllocator, image_
 
     const result = c.vmaCreateImage(alloc.?.handle, image_ci, &allocInfo, out_image, out_allocation, &infoOut);
     if (result != c.VK_SUCCESS) {
-        log.cardinal_log_error("vmaCreateImage failed: {d}", .{result});
+        vma_log.err("vmaCreateImage failed: {d}", .{result});
         return false;
     }
 
@@ -174,11 +174,10 @@ pub export fn vk_allocator_allocate_image(alloc: ?*types.VulkanAllocator, image_
         out_memory.?.* = infoOut.deviceMemory;
     }
 
-    log.cardinal_log_info("vk_allocator_allocate_image success", .{});
     return true;
 }
 
-pub export fn vk_allocator_allocate_buffer(alloc: ?*types.VulkanAllocator, buffer_ci: ?*const c.VkBufferCreateInfo, out_buffer: ?*c.VkBuffer, out_memory: ?*c.VkDeviceMemory, out_allocation: ?*c.VmaAllocation, required_props: c.VkMemoryPropertyFlags, map_immediately: bool, out_mapped_ptr: ?*?*anyopaque) callconv(.c) bool {
+pub export fn allocate_buffer(alloc: ?*types.VulkanAllocator, buffer_ci: ?*const c.VkBufferCreateInfo, out_buffer: ?*c.VkBuffer, out_memory: ?*c.VkDeviceMemory, out_allocation: ?*c.VmaAllocation, required_props: c.VkMemoryPropertyFlags, map_immediately: bool, out_mapped_ptr: ?*?*anyopaque) callconv(.c) bool {
     if (alloc == null or buffer_ci == null or out_buffer == null or out_allocation == null) return false;
 
     var allocInfo = std.mem.zeroes(c.VmaAllocationCreateInfo);
@@ -187,68 +186,63 @@ pub export fn vk_allocator_allocate_buffer(alloc: ?*types.VulkanAllocator, buffe
 
     var allocInfoOut: c.VmaAllocationInfo = undefined;
 
-    // log.cardinal_log_info("Calling vmaCreateBuffer: size={d}, usage={d}, flags={d}", .{ buffer_ci.?.size, buffer_ci.?.usage, allocInfo.flags });
-
     const result = c.vmaCreateBuffer(alloc.?.handle, buffer_ci, &allocInfo, out_buffer, out_allocation, &allocInfoOut);
     if (result != c.VK_SUCCESS) {
-        log.cardinal_log_error("vmaCreateBuffer failed: {d}", .{result});
+        vma_log.err("vmaCreateBuffer failed: {d}", .{result});
         return false;
     }
 
     // Verify buffer handle
     if (out_buffer.?.* == null) {
-        log.cardinal_log_error("vmaCreateBuffer returned success but buffer handle is null", .{});
+        vma_log.err("vmaCreateBuffer returned success but buffer handle is null", .{});
         return false;
     }
 
     if (out_memory != null) {
         out_memory.?.* = allocInfoOut.deviceMemory;
-        // log.cardinal_log_debug("vmaCreateBuffer returned memory handle: {any}", .{allocInfoOut.deviceMemory});
     }
 
     if (map_immediately) {
         if (out_mapped_ptr) |ptr| {
-             const res = c.vmaMapMemory(alloc.?.handle, out_allocation.?.*, ptr);
-             if (res != c.VK_SUCCESS) {
-                 log.cardinal_log_error("vmaMapMemory failed: {d}", .{res});
-                 vk_allocator_free_buffer(alloc, out_buffer.?.*, out_allocation.?.*);
-                 return false;
-             }
+            const res = c.vmaMapMemory(alloc.?.handle, out_allocation.?.*, ptr);
+            if (res != c.VK_SUCCESS) {
+                vma_log.err("vmaMapMemory failed: {d}", .{res});
+                free_buffer(alloc, out_buffer.?.*, out_allocation.?.*);
+                return false;
+            }
         } else {
-             var dummy_ptr: ?*anyopaque = null;
-             const res = c.vmaMapMemory(alloc.?.handle, out_allocation.?.*, &dummy_ptr);
-             if (res != c.VK_SUCCESS) {
-                 log.cardinal_log_error("vmaMapMemory failed: {d}", .{res});
-                 vk_allocator_free_buffer(alloc, out_buffer.?.*, out_allocation.?.*);
-                 return false;
-             }
+            var dummy_ptr: ?*anyopaque = null;
+            const res = c.vmaMapMemory(alloc.?.handle, out_allocation.?.*, &dummy_ptr);
+            if (res != c.VK_SUCCESS) {
+                vma_log.err("vmaMapMemory failed: {d}", .{res});
+                free_buffer(alloc, out_buffer.?.*, out_allocation.?.*);
+                return false;
+            }
         }
     } else if (out_mapped_ptr != null) {
         out_mapped_ptr.?.* = null;
     }
 
-    // log.cardinal_log_info("vk_allocator_allocate_buffer success, buffer: {any}", .{out_buffer.?.*});
     return true;
 }
 
-pub export fn vk_allocator_free_image(alloc: ?*types.VulkanAllocator, image: c.VkImage, allocation: c.VmaAllocation) callconv(.c) void {
+pub export fn free_image(alloc: ?*types.VulkanAllocator, image: c.VkImage, allocation: c.VmaAllocation) callconv(.c) void {
     if (alloc == null or image == null or allocation == null) return;
     c.vmaDestroyImage(alloc.?.handle, image, allocation);
 }
 
-pub export fn vk_allocator_free_buffer(alloc: ?*types.VulkanAllocator, buffer: c.VkBuffer, allocation: c.VmaAllocation) callconv(.c) void {
+pub export fn free_buffer(alloc: ?*types.VulkanAllocator, buffer: c.VkBuffer, allocation: c.VmaAllocation) callconv(.c) void {
     if (alloc == null or buffer == null or allocation == null) return;
-    // vma_log.debug("Freeing buffer {any}, allocation {any}", .{buffer, allocation});
     c.vmaDestroyBuffer(alloc.?.handle, buffer, allocation);
 }
 
 // Helpers for mapped memory
-pub export fn vk_allocator_map_memory(alloc: ?*types.VulkanAllocator, allocation: c.VmaAllocation, ppData: ?*?*anyopaque) callconv(.c) c.VkResult {
+pub export fn map_memory(alloc: ?*types.VulkanAllocator, allocation: c.VmaAllocation, ppData: ?*?*anyopaque) callconv(.c) c.VkResult {
     if (alloc == null) return c.VK_ERROR_INITIALIZATION_FAILED;
     return c.vmaMapMemory(alloc.?.handle, allocation, ppData);
 }
 
-pub export fn vk_allocator_unmap_memory(alloc: ?*types.VulkanAllocator, allocation: c.VmaAllocation) callconv(.c) void {
+pub export fn unmap_memory(alloc: ?*types.VulkanAllocator, allocation: c.VmaAllocation) callconv(.c) void {
     if (alloc == null) return;
     c.vmaUnmapMemory(alloc.?.handle, allocation);
 }

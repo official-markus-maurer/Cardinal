@@ -1,6 +1,7 @@
 const std = @import("std");
 const builtin = @import("builtin");
 const log = @import("../core/log.zig");
+const maint8_log = log.ScopedLogger("MAINT8_SYNC");
 const types = @import("vulkan_types.zig");
 const vk_barrier_validation = @import("vulkan_barrier_validation.zig");
 const platform = @import("../core/platform.zig");

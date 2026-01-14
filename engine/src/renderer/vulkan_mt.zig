@@ -9,25 +9,23 @@ const gltf_loader = @import("../assets/gltf_loader.zig");
 const scene = @import("../assets/scene.zig");
 const ref_counting = @import("../core/ref_counting.zig");
 
+const mt_log = log.ScopedLogger("MT");
+
 // Global subsystem instance
 pub var g_cardinal_mt_subsystem: types.CardinalMTSubsystem = std.mem.zeroes(types.CardinalMTSubsystem);
 
 // Task context structures
 const TextureLoadContext = struct {
     file_path: [:0]u8,
-    // We store the resulting resource here.
-    // If successful, this will be non-null.
     result_resource: ?*ref_counting.CardinalRefCountedResource,
 };
 
 const MeshLoadContext = struct {
     file_path: [:0]u8,
-    // We store the resulting scene here.
     result_scene: ?*scene.CardinalScene,
 };
 
-// === Platform-specific threading utilities ===
-
+// Platform-specific threading utilities
 pub fn cardinal_mt_mutex_init(mutex: *types.cardinal_mutex_t) bool {
     const mem_alloc = memory.cardinal_get_allocator_for_category(.RENDERER);
     const m = memory.cardinal_alloc(mem_alloc, @sizeOf(std.Thread.Mutex));
@@ -134,7 +132,7 @@ pub fn cardinal_mt_get_optimal_thread_count() u32 {
 fn cardinal_mt_worker_thread_func(arg: ?*anyopaque) void {
     _ = arg;
     const thread_id = cardinal_mt_get_current_thread_id();
-    log.cardinal_log_debug("[MT] Worker thread started (ID: {any})", .{thread_id});
+    mt_log.debug("Worker thread started (ID: {any})", .{thread_id});
 
     while (g_cardinal_mt_subsystem.is_running) {
         const task = cardinal_mt_task_queue_pop(&g_cardinal_mt_subsystem.pending_queue);
@@ -143,20 +141,14 @@ fn cardinal_mt_worker_thread_func(arg: ?*anyopaque) void {
             if (t.execute_func) |exec| {
                 exec(t.data);
                 t.success = true; // Assume success if no crash, logic can refine this
-            } else if (t.type == types.CardinalMTTaskType.CARDINAL_MT_TASK_COMMAND_RECORD) {
-                // Special handling for command recording
-                // This part was implicit in the C code or handled by execute_func?
-                // Looking at C code:
-                // task->execute_func = record_func;
-                // So it is handled by execute_func.
-            }
+            } else if (t.type == types.CardinalMTTaskType.CARDINAL_MT_TASK_COMMAND_RECORD) {}
 
             t.is_completed = true;
             cardinal_mt_task_queue_push(&g_cardinal_mt_subsystem.completed_queue, t);
         }
     }
 
-    log.cardinal_log_debug("[MT] Worker thread stopping (ID: {any})", .{thread_id});
+    mt_log.debug("Worker thread stopping (ID: {any})", .{thread_id});
 }
 
 fn cardinal_mt_create_thread(thread: *?types.cardinal_thread_handle_t, arg: ?*anyopaque) bool {
@@ -168,8 +160,7 @@ fn cardinal_mt_join_thread(thread: types.cardinal_thread_handle_t) void {
     thread.join();
 }
 
-// === Task Queue Management ===
-
+// Task Queue Management
 fn cardinal_mt_task_queue_init(queue: *types.CardinalMTTaskQueue) bool {
     queue.head = null;
     queue.tail = null;
@@ -288,11 +279,10 @@ fn cardinal_mt_task_queue_try_pop(queue: *types.CardinalMTTaskQueue) ?*types.Car
     return task;
 }
 
-// === Command Buffer Management ===
-
+// Command Buffer Management
 pub fn cardinal_mt_command_manager_init(manager: *types.CardinalMTCommandManager, vulkan_state: ?*types.VulkanState) bool {
     if (vulkan_state == null) {
-        log.cardinal_log_error("[MT] Invalid parameters for command manager initialization", .{});
+        mt_log.err("Invalid parameters for command manager initialization", .{});
         return false;
     }
 
@@ -301,7 +291,7 @@ pub fn cardinal_mt_command_manager_init(manager: *types.CardinalMTCommandManager
     manager.is_initialized = false;
 
     if (!cardinal_mt_mutex_init(&manager.pool_mutex)) {
-        log.cardinal_log_error("[MT] Failed to initialize command manager mutex", .{});
+        mt_log.err("Failed to initialize command manager mutex", .{});
         return false;
     }
 
@@ -309,7 +299,7 @@ pub fn cardinal_mt_command_manager_init(manager: *types.CardinalMTCommandManager
     const allocator = memory.cardinal_get_allocator_for_category(.RENDERER);
     const ptr = memory.cardinal_alloc(allocator, @sizeOf(types.CardinalThreadCommandPool) * types.CARDINAL_MAX_MT_THREADS);
     if (ptr == null) {
-        log.cardinal_log_error("[MT] Failed to allocate thread pools", .{});
+        mt_log.err("Failed to allocate thread pools", .{});
         cardinal_mt_mutex_destroy(&manager.pool_mutex);
         return false;
     }
@@ -327,7 +317,7 @@ pub fn cardinal_mt_command_manager_init(manager: *types.CardinalMTCommandManager
     }
 
     manager.is_initialized = true;
-    log.cardinal_log_info("[MT] Command manager initialized successfully", .{});
+    mt_log.info("Command manager initialized successfully", .{});
     return true;
 }
 
@@ -400,7 +390,7 @@ pub fn cardinal_mt_get_thread_command_pool(manager: *types.CardinalMTCommandMana
     }
 
     if (free_pool == null) {
-        log.cardinal_log_error("[MT] No free thread command pools available", .{});
+        mt_log.err("No free thread command pools available", .{});
         cardinal_mt_mutex_unlock(&manager.pool_mutex);
         return null;
     }
@@ -420,13 +410,13 @@ pub fn cardinal_mt_get_thread_command_pool(manager: *types.CardinalMTCommandMana
     };
 
     if (c.vkCreateCommandPool(vs.context.device, &pool_info, null, &pool.primary_pool) != c.VK_SUCCESS) {
-        log.cardinal_log_error("[MT] Failed to create primary command pool", .{});
+        mt_log.err("Failed to create primary command pool", .{});
         cardinal_mt_mutex_unlock(&manager.pool_mutex);
         return null;
     }
 
     if (c.vkCreateCommandPool(vs.context.device, &pool_info, null, &pool.secondary_pool) != c.VK_SUCCESS) {
-        log.cardinal_log_error("[MT] Failed to create secondary command pool", .{});
+        mt_log.err("Failed to create secondary command pool", .{});
         c.vkDestroyCommandPool(vs.context.device, pool.primary_pool, null);
         pool.primary_pool = null;
         cardinal_mt_mutex_unlock(&manager.pool_mutex);
@@ -438,7 +428,7 @@ pub fn cardinal_mt_get_thread_command_pool(manager: *types.CardinalMTCommandMana
     pool.secondary_buffers = @ptrCast(@alignCast(memory.cardinal_alloc(allocator, @sizeOf(c.VkCommandBuffer) * pool.secondary_buffer_count)));
 
     if (pool.secondary_buffers == null) {
-        log.cardinal_log_error("[MT] Failed to allocate memory for secondary command buffers", .{});
+        mt_log.err("Failed to allocate memory for secondary command buffers", .{});
         c.vkDestroyCommandPool(vs.context.device, pool.secondary_pool, null);
         c.vkDestroyCommandPool(vs.context.device, pool.primary_pool, null);
         pool.primary_pool = null;
@@ -456,7 +446,7 @@ pub fn cardinal_mt_get_thread_command_pool(manager: *types.CardinalMTCommandMana
     };
 
     if (c.vkAllocateCommandBuffers(vs.context.device, &alloc_info, pool.secondary_buffers) != c.VK_SUCCESS) {
-        log.cardinal_log_error("[MT] Failed to allocate secondary command buffers", .{});
+        mt_log.err("Failed to allocate secondary command buffers", .{});
         memory.cardinal_free(allocator, @ptrCast(pool.secondary_buffers));
         pool.secondary_buffers = null;
         c.vkDestroyCommandPool(vs.context.device, pool.secondary_pool, null);
@@ -471,7 +461,7 @@ pub fn cardinal_mt_get_thread_command_pool(manager: *types.CardinalMTCommandMana
     pool.is_active = true;
     manager.active_thread_count += 1;
 
-    log.cardinal_log_info("[MT] Created command pool for thread (total active: {d})", .{manager.active_thread_count});
+    mt_log.info("Created command pool for thread (total active: {d})", .{manager.active_thread_count});
 
     cardinal_mt_mutex_unlock(&manager.pool_mutex);
     return pool;
@@ -479,7 +469,7 @@ pub fn cardinal_mt_get_thread_command_pool(manager: *types.CardinalMTCommandMana
 
 pub fn cardinal_mt_allocate_secondary_command_buffer(pool: *types.CardinalThreadCommandPool, context: *types.CardinalSecondaryCommandContext) bool {
     if (pool.next_secondary_index >= pool.secondary_buffer_count) {
-        log.cardinal_log_warn("[MT] Thread command pool exhausted", .{});
+        mt_log.warn("Thread command pool exhausted", .{});
         return false;
     }
 
@@ -506,7 +496,7 @@ pub fn cardinal_mt_begin_secondary_command_buffer(context: *types.CardinalSecond
     };
 
     if (c.vkBeginCommandBuffer(context.command_buffer, &begin_info) != c.VK_SUCCESS) {
-        log.cardinal_log_error("[MT] Failed to begin secondary command buffer", .{});
+        mt_log.err("Failed to begin secondary command buffer", .{});
         return false;
     }
 
@@ -518,14 +508,14 @@ pub fn cardinal_mt_begin_secondary_command_buffer(context: *types.CardinalSecond
 pub fn cardinal_mt_end_secondary_command_buffer(context: *types.CardinalSecondaryCommandContext) bool {
     // Check if we think we are recording
     if (!context.is_recording) {
-        log.cardinal_log_warn("[MT] Attempted to end secondary command buffer that is not recording", .{});
+        mt_log.warn("Attempted to end secondary command buffer that is not recording", .{});
         return false;
     }
 
     // Try to end the command buffer
     if (c.vkEndCommandBuffer(context.command_buffer) != c.VK_SUCCESS) {
         // If it failed, it might not have been in recording state (validation error), or other error
-        log.cardinal_log_error("[MT] Failed to end secondary command buffer", .{});
+        mt_log.err("Failed to end secondary command buffer", .{});
         // We still mark it as not recording to avoid stuck state
         context.is_recording = false;
         return false;
@@ -605,12 +595,12 @@ pub fn cardinal_mt_wait_task(task: *types.CardinalMTTask) void {
 
 pub fn cardinal_mt_subsystem_init(vulkan_state: ?*types.VulkanState, worker_thread_count_in: u32) bool {
     if (g_cardinal_mt_subsystem.is_running) {
-        log.cardinal_log_warn("[MT] Subsystem already initialized", .{});
+        mt_log.warn("Subsystem already initialized", .{});
         return true;
     }
 
     if (vulkan_state == null) {
-        log.cardinal_log_error("[MT] Invalid Vulkan state for subsystem initialization", .{});
+        mt_log.err("Invalid Vulkan state for subsystem initialization", .{});
         return false;
     }
 
@@ -625,25 +615,25 @@ pub fn cardinal_mt_subsystem_init(vulkan_state: ?*types.VulkanState, worker_thre
     g_cardinal_mt_subsystem = std.mem.zeroes(types.CardinalMTSubsystem);
 
     if (!cardinal_mt_command_manager_init(&g_cardinal_mt_subsystem.command_manager, vulkan_state)) {
-        log.cardinal_log_error("[MT] Failed to initialize command manager", .{});
+        mt_log.err("Failed to initialize command manager", .{});
         return false;
     }
 
     if (!cardinal_mt_task_queue_init(&g_cardinal_mt_subsystem.pending_queue)) {
-        log.cardinal_log_error("[MT] Failed to initialize pending task queue", .{});
+        mt_log.err("Failed to initialize pending task queue", .{});
         cardinal_mt_command_manager_shutdown(&g_cardinal_mt_subsystem.command_manager);
         return false;
     }
 
     if (!cardinal_mt_task_queue_init(&g_cardinal_mt_subsystem.completed_queue)) {
-        log.cardinal_log_error("[MT] Failed to initialize completed task queue", .{});
+        mt_log.err("Failed to initialize completed task queue", .{});
         cardinal_mt_task_queue_shutdown(&g_cardinal_mt_subsystem.pending_queue);
         cardinal_mt_command_manager_shutdown(&g_cardinal_mt_subsystem.command_manager);
         return false;
     }
 
     if (!cardinal_mt_mutex_init(&g_cardinal_mt_subsystem.subsystem_mutex)) {
-        log.cardinal_log_error("[MT] Failed to initialize subsystem mutex", .{});
+        mt_log.err("Failed to initialize subsystem mutex", .{});
         cardinal_mt_task_queue_shutdown(&g_cardinal_mt_subsystem.completed_queue);
         cardinal_mt_task_queue_shutdown(&g_cardinal_mt_subsystem.pending_queue);
         cardinal_mt_command_manager_shutdown(&g_cardinal_mt_subsystem.command_manager);
@@ -657,7 +647,7 @@ pub fn cardinal_mt_subsystem_init(vulkan_state: ?*types.VulkanState, worker_thre
     const allocator = memory.cardinal_get_allocator_for_category(.RENDERER);
     const threads_ptr = memory.cardinal_alloc(allocator, @sizeOf(?types.cardinal_thread_handle_t) * worker_thread_count);
     if (threads_ptr == null) {
-        log.cardinal_log_error("[MT] Failed to allocate worker threads array", .{});
+        mt_log.err("Failed to allocate worker threads array", .{});
         cardinal_mt_mutex_destroy(&g_cardinal_mt_subsystem.subsystem_mutex);
         cardinal_mt_task_queue_shutdown(&g_cardinal_mt_subsystem.completed_queue);
         cardinal_mt_task_queue_shutdown(&g_cardinal_mt_subsystem.pending_queue);
@@ -675,7 +665,7 @@ pub fn cardinal_mt_subsystem_init(vulkan_state: ?*types.VulkanState, worker_thre
     var i: u32 = 0;
     while (i < worker_thread_count) : (i += 1) {
         if (!cardinal_mt_create_thread(&g_cardinal_mt_subsystem.worker_threads[i], null)) {
-            log.cardinal_log_error("[MT] Failed to create worker thread {d}", .{i});
+            mt_log.err("Failed to create worker thread {d}", .{i});
 
             g_cardinal_mt_subsystem.is_running = false;
             cardinal_mt_cond_broadcast(&g_cardinal_mt_subsystem.pending_queue.queue_condition);
@@ -698,14 +688,14 @@ pub fn cardinal_mt_subsystem_init(vulkan_state: ?*types.VulkanState, worker_thre
         }
     }
 
-    log.cardinal_log_info("[MT] Subsystem initialized with {d} worker threads", .{worker_thread_count});
+    mt_log.info("Subsystem initialized with {d} worker threads", .{worker_thread_count});
     return true;
 }
 
 pub fn cardinal_mt_subsystem_shutdown() void {
     if (!g_cardinal_mt_subsystem.is_running) return;
 
-    log.cardinal_log_info("[MT] Shutting down subsystem...", .{});
+    mt_log.info("Shutting down subsystem...", .{});
 
     g_cardinal_mt_subsystem.is_running = false;
     cardinal_mt_cond_broadcast(&g_cardinal_mt_subsystem.pending_queue.queue_condition);
@@ -731,12 +721,12 @@ pub fn cardinal_mt_subsystem_shutdown() void {
 
     g_cardinal_mt_subsystem = std.mem.zeroes(types.CardinalMTSubsystem);
 
-    log.cardinal_log_info("[MT] Subsystem shutdown completed", .{});
+    mt_log.info("Subsystem shutdown completed", .{});
 }
 
 pub fn cardinal_mt_submit_task(task: *types.CardinalMTTask) bool {
     if (!g_cardinal_mt_subsystem.is_running) {
-        log.cardinal_log_error("[MT] Invalid task or subsystem not running", .{});
+        mt_log.err("Invalid task or subsystem not running", .{});
         return false;
     }
 
@@ -802,21 +792,21 @@ fn execute_texture_load(data: ?*anyopaque) void {
     if (ref_res) |res| {
         ctx.result_resource = res;
     } else {
-        log.cardinal_log_error("[MT] Failed to load texture: {s}", .{ctx.file_path});
+        mt_log.err("Failed to load texture: {s}", .{ctx.file_path});
         ctx.result_resource = null;
     }
 }
 
 pub fn cardinal_mt_create_texture_load_task(file_path: []const u8, callback: ?*const fn (?*anyopaque, bool) void) ?*types.CardinalMTTask {
     if (file_path.len == 0) {
-        log.cardinal_log_error("[MT] Invalid file path for texture load task", .{});
+        mt_log.err("Invalid file path for texture load task", .{});
         return null;
     }
 
     const allocator = memory.cardinal_get_allocator_for_category(.RENDERER);
     const task_ptr = memory.cardinal_alloc(allocator, @sizeOf(types.CardinalMTTask));
     if (task_ptr == null) {
-        log.cardinal_log_error("[MT] Failed to allocate memory for texture load task", .{});
+        mt_log.err("Failed to allocate memory for texture load task", .{});
         return null;
     }
     const task: *types.CardinalMTTask = @ptrCast(@alignCast(task_ptr));
@@ -868,7 +858,7 @@ fn execute_mesh_load(data: ?*anyopaque) void {
     if (gltf_loader.cardinal_gltf_load_scene(ctx.file_path.ptr, s)) {
         ctx.result_scene = s;
     } else {
-        log.cardinal_log_error("[MT] Failed to load mesh/scene: {s}", .{ctx.file_path});
+        mt_log.err("Failed to load mesh/scene: {s}", .{ctx.file_path});
         memory.cardinal_free(allocator, scene_ptr);
         ctx.result_scene = null;
     }
@@ -876,14 +866,14 @@ fn execute_mesh_load(data: ?*anyopaque) void {
 
 pub fn cardinal_mt_create_mesh_load_task(file_path: []const u8, callback: ?*const fn (?*anyopaque, bool) void) ?*types.CardinalMTTask {
     if (file_path.len == 0) {
-        log.cardinal_log_error("[MT] Invalid file path for mesh load task", .{});
+        mt_log.err("Invalid file path for mesh load task", .{});
         return null;
     }
 
     const allocator = memory.cardinal_get_allocator_for_category(.RENDERER);
     const task_ptr = memory.cardinal_alloc(allocator, @sizeOf(types.CardinalMTTask));
     if (task_ptr == null) {
-        log.cardinal_log_error("[MT] Failed to allocate memory for mesh load task", .{});
+        mt_log.err("Failed to allocate memory for mesh load task", .{});
         return null;
     }
     const task: *types.CardinalMTTask = @ptrCast(@alignCast(task_ptr));
@@ -926,7 +916,7 @@ pub fn cardinal_mt_create_command_record_task(record_func: ?*const fn (?*anyopaq
     const allocator = memory.cardinal_get_allocator_for_category(.RENDERER);
     const task_ptr = memory.cardinal_alloc(allocator, @sizeOf(types.CardinalMTTask));
     if (task_ptr == null) {
-        log.cardinal_log_error("[MT] Failed to allocate memory for command record task", .{});
+        mt_log.err("Failed to allocate memory for command record task", .{});
         return null;
     }
     const task: *types.CardinalMTTask = @ptrCast(@alignCast(task_ptr));

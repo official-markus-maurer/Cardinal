@@ -409,24 +409,36 @@ fn dyn_realloc(self: *CardinalAllocator, ptr: ?*anyopaque, old_size: usize, new_
     var new_ptr: ?*anyopaque = null;
     if (is_aligned or (alignment > 0 and alignment > max_align)) {
         new_ptr = dyn_alloc(self, new_size, alignment);
-        if (new_ptr != null and actual_old_size > 0) {
-            const copy_size = if (actual_old_size < new_size) actual_old_size else new_size;
-            _ = c.memcpy(new_ptr, ptr, copy_size);
-        }
+        if (new_ptr != null) {
+            if (actual_old_size > 0) {
+                const copy_size = if (actual_old_size < new_size) actual_old_size else new_size;
+                _ = c.memcpy(new_ptr, ptr, copy_size);
+            }
 
-        if (is_aligned) {
-            if (builtin.os.tag == .windows) {
-                _aligned_free(ptr);
+            if (is_aligned) {
+                if (builtin.os.tag == .windows) {
+                    _aligned_free(ptr);
+                } else {
+                    c.free(ptr);
+                }
             } else {
                 c.free(ptr);
             }
         } else {
-            c.free(ptr);
+            // Alloc failed, restore tracking for original pointer
+            if (was_tracked) {
+                track_alloc(ptr, actual_old_size, is_aligned);
+            }
         }
     } else {
         new_ptr = c.realloc(ptr, new_size);
         if (new_ptr != null) {
             track_alloc(new_ptr, new_size, false);
+        } else {
+            // Realloc failed, restore tracking for original pointer
+            if (was_tracked) {
+                track_alloc(ptr, actual_old_size, is_aligned);
+            }
         }
     }
 

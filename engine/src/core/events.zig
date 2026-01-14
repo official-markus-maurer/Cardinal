@@ -1,5 +1,6 @@
 const std = @import("std");
 const log = @import("log.zig");
+const evt_log = log.ScopedLogger("EVENTS");
 
 pub const EventId = u64;
 
@@ -94,7 +95,7 @@ pub fn publish(event_id: EventId, data: ?*const anyopaque) void {
         // Fallback to heap allocation for large listener counts
         const listeners_copy = list.clone(g_allocator) catch {
             g_mutex.unlock();
-            log.cardinal_log_error("Failed to allocate listener copy for event {}", .{event_id});
+            evt_log.err("Failed to allocate listener copy for event {}", .{event_id});
             return;
         };
         g_mutex.unlock();

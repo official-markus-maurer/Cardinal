@@ -11,6 +11,8 @@ const vk_pso = @import("vulkan_pso.zig");
 const material_utils = @import("util/vulkan_material_utils.zig");
 const descriptor_mgr = @import("vulkan_descriptor_manager.zig");
 
+const shadows_log = log.ScopedLogger("SHADOWS");
+
 fn mat4_identity() math.Mat4 {
     return math.Mat4.identity();
 }
@@ -25,18 +27,18 @@ fn mat4_lookAt(eye: math.Vec3, center: math.Vec3, up: math.Vec3) math.Mat4 {
 
 pub fn vk_shadow_render(s: *types.VulkanState, cmd: c.VkCommandBuffer) void {
     if (!s.pipelines.use_pbr_pipeline or !s.pipelines.pbr_pipeline.initialized) {
-        // log.cardinal_log_warn("Shadow: PBR pipeline not ready", .{});
+        // shadows_log.warn("PBR pipeline not ready", .{});
         return;
     }
     const pipe = &s.pipelines.pbr_pipeline;
     if (pipe.shadowPipeline == null) {
-        log.cardinal_log_warn("Shadow: Shadow pipeline is null", .{});
+        shadows_log.warn("Shadow pipeline is null", .{});
         return;
     }
 
     const frame_check = if (s.sync.current_frame >= types.MAX_FRAMES_IN_FLIGHT) 0 else s.sync.current_frame;
     if (pipe.lightingBuffersMapped[frame_check] == null or pipe.uniformBuffersMapped[frame_check] == null) {
-        log.cardinal_log_warn("Shadow: Buffers not mapped", .{});
+        shadows_log.warn("Buffers not mapped", .{});
         return;
     }
 
@@ -44,7 +46,7 @@ pub fn vk_shadow_render(s: *types.VulkanState, cmd: c.VkCommandBuffer) void {
     const lighting = @as(*types.PBRLightingBuffer, @ptrCast(@alignCast(pipe.lightingBuffersMapped[frame_check])));
 
     if (lighting.count == 0) {
-        log.cardinal_log_warn("Shadow: No lights in lighting buffer", .{});
+        shadows_log.warn("No lights in lighting buffer", .{});
         return;
     }
 
@@ -67,11 +69,11 @@ pub fn vk_shadow_render(s: *types.VulkanState, cmd: c.VkCommandBuffer) void {
     }
 
     if (found) {
-        log.cardinal_log_info("Shadow: Using directional light with intensity {d:.2}: ({d:.2}, {d:.2}, {d:.2})", .{ bestIntensity, lightDir.x, lightDir.y, lightDir.z });
+        shadows_log.info("Using directional light with intensity {d:.2}: ({d:.2}, {d:.2}, {d:.2})", .{ bestIntensity, lightDir.x, lightDir.y, lightDir.z });
     }
 
     if (!found) {
-        log.cardinal_log_warn("Shadow: No directional light found", .{});
+        shadows_log.warn("No directional light found", .{});
         return;
     }
 
@@ -310,7 +312,7 @@ pub fn vk_shadow_render(s: *types.VulkanState, cmd: c.VkCommandBuffer) void {
 
     // Check descriptors upfront
     if (pipe.shadowDescriptorSets[frame_check] == null and pipe.shadowDescriptorManager == null) {
-        log.cardinal_log_error("Shadow: Shadow descriptor set is null (and no manager)", .{});
+        shadows_log.err("Shadow descriptor set is null (and no manager)", .{});
         return;
     }
 
@@ -579,7 +581,7 @@ pub fn vk_shadow_render(s: *types.VulkanState, cmd: c.VkCommandBuffer) void {
         }
 
         if (scn.mesh_count > 0 and j_layer == 0 and drawn_count == 0) {
-            log.cardinal_log_warn("Shadow: No meshes drawn for cascade 0! Total meshes: {d}", .{scn.mesh_count});
+            shadows_log.warn("No meshes drawn for cascade 0! Total meshes: {d}", .{scn.mesh_count});
         }
 
         // End Rendering

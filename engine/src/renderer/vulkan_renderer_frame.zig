@@ -5,6 +5,8 @@ const types = @import("vulkan_types.zig");
 
 const c = @import("vulkan_c.zig").c;
 
+const frame_log = log.ScopedLogger("RENDER_FRAME");
+
 const vk_instance = @import("vulkan_instance.zig");
 const vk_swapchain = @import("vulkan_swapchain.zig");
 const vk_pipeline = @import("vulkan_pipeline.zig");
@@ -39,7 +41,7 @@ fn vk_recover_from_device_loss(s: *types.VulkanState) bool {
 
     // Check if we've exceeded maximum recovery attempts
     if (s.recovery.attempt_count >= s.recovery.max_attempts) {
-        log.cardinal_log_error("[RECOVERY] Maximum device loss recovery attempts ({d}) exceeded", .{s.recovery.max_attempts});
+        frame_log.err("[RECOVERY] Maximum device loss recovery attempts ({d}) exceeded", .{s.recovery.max_attempts});
         s.recovery.recovery_in_progress = false;
         if (s.recovery.recovery_complete_callback) |callback| {
             callback(s.recovery.callback_user_data, false);
@@ -50,7 +52,7 @@ fn vk_recover_from_device_loss(s: *types.VulkanState) bool {
     s.recovery.recovery_in_progress = true;
     s.recovery.attempt_count += 1;
 
-    log.cardinal_log_warn("[RECOVERY] Attempting device loss recovery (attempt {d}/{d})", .{ s.recovery.attempt_count, s.recovery.max_attempts });
+    frame_log.warn("[RECOVERY] Attempting device loss recovery (attempt {d}/{d})", .{ s.recovery.attempt_count, s.recovery.max_attempts });
 
     // Notify application of device loss
     if (s.recovery.device_loss_callback) |callback| {
@@ -62,9 +64,9 @@ fn vk_recover_from_device_loss(s: *types.VulkanState) bool {
     if (s.context.device != null) {
         device_status = c.vkDeviceWaitIdle(s.context.device);
         if (device_status == c.VK_ERROR_DEVICE_LOST) {
-            log.cardinal_log_warn("[RECOVERY] Device confirmed lost, proceeding with recovery", .{});
+            frame_log.warn("[RECOVERY] Device confirmed lost, proceeding with recovery", .{});
         } else if (device_status != c.VK_SUCCESS) {
-            log.cardinal_log_error("[RECOVERY] Unexpected device error during recovery validation: {d}", .{device_status});
+            frame_log.err("[RECOVERY] Unexpected device error during recovery validation: {d}", .{device_status});
             s.recovery.recovery_in_progress = false;
             return false;
         }
@@ -165,15 +167,15 @@ fn vk_recover_from_device_loss(s: *types.VulkanState) bool {
         var frag_path: [512]u8 = undefined;
 
         _ = std.fmt.bufPrintZ(&task_path, "{s}/task.task.spv", .{shaders_dir}) catch |err| {
-            log.cardinal_log_error("Failed to format task shader path: {s}", .{@errorName(err)});
+            frame_log.err("Failed to format task shader path: {s}", .{@errorName(err)});
             success = false;
         };
         _ = std.fmt.bufPrintZ(&mesh_path, "{s}/mesh.mesh.spv", .{shaders_dir}) catch |err| {
-            log.cardinal_log_error("Failed to format mesh shader path: {s}", .{@errorName(err)});
+            frame_log.err("Failed to format mesh shader path: {s}", .{@errorName(err)});
             success = false;
         };
         _ = std.fmt.bufPrintZ(&frag_path, "{s}/mesh.frag.spv", .{shaders_dir}) catch |err| {
-            log.cardinal_log_error("Failed to format fragment shader path: {s}", .{@errorName(err)});
+            frame_log.err("Failed to format fragment shader path: {s}", .{@errorName(err)});
             success = false;
         };
 
@@ -191,7 +193,7 @@ fn vk_recover_from_device_loss(s: *types.VulkanState) bool {
         config.depth_compare_op = c.VK_COMPARE_OP_LESS;
 
         if (!vk_mesh_shader.vk_mesh_shader_create_pipeline(s, &config, s.swapchain.format, s.swapchain.depth_format, &s.pipelines.mesh_shader_pipeline, null)) {
-            log.cardinal_log_error("Failed to initialize mesh shader pipeline", .{});
+            frame_log.err("Failed to initialize mesh shader pipeline", .{});
             failure_point = "mesh shader pipeline";
             success = false;
         } else {
@@ -211,22 +213,22 @@ fn vk_recover_from_device_loss(s: *types.VulkanState) bool {
     }
 
     if (success) {
-        log.cardinal_log_info("[RECOVERY] Device loss recovery completed successfully", .{});
+        frame_log.info("[RECOVERY] Device loss recovery completed successfully", .{});
         s.recovery.device_lost = false;
         s.recovery.attempt_count = 0; // Reset on successful recovery
     } else {
-        log.cardinal_log_error("[RECOVERY] Device loss recovery failed at: {any}", .{failure_point orelse "unknown"});
+        frame_log.err("[RECOVERY] Device loss recovery failed at: {any}", .{failure_point orelse "unknown"});
 
         // Implement fallback: try to at least maintain a minimal valid state
         if (!had_valid_swapchain) {
-            log.cardinal_log_warn("[RECOVERY] Attempting minimal fallback recovery", .{});
+            frame_log.warn("[RECOVERY] Attempting minimal fallback recovery", .{});
             // Try to recreate just the essential components for a graceful shutdown
             // At minimum, ensure we have basic Vulkan state to prevent crashes
             if (s.context.device != null and vk_swapchain.vk_create_swapchain(@ptrCast(s))) {
                 if (vk_pipeline.vk_create_pipeline(@ptrCast(s))) {
                     _ = vk_commands.vk_create_commands_sync(@ptrCast(s));
                 }
-                log.cardinal_log_info("[RECOVERY] Minimal fallback recovery succeeded", .{});
+                frame_log.info("[RECOVERY] Minimal fallback recovery succeeded", .{});
             }
         }
     }
@@ -249,11 +251,11 @@ fn check_render_feasibility(s: *types.VulkanState) bool {
     }
 
     if (minimized) {
-        log.cardinal_log_debug("[SWAPCHAIN] Frame {d}: Window minimized, skipping frame", .{s.sync.current_frame});
+        frame_log.debug("Frame {d}: Window minimized, skipping frame", .{s.sync.current_frame});
         return false;
     }
     if (s.swapchain.extent.width == 0 or s.swapchain.extent.height == 0) {
-        log.cardinal_log_warn("[SWAPCHAIN] Frame {d}: Zero swapchain extent, skipping frame", .{s.sync.current_frame});
+        frame_log.warn("Frame {d}: Zero swapchain extent, skipping frame", .{s.sync.current_frame});
         s.swapchain.recreation_pending = true;
         return false;
     }
@@ -270,25 +272,25 @@ fn handle_pending_recreation(renderer: ?*types.CardinalRenderer, s: *types.Vulka
     }
 
     if (s.swapchain.window_resize_pending) {
-        log.cardinal_log_info("[SWAPCHAIN] Frame {d}: Window resize pending", .{s.sync.current_frame});
+        frame_log.info("Frame {d}: Window resize pending", .{s.sync.current_frame});
         s.swapchain.recreation_pending = true;
     }
 
     if (!s.swapchain.recreation_pending)
         return true;
 
-    log.cardinal_log_info("[SWAPCHAIN] Frame {d}: Handling pending swapchain recreation", .{s.sync.current_frame});
+    frame_log.info("Frame {d}: Handling pending swapchain recreation", .{s.sync.current_frame});
     if (vk_swapchain.vk_recreate_swapchain(@ptrCast(s))) {
         if (!vk_commands.vk_recreate_images_in_flight(@ptrCast(s))) {
-            log.cardinal_log_error("[SWAPCHAIN] Frame {d}: Failed to recreate image tracking", .{s.sync.current_frame});
+            frame_log.err("Frame {d}: Failed to recreate image tracking", .{s.sync.current_frame});
             return false;
         }
         s.swapchain.recreation_pending = false;
         s.swapchain.window_resize_pending = false;
-        log.cardinal_log_info("[SWAPCHAIN] Frame {d}: Recreation successful", .{s.sync.current_frame});
+        frame_log.info("Frame {d}: Recreation successful", .{s.sync.current_frame});
 
         if (s.scene_upload_pending and s.pending_scene_upload != null) {
-            log.cardinal_log_info("[UPLOAD] Performing deferred scene upload", .{});
+            frame_log.info("[UPLOAD] Performing deferred scene upload", .{});
             vk_renderer.cardinal_renderer_upload_scene(renderer, @ptrCast(@alignCast(s.pending_scene_upload)));
             s.scene_upload_pending = false;
             s.pending_scene_upload = null;
@@ -298,7 +300,7 @@ fn handle_pending_recreation(renderer: ?*types.CardinalRenderer, s: *types.Vulka
 
     if (s.swapchain.consecutive_recreation_failures >= 6) {
         s.swapchain.recreation_pending = false;
-        log.cardinal_log_warn("[SWAPCHAIN] Clearing pending recreation after failures", .{});
+        frame_log.warn("Clearing pending recreation after failures", .{});
     }
 
     return false;
@@ -306,18 +308,18 @@ fn handle_pending_recreation(renderer: ?*types.CardinalRenderer, s: *types.Vulka
 
 fn wait_for_fence(s: *types.VulkanState) bool {
     if (s.sync.in_flight_fences == null) {
-        log.cardinal_log_warn("[SYNC] Frame {d}: In-flight fences array is null, attempting lazy initialization", .{s.sync.current_frame});
+        frame_log.warn("Frame {d}: In-flight fences array is null, attempting lazy initialization", .{s.sync.current_frame});
         
         var max_frames = s.sync.max_frames_in_flight;
         if (max_frames == 0) max_frames = 3;
         
         if (s.context.device == null) {
-             log.cardinal_log_error("[SYNC] Device is null, cannot initialize sync manager", .{});
+             frame_log.err("Device is null, cannot initialize sync manager", .{});
              return false;
         }
 
         if (!vk_sync_manager.vulkan_sync_manager_init(&s.sync, s.context.device, s.context.graphics_queue, max_frames, s.config.timeline_max_ahead)) {
-             log.cardinal_log_error("[SYNC] Lazy initialization failed", .{});
+             frame_log.err("Lazy initialization failed", .{});
              return false;
         }
         
@@ -327,14 +329,14 @@ fn wait_for_fence(s: *types.VulkanState) bool {
     
     var current_fence = s.sync.in_flight_fences.?[s.sync.current_frame];
     if (current_fence == null) {
-        log.cardinal_log_error("[SYNC] Frame {d}: Current fence is null", .{s.sync.current_frame});
+        frame_log.err("Frame {d}: Current fence is null", .{s.sync.current_frame});
         return false;
     }
 
     const fence_status = c.vkGetFenceStatus(s.context.device, current_fence);
 
     if (fence_status == c.VK_SUCCESS) {
-        log.cardinal_log_debug("[SYNC] Frame {d}: GPU ahead, skipping wait", .{s.sync.current_frame});
+        frame_log.debug("Frame {d}: GPU ahead, skipping wait", .{s.sync.current_frame});
     } else if (fence_status == c.VK_NOT_READY) {
         const wait_res = c.vkWaitForFences(s.context.device, 1, &current_fence, c.VK_TRUE, c.UINT64_MAX);
         if (wait_res != c.VK_SUCCESS) {
@@ -343,7 +345,7 @@ fn wait_for_fence(s: *types.VulkanState) bool {
                 if (s.recovery.attempt_count < s.recovery.max_attempts)
                     _ = vk_recover_from_device_loss(s);
             } else {
-                log.cardinal_log_error("[SYNC] Frame {d}: Fence wait failed: {d}", .{ s.sync.current_frame, wait_res });
+                frame_log.err("Frame {d}: Fence wait failed: {d}", .{ s.sync.current_frame, wait_res });
             }
             return false;
         }
@@ -353,7 +355,7 @@ fn wait_for_fence(s: *types.VulkanState) bool {
             if (s.recovery.attempt_count < s.recovery.max_attempts)
                 _ = vk_recover_from_device_loss(s);
         } else {
-            log.cardinal_log_error("[SYNC] Frame {d}: Fence status check failed: {d}", .{ s.sync.current_frame, fence_status });
+            frame_log.err("Frame {d}: Fence status check failed: {d}", .{ s.sync.current_frame, fence_status });
         }
         return false;
     }
@@ -512,7 +514,7 @@ fn submit_command_buffer(s: *types.VulkanState, cmd: c.VkCommandBuffer, acquire_
             _ = vk_recover_from_device_loss(s);
         return false;
     } else if (res != c.VK_SUCCESS) {
-        log.cardinal_log_error("Queue submit failed: {d}", .{res});
+        frame_log.err("Queue submit failed: {d}", .{res});
         return false;
     }
     return true;
@@ -571,7 +573,7 @@ pub export fn cardinal_renderer_draw_frame(renderer: ?*types.CardinalRenderer) c
     if (!handle_pending_recreation(renderer, s))
         return;
 
-    log.cardinal_log_info("[SYNC] Frame {d}: Starting draw_frame", .{s.sync.current_frame});
+    frame_log.info("Frame {d}: Starting draw_frame", .{s.sync.current_frame});
 
     if (!wait_for_fence(s))
         return;

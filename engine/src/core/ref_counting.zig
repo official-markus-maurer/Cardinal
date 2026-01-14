@@ -1,4 +1,5 @@
 const std = @import("std");
+const builtin = @import("builtin");
 const log = @import("log.zig");
 const memory = @import("memory.zig");
 
@@ -120,14 +121,16 @@ fn remove_resource(identifier: ?[*:0]const u8) bool {
     ref_log.warn("Failed to find resource '{s}' in registry for removal!", .{identifier.?});
 
     // Debug: print registry contents to help diagnose
-    ref_log.warn("Registry state at failure:", .{});
-    var i: usize = 0;
-    while (i < g_registry.bucket_count) : (i += 1) {
-        var current_node = g_registry.buckets.?[i];
-        while (current_node) |node| {
-            const node_id = if (node.identifier) |id| id else "null";
-            ref_log.warn("  - Bucket {d}: '{s}' (ref: {d})", .{ i, node_id, @atomicLoad(u32, &node.ref_count, .seq_cst) });
-            current_node = node.next;
+    if (builtin.mode == .Debug) {
+        ref_log.warn("Registry state at failure:", .{});
+        var i: usize = 0;
+        while (i < g_registry.bucket_count) : (i += 1) {
+            var current_node = g_registry.buckets.?[i];
+            while (current_node) |node| {
+                const node_id = if (node.identifier) |id| id else "null";
+                ref_log.warn("  - Bucket {d}: '{s}' (ref: {d})", .{ i, node_id, @atomicLoad(u32, &node.ref_count, .seq_cst) });
+                current_node = node.next;
+            }
         }
     }
 
@@ -143,7 +146,7 @@ pub export fn cardinal_ref_counting_init(bucket_count: usize) callconv(.c) bool 
     const count = if (bucket_count == 0) 1009 else bucket_count; // Default prime number
 
     const allocator = memory.cardinal_get_allocator_for_category(.ENGINE);
-    const buckets = memory.cardinal_alloc(allocator, count * @sizeOf(?*CardinalRefCountedResource));
+    const buckets = memory.cardinal_calloc(allocator, count, @sizeOf(?*CardinalRefCountedResource));
 
     if (buckets == null) {
         ref_log.err("Failed to allocate memory for resource registry buckets", .{});
@@ -151,7 +154,6 @@ pub export fn cardinal_ref_counting_init(bucket_count: usize) callconv(.c) bool 
     }
 
     g_registry.buckets = @ptrCast(@alignCast(buckets));
-    @memset(g_registry.buckets.?[0..count], null);
 
     g_registry.bucket_count = count;
     g_registry.total_resources = 0;

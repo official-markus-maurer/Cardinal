@@ -110,7 +110,7 @@ pub export fn cardinal_scene_load_async(path: ?[*:0]const u8, priority: async_lo
     var ext_buf: [16]u8 = undefined;
     const ext_len = std.mem.len(ext.?);
     if (ext_len >= 16) {
-        log.cardinal_log_error("Extension too long", .{});
+        loader_log.err("Extension too long", .{});
         return null;
     }
 
@@ -123,7 +123,7 @@ pub export fn cardinal_scene_load_async(path: ?[*:0]const u8, priority: async_lo
     }
 
     if (!std.mem.eql(u8, ext_slice, "gltf") and !std.mem.eql(u8, ext_slice, "glb")) {
-        log.cardinal_log_error("Unsupported file format for async loading: {s} (extension: {s})", .{ path.?, ext_slice });
+        loader_log.err("Unsupported file format for async loading: {s} (extension: {s})", .{ path.?, ext_slice });
         return null;
     }
 
