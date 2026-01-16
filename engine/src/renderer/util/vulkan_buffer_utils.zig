@@ -2,6 +2,7 @@ const std = @import("std");
 const log = @import("../../core/log.zig");
 const buffer_mgr = @import("../vulkan_buffer_manager.zig");
 const types = @import("../vulkan_types.zig");
+const vk_allocator = @import("../vulkan_allocator.zig");
 
 const buf_utils_log = log.ScopedLogger("BUF_UTILS");
 
@@ -54,4 +55,22 @@ pub fn vk_buffer_create_with_staging(allocator: ?*types.VulkanAllocator, device:
 
     buf_utils_log.debug("Successfully created buffer with staging: size={d} bytes, usage=0x{X}", .{ size, usage });
     return true;
+}
+
+pub fn create_buffer(
+    allocator: ?*types.VulkanAllocator,
+    size: c.VkDeviceSize,
+    usage: c.VkBufferUsageFlags,
+    properties: c.VkMemoryPropertyFlags,
+    buffer: *c.VkBuffer,
+    bufferMemory: *c.VkDeviceMemory,
+    bufferAllocation: *c.VmaAllocation,
+) bool {
+    var bufferInfo = std.mem.zeroes(c.VkBufferCreateInfo);
+    bufferInfo.sType = c.VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO;
+    bufferInfo.size = size;
+    bufferInfo.usage = usage;
+    bufferInfo.sharingMode = c.VK_SHARING_MODE_EXCLUSIVE;
+
+    return vk_allocator.allocate_buffer(allocator, &bufferInfo, buffer, bufferMemory, bufferAllocation, properties, false, null);
 }

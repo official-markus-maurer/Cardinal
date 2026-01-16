@@ -754,13 +754,39 @@ pub const SkyboxPipeline = extern struct {
     initialized: bool,
 };
 
+pub const PostProcessParams = extern struct {
+    exposure: f32,
+    contrast: f32,
+    saturation: f32,
+    bloomIntensity: f32,
+    bloomThreshold: f32,
+    bloomKnee: f32,
+    padding: [2]f32,
+};
+
 pub const PostProcessPipeline = extern struct {
     pipeline: c.VkPipeline,
     pipelineLayout: c.VkPipelineLayout,
     descriptorManager: ?*VulkanDescriptorManager,
-    descriptorSet: c.VkDescriptorSet,
+    descriptorSets: [MAX_FRAMES_IN_FLIGHT]c.VkDescriptorSet,
     initialized: bool,
     sampler: c.VkSampler,
+
+    // Bloom resources
+    bloom_pipeline: ComputePipeline,
+    bloom_image: c.VkImage,
+    bloom_view: c.VkImageView,
+    bloom_memory: c.VkDeviceMemory,
+    bloom_allocation: c.VmaAllocation,
+    bloom_descriptor_pool: c.VkDescriptorPool,
+    bloom_descriptor_layout: c.VkDescriptorSetLayout,
+    bloom_descriptor_sets: [MAX_FRAMES_IN_FLIGHT]c.VkDescriptorSet,
+
+    // Params
+    params_buffer: [MAX_FRAMES_IN_FLIGHT]c.VkBuffer,
+    params_memory: [MAX_FRAMES_IN_FLIGHT]c.VkDeviceMemory,
+    params_allocation: [MAX_FRAMES_IN_FLIGHT]c.VmaAllocation,
+    params_mapped: [MAX_FRAMES_IN_FLIGHT]?*anyopaque,
 };
 
 pub const VulkanPipelines = extern struct {

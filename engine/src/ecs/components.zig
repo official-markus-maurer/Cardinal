@@ -1,6 +1,7 @@
 const std = @import("std");
 const math = @import("../core/math.zig");
 const handles = @import("../core/handles.zig");
+const entity_pkg = @import("entity.zig");
 
 pub const Transform = struct {
     position: math.Vec3 = math.Vec3.zero(),
@@ -89,9 +90,9 @@ pub const Name = struct {
 };
 
 pub const Hierarchy = struct {
-    parent: ?u32 = null, // Entity ID
-    first_child: ?u32 = null,
-    next_sibling: ?u32 = null,
-    prev_sibling: ?u32 = null,
+    parent: ?entity_pkg.Entity = null,
+    first_child: ?entity_pkg.Entity = null,
+    next_sibling: ?entity_pkg.Entity = null,
+    prev_sibling: ?entity_pkg.Entity = null,
     child_count: u32 = 0,
 };

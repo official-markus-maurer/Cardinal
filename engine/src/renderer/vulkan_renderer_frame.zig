@@ -309,24 +309,24 @@ fn handle_pending_recreation(renderer: ?*types.CardinalRenderer, s: *types.Vulka
 fn wait_for_fence(s: *types.VulkanState) bool {
     if (s.sync.in_flight_fences == null) {
         frame_log.warn("Frame {d}: In-flight fences array is null, attempting lazy initialization", .{s.sync.current_frame});
-        
+
         var max_frames = s.sync.max_frames_in_flight;
         if (max_frames == 0) max_frames = 3;
-        
+
         if (s.context.device == null) {
-             frame_log.err("Device is null, cannot initialize sync manager", .{});
-             return false;
+            frame_log.err("Device is null, cannot initialize sync manager", .{});
+            return false;
         }
 
         if (!vk_sync_manager.vulkan_sync_manager_init(&s.sync, s.context.device, s.context.graphics_queue, max_frames, s.config.timeline_max_ahead)) {
-             frame_log.err("Lazy initialization failed", .{});
-             return false;
+            frame_log.err("Lazy initialization failed", .{});
+            return false;
         }
-        
+
         // Update max frames in case it was 0
         s.sync.max_frames_in_flight = max_frames;
     }
-    
+
     var current_fence = s.sync.in_flight_fences.?[s.sync.current_frame];
     if (current_fence == null) {
         frame_log.err("Frame {d}: Current fence is null", .{s.sync.current_frame});
@@ -413,7 +413,7 @@ fn render_frame_headless(s: *types.VulkanState, signal_value: u64) void {
 
     // Check if vkQueueSubmit2 is available via function pointer
     var res: c.VkResult = c.VK_SUCCESS;
-    
+
     // Use synchronized submit
     res = vk_sync_manager.vulkan_sync_manager_submit_queue2(s.context.graphics_queue, 1, @ptrCast(&si), fence, s.context.vkQueueSubmit2);
 
@@ -497,7 +497,7 @@ fn submit_command_buffer(s: *types.VulkanState, cmd: c.VkCommandBuffer, acquire_
 
     // Check if vkQueueSubmit2 is available via function pointer
     var res: c.VkResult = c.VK_SUCCESS;
-    
+
     // Use synchronized submit
     res = vk_sync_manager.vulkan_sync_manager_submit_queue2(s.context.graphics_queue, 1, @ptrCast(&submit_info), s.sync.in_flight_fences.?[s.sync.current_frame], s.context.vkQueueSubmit2);
 
@@ -566,10 +566,12 @@ pub export fn cardinal_renderer_draw_frame(renderer: ?*types.CardinalRenderer) c
     if (!handle_pending_recreation(renderer, s))
         return;
 
-    frame_log.info("Frame {d}: Starting draw_frame", .{s.sync.current_frame});
+    frame_log.debug("Frame {d}: Starting draw_frame", .{s.sync.current_frame});
 
-    if (!wait_for_fence(s))
+    if (!wait_for_fence(s)) {
+        frame_log.warn("Frame {d}: Fence wait failed or timed out", .{s.sync.current_frame});
         return;
+    }
 
     // Clean up resources from the previous execution of this frame slot
     vk_mesh_shader.vk_mesh_shader_process_pending_cleanup(s);

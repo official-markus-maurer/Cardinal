@@ -1166,48 +1166,104 @@ pub export fn vk_pbr_render(pipeline: ?*types.VulkanPBRPipeline, commandBuffer: 
     // Pass 1: Opaque
     cmd.bindPipeline(c.VK_PIPELINE_BIND_POINT_GRAPHICS, pipe.pipeline);
 
-    // Bind main descriptor set (Set 0)
+    // Unified Descriptor Binding (Buffers or Sets)
+    var use_buffers_0 = false;
+    var use_buffers_1 = false;
+    
     if (pipe.descriptorManager) |mgr| {
-        var sets: ?[*]const c.VkDescriptorSet = null;
-        var descriptorSets = [_]c.VkDescriptorSet{descriptorSet};
-        if (use_buffers or (descriptorSet != null and @intFromPtr(descriptorSet) != 0)) {
-            sets = &descriptorSets;
-        }
-        descriptor_mgr.vk_descriptor_manager_bind_sets(mgr, commandBuffer, pipe.pipelineLayout, 0, 1, sets, 0, null);
-    } else {
-        const descriptorSets = [_]c.VkDescriptorSet{descriptorSet};
-        cmd.bindDescriptorSets(c.VK_PIPELINE_BIND_POINT_GRAPHICS, pipe.pipelineLayout, 0, &descriptorSets, &[_]u32{});
+        if (descriptor_mgr.vk_descriptor_manager_uses_buffers(mgr)) use_buffers_0 = true;
     }
+    if (pipe.textureManager) |tm| {
+        if (tm.bindless_pool.use_descriptor_buffer) use_buffers_1 = true;
+    }
+    
+    // pbr_log.debug("vk_pbr_render: buffers_0={s}, buffers_1={s}", .{ if(use_buffers_0) "true" else "false", if(use_buffers_1) "true" else "false" });
 
-    // Bind bindless set (Set 1) if available
-    if (pipe.textureManager != null) {
-        const tm = pipe.textureManager.?;
-        if (tm.bindless_pool.use_descriptor_buffer) {
-            const pool = &tm.bindless_pool;
-
-            var binding_info = std.mem.zeroes(c.VkDescriptorBufferBindingInfoEXT);
-            binding_info.sType = c.VK_STRUCTURE_TYPE_DESCRIPTOR_BUFFER_BINDING_INFO_EXT;
-            binding_info.address = pool.descriptor_buffer_address;
-            binding_info.usage = c.VK_BUFFER_USAGE_RESOURCE_DESCRIPTOR_BUFFER_BIT_EXT;
-
-            const binding_infos = [_]c.VkDescriptorBufferBindingInfoEXT{binding_info};
-            if (pool.vkCmdBindDescriptorBuffersEXT) |bind_buffers| {
-                bind_buffers(commandBuffer, 1, &binding_infos);
+    // Fallback for Set 0 if not using buffers
+    if (!use_buffers_0) {
+        if (pipe.descriptorManager) |mgr| {
+            var sets: ?[*]const c.VkDescriptorSet = null;
+            var descriptorSets = [_]c.VkDescriptorSet{descriptorSet};
+            if (descriptorSet != null and @intFromPtr(descriptorSet) != 0) {
+                sets = &descriptorSets;
             }
-
-            const buffer_index: u32 = 0;
-            const offset: c.VkDeviceSize = 0;
-
-            if (pool.vkCmdSetDescriptorBufferOffsetsEXT) |set_offsets| {
-                set_offsets(commandBuffer, c.VK_PIPELINE_BIND_POINT_GRAPHICS, pipe.pipelineLayout, 1, 1, &buffer_index, &offset);
-            }
-        } else if (tm.bindless_pool.descriptor_set != null) {
-            const bindlessSet = tm.bindless_pool.descriptor_set;
-            if (@intFromPtr(bindlessSet) != 0) {
-                const bindlessSets = [_]c.VkDescriptorSet{bindlessSet};
-                cmd.bindDescriptorSets(c.VK_PIPELINE_BIND_POINT_GRAPHICS, pipe.pipelineLayout, 1, &bindlessSets, &[_]u32{});
+            descriptor_mgr.vk_descriptor_manager_bind_sets(mgr, commandBuffer, pipe.pipelineLayout, 0, 1, sets, 0, null);
+        } else {
+             const descriptorSets = [_]c.VkDescriptorSet{descriptorSet};
+             cmd.bindDescriptorSets(c.VK_PIPELINE_BIND_POINT_GRAPHICS, pipe.pipelineLayout, 0, &descriptorSets, &[_]u32{});
+        }
+    }
+    
+    // Fallback for Set 1 if not using buffers
+    if (!use_buffers_1) {
+        if (pipe.textureManager) |tm| {
+             if (tm.bindless_pool.descriptor_set) |bindlessSet| {
+                if (@intFromPtr(bindlessSet) != 0) {
+                    const bindlessSets = [_]c.VkDescriptorSet{bindlessSet};
+                    cmd.bindDescriptorSets(c.VK_PIPELINE_BIND_POINT_GRAPHICS, pipe.pipelineLayout, 1, &bindlessSets, &[_]u32{});
+                }
             }
         }
+    }
+    
+    // Buffer Path (if either uses buffers)
+    if (use_buffers_0 or use_buffers_1) {
+         var binding_infos: [2]c.VkDescriptorBufferBindingInfoEXT = undefined;
+         var binding_count: u32 = 0;
+         var set0_idx: u32 = 0;
+         var set1_idx: u32 = 0;
+         
+         if (use_buffers_0) {
+             set0_idx = binding_count;
+             _ = descriptor_mgr.vk_descriptor_manager_get_binding_info(pipe.descriptorManager, &binding_infos[binding_count]);
+             binding_count += 1;
+         }
+         
+         if (use_buffers_1) {
+             set1_idx = binding_count;
+             const tm = pipe.textureManager.?;
+             binding_infos[binding_count] = std.mem.zeroes(c.VkDescriptorBufferBindingInfoEXT);
+             binding_infos[binding_count].sType = c.VK_STRUCTURE_TYPE_DESCRIPTOR_BUFFER_BINDING_INFO_EXT;
+             binding_infos[binding_count].address = tm.bindless_pool.descriptor_buffer_address;
+             binding_infos[binding_count].usage = c.VK_BUFFER_USAGE_RESOURCE_DESCRIPTOR_BUFFER_BIT_EXT;
+             binding_count += 1;
+         }
+         
+         if (binding_count > 0) {
+             var bind_func: c.PFN_vkCmdBindDescriptorBuffersEXT = null;
+             
+             if (use_buffers_0) {
+                 const mgr = pipe.descriptorManager.?;
+                 if (mgr.vulkan_state) |vs_ptr| {
+                     const vs = @as(*types.VulkanState, @ptrCast(@alignCast(vs_ptr)));
+                     bind_func = vs.context.vkCmdBindDescriptorBuffersEXT;
+                 }
+             } else if (use_buffers_1) {
+                 bind_func = pipe.textureManager.?.bindless_pool.vkCmdBindDescriptorBuffersEXT;
+             }
+             
+             if (bind_func) |f| {
+                 f(commandBuffer, binding_count, &binding_infos);
+             }
+         }
+         
+         if (use_buffers_0) {
+             var sets: ?[*]const c.VkDescriptorSet = null;
+             var descriptorSets = [_]c.VkDescriptorSet{descriptorSet};
+             if (descriptorSet != null and @intFromPtr(descriptorSet) != 0) {
+                 sets = &descriptorSets;
+             }
+             descriptor_mgr.vk_descriptor_manager_set_offsets(pipe.descriptorManager, commandBuffer, pipe.pipelineLayout, 0, 1, sets, set0_idx);
+         }
+         
+         if (use_buffers_1) {
+             const tm = pipe.textureManager.?;
+             if (tm.bindless_pool.vkCmdSetDescriptorBufferOffsetsEXT) |set_offsets| {
+                 const buffer_index = set1_idx;
+                 const offset: c.VkDeviceSize = 0;
+                 set_offsets(commandBuffer, c.VK_PIPELINE_BIND_POINT_GRAPHICS, pipe.pipelineLayout, 1, 1, &buffer_index, &offset);
+             }
+         }
     }
 
     c.vkCmdSetDepthBias(commandBuffer, 0.0, 0.0, 0.0);
@@ -1286,48 +1342,89 @@ pub export fn vk_pbr_render(pipeline: ?*types.VulkanPBRPipeline, commandBuffer: 
     // Pass 2: Blend
     cmd.bindPipeline(c.VK_PIPELINE_BIND_POINT_GRAPHICS, pipe.pipelineBlend);
 
-    // Re-bind descriptor sets for new pipeline if needed
-    if (pipe.descriptorManager) |mgr| {
-        var sets: ?[*]const c.VkDescriptorSet = null;
-        var descriptorSets = [_]c.VkDescriptorSet{descriptorSet};
-        if (use_buffers or (descriptorSet != null and @intFromPtr(descriptorSet) != 0)) {
-            sets = &descriptorSets;
-        }
-        descriptor_mgr.vk_descriptor_manager_bind_sets(mgr, commandBuffer, pipe.pipelineLayout, 0, 1, sets, 0, null);
-    } else {
-        const descriptorSets = [_]c.VkDescriptorSet{descriptorSet};
-        cmd.bindDescriptorSets(c.VK_PIPELINE_BIND_POINT_GRAPHICS, pipe.pipelineLayout, 0, &descriptorSets, &[_]u32{});
-    }
-
-    if (pipe.textureManager != null) {
-        const tm = pipe.textureManager.?;
-        if (tm.bindless_pool.use_descriptor_buffer) {
-            const pool = &tm.bindless_pool;
-
-            var binding_info = std.mem.zeroes(c.VkDescriptorBufferBindingInfoEXT);
-            binding_info.sType = c.VK_STRUCTURE_TYPE_DESCRIPTOR_BUFFER_BINDING_INFO_EXT;
-            binding_info.address = pool.descriptor_buffer_address;
-            binding_info.usage = c.VK_BUFFER_USAGE_RESOURCE_DESCRIPTOR_BUFFER_BIT_EXT;
-
-            const binding_infos = [_]c.VkDescriptorBufferBindingInfoEXT{binding_info};
-            if (pool.vkCmdBindDescriptorBuffersEXT) |bind_buffers| {
-                bind_buffers(commandBuffer, 1, &binding_infos);
+    // Re-bind descriptor sets (Unified)
+    if (!use_buffers_0) {
+        if (pipe.descriptorManager) |mgr| {
+            var sets: ?[*]const c.VkDescriptorSet = null;
+            var descriptorSets = [_]c.VkDescriptorSet{descriptorSet};
+            if (descriptorSet != null and @intFromPtr(descriptorSet) != 0) {
+                sets = &descriptorSets;
             }
-
-            const buffer_index: u32 = 0;
-            const offset: c.VkDeviceSize = 0;
-
-            if (pool.vkCmdSetDescriptorBufferOffsetsEXT) |set_offsets| {
-                set_offsets(commandBuffer, c.VK_PIPELINE_BIND_POINT_GRAPHICS, pipe.pipelineLayout, 1, 1, &buffer_index, &offset);
-            }
+            descriptor_mgr.vk_descriptor_manager_bind_sets(mgr, commandBuffer, pipe.pipelineLayout, 0, 1, sets, 0, null);
         } else {
-            if (tm.bindless_pool.descriptor_set) |bindlessSet| {
+             const descriptorSets = [_]c.VkDescriptorSet{descriptorSet};
+             cmd.bindDescriptorSets(c.VK_PIPELINE_BIND_POINT_GRAPHICS, pipe.pipelineLayout, 0, &descriptorSets, &[_]u32{});
+        }
+    }
+    
+    if (!use_buffers_1) {
+        if (pipe.textureManager) |tm| {
+             if (tm.bindless_pool.descriptor_set) |bindlessSet| {
                 if (@intFromPtr(bindlessSet) != 0) {
                     const bindlessSets = [_]c.VkDescriptorSet{bindlessSet};
                     cmd.bindDescriptorSets(c.VK_PIPELINE_BIND_POINT_GRAPHICS, pipe.pipelineLayout, 1, &bindlessSets, &[_]u32{});
                 }
             }
         }
+    }
+    
+    if (use_buffers_0 or use_buffers_1) {
+         var binding_infos: [2]c.VkDescriptorBufferBindingInfoEXT = undefined;
+         var binding_count: u32 = 0;
+         var set0_idx: u32 = 0;
+         var set1_idx: u32 = 0;
+         
+         if (use_buffers_0) {
+             set0_idx = binding_count;
+             _ = descriptor_mgr.vk_descriptor_manager_get_binding_info(pipe.descriptorManager, &binding_infos[binding_count]);
+             binding_count += 1;
+         }
+         
+         if (use_buffers_1) {
+             set1_idx = binding_count;
+             const tm = pipe.textureManager.?;
+             binding_infos[binding_count] = std.mem.zeroes(c.VkDescriptorBufferBindingInfoEXT);
+             binding_infos[binding_count].sType = c.VK_STRUCTURE_TYPE_DESCRIPTOR_BUFFER_BINDING_INFO_EXT;
+             binding_infos[binding_count].address = tm.bindless_pool.descriptor_buffer_address;
+             binding_infos[binding_count].usage = c.VK_BUFFER_USAGE_RESOURCE_DESCRIPTOR_BUFFER_BIT_EXT;
+             binding_count += 1;
+         }
+         
+         if (binding_count > 0) {
+             var bind_func: c.PFN_vkCmdBindDescriptorBuffersEXT = null;
+             
+             if (use_buffers_0) {
+                 const mgr = pipe.descriptorManager.?;
+                 if (mgr.vulkan_state) |vs_ptr| {
+                     const vs = @as(*types.VulkanState, @ptrCast(@alignCast(vs_ptr)));
+                     bind_func = vs.context.vkCmdBindDescriptorBuffersEXT;
+                 }
+             } else if (use_buffers_1) {
+                 bind_func = pipe.textureManager.?.bindless_pool.vkCmdBindDescriptorBuffersEXT;
+             }
+             
+             if (bind_func) |f| {
+                 f(commandBuffer, binding_count, &binding_infos);
+             }
+         }
+         
+         if (use_buffers_0) {
+             var sets: ?[*]const c.VkDescriptorSet = null;
+             var descriptorSets = [_]c.VkDescriptorSet{descriptorSet};
+             if (descriptorSet != null and @intFromPtr(descriptorSet) != 0) {
+                 sets = &descriptorSets;
+             }
+             descriptor_mgr.vk_descriptor_manager_set_offsets(pipe.descriptorManager, commandBuffer, pipe.pipelineLayout, 0, 1, sets, set0_idx);
+         }
+         
+         if (use_buffers_1) {
+             const tm = pipe.textureManager.?;
+             if (tm.bindless_pool.vkCmdSetDescriptorBufferOffsetsEXT) |set_offsets| {
+                 const buffer_index = set1_idx;
+                 const offset: c.VkDeviceSize = 0;
+                 set_offsets(commandBuffer, c.VK_PIPELINE_BIND_POINT_GRAPHICS, pipe.pipelineLayout, 1, 1, &buffer_index, &offset);
+             }
+         }
     }
 
     // Apply depth bias for transparent materials too (to prevent z-fighting with coplanar opaque surfaces)

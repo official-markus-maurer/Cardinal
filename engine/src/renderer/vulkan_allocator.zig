@@ -80,8 +80,23 @@ pub export fn init(alloc: ?*types.VulkanAllocator, instance: c.VkInstance, phys:
 
     // We already loaded bind functions above
 
-    g_vulkan_functions.vkGetDeviceBufferMemoryRequirements = bufReq;
-    g_vulkan_functions.vkGetDeviceImageMemoryRequirements = imgReq;
+    if (bufReq == null) {
+        g_vulkan_functions.vkGetDeviceBufferMemoryRequirements = @ptrCast(c.vkGetDeviceProcAddr(dev, "vkGetDeviceBufferMemoryRequirements"));
+        if (g_vulkan_functions.vkGetDeviceBufferMemoryRequirements == null) {
+            g_vulkan_functions.vkGetDeviceBufferMemoryRequirements = @ptrCast(c.vkGetDeviceProcAddr(dev, "vkGetDeviceBufferMemoryRequirementsKHR"));
+        }
+    } else {
+        g_vulkan_functions.vkGetDeviceBufferMemoryRequirements = bufReq;
+    }
+
+    if (imgReq == null) {
+        g_vulkan_functions.vkGetDeviceImageMemoryRequirements = @ptrCast(c.vkGetDeviceProcAddr(dev, "vkGetDeviceImageMemoryRequirements"));
+        if (g_vulkan_functions.vkGetDeviceImageMemoryRequirements == null) {
+            g_vulkan_functions.vkGetDeviceImageMemoryRequirements = @ptrCast(c.vkGetDeviceProcAddr(dev, "vkGetDeviceImageMemoryRequirementsKHR"));
+        }
+    } else {
+        g_vulkan_functions.vkGetDeviceImageMemoryRequirements = imgReq;
+    }
 
     // Additional functions if available
     if (bufDevAddr != null) {
@@ -174,6 +189,7 @@ pub export fn allocate_image(alloc: ?*types.VulkanAllocator, image_ci: ?*const c
         out_memory.?.* = infoOut.deviceMemory;
     }
 
+    vma_log.debug("Allocated image: handle={any} allocation={any}", .{ out_image.?.*, out_allocation.?.* });
     return true;
 }
 
@@ -184,56 +200,44 @@ pub export fn allocate_buffer(alloc: ?*types.VulkanAllocator, buffer_ci: ?*const
     allocInfo.usage = get_vma_usage(required_props);
     allocInfo.flags = get_vma_flags(required_props);
 
-    var allocInfoOut: c.VmaAllocationInfo = undefined;
+    if (map_immediately) {
+        allocInfo.flags |= c.VMA_ALLOCATION_CREATE_MAPPED_BIT;
+    }
 
-    const result = c.vmaCreateBuffer(alloc.?.handle, buffer_ci, &allocInfo, out_buffer, out_allocation, &allocInfoOut);
+    var infoOut: c.VmaAllocationInfo = undefined;
+
+    const result = c.vmaCreateBuffer(alloc.?.handle, buffer_ci, &allocInfo, out_buffer, out_allocation, &infoOut);
     if (result != c.VK_SUCCESS) {
         vma_log.err("vmaCreateBuffer failed: {d}", .{result});
         return false;
     }
 
-    // Verify buffer handle
-    if (out_buffer.?.* == null) {
-        vma_log.err("vmaCreateBuffer returned success but buffer handle is null", .{});
-        return false;
-    }
-
     if (out_memory != null) {
-        out_memory.?.* = allocInfoOut.deviceMemory;
+        out_memory.?.* = infoOut.deviceMemory;
     }
 
-    if (map_immediately) {
-        if (out_mapped_ptr) |ptr| {
-            const res = c.vmaMapMemory(alloc.?.handle, out_allocation.?.*, ptr);
-            if (res != c.VK_SUCCESS) {
-                vma_log.err("vmaMapMemory failed: {d}", .{res});
-                free_buffer(alloc, out_buffer.?.*, out_allocation.?.*);
-                return false;
-            }
-        } else {
-            var dummy_ptr: ?*anyopaque = null;
-            const res = c.vmaMapMemory(alloc.?.handle, out_allocation.?.*, &dummy_ptr);
-            if (res != c.VK_SUCCESS) {
-                vma_log.err("vmaMapMemory failed: {d}", .{res});
-                free_buffer(alloc, out_buffer.?.*, out_allocation.?.*);
-                return false;
-            }
-        }
-    } else if (out_mapped_ptr != null) {
-        out_mapped_ptr.?.* = null;
+    if (map_immediately and out_mapped_ptr != null) {
+        out_mapped_ptr.?.* = infoOut.pMappedData;
     }
 
+    vma_log.debug("Allocated buffer: handle={any} allocation={any}", .{ out_buffer.?.*, out_allocation.?.* });
     return true;
 }
 
 pub export fn free_image(alloc: ?*types.VulkanAllocator, image: c.VkImage, allocation: c.VmaAllocation) callconv(.c) void {
-    if (alloc == null or image == null or allocation == null) return;
-    c.vmaDestroyImage(alloc.?.handle, image, allocation);
+    if (alloc == null) return;
+    if (image != null and allocation != null) {
+        vma_log.debug("Freeing image: handle={any} allocation={any}", .{ image, allocation });
+        c.vmaDestroyImage(alloc.?.handle, image, allocation);
+    }
 }
 
 pub export fn free_buffer(alloc: ?*types.VulkanAllocator, buffer: c.VkBuffer, allocation: c.VmaAllocation) callconv(.c) void {
-    if (alloc == null or buffer == null or allocation == null) return;
-    c.vmaDestroyBuffer(alloc.?.handle, buffer, allocation);
+    if (alloc == null) return;
+    if (buffer != null and allocation != null) {
+        vma_log.debug("Freeing buffer: handle={any} allocation={any}", .{ buffer, allocation });
+        c.vmaDestroyBuffer(alloc.?.handle, buffer, allocation);
+    }
 }
 
 // Helpers for mapped memory

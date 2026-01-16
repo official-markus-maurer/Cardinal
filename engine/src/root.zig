@@ -63,6 +63,9 @@ pub const ecs_registry = @import("ecs/registry.zig");
 pub const ecs_system = @import("ecs/system.zig");
 pub const ecs_components = @import("ecs/components.zig");
 pub const ecs_systems = @import("ecs/systems.zig");
+pub const ecs_scheduler = @import("ecs/scheduler.zig");
+pub const ecs_archetype = @import("ecs/archetype.zig");
+pub const ecs_command_buffer = @import("ecs/command_buffer.zig");
 
 comptime {
     _ = log;
@@ -98,6 +101,9 @@ comptime {
     _ = vulkan_swapchain;
     _ = vulkan_mesh_shader;
     _ = vulkan_pbr;
+    _ = ecs_scheduler;
+    _ = ecs_archetype;
+    _ = ecs_command_buffer;
     _ = vulkan_descriptor_indexing;
     _ = vulkan_descriptor_utils;
     _ = vulkan_shader_utils;

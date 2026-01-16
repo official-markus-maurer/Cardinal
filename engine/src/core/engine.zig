@@ -19,6 +19,7 @@ const vulkan_renderer = @import("../renderer/vulkan_renderer.zig");
 const vulkan_types = @import("../renderer/vulkan_types.zig");
 const ecs_registry = @import("../ecs/registry.zig");
 const ecs_systems = @import("../ecs/systems.zig");
+const ecs_scheduler = @import("../ecs/scheduler.zig");
 
 pub const CardinalEngineConfig = config_pkg.CardinalEngineConfig;
 
@@ -30,6 +31,7 @@ pub const CardinalEngine = struct {
     config: CardinalEngineConfig,
     config_manager: config_pkg.ConfigManager,
     registry: ecs_registry.Registry,
+    scheduler: ecs_scheduler.Scheduler,
 
     frame_allocator: stack_allocator.StackAllocator = undefined,
     frame_memory: []u8 = undefined,
@@ -63,7 +65,13 @@ pub const CardinalEngine = struct {
             .renderer = .{ ._opaque = null },
             .last_frame_time = platform.get_time_ns(),
             .registry = ecs_registry.Registry.init(allocator),
+            .scheduler = ecs_scheduler.Scheduler.init(allocator, undefined), // Registry pointer set below
         };
+        // Fixup registry pointer in scheduler (since self.registry is value, but we need pointer to it)
+        // Actually self.registry is inside self, so we need self pointer.
+        // But self is created on heap.
+        self.scheduler.registry = &self.registry;
+
         errdefer {
             self.deinit();
             allocator.destroy(self);
@@ -79,6 +87,8 @@ pub const CardinalEngine = struct {
     }
 
     pub fn deinit(self: *CardinalEngine) void {
+        self.scheduler.deinit();
+
         // Shutdown async loader first to stop worker threads and release pending tasks
         if (self.async_loader_initialized) {
             async_loader.cardinal_async_loader_shutdown();
@@ -142,9 +152,10 @@ pub const CardinalEngine = struct {
         }
 
         // ECS System Updates
-        ecs_systems.ScriptSystem.update(&self.registry, delta_time);
-        ecs_systems.PhysicsSystem.update(&self.registry, delta_time);
-        ecs_systems.RenderSystem.update(&self.registry, delta_time);
+        // ecs_systems.ScriptSystem.update(&self.registry, delta_time);
+        // ecs_systems.PhysicsSystem.update(&self.registry, delta_time);
+        // ecs_systems.RenderSystem.update(&self.registry, delta_time);
+        try self.scheduler.run(delta_time);
 
         try self.module_manager.update(delta_time);
     }
@@ -154,6 +165,11 @@ pub const CardinalEngine = struct {
     }
 
     fn initSystems(self: *CardinalEngine) !void {
+        // Register default ECS Systems
+        try self.scheduler.add(ecs_systems.ScriptSystemDesc);
+        try self.scheduler.add(ecs_systems.PhysicsSystemDesc);
+        try self.scheduler.add(ecs_systems.RenderSystemDesc);
+
         eng_log.info("Initializing memory management system...", .{});
         memory.cardinal_memory_init(self.config.memory_size);
         self.memory_initialized = true;

@@ -175,6 +175,9 @@ fn create_task(task_type: CardinalAsyncTaskType, priority: CardinalAsyncPriority
         return null;
     }
 
+    // Ensure the job is pushed to the completed queue so we can process callbacks and free it
+    job.?.push_to_completed_queue = true;
+
     // Store Job pointer in 'next' field (Type punning)
     task.next = @ptrCast(job);
 
@@ -762,6 +765,7 @@ pub export fn cardinal_async_free_task(task: ?*CardinalAsyncTask) callconv(.c) v
         // If we are shutting down (or already shut down), the job system pool is likely destroyed,
         // so the job pointer is invalid or the pool is gone.
         if (g_async_loader.initialized) {
+            g_async_loader.state_mutex.lock();
             if (t.next) |job_ptr| {
                 const job = @as(*job_system.Job, @ptrCast(job_ptr));
                 // Detach task from job to signal it's orphaned.
@@ -770,6 +774,7 @@ pub export fn cardinal_async_free_task(task: ?*CardinalAsyncTask) callconv(.c) v
                 job.data = null;
                 t.next = null;
             }
+            g_async_loader.state_mutex.unlock();
         }
 
         if (t.result_data) |data| {
@@ -898,8 +903,20 @@ pub export fn cardinal_async_process_completed_tasks(max_tasks: u32) callconv(.c
         if (job_opt == null) break;
         const job = job_opt.?;
 
+        // Safety check: ensure this job belongs to async_loader
+        if (job.func != execute_task_job) {
+             // Foreign job - skip processing but do NOT free it as we don't own it.
+             // Note: This leaks the job if the owner expected it to be in the queue (which they shouldn't if they handle cleanup).
+             // Ideally we would push it back, but that changes order.
+             // Given the fix in JobSystem to allow opting out of completed queue, this should be rare.
+             continue;
+        }
+
+        g_async_loader.state_mutex.lock();
+
         // If job data is null, the task was cancelled/freed already
         if (job.data == null) {
+            g_async_loader.state_mutex.unlock();
             job_system.free_job(job);
             continue;
         }
@@ -911,9 +928,14 @@ pub export fn cardinal_async_process_completed_tasks(max_tasks: u32) callconv(.c
 
         // Detach job from task to prevent double-free or race conditions
         task.next = null;
+        
+        const cb = task.callback;
+        const cb_data = task.callback_data;
 
-        if (task.callback) |cb| {
-            cb(task, task.callback_data);
+        g_async_loader.state_mutex.unlock();
+
+        if (cb) |f| {
+            f(task, cb_data);
         }
 
         // We are responsible for freeing the job now that it's out of the queue

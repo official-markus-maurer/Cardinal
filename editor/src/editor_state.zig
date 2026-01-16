@@ -131,6 +131,17 @@ pub const EditorState = struct {
     material_normal_scale: f32 = 1.0,
     material_ao_strength: f32 = 1.0,
 
+    // Post Process
+    post_process: types.PostProcessParams = .{
+        .exposure = 1.0,
+        .contrast = 1.0,
+        .saturation = 1.0,
+        .bloomIntensity = 0.04,
+        .bloomThreshold = 1.0,
+        .bloomKnee = 0.1,
+        .padding = .{ 0.0, 0.0 },
+    },
+
     // UI Toggles
     show_material_0_toggle: bool = true,
     tab_key_pressed: bool = false,

@@ -34,6 +34,7 @@ pub const Job = extern struct {
     id: u32,
     priority: JobPriority,
     status: JobStatus,
+    push_to_completed_queue: bool,
 
     func: JobFunc,
     data: ?*anyopaque,
@@ -238,7 +239,7 @@ fn worker_thread_func(worker: *WorkerThread) void {
     g_job_system.state_mutex.unlock();
 
     // Push to completed queue
-    {
+    if (job.push_to_completed_queue) {
         g_job_system.completed_queue.mutex.lock();
         defer g_job_system.completed_queue.mutex.unlock();
 

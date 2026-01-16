@@ -576,6 +576,7 @@ pub export fn vk_descriptor_manager_allocate_sets(manager: ?*types.VulkanDescrip
         while (i < setCount) : (i += 1) {
             // Ensure we track which pool this set came from!
             // allocInfo.descriptorPool was updated if we created a new pool.
+            // desc_log.debug("Mapping set 0x{x} to pool 0x{x}", .{ @intFromPtr(pDescriptorSets.?[i]), @intFromPtr(allocInfo.descriptorPool) });
             map.put(std.heap.c_allocator, pDescriptorSets.?[i], allocInfo.descriptorPool) catch {};
         }
     }
@@ -807,6 +808,10 @@ pub export fn vk_descriptor_manager_update_textures_with_samplers(manager: ?*typ
 }
 
 pub export fn vk_descriptor_manager_bind_sets(manager: ?*types.VulkanDescriptorManager, commandBuffer: c.VkCommandBuffer, pipelineLayout: c.VkPipelineLayout, firstSet: u32, setCount: u32, pDescriptorSets: ?[*]const c.VkDescriptorSet, dynamicOffsetCount: u32, pDynamicOffsets: ?[*]const u32) callconv(.c) void {
+    vk_descriptor_manager_bind_sets_with_buffer_index(manager, commandBuffer, pipelineLayout, firstSet, setCount, pDescriptorSets, dynamicOffsetCount, pDynamicOffsets, 0);
+}
+
+pub export fn vk_descriptor_manager_bind_sets_with_buffer_index(manager: ?*types.VulkanDescriptorManager, commandBuffer: c.VkCommandBuffer, pipelineLayout: c.VkPipelineLayout, firstSet: u32, setCount: u32, pDescriptorSets: ?[*]const c.VkDescriptorSet, dynamicOffsetCount: u32, pDynamicOffsets: ?[*]const u32, bufferIndex: u32) callconv(.c) void {
     if (manager == null) return;
     const mgr = manager.?;
     if (!mgr.initialized or setCount == 0) return;
@@ -815,55 +820,108 @@ pub export fn vk_descriptor_manager_bind_sets(manager: ?*types.VulkanDescriptorM
         if (mgr.vulkan_state == null) return;
         const vs = @as(*types.VulkanState, @ptrCast(@alignCast(mgr.vulkan_state)));
 
-        var addressInfo = std.mem.zeroes(c.VkBufferDeviceAddressInfo);
-        addressInfo.sType = c.VK_STRUCTURE_TYPE_BUFFER_DEVICE_ADDRESS_INFO;
-        addressInfo.buffer = mgr.descriptorBuffer.handle;
+        if (bufferIndex == 0) {
+            var addressInfo = std.mem.zeroes(c.VkBufferDeviceAddressInfo);
+            addressInfo.sType = c.VK_STRUCTURE_TYPE_BUFFER_DEVICE_ADDRESS_INFO;
+            addressInfo.buffer = mgr.descriptorBuffer.handle;
 
-        const baseAddress = vs.context.vkGetBufferDeviceAddress.?(mgr.device, &addressInfo);
+            const baseAddress = vs.context.vkGetBufferDeviceAddress.?(mgr.device, &addressInfo);
 
-        var bindingInfo = std.mem.zeroes(c.VkDescriptorBufferBindingInfoEXT);
-        bindingInfo.sType = c.VK_STRUCTURE_TYPE_DESCRIPTOR_BUFFER_BINDING_INFO_EXT;
-        bindingInfo.address = baseAddress;
-        bindingInfo.usage = c.VK_BUFFER_USAGE_RESOURCE_DESCRIPTOR_BUFFER_BIT_EXT;
+            var bindingInfo = std.mem.zeroes(c.VkDescriptorBufferBindingInfoEXT);
+            bindingInfo.sType = c.VK_STRUCTURE_TYPE_DESCRIPTOR_BUFFER_BINDING_INFO_EXT;
+            bindingInfo.address = baseAddress;
+            bindingInfo.usage = c.VK_BUFFER_USAGE_RESOURCE_DESCRIPTOR_BUFFER_BIT_EXT;
 
-        vs.context.vkCmdBindDescriptorBuffersEXT.?(commandBuffer, 1, &bindingInfo);
-
-        // Allocating on heap since alloca is not available and stack array size must be comptime known
-        const ptr1 = c.malloc(setCount * @sizeOf(u32));
-        const ptr2 = c.malloc(setCount * @sizeOf(c.VkDeviceSize));
-
-        const bufferIndices = if (ptr1) |p| @as([*]u32, @ptrCast(@alignCast(p))) else null;
-        const offsets = if (ptr2) |p| @as([*]c.VkDeviceSize, @ptrCast(@alignCast(p))) else null;
-
-        if (bufferIndices != null and offsets != null) {
-            var i: u32 = 0;
-            while (i < setCount) : (i += 1) {
-                bufferIndices.?[i] = 0;
-                // Extract index from pseudo-handle if provided, otherwise fallback to assuming linear mapping (legacy/risky)
-                // But for descriptor buffers as implemented in allocate_sets, we MUST have the handle.
-                if (pDescriptorSets) |sets| {
-                    const setHandle = @intFromPtr(sets[i]);
-                    // Adjust for 1-based index
-                    if (setHandle > 0) {
-                        const setIndex = setHandle - 1;
-                        offsets.?[i] = mgr.descriptorSetSize * @as(u32, @intCast(setIndex));
-                    } else {
-                        offsets.?[i] = 0; // Invalid handle
-                    }
-                } else {
-                    offsets.?[i] = mgr.descriptorSetSize * (firstSet + i);
-                }
-            }
-
-            vs.context.vkCmdSetDescriptorBufferOffsetsEXT.?(commandBuffer, c.VK_PIPELINE_BIND_POINT_GRAPHICS, pipelineLayout, firstSet, setCount, bufferIndices, offsets);
+            vs.context.vkCmdBindDescriptorBuffersEXT.?(commandBuffer, 1, &bindingInfo);
         }
 
-        if (ptr1) |p| c.free(p);
-        if (ptr2) |p| c.free(p);
+        vk_descriptor_manager_set_offsets(manager, commandBuffer, pipelineLayout, firstSet, setCount, pDescriptorSets, bufferIndex);
     } else {
         if (pDescriptorSets == null) return;
         c.vkCmdBindDescriptorSets(commandBuffer, c.VK_PIPELINE_BIND_POINT_GRAPHICS, pipelineLayout, firstSet, setCount, pDescriptorSets, dynamicOffsetCount, pDynamicOffsets);
     }
+}
+
+pub export fn vk_descriptor_manager_get_buffer_handle(manager: ?*types.VulkanDescriptorManager) callconv(.c) c.VkBuffer {
+    if (manager) |mgr| {
+        if (mgr.useDescriptorBuffers) return mgr.descriptorBuffer.handle;
+    }
+    return null;
+}
+
+pub export fn vk_descriptor_manager_get_binding_info(manager: ?*types.VulkanDescriptorManager, outInfo: *c.VkDescriptorBufferBindingInfoEXT) callconv(.c) bool {
+    if (manager == null) return false;
+    const mgr = manager.?;
+    if (!mgr.initialized or !mgr.useDescriptorBuffers or mgr.vulkan_state == null) return false;
+
+    const vs = @as(*types.VulkanState, @ptrCast(@alignCast(mgr.vulkan_state)));
+
+    var addressInfo = std.mem.zeroes(c.VkBufferDeviceAddressInfo);
+    addressInfo.sType = c.VK_STRUCTURE_TYPE_BUFFER_DEVICE_ADDRESS_INFO;
+    addressInfo.buffer = mgr.descriptorBuffer.handle;
+
+    const baseAddress = vs.context.vkGetBufferDeviceAddress.?(mgr.device, &addressInfo);
+
+    outInfo.* = std.mem.zeroes(c.VkDescriptorBufferBindingInfoEXT);
+    outInfo.sType = c.VK_STRUCTURE_TYPE_DESCRIPTOR_BUFFER_BINDING_INFO_EXT;
+    outInfo.address = baseAddress;
+    outInfo.usage = c.VK_BUFFER_USAGE_RESOURCE_DESCRIPTOR_BUFFER_BIT_EXT;
+
+    return true;
+}
+
+pub export fn vk_descriptor_manager_set_offsets(manager: ?*types.VulkanDescriptorManager, commandBuffer: c.VkCommandBuffer, pipelineLayout: c.VkPipelineLayout, firstSet: u32, setCount: u32, pDescriptorSets: ?[*]const c.VkDescriptorSet, bufferIndex: u32) callconv(.c) void {
+    if (manager == null) return;
+    const mgr = manager.?;
+    if (!mgr.initialized or !mgr.useDescriptorBuffers or mgr.vulkan_state == null) return;
+
+    const vs = @as(*types.VulkanState, @ptrCast(@alignCast(mgr.vulkan_state)));
+
+    // Use stack buffer for small counts to avoid malloc
+    var stack_indices: [8]u32 = undefined;
+    var stack_offsets: [8]c.VkDeviceSize = undefined;
+
+    var bufferIndices: [*]u32 = &stack_indices;
+    var offsets: [*]c.VkDeviceSize = &stack_offsets;
+
+    // Heap allocation fallback for large counts
+    var ptr1: ?*anyopaque = null;
+    var ptr2: ?*anyopaque = null;
+
+    if (setCount > 8) {
+        ptr1 = c.malloc(setCount * @sizeOf(u32));
+        ptr2 = c.malloc(setCount * @sizeOf(c.VkDeviceSize));
+        if (ptr1 == null or ptr2 == null) {
+            if (ptr1) |p| c.free(p);
+            if (ptr2) |p| c.free(p);
+            return;
+        }
+        bufferIndices = @as([*]u32, @ptrCast(@alignCast(ptr1)));
+        offsets = @as([*]c.VkDeviceSize, @ptrCast(@alignCast(ptr2)));
+    }
+    defer {
+        if (ptr1) |p| c.free(p);
+        if (ptr2) |p| c.free(p);
+    }
+
+    var i: u32 = 0;
+    while (i < setCount) : (i += 1) {
+        bufferIndices[i] = bufferIndex;
+        // Extract index from pseudo-handle if provided
+        if (pDescriptorSets) |sets| {
+            const setHandle = @intFromPtr(sets[i]);
+            if (setHandle > 0) {
+                const setIndex = setHandle - 1;
+                offsets[i] = mgr.descriptorSetSize * @as(u32, @intCast(setIndex));
+            } else {
+                offsets[i] = 0;
+            }
+        } else {
+            offsets[i] = mgr.descriptorSetSize * (firstSet + i);
+        }
+    }
+
+    vs.context.vkCmdSetDescriptorBufferOffsetsEXT.?(commandBuffer, c.VK_PIPELINE_BIND_POINT_GRAPHICS, pipelineLayout, firstSet, setCount, bufferIndices, offsets);
 }
 
 pub export fn vk_descriptor_manager_get_layout(manager: ?*const types.VulkanDescriptorManager) callconv(.c) c.VkDescriptorSetLayout {

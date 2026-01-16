@@ -143,6 +143,17 @@ void imgui_bridge_force_clear_backend_data(void) {
   io.BackendRendererName = nullptr;
 }
 
+void imgui_bridge_invalidate_device_objects(void) {
+  ImGuiPlatformIO& platform_io = ImGui::GetPlatformIO();
+  for (int i = 0; i < platform_io.Textures.Size; i++) {
+    ImTextureData* tex = platform_io.Textures[i];
+    // Clear backend data to prevent access to invalid resources
+    tex->BackendUserData = nullptr;
+    // Force recreation on next use
+    tex->SetStatus(ImTextureStatus_WantCreate);
+  }
+}
+
 void imgui_bridge_impl_vulkan_new_frame(void) { ImGui_ImplVulkan_NewFrame(); }
 
 void imgui_bridge_impl_vulkan_render_draw_data(VkCommandBuffer command_buffer) {

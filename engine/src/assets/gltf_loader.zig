@@ -23,21 +23,13 @@ const c = @cImport({
 
 // Texture path cache
 var g_texture_path_cache: std.StringHashMap([]const u8) = undefined;
-var g_cache_initialized: bool = false;
+var g_init_once = std.once(init_texture_cache_impl);
 var g_cache_mutex: std.Thread.Mutex = .{};
 
-fn init_texture_cache() void {
-    if (!g_cache_initialized) {
-        g_cache_mutex.lock();
-        defer g_cache_mutex.unlock();
-
-        if (!g_cache_initialized) {
-            const allocator = memory.cardinal_get_allocator_for_category(.ASSETS);
-            g_texture_path_cache = std.StringHashMap([]const u8).init(allocator.as_allocator());
-            g_cache_initialized = true;
-            gltf_log.debug("Texture path cache initialized (HashMap)", .{});
-        }
-    }
+fn init_texture_cache_impl() void {
+    const allocator = memory.cardinal_get_allocator_for_category(.ASSETS);
+    g_texture_path_cache = std.StringHashMap([]const u8).init(allocator.as_allocator());
+    gltf_log.debug("Texture path cache initialized (HashMap)", .{});
 }
 
 fn compute_cache_key(buf: []u8, base: []const u8, uri: []const u8) ![]const u8 {
@@ -65,7 +57,7 @@ fn compute_cache_key(buf: []u8, base: []const u8, uri: []const u8) ![]const u8 {
 }
 
 fn lookup_cached_path(base: []const u8, uri: []const u8) ?[]const u8 {
-    if (!g_cache_initialized) return null;
+    g_init_once.call();
 
     g_cache_mutex.lock();
     defer g_cache_mutex.unlock();
@@ -81,7 +73,7 @@ fn lookup_cached_path(base: []const u8, uri: []const u8) ?[]const u8 {
 }
 
 fn cache_texture_path(base: []const u8, uri: []const u8, resolved_path: []const u8) void {
-    if (!g_cache_initialized) init_texture_cache();
+    g_init_once.call();
 
     g_cache_mutex.lock();
     defer g_cache_mutex.unlock();
@@ -1067,7 +1059,7 @@ fn load_lights_from_gltf(data: *const c.cgltf_data, out_lights: *?[*]scene.Cardi
 fn manual_load_buffers(data: *c.cgltf_data, gltf_path: [*:0]const u8) bool {
     const allocator = memory.cardinal_get_allocator_for_category(.TEMPORARY).as_allocator();
     const path_span = std.mem.span(gltf_path);
-    
+
     // Log the path we are trying to use
     // gltf_log.debug("Manual load buffers for: {s}", .{path_span});
 
@@ -1090,7 +1082,7 @@ fn manual_load_buffers(data: *c.cgltf_data, gltf_path: [*:0]const u8) bool {
             allocator.dupe(u8, uri) catch return false
         else
             std.fs.path.join(allocator, &[_][]const u8{ dir, uri }) catch return false;
-            
+
         defer allocator.free(bin_path);
 
         var file: std.fs.File = undefined;
@@ -1156,17 +1148,17 @@ fn manual_load_buffers(data: *c.cgltf_data, gltf_path: [*:0]const u8) bool {
 }
 
 pub export fn cardinal_gltf_load_scene(path: [*:0]const u8, out_scene: *scene.CardinalScene) callconv(.c) bool {
-    std.debug.print("[GLTF] cardinal_gltf_load_scene start: {s}\n", .{path});
+    gltf_log.debug("[GLTF] cardinal_gltf_load_scene start: {s}\n", .{path});
     // Log with Error level to ensure it shows up in user logs (temporary debugging)
     // gltf_log.info("Starting GLTF scene loading: {s}", .{path});
-    
+
     // Validate path (basic check)
     if (path[0] == 0) {
         gltf_log.err("Empty path passed to GLTF loader", .{});
         return false;
     }
 
-    gltf_log.info("GLTF Loader: Processing path '{s}' (ptr: {*})", .{path, path});
+    gltf_log.info("GLTF Loader: Processing path '{s}' (ptr: {*})", .{ path, path });
 
     // Make a local copy of the path to avoid potential memory corruption issues
     // and ensure stability across C calls.
@@ -1186,20 +1178,17 @@ pub export fn cardinal_gltf_load_scene(path: [*:0]const u8, out_scene: *scene.Ca
     var options: c.cgltf_options = std.mem.zeroes(c.cgltf_options);
     var data: ?*c.cgltf_data = null;
 
-    std.debug.print("[GLTF] Calling cgltf_parse_file...\n", .{});
     gltf_log.debug("Calling cgltf_parse_file...", .{});
     const result = c.cgltf_parse_file(&options, local_path, &data);
     if (result != c.cgltf_result_success) {
-        std.debug.print("[GLTF] cgltf_parse_file failed: {d}\n", .{result});
-        gltf_log.err("cgltf_parse_file failed: {d} for {s}", .{ result, local_path });
+        gltf_log.err("cgltf_parse_file failed: {d}", .{result});
         return false;
     }
     gltf_log.debug("cgltf_parse_file success. Data: {*}", .{data});
 
     const d = data.?;
 
-    std.debug.print("[GLTF] Calling cgltf_load_buffers...\n", .{});
-    gltf_log.debug("Calling cgltf_load_buffers with path '{s}' (ptr: {*})", .{local_path, local_path});
+    gltf_log.debug("Calling cgltf_load_buffers with path '{s}' (ptr: {*})", .{ local_path, local_path });
     const load_result = c.cgltf_load_buffers(&options, data, local_path);
     if (load_result != c.cgltf_result_success) {
         std.debug.print("[GLTF] cgltf_load_buffers failed: {d}\n", .{load_result});
@@ -1211,8 +1200,7 @@ pub export fn cardinal_gltf_load_scene(path: [*:0]const u8, out_scene: *scene.Ca
             return false;
         }
     }
-    std.debug.print("[GLTF] Buffers loaded. Textures: {d}, Meshes: {d}, Materials: {d}\n", .{ d.textures_count, d.meshes_count, d.materials_count });
-
+    gltf_log.debug("[GLTF] Buffers loaded. Textures: {d}, Meshes: {d}, Materials: {d}\n", .{ d.textures_count, d.meshes_count, d.materials_count });
 
     // Load textures
     const num_textures = if (d.textures_count > 0) d.textures_count else d.images_count;

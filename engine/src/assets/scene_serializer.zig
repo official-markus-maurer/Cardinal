@@ -279,7 +279,7 @@ pub const SceneSerializer = struct {
             }
 
             // First pass: Create entities and build ID map
-            var id_map = std.AutoHashMap(u32, u32).init(self.allocator);
+            var id_map = std.AutoHashMap(u32, entity_pkg.Entity).init(self.allocator);
             defer id_map.deinit();
 
             // Store created entities to add components in second pass
@@ -297,7 +297,7 @@ pub const SceneSerializer = struct {
 
                 if (entity_val.object.get("id")) |id_val| {
                     if (id_val == .integer) {
-                        try id_map.put(@intCast(id_val.integer), entity.index());
+                        try id_map.put(@intCast(id_val.integer), entity);
                     }
                 }
 
@@ -582,25 +582,25 @@ pub const SceneSerializer = struct {
     fn serializeHierarchy(writer: anytype, h: *components.Hierarchy) !void {
         try writer.beginObject();
         try writer.objectField("parent");
-        if (h.parent) |p| try writer.write(p) else try writer.write(null);
+        if (h.parent) |p| try writer.write(p.index()) else try writer.write(null);
         try writer.objectField("first_child");
-        if (h.first_child) |c| try writer.write(c) else try writer.write(null);
+        if (h.first_child) |c| try writer.write(c.index()) else try writer.write(null);
         try writer.objectField("next_sibling");
-        if (h.next_sibling) |s| try writer.write(s) else try writer.write(null);
+        if (h.next_sibling) |s| try writer.write(s.index()) else try writer.write(null);
         try writer.objectField("prev_sibling");
-        if (h.prev_sibling) |s| try writer.write(s) else try writer.write(null);
+        if (h.prev_sibling) |s| try writer.write(s.index()) else try writer.write(null);
         try writer.objectField("child_count");
         try writer.write(h.child_count);
         try writer.endObject();
     }
 
-    fn deserializeHierarchy(val: std.json.Value, id_map: *std.AutoHashMap(u32, u32)) !components.Hierarchy {
+    fn deserializeHierarchy(val: std.json.Value, id_map: *std.AutoHashMap(u32, entity_pkg.Entity)) !components.Hierarchy {
         var h = components.Hierarchy{};
         if (val.object.get("parent")) |p| {
             if (p != .null) {
                 const old_id: u32 = @intCast(p.integer);
-                if (id_map.get(old_id)) |new_id| {
-                    h.parent = new_id;
+                if (id_map.get(old_id)) |new_entity| {
+                    h.parent = new_entity;
                 } else {
                     // This is a normal warning, not a critical error that should crash or stop
                     serializer_log.warn("Hierarchy: parent ID {d} not found in map", .{old_id});
@@ -610,8 +610,8 @@ pub const SceneSerializer = struct {
         if (val.object.get("first_child")) |c| {
             if (c != .null) {
                 const old_id: u32 = @intCast(c.integer);
-                if (id_map.get(old_id)) |new_id| {
-                    h.first_child = new_id;
+                if (id_map.get(old_id)) |new_entity| {
+                    h.first_child = new_entity;
                 } else {
                     serializer_log.warn("Hierarchy: first_child ID {d} not found in map", .{old_id});
                 }
@@ -620,8 +620,8 @@ pub const SceneSerializer = struct {
         if (val.object.get("next_sibling")) |s| {
             if (s != .null) {
                 const old_id: u32 = @intCast(s.integer);
-                if (id_map.get(old_id)) |new_id| {
-                    h.next_sibling = new_id;
+                if (id_map.get(old_id)) |new_entity| {
+                    h.next_sibling = new_entity;
                 } else {
                     serializer_log.warn("Hierarchy: next_sibling ID {d} not found in map", .{old_id});
                 }
@@ -630,8 +630,8 @@ pub const SceneSerializer = struct {
         if (val.object.get("prev_sibling")) |s| {
             if (s != .null) {
                 const old_id: u32 = @intCast(s.integer);
-                if (id_map.get(old_id)) |new_id| {
-                    h.prev_sibling = new_id;
+                if (id_map.get(old_id)) |new_entity| {
+                    h.prev_sibling = new_entity;
                 } else {
                     serializer_log.warn("Hierarchy: prev_sibling ID {d} not found in map", .{old_id});
                 }

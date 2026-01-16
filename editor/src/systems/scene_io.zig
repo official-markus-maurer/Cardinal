@@ -127,31 +127,28 @@ pub fn import_scene_graph(state: *EditorState) void {
                     const parent_entity = engine.ecs_entity.Entity{ .id = parent_id };
                     // Add Hierarchy component
                     var hierarchy = if (state.registry.get(components.Hierarchy, entity)) |h| h.* else components.Hierarchy{};
-                    hierarchy.parent = parent_entity.index();
+                    hierarchy.parent = parent_entity;
                     state.registry.add(entity, hierarchy) catch {};
 
                     // Update parent's hierarchy
                     var parent_hierarchy = if (state.registry.get(components.Hierarchy, parent_entity)) |h| h.* else components.Hierarchy{};
 
                     // Link as child
-                    if (parent_hierarchy.first_child) |first_child_idx| {
+                    if (parent_hierarchy.first_child) |first_child_entity| {
                         // Find last child
-                        var curr_idx = first_child_idx;
+                        var curr_entity = first_child_entity;
                         while (true) {
-                            const gen = state.registry.entity_manager.handles.get_generation(curr_idx);
-                            const curr_entity = engine.ecs_entity.Entity.make(curr_idx, gen);
-
                             if (state.registry.get(components.Hierarchy, curr_entity)) |h| {
                                 if (h.next_sibling) |next| {
-                                    curr_idx = next;
+                                    curr_entity = next;
                                 } else {
                                     // Link new entity as next sibling of last child
                                     var last_h = h.*;
-                                    last_h.next_sibling = entity.index();
+                                    last_h.next_sibling = entity;
                                     state.registry.add(curr_entity, last_h) catch {};
 
                                     // Set prev sibling of new entity
-                                    hierarchy.prev_sibling = curr_idx;
+                                    hierarchy.prev_sibling = curr_entity;
                                     state.registry.add(entity, hierarchy) catch {};
                                     break;
                                 }
@@ -161,7 +158,7 @@ pub fn import_scene_graph(state: *EditorState) void {
                         }
                     } else {
                         // First child
-                        parent_hierarchy.first_child = entity.index();
+                        parent_hierarchy.first_child = entity;
                     }
 
                     parent_hierarchy.child_count += 1;

@@ -31,6 +31,7 @@ const asset_manager = @import("../assets/asset_manager.zig");
 const transform = @import("../core/transform.zig");
 const render_graph = @import("render_graph.zig");
 const vk_post_process = @import("vulkan_post_process.zig");
+const vk_texture_manager = @import("vulkan_texture_manager.zig");
 
 // Helper to cast opaque pointer to VulkanState
 fn get_state(renderer: ?*types.CardinalRenderer) ?*types.VulkanState {
@@ -85,6 +86,19 @@ fn pbr_pass_callback(cmd: c.VkCommandBuffer, state: *types.VulkanState) void {
 }
 
 fn post_process_pass_callback(cmd: c.VkCommandBuffer, state: *types.VulkanState) void {
+    var input_view: ?c.VkImageView = null;
+    if (state.render_graph) |rg_ptr| {
+        const rg = @as(*render_graph.RenderGraph, @ptrCast(@alignCast(rg_ptr)));
+        if (rg.resources.get(types.RESOURCE_ID_HDR_COLOR)) |res| {
+            input_view = res.image_view;
+        }
+    }
+
+    // 1. Compute Pass (Outside Render Pass)
+    if (input_view) |view| {
+        vk_post_process.compute_bloom(state, cmd, state.sync.current_frame, view);
+    }
+
     var clears: [1]c.VkClearValue = undefined;
     clears[0].color.float32[0] = 0.0;
     clears[0].color.float32[1] = 0.0;
@@ -94,13 +108,8 @@ fn post_process_pass_callback(cmd: c.VkCommandBuffer, state: *types.VulkanState)
     // Render to Swapchain (Backbuffer)
     // begin_dynamic_rendering_ext defaults to swapchain view if color_view is null
     if (vk_commands.begin_dynamic_rendering_ext(state, cmd, state.current_image_index, false, null, null, &clears, true, 0)) {
-        if (state.render_graph) |rg_ptr| {
-            const rg = @as(*render_graph.RenderGraph, @ptrCast(@alignCast(rg_ptr)));
-            if (rg.resources.get(types.RESOURCE_ID_HDR_COLOR)) |res| {
-                if (res.image_view) |view| {
-                    vk_post_process.render(state, cmd, view);
-                }
-            }
+        if (input_view) |view| {
+            vk_post_process.draw(state, cmd, state.sync.current_frame, view);
         }
         vk_commands.end_dynamic_rendering(state, cmd);
     }
@@ -134,6 +143,21 @@ fn init_vulkan_core(s: *types.VulkanState, win: ?*window.CardinalWindow) bool {
         return false;
     }
     return true;
+}
+
+pub export fn cardinal_renderer_set_post_process_params(renderer: ?*types.CardinalRenderer, params: ?*const types.PostProcessParams) callconv(.c) void {
+    const s = get_state(renderer) orelse return;
+    const pp = params orelse return;
+
+    // Update the buffer for the current frame
+    const frame_index = if (s.sync.current_frame >= types.MAX_FRAMES_IN_FLIGHT) 0 else s.sync.current_frame;
+
+    if (s.pipelines.post_process_pipeline.initialized) {
+        if (s.pipelines.post_process_pipeline.params_mapped[frame_index]) |ptr| {
+            const dst = @as(*types.PostProcessParams, @ptrCast(@alignCast(ptr)));
+            dst.* = pp.*;
+        }
+    }
 }
 
 pub export fn cardinal_renderer_set_frame_allocator(renderer: ?*types.CardinalRenderer, allocator: ?*anyopaque) callconv(.c) void {
@@ -241,7 +265,7 @@ fn init_sync_manager(s: *types.VulkanState) bool {
 fn init_pbr_pipeline_helper(s: *types.VulkanState) void {
     s.pipelines.use_pbr_pipeline = false;
     // PBR Pipeline renders to HDR attachment (Float16), not directly to swapchain
-    if (vk_pbr.vk_pbr_pipeline_create(@ptrCast(&s.pipelines.pbr_pipeline), s.context.device, s.context.physical_device, c.VK_FORMAT_R16G16B16A16_SFLOAT, s.swapchain.depth_format, s.commands.pools.?[0], s.context.graphics_queue, @ptrCast(&s.allocator), @ptrCast(s), null)) {
+    if (vk_pbr.vk_pbr_pipeline_create(@ptrCast(&s.pipelines.pbr_pipeline), s.context.device, s.context.physical_device, c.VK_FORMAT_R16G16B16A16_SFLOAT, s.swapchain.depth_format, s.commands.pools.?[0], s.context.graphics_queue, @ptrCast(&s.allocator), @ptrCast(s), s.pipelines.pipeline_cache)) {
         s.pipelines.use_pbr_pipeline = true;
         renderer_log.info("renderer_create: PBR pipeline", .{});
     } else {
@@ -352,6 +376,13 @@ fn init_pipelines(s: *types.VulkanState) bool {
     init_mesh_shader_pipeline_helper(s);
     init_compute_pipeline_helper(s);
     init_skybox_pipeline_helper(s);
+
+    // Initialize Post Process Pipeline
+    if (vk_post_process.vk_post_process_init(s)) {
+        renderer_log.info("renderer_create: Post Process pipeline", .{});
+    } else {
+        renderer_log.err("vk_post_process_init failed", .{});
+    }
 
     // Initialize rendering mode
     s.current_rendering_mode = types.CardinalRenderingMode.NORMAL;
@@ -514,16 +545,16 @@ pub export fn cardinal_renderer_create(out_renderer: ?*types.CardinalRenderer, w
     }
     renderer_log.warn("renderer_create: swapchain created", .{});
 
-    if (!vk_post_process.vk_post_process_init(s)) {
-        renderer_log.err("Failed to initialize post process pipeline", .{});
-        return false;
-    }
-
     if (!vk_pipeline.vk_create_pipeline(@ptrCast(@alignCast(s)))) {
         renderer_log.err("vk_create_pipeline failed", .{});
         return false;
     }
     renderer_log.warn("renderer_create: pipeline created", .{});
+
+    if (!vk_post_process.vk_post_process_init(s)) {
+        renderer_log.err("Failed to initialize post process pipeline", .{});
+        return false;
+    }
 
     if (!vk_commands.vk_create_commands_sync(@ptrCast(@alignCast(s)))) {
         renderer_log.err("vk_create_commands_sync failed", .{});
@@ -682,6 +713,14 @@ pub export fn cardinal_renderer_wait_idle(renderer: ?*types.CardinalRenderer) ca
     if (renderer == null) return;
     const s = get_state(renderer) orelse return;
     _ = c.vkDeviceWaitIdle(s.context.device);
+}
+
+pub export fn cardinal_renderer_wait_for_texture_uploads(renderer: ?*types.CardinalRenderer) callconv(.c) void {
+    if (renderer == null) return;
+    const s = get_state(renderer) orelse return;
+    if (s.pipelines.pbr_pipeline.textureManager) |mgr| {
+        vk_texture_manager.vk_texture_manager_wait_idle(mgr);
+    }
 }
 
 pub fn destroy_scene_buffers(vs: *types.VulkanState) void {
@@ -1183,7 +1222,7 @@ fn submit_and_wait(s: *types.VulkanState, cmd: c.VkCommandBuffer) void {
 
         // Use synchronized submit
         const submit_result = vk_sync_manager.vulkan_sync_manager_submit_queue2(s.context.graphics_queue, 1, @ptrCast(&submit2), null, s.context.vkQueueSubmit2);
-        
+
         if (submit_result == c.VK_SUCCESS) {
             // Wait for completion using timeline semaphore
             const wait_result = vk_sync_manager.vulkan_sync_manager_wait_timeline(sm, timeline_value, c.UINT64_MAX);

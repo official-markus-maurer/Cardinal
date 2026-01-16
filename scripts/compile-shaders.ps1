@@ -133,7 +133,30 @@ if ($LASTEXITCODE -eq 0) {
     Write-Host "[ERROR] Failed to compile PostProcess fragment shader"
 }
 
+# Compile Bloom shader
+Write-Host "Compiling Bloom compute shader..."
+glslc --target-env=vulkan1.1 bloom.comp -o "$outputDir\bloom.comp.spv"
+if ($LASTEXITCODE -eq 0) {
+    Write-Host "[OK] Bloom compute shader compiled successfully"
+} else {
+    Write-Host "[ERROR] Failed to compile Bloom compute shader"
+}
+
 Write-Host "Compiling skybox vertex shader..."
+glslc --target-env=vulkan1.1 skybox.vert -o "$outputDir\skybox.vert.spv"
+if ($LASTEXITCODE -eq 0) {
+    Write-Host "[OK] Skybox vertex shader compiled successfully"
+} else {
+    Write-Host "[ERROR] Failed to compile skybox vertex shader"
+}
+
+Write-Host "Compiling skybox fragment shader..."
+glslc --target-env=vulkan1.1 skybox.frag -o "$outputDir\skybox.frag.spv"
+if ($LASTEXITCODE -eq 0) {
+    Write-Host "[OK] Skybox fragment shader compiled successfully"
+} else {
+    Write-Host "[ERROR] Failed to compile skybox fragment shader"
+}
 
 Write-Host "Shader compilation complete!"
 

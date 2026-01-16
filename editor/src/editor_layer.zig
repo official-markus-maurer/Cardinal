@@ -233,6 +233,25 @@ fn draw_pbr_settings_panel() void {
 
             c.imgui_bridge_separator();
 
+            if (c.imgui_bridge_collapsing_header("Post Process", c.ImGuiTreeNodeFlags_DefaultOpen)) {
+                var pp_changed = false;
+                if (c.imgui_bridge_slider_float("Exposure", &state.post_process.exposure, 0.1, 10.0, "%.2f")) pp_changed = true;
+                if (c.imgui_bridge_slider_float("Contrast", &state.post_process.contrast, 0.1, 3.0, "%.2f")) pp_changed = true;
+                if (c.imgui_bridge_slider_float("Saturation", &state.post_process.saturation, 0.0, 3.0, "%.2f")) pp_changed = true;
+                
+                c.imgui_bridge_separator();
+                c.imgui_bridge_text("Bloom");
+                if (c.imgui_bridge_slider_float("Intensity", &state.post_process.bloomIntensity, 0.0, 1.0, "%.3f")) pp_changed = true;
+                if (c.imgui_bridge_slider_float("Threshold", &state.post_process.bloomThreshold, 0.0, 5.0, "%.2f")) pp_changed = true;
+                if (c.imgui_bridge_slider_float("Knee", &state.post_process.bloomKnee, 0.0, 1.0, "%.2f")) pp_changed = true;
+
+                if (pp_changed) {
+                    renderer.cardinal_renderer_set_post_process_params(state.renderer, &state.post_process);
+                }
+            }
+
+            c.imgui_bridge_separator();
+
             if (c.imgui_bridge_collapsing_header("Rendering Mode", c.ImGuiTreeNodeFlags_DefaultOpen)) {
                 const current_mode = renderer.cardinal_renderer_get_rendering_mode(state.renderer);
 
@@ -410,6 +429,7 @@ pub fn init(win_ptr: *window.CardinalWindow, rnd_ptr: *types.CardinalRenderer, r
     std.debug.print("[EDITOR_LAYER] Camera set.\n", .{});
     renderer.cardinal_renderer_set_lighting(rnd_ptr, &state.light);
     std.debug.print("[EDITOR_LAYER] Lighting set.\n", .{});
+    renderer.cardinal_renderer_set_post_process_params(rnd_ptr, &state.post_process);
     renderer.cardinal_renderer_set_ui_callback(rnd_ptr, @ptrCast(&ui_draw_callback));
 
     // Initialize scene list
@@ -474,6 +494,9 @@ pub fn on_device_restored(user_data: ?*anyopaque, success: bool) callconv(.c) vo
         return;
     }
 
+    // Invalidate existing textures to prevent use-after-free or invalid pool errors
+    c.imgui_bridge_invalidate_device_objects();
+
     // Ensure backend data is clear before re-init
     c.imgui_bridge_force_clear_backend_data();
 
@@ -504,6 +527,9 @@ pub fn on_device_restored(user_data: ?*anyopaque, success: bool) callconv(.c) vo
 pub fn shutdown() void {
     // Process any remaining completed tasks
     _ = async_loader.cardinal_async_process_completed_tasks(0);
+
+    // Wait for any background texture uploads to finish before we destroy the model manager (which owns the data)
+    renderer.cardinal_renderer_wait_for_texture_uploads(state.renderer);
 
     c.imgui_bridge_impl_vulkan_shutdown();
     c.imgui_bridge_impl_glfw_shutdown();

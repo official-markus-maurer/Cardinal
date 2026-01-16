@@ -226,7 +226,39 @@ pub fn vk_texture_manager_init(manager: *types.VulkanTextureManager, config: *co
     return true;
 }
 
+pub fn vk_texture_manager_wait_idle(manager: *types.VulkanTextureManager) void {
+    var curr_ptr = @as(?*AsyncTextureUpdateContext, @ptrCast(@alignCast(manager.pending_updates)));
+    while (curr_ptr) |ctx| {
+        while (!ctx.finished.load(.acquire)) {
+            if (builtin.os.tag == .windows) {
+                c.Sleep(1);
+            } else {
+                std.atomic.spinLoopHint();
+            }
+        }
+        curr_ptr = ctx.next;
+    }
+}
+
 pub fn vk_texture_manager_destroy(manager: *types.VulkanTextureManager) void {
+    // Wait for and cleanup pending updates
+    vk_texture_manager_wait_idle(manager);
+
+    var curr_ptr = @as(?*AsyncTextureUpdateContext, @ptrCast(@alignCast(manager.pending_updates)));
+    while (curr_ptr) |ctx| {
+        // Cleanup resources
+        if (ctx.new_view != null) c.vkDestroyImageView(manager.device, ctx.new_view, null);
+        if (ctx.new_image != null) vk_allocator.free_image(manager.allocator, ctx.new_image, ctx.new_allocation);
+        if (ctx.staging_buffer != null) vk_allocator.free_buffer(manager.allocator, ctx.staging_buffer, ctx.staging_allocation);
+
+        const next = ctx.next;
+        const mem_alloc = memory.cardinal_get_allocator_for_category(.RENDERER);
+        memory.cardinal_free(mem_alloc, ctx);
+
+        curr_ptr = next;
+    }
+    manager.pending_updates = null;
+
     vk_texture_manager_clear_textures(manager);
 
     // Destroy placeholder if it exists (index 0)
