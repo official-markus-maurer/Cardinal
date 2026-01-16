@@ -54,6 +54,7 @@ pub const LoadingTaskInfo = struct {
 pub const EditorState = struct {
     renderer: *types.CardinalRenderer = undefined,
     window: *window.CardinalWindow = undefined,
+    registry: *engine.ecs_registry.Registry = undefined,
     descriptor_pool: c.VkDescriptorPool = null,
 
     // Temporary Arena
@@ -80,12 +81,19 @@ pub const EditorState = struct {
     // UI State
     status_msg: [256]u8 = [_]u8{0} ** 256,
     scene_path: [512]u8 = [_]u8{0} ** 512,
+    save_scene_name: [256]u8 = [_]u8{0} ** 256, // New: for saving with name
+    available_scenes: std.ArrayListUnmanaged([]const u8) = .{}, // New: for listing scenes
+    scene_context_menu_name: [256]u8 = [_]u8{0} ** 256,
+    rename_scene_buffer: [256]u8 = [_]u8{0} ** 256,
+    open_rename_popup: bool = false,
+    open_delete_popup: bool = false,
     selected_model_id: u32 = 0,
 
     // Panel Visibility
     show_scene_graph: bool = true,
     show_assets: bool = true,
     show_model_manager: bool = true,
+    show_scene_manager: bool = true,
     show_pbr_settings: bool = true,
     show_animation: bool = true,
     show_memory_stats: bool = false,

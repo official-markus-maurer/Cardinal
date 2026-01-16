@@ -151,5 +151,12 @@ pub fn View(comptime T: type) type {
                 }
             }
         }
+
+        pub fn count(self: @This()) usize {
+            if (self.storage) |s| {
+                return s.packed_entities.items.len;
+            }
+            return 0;
+        }
     };
 }

@@ -5,6 +5,8 @@ const vulkan_renderer = engine.vulkan_renderer;
 const vulkan_renderer_frame = engine.vulkan_renderer_frame;
 const editor_layer = @import("editor_layer.zig");
 
+const app_log = log.ScopedLogger("APP");
+
 const CardinalEngine = engine.engine.CardinalEngine;
 pub const EditorConfig = engine.engine.CardinalEngineConfig;
 
@@ -29,7 +31,7 @@ pub const EditorApp = struct {
         app.registerInputActions();
 
         // Initialize editor layer
-        if (!editor_layer.init(app.engine.window.?, &app.engine.renderer)) {
+        if (!editor_layer.init(app.engine.window.?, &app.engine.renderer, &app.engine.registry)) {
             app.engine.deinit();
             allocator.destroy(app.engine);
             allocator.destroy(app);
@@ -37,8 +39,10 @@ pub const EditorApp = struct {
         }
         app.editor_layer_initialized = true;
 
+        app_log.info("Setting device loss callbacks...", .{});
         // Set device loss callbacks
         vulkan_renderer.cardinal_renderer_set_device_loss_callbacks(&app.engine.renderer, editor_layer.on_device_loss, editor_layer.on_device_restored, null);
+        app_log.info("Device loss callbacks set.", .{});
 
         return app;
     }

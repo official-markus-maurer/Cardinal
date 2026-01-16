@@ -10,7 +10,7 @@ pub fn draw_inspector_panel(state: *EditorState) void {
         defer c.imgui_bridge_end();
         
         if (open) {
-            c.imgui_bridge_text("Loaded Models:");
+            c.imgui_bridge_text("Loaded Models: %d", state.model_manager.model_count);
             c.imgui_bridge_separator();
 
             const model_count = state.model_manager.model_count;

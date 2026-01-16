@@ -9,26 +9,26 @@ const ref_counting = @import("ref_counting.zig");
 const scene = @import("../assets/scene.zig");
 const job_system = @import("job_system.zig");
 
-// --- Function Pointers ---
+// Function Pointers
 pub const Loaders = struct {
     pub var texture_load_fn: ?*const fn (file_path: ?[*]const u8, out_texture: ?*anyopaque) callconv(.c) ?*ref_counting.CardinalRefCountedResource = null;
     pub var scene_load_fn: ?*const fn (file_path: ?[*:0]const u8, scene: ?*scene.CardinalScene) callconv(.c) bool = null;
+    pub var ecs_scene_load_fn: ?*const fn (file_path: ?[*:0]const u8) callconv(.c) ?*anyopaque = null;
 };
 
-pub export fn cardinal_async_register_texture_loader(
-    load_fn: *const fn (?[*]const u8, ?*anyopaque) callconv(.c) ?*ref_counting.CardinalRefCountedResource
-) callconv(.c) void {
+pub export fn cardinal_async_register_texture_loader(load_fn: *const fn (?[*]const u8, ?*anyopaque) callconv(.c) ?*ref_counting.CardinalRefCountedResource) callconv(.c) void {
     Loaders.texture_load_fn = load_fn;
 }
 
-pub export fn cardinal_async_register_scene_loader(
-    load_fn: *const fn (?[*:0]const u8, ?*scene.CardinalScene) callconv(.c) bool
-) callconv(.c) void {
+pub export fn cardinal_async_register_scene_loader(load_fn: *const fn (?[*:0]const u8, ?*scene.CardinalScene) callconv(.c) bool) callconv(.c) void {
     Loaders.scene_load_fn = load_fn;
 }
 
-// --- Enums and Structs ---
+pub export fn cardinal_async_register_ecs_scene_loader(load_fn: *const fn (?[*:0]const u8) callconv(.c) ?*anyopaque) callconv(.c) void {
+    Loaders.ecs_scene_load_fn = load_fn;
+}
 
+// Enums and Structs
 pub const CardinalAsyncPriority = enum(c_int) {
     LOW = 0,
     NORMAL = 1,
@@ -51,6 +51,7 @@ pub const CardinalAsyncTaskType = enum(c_int) {
     MATERIAL_LOAD = 3,
     MESH_LOAD = 4,
     CUSTOM = 5,
+    ECS_SCENE_LOAD = 6,
 };
 
 pub const CardinalAsyncTaskFunc = ?*const fn (task: ?*CardinalAsyncTask, user_data: ?*anyopaque) callconv(.c) bool;
@@ -84,8 +85,7 @@ pub const CardinalAsyncLoaderConfig = extern struct {
     enable_priority_queue: bool,
 };
 
-// --- Internal State ---
-
+// Internal State
 const TaskSlot = struct {
     task: ?*CardinalAsyncTask,
     generation: u32,
@@ -105,8 +105,7 @@ const AsyncLoaderState = struct {
 
 var g_async_loader: AsyncLoaderState = undefined;
 
-// --- Helper Functions ---
-
+// Helper Functions
 fn get_timestamp_ms() u64 {
     return @as(u64, @intCast(std.time.milliTimestamp()));
 }
@@ -182,8 +181,7 @@ fn create_task(task_type: CardinalAsyncTaskType, priority: CardinalAsyncPriority
     return task;
 }
 
-// --- Task Execution ---
-
+// Task Execution
 fn execute_texture_load_task(task: *CardinalAsyncTask) bool {
     if (task.file_path == null) return false;
 
@@ -221,7 +219,7 @@ fn execute_texture_load_task(task: *CardinalAsyncTask) bool {
 fn execute_scene_load_task(task: *CardinalAsyncTask) bool {
     if (task.file_path == null) return false;
 
-    async_log.debug("Loading scene: {s}", .{task.file_path.?});
+    async_log.info("Loading scene: {s}", .{task.file_path.?});
 
     const allocator = memory.cardinal_get_allocator_for_category(.ENGINE);
     const scene_ptr = memory.cardinal_alloc(allocator, @sizeOf(scene.CardinalScene));
@@ -231,6 +229,12 @@ fn execute_scene_load_task(task: *CardinalAsyncTask) bool {
     }
     const scene_obj = @as(*scene.CardinalScene, @ptrCast(@alignCast(scene_ptr)));
 
+    if (Loaders.scene_load_fn == null) {
+        async_log.err("Scene loader function not registered", .{});
+        memory.cardinal_free(allocator, scene_ptr);
+        return false;
+    }
+
     if (!Loaders.scene_load_fn.?(task.file_path.?, scene_obj)) {
         memory.cardinal_free(allocator, scene_ptr);
         return false;
@@ -239,7 +243,11 @@ fn execute_scene_load_task(task: *CardinalAsyncTask) bool {
     task.result_data = scene_ptr;
     task.result_size = @sizeOf(scene.CardinalScene);
 
-    async_log.debug("Successfully loaded scene: {s}", .{task.file_path.?});
+    if (task.file_path) |path| {
+        async_log.debug("Successfully loaded scene: {s}", .{path});
+    } else {
+        async_log.debug("Successfully loaded scene (unknown path)", .{});
+    }
     return true;
 }
 
@@ -247,10 +255,6 @@ fn execute_material_load_task(task: *CardinalAsyncTask) bool {
     if (task.custom_data == null) return false;
 
     async_log.debug("Loading material", .{});
-
-    // Modern POD system: The material data is already in custom_data (copied from source).
-    // We just pass it through as the result.
-    // We transfer ownership of the allocated memory from custom_data to result_data.
 
     task.result_data = task.custom_data;
     task.result_size = @sizeOf(scene.CardinalMaterial);
@@ -329,6 +333,28 @@ fn execute_mesh_load_task(task: *CardinalAsyncTask) bool {
     return true;
 }
 
+fn execute_ecs_scene_load_task(task: *CardinalAsyncTask) bool {
+    if (task.file_path == null) return false;
+
+    async_log.info("Loading ECS scene: {s}", .{task.file_path.?});
+
+    if (Loaders.ecs_scene_load_fn == null) {
+        async_log.err("ECS scene loader function not registered", .{});
+        return false;
+    }
+
+    const result = Loaders.ecs_scene_load_fn.?(task.file_path.?);
+    if (result == null) {
+        return false;
+    }
+
+    task.result_data = result;
+    task.result_size = 0; // Opaque
+
+    async_log.debug("Successfully loaded ECS scene data", .{});
+    return true;
+}
+
 fn mesh_destructor_wrapper(data: ?*anyopaque) callconv(.c) void {
     if (data) |d| {
         const mesh = @as(*scene.CardinalMesh, @ptrCast(@alignCast(d)));
@@ -350,6 +376,7 @@ fn execute_task(task: *CardinalAsyncTask) bool {
         .SCENE_LOAD => success = execute_scene_load_task(task),
         .MATERIAL_LOAD => success = execute_material_load_task(task),
         .MESH_LOAD => success = execute_mesh_load_task(task),
+        .ECS_SCENE_LOAD => success = execute_ecs_scene_load_task(task),
         .CUSTOM => {
             if (task.custom_func) |func| {
                 success = func(task, task.custom_data);
@@ -362,8 +389,7 @@ fn execute_task(task: *CardinalAsyncTask) bool {
     return success;
 }
 
-// --- Public API ---
-
+// Public API
 pub export fn cardinal_async_loader_init(config: ?*const CardinalAsyncLoaderConfig) callconv(.c) bool {
     if (g_async_loader.initialized) {
         std.log.warn("Async loader already initialized", .{});
@@ -464,6 +490,7 @@ pub export fn cardinal_async_load_texture(file_path: ?[*:0]const u8, priority: C
         @memcpy(@as([*]u8, @ptrCast(ptr))[0..len], file_path.?[0..len]);
         @as([*]u8, @ptrCast(ptr))[len] = 0;
         task.?.file_path = @ptrCast(ptr);
+        async_log.debug("Task {d} created with path: {s}", .{ task.?.id, task.?.file_path.? });
     } else {
         cardinal_async_free_task(task);
         return null;
@@ -485,6 +512,36 @@ pub export fn cardinal_async_load_scene(file_path: ?[*:0]const u8, priority: Car
     if (!g_async_loader.initialized or file_path == null) return null;
 
     const task = create_task(.SCENE_LOAD, priority);
+    if (task == null) return null;
+
+    const len = std.mem.len(file_path.?);
+    const allocator = memory.cardinal_get_allocator_for_category(.ENGINE);
+    const path_ptr = memory.cardinal_alloc(allocator, len + 1);
+    if (path_ptr) |ptr| {
+        @memcpy(@as([*]u8, @ptrCast(ptr))[0..len], file_path.?[0..len]);
+        @as([*]u8, @ptrCast(ptr))[len] = 0;
+        task.?.file_path = @ptrCast(ptr);
+    } else {
+        cardinal_async_free_task(task);
+        return null;
+    }
+
+    task.?.callback = callback;
+    task.?.callback_data = user_data;
+
+    const job = @as(*job_system.Job, @ptrCast(task.?.next));
+    if (!job_system.submit_job(job)) {
+        cardinal_async_free_task(task);
+        return null;
+    }
+
+    return task;
+}
+
+pub export fn cardinal_async_load_ecs_scene(file_path: ?[*:0]const u8, priority: CardinalAsyncPriority, callback: CardinalAsyncCallback, user_data: ?*anyopaque) callconv(.c) ?*CardinalAsyncTask {
+    if (!g_async_loader.initialized or file_path == null) return null;
+
+    const task = create_task(.ECS_SCENE_LOAD, priority);
     if (task == null) return null;
 
     const len = std.mem.len(file_path.?);
@@ -606,7 +663,7 @@ pub export fn cardinal_async_load_mesh(mesh_data: ?*const anyopaque, priority: C
     return task;
 }
 
-pub export fn cardinal_async_submit_custom_task(task_func: CardinalAsyncTaskFunc, custom_data: ?*anyopaque, priority: CardinalAsyncPriority, callback: CardinalAsyncCallback, user_data: ?*anyopaque) callconv(.c) ?*CardinalAsyncTask {
+pub export fn cardinal_async_create_custom_task(task_func: CardinalAsyncTaskFunc, custom_data: ?*anyopaque, priority: CardinalAsyncPriority, callback: CardinalAsyncCallback, user_data: ?*anyopaque) callconv(.c) ?*CardinalAsyncTask {
     if (!g_async_loader.initialized or task_func == null) return null;
 
     const task = create_task(.CUSTOM, priority);
@@ -617,8 +674,21 @@ pub export fn cardinal_async_submit_custom_task(task_func: CardinalAsyncTaskFunc
     task.?.callback = callback;
     task.?.callback_data = user_data;
 
-    const job = @as(*job_system.Job, @ptrCast(task.?.next));
-    if (!job_system.submit_job(job)) {
+    return task;
+}
+
+pub export fn cardinal_async_submit_task(task: ?*CardinalAsyncTask) callconv(.c) bool {
+    if (task == null) return false;
+    const t = task.?;
+    const job = @as(*job_system.Job, @ptrCast(t.next));
+    return job_system.submit_job(job);
+}
+
+pub export fn cardinal_async_submit_custom_task(task_func: CardinalAsyncTaskFunc, custom_data: ?*anyopaque, priority: CardinalAsyncPriority, callback: CardinalAsyncCallback, user_data: ?*anyopaque) callconv(.c) ?*CardinalAsyncTask {
+    const task = cardinal_async_create_custom_task(task_func, custom_data, priority, callback, user_data);
+    if (task == null) return null;
+
+    if (!cardinal_async_submit_task(task)) {
         cardinal_async_free_task(task);
         return null;
     }
@@ -654,9 +724,27 @@ pub export fn cardinal_async_wait_for_task(task: ?*CardinalAsyncTask, timeout_ms
     while (t.status == .PENDING or t.status == .RUNNING) {
         if (timeout_ms > 0) {
             const elapsed = get_timestamp_ms() - start_time;
-            if (elapsed >= timeout_ms) return false;
+            if (elapsed >= timeout_ms) {
+                // If we time out, check if the underlying job actually finished but we missed the update
+                // This shouldn't happen with correct synchronization but is a failsafe
+                if (t.next) |job_ptr| {
+                    const job = @as(*job_system.Job, @ptrCast(job_ptr));
+                    if (job.status == .COMPLETED or job.status == .FAILED) {
+                        // Sync status
+                        // Note: This is racy without locks, but we are just reading
+                        // t.status update happens in callback usually or job completion
+                        // If callback hasn't run, status might still be running
+                        // But job system updates job status before callback
+                    }
+                }
+                return false;
+            }
         }
         if (g_async_loader.shutting_down) return false;
+
+        // Process completed tasks to ensure callbacks run and status updates propagate
+        // This is critical if we are waiting on the main thread and callbacks run on main thread
+        _ = cardinal_async_process_completed_tasks(0);
 
         Sleep(1);
     }
@@ -676,7 +764,11 @@ pub export fn cardinal_async_free_task(task: ?*CardinalAsyncTask) callconv(.c) v
         if (g_async_loader.initialized) {
             if (t.next) |job_ptr| {
                 const job = @as(*job_system.Job, @ptrCast(job_ptr));
-                job_system.free_job(job);
+                // Detach task from job to signal it's orphaned.
+                // We do NOT free the job here because it might be in the completed queue (or running).
+                // process_completed_tasks handles freeing jobs with null data.
+                job.data = null;
+                t.next = null;
             }
         }
 
@@ -744,6 +836,13 @@ pub export fn cardinal_async_get_scene_result(task: ?*CardinalAsyncTask, out_sce
     return false;
 }
 
+pub export fn cardinal_async_get_ecs_scene_result(task: ?*CardinalAsyncTask) callconv(.c) ?*anyopaque {
+    if (task == null or task.?.type != .ECS_SCENE_LOAD or task.?.status != .COMPLETED) {
+        return null;
+    }
+    return task.?.result_data;
+}
+
 pub export fn cardinal_async_get_material_result(task: ?*CardinalAsyncTask, out_material: ?*scene.CardinalMaterial) callconv(.c) ?*ref_counting.CardinalRefCountedResource {
     if (task == null or task.?.type != .MATERIAL_LOAD or task.?.status != .COMPLETED or out_material == null) {
         return null;
@@ -795,14 +894,30 @@ pub export fn cardinal_async_process_completed_tasks(max_tasks: u32) callconv(.c
     var processed: u32 = 0;
 
     while (max_tasks == 0 or processed < max_tasks) {
-        const job = job_system.get_completed_job();
-        if (job == null) break;
+        const job_opt = job_system.get_completed_job();
+        if (job_opt == null) break;
+        const job = job_opt.?;
 
-        const task = @as(*CardinalAsyncTask, @ptrCast(@alignCast(job.?.data)));
+        // If job data is null, the task was cancelled/freed already
+        if (job.data == null) {
+            job_system.free_job(job);
+            continue;
+        }
+
+        const task = @as(*CardinalAsyncTask, @ptrCast(@alignCast(job.data)));
+
+        // Debug log (temporary)
+        // std.debug.print("[ASYNC] Processing completed task ID: {d}, Type: {any}\n", .{task.id, task.type});
+
+        // Detach job from task to prevent double-free or race conditions
+        task.next = null;
 
         if (task.callback) |cb| {
             cb(task, task.callback_data);
         }
+
+        // We are responsible for freeing the job now that it's out of the queue
+        job_system.free_job(job);
 
         processed += 1;
     }
@@ -810,8 +925,7 @@ pub export fn cardinal_async_process_completed_tasks(max_tasks: u32) callconv(.c
     return processed;
 }
 
-// --- Handle System API ---
-
+// Handle System API
 pub export fn cardinal_async_get_handle(task: ?*CardinalAsyncTask) callconv(.c) handles.AsyncHandle {
     if (task) |t| {
         g_async_loader.state_mutex.lock();

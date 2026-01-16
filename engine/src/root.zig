@@ -24,6 +24,7 @@ pub const mesh_loader = @import("assets/mesh_loader.zig");
 pub const model_manager = @import("assets/model_manager.zig");
 pub const gltf_loader = @import("assets/gltf_loader.zig");
 pub const scene = @import("assets/scene.zig");
+pub const scene_serializer = @import("assets/scene_serializer.zig");
 pub const vulkan_mt = @import("renderer/vulkan_mt.zig");
 pub const vulkan_timeline_pool = @import("renderer/vulkan_timeline_pool.zig");
 pub const vulkan_timeline_debug = @import("renderer/vulkan_timeline_debug.zig");
@@ -60,6 +61,8 @@ pub const ecs_entity = @import("ecs/entity.zig");
 pub const ecs_component = @import("ecs/component.zig");
 pub const ecs_registry = @import("ecs/registry.zig");
 pub const ecs_system = @import("ecs/system.zig");
+pub const ecs_components = @import("ecs/components.zig");
+pub const ecs_systems = @import("ecs/systems.zig");
 
 comptime {
     _ = log;
@@ -79,6 +82,7 @@ comptime {
     _ = model_manager;
     _ = gltf_loader;
     _ = scene;
+    _ = scene_serializer;
     _ = vulkan_mt;
     _ = vulkan_timeline_pool;
     _ = vulkan_timeline_debug;
@@ -110,6 +114,12 @@ comptime {
     _ = vulkan_renderer;
     _ = vulkan_renderer_frame;
     _ = vulkan_pipeline_manager;
+    _ = ecs_entity;
+    _ = ecs_component;
+    _ = ecs_registry;
+    _ = ecs_system;
+    _ = ecs_components;
+    _ = ecs_systems;
 }
 
 test {
@@ -130,4 +140,10 @@ test {
     _ = gltf_loader;
     _ = scene;
     _ = vulkan_mt;
+    _ = ecs_entity;
+    _ = ecs_component;
+    _ = ecs_registry;
+    _ = ecs_system;
+    _ = ecs_components;
+    _ = ecs_systems;
 }

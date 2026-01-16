@@ -169,6 +169,7 @@ pub const CardinalSceneNode = extern struct {
     skin_index: u32,
 
     light_index: i32, // -1 if no light
+    parent_index: i32, // -1 if no parent (index in all_nodes)
 };
 
 // Forward declaration for AnimationSystem and Skin (opaque for now)
@@ -214,6 +215,7 @@ pub export fn cardinal_scene_node_create(name: ?[*:0]const u8) ?*CardinalSceneNo
     @memcpy(&node.world_transform, &identity);
     node.world_transform_dirty = false;
     node.light_index = -1;
+    node.parent_index = -1;
 
     if (name) |n| {
         const len = std.mem.len(n);

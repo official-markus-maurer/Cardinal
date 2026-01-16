@@ -15,7 +15,7 @@ fn print_usage(program_name: []const u8) void {
 pub fn main() !u8 {
     // Initialize memory system first
     const memory = @import("cardinal_engine").memory;
-    memory.cardinal_memory_init(1024 * 1024 * 64); // 64MB
+    memory.cardinal_memory_init(1024 * 1024 * 512); // Increased to 512MB
 
     const allocator = memory.cardinal_get_allocator_for_category(.ENGINE).as_allocator();
 
@@ -51,6 +51,7 @@ pub fn main() !u8 {
     };
     defer app.destroy();
 
+    std.debug.print("[MAIN] App created. Calling run()...\n", .{});
     app.run() catch |err| {
         editor_log.err("Runtime error: {}", .{err});
         return 255;

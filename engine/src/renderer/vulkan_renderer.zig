@@ -1181,7 +1181,9 @@ fn submit_and_wait(s: *types.VulkanState, cmd: c.VkCommandBuffer) void {
         submit2.signalSemaphoreInfoCount = 1;
         submit2.pSignalSemaphoreInfos = &signal_semaphore_info;
 
-        const submit_result = s.context.vkQueueSubmit2.?(s.context.graphics_queue, 1, &submit2, null);
+        // Use synchronized submit
+        const submit_result = vk_sync_manager.vulkan_sync_manager_submit_queue2(s.context.graphics_queue, 1, @ptrCast(&submit2), null, s.context.vkQueueSubmit2);
+        
         if (submit_result == c.VK_SUCCESS) {
             // Wait for completion using timeline semaphore
             const wait_result = vk_sync_manager.vulkan_sync_manager_wait_timeline(sm, timeline_value, c.UINT64_MAX);
@@ -1195,7 +1197,7 @@ fn submit_and_wait(s: *types.VulkanState, cmd: c.VkCommandBuffer) void {
         }
     } else {
         // Fallback to old method if sync manager not available
-        _ = s.context.vkQueueSubmit2.?(s.context.graphics_queue, 1, &submit2, null);
+        _ = vk_sync_manager.vulkan_sync_manager_submit_queue2(s.context.graphics_queue, 1, @ptrCast(&submit2), null, s.context.vkQueueSubmit2);
         const wait_result = c.vkQueueWaitIdle(s.context.graphics_queue);
 
         if (wait_result == c.VK_SUCCESS) {

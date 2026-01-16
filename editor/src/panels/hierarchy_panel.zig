@@ -1,8 +1,12 @@
 const std = @import("std");
 const engine = @import("cardinal_engine");
+const math = engine.math;
 const scene = engine.scene;
+const model_manager = engine.model_manager;
+const animation = engine.animation;
 const c = @import("../c.zig").c;
 const EditorState = @import("../editor_state.zig").EditorState;
+const scene_io = @import("../systems/scene_io.zig");
 
 fn draw_scene_node(state: *EditorState, node: *scene.CardinalSceneNode, depth: i32) void {
     // Node ID
@@ -64,7 +68,7 @@ pub fn draw_hierarchy_panel(state: *EditorState) void {
     if (state.show_scene_graph) {
         const open = c.imgui_bridge_begin("Scene Graph", &state.show_scene_graph, 0);
         defer c.imgui_bridge_end();
-        
+
         if (open) {
             if (c.imgui_bridge_tree_node("Scene")) {
                 c.imgui_bridge_bullet_text("Camera");

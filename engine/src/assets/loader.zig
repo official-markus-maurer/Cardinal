@@ -2,6 +2,8 @@ const std = @import("std");
 const scene = @import("scene.zig");
 const async_loader = @import("../core/async_loader.zig");
 const log = @import("../core/log.zig");
+const scene_serializer = @import("scene_serializer.zig");
+const memory = @import("../core/memory.zig");
 
 const loader_log = log.ScopedLogger("LOADER");
 
@@ -128,4 +130,42 @@ pub export fn cardinal_scene_load_async(path: ?[*:0]const u8, priority: async_lo
     }
 
     return async_loader.cardinal_async_load_scene(@ptrCast(path.?), priority, callback, user_data);
+}
+
+fn ecs_scene_loader_impl(file_path: ?[*:0]const u8) callconv(.c) ?*anyopaque {
+    if (file_path == null) return null;
+    
+    const allocator_handle = memory.cardinal_get_allocator_for_category(.ASSETS);
+    const allocator = allocator_handle.as_allocator();
+
+    const path_slice = std.mem.span(file_path.?);
+    const file = std.fs.cwd().openFile(path_slice, .{}) catch {
+        loader_log.err("Failed to open file: {s}", .{path_slice});
+        return null;
+    };
+    defer file.close();
+
+    const content = file.readToEndAlloc(allocator, std.math.maxInt(usize)) catch |err| {
+        loader_log.err("Failed to read file: {}", .{err});
+        return null;
+    };
+    // Do NOT free content here; ownership passed to ParsedScene
+
+    const parsed = scene_serializer.SceneSerializer.loadSceneData(allocator, content, path_slice) catch |err| {
+        loader_log.err("Failed to parse scene: {}", .{err});
+        allocator.free(content); // Free content if parsing fails
+        return null;
+    };
+
+    const ptr = allocator.create(scene_serializer.SceneSerializer.ParsedScene) catch return null;
+    ptr.* = parsed;
+    
+    return ptr;
+}
+
+pub export fn cardinal_ecs_scene_load_async(path: ?[*:0]const u8, priority: async_loader.CardinalAsyncPriority, callback: async_loader.CardinalAsyncCallback, user_data: ?*anyopaque) callconv(.c) ?*async_loader.CardinalAsyncTask {
+    if (async_loader.Loaders.ecs_scene_load_fn == null) {
+        async_loader.cardinal_async_register_ecs_scene_loader(ecs_scene_loader_impl);
+    }
+    return async_loader.cardinal_async_load_ecs_scene(path, priority, callback, user_data);
 }

@@ -266,7 +266,7 @@ bool imgui_bridge_selectable_size(const char *label, bool selected, int flags,
 bool imgui_bridge_collapsing_header(const char *label, int flags);
 void imgui_bridge_set_next_item_width(float width);
 float imgui_bridge_get_content_region_avail_x(void);
-bool imgui_bridge_input_text(const char *label, char *buf, size_t buf_size);
+bool imgui_bridge_input_text(const char *label, char *buf, size_t buf_size, int flags);
 bool imgui_bridge_input_text_with_hint(const char *label, const char *hint,
                                        char *buf, size_t buf_size);
 
@@ -275,6 +275,8 @@ void imgui_bridge_dock_space(unsigned int id, const ImVec2 *size, int flags);
 void imgui_bridge_dock_space_over_viewport(void);
 bool imgui_bridge_begin_main_menu_bar(void);
 void imgui_bridge_end_main_menu_bar(void);
+bool imgui_bridge_begin_menu_bar(void);
+void imgui_bridge_end_menu_bar(void);
 bool imgui_bridge_begin_menu(const char *label, bool enabled);
 void imgui_bridge_end_menu(void);
 bool imgui_bridge_menu_item(const char *label, const char *shortcut,
@@ -302,13 +304,18 @@ void imgui_bridge_table_set_column_index(int column_n);
 // Popups
 void imgui_bridge_open_popup(const char *str_id);
 bool imgui_bridge_begin_popup(const char *str_id, int flags);
+bool imgui_bridge_begin_popup_modal(const char *name, bool *p_open, int flags);
 void imgui_bridge_end_popup(void);
 void imgui_bridge_close_current_popup(void);
+void imgui_bridge_set_keyboard_focus_here(int offset);
+bool imgui_bridge_is_window_appearing(void);
 
 // Tooltips & Interaction
 void imgui_bridge_set_tooltip(const char *fmt, ...);
 bool imgui_bridge_is_item_hovered(int flags);
+bool imgui_bridge_is_item_clicked(int mouse_button);
 bool imgui_bridge_is_mouse_double_clicked(int button);
+bool imgui_bridge_is_key_pressed(int key);
 
 // Widgets
 bool imgui_bridge_drag_float(const char *label, float *v, float v_speed,

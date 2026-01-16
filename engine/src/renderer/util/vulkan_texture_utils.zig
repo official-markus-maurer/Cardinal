@@ -389,7 +389,8 @@ fn submit_texture_upload(device: c.VkDevice, graphicsQueue: c.VkQueue, commandBu
             return false;
         }
 
-        if (c.vkQueueSubmit2(graphicsQueue, 1, &submitInfo, uploadFence) != c.VK_SUCCESS) {
+        // Use synchronized submit
+        if (vk_sync_manager.vulkan_sync_manager_submit_queue2(graphicsQueue, 1, @ptrCast(&submitInfo), uploadFence, null) != c.VK_SUCCESS) {
             c.vkDestroyFence(device, uploadFence, null);
             return false;
         }
@@ -406,7 +407,8 @@ fn submit_texture_upload(device: c.VkDevice, graphicsQueue: c.VkQueue, commandBu
         waitInfo.pValues = &timeline_value;
         _ = c.vkWaitSemaphores(device, &waitInfo, c.UINT64_MAX);
     } else {
-        if (c.vkQueueSubmit2(graphicsQueue, 1, &submitInfo, null) != c.VK_SUCCESS) {
+        // Use synchronized submit
+        if (vk_sync_manager.vulkan_sync_manager_submit_queue2(graphicsQueue, 1, @ptrCast(&submitInfo), null, null) != c.VK_SUCCESS) {
             return false;
         }
         _ = c.vkQueueWaitIdle(graphicsQueue);
@@ -497,8 +499,10 @@ pub export fn vk_texture_create_from_data(allocator: ?*types.VulkanAllocator, de
     return true;
 }
 
-pub export fn vk_texture_create_placeholder(allocator: ?*types.VulkanAllocator, device: c.VkDevice, commandPool: c.VkCommandPool, graphicsQueue: c.VkQueue, textureImage: ?*c.VkImage, textureImageMemory: ?*c.VkDeviceMemory, textureImageView: ?*c.VkImageView, format: ?*const c.VkFormat, textureAllocation: ?*c.VmaAllocation) callconv(.c) bool {
-    _ = format;
+pub export fn vk_texture_create_placeholder(allocator: ?*types.VulkanAllocator, device: c.VkDevice, commandPool: c.VkCommandPool, graphicsQueue: c.VkQueue, textureImage: ?*c.VkImage, textureImageMemory: ?*c.VkDeviceMemory, textureImageView: ?*c.VkImageView, format: ?*c.VkFormat, textureAllocation: ?*c.VmaAllocation) callconv(.c) bool {
+    if (format) |fmt| {
+        fmt.* = c.VK_FORMAT_R8G8B8A8_SRGB;
+    }
     // Magenta placeholder (R=255, G=0, B=255, A=255)
     var magentaPixel = [_]u8{ 255, 0, 255, 255 };
     var placeholderTexture = std.mem.zeroes(scene.CardinalTexture);

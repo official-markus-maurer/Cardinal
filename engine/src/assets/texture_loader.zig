@@ -88,6 +88,16 @@ var g_placeholder_texture = TextureData{
     .is_hdr = false,
 };
 
+pub export fn cardinal_texture_check_cache(path: [*:0]const u8) ?*ref_counting.CardinalRefCountedResource {
+    if (!g_texture_cache.initialized) return null;
+    const filepath_slice = std.mem.span(path);
+    return texture_cache_get(filepath_slice);
+}
+
+pub export fn cardinal_texture_get_placeholder(out_texture: *TextureData) void {
+    out_texture.* = g_placeholder_texture;
+}
+
 pub export fn texture_load_from_disk(path: [*:0]const u8, out_texture: *TextureData) bool {
     const filename_slice = std.mem.span(path);
 

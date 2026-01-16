@@ -11,6 +11,7 @@ const scene = engine.scene;
 const loader = engine.loader;
 const async_loader = engine.async_loader;
 const animation = engine.animation;
+const scene_serializer = engine.scene_serializer;
 
 const editor_state = @import("editor_state.zig");
 const EditorState = editor_state.EditorState;
@@ -21,8 +22,10 @@ const content_browser = @import("panels/content_browser.zig");
 const inspector = @import("panels/inspector.zig");
 const memory_stats = @import("panels/memory_stats.zig");
 const animation_panel = @import("panels/animation_panel.zig");
+const scene_manager_panel = @import("panels/scene_manager_panel.zig");
 const input_system = @import("systems/input.zig");
 const camera_controller = @import("systems/camera_controller.zig");
+const scene_io = @import("systems/scene_io.zig");
 
 const c = @import("c.zig").c;
 
@@ -67,6 +70,11 @@ fn check_loading_status() void {
                         state.combined_scene = comb_ptr.*;
                         state.scene_loaded = true;
 
+                        // Re-init ECS Registry and Import Scene
+                        state.registry.deinit();
+                        state.registry.* = engine.ecs_registry.Registry.init(allocator);
+                        scene_io.import_scene_graph(&state);
+
                         if (initialized) {
                             state.pending_scene = state.combined_scene;
                             state.scene_upload_pending = true;
@@ -101,6 +109,16 @@ fn check_loading_status() void {
     }
 
     state.is_loading = (state.loading_tasks.items.len > 0);
+}
+
+fn save_scene() void {
+    // TODO: Use file dialog
+    scene_io.save_scene(&state, allocator, "assets/scenes/scene.json");
+}
+
+fn load_scene() void {
+    // TODO: Use file dialog
+    scene_io.load_scene(&state, allocator, "assets/scenes/scene.json");
 }
 
 fn draw_pbr_settings_panel() void {
@@ -258,7 +276,7 @@ fn ui_draw_callback(cmd: VkCommandBuffer) callconv(.c) void {
 
 // Public API
 
-pub fn init(win_ptr: *window.CardinalWindow, rnd_ptr: *types.CardinalRenderer) bool {
+pub fn init(win_ptr: *window.CardinalWindow, rnd_ptr: *types.CardinalRenderer, registry: *engine.ecs_registry.Registry) bool {
     if (initialized) {
         log.cardinal_log_warn("[EDITOR] Already initialized", .{});
         return true;
@@ -273,6 +291,7 @@ pub fn init(win_ptr: *window.CardinalWindow, rnd_ptr: *types.CardinalRenderer) b
 
     state.window = win_ptr;
     state.renderer = rnd_ptr;
+    state.registry = registry;
     state.camera = .{
         .position = .{ .x = 0.0, .y = 2.0, .z = 5.0 },
         .target = .{ .x = 0.0, .y = 0.0, .z = 0.0 },
@@ -378,13 +397,23 @@ pub fn init(win_ptr: *window.CardinalWindow, rnd_ptr: *types.CardinalRenderer) b
         .depth_attachment_format = renderer.cardinal_renderer_internal_depth_format(rnd_ptr),
     };
 
+    log.cardinal_log_info("[EDITOR_LAYER] Init Info: Instance={any}, PhysDev={any}, Device={any}, QueueFam={d}, Queue={any}, Pool={any}, ImageCount={d}, ColorFmt={d}, DepthFmt={d}", .{ init_info.instance, init_info.physical_device, init_info.device, init_info.queue_family, init_info.queue, init_info.descriptor_pool, init_info.image_count, init_info.color_attachment_format, init_info.depth_attachment_format });
+
     if (!c.imgui_bridge_impl_vulkan_init(&init_info)) return false;
 
+    log.cardinal_log_info("[EDITOR_LAYER] ImGui Vulkan Init successful.", .{});
+    log.cardinal_log_info("[EDITOR_LAYER] Scanning assets dir...", .{});
     content_browser.scan_assets_dir(&state, allocator);
+    log.cardinal_log_info("[EDITOR_LAYER] Assets dir scanned.", .{});
 
     renderer.cardinal_renderer_set_camera(rnd_ptr, &state.camera);
+    std.debug.print("[EDITOR_LAYER] Camera set.\n", .{});
     renderer.cardinal_renderer_set_lighting(rnd_ptr, &state.light);
+    std.debug.print("[EDITOR_LAYER] Lighting set.\n", .{});
     renderer.cardinal_renderer_set_ui_callback(rnd_ptr, @ptrCast(&ui_draw_callback));
+
+    // Initialize scene list
+    scene_io.refresh_available_scenes(&state, allocator);
 
     initialized = true;
     return true;
@@ -638,8 +667,15 @@ pub fn update() void {
         c.imgui_bridge_dock_space(dock_id, &zero_vec, dock_flags);
 
         // Main Menu Bar
-        if (c.imgui_bridge_begin_main_menu_bar()) {
+        if (c.imgui_bridge_begin_menu_bar()) {
             if (c.imgui_bridge_begin_menu("File", true)) {
+                if (c.imgui_bridge_menu_item("Save Scene", "Ctrl+S", false, true)) {
+                    save_scene();
+                }
+                if (c.imgui_bridge_menu_item("Load Scene", "Ctrl+O", false, true)) {
+                    load_scene();
+                }
+                c.imgui_bridge_separator();
                 if (c.imgui_bridge_menu_item("Exit", "Ctrl+Q", false, true)) {
                     // Exit logic - set window should close?
                     // We don't have direct access to window.should_close from here cleanly without externs or helpers
@@ -652,12 +688,13 @@ pub fn update() void {
                 if (c.imgui_bridge_menu_item("Scene Graph", null, state.show_scene_graph, true)) state.show_scene_graph = !state.show_scene_graph;
                 if (c.imgui_bridge_menu_item("Assets", null, state.show_assets, true)) state.show_assets = !state.show_assets;
                 if (c.imgui_bridge_menu_item("Model Manager", null, state.show_model_manager, true)) state.show_model_manager = !state.show_model_manager;
+                if (c.imgui_bridge_menu_item("Scene Manager", null, state.show_scene_manager, true)) state.show_scene_manager = !state.show_scene_manager;
                 if (c.imgui_bridge_menu_item("PBR Settings", null, state.show_pbr_settings, true)) state.show_pbr_settings = !state.show_pbr_settings;
                 if (c.imgui_bridge_menu_item("Animation", null, state.show_animation, true)) state.show_animation = !state.show_animation;
                 if (c.imgui_bridge_menu_item("Memory Stats", null, state.show_memory_stats, true)) state.show_memory_stats = !state.show_memory_stats;
                 c.imgui_bridge_end_menu();
             }
-            c.imgui_bridge_end_main_menu_bar();
+            c.imgui_bridge_end_menu_bar();
         }
 
         // Panels
@@ -666,6 +703,7 @@ pub fn update() void {
         inspector.draw_inspector_panel(&state);
         draw_pbr_settings_panel();
         animation_panel.draw_animation_panel(&state);
+        scene_manager_panel.draw_scene_manager_panel(&state, allocator);
         memory_stats.draw_memory_stats_panel(&state);
 
         // Check for dirty model manager and update combined scene

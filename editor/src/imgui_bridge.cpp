@@ -225,8 +225,8 @@ float imgui_bridge_get_content_region_avail_x(void) {
   return ImGui::GetContentRegionAvail().x;
 }
 
-bool imgui_bridge_input_text(const char *label, char *buf, size_t buf_size) {
-  return ImGui::InputText(label, buf, buf_size);
+bool imgui_bridge_input_text(const char *label, char *buf, size_t buf_size, int flags) {
+  return ImGui::InputText(label, buf, buf_size, flags);
 }
 
 bool imgui_bridge_input_text_with_hint(const char *label, const char *hint,
@@ -248,6 +248,12 @@ bool imgui_bridge_begin_main_menu_bar(void) {
 }
 
 void imgui_bridge_end_main_menu_bar(void) { ImGui::EndMainMenuBar(); }
+
+bool imgui_bridge_begin_menu_bar(void) {
+  return ImGui::BeginMenuBar();
+}
+
+void imgui_bridge_end_menu_bar(void) { ImGui::EndMenuBar(); }
 
 bool imgui_bridge_begin_menu(const char *label, bool enabled) {
   return ImGui::BeginMenu(label, enabled);
@@ -312,9 +318,21 @@ bool imgui_bridge_begin_popup(const char *str_id, int flags) {
   return ImGui::BeginPopup(str_id, flags);
 }
 
+bool imgui_bridge_begin_popup_modal(const char *name, bool *p_open, int flags) {
+  return ImGui::BeginPopupModal(name, p_open, flags);
+}
+
 void imgui_bridge_end_popup(void) { ImGui::EndPopup(); }
 
 void imgui_bridge_close_current_popup(void) { ImGui::CloseCurrentPopup(); }
+
+void imgui_bridge_set_keyboard_focus_here(int offset) {
+  ImGui::SetKeyboardFocusHere(offset);
+}
+
+bool imgui_bridge_is_window_appearing(void) {
+  return ImGui::IsWindowAppearing();
+}
 
 void imgui_bridge_set_tooltip(const char *fmt, ...) {
   va_list args;
@@ -327,8 +345,16 @@ bool imgui_bridge_is_item_hovered(int flags) {
   return ImGui::IsItemHovered(flags);
 }
 
+bool imgui_bridge_is_item_clicked(int mouse_button) {
+  return ImGui::IsItemClicked(mouse_button);
+}
+
 bool imgui_bridge_is_mouse_double_clicked(int button) {
   return ImGui::IsMouseDoubleClicked(button);
+}
+
+bool imgui_bridge_is_key_pressed(int key) {
+  return ImGui::IsKeyPressed((ImGuiKey)key);
 }
 
 // Widgets

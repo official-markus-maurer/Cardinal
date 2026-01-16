@@ -413,11 +413,9 @@ fn render_frame_headless(s: *types.VulkanState, signal_value: u64) void {
 
     // Check if vkQueueSubmit2 is available via function pointer
     var res: c.VkResult = c.VK_SUCCESS;
-    if (s.context.vkQueueSubmit2 != null) {
-        res = s.context.vkQueueSubmit2.?(s.context.graphics_queue, 1, &si, fence);
-    } else {
-        res = c.vkQueueSubmit2(s.context.graphics_queue, 1, &si, fence);
-    }
+    
+    // Use synchronized submit
+    res = vk_sync_manager.vulkan_sync_manager_submit_queue2(s.context.graphics_queue, 1, @ptrCast(&si), fence, s.context.vkQueueSubmit2);
 
     if (res == c.VK_SUCCESS) {
         _ = c.vkWaitForFences(s.context.device, 1, &fence, c.VK_TRUE, c.UINT64_MAX);
@@ -499,14 +497,9 @@ fn submit_command_buffer(s: *types.VulkanState, cmd: c.VkCommandBuffer, acquire_
 
     // Check if vkQueueSubmit2 is available via function pointer
     var res: c.VkResult = c.VK_SUCCESS;
-    if (s.context.vkQueueSubmit2 != null) {
-        res = s.context.vkQueueSubmit2.?(s.context.graphics_queue, 1, &submit_info, s.sync.in_flight_fences.?[s.sync.current_frame]);
-    } else {
-        // Fallback to direct call (might not link if not loaded, but C code did this)
-        // Wait, C code did: s->context.vkQueueSubmit2 ? ... : vkQueueSubmit2(...)
-        // In Zig we can do same if vkQueueSubmit2 is available in c namespace.
-        res = c.vkQueueSubmit2(s.context.graphics_queue, 1, &submit_info, s.sync.in_flight_fences.?[s.sync.current_frame]);
-    }
+    
+    // Use synchronized submit
+    res = vk_sync_manager.vulkan_sync_manager_submit_queue2(s.context.graphics_queue, 1, @ptrCast(&submit_info), s.sync.in_flight_fences.?[s.sync.current_frame], s.context.vkQueueSubmit2);
 
     if (res == c.VK_ERROR_DEVICE_LOST) {
         s.recovery.device_lost = true;

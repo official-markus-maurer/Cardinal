@@ -12,6 +12,7 @@ const c = @import("vulkan_c.zig").c;
 // This is necessary because multiple threads (texture loading) access the sync manager
 // and the overflow reset logic modifies the semaphore handle, which is not thread-safe.
 var g_sync_lock = std.Thread.RwLock{};
+var g_queue_lock = std.Thread.Mutex{};
 
 // Helper to cast u64/u32 to atomic value pointer
 fn atomic(ptr: anytype) *std.atomic.Value(@TypeOf(ptr.*)) {
@@ -24,6 +25,21 @@ pub fn vulkan_sync_manager_lock_shared() void {
 
 pub fn vulkan_sync_manager_unlock_shared() void {
     g_sync_lock.unlockShared();
+}
+
+pub fn vulkan_sync_manager_submit_queue(queue: c.VkQueue, submit_count: u32, pSubmits: [*]const c.VkSubmitInfo, fence: c.VkFence) c.VkResult {
+    g_queue_lock.lock();
+    defer g_queue_lock.unlock();
+    return c.vkQueueSubmit(queue, submit_count, pSubmits, fence);
+}
+
+pub fn vulkan_sync_manager_submit_queue2(queue: c.VkQueue, submit_count: u32, pSubmits: [*]const c.VkSubmitInfo2, fence: c.VkFence, submit_fn: ?*const fn (c.VkQueue, u32, [*]const c.VkSubmitInfo2, c.VkFence) callconv(.c) c.VkResult) c.VkResult {
+    g_queue_lock.lock();
+    defer g_queue_lock.unlock();
+    if (submit_fn) |func| {
+        return func(queue, submit_count, pSubmits, fence);
+    }
+    return c.vkQueueSubmit2(queue, submit_count, pSubmits, fence);
 }
 
 pub fn vulkan_sync_manager_init(sync_manager: ?*types.VulkanSyncManager, device: c.VkDevice, graphics_queue: c.VkQueue, max_frames_in_flight: u32, max_ahead: u64) bool {

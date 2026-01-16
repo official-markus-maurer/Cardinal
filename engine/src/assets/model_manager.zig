@@ -64,8 +64,19 @@ fn finalize_model_task(task: ?*async_loader.CardinalAsyncTask, user_data: ?*anyo
     defer async_loader.cardinal_async_free_task(ctx.scene_task);
 
     // Check if scene load was successful
-    if (ctx.scene_task.status != .COMPLETED or ctx.scene_task.result_data == null) {
-        model_log.err("Scene load task failed or no result", .{});
+    if (ctx.scene_task.status != .COMPLETED) {
+        if (ctx.scene_task.status == .FAILED) {
+            const err_msg = async_loader.cardinal_async_get_error_message(ctx.scene_task);
+            const err_str = if (err_msg) |msg| std.mem.span(msg) else "unknown error";
+            model_log.err("Scene load task failed: {s}", .{err_str});
+        } else {
+            model_log.err("Scene load task did not complete (status: {any})", .{ctx.scene_task.status});
+        }
+        return false;
+    }
+
+    if (ctx.scene_task.result_data == null) {
+        model_log.err("Scene load task completed but returned no result", .{});
         return false;
     }
 
@@ -88,9 +99,8 @@ fn finalize_model_task(task: ?*async_loader.CardinalAsyncTask, user_data: ?*anyo
     // Calculate bounds
     calculate_scene_bounds(&result.scene, &result.bbox_min, &result.bbox_max);
 
-    // Cleanup the temporary scene struct container (contents are now owned by result)
-    const engine_allocator = memory.cardinal_get_allocator_for_category(.ENGINE);
-    memory.cardinal_free(engine_allocator, loaded_scene_ptr);
+    // NOTE: We do NOT free loaded_scene_ptr here because async_loader.cardinal_async_free_task(ctx.scene_task)
+    // will free the result_data (which is loaded_scene_ptr). Doing it here would cause a double free.
 
     if (task) |t| {
         t.result_data = result;
@@ -216,7 +226,7 @@ fn expand_models_array(manager: *CardinalModelManager) bool {
     return true;
 }
 
-fn find_model_index(manager: *const CardinalModelManager, model_id: u32) i32 {
+pub fn find_model_index(manager: *const CardinalModelManager, model_id: u32) i32 {
     if (manager.models) |models| {
         var i: u32 = 0;
         while (i < manager.model_count) : (i += 1) {
@@ -418,38 +428,23 @@ fn rebuild_combined_scene(manager: *CardinalModelManager) void {
 
                 var used_ref_counting = false;
                 if (src_texture.ref_resource) |res| {
-                    // Try to acquire the resource properly via the registry
-                    var acquired = false;
-                    if (res.identifier) |id| {
-                        if (ref_counting.cardinal_ref_acquire(id)) |acquired_res| {
-                            dst_texture.ref_resource = acquired_res;
-                            acquired = true;
-                        }
-                    }
+                    // Directly increment ref count and use the existing resource pointer
+                    // This ensures we preserve the link to the async loading resource
+                    _ = @atomicRmw(u32, &res.ref_count, .Add, 1, .seq_cst);
+                    dst_texture.ref_resource = res;
 
-                    if (acquired) {
-                        _ = @atomicRmw(u32, &dst_texture.ref_resource.?.ref_count, .Add, 0, .seq_cst); // Just to ensure visibility if needed, though acquire already did Add
-
-                        // Update data pointer from the resource directly to ensure we have the latest data
-                        if (dst_texture.ref_resource.?.resource) |r| {
-                            const tex_data = @as(*texture_loader.TextureData, @ptrCast(@alignCast(r)));
-                            dst_texture.data = tex_data.data;
-                            dst_texture.width = tex_data.width;
-                            dst_texture.height = tex_data.height;
-                            dst_texture.channels = tex_data.channels;
-                            dst_texture.is_hdr = tex_data.is_hdr;
-                        } else {
-                            dst_texture.data = src_texture.data;
-                        }
-                        used_ref_counting = true;
+                    // Update data pointer from the resource directly
+                    if (res.resource) |r| {
+                        const tex_data = @as(*texture_loader.TextureData, @ptrCast(@alignCast(r)));
+                        dst_texture.data = tex_data.data;
+                        dst_texture.width = tex_data.width;
+                        dst_texture.height = tex_data.height;
+                        dst_texture.channels = tex_data.channels;
+                        dst_texture.is_hdr = tex_data.is_hdr;
                     } else {
-                        // Fallback: If we couldn't acquire (e.g. not in registry), we don't use ref counting
-                        // and will fall through to deep copy below.
-                        dst_texture.ref_resource = null;
-                        if (res.identifier) |id| {
-                            model_log.warn("Failed to acquire ref for texture '{s}', falling back to copy", .{id});
-                        }
+                        dst_texture.data = src_texture.data;
                     }
+                    used_ref_counting = true;
                 }
 
                 if (!used_ref_counting) {
@@ -795,6 +790,7 @@ pub export fn cardinal_model_manager_load_model(manager: ?*CardinalModelManager,
             var success = false;
             if (task.type == .CUSTOM) {
                 if (task.result_data) |result_ptr| {
+                    model_log.debug("Processing result data at {*}, model at {*}", .{ result_ptr, model.? });
                     const result = @as(*FinalizedModelData, @ptrCast(@alignCast(result_ptr)));
 
                     // Copy data to model
@@ -812,6 +808,8 @@ pub export fn cardinal_model_manager_load_model(manager: ?*CardinalModelManager,
 
                     const model_name_str = if (model.?.name) |n| n else "Unnamed";
                     model_log.info("Synchronous (via Async) loading completed for model '{s}' (ID: {d}, {d} meshes)", .{ model_name_str, model.?.id, model.?.scene.mesh_count });
+                } else {
+                    model_log.err("Task completed but result_data is null", .{});
                 }
             }
 
@@ -887,6 +885,8 @@ pub export fn cardinal_model_manager_load_model_async(manager: ?*CardinalModelMa
         model_log.err("Failed to start async loading for {s}", .{file_path.?});
         if (model.name) |n| memory.cardinal_free(allocator, @ptrCast(n));
         if (model.file_path) |p| memory.cardinal_free(allocator, @ptrCast(p));
+        // Reset loading state
+        model.is_loading = false;
         return 0;
     }
 
@@ -903,7 +903,8 @@ pub export fn cardinal_model_manager_load_model_async(manager: ?*CardinalModelMa
 
     // 3. Create Finalize Task (Dependent)
     // This runs after scene load completes
-    const finalize_task = async_loader.cardinal_async_submit_custom_task(finalize_model_task, ctx, @enumFromInt(priority), null, null);
+    // Note: We use create_custom_task (no submit) to ensure we can add dependencies before it starts
+    const finalize_task = async_loader.cardinal_async_create_custom_task(finalize_model_task, ctx, @enumFromInt(priority), null, null);
     if (finalize_task == null) {
         memory.cardinal_free(allocator, ctx_ptr);
         async_loader.cardinal_async_free_task(scene_task);
@@ -916,10 +917,20 @@ pub export fn cardinal_model_manager_load_model_async(manager: ?*CardinalModelMa
     // finalize_task depends on scene_task
     if (!async_loader.cardinal_async_add_dependency(finalize_task, scene_task)) {
         model_log.err("Failed to add task dependency", .{});
-        // Cleanup is tricky here since tasks are submitted.
-        // But since we just submitted them, they might be pending.
-        // We'll let them run (and fail/leak?) or try to cancel.
-        // For robustness, we assume add_dependency works if tasks are fresh.
+        // If dependency add fails, we should cleanup.
+        // But since we haven't submitted finalize_task yet, we can safely free it.
+        async_loader.cardinal_async_free_task(finalize_task);
+        // scene_task is already submitted, let it run or cancel?
+        // Let's try to cancel
+        _ = async_loader.cardinal_async_cancel_task(scene_task);
+        return 0;
+    }
+
+    // 5. Submit Finalize Task
+    if (!async_loader.cardinal_async_submit_task(finalize_task)) {
+        model_log.err("Failed to submit finalize task", .{});
+        async_loader.cardinal_async_free_task(finalize_task);
+        return 0;
     }
 
     model.load_task = finalize_task;

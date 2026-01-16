@@ -9,7 +9,7 @@ This document outlines the roadmap for the Cardinal Engine, focusing on robustne
     - Switch to a **Fiber-based** architecture (Naughty Dog / GDC 2015 style).
     - Enable finer-grained concurrency.
     - Avoid blocking worker threads during dependency waits.
-- [ ] **Concurrency Safety**: Replace volatile flags with `std.atomic.Value` in `vulkan_texture_manager.zig` to ensure thread safety across architectures.
+- [x] **Concurrency Safety**: Replace volatile flags with `std.atomic.Value` in `vulkan_texture_manager.zig` to ensure thread safety across architectures.
 
 ## 2. Data & Assets
 
@@ -21,10 +21,10 @@ This document outlines the roadmap for the Cardinal Engine, focusing on robustne
 - [ ] **Shader Compilation**: Integrate runtime shader compilation (e.g., shaderc or slang) to compile `.glsl` to `.spv` on the fly.
 
 ### Scene System
-- [ ] **ECS Architecture**: Design and implement a Sparse-Set based Entity Component System (ECS) to replace the current Object-Oriented hierarchy.
+- [x] **ECS Architecture**: Design and implement a Sparse-Set based Entity Component System (ECS) to replace the current Object-Oriented hierarchy.
     - *Components*: Transform, MeshRenderer, Light, Camera, Script.
     - *Systems*: RenderSystem, PhysicsSystem, ScriptSystem.
-- [ ] **Scene Serialization**: Robust save/load system using a schema-based format (JSON/Binary) that supports versioning.
+- [x] **Scene Serialization**: Robust save/load system using a schema-based format (JSON/Binary) that supports versioning.
 
 ## 3. Rendering (Vulkan)
 - [ ] **IBL**: Implement Environment Maps, Irradiance Maps, and Prefiltered Specular maps.

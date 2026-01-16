@@ -192,43 +192,70 @@ fn worker_thread_func(worker: *WorkerThread) void {
         }
 
         job.status = .RUNNING;
+        var new_status: JobStatus = .COMPLETED;
+        var error_code: i32 = 0;
+
         if (job.func) |f| {
             const result = f(job.data);
             if (result != 0) {
-                job.status = .FAILED;
-                job.error_code = result;
+                new_status = .FAILED;
+                error_code = result;
                 if (job.error_func) |ef| {
                     ef(job.data, result);
                 }
-            } else {
-                job.status = .COMPLETED;
             }
-        } else {
-            job.status = .COMPLETED;
         }
-
-        _ = job_queue_push(&g_job_system.completed_queue, job);
 
         // Process dependencies
-        g_job_system.state_mutex.lock();
-        var node = job.dependents_head;
-        while (node) |n| {
-            const dependent = n.job;
-            if (dependent.dependency_count > 0) {
-                dependent.dependency_count -= 1;
-                if (dependent.dependency_count == 0) {
-                    // Move from waiting to pending
-                    if (job_queue_remove(&g_job_system.waiting_queue, dependent)) {
-                        _ = job_queue_push(&g_job_system.pending_queue, dependent);
-                    }
+    // CRITICAL: We must hold state_mutex while processing dependents to prevent race conditions
+    // where a dependent is added JUST as we are finishing.
+    g_job_system.state_mutex.lock();
+    
+    // First, verify status update is atomic with dependency processing
+    if (new_status == .FAILED) job.error_code = error_code;
+    job.status = new_status;
+
+    var node = job.dependents_head;
+    while (node) |n| {
+        const dependent = n.job;
+        if (dependent.dependency_count > 0) {
+            dependent.dependency_count -= 1;
+            if (dependent.dependency_count == 0) {
+                // Move from waiting to pending
+                // Note: We need to be careful about lock ordering if job_queue_remove/push takes locks.
+                // job_queue_remove/push take their own queue locks.
+                // state_mutex -> queue_mutex is a valid ordering if consistently applied.
+                if (job_queue_remove(&g_job_system.waiting_queue, dependent)) {
+                    _ = job_queue_push(&g_job_system.pending_queue, dependent);
                 }
             }
-            const next = n.next;
-            g_job_system.dependency_pool.destroy(n);
-            node = next;
         }
-        job.dependents_head = null;
-        g_job_system.state_mutex.unlock();
+        const next = n.next;
+        g_job_system.dependency_pool.destroy(n);
+        node = next;
+    }
+    job.dependents_head = null;
+    g_job_system.state_mutex.unlock();
+
+    // Push to completed queue
+    {
+        g_job_system.completed_queue.mutex.lock();
+        defer g_job_system.completed_queue.mutex.unlock();
+
+        // Manual push to avoid deadlock (job_queue_push takes lock)
+        const queue = &g_job_system.completed_queue;
+        // Ignore max_size for completed queue to prevent leaks
+
+        job.next = null;
+        if (queue.tail) |tail| {
+            tail.next = job;
+        } else {
+            queue.head = job;
+        }
+        queue.tail = job;
+        queue.count += 1;
+        queue.condition.signal();
+    }
     }
 }
 
@@ -402,9 +429,23 @@ pub fn process_completed_jobs(max_jobs: u32) u32 {
     return processed;
 }
 
+// Add helper to process completed queue from any thread safely
 pub fn get_completed_job() ?*Job {
-    if (!g_job_system.initialized) return null;
-    return job_queue_pop(&g_job_system.completed_queue, false);
+    g_job_system.completed_queue.mutex.lock();
+    defer g_job_system.completed_queue.mutex.unlock();
+
+    if (g_job_system.completed_queue.head) |job| {
+        g_job_system.completed_queue.head = job.next;
+        if (g_job_system.completed_queue.head == null) {
+            g_job_system.completed_queue.tail = null;
+        }
+        if (g_job_system.completed_queue.count > 0) {
+            g_job_system.completed_queue.count -= 1;
+        }
+        job.next = null;
+        return job;
+    }
+    return null;
 }
 
 pub fn get_pending_job_count() u32 {

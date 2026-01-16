@@ -17,6 +17,8 @@ const loader_mod = @import("../assets/loader.zig");
 const mesh_loader = @import("../assets/mesh_loader.zig");
 const vulkan_renderer = @import("../renderer/vulkan_renderer.zig");
 const vulkan_types = @import("../renderer/vulkan_types.zig");
+const ecs_registry = @import("../ecs/registry.zig");
+const ecs_systems = @import("../ecs/systems.zig");
 
 pub const CardinalEngineConfig = config_pkg.CardinalEngineConfig;
 
@@ -27,6 +29,7 @@ pub const CardinalEngine = struct {
     renderer: vulkan_types.CardinalRenderer,
     config: CardinalEngineConfig,
     config_manager: config_pkg.ConfigManager,
+    registry: ecs_registry.Registry,
 
     frame_allocator: stack_allocator.StackAllocator = undefined,
     frame_memory: []u8 = undefined,
@@ -59,6 +62,7 @@ pub const CardinalEngine = struct {
             .window = null,
             .renderer = .{ ._opaque = null },
             .last_frame_time = platform.get_time_ns(),
+            .registry = ecs_registry.Registry.init(allocator),
         };
         errdefer {
             self.deinit();
@@ -116,6 +120,7 @@ pub const CardinalEngine = struct {
             self.allocator.free(self.frame_memory);
         }
 
+        self.registry.deinit();
         self.config_manager.deinit();
     }
 
@@ -135,6 +140,12 @@ pub const CardinalEngine = struct {
             window.cardinal_window_poll(win);
             input.update(win);
         }
+
+        // ECS System Updates
+        ecs_systems.ScriptSystem.update(&self.registry, delta_time);
+        ecs_systems.PhysicsSystem.update(&self.registry, delta_time);
+        ecs_systems.RenderSystem.update(&self.registry, delta_time);
+
         try self.module_manager.update(delta_time);
     }
 

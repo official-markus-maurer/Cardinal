@@ -43,7 +43,8 @@ fn create_command_pools(s: *types.VulkanState) bool {
 fn allocate_command_buffers(s: *types.VulkanState) bool {
     // Primary buffers
     const mem_alloc = memory.cardinal_get_allocator_for_category(.RENDERER);
-    const buffers_ptr = memory.cardinal_alloc(mem_alloc, s.sync.max_frames_in_flight * @sizeOf(c.VkCommandBuffer));
+    // Allocate extra space to prevent heap corruption if there's an alignment/stride mismatch
+    const buffers_ptr = memory.cardinal_alloc(mem_alloc, (s.sync.max_frames_in_flight + 1) * @sizeOf(c.VkCommandBuffer));
     if (buffers_ptr == null) return false;
     s.commands.buffers = @as([*]c.VkCommandBuffer, @ptrCast(@alignCast(buffers_ptr)));
 
@@ -65,7 +66,7 @@ fn allocate_command_buffers(s: *types.VulkanState) bool {
     // Note: These are allocated as PRIMARY buffers.
     // They serve as an alternate set of primary command buffers (e.g., for double buffering
     // logic or separate submissions), distinct from Vulkan's VK_COMMAND_BUFFER_LEVEL_SECONDARY.
-    const sec_buffers_ptr = memory.cardinal_alloc(mem_alloc, s.sync.max_frames_in_flight * @sizeOf(c.VkCommandBuffer));
+    const sec_buffers_ptr = memory.cardinal_alloc(mem_alloc, (s.sync.max_frames_in_flight + 1) * @sizeOf(c.VkCommandBuffer));
     if (sec_buffers_ptr == null) return false;
     s.commands.alternate_primary_buffers = @as([*]c.VkCommandBuffer, @ptrCast(@alignCast(sec_buffers_ptr)));
 
@@ -84,7 +85,7 @@ fn allocate_command_buffers(s: *types.VulkanState) bool {
     cmd_log.warn("Allocated {d} alternate primary command buffers", .{s.sync.max_frames_in_flight});
 
     // Scene secondary buffers (real secondary level)
-    const scene_sec_ptr = memory.cardinal_alloc(mem_alloc, s.sync.max_frames_in_flight * @sizeOf(c.VkCommandBuffer));
+    const scene_sec_ptr = memory.cardinal_alloc(mem_alloc, (s.sync.max_frames_in_flight + 1) * @sizeOf(c.VkCommandBuffer));
     if (scene_sec_ptr == null) return false;
     s.commands.scene_secondary_buffers = @as([*]c.VkCommandBuffer, @ptrCast(@alignCast(scene_sec_ptr)));
 

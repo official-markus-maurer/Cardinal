@@ -168,6 +168,8 @@ pub fn load_scene(state: *EditorState, allocator: std.mem.Allocator, path: []con
     }
 }
 
+const scene_io = @import("../systems/scene_io.zig");
+
 pub fn draw_asset_browser_panel(state: *EditorState, allocator: std.mem.Allocator) void {
     if (state.show_assets) {
         const open = c.imgui_bridge_begin("Assets", &state.show_assets, 0);
@@ -268,12 +270,12 @@ pub fn draw_asset_browser_panel(state: *EditorState, allocator: std.mem.Allocato
 
             c.imgui_bridge_separator();
 
-            c.imgui_bridge_text("Load Scene (glTF/glb)");
+            c.imgui_bridge_text("Import Model (glTF/glb)");
             c.imgui_bridge_set_next_item_width(-1.0);
-            if (c.imgui_bridge_input_text_with_hint("##scene_path", "C:/path/to/scene.gltf or .glb", @ptrCast(&state.scene_path), state.scene_path.len)) {
+            if (c.imgui_bridge_input_text_with_hint("##scene_path", "C:/path/to/model.gltf or .glb", @ptrCast(&state.scene_path), state.scene_path.len)) {
                 // Input handling
             }
-            if (c.imgui_bridge_button("Load")) {
+            if (c.imgui_bridge_button("Import")) {
                 const path_len = std.mem.indexOf(u8, &state.scene_path, &[_]u8{0}) orelse state.scene_path.len;
                 if (path_len > 0) {
                     load_scene(state, allocator, state.scene_path[0..path_len]);

@@ -712,6 +712,11 @@ fn build_scene_node(data: *const c.cgltf_data, gltf_node: *const c.cgltf_node, m
         }
     }
 
+    if (gltf_node.parent != null and data.nodes != null) {
+        const parent_idx = (@intFromPtr(gltf_node.parent) - @intFromPtr(data.nodes)) / @sizeOf(c.cgltf_node);
+        node.parent_index = @intCast(parent_idx);
+    }
+
     var local_transform: [16]f32 = undefined;
     if (gltf_node.has_matrix != 0) {
         var i: usize = 0;
@@ -1059,27 +1064,155 @@ fn load_lights_from_gltf(data: *const c.cgltf_data, out_lights: *?[*]scene.Cardi
     return true;
 }
 
+fn manual_load_buffers(data: *c.cgltf_data, gltf_path: [*:0]const u8) bool {
+    const allocator = memory.cardinal_get_allocator_for_category(.TEMPORARY).as_allocator();
+    const path_span = std.mem.span(gltf_path);
+    
+    // Log the path we are trying to use
+    // gltf_log.debug("Manual load buffers for: {s}", .{path_span});
+
+    const dir = std.fs.path.dirname(path_span) orelse ".";
+
+    var i: usize = 0;
+    while (i < data.buffers_count) : (i += 1) {
+        var buf = &data.buffers[i];
+        if (buf.data != null) continue; // Already loaded
+        if (buf.uri == null) continue; // No URI
+
+        const uri = std.mem.span(buf.uri);
+        if (std.mem.startsWith(u8, uri, "data:")) {
+            gltf_log.err("Manual load: Data URIs not supported in fallback", .{});
+            return false;
+        }
+
+        // Construct path. If dir is ".", we just use uri.
+        const bin_path = if (std.mem.eql(u8, dir, "."))
+            allocator.dupe(u8, uri) catch return false
+        else
+            std.fs.path.join(allocator, &[_][]const u8{ dir, uri }) catch return false;
+            
+        defer allocator.free(bin_path);
+
+        var file: std.fs.File = undefined;
+        var opened = false;
+
+        // 1. Try resolving to absolute path first (safest)
+        if (std.fs.cwd().realpathAlloc(allocator, bin_path)) |abs_path| {
+            defer allocator.free(abs_path);
+            if (std.fs.openFileAbsolute(abs_path, .{ .mode = .read_only })) |f| {
+                file = f;
+                opened = true;
+            } else |_| {}
+        } else |_| {
+            // realpath failed (maybe file doesn't exist or path invalid)
+        }
+
+        // 2. If that failed, try opening as relative path from CWD
+        if (!opened) {
+            if (std.fs.cwd().openFile(bin_path, .{ .mode = .read_only })) |f| {
+                file = f;
+                opened = true;
+            } else |err| {
+                // Try relative to executable/assets?
+                // For now just log error
+                gltf_log.err("Manual load: Failed to open buffer file {s}: {any}", .{ bin_path, err });
+                return false;
+            }
+        }
+        defer file.close();
+
+        const size = file.getEndPos() catch return false;
+
+        const raw_ptr = c.malloc(size);
+        if (raw_ptr == null) {
+            gltf_log.err("Manual load: Failed to allocate {d} bytes", .{size});
+            return false;
+        }
+        const ptr = raw_ptr.?;
+
+        const slice = @as([*]u8, @ptrCast(ptr))[0..size];
+        const read = file.readAll(slice) catch {
+            c.free(ptr);
+            return false;
+        };
+
+        if (read != size) {
+            gltf_log.err("Manual load: Read incomplete", .{});
+            c.free(ptr);
+            return false;
+        }
+
+        buf.data = ptr;
+        if (size < buf.size) {
+            gltf_log.err("Manual load: File too small {s} (expected {d}, got {d})", .{ bin_path, buf.size, size });
+            c.free(ptr);
+            return false;
+        }
+
+        buf.data_free_method = c.cgltf_data_free_method_memory_free;
+        gltf_log.info("Manual load: Successfully loaded buffer {s} ({d} bytes)", .{ uri, size });
+    }
+    return true;
+}
+
 pub export fn cardinal_gltf_load_scene(path: [*:0]const u8, out_scene: *scene.CardinalScene) callconv(.c) bool {
-    gltf_log.info("Starting GLTF scene loading: {s}", .{path});
+    std.debug.print("[GLTF] cardinal_gltf_load_scene start: {s}\n", .{path});
+    // Log with Error level to ensure it shows up in user logs (temporary debugging)
+    // gltf_log.info("Starting GLTF scene loading: {s}", .{path});
+    
+    // Validate path (basic check)
+    if (path[0] == 0) {
+        gltf_log.err("Empty path passed to GLTF loader", .{});
+        return false;
+    }
+
+    gltf_log.info("GLTF Loader: Processing path '{s}' (ptr: {*})", .{path, path});
+
+    // Make a local copy of the path to avoid potential memory corruption issues
+    // and ensure stability across C calls.
+    // NOTE: We use .ENGINE (Dynamic) allocator because .TEMPORARY (Linear) is NOT thread-safe
+    // and this function runs on worker threads.
+    const allocator = memory.cardinal_get_allocator_for_category(.ENGINE).as_allocator();
+    const path_len = std.mem.len(path);
+    const local_path = allocator.allocSentinel(u8, path_len, 0) catch {
+        gltf_log.err("Failed to allocate local path copy", .{});
+        return false;
+    };
+    defer allocator.free(local_path);
+    @memcpy(local_path, path[0..path_len]);
+
     @memset(@as([*]u8, @ptrCast(out_scene))[0..@sizeOf(scene.CardinalScene)], 0);
 
     var options: c.cgltf_options = std.mem.zeroes(c.cgltf_options);
     var data: ?*c.cgltf_data = null;
 
-    const result = c.cgltf_parse_file(&options, path, &data);
+    std.debug.print("[GLTF] Calling cgltf_parse_file...\n", .{});
+    gltf_log.debug("Calling cgltf_parse_file...", .{});
+    const result = c.cgltf_parse_file(&options, local_path, &data);
     if (result != c.cgltf_result_success) {
-        gltf_log.err("cgltf_parse_file failed: {d} for {s}", .{ result, path });
+        std.debug.print("[GLTF] cgltf_parse_file failed: {d}\n", .{result});
+        gltf_log.err("cgltf_parse_file failed: {d} for {s}", .{ result, local_path });
         return false;
     }
-
-    const load_result = c.cgltf_load_buffers(&options, data, path);
-    if (load_result != c.cgltf_result_success) {
-        gltf_log.err("cgltf_load_buffers failed: {d} for {s}", .{ load_result, path });
-        c.cgltf_free(data);
-        return false;
-    }
+    gltf_log.debug("cgltf_parse_file success. Data: {*}", .{data});
 
     const d = data.?;
+
+    std.debug.print("[GLTF] Calling cgltf_load_buffers...\n", .{});
+    gltf_log.debug("Calling cgltf_load_buffers with path '{s}' (ptr: {*})", .{local_path, local_path});
+    const load_result = c.cgltf_load_buffers(&options, data, local_path);
+    if (load_result != c.cgltf_result_success) {
+        std.debug.print("[GLTF] cgltf_load_buffers failed: {d}\n", .{load_result});
+        gltf_log.warn("cgltf_load_buffers failed: {d} for {s} (ptr: {*}), attempting manual fallback", .{ load_result, local_path, local_path });
+
+        if (!manual_load_buffers(d, local_path)) {
+            gltf_log.err("Manual buffer loading also failed", .{});
+            c.cgltf_free(data);
+            return false;
+        }
+    }
+    std.debug.print("[GLTF] Buffers loaded. Textures: {d}, Meshes: {d}, Materials: {d}\n", .{ d.textures_count, d.meshes_count, d.materials_count });
+
 
     // Load textures
     const num_textures = if (d.textures_count > 0) d.textures_count else d.images_count;
@@ -1087,8 +1220,8 @@ pub export fn cardinal_gltf_load_scene(path: [*:0]const u8, out_scene: *scene.Ca
     var texture_count: u32 = 0;
 
     if (num_textures > 0) {
-        const allocator = memory.cardinal_get_allocator_for_category(.ASSETS);
-        const textures_ptr = memory.cardinal_calloc(allocator, num_textures, @sizeOf(scene.CardinalTexture));
+        const assets_allocator = memory.cardinal_get_allocator_for_category(.ASSETS);
+        const textures_ptr = memory.cardinal_calloc(assets_allocator, num_textures, @sizeOf(scene.CardinalTexture));
         if (textures_ptr == null) {
             gltf_log.err("Failed to allocate textures", .{});
             c.cgltf_free(data);
@@ -1104,7 +1237,7 @@ pub export fn cardinal_gltf_load_scene(path: [*:0]const u8, out_scene: *scene.Ca
 
                 if (tex.image != null) {
                     const img_idx = (@intFromPtr(tex.image) - @intFromPtr(d.images)) / @sizeOf(c.cgltf_image);
-                    if (load_texture_from_gltf(d, img_idx, path, &textures.?[texture_count])) {
+                    if (load_texture_from_gltf(d, img_idx, local_path, &textures.?[texture_count])) {
                         success = true;
                     }
                 } else {
@@ -1119,7 +1252,7 @@ pub export fn cardinal_gltf_load_scene(path: [*:0]const u8, out_scene: *scene.Ca
         } else {
             var i: usize = 0;
             while (i < d.images_count) : (i += 1) {
-                if (load_texture_from_gltf(d, i, path, &textures.?[texture_count])) {
+                if (load_texture_from_gltf(d, i, local_path, &textures.?[texture_count])) {
                     convert_sampler(null, &textures.?[texture_count].sampler);
                     texture_count += 1;
                 }
@@ -1132,8 +1265,8 @@ pub export fn cardinal_gltf_load_scene(path: [*:0]const u8, out_scene: *scene.Ca
     var material_count: u32 = 0;
 
     if (d.materials_count > 0) {
-        const allocator = memory.cardinal_get_allocator_for_category(.ASSETS);
-        const materials_ptr = memory.cardinal_calloc(allocator, d.materials_count, @sizeOf(scene.CardinalMaterial));
+        const assets_allocator = memory.cardinal_get_allocator_for_category(.ASSETS);
+        const materials_ptr = memory.cardinal_calloc(assets_allocator, d.materials_count, @sizeOf(scene.CardinalMaterial));
         if (materials_ptr == null) {
             gltf_log.err("Failed to allocate materials", .{});
             // Cleanup textures
@@ -1141,9 +1274,9 @@ pub export fn cardinal_gltf_load_scene(path: [*:0]const u8, out_scene: *scene.Ca
                 var i: usize = 0;
                 while (i < texture_count) : (i += 1) {
                     // ref_resource is handled by ref_counting system
-                    if (texs[i].path) |p| memory.cardinal_free(allocator, @ptrCast(p));
+                    if (texs[i].path) |p| memory.cardinal_free(assets_allocator, @ptrCast(p));
                 }
-                memory.cardinal_free(allocator, textures);
+                memory.cardinal_free(assets_allocator, textures);
             }
             c.cgltf_free(data);
             return false;
@@ -1310,8 +1443,8 @@ pub export fn cardinal_gltf_load_scene(path: [*:0]const u8, out_scene: *scene.Ca
         return true;
     }
 
-    const allocator = memory.cardinal_get_allocator_for_category(.ASSETS);
-    const meshes_ptr = memory.cardinal_calloc(allocator, mesh_count, @sizeOf(scene.CardinalMesh));
+    const assets_allocator = memory.cardinal_get_allocator_for_category(.ASSETS);
+    const meshes_ptr = memory.cardinal_calloc(assets_allocator, mesh_count, @sizeOf(scene.CardinalMesh));
     if (meshes_ptr == null) {
         gltf_log.err("Failed to allocate meshes", .{});
         c.cgltf_free(data);
@@ -1360,7 +1493,7 @@ pub export fn cardinal_gltf_load_scene(path: [*:0]const u8, out_scene: *scene.Ca
             if (pos_acc == null) continue;
             const vcount = pos_acc.?.count;
 
-            const vertices_ptr = memory.cardinal_calloc(allocator, vcount, @sizeOf(scene.CardinalVertex));
+            const vertices_ptr = memory.cardinal_calloc(assets_allocator, vcount, @sizeOf(scene.CardinalVertex));
             const vertices = @as([*]scene.CardinalVertex, @ptrCast(@alignCast(vertices_ptr)));
 
             var vi: usize = 0;
@@ -1420,7 +1553,7 @@ pub export fn cardinal_gltf_load_scene(path: [*:0]const u8, out_scene: *scene.Ca
             const morph_target_count = p.targets_count;
 
             if (morph_target_count > 0) {
-                const mt_ptr = memory.cardinal_calloc(allocator, morph_target_count, @sizeOf(scene.CardinalMorphTarget));
+                const mt_ptr = memory.cardinal_calloc(assets_allocator, morph_target_count, @sizeOf(scene.CardinalMorphTarget));
                 if (mt_ptr != null) {
                     morph_targets = @ptrCast(@alignCast(mt_ptr));
                     var ti: usize = 0;
@@ -1439,7 +1572,7 @@ pub export fn cardinal_gltf_load_scene(path: [*:0]const u8, out_scene: *scene.Ca
                             }
 
                             const data_size = count * 3 * @sizeOf(f32);
-                            const data_ptr = memory.cardinal_alloc(allocator, data_size);
+                            const data_ptr = memory.cardinal_alloc(assets_allocator, data_size);
                             if (data_ptr == null) continue;
                             const float_ptr = @as([*]f32, @ptrCast(@alignCast(data_ptr)));
 
@@ -1453,7 +1586,7 @@ pub export fn cardinal_gltf_load_scene(path: [*:0]const u8, out_scene: *scene.Ca
                                 c.cgltf_attribute_type_position => mt.positions = float_ptr,
                                 c.cgltf_attribute_type_normal => mt.normals = float_ptr,
                                 c.cgltf_attribute_type_tangent => mt.tangents = float_ptr,
-                                else => memory.cardinal_free(allocator, data_ptr),
+                                else => memory.cardinal_free(assets_allocator, data_ptr),
                             }
                         }
                     }
@@ -1466,7 +1599,7 @@ pub export fn cardinal_gltf_load_scene(path: [*:0]const u8, out_scene: *scene.Ca
 
             if (p.indices) |ind_acc| {
                 index_count = @intCast(ind_acc.*.count);
-                const indices_ptr = memory.cardinal_alloc(allocator, index_count * @sizeOf(u32));
+                const indices_ptr = memory.cardinal_alloc(assets_allocator, index_count * @sizeOf(u32));
                 indices = @ptrCast(@alignCast(indices_ptr));
                 var ii: usize = 0;
                 while (ii < index_count) : (ii += 1) {
@@ -1476,7 +1609,7 @@ pub export fn cardinal_gltf_load_scene(path: [*:0]const u8, out_scene: *scene.Ca
                 }
             } else if (p.type == c.cgltf_primitive_type_triangles) {
                 index_count = @intCast(vcount);
-                const indices_ptr = memory.cardinal_alloc(allocator, index_count * @sizeOf(u32));
+                const indices_ptr = memory.cardinal_alloc(assets_allocator, index_count * @sizeOf(u32));
                 indices = @ptrCast(@alignCast(indices_ptr));
                 var ii: usize = 0;
                 while (ii < index_count) : (ii += 1) {
@@ -1530,7 +1663,7 @@ pub export fn cardinal_gltf_load_scene(path: [*:0]const u8, out_scene: *scene.Ca
     }
 
     // Build hierarchy
-    const mesh_primitive_offsets = @as([*]u32, @ptrCast(@alignCast(memory.cardinal_alloc(allocator, d.meshes_count * @sizeOf(u32)))));
+    const mesh_primitive_offsets = @as([*]u32, @ptrCast(@alignCast(memory.cardinal_alloc(assets_allocator, d.meshes_count * @sizeOf(u32)))));
     var current_offset: u32 = 0;
     mi = 0;
     while (mi < d.meshes_count) : (mi += 1) {
@@ -1543,14 +1676,14 @@ pub export fn cardinal_gltf_load_scene(path: [*:0]const u8, out_scene: *scene.Ca
 
     if (d.nodes_count > 0) {
         out_scene.all_node_count = @intCast(d.nodes_count);
-        const all_nodes_ptr = memory.cardinal_calloc(allocator, out_scene.all_node_count, @sizeOf(?*scene.CardinalSceneNode));
+        const all_nodes_ptr = memory.cardinal_calloc(assets_allocator, out_scene.all_node_count, @sizeOf(?*scene.CardinalSceneNode));
         out_scene.all_nodes = @ptrCast(@alignCast(all_nodes_ptr));
     }
 
     if (d.scene != null and d.scene.*.nodes_count > 0) {
         const scn = d.scene.*;
         root_node_count = @intCast(scn.nodes_count);
-        const root_nodes_ptr = memory.cardinal_calloc(allocator, root_node_count, @sizeOf(?*scene.CardinalSceneNode));
+        const root_nodes_ptr = memory.cardinal_calloc(assets_allocator, root_node_count, @sizeOf(?*scene.CardinalSceneNode));
         root_nodes = @ptrCast(@alignCast(root_nodes_ptr));
         var ni: usize = 0;
         while (ni < scn.nodes_count) : (ni += 1) {
@@ -1558,7 +1691,7 @@ pub export fn cardinal_gltf_load_scene(path: [*:0]const u8, out_scene: *scene.Ca
         }
     } else if (d.nodes_count > 0) {
         root_node_count = @intCast(d.nodes_count);
-        const root_nodes_ptr = memory.cardinal_calloc(allocator, root_node_count, @sizeOf(?*scene.CardinalSceneNode));
+        const root_nodes_ptr = memory.cardinal_calloc(assets_allocator, root_node_count, @sizeOf(?*scene.CardinalSceneNode));
         root_nodes = @ptrCast(@alignCast(root_nodes_ptr));
         var ni: usize = 0;
         while (ni < d.nodes_count) : (ni += 1) {
@@ -1566,7 +1699,7 @@ pub export fn cardinal_gltf_load_scene(path: [*:0]const u8, out_scene: *scene.Ca
         }
     }
 
-    memory.cardinal_free(allocator, mesh_primitive_offsets);
+    memory.cardinal_free(assets_allocator, mesh_primitive_offsets);
 
     // Update transforms
     if (root_nodes) |roots| {
@@ -1632,7 +1765,7 @@ pub export fn cardinal_gltf_load_scene(path: [*:0]const u8, out_scene: *scene.Ca
                             // Add meshes to skin
                             if (node.mesh_count > 0) {
                                 const new_count = skin.mesh_count + node.mesh_count;
-                                const new_indices = memory.cardinal_realloc(allocator, skin.mesh_indices, new_count * @sizeOf(u32));
+                                const new_indices = memory.cardinal_realloc(assets_allocator, skin.mesh_indices, new_count * @sizeOf(u32));
                                 if (new_indices != null) {
                                     skin.mesh_indices = @ptrCast(@alignCast(new_indices));
                                     var m: usize = 0;
