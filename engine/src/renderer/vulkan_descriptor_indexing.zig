@@ -247,7 +247,7 @@ pub export fn vk_bindless_texture_pool_destroy(pool: ?*types.BindlessTexturePool
     // Destroy descriptor buffer if used
     if (p.use_descriptor_buffer) {
         if (p.descriptor_buffer.mapped != null) {
-            vk_allocator.unmap_memory(p.allocator, p.descriptor_buffer.allocation);
+            // vk_allocator.unmap_memory(p.allocator, p.descriptor_buffer.allocation);
             p.descriptor_buffer.mapped = null;
         }
         vk_allocator.free_buffer(p.allocator, p.descriptor_buffer.handle, p.descriptor_buffer.allocation);

@@ -303,9 +303,7 @@ pub fn vk_post_process_destroy(s: *types.VulkanState) void {
         // Params cleanup
         var i: u32 = 0;
         while (i < types.MAX_FRAMES_IN_FLIGHT) : (i += 1) {
-            // Explicitly unmap before destroying buffer to satisfy VMA requirement
-            // for buffers allocated with map_immediately=true (which calls vmaMapMemory)
-            vk_allocator.unmap_memory(&s.allocator, s.pipelines.post_process_pipeline.params_allocation[i]);
+            // vmaDestroyBuffer automatically unmaps if the buffer was mapped
             vk_allocator.free_buffer(&s.allocator, s.pipelines.post_process_pipeline.params_buffer[i], s.pipelines.post_process_pipeline.params_allocation[i]);
         }
 

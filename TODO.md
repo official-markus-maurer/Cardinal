@@ -150,7 +150,7 @@ This document outlines the roadmap for the Cardinal Engine, focusing on robustne
 
 ### OS Integration
 - [ ] **Cross-Platform Build**: Abstract platform-specific linking (Windows/Linux/macOS) in `build.zig`.
-- [ ] **Async Logging**: Move log formatting and writing to a background thread to reduce main thread overhead.
-- [ ] **High DPI**: Proper scaling support for high-resolution displays.
+- [x] **Async Logging**: Move log formatting and writing to a background thread to reduce main thread overhead.
+- [x] **High DPI**: Proper scaling support for high-resolution displays.
 - [ ] **Virtual File System (VFS)**: Abstract file system operations to support archives (Zip/Pak) and virtual paths (`asset://`).
 - [ ] **Crash Reporting**: Implement a crash handler to save stack traces and minidumps on failure.

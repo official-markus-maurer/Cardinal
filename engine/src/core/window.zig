@@ -51,9 +51,20 @@ pub const CardinalWindow = struct {
 
     cursor_pos_callback: ?*const fn (f64, f64, ?*anyopaque) callconv(.c) void,
     cursor_pos_user_data: ?*anyopaque,
+
+    content_scale_x: f32,
+    content_scale_y: f32,
 };
 
 // Callbacks
+fn window_content_scale_callback(window: ?*c.GLFWwindow, xscale: f32, yscale: f32) callconv(.c) void {
+    const win = @as(?*CardinalWindow, @ptrCast(@alignCast(c.glfwGetWindowUserPointer(window))));
+    if (win) |w| {
+        w.content_scale_x = xscale;
+        w.content_scale_y = yscale;
+    }
+}
+
 fn key_callback(window: ?*c.GLFWwindow, key: c_int, scancode: c_int, action: c_int, mods: c_int) callconv(.c) void {
     const win = @as(?*CardinalWindow, @ptrCast(@alignCast(c.glfwGetWindowUserPointer(window))));
     if (win) |w| {
@@ -161,8 +172,16 @@ pub export fn cardinal_window_create(config: *const CardinalWindowConfig) callco
     win.height = config.height;
     win.should_close = false;
 
+    // Initialize content scale
+    var x_scale: f32 = 1.0;
+    var y_scale: f32 = 1.0;
+    c.glfwGetWindowContentScale(handle, &x_scale, &y_scale);
+    win.content_scale_x = x_scale;
+    win.content_scale_y = y_scale;
+
     c.glfwSetWindowUserPointer(handle, win);
     _ = c.glfwSetFramebufferSizeCallback(handle, framebuffer_resize_callback);
+    _ = c.glfwSetWindowContentScaleCallback(handle, window_content_scale_callback);
     _ = c.glfwSetWindowIconifyCallback(handle, window_iconify_callback);
     _ = c.glfwSetKeyCallback(handle, key_callback);
     _ = c.glfwSetMouseButtonCallback(handle, mouse_button_callback);
@@ -246,5 +265,15 @@ pub export fn cardinal_window_set_cursor_pos_callback(window: ?*CardinalWindow, 
     if (window) |win| {
         win.cursor_pos_callback = callback;
         win.cursor_pos_user_data = user_data;
+    }
+}
+
+pub export fn cardinal_window_get_content_scale(window: ?*const CardinalWindow, x_scale: ?*f32, y_scale: ?*f32) callconv(.c) void {
+    if (window) |win| {
+        if (x_scale) |x| x.* = win.content_scale_x;
+        if (y_scale) |y| y.* = win.content_scale_y;
+    } else {
+        if (x_scale) |x| x.* = 1.0;
+        if (y_scale) |y| y.* = 1.0;
     }
 }

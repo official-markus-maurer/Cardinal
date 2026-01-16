@@ -198,7 +198,7 @@ pub fn vk_create_simple_pipelines(s: *types.VulkanState, pipelineCache: c.VkPipe
 
 pub fn vk_destroy_simple_pipelines(s: *types.VulkanState) void {
     if (s.pipelines.simple_uniform_buffer_mapped != null) {
-        vk_allocator.unmap_memory(&s.allocator, s.pipelines.simple_uniform_buffer_allocation);
+        // vk_allocator.unmap_memory(&s.allocator, s.pipelines.simple_uniform_buffer_allocation);
         s.pipelines.simple_uniform_buffer_mapped = null;
     }
 

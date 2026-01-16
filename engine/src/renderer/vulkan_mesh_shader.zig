@@ -645,7 +645,7 @@ pub export fn vk_mesh_shader_destroy_draw_data(s: ?*types.VulkanState, draw_data
 
     if (data.uniform_buffer != null) {
         if (data.uniform_mapped != null) {
-            vk_allocator.unmap_memory(@ptrCast(&vs.allocator), data.uniform_allocation);
+            // vk_allocator.unmap_memory(@ptrCast(&vs.allocator), data.uniform_allocation);
             data.uniform_mapped = null;
         }
         vk_allocator.free_buffer(@ptrCast(&vs.allocator), data.uniform_buffer, data.uniform_allocation);

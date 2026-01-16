@@ -37,6 +37,7 @@ pub fn main() !u8 {
     }
 
     log.cardinal_log_init_with_level(log_level);
+    log.cardinal_log_init_async(true);
     defer log.cardinal_log_shutdown();
     defer memory.cardinal_memory_shutdown();
 

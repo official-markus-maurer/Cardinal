@@ -231,7 +231,9 @@ fn cleanup_buffer_resources(buffer: *VulkanBuffer, device: c.VkDevice, allocator
     // Unmap if mapped
     if (buffer.mapped != null) {
         buf_log.info("UNMAP: Unmapping buffer={any}", .{buffer.handle});
-        vk_buffer_unmap(buffer, allocator);
+        // VMA handles unmapping automatically when freeing the buffer/allocation
+        // We just need to clear the pointer to avoid dangling references
+        buffer.mapped = null;
         buf_log.info("UNMAPPED: buffer={any}", .{buffer.handle});
     }
 

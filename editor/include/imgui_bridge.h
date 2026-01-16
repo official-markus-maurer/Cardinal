@@ -212,6 +212,8 @@ unsigned int imgui_bridge_get_id(const char *str_id);
 void imgui_bridge_create_context(void);
 void imgui_bridge_destroy_context(void);
 void imgui_bridge_style_colors_dark(void);
+void imgui_bridge_style_colors_cardinal(void);
+void imgui_bridge_set_display_scale(float scale);
 void imgui_bridge_enable_docking(bool enable);
 void imgui_bridge_enable_keyboard(bool enable);
 

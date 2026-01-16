@@ -1001,7 +1001,6 @@ pub export fn vk_pbr_pipeline_destroy(pipeline: ?*types.VulkanPBRPipeline, devic
     while (frame_idx < types.MAX_FRAMES_IN_FLIGHT) : (frame_idx += 1) {
         if (pipe.uniformBuffers[frame_idx] != null or pipe.uniformBuffersMemory[frame_idx] != null) {
             if (pipe.uniformBuffersMapped[frame_idx] != null) {
-                vk_allocator.unmap_memory(alloc, pipe.uniformBuffersAllocation[frame_idx]);
                 pipe.uniformBuffersMapped[frame_idx] = null;
             }
             vk_allocator.free_buffer(alloc, pipe.uniformBuffers[frame_idx], pipe.uniformBuffersAllocation[frame_idx]);
@@ -1009,7 +1008,6 @@ pub export fn vk_pbr_pipeline_destroy(pipeline: ?*types.VulkanPBRPipeline, devic
 
         if (pipe.lightingBuffers[frame_idx] != null or pipe.lightingBuffersMemory[frame_idx] != null) {
             if (pipe.lightingBuffersMapped[frame_idx] != null) {
-                vk_allocator.unmap_memory(alloc, pipe.lightingBuffersAllocation[frame_idx]);
                 pipe.lightingBuffersMapped[frame_idx] = null;
             }
             vk_allocator.free_buffer(alloc, pipe.lightingBuffers[frame_idx], pipe.lightingBuffersAllocation[frame_idx]);
@@ -1017,7 +1015,6 @@ pub export fn vk_pbr_pipeline_destroy(pipeline: ?*types.VulkanPBRPipeline, devic
 
         if (pipe.boneMatricesBuffers[frame_idx] != null or pipe.boneMatricesBuffersMemory[frame_idx] != null) {
             if (pipe.boneMatricesBuffersMapped[frame_idx] != null) {
-                vk_allocator.unmap_memory(alloc, pipe.boneMatricesBuffersAllocation[frame_idx]);
                 pipe.boneMatricesBuffersMapped[frame_idx] = null;
             }
             vk_allocator.free_buffer(alloc, pipe.boneMatricesBuffers[frame_idx], pipe.boneMatricesBuffersAllocation[frame_idx]);
@@ -1025,7 +1022,6 @@ pub export fn vk_pbr_pipeline_destroy(pipeline: ?*types.VulkanPBRPipeline, devic
 
         if (pipe.shadowUBOs[frame_idx] != null or pipe.shadowUBOsMemory[frame_idx] != null) {
             if (pipe.shadowUBOsMapped[frame_idx] != null) {
-                vk_allocator.unmap_memory(alloc, pipe.shadowUBOsAllocation[frame_idx]);
                 pipe.shadowUBOsMapped[frame_idx] = null;
             }
             vk_allocator.free_buffer(alloc, pipe.shadowUBOs[frame_idx], pipe.shadowUBOsAllocation[frame_idx]);

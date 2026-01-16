@@ -368,6 +368,15 @@ pub fn init(win_ptr: *window.CardinalWindow, rnd_ptr: *types.CardinalRenderer, r
     c.imgui_bridge_enable_keyboard(true);
     c.imgui_bridge_style_colors_dark();
 
+    // Set high DPI scale
+    var x_scale: f32 = 1.0;
+    var y_scale: f32 = 1.0;
+    window.cardinal_window_get_content_scale(win_ptr, &x_scale, &y_scale);
+    if (x_scale > 1.0) {
+        c.imgui_bridge_set_display_scale(x_scale);
+        log.cardinal_log_info("High DPI detected: scale {d:.2}", .{x_scale});
+    }
+
     const glfw_window = @as(?*c.GLFWwindow, @ptrCast(win_ptr.handle));
     if (!c.imgui_bridge_impl_glfw_init_for_vulkan(glfw_window, true)) return false;
 

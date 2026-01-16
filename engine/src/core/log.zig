@@ -36,6 +36,65 @@ var g_sinks: [MAX_SINKS]?*CardinalLogSink = .{null} ** MAX_SINKS;
 var g_sinks_mutex: std.Thread.Mutex = .{};
 var g_initialized: bool = false;
 
+// Async Logging State
+const LogEntry = struct {
+    level: CardinalLogLevel,
+    line: c_int,
+    category: [64]u8,
+    file: [256]u8,
+    message: []u8,
+    json: ?[]u8,
+};
+
+var g_async_enabled: bool = false;
+var g_log_queue: std.ArrayListUnmanaged(LogEntry) = .{};
+var g_queue_mutex: std.Thread.Mutex = .{};
+var g_queue_cond: std.Thread.Condition = .{};
+var g_log_thread: ?std.Thread = null;
+var g_shutdown_requested: bool = false;
+
+fn log_worker_thread() void {
+    const allocator = memory.cardinal_get_allocator_for_category(.LOGGING).as_allocator();
+    var local_queue = std.ArrayListUnmanaged(LogEntry){};
+    defer local_queue.deinit(allocator);
+
+    while (true) {
+        {
+            g_queue_mutex.lock();
+            defer g_queue_mutex.unlock();
+
+            while (g_log_queue.items.len == 0 and !g_shutdown_requested) {
+                g_queue_cond.wait(&g_queue_mutex);
+            }
+
+            if (g_shutdown_requested and g_log_queue.items.len == 0) {
+                break;
+            }
+
+            // Swap queues
+            const temp = g_log_queue;
+            g_log_queue = local_queue;
+            local_queue = temp;
+        }
+
+        // Process logs
+        g_sinks_mutex.lock();
+        for (local_queue.items) |entry| {
+            for (g_sinks) |s| {
+                if (s) |sink| {
+                    const json_ptr: ?[*:0]const u8 = if (entry.json) |j| @ptrCast(j) else null;
+                    sink.log_func(sink.user_data, entry.level, @ptrCast(&entry.category), json_ptr, @ptrCast(&entry.file), entry.line, @ptrCast(entry.message));
+                }
+            }
+            allocator.free(entry.message);
+            if (entry.json) |j| allocator.free(j);
+        }
+        g_sinks_mutex.unlock();
+
+        local_queue.clearRetainingCapacity();
+    }
+}
+
 fn getLevelStr(level: CardinalLogLevel) [:0]const u8 {
     return switch (level) {
         .TRACE => "TRACE",
@@ -47,7 +106,7 @@ fn getLevelStr(level: CardinalLogLevel) [:0]const u8 {
     };
 }
 
-// --- Console Sink ---
+// Console Sink
 fn console_sink_log(_: ?*anyopaque, level: CardinalLogLevel, category: [*:0]const u8, json_fields: ?[*:0]const u8, file: [*:0]const u8, line: c_int, msg: [*:0]const u8) callconv(.c) void {
     const level_str = getLevelStr(level);
     const use_stderr = @intFromEnum(level) >= @intFromEnum(CardinalLogLevel.ERROR);
@@ -86,7 +145,7 @@ var g_console_sink: CardinalLogSink = .{
     .user_data = null,
 };
 
-// --- File Sink ---
+// File Sink
 const FileSinkData = extern struct {
     file_handle: std.fs.File.Handle,
 };
@@ -157,10 +216,22 @@ pub export fn cardinal_log_create_file_sink(filename: ?[*:0]const u8) ?*Cardinal
     return sink_ptr;
 }
 
-// --- Initialization ---
-
+// Initialization
 pub export fn cardinal_log_init() void {
     cardinal_log_init_with_level(min_log_level);
+}
+
+pub export fn cardinal_log_init_async(enable: bool) void {
+    if (g_initialized and enable and !g_async_enabled) {
+        g_log_queue = .{};
+        g_shutdown_requested = false;
+        g_async_enabled = true;
+        g_log_thread = std.Thread.spawn(.{}, log_worker_thread, .{}) catch |err| {
+            std.debug.print("Failed to spawn log thread: {}\n", .{err});
+            g_async_enabled = false;
+            return;
+        };
+    }
 }
 
 pub export fn cardinal_log_init_with_level(level: CardinalLogLevel) void {
@@ -199,6 +270,24 @@ pub export fn cardinal_log_init_with_level(level: CardinalLogLevel) void {
 }
 
 pub export fn cardinal_log_shutdown() void {
+    if (g_async_enabled) {
+        {
+            g_queue_mutex.lock();
+            g_shutdown_requested = true;
+            g_queue_cond.signal();
+            g_queue_mutex.unlock();
+        }
+
+        if (g_log_thread) |thread| {
+            thread.join();
+            g_log_thread = null;
+        }
+
+        const allocator = memory.cardinal_get_allocator_for_category(.LOGGING).as_allocator();
+        g_log_queue.deinit(allocator);
+        g_async_enabled = false;
+    }
+
     g_sinks_mutex.lock();
     defer g_sinks_mutex.unlock();
 
@@ -248,8 +337,7 @@ pub export fn cardinal_log_parse_level(level_str_input: ?[*:0]const u8) Cardinal
     return .INFO;
 }
 
-// --- Sink Management ---
-
+// Sink Management
 pub export fn cardinal_log_add_sink(sink_ptr: ?*CardinalLogSink) void {
     if (sink_ptr == null) return;
 
@@ -297,8 +385,7 @@ pub export fn cardinal_log_destroy_sink(sink_ptr: ?*CardinalLogSink) void {
     allocator.destroy(sink_ptr.?);
 }
 
-// --- Log Output ---
-
+// Log Output
 pub export fn cardinal_log_output_full(level: CardinalLogLevel, category: [*:0]const u8, json_fields: ?[*:0]const u8, file: [*:0]const u8, line: c_int, fmt: [*:0]const u8, args: c.va_list) void {
     if (@intFromEnum(level) < @intFromEnum(min_log_level)) return;
 
@@ -318,6 +405,50 @@ pub export fn cardinal_log_output_full(level: CardinalLogLevel, category: [*:0]c
         offset = last_backslash.? + 1;
     }
     final_filename = @ptrCast(file + offset);
+
+    // If async enabled and not fatal, push to queue
+    if (g_async_enabled and level != .FATAL) {
+        const allocator = memory.cardinal_get_allocator_for_category(.LOGGING).as_allocator();
+
+        const msg_span = std.mem.span(@as([*:0]const u8, @ptrCast(&buffer)));
+        const msg_copy = allocator.dupeZ(u8, msg_span) catch return;
+
+        var json_copy: ?[]u8 = null;
+        if (json_fields) |j| {
+            json_copy = allocator.dupeZ(u8, std.mem.span(j)) catch {
+                allocator.free(msg_copy);
+                return;
+            };
+        }
+
+        var entry = LogEntry{
+            .level = level,
+            .line = line,
+            .category = undefined,
+            .file = undefined,
+            .message = msg_copy,
+            .json = json_copy,
+        };
+
+        const cat_span = std.mem.span(category);
+        const cat_len = @min(cat_span.len, 63);
+        @memcpy(entry.category[0..cat_len], cat_span[0..cat_len]);
+        entry.category[cat_len] = 0;
+
+        const file_span = std.mem.span(final_filename);
+        const file_len = @min(file_span.len, 255);
+        @memcpy(entry.file[0..file_len], file_span[0..file_len]);
+        entry.file[file_len] = 0;
+
+        g_queue_mutex.lock();
+        defer g_queue_mutex.unlock();
+        g_log_queue.append(allocator, entry) catch {
+            allocator.free(msg_copy);
+            if (json_copy) |j| allocator.free(j);
+        };
+        g_queue_cond.signal();
+        return;
+    }
 
     g_sinks_mutex.lock();
     defer g_sinks_mutex.unlock();
@@ -376,6 +507,48 @@ fn log_internal(comptime level: CardinalLogLevel, category: []const u8, fields: 
     const len = @min(final_filename_slice.len, 255);
     @memcpy(filename_buf[0..len], final_filename_slice[0..len]);
     filename_buf[len] = 0;
+
+    // If async enabled and not fatal, push to queue
+    if (g_async_enabled and level != .FATAL) {
+        const allocator = memory.cardinal_get_allocator_for_category(.LOGGING).as_allocator();
+
+        const msg_copy = allocator.dupeZ(u8, msg) catch return;
+
+        var json_copy: ?[]u8 = null;
+        if (json_ptr) |j| {
+            json_copy = allocator.dupeZ(u8, std.mem.span(j)) catch {
+                allocator.free(msg_copy);
+                return;
+            };
+        }
+
+        var entry = LogEntry{
+            .level = level,
+            .line = @intCast(src.line),
+            .category = undefined,
+            .file = undefined,
+            .message = msg_copy,
+            .json = json_copy,
+        };
+
+        // Use existing cat_buffer/cat_len
+        @memcpy(entry.category[0..cat_len], cat_buffer[0..cat_len]);
+        entry.category[cat_len] = 0;
+
+        const file_span = std.mem.span(@as([*:0]const u8, @ptrCast(&filename_buf)));
+        const file_len = @min(file_span.len, 255);
+        @memcpy(entry.file[0..file_len], file_span[0..file_len]);
+        entry.file[file_len] = 0;
+
+        g_queue_mutex.lock();
+        defer g_queue_mutex.unlock();
+        g_log_queue.append(allocator, entry) catch {
+            allocator.free(msg_copy);
+            if (json_copy) |j| allocator.free(j);
+        };
+        g_queue_cond.signal();
+        return;
+    }
 
     g_sinks_mutex.lock();
     defer g_sinks_mutex.unlock();

@@ -265,7 +265,6 @@ fn setup_descriptor_buffer(manager: *types.VulkanDescriptorManager, maxSets: u32
 
     if (manager.bindingOffsets == null) {
         desc_log.err("Failed to allocate binding offsets array", .{});
-        c.vkUnmapMemory(manager.device, manager.descriptorBuffer.memory);
         vk_allocator.free_buffer(@ptrCast(manager.allocator), manager.descriptorBuffer.handle, manager.descriptorBuffer.allocation);
         manager.descriptorBuffer = std.mem.zeroes(types.VulkanBuffer);
         return false;
@@ -417,7 +416,7 @@ pub export fn vk_descriptor_manager_destroy(manager: ?*types.VulkanDescriptorMan
 
     if (mgr.useDescriptorBuffers) {
         if (mgr.descriptorBuffer.mapped != null) {
-            vk_allocator.unmap_memory(mgr.allocator, mgr.descriptorBuffer.allocation);
+            mgr.descriptorBuffer.mapped = null;
         }
         if (mgr.descriptorBuffer.handle != null) {
             vk_allocator.free_buffer(mgr.allocator, mgr.descriptorBuffer.handle, mgr.descriptorBuffer.allocation);
