@@ -155,21 +155,6 @@ fn try_optimized_fallback_paths(original_uri: []const u8, base_path: []const u8,
         if (try_texture_path(path, tex_data)) |res| return res;
     }
 
-    // 2. Common asset directories
-    const common_dirs = [_][]const u8{ "assets/textures/", "assets/models/textures/", "textures/", "models/textures/" };
-
-    for (common_dirs) |dir| {
-        const path = std.fmt.bufPrintZ(texture_path_buf, "{s}{s}", .{ dir, filename_only }) catch continue;
-        if (try_texture_path(path, tex_data)) |res| return res;
-    }
-
-    // 3. Parallel textures directory
-    if (dir_end) |end| {
-        const dir = base_path[0 .. end + 1];
-        const path = std.fmt.bufPrintZ(texture_path_buf, "{s}../textures/{s}", .{ dir, filename_only }) catch return null;
-        if (try_texture_path(path, tex_data)) |res| return res;
-    }
-
     return null;
 }
 
@@ -613,78 +598,24 @@ fn load_texture_from_gltf(data: *const c.cgltf_data, img_idx: usize, base_path: 
     }
 }
 
-fn process_node(data: *const c.cgltf_data, node: *const c.cgltf_node, parent_transform: ?*const [16]f32, meshes: [*]scene.CardinalMesh, total_mesh_count: usize) void {
-    var local_transform: [16]f32 = undefined;
+// Helper to propagate node transforms to meshes
+fn propagate_transforms_to_meshes(node: ?*scene.CardinalSceneNode, meshes: [*]scene.CardinalMesh) void {
+    if (node == null) return;
+    const n = node.?;
 
-    if (node.has_matrix != 0) {
-        var i: usize = 0;
-        while (i < 16) : (i += 1) {
-            local_transform[i] = @floatCast(node.matrix[i]);
-        }
-    } else {
-        const translation = if (node.has_translation != 0) &node.translation else null;
-        const rotation = if (node.has_rotation != 0) &node.rotation else null;
-        const scale = if (node.has_scale != 0) &node.scale else null;
-
-        // Convert to f32 arrays
-        var t: [3]f32 = undefined;
-        var r: [4]f32 = undefined;
-        var s: [3]f32 = undefined;
-
-        var t_ptr: ?*const [3]f32 = null;
-        var r_ptr: ?*const [4]f32 = null;
-        var s_ptr: ?*const [3]f32 = null;
-
-        if (translation) |src| {
-            t[0] = @floatCast(src[0]);
-            t[1] = @floatCast(src[1]);
-            t[2] = @floatCast(src[2]);
-            t_ptr = &t;
-        }
-        if (rotation) |src| {
-            r[0] = @floatCast(src[0]);
-            r[1] = @floatCast(src[1]);
-            r[2] = @floatCast(src[2]);
-            r[3] = @floatCast(src[3]);
-            r_ptr = &r;
-        }
-        if (scale) |src| {
-            s[0] = @floatCast(src[0]);
-            s[1] = @floatCast(src[1]);
-            s[2] = @floatCast(src[2]);
-            s_ptr = &s;
-        }
-
-        transform_math.cardinal_matrix_from_trs(t_ptr, r_ptr, s_ptr, &local_transform);
-    }
-
-    var world_transform: [16]f32 = undefined;
-    if (parent_transform) |pt| {
-        transform_math.cardinal_matrix_multiply(pt, &local_transform, &world_transform);
-    } else {
-        @memcpy(&world_transform, &local_transform);
-    }
-
-    if (node.mesh) |mesh| {
-        const mesh_index = (@intFromPtr(mesh) - @intFromPtr(data.meshes)) / @sizeOf(c.cgltf_mesh);
-
-        var cardinal_mesh_index: usize = 0;
-        var mi: usize = 0;
-        while (mi < mesh_index) : (mi += 1) {
-            cardinal_mesh_index += data.meshes[mi].primitives_count;
-        }
-
-        var pi: usize = 0;
-        while (pi < mesh.*.primitives_count) : (pi += 1) {
-            if (cardinal_mesh_index + pi < total_mesh_count) {
-                @memcpy(&meshes[cardinal_mesh_index + pi].transform, &world_transform);
-            }
+    if (n.mesh_indices) |indices| {
+        var i: u32 = 0;
+        while (i < n.mesh_count) : (i += 1) {
+            const mesh_idx = indices[i];
+            @memcpy(&meshes[mesh_idx].transform, &n.world_transform);
         }
     }
 
-    var ci: usize = 0;
-    while (ci < node.children_count) : (ci += 1) {
-        process_node(data, node.children[ci], &world_transform, meshes, total_mesh_count);
+    if (n.children) |children| {
+        var i: u32 = 0;
+        while (i < n.child_count) : (i += 1) {
+            propagate_transforms_to_meshes(children[i], meshes);
+        }
     }
 }
 
@@ -1056,97 +987,6 @@ fn load_lights_from_gltf(data: *const c.cgltf_data, out_lights: *?[*]scene.Cardi
     return true;
 }
 
-fn manual_load_buffers(data: *c.cgltf_data, gltf_path: [*:0]const u8) bool {
-    const allocator = memory.cardinal_get_allocator_for_category(.TEMPORARY).as_allocator();
-    const path_span = std.mem.span(gltf_path);
-
-    // Log the path we are trying to use
-    // gltf_log.debug("Manual load buffers for: {s}", .{path_span});
-
-    const dir = std.fs.path.dirname(path_span) orelse ".";
-
-    var i: usize = 0;
-    while (i < data.buffers_count) : (i += 1) {
-        var buf = &data.buffers[i];
-        if (buf.data != null) continue; // Already loaded
-        if (buf.uri == null) continue; // No URI
-
-        const uri = std.mem.span(buf.uri);
-        if (std.mem.startsWith(u8, uri, "data:")) {
-            gltf_log.err("Manual load: Data URIs not supported in fallback", .{});
-            return false;
-        }
-
-        // Construct path. If dir is ".", we just use uri.
-        const bin_path = if (std.mem.eql(u8, dir, "."))
-            allocator.dupe(u8, uri) catch return false
-        else
-            std.fs.path.join(allocator, &[_][]const u8{ dir, uri }) catch return false;
-
-        defer allocator.free(bin_path);
-
-        var file: std.fs.File = undefined;
-        var opened = false;
-
-        // 1. Try resolving to absolute path first (safest)
-        if (std.fs.cwd().realpathAlloc(allocator, bin_path)) |abs_path| {
-            defer allocator.free(abs_path);
-            if (std.fs.openFileAbsolute(abs_path, .{ .mode = .read_only })) |f| {
-                file = f;
-                opened = true;
-            } else |_| {}
-        } else |_| {
-            // realpath failed (maybe file doesn't exist or path invalid)
-        }
-
-        // 2. If that failed, try opening as relative path from CWD
-        if (!opened) {
-            if (std.fs.cwd().openFile(bin_path, .{ .mode = .read_only })) |f| {
-                file = f;
-                opened = true;
-            } else |err| {
-                // Try relative to executable/assets?
-                // For now just log error
-                gltf_log.err("Manual load: Failed to open buffer file {s}: {any}", .{ bin_path, err });
-                return false;
-            }
-        }
-        defer file.close();
-
-        const size = file.getEndPos() catch return false;
-
-        const raw_ptr = c.malloc(size);
-        if (raw_ptr == null) {
-            gltf_log.err("Manual load: Failed to allocate {d} bytes", .{size});
-            return false;
-        }
-        const ptr = raw_ptr.?;
-
-        const slice = @as([*]u8, @ptrCast(ptr))[0..size];
-        const read = file.readAll(slice) catch {
-            c.free(ptr);
-            return false;
-        };
-
-        if (read != size) {
-            gltf_log.err("Manual load: Read incomplete", .{});
-            c.free(ptr);
-            return false;
-        }
-
-        buf.data = ptr;
-        if (size < buf.size) {
-            gltf_log.err("Manual load: File too small {s} (expected {d}, got {d})", .{ bin_path, buf.size, size });
-            c.free(ptr);
-            return false;
-        }
-
-        buf.data_free_method = c.cgltf_data_free_method_memory_free;
-        gltf_log.info("Manual load: Successfully loaded buffer {s} ({d} bytes)", .{ uri, size });
-    }
-    return true;
-}
-
 pub export fn cardinal_gltf_load_scene(path: [*:0]const u8, out_scene: *scene.CardinalScene) callconv(.c) bool {
     gltf_log.debug("[GLTF] cardinal_gltf_load_scene start: {s}\n", .{path});
     // Log with Error level to ensure it shows up in user logs (temporary debugging)
@@ -1192,13 +1032,9 @@ pub export fn cardinal_gltf_load_scene(path: [*:0]const u8, out_scene: *scene.Ca
     const load_result = c.cgltf_load_buffers(&options, data, local_path);
     if (load_result != c.cgltf_result_success) {
         std.debug.print("[GLTF] cgltf_load_buffers failed: {d}\n", .{load_result});
-        gltf_log.warn("cgltf_load_buffers failed: {d} for {s} (ptr: {*}), attempting manual fallback", .{ load_result, local_path, local_path });
-
-        if (!manual_load_buffers(d, local_path)) {
-            gltf_log.err("Manual buffer loading also failed", .{});
-            c.cgltf_free(data);
-            return false;
-        }
+        gltf_log.err("cgltf_load_buffers failed: {d} for {s}", .{ load_result, local_path });
+        c.cgltf_free(data);
+        return false;
     }
     gltf_log.debug("[GLTF] Buffers loaded. Textures: {d}, Meshes: {d}, Materials: {d}\n", .{ d.textures_count, d.meshes_count, d.materials_count });
 
@@ -1695,20 +1531,8 @@ pub export fn cardinal_gltf_load_scene(path: [*:0]const u8, out_scene: *scene.Ca
         while (i < root_node_count) : (i += 1) {
             if (roots[i]) |root| {
                 scene.cardinal_scene_node_update_transforms(root, null);
+                propagate_transforms_to_meshes(root, meshes_safe);
             }
-        }
-    }
-
-    // Backward compatibility mesh transforms (fallback)
-    if (d.scene != null and d.scene.*.nodes_count > 0) {
-        var ni: usize = 0;
-        while (ni < d.scene.*.nodes_count) : (ni += 1) {
-            process_node(d, d.scene.*.nodes[ni], null, meshes_safe, mesh_count);
-        }
-    } else if (d.nodes_count > 0) {
-        var ni: usize = 0;
-        while (ni < d.nodes_count) : (ni += 1) {
-            process_node(d, @ptrCast(&d.nodes[ni]), null, meshes_safe, mesh_count);
         }
     }
 

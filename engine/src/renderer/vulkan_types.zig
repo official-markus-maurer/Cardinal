@@ -837,13 +837,10 @@ pub const VulkanPipelines = extern struct {
 
     use_mesh_shader_pipeline: bool,
     compute_shader_initialized: bool,
-    simple_uniform_buffer: c.VkBuffer,
-    simple_uniform_buffer_memory: c.VkDeviceMemory,
-    simple_uniform_buffer_allocation: c.VmaAllocation,
+    simple_uniform_buffer: VulkanBuffer,
     simple_descriptor_set: c.VkDescriptorSet,
     uv_pipeline: c.VkPipeline,
     uv_pipeline_layout: c.VkPipelineLayout,
-    simple_uniform_buffer_mapped: ?*anyopaque,
 
     wireframe_pipeline: c.VkPipeline,
     wireframe_pipeline_layout: c.VkPipelineLayout,

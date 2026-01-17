@@ -365,47 +365,31 @@ pub export fn vk_descriptor_manager_create(manager: ?*types.VulkanDescriptorMana
 
     if (mgr.useDescriptorBuffers) {
         if (!setup_descriptor_buffer(mgr, info.maxSets, vulkan_state.?)) {
-            desc_log.warn("Failed to setup descriptor buffer, falling back to traditional descriptor sets", .{});
-            mgr.useDescriptorBuffers = false;
+            desc_log.err("Failed to setup descriptor buffer", .{});
+            return false;
+        }
+
+        // Initialize free list for descriptor buffers
+        const indices_ptr = memory.cardinal_alloc(mem_alloc, info.maxSets * @sizeOf(u32));
+        if (indices_ptr != null) {
+            mgr.freeIndices = @as([*]u32, @ptrCast(@alignCast(indices_ptr)));
+            mgr.freeCount = 0;
+            mgr.freeCapacity = info.maxSets;
         } else {
-            // Initialize free list for descriptor buffers
-            const indices_ptr = memory.cardinal_alloc(mem_alloc, info.maxSets * @sizeOf(u32));
-            if (indices_ptr != null) {
-                mgr.freeIndices = @as([*]u32, @ptrCast(@alignCast(indices_ptr)));
-                mgr.freeCount = 0;
-                mgr.freeCapacity = info.maxSets;
-            } else {
-                desc_log.err("Failed to allocate free list for descriptor manager", .{});
-                // Continue but without free list capability (append-only)
-                mgr.freeIndices = null;
-                mgr.freeCount = 0;
-                mgr.freeCapacity = 0;
-            }
+            desc_log.err("Failed to allocate free list for descriptor manager", .{});
+            // Continue but without free list capability (append-only)
+            mgr.freeIndices = null;
+            mgr.freeCount = 0;
+            mgr.freeCapacity = 0;
         }
-    }
-
-    if (!mgr.useDescriptorBuffers) {
-        if (!create_descriptor_pool(mgr, info.maxSets, info.poolFlags)) {
-            c.vkDestroyDescriptorSetLayout(mgr.device, mgr.descriptorSetLayout, null);
-            memory.cardinal_free(mem_alloc, @as(?*anyopaque, @ptrCast(@constCast(mgr.bindings))));
-            return false;
-        }
-
-        const ptr2 = memory.cardinal_alloc(mem_alloc, info.maxSets * @sizeOf(c.VkDescriptorSet));
-        mgr.descriptorSets = if (ptr2) |p| @as([*]c.VkDescriptorSet, @ptrCast(@alignCast(p))) else null;
-
-        if (mgr.descriptorSets == null) {
-            desc_log.err("Failed to allocate memory for descriptor sets", .{});
-            c.vkDestroyDescriptorPool(mgr.device, mgr.descriptorPool, null);
-            c.vkDestroyDescriptorSetLayout(mgr.device, mgr.descriptorSetLayout, null);
-            memory.cardinal_free(mem_alloc, @as(?*anyopaque, @ptrCast(@constCast(mgr.bindings))));
-            return false;
-        }
-        mgr.descriptorSetCount = 0;
+    } else {
+        desc_log.err("Descriptor buffers are required but not supported/enabled", .{});
+        memory.cardinal_free(mem_alloc, @as(?*anyopaque, @ptrCast(@constCast(mgr.bindings))));
+        return false;
     }
 
     mgr.initialized = true;
-    desc_log.info("Created descriptor manager: {s}, {d} bindings, max {d} sets", .{ if (mgr.useDescriptorBuffers) "descriptor buffers" else "traditional sets", mgr.bindingCount, info.maxSets });
+    desc_log.info("Created descriptor manager: descriptor buffers, {d} bindings, max {d} sets", .{ mgr.bindingCount, info.maxSets });
     return true;
 }
 
@@ -432,22 +416,13 @@ pub export fn vk_descriptor_manager_destroy(manager: ?*types.VulkanDescriptorMan
             mgr.freeIndices = null;
         }
     } else {
+        // Legacy cleanup (should not happen if creation enforces buffers)
         const mem_alloc = memory.cardinal_get_allocator_for_category(.RENDERER);
         if (mgr.descriptorSets != null) {
             memory.cardinal_free(mem_alloc, @as(?*anyopaque, @ptrCast(mgr.descriptorSets)));
         }
         if (mgr.descriptorPool != null) {
             c.vkDestroyDescriptorPool(mgr.device, mgr.descriptorPool, null);
-        }
-        if (mgr.retiredPools != null) {
-            var i: u32 = 0;
-            while (i < mgr.retiredPoolCount) : (i += 1) {
-                c.vkDestroyDescriptorPool(mgr.device, mgr.retiredPools.?[i], null);
-            }
-            memory.cardinal_free(mem_alloc, @as(?*anyopaque, @ptrCast(mgr.retiredPools)));
-            mgr.retiredPools = null;
-            mgr.retiredPoolCount = 0;
-            mgr.retiredPoolCapacity = 0;
         }
     }
 
@@ -709,23 +684,9 @@ pub export fn vk_descriptor_manager_update_image(manager: ?*types.VulkanDescript
         const dstPtr = @as([*]u8, @ptrCast(mgr.descriptorBuffer.mapped)) + dstOffset;
         vs.context.vkGetDescriptorEXT.?(mgr.device, &getInfo, descSize, @ptrCast(dstPtr));
         return true;
-    } else {
-        var imageInfo = std.mem.zeroes(c.VkDescriptorImageInfo);
-        imageInfo.imageLayout = imageLayout;
-        imageInfo.imageView = imageView;
-        imageInfo.sampler = sampler;
-
-        var descriptorWrite = std.mem.zeroes(c.VkWriteDescriptorSet);
-        descriptorWrite.sType = c.VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
-        descriptorWrite.dstSet = set;
-        descriptorWrite.dstBinding = binding;
-        descriptorWrite.descriptorType = dtype;
-        descriptorWrite.descriptorCount = 1;
-        descriptorWrite.pImageInfo = &imageInfo;
-
-        c.vkUpdateDescriptorSets(mgr.device, 1, &descriptorWrite, 0, null);
-        return true;
     }
+
+    return false;
 }
 
 // Internal helper for textures update
@@ -957,21 +918,6 @@ pub export fn vk_descriptor_manager_free_set(manager: ?*types.VulkanDescriptorMa
                 mgr.freeIndices.?[mgr.freeCount] = setIndex;
                 mgr.freeCount += 1;
             }
-        }
-    } else {
-        if (mgr.setPoolMapping != null) {
-            const map = @as(*SetPoolMap, @ptrCast(@alignCast(mgr.setPoolMapping)));
-            const pool = map.get(descriptorSet);
-            if (pool) |p| {
-                _ = c.vkFreeDescriptorSets(mgr.device, p, 1, &descriptorSet);
-                _ = map.remove(descriptorSet);
-            } else {
-                desc_log.warn("Skipping free of untracked descriptor set 0x{x}", .{@intFromPtr(descriptorSet)});
-            }
-        } else {
-            // No mapping available - this should not happen if initialized correctly
-            // We cannot safely assume mgr.descriptorPool is the correct pool if multiple pools were used
-            desc_log.err("Attempted to free descriptor set 0x{x} but setPoolMapping is null", .{@intFromPtr(descriptorSet)});
         }
     }
 }

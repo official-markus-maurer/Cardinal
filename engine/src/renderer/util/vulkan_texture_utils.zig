@@ -8,7 +8,6 @@ const tex_utils_log = log.ScopedLogger("TEX_UTILS");
 
 const buffer_mgr = @import("../vulkan_buffer_manager.zig");
 const vk_sync_manager = @import("../vulkan_sync_manager.zig");
-const buffer_utils = @import("vulkan_buffer_utils.zig");
 const vk_allocator = @import("../vulkan_allocator.zig");
 const scene = @import("../../assets/scene.zig");
 

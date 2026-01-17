@@ -9,7 +9,6 @@ const types = @import("vulkan_types.zig");
 const vk_texture_mgr = @import("vulkan_texture_manager.zig");
 const vk_sync_mgr = @import("vulkan_sync_manager.zig");
 const vk_allocator = @import("vulkan_allocator.zig");
-const buffer_utils = @import("util/vulkan_buffer_utils.zig");
 const descriptor_utils = @import("util/vulkan_descriptor_utils.zig");
 const material_utils = @import("util/vulkan_material_utils.zig");
 const shader_utils = @import("util/vulkan_shader_utils.zig");
@@ -325,10 +324,14 @@ fn create_pbr_mesh_buffers(pipeline: *types.VulkanPBRPipeline, device: c.VkDevic
     }
 
     // Create vertex buffer using staging buffer
-    if (!buffer_utils.vk_buffer_create_with_staging(allocator, device, commandPool, graphicsQueue, vertexData, vertexBufferSize, c.VK_BUFFER_USAGE_VERTEX_BUFFER_BIT, &pipeline.vertexBuffer, &pipeline.vertexBufferMemory, &pipeline.vertexBufferAllocation, vulkan_state)) {
+    var vertexBufferObj = std.mem.zeroes(buffer_mgr.VulkanBuffer);
+    if (!buffer_mgr.vk_buffer_create_device_local(&vertexBufferObj, device, @ptrCast(allocator), commandPool, graphicsQueue, vertexData, vertexBufferSize, c.VK_BUFFER_USAGE_VERTEX_BUFFER_BIT, vulkan_state)) {
         pbr_log.err("Failed to create vertex buffer with staging", .{});
         return false;
     }
+    pipeline.vertexBuffer = vertexBufferObj.handle;
+    pipeline.vertexBufferMemory = vertexBufferObj.memory;
+    pipeline.vertexBufferAllocation = vertexBufferObj.allocation;
 
     pbr_log.debug("Vertex buffer created with staging: {d} vertices", .{totalVertices});
 
@@ -361,10 +364,14 @@ fn create_pbr_mesh_buffers(pipeline: *types.VulkanPBRPipeline, device: c.VkDevic
         }
 
         // Create index buffer using staging buffer
-        if (!buffer_utils.vk_buffer_create_with_staging(allocator, device, commandPool, graphicsQueue, indexData, indexBufferSize, c.VK_BUFFER_USAGE_INDEX_BUFFER_BIT, &pipeline.indexBuffer, &pipeline.indexBufferMemory, &pipeline.indexBufferAllocation, vulkan_state)) {
+        var indexBufferObj = std.mem.zeroes(buffer_mgr.VulkanBuffer);
+        if (!buffer_mgr.vk_buffer_create_device_local(&indexBufferObj, device, @ptrCast(allocator), commandPool, graphicsQueue, indexData, indexBufferSize, c.VK_BUFFER_USAGE_INDEX_BUFFER_BIT, vulkan_state)) {
             pbr_log.err("Failed to create index buffer with staging", .{});
             return false;
         }
+        pipeline.indexBuffer = indexBufferObj.handle;
+        pipeline.indexBufferMemory = indexBufferObj.memory;
+        pipeline.indexBufferAllocation = indexBufferObj.allocation;
 
         pipeline.totalIndexCount = totalIndices;
         pbr_log.debug("Index buffer created with staging: {d} indices", .{totalIndices});
@@ -1665,31 +1672,6 @@ pub export fn vk_pbr_render(pipeline: ?*types.VulkanPBRPipeline, commandBuffer: 
     cmd.bindPipeline(c.VK_PIPELINE_BIND_POINT_GRAPHICS, pipe.pipelineBlend);
 
     // Re-bind descriptor sets (Unified)
-    if (!use_buffers_0) {
-        if (pipe.descriptorManager) |mgr| {
-            var sets: ?[*]const c.VkDescriptorSet = null;
-            var descriptorSets = [_]c.VkDescriptorSet{descriptorSet};
-            if (descriptorSet != null and @intFromPtr(descriptorSet) != 0) {
-                sets = &descriptorSets;
-            }
-            descriptor_mgr.vk_descriptor_manager_bind_sets(mgr, commandBuffer, pipe.pipelineLayout, 0, 1, sets, 0, null);
-        } else {
-            const descriptorSets = [_]c.VkDescriptorSet{descriptorSet};
-            cmd.bindDescriptorSets(c.VK_PIPELINE_BIND_POINT_GRAPHICS, pipe.pipelineLayout, 0, &descriptorSets, &[_]u32{});
-        }
-    }
-
-    if (!use_buffers_1) {
-        if (pipe.textureManager) |tm| {
-            if (tm.bindless_pool.descriptor_set) |bindlessSet| {
-                if (@intFromPtr(bindlessSet) != 0) {
-                    const bindlessSets = [_]c.VkDescriptorSet{bindlessSet};
-                    cmd.bindDescriptorSets(c.VK_PIPELINE_BIND_POINT_GRAPHICS, pipe.pipelineLayout, 1, &bindlessSets, &[_]u32{});
-                }
-            }
-        }
-    }
-
     if (use_buffers_0 or use_buffers_1) {
         var binding_infos: [2]c.VkDescriptorBufferBindingInfoEXT = undefined;
         var binding_count: u32 = 0;

@@ -193,9 +193,12 @@ pub const SceneSerializer = struct {
         }
 
         // Check version
-        if (root.object.get("version")) |ver| {
-            if (ver.integer > 2) return error.UnsupportedVersion;
+        const version = if (root.object.get("version")) |ver| ver.integer else 0;
+        if (version < 2) {
+            serializer_log.err("Scene version {d} is legacy and no longer supported. Minimum version is 2.", .{version});
+            return error.UnsupportedVersion;
         }
+        if (version > 2) return error.UnsupportedVersion;
 
         var total_mesh_count: u32 = 0;
 

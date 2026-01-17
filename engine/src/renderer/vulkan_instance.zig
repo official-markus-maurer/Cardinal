@@ -266,14 +266,11 @@ fn configure_validation(ci: *c.VkInstanceCreateInfo, layers: [*]const [*c]const 
     debug_ci.messageType = c.VK_DEBUG_UTILS_MESSAGE_TYPE_GENERAL_BIT_EXT | c.VK_DEBUG_UTILS_MESSAGE_TYPE_VALIDATION_BIT_EXT | c.VK_DEBUG_UTILS_MESSAGE_TYPE_PERFORMANCE_BIT_EXT;
     debug_ci.pfnUserCallback = debug_callback;
 
-    const static = struct {
-        var legacy_detection: c.VkBool32 = c.VK_TRUE;
-    };
     settings.pLayerName = "VK_LAYER_KHRONOS_validation";
-    settings.pSettingName = "legacy_detection";
+    settings.pSettingName = "validate_core";
     settings.type = .BOOL32_EXT;
     settings.valueCount = 1;
-    settings.pValues = &static.legacy_detection;
+    settings.pValues = &c.VK_TRUE;
 
     // Temporarily disable layer settings to avoid validation error VK_STRUCTURE_TYPE_MICROMAP_BUILD_INFO_EXT collision
     ci.pNext = debug_ci;

@@ -51,7 +51,6 @@ pub const vulkan_simple_pipelines = @import("renderer/vulkan_simple_pipelines.zi
 pub const vulkan_utils = @import("renderer/vulkan_utils.zig");
 pub const vulkan_types = @import("renderer/vulkan_types.zig");
 pub const vulkan_maintenance8_sync = @import("renderer/vulkan_maintenance8_sync.zig");
-pub const vulkan_buffer_utils = @import("renderer/util/vulkan_buffer_utils.zig");
 pub const vulkan_texture_utils = @import("renderer/util/vulkan_texture_utils.zig");
 pub const vulkan_material_utils = @import("renderer/util/vulkan_material_utils.zig");
 pub const vulkan_renderer = @import("renderer/vulkan_renderer.zig");
@@ -115,7 +114,6 @@ comptime {
     _ = vulkan_utils;
     _ = vulkan_types;
     _ = vulkan_maintenance8_sync;
-    _ = vulkan_buffer_utils;
     _ = vulkan_texture_utils;
     _ = vulkan_material_utils;
     _ = vulkan_renderer;

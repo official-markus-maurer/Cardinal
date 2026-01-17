@@ -24,7 +24,7 @@ const vk_compute = @import("vulkan_compute.zig");
 const texture_loader = @import("../assets/texture_loader.zig");
 const vk_simple_pipelines = @import("vulkan_simple_pipelines.zig");
 const vk_allocator = @import("vulkan_allocator.zig");
-const vk_buffer_utils = @import("util/vulkan_buffer_utils.zig");
+const buffer_mgr = @import("vulkan_buffer_manager.zig");
 const vk_texture_utils = @import("util/vulkan_texture_utils.zig");
 const vk_barrier_validation = @import("vulkan_barrier_validation.zig");
 const ref_counting = @import("../core/ref_counting.zig");
@@ -357,9 +357,7 @@ fn init_simple_pipelines_helper(s: *types.VulkanState) void {
     s.pipelines.wireframe_pipeline_layout = null;
     s.pipelines.simple_descriptor_manager = null;
     s.pipelines.simple_descriptor_set = null;
-    s.pipelines.simple_uniform_buffer = null;
-    s.pipelines.simple_uniform_buffer_memory = null;
-    s.pipelines.simple_uniform_buffer_mapped = null;
+    s.pipelines.simple_uniform_buffer = std.mem.zeroes(types.VulkanBuffer);
 
     if (!vk_simple_pipelines.vk_create_simple_pipelines(s, null)) {
         renderer_log.err("vk_create_simple_pipelines failed", .{});
@@ -696,16 +694,6 @@ pub export fn cardinal_renderer_create_headless(out_renderer: ?*types.CardinalRe
         s.sync_manager = null;
         return false;
     }
-
-    // Ensure function pointers fallback
-    if (s.context.vkQueueSubmit2 == null)
-        s.context.vkQueueSubmit2 = c.vkQueueSubmit2;
-    if (s.context.vkCmdPipelineBarrier2 == null)
-        s.context.vkCmdPipelineBarrier2 = c.vkCmdPipelineBarrier2;
-    if (s.context.vkCmdBeginRendering == null)
-        s.context.vkCmdBeginRendering = c.vkCmdBeginRendering;
-    if (s.context.vkCmdEndRendering == null)
-        s.context.vkCmdEndRendering = c.vkCmdEndRendering;
 
     renderer_log.info("renderer_create_headless: success", .{});
     return true;
@@ -1456,14 +1444,22 @@ fn upload_single_mesh(s: *types.VulkanState, src: *const types.CardinalMesh, dst
     }
 
     renderer_log.debug("Mesh {d}: staging vertex buffer", .{mesh_index});
-    if (!vk_buffer_utils.vk_buffer_create_with_staging(@ptrCast(&s.allocator), s.context.device, s.commands.pools.?[0], s.context.graphics_queue, src.vertices, vsize, c.VK_BUFFER_USAGE_VERTEX_BUFFER_BIT, &dst.vbuf, &dst.vmem, &dst.v_allocation, s)) {
+    var vbuf = std.mem.zeroes(buffer_mgr.VulkanBuffer);
+    if (!buffer_mgr.vk_buffer_create_device_local(&vbuf, s.context.device, @ptrCast(&s.allocator), s.commands.pools.?[0], s.context.graphics_queue, src.vertices, vsize, c.VK_BUFFER_USAGE_VERTEX_BUFFER_BIT, s)) {
         renderer_log.err("Failed to create vertex buffer for mesh {d}", .{mesh_index});
         return false;
     }
+    dst.vbuf = vbuf.handle;
+    dst.vmem = vbuf.memory;
+    dst.v_allocation = vbuf.allocation;
 
     if (src.index_count > 0 and src.indices != null) {
         renderer_log.debug("Mesh {d}: staging index buffer", .{mesh_index});
-        if (vk_buffer_utils.vk_buffer_create_with_staging(@ptrCast(&s.allocator), s.context.device, s.commands.pools.?[0], s.context.graphics_queue, src.indices, index_size, c.VK_BUFFER_USAGE_INDEX_BUFFER_BIT, &dst.ibuf, &dst.imem, &dst.i_allocation, s)) {
+        var ibuf = std.mem.zeroes(buffer_mgr.VulkanBuffer);
+        if (buffer_mgr.vk_buffer_create_device_local(&ibuf, s.context.device, @ptrCast(&s.allocator), s.commands.pools.?[0], s.context.graphics_queue, src.indices, index_size, c.VK_BUFFER_USAGE_INDEX_BUFFER_BIT, s)) {
+            dst.ibuf = ibuf.handle;
+            dst.imem = ibuf.memory;
+            dst.i_allocation = ibuf.allocation;
             dst.index_count = src.index_count;
         } else {
             renderer_log.err("Failed to create index buffer for mesh {d}", .{mesh_index});

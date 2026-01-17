@@ -171,12 +171,10 @@ pub export fn vk_buffer_create(buffer_ptr: ?*VulkanBuffer, device: c.VkDevice, a
     buffer.properties = createInfo.properties;
     // buffer.mapped is already set if map_immediately was true and successful
 
-    // Fallback or explicit map if not handled by allocator (shouldn't happen with updated allocator)
     if (createInfo.persistentlyMapped and buffer.mapped == null) {
-        buffer.mapped = vk_buffer_map(buffer, allocator, 0, c.VK_WHOLE_SIZE);
-        if (buffer.mapped == null) {
-            buf_log.warn("Failed to persistently map buffer memory (fallback)", .{});
-        }
+        buf_log.err("Failed to persistently map buffer memory", .{});
+        // If it was supposed to be mapped but isn't, this is an error condition
+        return false;
     }
 
     buf_log.debug("Created buffer with size {d} bytes", .{createInfo.size});

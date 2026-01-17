@@ -238,7 +238,7 @@ fn draw_pbr_settings_panel() void {
                 if (c.imgui_bridge_slider_float("Exposure", &state.post_process.exposure, 0.1, 10.0, "%.2f")) pp_changed = true;
                 if (c.imgui_bridge_slider_float("Contrast", &state.post_process.contrast, 0.1, 3.0, "%.2f")) pp_changed = true;
                 if (c.imgui_bridge_slider_float("Saturation", &state.post_process.saturation, 0.0, 3.0, "%.2f")) pp_changed = true;
-                
+
                 c.imgui_bridge_separator();
                 c.imgui_bridge_text("Bloom");
                 if (c.imgui_bridge_slider_float("Intensity", &state.post_process.bloomIntensity, 0.0, 1.0, "%.3f")) pp_changed = true;
@@ -758,7 +758,6 @@ pub fn update() void {
         defer c.imgui_bridge_end();
 
         if (status_open) {
-            c.imgui_bridge_text("FPS: %.1f", 1.0 / dt);
             c.imgui_bridge_text("Status: %s", &state.status_msg);
         }
     }

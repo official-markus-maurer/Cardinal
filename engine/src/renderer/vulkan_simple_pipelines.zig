@@ -62,7 +62,7 @@ fn create_simple_descriptor_resources(s: *types.VulkanState) bool {
     simple_log.info("Allocated simple_descriptor_set handle: {any}", .{s.pipelines.simple_descriptor_set});
 
     // Update Set
-    if (!descriptor_mgr.vk_descriptor_manager_update_buffer(s.pipelines.simple_descriptor_manager, s.pipelines.simple_descriptor_set, 0, s.pipelines.simple_uniform_buffer, 0, @sizeOf(SimpleUniformBufferObject))) {
+    if (!descriptor_mgr.vk_descriptor_manager_update_buffer(s.pipelines.simple_descriptor_manager, s.pipelines.simple_descriptor_set, 0, s.pipelines.simple_uniform_buffer.handle, 0, @sizeOf(SimpleUniformBufferObject))) {
         simple_log.err("Failed to update simple UBO descriptor", .{});
         return false;
     }
@@ -73,26 +73,21 @@ fn create_simple_descriptor_resources(s: *types.VulkanState) bool {
 fn create_simple_uniform_buffer(s: *types.VulkanState) bool {
     const bufferSize = @sizeOf(SimpleUniformBufferObject);
 
-    var simpleBuffer = std.mem.zeroes(buffer_mgr.VulkanBuffer);
     var createInfo = std.mem.zeroes(buffer_mgr.VulkanBufferCreateInfo);
     createInfo.size = bufferSize;
     createInfo.usage = c.VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT;
     createInfo.properties = c.VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | c.VK_MEMORY_PROPERTY_HOST_COHERENT_BIT;
     createInfo.persistentlyMapped = true;
 
-    if (!buffer_mgr.vk_buffer_create(&simpleBuffer, s.context.device, @ptrCast(&s.allocator), &createInfo)) {
+    if (!buffer_mgr.vk_buffer_create(&s.pipelines.simple_uniform_buffer, s.context.device, @ptrCast(&s.allocator), &createInfo)) {
         simple_log.err("Failed to create simple uniform buffer!", .{});
         return false;
     }
 
-    // Store buffer handles for compatibility with existing code
-    s.pipelines.simple_uniform_buffer = simpleBuffer.handle;
-    s.pipelines.simple_uniform_buffer_memory = simpleBuffer.memory;
-    s.pipelines.simple_uniform_buffer_allocation = simpleBuffer.allocation;
-    s.pipelines.simple_uniform_buffer_mapped = simpleBuffer.mapped;
-
-    if (s.pipelines.simple_uniform_buffer_mapped == null) {
+    if (s.pipelines.simple_uniform_buffer.mapped == null) {
         simple_log.err("Failed to map simple uniform buffer memory!", .{});
+        vk_allocator.free_buffer(&s.allocator, s.pipelines.simple_uniform_buffer.handle, s.pipelines.simple_uniform_buffer.allocation);
+        s.pipelines.simple_uniform_buffer = std.mem.zeroes(buffer_mgr.VulkanBuffer);
         return false;
     }
 
@@ -197,15 +192,8 @@ pub fn vk_create_simple_pipelines(s: *types.VulkanState, pipelineCache: c.VkPipe
 }
 
 pub fn vk_destroy_simple_pipelines(s: *types.VulkanState) void {
-    if (s.pipelines.simple_uniform_buffer_mapped != null) {
-        // vk_allocator.unmap_memory(&s.allocator, s.pipelines.simple_uniform_buffer_allocation);
-        s.pipelines.simple_uniform_buffer_mapped = null;
-    }
-
-    if (s.pipelines.simple_uniform_buffer != null or s.pipelines.simple_uniform_buffer_memory != null) {
-        vk_allocator.free_buffer(&s.allocator, s.pipelines.simple_uniform_buffer, s.pipelines.simple_uniform_buffer_allocation);
-        s.pipelines.simple_uniform_buffer = null;
-        s.pipelines.simple_uniform_buffer_memory = null;
+    if (s.pipelines.simple_uniform_buffer.handle != null) {
+        buffer_mgr.vk_buffer_destroy(&s.pipelines.simple_uniform_buffer, s.context.device, @ptrCast(&s.allocator), s);
     }
 
     if (s.pipelines.simple_descriptor_manager != null) {
@@ -238,7 +226,7 @@ pub fn vk_destroy_simple_pipelines(s: *types.VulkanState) void {
 }
 
 pub fn update_simple_uniforms(s: *types.VulkanState, model: *const [16]f32, view: *const [16]f32, proj: *const [16]f32, viewPos: *const [3]f32) void {
-    if (s.pipelines.simple_uniform_buffer_mapped == null) {
+    if (s.pipelines.simple_uniform_buffer.mapped == null) {
         simple_log.err("update_simple_uniforms: Buffer not mapped!", .{});
         return;
     }
@@ -252,7 +240,7 @@ pub fn update_simple_uniforms(s: *types.VulkanState, model: *const [16]f32, view
     @memcpy(&ubo.viewPos, viewPos);
     ubo.debugFlags = 0.0;
 
-    @memcpy(@as([*]u8, @ptrCast(s.pipelines.simple_uniform_buffer_mapped))[0..@sizeOf(SimpleUniformBufferObject)], @as([*]const u8, @ptrCast(&ubo))[0..@sizeOf(SimpleUniformBufferObject)]);
+    @memcpy(@as([*]u8, @ptrCast(s.pipelines.simple_uniform_buffer.mapped))[0..@sizeOf(SimpleUniformBufferObject)], @as([*]const u8, @ptrCast(&ubo))[0..@sizeOf(SimpleUniformBufferObject)]);
 }
 
 pub fn render_simple(s: *types.VulkanState, commandBufferHandle: c.VkCommandBuffer, pipeline: c.VkPipeline, pipelineLayout: c.VkPipelineLayout) void {

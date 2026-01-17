@@ -727,11 +727,12 @@ pub export fn cardinal_animation_system_update(system: ?*CardinalAnimationSystem
             if (node == null) continue;
             const scene_node = node.?;
 
-            // Get current transform for fallback
-            var current_t: [3]f32 = undefined;
-            var current_r: [4]f32 = undefined;
-            var current_s: [3]f32 = undefined;
+            // Base values
+            var current_t: [3]f32 = .{0, 0, 0};
+            var current_r: [4]f32 = .{0, 0, 0, 1};
+            var current_s: [3]f32 = .{1, 1, 1};
 
+            // Use current transform as base if no animation data for that channel
             const local_matrix = &scene_node.local_transform;
             _ = transform.cardinal_matrix_decompose(local_matrix, &current_t, &current_r, &current_s);
 

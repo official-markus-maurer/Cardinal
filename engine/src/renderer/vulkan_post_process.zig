@@ -7,7 +7,6 @@ const descriptor_mgr = @import("vulkan_descriptor_manager.zig");
 const vk_pso = @import("vulkan_pso.zig");
 const vk_compute = @import("vulkan_compute.zig");
 const vk_allocator = @import("vulkan_allocator.zig");
-const vk_buffer_utils = @import("util/vulkan_buffer_utils.zig");
 
 const pp_log = log.ScopedLogger("POST_PROCESS");
 

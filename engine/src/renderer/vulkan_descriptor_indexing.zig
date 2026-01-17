@@ -199,9 +199,8 @@ pub export fn vk_bindless_texture_pool_init(pool: ?*types.BindlessTexturePool, v
             return false;
         }
 
-        // Pseudo-handle for compatibility?
         // We can use a dummy value for descriptor_set if needed, but we should rely on use_descriptor_buffer flag
-        p.descriptor_set = @ptrFromInt(0xDEADBEEF); // Dummy handle
+        p.descriptor_set = null;
 
     } else {
         // Create descriptor pool

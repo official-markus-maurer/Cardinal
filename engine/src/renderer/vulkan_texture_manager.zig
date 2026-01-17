@@ -767,26 +767,7 @@ pub fn vk_texture_manager_update_textures(manager: *types.VulkanTextureManager) 
                     if (vk_sync_mgr.vulkan_sync_manager_submit_queue2(manager.graphicsQueue, 1, @ptrCast(&submit_info), null, manager.vkQueueSubmit2) == c.VK_SUCCESS) {
                         submit_success = true;
                     } else {
-                        tex_mgr_log.err("vkQueueSubmit2 not available or failed, trying legacy submit", .{});
-                        // Fallback to legacy submit
-                        var legacy_submit = std.mem.zeroes(c.VkSubmitInfo);
-                        legacy_submit.sType = c.VK_STRUCTURE_TYPE_SUBMIT_INFO;
-                        legacy_submit.commandBufferCount = 1;
-                        legacy_submit.pCommandBuffers = &primary_cmd;
-
-                        var timeline_info = std.mem.zeroes(c.VkTimelineSemaphoreSubmitInfo);
-                        if (manager.syncManager) |sync| {
-                            legacy_submit.signalSemaphoreCount = 1;
-                            legacy_submit.pSignalSemaphores = &sync.timeline_semaphore;
-                            timeline_info.sType = c.VK_STRUCTURE_TYPE_TIMELINE_SEMAPHORE_SUBMIT_INFO;
-                            timeline_info.signalSemaphoreValueCount = 1;
-                            timeline_info.pSignalSemaphoreValues = &signal_val;
-                            legacy_submit.pNext = &timeline_info;
-                        }
-
-                        if (vk_sync_mgr.vulkan_sync_manager_submit_queue(manager.graphicsQueue, 1, @ptrCast(&legacy_submit), null) == c.VK_SUCCESS) {
-                            submit_success = true;
-                        }
+                        tex_mgr_log.err("vkQueueSubmit2 failed", .{});
                     }
                 } else {
                     tex_mgr_log.err("Failed to allocate primary command buffer for async upload batch", .{});

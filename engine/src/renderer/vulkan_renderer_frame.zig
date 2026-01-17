@@ -19,7 +19,6 @@ const vk_simple_pipelines = @import("vulkan_simple_pipelines.zig");
 const vk_post_process = @import("vulkan_post_process.zig");
 const vk_renderer = @import("vulkan_renderer.zig");
 const vk_texture_manager = @import("vulkan_texture_manager.zig");
-const vk_buffer_utils = @import("util/vulkan_buffer_utils.zig");
 const vk_texture_utils = @import("util/vulkan_texture_utils.zig");
 const vk_allocator = @import("vulkan_allocator.zig");
 const window = @import("../core/window.zig");
@@ -74,7 +73,6 @@ fn vk_recover_from_device_loss(s: *types.VulkanState) bool {
     }
 
     // Store original state for potential rollback
-    const had_valid_swapchain = (s.swapchain.handle != null);
     const stored_scene = s.current_scene;
 
     // Step 1: Destroy all device-dependent resources in reverse order
@@ -219,19 +217,6 @@ fn vk_recover_from_device_loss(s: *types.VulkanState) bool {
         s.recovery.attempt_count = 0; // Reset on successful recovery
     } else {
         frame_log.err("[RECOVERY] Device loss recovery failed at: {any}", .{failure_point orelse "unknown"});
-
-        // Implement fallback: try to at least maintain a minimal valid state
-        if (!had_valid_swapchain) {
-            frame_log.warn("[RECOVERY] Attempting minimal fallback recovery", .{});
-            // Try to recreate just the essential components for a graceful shutdown
-            // At minimum, ensure we have basic Vulkan state to prevent crashes
-            if (s.context.device != null and vk_swapchain.vk_create_swapchain(@ptrCast(s))) {
-                if (vk_pipeline.vk_create_pipeline(@ptrCast(s))) {
-                    _ = vk_commands.vk_create_commands_sync(@ptrCast(s));
-                }
-                frame_log.info("[RECOVERY] Minimal fallback recovery succeeded", .{});
-            }
-        }
     }
 
     s.recovery.recovery_in_progress = false;

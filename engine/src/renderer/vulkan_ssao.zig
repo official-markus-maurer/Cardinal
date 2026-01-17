@@ -5,8 +5,8 @@ const math = @import("../core/math.zig");
 const memory = @import("../core/memory.zig");
 const types = @import("vulkan_types.zig");
 const vk_compute = @import("vulkan_compute.zig");
+const buffer_mgr = @import("vulkan_buffer_manager.zig");
 const vk_texture_utils = @import("util/vulkan_texture_utils.zig");
-const vk_buffer_utils = @import("util/vulkan_buffer_utils.zig");
 const vk_descriptor_manager = @import("vulkan_descriptor_manager.zig");
 const vk_allocator = @import("vulkan_allocator.zig");
 const wrappers = @import("vulkan_wrappers.zig");
@@ -32,24 +32,28 @@ pub fn vk_ssao_init(s: *types.VulkanState) bool {
     // 1. Create Resources (Images)
     if (!create_resources(s)) {
         ssao_log.err("Failed to create SSAO resources", .{});
+        vk_ssao_destroy(s);
         return false;
     }
 
     // 2. Create Noise Texture & Kernel
     if (!create_noise_and_kernel(s)) {
         ssao_log.err("Failed to create SSAO noise/kernel", .{});
+        vk_ssao_destroy(s);
         return false;
     }
 
     // 3. Create Pipelines
     if (!create_pipelines(s)) {
         ssao_log.err("Failed to create SSAO pipelines", .{});
+        vk_ssao_destroy(s);
         return false;
     }
 
     // 4. Update Descriptors
     if (!update_descriptors(s)) {
         ssao_log.err("Failed to update SSAO descriptors", .{});
+        vk_ssao_destroy(s);
         return false;
     }
 
@@ -60,30 +64,86 @@ pub fn vk_ssao_init(s: *types.VulkanState) bool {
 }
 
 pub fn vk_ssao_destroy(s: *types.VulkanState) void {
-    if (!s.pipelines.ssao_pipeline.initialized) return;
-
+    // Always attempt cleanup, even if not fully initialized
     const device = s.context.device;
     const allocator = &s.allocator;
 
     // Destroy Resources
     var i: u32 = 0;
     while (i < types.MAX_FRAMES_IN_FLIGHT) : (i += 1) {
-        if (s.pipelines.ssao_pipeline.ssao_view[i] != null) c.vkDestroyImageView(device, s.pipelines.ssao_pipeline.ssao_view[i], null);
-        if (s.pipelines.ssao_pipeline.ssao_image[i] != null) vk_allocator.free_image(allocator, s.pipelines.ssao_pipeline.ssao_image[i], s.pipelines.ssao_pipeline.ssao_allocation[i]);
+        if (s.pipelines.ssao_pipeline.ssao_view[i] != null) {
+            c.vkDestroyImageView(device, s.pipelines.ssao_pipeline.ssao_view[i], null);
+            s.pipelines.ssao_pipeline.ssao_view[i] = null;
+        }
+        if (s.pipelines.ssao_pipeline.ssao_image[i] != null) {
+            vk_allocator.free_image(allocator, s.pipelines.ssao_pipeline.ssao_image[i], s.pipelines.ssao_pipeline.ssao_allocation[i]);
+            s.pipelines.ssao_pipeline.ssao_image[i] = null;
+            s.pipelines.ssao_pipeline.ssao_allocation[i] = null;
+        }
 
-        if (s.pipelines.ssao_pipeline.ssao_blur_view[i] != null) c.vkDestroyImageView(device, s.pipelines.ssao_pipeline.ssao_blur_view[i], null);
-        if (s.pipelines.ssao_pipeline.ssao_blur_image[i] != null) vk_allocator.free_image(allocator, s.pipelines.ssao_pipeline.ssao_blur_image[i], s.pipelines.ssao_pipeline.ssao_blur_allocation[i]);
+        if (s.pipelines.ssao_pipeline.ssao_blur_view[i] != null) {
+            c.vkDestroyImageView(device, s.pipelines.ssao_pipeline.ssao_blur_view[i], null);
+            s.pipelines.ssao_pipeline.ssao_blur_view[i] = null;
+        }
+        if (s.pipelines.ssao_pipeline.ssao_blur_image[i] != null) {
+            vk_allocator.free_image(allocator, s.pipelines.ssao_pipeline.ssao_blur_image[i], s.pipelines.ssao_pipeline.ssao_blur_allocation[i]);
+            s.pipelines.ssao_pipeline.ssao_blur_image[i] = null;
+            s.pipelines.ssao_pipeline.ssao_blur_allocation[i] = null;
+        }
     }
 
     // Destroy Noise & Kernel
-    if (s.pipelines.ssao_pipeline.noise_texture.view != null) c.vkDestroyImageView(device, s.pipelines.ssao_pipeline.noise_texture.view, null);
-    if (s.pipelines.ssao_pipeline.noise_texture.sampler != null) c.vkDestroySampler(device, s.pipelines.ssao_pipeline.noise_texture.sampler, null);
-    vk_allocator.free_image(allocator, s.pipelines.ssao_pipeline.noise_texture.image, s.pipelines.ssao_pipeline.noise_texture.allocation);
-    vk_allocator.free_buffer(allocator, s.pipelines.ssao_pipeline.kernel_buffer, s.pipelines.ssao_pipeline.kernel_allocation);
+    if (s.pipelines.ssao_pipeline.noise_texture.view != null) {
+        c.vkDestroyImageView(device, s.pipelines.ssao_pipeline.noise_texture.view, null);
+        s.pipelines.ssao_pipeline.noise_texture.view = null;
+    }
+    if (s.pipelines.ssao_pipeline.noise_texture.sampler != null) {
+        c.vkDestroySampler(device, s.pipelines.ssao_pipeline.noise_texture.sampler, null);
+        s.pipelines.ssao_pipeline.noise_texture.sampler = null;
+    }
+    if (s.pipelines.ssao_pipeline.noise_texture.image != null) {
+        vk_allocator.free_image(allocator, s.pipelines.ssao_pipeline.noise_texture.image, s.pipelines.ssao_pipeline.noise_texture.allocation);
+        s.pipelines.ssao_pipeline.noise_texture.image = null;
+        s.pipelines.ssao_pipeline.noise_texture.allocation = null;
+    }
+    if (s.pipelines.ssao_pipeline.kernel_buffer != null) {
+        vk_allocator.free_buffer(allocator, s.pipelines.ssao_pipeline.kernel_buffer, s.pipelines.ssao_pipeline.kernel_allocation);
+        s.pipelines.ssao_pipeline.kernel_buffer = null;
+        s.pipelines.ssao_pipeline.kernel_allocation = null;
+    }
+
+    // Destroy Kernel Buffer
+    if (s.pipelines.ssao_pipeline.kernel_buffer != null) {
+        var temp_buffer = std.mem.zeroes(buffer_mgr.VulkanBuffer);
+        temp_buffer.handle = s.pipelines.ssao_pipeline.kernel_buffer;
+        temp_buffer.memory = s.pipelines.ssao_pipeline.kernel_memory;
+        temp_buffer.allocation = s.pipelines.ssao_pipeline.kernel_allocation;
+
+        buffer_mgr.vk_buffer_destroy(&temp_buffer, device, allocator, s);
+        s.pipelines.ssao_pipeline.kernel_buffer = null;
+    }
+
+    // Destroy Noise Texture
+    if (s.pipelines.ssao_pipeline.noise_texture.image != null) {
+        if (s.pipelines.ssao_pipeline.noise_texture.view != null) {
+            c.vkDestroyImageView(device, s.pipelines.ssao_pipeline.noise_texture.view, null);
+            s.pipelines.ssao_pipeline.noise_texture.view = null;
+        }
+        if (s.pipelines.ssao_pipeline.noise_texture.sampler != null) {
+            c.vkDestroySampler(device, s.pipelines.ssao_pipeline.noise_texture.sampler, null);
+            s.pipelines.ssao_pipeline.noise_texture.sampler = null;
+        }
+        vk_allocator.free_image(allocator, s.pipelines.ssao_pipeline.noise_texture.image, s.pipelines.ssao_pipeline.noise_texture.allocation);
+        s.pipelines.ssao_pipeline.noise_texture.image = null;
+    }
 
     // Destroy Pipelines
-    vk_compute.vk_compute_destroy_pipeline(s, &s.pipelines.ssao_pipeline.pipeline);
-    vk_compute.vk_compute_destroy_pipeline(s, &s.pipelines.ssao_pipeline.blur_pipeline);
+    if (s.pipelines.ssao_pipeline.pipeline.pipeline != null) {
+        vk_compute.vk_compute_destroy_pipeline(s, &s.pipelines.ssao_pipeline.pipeline);
+    }
+    if (s.pipelines.ssao_pipeline.blur_pipeline.pipeline != null) {
+        vk_compute.vk_compute_destroy_pipeline(s, &s.pipelines.ssao_pipeline.blur_pipeline);
+    }
 
     s.pipelines.ssao_pipeline.initialized = false;
     s.pipelines.use_ssao = false;
@@ -260,7 +320,17 @@ fn create_noise_and_kernel(s: *types.VulkanState) bool {
     }
 
     // Create Buffer
-    if (!vk_buffer_utils.create_buffer(&s.allocator, @sizeOf(SSAOKernel), c.VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT, c.VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | c.VK_MEMORY_PROPERTY_HOST_COHERENT_BIT, &s.pipelines.ssao_pipeline.kernel_buffer, &s.pipelines.ssao_pipeline.kernel_memory, &s.pipelines.ssao_pipeline.kernel_allocation)) return false;
+    var kernelBufferObj = std.mem.zeroes(buffer_mgr.VulkanBuffer);
+    var kernelInfo = std.mem.zeroes(buffer_mgr.VulkanBufferCreateInfo);
+    kernelInfo.size = @sizeOf(SSAOKernel);
+    kernelInfo.usage = c.VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT;
+    kernelInfo.properties = c.VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | c.VK_MEMORY_PROPERTY_HOST_COHERENT_BIT;
+
+    if (!buffer_mgr.vk_buffer_create(&kernelBufferObj, s.context.device, @ptrCast(&s.allocator), &kernelInfo)) return false;
+
+    s.pipelines.ssao_pipeline.kernel_buffer = kernelBufferObj.handle;
+    s.pipelines.ssao_pipeline.kernel_memory = kernelBufferObj.memory;
+    s.pipelines.ssao_pipeline.kernel_allocation = kernelBufferObj.allocation;
 
     // Upload Kernel (Initial)
     var data: ?*anyopaque = null;
@@ -282,11 +352,19 @@ fn create_noise_and_kernel(s: *types.VulkanState) bool {
     const noise_size = 16 * @sizeOf(math.Vec4);
 
     // Create Staging Buffer
-    var staging_buffer: c.VkBuffer = null;
-    var staging_memory: c.VkDeviceMemory = null;
-    var staging_alloc: c.VmaAllocation = null;
+    var stagingBufferObj = std.mem.zeroes(buffer_mgr.VulkanBuffer);
+    var stagingInfo = std.mem.zeroes(buffer_mgr.VulkanBufferCreateInfo);
+    stagingInfo.size = noise_size;
+    stagingInfo.usage = c.VK_BUFFER_USAGE_TRANSFER_SRC_BIT;
+    stagingInfo.properties = c.VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | c.VK_MEMORY_PROPERTY_HOST_COHERENT_BIT;
 
-    if (!vk_buffer_utils.create_buffer(&s.allocator, noise_size, c.VK_BUFFER_USAGE_TRANSFER_SRC_BIT, c.VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | c.VK_MEMORY_PROPERTY_HOST_COHERENT_BIT, &staging_buffer, &staging_memory, &staging_alloc)) return false;
+    if (!buffer_mgr.vk_buffer_create(&stagingBufferObj, s.context.device, @ptrCast(&s.allocator), &stagingInfo)) {
+        vk_allocator.free_buffer(&s.allocator, s.pipelines.ssao_pipeline.kernel_buffer, s.pipelines.ssao_pipeline.kernel_allocation);
+        return false;
+    }
+
+    const staging_buffer = stagingBufferObj.handle;
+    const staging_alloc = stagingBufferObj.allocation;
 
     if (vk_allocator.map_memory(&s.allocator, staging_alloc, &data) == c.VK_SUCCESS) {
         @memcpy(@as([*]u8, @ptrCast(data))[0..noise_size], @as([*]u8, @ptrCast(&noise_data))[0..noise_size]);
@@ -294,9 +372,18 @@ fn create_noise_and_kernel(s: *types.VulkanState) bool {
     }
 
     // Create Image
-    if (!vk_texture_utils.create_image_and_memory(&s.allocator, s.context.device, 4, 4, c.VK_FORMAT_R32G32B32A32_SFLOAT, &s.pipelines.ssao_pipeline.noise_texture.image, &s.pipelines.ssao_pipeline.noise_texture.memory, &s.pipelines.ssao_pipeline.noise_texture.allocation)) return false;
+    if (!vk_texture_utils.create_image_and_memory(&s.allocator, s.context.device, 4, 4, c.VK_FORMAT_R32G32B32A32_SFLOAT, &s.pipelines.ssao_pipeline.noise_texture.image, &s.pipelines.ssao_pipeline.noise_texture.memory, &s.pipelines.ssao_pipeline.noise_texture.allocation)) {
+        vk_allocator.free_buffer(&s.allocator, staging_buffer, staging_alloc);
+        vk_allocator.free_buffer(&s.allocator, s.pipelines.ssao_pipeline.kernel_buffer, s.pipelines.ssao_pipeline.kernel_allocation);
+        return false;
+    }
 
-    if (!vk_texture_utils.create_texture_image_view(s.context.device, s.pipelines.ssao_pipeline.noise_texture.image, &s.pipelines.ssao_pipeline.noise_texture.view, c.VK_FORMAT_R32G32B32A32_SFLOAT)) return false;
+    if (!vk_texture_utils.create_texture_image_view(s.context.device, s.pipelines.ssao_pipeline.noise_texture.image, &s.pipelines.ssao_pipeline.noise_texture.view, c.VK_FORMAT_R32G32B32A32_SFLOAT)) {
+        vk_allocator.free_buffer(&s.allocator, staging_buffer, staging_alloc);
+        vk_allocator.free_buffer(&s.allocator, s.pipelines.ssao_pipeline.kernel_buffer, s.pipelines.ssao_pipeline.kernel_allocation);
+        vk_allocator.free_image(&s.allocator, s.pipelines.ssao_pipeline.noise_texture.image, s.pipelines.ssao_pipeline.noise_texture.allocation);
+        return false;
+    }
 
     // Transition and Copy
     vk_texture_utils.transition_image_layout(s.context.device, s.context.graphics_queue, s.commands.pools.?[0], s.pipelines.ssao_pipeline.noise_texture.image, c.VK_FORMAT_R32G32B32A32_SFLOAT, c.VK_IMAGE_LAYOUT_UNDEFINED, c.VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL);
@@ -304,7 +391,7 @@ fn create_noise_and_kernel(s: *types.VulkanState) bool {
     vk_texture_utils.transition_image_layout(s.context.device, s.context.graphics_queue, s.commands.pools.?[0], s.pipelines.ssao_pipeline.noise_texture.image, c.VK_FORMAT_R32G32B32A32_SFLOAT, c.VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, c.VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
 
     // Cleanup Staging
-    vk_allocator.free_buffer(&s.allocator, staging_buffer, staging_alloc);
+    buffer_mgr.vk_buffer_destroy(&stagingBufferObj, s.context.device, @ptrCast(&s.allocator), s);
 
     // Create Sampler (Repeat, Nearest)
     var sampler_info = std.mem.zeroes(c.VkSamplerCreateInfo);
@@ -316,6 +403,9 @@ fn create_noise_and_kernel(s: *types.VulkanState) bool {
     sampler_info.addressModeW = c.VK_SAMPLER_ADDRESS_MODE_REPEAT;
 
     if (c.vkCreateSampler(s.context.device, &sampler_info, null, &s.pipelines.ssao_pipeline.noise_texture.sampler) != c.VK_SUCCESS) {
+        vk_allocator.free_buffer(&s.allocator, s.pipelines.ssao_pipeline.kernel_buffer, s.pipelines.ssao_pipeline.kernel_allocation);
+        vk_allocator.free_image(&s.allocator, s.pipelines.ssao_pipeline.noise_texture.image, s.pipelines.ssao_pipeline.noise_texture.allocation);
+        c.vkDestroyImageView(s.context.device, s.pipelines.ssao_pipeline.noise_texture.view, null);
         return false;
     }
 

@@ -156,7 +156,8 @@ pub fn reflect_shader(allocator: std.mem.Allocator, code: []const u32, stage: c.
             if (reflection.constants.get(length_id)) |len| {
                 try array_lengths.put(id, len);
             } else {
-                try array_lengths.put(id, 1); // Fallback
+                // Fail if array length constant is not found (no fallback)
+                return error.InvalidShader;
             }
         } else if (opcode == SpvOpTypeRuntimeArray) {
             const id = code[i + 1];
