@@ -121,6 +121,7 @@ pub fn main() !u8 {
     while (!window.cardinal_window_should_close(win)) {
         window.cardinal_window_poll(win);
         vulkan_renderer_frame.cardinal_renderer_draw_frame(&renderer);
+        engine.tracy.frameMark();
         frames += 1;
         if (frames > 10) break;
     }

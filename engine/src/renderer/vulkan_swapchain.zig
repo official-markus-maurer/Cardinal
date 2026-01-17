@@ -7,6 +7,7 @@ const types = @import("vulkan_types.zig");
 const vk_commands = @import("vulkan_commands.zig");
 const vk_pipeline = @import("vulkan_pipeline.zig");
 const vk_mesh_shader = @import("vulkan_mesh_shader.zig");
+const vk_ssao = @import("vulkan_ssao.zig");
 const platform = @import("../core/platform.zig");
 
 const swap_log = log.ScopedLogger("SWAPCHAIN");
@@ -590,6 +591,15 @@ pub export fn vk_recreate_swapchain(s: ?*types.VulkanState) callconv(.c) bool {
     if (vs.pipelines.use_mesh_shader_pipeline and vs.context.supports_mesh_shader) {
         if (!recreate_mesh_shader_pipeline_logic(vs)) {
             return handle_recreation_failure(vs, &backup);
+        }
+    }
+
+    // Recreate SSAO resources if enabled
+    if (vs.pipelines.use_ssao) {
+        if (!vk_ssao.vk_ssao_resize(vs, vs.swapchain.extent.width, vs.swapchain.extent.height)) {
+            swap_log.err("Failed to resize SSAO resources", .{});
+            // We don't fail the whole swapchain recreation for this, just disable SSAO
+            vs.pipelines.use_ssao = false;
         }
     }
 

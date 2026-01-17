@@ -1,6 +1,7 @@
 const std = @import("std");
 const builtin = @import("builtin");
 const log = @import("../core/log.zig");
+const tracy = @import("../core/tracy.zig");
 const platform = @import("../core/platform.zig");
 const math = @import("../core/math.zig");
 const memory = @import("../core/memory.zig");
@@ -15,6 +16,7 @@ const vk_simple_pipelines = @import("vulkan_simple_pipelines.zig");
 const vk_sync_manager = @import("vulkan_sync_manager.zig");
 const render_graph = @import("render_graph.zig");
 const vk_shadows = @import("vulkan_shadows.zig");
+const vk_ssao = @import("vulkan_ssao.zig");
 const stack_allocator = @import("../core/stack_allocator.zig");
 
 const cmd_log = log.ScopedLogger("COMMANDS");
@@ -293,30 +295,32 @@ fn transition_images(s: *types.VulkanState, cmd: c.VkCommandBuffer, image_index:
 }
 
 pub fn begin_dynamic_rendering(s: *types.VulkanState, cmd: c.VkCommandBuffer, image_index: u32, use_depth: bool, depth_view: ?c.VkImageView, clears: [*]const c.VkClearValue, should_clear: bool, flags: c.VkRenderingFlags) bool {
-    return begin_dynamic_rendering_ext(s, cmd, image_index, use_depth, depth_view, null, clears, should_clear, flags);
+    return begin_dynamic_rendering_ext(s, cmd, image_index, use_depth, depth_view, null, clears, should_clear, should_clear, flags, true);
 }
 
-pub fn begin_dynamic_rendering_ext(s: *types.VulkanState, cmd: c.VkCommandBuffer, image_index: u32, use_depth: bool, depth_view: ?c.VkImageView, color_view: ?c.VkImageView, clears: [*]const c.VkClearValue, should_clear: bool, flags: c.VkRenderingFlags) bool {
+pub fn begin_dynamic_rendering_ext(s: *types.VulkanState, cmd: c.VkCommandBuffer, image_index: u32, use_depth: bool, depth_view: ?c.VkImageView, color_view: ?c.VkImageView, clears: [*]const c.VkClearValue, should_clear_color: bool, should_clear_depth: bool, flags: c.VkRenderingFlags, use_color: bool) bool {
     if (s.context.vkCmdBeginRendering == null or s.context.vkCmdEndRendering == null or s.context.vkCmdPipelineBarrier2 == null) {
         cmd_log.err("Frame {d}: Dynamic rendering functions not loaded", .{s.sync.current_frame});
         return false;
     }
 
     var colorAttachment = std.mem.zeroes(c.VkRenderingAttachmentInfo);
-    colorAttachment.sType = c.VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO;
-    colorAttachment.imageView = if (color_view) |cv| cv else s.swapchain.image_views.?[image_index];
-    colorAttachment.imageLayout = c.VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
-    colorAttachment.loadOp = if (should_clear) c.VK_ATTACHMENT_LOAD_OP_CLEAR else c.VK_ATTACHMENT_LOAD_OP_LOAD;
-    colorAttachment.storeOp = c.VK_ATTACHMENT_STORE_OP_STORE;
-    colorAttachment.clearValue = clears[0];
+    if (use_color) {
+        colorAttachment.sType = c.VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO;
+        colorAttachment.imageView = if (color_view) |cv| cv else s.swapchain.image_views.?[image_index];
+        colorAttachment.imageLayout = c.VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
+        colorAttachment.loadOp = if (should_clear_color) c.VK_ATTACHMENT_LOAD_OP_CLEAR else c.VK_ATTACHMENT_LOAD_OP_LOAD;
+        colorAttachment.storeOp = c.VK_ATTACHMENT_STORE_OP_STORE;
+        colorAttachment.clearValue = clears[0];
+    }
 
     var depthAttachment = std.mem.zeroes(c.VkRenderingAttachmentInfo);
     if (use_depth) {
         depthAttachment.sType = c.VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO;
         depthAttachment.imageView = if (depth_view) |dv| dv else s.swapchain.depth_image_view;
         depthAttachment.imageLayout = c.VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
-        depthAttachment.loadOp = if (should_clear) c.VK_ATTACHMENT_LOAD_OP_CLEAR else c.VK_ATTACHMENT_LOAD_OP_LOAD;
-        depthAttachment.storeOp = c.VK_ATTACHMENT_STORE_OP_DONT_CARE;
+        depthAttachment.loadOp = if (should_clear_depth) c.VK_ATTACHMENT_LOAD_OP_CLEAR else c.VK_ATTACHMENT_LOAD_OP_LOAD;
+        depthAttachment.storeOp = c.VK_ATTACHMENT_STORE_OP_STORE; // Store depth for SSAO/PBR
         depthAttachment.clearValue = clears[1];
     }
 
@@ -327,8 +331,8 @@ pub fn begin_dynamic_rendering_ext(s: *types.VulkanState, cmd: c.VkCommandBuffer
     renderingInfo.renderArea.offset.y = 0;
     renderingInfo.renderArea.extent = s.swapchain.extent;
     renderingInfo.layerCount = 1;
-    renderingInfo.colorAttachmentCount = 1;
-    renderingInfo.pColorAttachments = &colorAttachment;
+    renderingInfo.colorAttachmentCount = if (use_color) 1 else 0;
+    renderingInfo.pColorAttachments = if (use_color) &colorAttachment else null;
     renderingInfo.pDepthAttachment = if (use_depth) &depthAttachment else null;
 
     s.context.vkCmdBeginRendering.?(cmd, &renderingInfo);
@@ -415,6 +419,9 @@ fn vk_update_frame_uniforms(s: *types.VulkanState) void {
 }
 
 pub fn vk_record_scene_content(s: *types.VulkanState, cmd: c.VkCommandBuffer) void {
+    const zone = tracy.zoneS(@src(), "Record Scene Content");
+    defer zone.end();
+
     // cmd_log.debug("vk_record_scene_content: Mode {any}", .{s.current_rendering_mode});
 
     switch (s.current_rendering_mode) {
@@ -685,6 +692,9 @@ pub export fn vk_destroy_commands_sync(s: ?*types.VulkanState) callconv(.c) void
 }
 
 pub export fn vk_record_cmd(s: ?*types.VulkanState, image_index: u32) callconv(.c) void {
+    const zone = tracy.zoneS(@src(), "Record Command Buffer");
+    defer zone.end();
+
     if (s == null) return;
     const vs = s.?;
 
@@ -704,11 +714,106 @@ pub export fn vk_record_cmd(s: ?*types.VulkanState, image_index: u32) callconv(.
 
     // cmd_log.debug("Started command buffer", .{});
 
+    // Transition Depth to ATTACHMENT_OPTIMAL for all modes (required for Main Pass even if Pre-pass is skipped)
+    if (vs.swapchain.depth_image != null) {
+        var barrier = std.mem.zeroes(c.VkImageMemoryBarrier2);
+        barrier.sType = c.VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2;
+        barrier.srcStageMask = c.VK_PIPELINE_STAGE_2_TOP_OF_PIPE_BIT;
+        barrier.srcAccessMask = 0;
+        barrier.dstStageMask = c.VK_PIPELINE_STAGE_2_EARLY_FRAGMENT_TESTS_BIT;
+        barrier.dstAccessMask = c.VK_ACCESS_2_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT;
+        barrier.oldLayout = c.VK_IMAGE_LAYOUT_UNDEFINED;
+        barrier.newLayout = c.VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
+        barrier.image = vs.swapchain.depth_image;
+        barrier.subresourceRange.aspectMask = c.VK_IMAGE_ASPECT_DEPTH_BIT;
+        barrier.subresourceRange.levelCount = 1;
+        barrier.subresourceRange.layerCount = 1;
+
+        var dep = std.mem.zeroes(c.VkDependencyInfo);
+        dep.sType = c.VK_STRUCTURE_TYPE_DEPENDENCY_INFO;
+        dep.imageMemoryBarrierCount = 1;
+        dep.pImageMemoryBarriers = &barrier;
+
+        c.vkCmdPipelineBarrier2(cmd, &dep);
+    }
+
     // Shadow Pass
     if (vs.pipelines.use_pbr_pipeline and vs.current_rendering_mode == types.CardinalRenderingMode.NORMAL) {
         // cmd_log.debug("Recording Shadow Pass", .{});
         vk_shadows.vk_shadow_render(vs, cmd);
         // cmd_log.debug("Finished Shadow Pass", .{});
+
+        // Depth Pre-pass
+        if (vs.pipelines.depth_pipeline != null) {
+            var depthClears: [2]c.VkClearValue = undefined;
+            depthClears[1].depthStencil.depth = 1.0;
+            depthClears[1].depthStencil.stencil = 0;
+
+
+
+            if (begin_dynamic_rendering_ext(vs, cmd, image_index, true, null, null, &depthClears, false, true, 0, false)) {
+                vk_pbr.vk_pbr_render_depth_prepass(vs, cmd, vs.current_scene, vs.sync.current_frame);
+                end_dynamic_rendering(vs, cmd);
+            }
+
+            // SSAO Pass
+            if (vs.pipelines.use_ssao and vs.pipelines.ssao_pipeline.initialized) {
+                var barrier = std.mem.zeroes(c.VkImageMemoryBarrier2);
+                barrier.sType = c.VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2;
+                var dep = std.mem.zeroes(c.VkDependencyInfo);
+                dep.sType = c.VK_STRUCTURE_TYPE_DEPENDENCY_INFO;
+                dep.imageMemoryBarrierCount = 1;
+                dep.pImageMemoryBarriers = &barrier;
+
+                // 1. Transition Depth to READ_ONLY
+                barrier.srcStageMask = c.VK_PIPELINE_STAGE_2_LATE_FRAGMENT_TESTS_BIT;
+                barrier.srcAccessMask = c.VK_ACCESS_2_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT;
+                barrier.dstStageMask = c.VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT;
+                barrier.dstAccessMask = c.VK_ACCESS_2_SHADER_READ_BIT;
+                barrier.oldLayout = c.VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
+                barrier.newLayout = c.VK_IMAGE_LAYOUT_DEPTH_STENCIL_READ_ONLY_OPTIMAL;
+                barrier.image = vs.swapchain.depth_image;
+                barrier.subresourceRange.aspectMask = c.VK_IMAGE_ASPECT_DEPTH_BIT;
+                barrier.subresourceRange.levelCount = 1;
+                barrier.subresourceRange.layerCount = 1;
+                c.vkCmdPipelineBarrier2(cmd, &dep);
+
+                // 2. Transition SSAO Blur Image to GENERAL (for writing)
+                barrier.srcStageMask = c.VK_PIPELINE_STAGE_2_TOP_OF_PIPE_BIT;
+                barrier.srcAccessMask = 0;
+                barrier.dstStageMask = c.VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT;
+                barrier.dstAccessMask = c.VK_ACCESS_2_SHADER_WRITE_BIT;
+                barrier.oldLayout = c.VK_IMAGE_LAYOUT_UNDEFINED;
+                barrier.newLayout = c.VK_IMAGE_LAYOUT_GENERAL;
+                barrier.image = vs.pipelines.ssao_pipeline.ssao_blur_image[vs.sync.current_frame];
+                barrier.subresourceRange.aspectMask = c.VK_IMAGE_ASPECT_COLOR_BIT;
+                c.vkCmdPipelineBarrier2(cmd, &dep);
+
+                // 3. Dispatch SSAO
+                vk_ssao.vk_ssao_compute(vs, cmd, vs.sync.current_frame);
+
+                // 4. Transition SSAO Blur Image to SHADER_READ_ONLY (for PBR)
+                barrier.srcStageMask = c.VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT;
+                barrier.srcAccessMask = c.VK_ACCESS_2_SHADER_WRITE_BIT;
+                barrier.dstStageMask = c.VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT;
+                barrier.dstAccessMask = c.VK_ACCESS_2_SHADER_READ_BIT;
+                barrier.oldLayout = c.VK_IMAGE_LAYOUT_GENERAL;
+                barrier.newLayout = c.VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+                barrier.image = vs.pipelines.ssao_pipeline.ssao_blur_image[vs.sync.current_frame];
+                c.vkCmdPipelineBarrier2(cmd, &dep);
+
+                // 5. Transition Depth back to ATTACHMENT_OPTIMAL
+                barrier.srcStageMask = c.VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT;
+                barrier.srcAccessMask = c.VK_ACCESS_2_SHADER_READ_BIT;
+                barrier.dstStageMask = c.VK_PIPELINE_STAGE_2_EARLY_FRAGMENT_TESTS_BIT;
+                barrier.dstAccessMask = c.VK_ACCESS_2_DEPTH_STENCIL_ATTACHMENT_READ_BIT | c.VK_ACCESS_2_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT;
+                barrier.oldLayout = c.VK_IMAGE_LAYOUT_DEPTH_STENCIL_READ_ONLY_OPTIMAL;
+                barrier.newLayout = c.VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
+                barrier.image = vs.swapchain.depth_image;
+                barrier.subresourceRange.aspectMask = c.VK_IMAGE_ASPECT_DEPTH_BIT;
+                c.vkCmdPipelineBarrier2(cmd, &dep);
+            }
+        }
     }
 
     var clears: [2]c.VkClearValue = undefined;

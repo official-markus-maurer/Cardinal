@@ -13,6 +13,10 @@ pub const c = @cImport({
     @cInclude("GLFW/glfw3.h");
 
     if (builtin.os.tag == .windows) {
+        @cDefine("WIN32", "1");
+        @cDefine("_WIN32", "1");
+        @cDefine("VK_USE_PLATFORM_WIN32_KHR", "1");
+        @cDefine("VMA_EXTERNAL_MEMORY", "1");
         @cInclude("windows.h");
     } else {
         @cInclude("pthread.h");

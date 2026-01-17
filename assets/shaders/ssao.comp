@@ -1,0 +1,67 @@
+#version 450
+
+layout(local_size_x = 16, local_size_y = 16) in;
+
+layout(binding = 0, r8) writeonly uniform image2D outSSAO;
+layout(binding = 1) uniform sampler2D depthMap;
+layout(binding = 2) uniform sampler2D noiseMap;
+
+layout(binding = 3) uniform SSAOParams {
+    mat4 projection;
+    mat4 inverseProjection;
+    mat4 view;
+    vec4 samples[64];
+    float radius;
+    float bias;
+    float power;
+    float resolutionScale;
+} params;
+
+vec3 getViewPos(vec2 uv) {
+    float depth = texture(depthMap, uv).r;
+    vec4 clipPos = vec4(uv * 2.0 - 1.0, depth, 1.0);
+    vec4 viewPos = params.inverseProjection * clipPos;
+    return viewPos.xyz / viewPos.w;
+}
+
+void main() {
+    ivec2 pixelPos = ivec2(gl_GlobalInvocationID.xy);
+    ivec2 size = imageSize(outSSAO);
+    if (pixelPos.x >= size.x || pixelPos.y >= size.y) return;
+
+    vec2 uv = (vec2(pixelPos) + 0.5) / vec2(size);
+    vec3 fragPos = getViewPos(uv);
+    
+    // Normal reconstruction
+    vec3 pR = getViewPos(uv + vec2(1.0/size.x, 0.0));
+    vec3 pU = getViewPos(uv + vec2(0.0, 1.0/size.y));
+    vec3 n = normalize(cross(pR - fragPos, pU - fragPos));
+    
+    vec2 noiseScale = vec2(size) / 4.0;
+    vec3 randomVec = texture(noiseMap, uv * noiseScale).xyz;
+    
+    vec3 tangent = normalize(randomVec - n * dot(randomVec, n));
+    vec3 bitangent = cross(n, tangent);
+    mat3 TBN = mat3(tangent, bitangent, n);
+    
+    float occlusion = 0.0;
+    for(int i = 0; i < 64; ++i) {
+        vec3 samplePos = TBN * params.samples[i].xyz;
+        samplePos = fragPos + samplePos * params.radius;
+        
+        vec4 offset = vec4(samplePos, 1.0);
+        offset = params.projection * offset;
+        offset.xyz /= offset.w;
+        offset.xy = offset.xy * 0.5 + 0.5;
+        
+        float sampleDepth = getViewPos(offset.xy).z;
+        
+        float rangeCheck = smoothstep(0.0, 1.0, params.radius / abs(fragPos.z - sampleDepth));
+        occlusion += (sampleDepth >= samplePos.z + params.bias ? 1.0 : 0.0) * rangeCheck;
+    }
+    
+    occlusion = 1.0 - (occlusion / 64.0);
+    occlusion = pow(occlusion, params.power);
+    
+    imageStore(outSSAO, pixelPos, vec4(vec3(occlusion), 1.0));
+}

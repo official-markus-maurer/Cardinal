@@ -158,6 +158,23 @@ if ($LASTEXITCODE -eq 0) {
     Write-Host "[ERROR] Failed to compile skybox fragment shader"
 }
 
+# Compile SSAO shaders
+Write-Host "Compiling SSAO compute shader..."
+glslc --target-env=vulkan1.1 ssao.comp -o "$outputDir\ssao.comp.spv"
+if ($LASTEXITCODE -eq 0) {
+    Write-Host "[OK] SSAO compute shader compiled successfully"
+} else {
+    Write-Host "[ERROR] Failed to compile SSAO compute shader"
+}
+
+Write-Host "Compiling SSAO Blur compute shader..."
+glslc --target-env=vulkan1.1 ssao_blur.comp -o "$outputDir\ssao_blur.comp.spv"
+if ($LASTEXITCODE -eq 0) {
+    Write-Host "[OK] SSAO Blur compute shader compiled successfully"
+} else {
+    Write-Host "[ERROR] Failed to compile SSAO Blur compute shader"
+}
+
 Write-Host "Shader compilation complete!"
 
 # Return to original directory

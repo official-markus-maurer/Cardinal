@@ -78,6 +78,8 @@ layout(binding = 9) uniform ShadowUBO {
     vec4 cascadeSplits; 
 } shadowData;
 
+layout(binding = 10) uniform sampler2D ssaoMap;
+
 // Poisson Disk Sampling (16 samples)
 const vec2 poissonDisk[16] = vec2[](
    vec2( -0.94201624, -0.39906216 ),
@@ -418,6 +420,11 @@ void main() {
     }
     // Apply AO strength factor
     ao = mix(1.0, ao, material.metallicNormalAO.z);
+
+    // Apply SSAO
+    vec2 screenUV = gl_FragCoord.xy / vec2(textureSize(ssaoMap, 0));
+    float ssao = texture(ssaoMap, screenUV).r;
+    ao *= ssao;
     
     vec3 emissive = vec3(material.emissiveAndRoughness.xyz);
     if (!isNoTex(material.emissiveTextureIndex)) {

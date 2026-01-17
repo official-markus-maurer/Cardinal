@@ -1,3 +1,4 @@
+pub const tracy = @import("core/tracy.zig");
 pub const log = @import("core/log.zig");
 pub const errors = @import("core/errors.zig");
 pub const events = @import("core/events.zig");

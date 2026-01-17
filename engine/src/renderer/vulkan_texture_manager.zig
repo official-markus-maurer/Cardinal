@@ -223,6 +223,23 @@ pub fn vk_texture_manager_init(manager: *types.VulkanTextureManager, config: *co
         }
     }
 
+    // Initialize async upload buffers
+    var i: u32 = 0;
+    while (i < types.MAX_FRAMES_IN_FLIGHT) : (i += 1) {
+        var allocInfo = std.mem.zeroes(c.VkCommandBufferAllocateInfo);
+        allocInfo.sType = c.VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO;
+        allocInfo.commandPool = manager.commandPool;
+        allocInfo.level = c.VK_COMMAND_BUFFER_LEVEL_PRIMARY;
+        allocInfo.commandBufferCount = 1;
+
+        if (c.vkAllocateCommandBuffers(manager.device, &allocInfo, &manager.upload_command_buffers[i]) != c.VK_SUCCESS) {
+            tex_mgr_log.err("Failed to allocate upload command buffer {d}", .{i});
+            return false;
+        }
+        manager.upload_fence_values[i] = 0;
+    }
+    manager.upload_buffer_index = 0;
+
     return true;
 }
 
@@ -280,6 +297,15 @@ pub fn vk_texture_manager_destroy(manager: *types.VulkanTextureManager) void {
     }
 
     vk_descriptor_indexing.vk_bindless_texture_pool_destroy(&manager.bindless_pool);
+
+    // Free upload command buffers
+    var i: u32 = 0;
+    while (i < types.MAX_FRAMES_IN_FLIGHT) : (i += 1) {
+        if (manager.upload_command_buffers[i] != null) {
+            c.vkFreeCommandBuffers(manager.device, manager.commandPool, 1, &manager.upload_command_buffers[i]);
+            manager.upload_command_buffers[i] = null;
+        }
+    }
 
     manager.textureCapacity = 0;
 }
@@ -648,6 +674,8 @@ pub fn vk_texture_manager_update_textures(manager: *types.VulkanTextureManager) 
         var submit_success = false;
         var signal_val: u64 = 0;
         var primary_cmd: c.VkCommandBuffer = null;
+        var using_reusable = false;
+        var reused_index: ?u32 = null;
 
         // Collect secondary command buffers for successful tasks
         const cmd_bufs_ptr = memory.cardinal_alloc(mem_alloc, @sizeOf(c.VkCommandBuffer) * completed_count);
@@ -666,13 +694,45 @@ pub fn vk_texture_manager_update_textures(manager: *types.VulkanTextureManager) 
 
             if (valid_count > 0) {
                 // Batch completed updates into one primary buffer.
-                var cmd_buf_info = std.mem.zeroes(c.VkCommandBufferAllocateInfo);
-                cmd_buf_info.sType = c.VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO;
-                cmd_buf_info.commandPool = manager.commandPool;
-                cmd_buf_info.level = c.VK_COMMAND_BUFFER_LEVEL_PRIMARY;
-                cmd_buf_info.commandBufferCount = 1;
+                // Try to find a reusable buffer
+                var reusable_cmd: c.VkCommandBuffer = null;
 
-                if (c.vkAllocateCommandBuffers(manager.device, &cmd_buf_info, &primary_cmd) == c.VK_SUCCESS) {
+                if (manager.syncManager) |sync| {
+                    var gpu_val: u64 = 0;
+                    _ = c.vkGetSemaphoreCounterValue(manager.device, sync.timeline_semaphore, &gpu_val);
+
+                    var i: u32 = 0;
+                    while (i < types.MAX_FRAMES_IN_FLIGHT) : (i += 1) {
+                        const idx = (manager.upload_buffer_index + i) % types.MAX_FRAMES_IN_FLIGHT;
+                        if (gpu_val >= manager.upload_fence_values[idx]) {
+                            reusable_cmd = manager.upload_command_buffers[idx];
+                            reused_index = idx;
+                            manager.upload_buffer_index = (idx + 1) % types.MAX_FRAMES_IN_FLIGHT;
+                            break;
+                        }
+                    }
+                } else {
+                    reusable_cmd = manager.upload_command_buffers[0];
+                    reused_index = 0;
+                }
+
+                if (reusable_cmd != null) {
+                    primary_cmd = reusable_cmd;
+                    using_reusable = true;
+                    _ = c.vkResetCommandBuffer(primary_cmd, 0);
+                } else {
+                    var cmd_buf_info = std.mem.zeroes(c.VkCommandBufferAllocateInfo);
+                    cmd_buf_info.sType = c.VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO;
+                    cmd_buf_info.commandPool = manager.commandPool;
+                    cmd_buf_info.level = c.VK_COMMAND_BUFFER_LEVEL_PRIMARY;
+                    cmd_buf_info.commandBufferCount = 1;
+
+                    if (c.vkAllocateCommandBuffers(manager.device, &cmd_buf_info, &primary_cmd) != c.VK_SUCCESS) {
+                        primary_cmd = null;
+                    }
+                }
+
+                if (primary_cmd != null) {
                     var begin_info = std.mem.zeroes(c.VkCommandBufferBeginInfo);
                     begin_info.sType = c.VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
                     begin_info.flags = c.VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
@@ -823,13 +883,23 @@ pub fn vk_texture_manager_update_textures(manager: *types.VulkanTextureManager) 
         if (primary_cmd != null) {
             if (submit_success) {
                 if (manager.syncManager != null) {
-                    vk_texture_utils.add_command_buffer_cleanup(primary_cmd, manager.commandPool, manager.device, signal_val);
+                    if (using_reusable) {
+                        if (reused_index) |idx| {
+                            manager.upload_fence_values[idx] = signal_val;
+                        }
+                    } else {
+                        vk_texture_utils.add_command_buffer_cleanup(primary_cmd, manager.commandPool, manager.device, signal_val);
+                    }
                 } else {
                     // We already waited idle if syncManager is null
-                    c.vkFreeCommandBuffers(manager.device, manager.commandPool, 1, &primary_cmd);
+                    if (!using_reusable) {
+                        c.vkFreeCommandBuffers(manager.device, manager.commandPool, 1, &primary_cmd);
+                    }
                 }
             } else {
-                c.vkFreeCommandBuffers(manager.device, manager.commandPool, 1, &primary_cmd);
+                if (!using_reusable) {
+                    c.vkFreeCommandBuffers(manager.device, manager.commandPool, 1, &primary_cmd);
+                }
             }
         }
     }

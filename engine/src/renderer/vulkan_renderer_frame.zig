@@ -1,5 +1,6 @@
 const std = @import("std");
 const log = @import("../core/log.zig");
+const tracy = @import("../core/tracy.zig");
 const builtin = @import("builtin");
 const types = @import("vulkan_types.zig");
 
@@ -307,6 +308,9 @@ fn handle_pending_recreation(renderer: ?*types.CardinalRenderer, s: *types.Vulka
 }
 
 fn wait_for_fence(s: *types.VulkanState) bool {
+    const zone = tracy.zoneS(@src(), "Wait For Fence");
+    defer zone.end();
+
     if (s.sync.in_flight_fences == null) {
         frame_log.warn("Frame {d}: In-flight fences array is null, attempting lazy initialization", .{s.sync.current_frame});
 
@@ -451,6 +455,9 @@ fn acquire_next_image(s: *types.VulkanState, out_image_index: *u32) bool {
 }
 
 fn submit_command_buffer(s: *types.VulkanState, cmd: c.VkCommandBuffer, acquire_sem: c.VkSemaphore, signal_value: u64) bool {
+    const zone = tracy.zoneS(@src(), "Submit Command Buffer");
+    defer zone.end();
+
     var wait_info = c.VkSemaphoreSubmitInfo{
         .sType = c.VK_STRUCTURE_TYPE_SEMAPHORE_SUBMIT_INFO,
         .pNext = null,
@@ -559,6 +566,9 @@ fn present_swapchain_image(s: *types.VulkanState, image_index: u32, signal_value
 }
 
 pub export fn cardinal_renderer_draw_frame(renderer: ?*types.CardinalRenderer) callconv(.c) void {
+    const zone = tracy.zoneS(@src(), "Renderer Draw Frame");
+    defer zone.end();
+
     const s = get_state(renderer) orelse return;
 
     if (!check_render_feasibility(s))
@@ -579,7 +589,7 @@ pub export fn cardinal_renderer_draw_frame(renderer: ?*types.CardinalRenderer) c
 
     // Update textures (async load completion)
     if (s.pipelines.use_pbr_pipeline and s.pipelines.pbr_pipeline.textureManager != null) {
-        vk_texture_manager.vk_texture_manager_update_textures(s.pipelines.pbr_pipeline.textureManager.?);
+        // Redundant update for testing performance impact was removed
     }
 
     // Update skybox (async load completion)

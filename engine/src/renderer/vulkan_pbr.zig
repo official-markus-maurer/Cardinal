@@ -442,6 +442,36 @@ fn update_pbr_descriptor_sets(pipeline: *types.VulkanPBRPipeline, vulkan_state: 
             pbr_log.err("Failed to update shadow UBO descriptor", .{});
             return false;
         }
+
+        // Update SSAO Map (Binding 10)
+        var ssaoView: c.VkImageView = null;
+        var ssaoSampler: c.VkSampler = pipeline.textureManager.?.defaultSampler;
+
+        if (vulkan_state) |vs| {
+            if (vs.pipelines.use_ssao and vs.pipelines.ssao_pipeline.initialized and vs.pipelines.ssao_pipeline.ssao_blur_view[i] != null) {
+                ssaoView = vs.pipelines.ssao_pipeline.ssao_blur_view[i];
+                if (vs.pipelines.post_process_pipeline.initialized) {
+                    ssaoSampler = vs.pipelines.post_process_pipeline.sampler;
+                }
+            }
+        }
+
+        // Fallback to placeholder if SSAO not available
+        if (ssaoView == null) {
+            if (pipeline.textureManager.?.textureCount > 0) {
+                ssaoView = pipeline.textureManager.?.textures.?[0].view;
+                if (pipeline.textureManager.?.textures.?[0].sampler) |s| {
+                    ssaoSampler = s;
+                }
+            }
+        }
+
+        if (ssaoView != null) {
+            if (!descriptor_mgr.vk_descriptor_manager_update_image(dm, set, 10, ssaoView, ssaoSampler, c.VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL)) {
+                pbr_log.err("Failed to update SSAO map descriptor", .{});
+                return false;
+            }
+        }
     }
 
     return true;
@@ -904,6 +934,17 @@ pub export fn vk_pbr_pipeline_create(pipeline: ?*types.VulkanPBRPipeline, device
     }
     pbr_log.debug("Descriptor manager created successfully", .{});
 
+    // Cache descriptor buffer binding info if using buffers
+    pipe.set0_binding_info_valid = false;
+    if (pipe.descriptorManager) |dm| {
+        if (dm.useDescriptorBuffers) {
+            if (descriptor_mgr.vk_descriptor_manager_get_binding_info(dm, &pipe.set0_binding_info)) {
+                pipe.set0_binding_info_valid = true;
+                pbr_log.debug("Cached Set 0 descriptor buffer binding info", .{});
+            }
+        }
+    }
+
     if (!create_pbr_texture_manager(pipe, device, alloc, commandPool, graphicsQueue, vulkan_state)) {
         vk_pbr_pipeline_destroy(pipeline, device, allocator);
         return false;
@@ -1108,6 +1149,280 @@ const SortItem = struct {
     }
 };
 
+pub export fn vk_pbr_create_depth_prepass(vulkan_state: ?*types.VulkanState) callconv(.c) bool {
+    if (vulkan_state == null) return false;
+    const s = vulkan_state.?;
+    const device = s.context.device;
+    const pbr_pipe = &s.pipelines.pbr_pipeline;
+    const depth_log = log.ScopedLogger("PBR_DEPTH");
+
+    // 1. Create Pipeline Layout
+    var pipelineLayoutInfo = std.mem.zeroes(c.VkPipelineLayoutCreateInfo);
+    pipelineLayoutInfo.sType = c.VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO;
+
+    var layouts: [2]c.VkDescriptorSetLayout = undefined;
+
+    // Use main PBR descriptor manager layout
+    if (pbr_pipe.descriptorManager == null) {
+        depth_log.err("PBR descriptor manager is null", .{});
+        return false;
+    }
+    layouts[0] = descriptor_mgr.vk_descriptor_manager_get_layout(pbr_pipe.descriptorManager);
+    var layoutCount: u32 = 1;
+
+    if (pbr_pipe.textureManager) |tm| {
+        const bindlessLayout = vk_descriptor_indexing.vk_bindless_texture_get_layout(&tm.bindless_pool);
+        if (bindlessLayout != null) {
+            layouts[1] = bindlessLayout;
+            layoutCount = 2;
+        }
+    }
+
+    pipelineLayoutInfo.setLayoutCount = layoutCount;
+    pipelineLayoutInfo.pSetLayouts = &layouts;
+
+    // Push constants (same as PBR)
+    var pushConstantRange = c.VkPushConstantRange{
+        .stageFlags = c.VK_SHADER_STAGE_VERTEX_BIT | c.VK_SHADER_STAGE_FRAGMENT_BIT,
+        .offset = 0,
+        .size = @sizeOf(types.PBRPushConstants),
+    };
+    pipelineLayoutInfo.pushConstantRangeCount = 1;
+    pipelineLayoutInfo.pPushConstantRanges = &pushConstantRange;
+
+    if (c.vkCreatePipelineLayout(device, &pipelineLayoutInfo, null, &s.pipelines.depth_pipeline_layout) != c.VK_SUCCESS) {
+        depth_log.err("Failed to create depth pipeline layout", .{});
+        return false;
+    }
+
+    // 2. Load Pipeline from JSON (reuse shadow.json but override)
+    // Allocator for temporary build data
+    const renderer_allocator = memory.cardinal_get_allocator_for_category(.RENDERER).as_allocator();
+    var builder = vk_pso.PipelineBuilder.init(renderer_allocator, device, null);
+
+    const pipeline_dir_span = std.mem.span(@as([*:0]const u8, @ptrCast(&s.config.pipeline_dir)));
+    const shadow_path = std.fmt.allocPrint(renderer_allocator, "{s}/shadow.json", .{pipeline_dir_span}) catch return false;
+    defer renderer_allocator.free(shadow_path);
+
+    var parsed = vk_pso.PipelineBuilder.load_from_json(renderer_allocator, shadow_path) catch |err| {
+        depth_log.err("Failed to load shadow pipeline JSON for depth pass: {s}", .{@errorName(err)});
+        return false;
+    };
+    defer parsed.deinit();
+
+    var descriptor = parsed.value;
+
+    // 3. Override Descriptor for Main Depth Pass
+    descriptor.rendering.depth_format = s.swapchain.depth_format;
+    descriptor.rendering.color_formats = &.{}; // No color output
+
+    // Standard Back-face culling for main camera
+    descriptor.rasterization.cull_mode = .back;
+
+    // Depth Test/Write should already be true in shadow.json
+    // Compare Op should be LESS
+    descriptor.depth_stencil.depth_compare_op = .less;
+
+    // Add Descriptor Buffer flags if needed
+    if (pbr_pipe.descriptorManager) |mgr| {
+        if (mgr.useDescriptorBuffers) {
+            descriptor.flags |= c.VK_PIPELINE_CREATE_DESCRIPTOR_BUFFER_BIT_EXT;
+        }
+    }
+    if (pbr_pipe.textureManager) |tm| {
+        if (tm.bindless_pool.use_descriptor_buffer) {
+            descriptor.flags |= c.VK_PIPELINE_CREATE_DESCRIPTOR_BUFFER_BIT_EXT;
+        }
+    }
+
+    // 4. Build Pipeline
+    builder.build(descriptor, s.pipelines.depth_pipeline_layout, &s.pipelines.depth_pipeline) catch |err| {
+        depth_log.err("Failed to build depth pipeline: {s}", .{@errorName(err)});
+        return false;
+    };
+
+    depth_log.info("Depth pre-pass pipeline created", .{});
+    return true;
+}
+
+pub export fn vk_pbr_render_depth_prepass(vulkan_state: ?*types.VulkanState, commandBuffer: c.VkCommandBuffer, scene_data: ?*const scene.CardinalScene, frame_index: u32) callconv(.c) void {
+    if (vulkan_state == null or scene_data == null) return;
+    const s = vulkan_state.?;
+    const pipe = &s.pipelines.pbr_pipeline;
+    const scn = scene_data.?;
+    const cmd = wrappers.CommandBuffer.init(commandBuffer);
+    const frame = if (frame_index >= types.MAX_FRAMES_IN_FLIGHT) 0 else frame_index;
+
+    if (pipe.vertexBuffer == null or pipe.indexBuffer == null) return;
+    if (s.pipelines.depth_pipeline == null) return;
+
+    // Bind Pipeline
+    cmd.bindPipeline(c.VK_PIPELINE_BIND_POINT_GRAPHICS, s.pipelines.depth_pipeline);
+
+    // Bind Vertex/Index Buffers
+    const vertexBuffers = [_]c.VkBuffer{pipe.vertexBuffer};
+    const offsets = [_]c.VkDeviceSize{0};
+    cmd.bindVertexBuffers(0, &vertexBuffers, &offsets);
+    cmd.bindIndexBuffer(pipe.indexBuffer, 0, c.VK_INDEX_TYPE_UINT32);
+
+    // Bind Descriptors (Logic copied from vk_pbr_render)
+    var descriptorSet: c.VkDescriptorSet = null;
+    if (pipe.descriptorManager) |mgr| {
+        const dm = @as(*types.VulkanDescriptorManager, @ptrCast(mgr));
+        if (dm.useDescriptorBuffers) {
+            descriptorSet = @ptrFromInt(frame + 1);
+        } else if (dm.descriptorSets != null and dm.descriptorSetCount > frame) {
+            descriptorSet = dm.descriptorSets.?[frame];
+        }
+    }
+
+    var use_buffers = false;
+    if (pipe.descriptorManager) |mgr| {
+        const dm = @as(*types.VulkanDescriptorManager, @ptrCast(mgr));
+        use_buffers = dm.useDescriptorBuffers;
+    }
+    if (!use_buffers and (descriptorSet == null or @intFromPtr(descriptorSet) == 0)) return;
+
+    // Determine binding method
+    var use_buffers_0 = false;
+    var use_buffers_1 = false;
+    if (pipe.descriptorManager) |mgr| {
+        if (descriptor_mgr.vk_descriptor_manager_uses_buffers(mgr)) use_buffers_0 = true;
+    }
+    if (pipe.textureManager) |tm| {
+        if (tm.bindless_pool.use_descriptor_buffer) use_buffers_1 = true;
+    }
+
+    // Bind Sets (Legacy)
+    if (!use_buffers_0) {
+        if (pipe.descriptorManager) |mgr| {
+            var sets: ?[*]const c.VkDescriptorSet = null;
+            var descriptorSets = [_]c.VkDescriptorSet{descriptorSet};
+            if (descriptorSet != null and @intFromPtr(descriptorSet) != 0) {
+                sets = &descriptorSets;
+            }
+            descriptor_mgr.vk_descriptor_manager_bind_sets(mgr, commandBuffer, s.pipelines.depth_pipeline_layout, 0, 1, sets, 0, null);
+        }
+    }
+    if (!use_buffers_1) {
+        if (pipe.textureManager) |tm| {
+            if (tm.bindless_pool.descriptor_set) |bindlessSet| {
+                if (@intFromPtr(bindlessSet) != 0) {
+                    const bindlessSets = [_]c.VkDescriptorSet{bindlessSet};
+                    cmd.bindDescriptorSets(c.VK_PIPELINE_BIND_POINT_GRAPHICS, s.pipelines.depth_pipeline_layout, 1, &bindlessSets, &[_]u32{});
+                }
+            }
+        }
+    }
+
+    // Bind Buffers (EXT)
+    if (use_buffers_0 or use_buffers_1) {
+        var binding_infos: [2]c.VkDescriptorBufferBindingInfoEXT = undefined;
+        var binding_count: u32 = 0;
+        var set0_idx: u32 = 0;
+        var set1_idx: u32 = 0;
+
+        if (use_buffers_0) {
+            set0_idx = binding_count;
+            if (pipe.set0_binding_info_valid) {
+                binding_infos[binding_count] = pipe.set0_binding_info;
+            } else {
+                _ = descriptor_mgr.vk_descriptor_manager_get_binding_info(pipe.descriptorManager, &binding_infos[binding_count]);
+            }
+            binding_count += 1;
+        }
+
+        if (use_buffers_1) {
+            set1_idx = binding_count;
+            const tm = pipe.textureManager.?;
+            binding_infos[binding_count] = std.mem.zeroes(c.VkDescriptorBufferBindingInfoEXT);
+            binding_infos[binding_count].sType = c.VK_STRUCTURE_TYPE_DESCRIPTOR_BUFFER_BINDING_INFO_EXT;
+            binding_infos[binding_count].address = tm.bindless_pool.descriptor_buffer_address;
+            binding_infos[binding_count].usage = c.VK_BUFFER_USAGE_RESOURCE_DESCRIPTOR_BUFFER_BIT_EXT;
+            binding_count += 1;
+        }
+
+        if (binding_count > 0) {
+            var bind_func: c.PFN_vkCmdBindDescriptorBuffersEXT = null;
+            if (use_buffers_0) {
+                const mgr = pipe.descriptorManager.?;
+                if (mgr.vulkan_state) |vs_ptr| {
+                    const vs = @as(*types.VulkanState, @ptrCast(@alignCast(vs_ptr)));
+                    bind_func = vs.context.vkCmdBindDescriptorBuffersEXT;
+                }
+            } else if (use_buffers_1) {
+                bind_func = pipe.textureManager.?.bindless_pool.vkCmdBindDescriptorBuffersEXT;
+            }
+            if (bind_func) |f| {
+                f(commandBuffer, binding_count, &binding_infos);
+            }
+        }
+
+        if (use_buffers_0) {
+            var sets: ?[*]const c.VkDescriptorSet = null;
+            var descriptorSets = [_]c.VkDescriptorSet{descriptorSet};
+            if (descriptorSet != null and @intFromPtr(descriptorSet) != 0) {
+                sets = &descriptorSets;
+            }
+            descriptor_mgr.vk_descriptor_manager_set_offsets(pipe.descriptorManager, commandBuffer, s.pipelines.depth_pipeline_layout, 0, 1, sets, set0_idx);
+        }
+        if (use_buffers_1) {
+            const tm = pipe.textureManager.?;
+            if (tm.bindless_pool.vkCmdSetDescriptorBufferOffsetsEXT) |set_offsets| {
+                const buffer_index = set1_idx;
+                const offset: c.VkDeviceSize = 0;
+                set_offsets(commandBuffer, c.VK_PIPELINE_BIND_POINT_GRAPHICS, s.pipelines.depth_pipeline_layout, 1, 1, &buffer_index, &offset);
+            }
+        }
+    }
+
+    c.vkCmdSetDepthBias(commandBuffer, 0.0, 0.0, 0.0);
+
+    // Draw Loop
+    var indexOffset: u32 = 0;
+    var i: u32 = 0;
+    while (i < scn.mesh_count) : (i += 1) {
+        const mesh = &scn.meshes.?[i];
+
+        // Skip Transparent
+        if (mesh.material_index < scn.material_count) {
+            const mat = &scn.materials.?[mesh.material_index];
+            if (mat.alpha_mode == scene.CardinalAlphaMode.BLEND) {
+                indexOffset += mesh.index_count;
+                continue;
+            }
+            if (mat.alpha_mode == scene.CardinalAlphaMode.MASK) {
+                c.vkCmdSetDepthBias(commandBuffer, -16.0, 0.0, -8.0);
+            } else {
+                c.vkCmdSetDepthBias(commandBuffer, 0.0, 0.0, 0.0);
+            }
+        }
+
+        if (mesh.vertices == null or mesh.vertex_count == 0 or mesh.indices == null or mesh.index_count == 0) {
+            // Even if we skip rendering (e.g. no vertices), we MUST increment indexOffset if indices were added to the buffer
+            if (mesh.index_count > 0 and mesh.indices != null) {
+                indexOffset += mesh.index_count;
+            }
+            continue;
+        }
+        if (!mesh.visible) {
+            indexOffset += mesh.index_count;
+            continue;
+        }
+
+        var pushConstants = std.mem.zeroes(types.PBRPushConstants);
+        const tm_opaque: ?*const anyopaque = if (pipe.textureManager) |tm| @ptrCast(tm) else null;
+        material_utils.vk_material_setup_push_constants(@ptrCast(&pushConstants), @ptrCast(mesh), @ptrCast(scn), @ptrCast(@alignCast(tm_opaque)));
+
+        cmd.pushConstants(s.pipelines.depth_pipeline_layout, c.VK_SHADER_STAGE_VERTEX_BIT | c.VK_SHADER_STAGE_FRAGMENT_BIT, 0, @sizeOf(types.PBRPushConstants), &pushConstants);
+
+        if (indexOffset + mesh.index_count > pipe.totalIndexCount) break;
+
+        cmd.drawIndexed(mesh.index_count, 1, indexOffset, 0, 0);
+        indexOffset += mesh.index_count;
+    }
+}
+
 pub export fn vk_pbr_render(pipeline: ?*types.VulkanPBRPipeline, commandBuffer: c.VkCommandBuffer, scene_data: ?*const scene.CardinalScene, frame_index: u32) callconv(.c) void {
     if (pipeline == null or !pipeline.?.initialized or scene_data == null) {
         // pbr_log.warn("vk_pbr_render skipped: pipeline or scene null", .{});
@@ -1165,14 +1480,14 @@ pub export fn vk_pbr_render(pipeline: ?*types.VulkanPBRPipeline, commandBuffer: 
     // Unified Descriptor Binding (Buffers or Sets)
     var use_buffers_0 = false;
     var use_buffers_1 = false;
-    
+
     if (pipe.descriptorManager) |mgr| {
         if (descriptor_mgr.vk_descriptor_manager_uses_buffers(mgr)) use_buffers_0 = true;
     }
     if (pipe.textureManager) |tm| {
         if (tm.bindless_pool.use_descriptor_buffer) use_buffers_1 = true;
     }
-    
+
     // pbr_log.debug("vk_pbr_render: buffers_0={s}, buffers_1={s}", .{ if(use_buffers_0) "true" else "false", if(use_buffers_1) "true" else "false" });
 
     // Fallback for Set 0 if not using buffers
@@ -1185,15 +1500,15 @@ pub export fn vk_pbr_render(pipeline: ?*types.VulkanPBRPipeline, commandBuffer: 
             }
             descriptor_mgr.vk_descriptor_manager_bind_sets(mgr, commandBuffer, pipe.pipelineLayout, 0, 1, sets, 0, null);
         } else {
-             const descriptorSets = [_]c.VkDescriptorSet{descriptorSet};
-             cmd.bindDescriptorSets(c.VK_PIPELINE_BIND_POINT_GRAPHICS, pipe.pipelineLayout, 0, &descriptorSets, &[_]u32{});
+            const descriptorSets = [_]c.VkDescriptorSet{descriptorSet};
+            cmd.bindDescriptorSets(c.VK_PIPELINE_BIND_POINT_GRAPHICS, pipe.pipelineLayout, 0, &descriptorSets, &[_]u32{});
         }
     }
-    
+
     // Fallback for Set 1 if not using buffers
     if (!use_buffers_1) {
         if (pipe.textureManager) |tm| {
-             if (tm.bindless_pool.descriptor_set) |bindlessSet| {
+            if (tm.bindless_pool.descriptor_set) |bindlessSet| {
                 if (@intFromPtr(bindlessSet) != 0) {
                     const bindlessSets = [_]c.VkDescriptorSet{bindlessSet};
                     cmd.bindDescriptorSets(c.VK_PIPELINE_BIND_POINT_GRAPHICS, pipe.pipelineLayout, 1, &bindlessSets, &[_]u32{});
@@ -1201,65 +1516,69 @@ pub export fn vk_pbr_render(pipeline: ?*types.VulkanPBRPipeline, commandBuffer: 
             }
         }
     }
-    
+
     // Buffer Path (if either uses buffers)
     if (use_buffers_0 or use_buffers_1) {
-         var binding_infos: [2]c.VkDescriptorBufferBindingInfoEXT = undefined;
-         var binding_count: u32 = 0;
-         var set0_idx: u32 = 0;
-         var set1_idx: u32 = 0;
-         
-         if (use_buffers_0) {
-             set0_idx = binding_count;
-             _ = descriptor_mgr.vk_descriptor_manager_get_binding_info(pipe.descriptorManager, &binding_infos[binding_count]);
-             binding_count += 1;
-         }
-         
-         if (use_buffers_1) {
-             set1_idx = binding_count;
-             const tm = pipe.textureManager.?;
-             binding_infos[binding_count] = std.mem.zeroes(c.VkDescriptorBufferBindingInfoEXT);
-             binding_infos[binding_count].sType = c.VK_STRUCTURE_TYPE_DESCRIPTOR_BUFFER_BINDING_INFO_EXT;
-             binding_infos[binding_count].address = tm.bindless_pool.descriptor_buffer_address;
-             binding_infos[binding_count].usage = c.VK_BUFFER_USAGE_RESOURCE_DESCRIPTOR_BUFFER_BIT_EXT;
-             binding_count += 1;
-         }
-         
-         if (binding_count > 0) {
-             var bind_func: c.PFN_vkCmdBindDescriptorBuffersEXT = null;
-             
-             if (use_buffers_0) {
-                 const mgr = pipe.descriptorManager.?;
-                 if (mgr.vulkan_state) |vs_ptr| {
-                     const vs = @as(*types.VulkanState, @ptrCast(@alignCast(vs_ptr)));
-                     bind_func = vs.context.vkCmdBindDescriptorBuffersEXT;
-                 }
-             } else if (use_buffers_1) {
-                 bind_func = pipe.textureManager.?.bindless_pool.vkCmdBindDescriptorBuffersEXT;
-             }
-             
-             if (bind_func) |f| {
-                 f(commandBuffer, binding_count, &binding_infos);
-             }
-         }
-         
-         if (use_buffers_0) {
-             var sets: ?[*]const c.VkDescriptorSet = null;
-             var descriptorSets = [_]c.VkDescriptorSet{descriptorSet};
-             if (descriptorSet != null and @intFromPtr(descriptorSet) != 0) {
-                 sets = &descriptorSets;
-             }
-             descriptor_mgr.vk_descriptor_manager_set_offsets(pipe.descriptorManager, commandBuffer, pipe.pipelineLayout, 0, 1, sets, set0_idx);
-         }
-         
-         if (use_buffers_1) {
-             const tm = pipe.textureManager.?;
-             if (tm.bindless_pool.vkCmdSetDescriptorBufferOffsetsEXT) |set_offsets| {
-                 const buffer_index = set1_idx;
-                 const offset: c.VkDeviceSize = 0;
-                 set_offsets(commandBuffer, c.VK_PIPELINE_BIND_POINT_GRAPHICS, pipe.pipelineLayout, 1, 1, &buffer_index, &offset);
-             }
-         }
+        var binding_infos: [2]c.VkDescriptorBufferBindingInfoEXT = undefined;
+        var binding_count: u32 = 0;
+        var set0_idx: u32 = 0;
+        var set1_idx: u32 = 0;
+
+        if (use_buffers_0) {
+            set0_idx = binding_count;
+            if (pipe.set0_binding_info_valid) {
+                binding_infos[binding_count] = pipe.set0_binding_info;
+            } else {
+                _ = descriptor_mgr.vk_descriptor_manager_get_binding_info(pipe.descriptorManager, &binding_infos[binding_count]);
+            }
+            binding_count += 1;
+        }
+
+        if (use_buffers_1) {
+            set1_idx = binding_count;
+            const tm = pipe.textureManager.?;
+            binding_infos[binding_count] = std.mem.zeroes(c.VkDescriptorBufferBindingInfoEXT);
+            binding_infos[binding_count].sType = c.VK_STRUCTURE_TYPE_DESCRIPTOR_BUFFER_BINDING_INFO_EXT;
+            binding_infos[binding_count].address = tm.bindless_pool.descriptor_buffer_address;
+            binding_infos[binding_count].usage = c.VK_BUFFER_USAGE_RESOURCE_DESCRIPTOR_BUFFER_BIT_EXT;
+            binding_count += 1;
+        }
+
+        if (binding_count > 0) {
+            var bind_func: c.PFN_vkCmdBindDescriptorBuffersEXT = null;
+
+            if (use_buffers_0) {
+                const mgr = pipe.descriptorManager.?;
+                if (mgr.vulkan_state) |vs_ptr| {
+                    const vs = @as(*types.VulkanState, @ptrCast(@alignCast(vs_ptr)));
+                    bind_func = vs.context.vkCmdBindDescriptorBuffersEXT;
+                }
+            } else if (use_buffers_1) {
+                bind_func = pipe.textureManager.?.bindless_pool.vkCmdBindDescriptorBuffersEXT;
+            }
+
+            if (bind_func) |f| {
+                f(commandBuffer, binding_count, &binding_infos);
+            }
+        }
+
+        if (use_buffers_0) {
+            var sets: ?[*]const c.VkDescriptorSet = null;
+            var descriptorSets = [_]c.VkDescriptorSet{descriptorSet};
+            if (descriptorSet != null and @intFromPtr(descriptorSet) != 0) {
+                sets = &descriptorSets;
+            }
+            descriptor_mgr.vk_descriptor_manager_set_offsets(pipe.descriptorManager, commandBuffer, pipe.pipelineLayout, 0, 1, sets, set0_idx);
+        }
+
+        if (use_buffers_1) {
+            const tm = pipe.textureManager.?;
+            if (tm.bindless_pool.vkCmdSetDescriptorBufferOffsetsEXT) |set_offsets| {
+                const buffer_index = set1_idx;
+                const offset: c.VkDeviceSize = 0;
+                set_offsets(commandBuffer, c.VK_PIPELINE_BIND_POINT_GRAPHICS, pipe.pipelineLayout, 1, 1, &buffer_index, &offset);
+            }
+        }
     }
 
     c.vkCmdSetDepthBias(commandBuffer, 0.0, 0.0, 0.0);
@@ -1282,7 +1601,9 @@ pub export fn vk_pbr_render(pipeline: ?*types.VulkanPBRPipeline, commandBuffer: 
         }
 
         if (is_blend) {
-            indexOffset += mesh.index_count;
+            if (mesh.index_count > 0 and mesh.indices != null) {
+                indexOffset += mesh.index_count;
+            }
             continue;
         }
 
@@ -1294,6 +1615,11 @@ pub export fn vk_pbr_render(pipeline: ?*types.VulkanPBRPipeline, commandBuffer: 
         }
 
         if (mesh.vertices == null or mesh.vertex_count == 0 or mesh.indices == null or mesh.index_count == 0 or mesh.index_count > 1000000000) {
+            // Even if we skip rendering (e.g. no vertices), we MUST increment indexOffset if indices were added to the buffer
+            // to keep alignment with the buffer layout created in create_pbr_mesh_buffers.
+            if (mesh.index_count > 0 and mesh.indices != null) {
+                indexOffset += mesh.index_count;
+            }
             continue;
         }
         if (!mesh.visible) {
@@ -1348,14 +1674,14 @@ pub export fn vk_pbr_render(pipeline: ?*types.VulkanPBRPipeline, commandBuffer: 
             }
             descriptor_mgr.vk_descriptor_manager_bind_sets(mgr, commandBuffer, pipe.pipelineLayout, 0, 1, sets, 0, null);
         } else {
-             const descriptorSets = [_]c.VkDescriptorSet{descriptorSet};
-             cmd.bindDescriptorSets(c.VK_PIPELINE_BIND_POINT_GRAPHICS, pipe.pipelineLayout, 0, &descriptorSets, &[_]u32{});
+            const descriptorSets = [_]c.VkDescriptorSet{descriptorSet};
+            cmd.bindDescriptorSets(c.VK_PIPELINE_BIND_POINT_GRAPHICS, pipe.pipelineLayout, 0, &descriptorSets, &[_]u32{});
         }
     }
-    
+
     if (!use_buffers_1) {
         if (pipe.textureManager) |tm| {
-             if (tm.bindless_pool.descriptor_set) |bindlessSet| {
+            if (tm.bindless_pool.descriptor_set) |bindlessSet| {
                 if (@intFromPtr(bindlessSet) != 0) {
                     const bindlessSets = [_]c.VkDescriptorSet{bindlessSet};
                     cmd.bindDescriptorSets(c.VK_PIPELINE_BIND_POINT_GRAPHICS, pipe.pipelineLayout, 1, &bindlessSets, &[_]u32{});
@@ -1363,64 +1689,68 @@ pub export fn vk_pbr_render(pipeline: ?*types.VulkanPBRPipeline, commandBuffer: 
             }
         }
     }
-    
+
     if (use_buffers_0 or use_buffers_1) {
-         var binding_infos: [2]c.VkDescriptorBufferBindingInfoEXT = undefined;
-         var binding_count: u32 = 0;
-         var set0_idx: u32 = 0;
-         var set1_idx: u32 = 0;
-         
-         if (use_buffers_0) {
-             set0_idx = binding_count;
-             _ = descriptor_mgr.vk_descriptor_manager_get_binding_info(pipe.descriptorManager, &binding_infos[binding_count]);
-             binding_count += 1;
-         }
-         
-         if (use_buffers_1) {
-             set1_idx = binding_count;
-             const tm = pipe.textureManager.?;
-             binding_infos[binding_count] = std.mem.zeroes(c.VkDescriptorBufferBindingInfoEXT);
-             binding_infos[binding_count].sType = c.VK_STRUCTURE_TYPE_DESCRIPTOR_BUFFER_BINDING_INFO_EXT;
-             binding_infos[binding_count].address = tm.bindless_pool.descriptor_buffer_address;
-             binding_infos[binding_count].usage = c.VK_BUFFER_USAGE_RESOURCE_DESCRIPTOR_BUFFER_BIT_EXT;
-             binding_count += 1;
-         }
-         
-         if (binding_count > 0) {
-             var bind_func: c.PFN_vkCmdBindDescriptorBuffersEXT = null;
-             
-             if (use_buffers_0) {
-                 const mgr = pipe.descriptorManager.?;
-                 if (mgr.vulkan_state) |vs_ptr| {
-                     const vs = @as(*types.VulkanState, @ptrCast(@alignCast(vs_ptr)));
-                     bind_func = vs.context.vkCmdBindDescriptorBuffersEXT;
-                 }
-             } else if (use_buffers_1) {
-                 bind_func = pipe.textureManager.?.bindless_pool.vkCmdBindDescriptorBuffersEXT;
-             }
-             
-             if (bind_func) |f| {
-                 f(commandBuffer, binding_count, &binding_infos);
-             }
-         }
-         
-         if (use_buffers_0) {
-             var sets: ?[*]const c.VkDescriptorSet = null;
-             var descriptorSets = [_]c.VkDescriptorSet{descriptorSet};
-             if (descriptorSet != null and @intFromPtr(descriptorSet) != 0) {
-                 sets = &descriptorSets;
-             }
-             descriptor_mgr.vk_descriptor_manager_set_offsets(pipe.descriptorManager, commandBuffer, pipe.pipelineLayout, 0, 1, sets, set0_idx);
-         }
-         
-         if (use_buffers_1) {
-             const tm = pipe.textureManager.?;
-             if (tm.bindless_pool.vkCmdSetDescriptorBufferOffsetsEXT) |set_offsets| {
-                 const buffer_index = set1_idx;
-                 const offset: c.VkDeviceSize = 0;
-                 set_offsets(commandBuffer, c.VK_PIPELINE_BIND_POINT_GRAPHICS, pipe.pipelineLayout, 1, 1, &buffer_index, &offset);
-             }
-         }
+        var binding_infos: [2]c.VkDescriptorBufferBindingInfoEXT = undefined;
+        var binding_count: u32 = 0;
+        var set0_idx: u32 = 0;
+        var set1_idx: u32 = 0;
+
+        if (use_buffers_0) {
+            set0_idx = binding_count;
+            if (pipe.set0_binding_info_valid) {
+                binding_infos[binding_count] = pipe.set0_binding_info;
+            } else {
+                _ = descriptor_mgr.vk_descriptor_manager_get_binding_info(pipe.descriptorManager, &binding_infos[binding_count]);
+            }
+            binding_count += 1;
+        }
+
+        if (use_buffers_1) {
+            set1_idx = binding_count;
+            const tm = pipe.textureManager.?;
+            binding_infos[binding_count] = std.mem.zeroes(c.VkDescriptorBufferBindingInfoEXT);
+            binding_infos[binding_count].sType = c.VK_STRUCTURE_TYPE_DESCRIPTOR_BUFFER_BINDING_INFO_EXT;
+            binding_infos[binding_count].address = tm.bindless_pool.descriptor_buffer_address;
+            binding_infos[binding_count].usage = c.VK_BUFFER_USAGE_RESOURCE_DESCRIPTOR_BUFFER_BIT_EXT;
+            binding_count += 1;
+        }
+
+        if (binding_count > 0) {
+            var bind_func: c.PFN_vkCmdBindDescriptorBuffersEXT = null;
+
+            if (use_buffers_0) {
+                const mgr = pipe.descriptorManager.?;
+                if (mgr.vulkan_state) |vs_ptr| {
+                    const vs = @as(*types.VulkanState, @ptrCast(@alignCast(vs_ptr)));
+                    bind_func = vs.context.vkCmdBindDescriptorBuffersEXT;
+                }
+            } else if (use_buffers_1) {
+                bind_func = pipe.textureManager.?.bindless_pool.vkCmdBindDescriptorBuffersEXT;
+            }
+
+            if (bind_func) |f| {
+                f(commandBuffer, binding_count, &binding_infos);
+            }
+        }
+
+        if (use_buffers_0) {
+            var sets: ?[*]const c.VkDescriptorSet = null;
+            var descriptorSets = [_]c.VkDescriptorSet{descriptorSet};
+            if (descriptorSet != null and @intFromPtr(descriptorSet) != 0) {
+                sets = &descriptorSets;
+            }
+            descriptor_mgr.vk_descriptor_manager_set_offsets(pipe.descriptorManager, commandBuffer, pipe.pipelineLayout, 0, 1, sets, set0_idx);
+        }
+
+        if (use_buffers_1) {
+            const tm = pipe.textureManager.?;
+            if (tm.bindless_pool.vkCmdSetDescriptorBufferOffsetsEXT) |set_offsets| {
+                const buffer_index = set1_idx;
+                const offset: c.VkDeviceSize = 0;
+                set_offsets(commandBuffer, c.VK_PIPELINE_BIND_POINT_GRAPHICS, pipe.pipelineLayout, 1, 1, &buffer_index, &offset);
+            }
+        }
     }
 
     // Apply depth bias for transparent materials too (to prevent z-fighting with coplanar opaque surfaces)
@@ -1475,7 +1805,9 @@ pub export fn vk_pbr_render(pipeline: ?*types.VulkanPBRPipeline, commandBuffer: 
             }
         }
 
-        currentIndexOffset += mesh.index_count;
+        if (mesh.index_count > 0 and mesh.indices != null) {
+            currentIndexOffset += mesh.index_count;
+        }
     }
 
     std.sort.block(SortItem, transparent_meshes.items, {}, SortItem.lessThan);

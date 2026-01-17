@@ -74,6 +74,7 @@ pub const EditorApp = struct {
             editor_layer.render();
 
             _ = vulkan_renderer_frame.cardinal_renderer_draw_frame(&self.engine.renderer);
+            engine.tracy.frameMark();
 
             log.cardinal_log_debug("[EDITOR] Processing pending uploads after frame draw", .{});
             editor_layer.process_pending_uploads();

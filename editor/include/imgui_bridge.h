@@ -112,6 +112,27 @@ typedef enum ImGuiTreeNodeFlags_ {
   ImGuiTreeNodeFlags_NavLeftJumpsBackHere = 1 << 13,
 } ImGuiTreeNodeFlags_;
 
+typedef enum ImGuiHoveredFlags_ {
+  ImGuiHoveredFlags_None = 0,
+  ImGuiHoveredFlags_ChildWindows = 1 << 0,
+  ImGuiHoveredFlags_RootWindow = 1 << 1,
+  ImGuiHoveredFlags_AnyWindow = 1 << 2,
+  ImGuiHoveredFlags_NoPopupHierarchy = 1 << 3,
+  ImGuiHoveredFlags_DockHierarchy = 1 << 4,
+  ImGuiHoveredFlags_AllowWhenBlockedByPopup = 1 << 5,
+  ImGuiHoveredFlags_AllowWhenBlockedByModal = 1 << 6,
+  ImGuiHoveredFlags_AllowWhenBlockedByActiveItem = 1 << 7,
+  ImGuiHoveredFlags_AllowWhenOverlapped = 1 << 8,
+  ImGuiHoveredFlags_AllowWhenDisabled = 1 << 9,
+  ImGuiHoveredFlags_NoNavOverride = 1 << 10,
+  ImGuiHoveredFlags_ForTooltip = 1 << 11,
+  ImGuiHoveredFlags_Stationary = 1 << 12,
+  ImGuiHoveredFlags_DelayNone = 1 << 13,
+  ImGuiHoveredFlags_DelayShort = 1 << 14,
+  ImGuiHoveredFlags_DelayNormal = 1 << 15,
+  ImGuiHoveredFlags_NoSharedDelay = 1 << 16,
+} ImGuiHoveredFlags_;
+
 typedef enum ImGuiDockNodeFlags_ {
   ImGuiDockNodeFlags_None = 0,
   ImGuiDockNodeFlags_KeepAliveOnly = 1 << 0,
@@ -207,6 +228,7 @@ void imgui_bridge_set_next_window_size(const ImVec2 *size, int cond);
 void imgui_bridge_push_style_var_vec2(int idx, const ImVec2 *val);
 void imgui_bridge_pop_style_var(int count);
 unsigned int imgui_bridge_get_id(const char *str_id);
+float imgui_bridge_get_framerate(void);
 
 // Bridge API
 void imgui_bridge_create_context(void);
@@ -331,6 +353,12 @@ bool imgui_bridge_color_edit3(const char *label, float col[3], int flags);
 bool imgui_bridge_combo(const char *label, int *current_item,
                         const char *const items[], int items_count,
                         int popup_max_height_in_items);
+void imgui_bridge_plot_lines(const char *label, const float *values,
+                             int values_count, int values_offset,
+                             const char *overlay_text, float scale_min,
+                             float scale_max, const ImVec2 *graph_size,
+                             int stride);
+
 
 // IO
 float imgui_bridge_get_io_delta_time(void);

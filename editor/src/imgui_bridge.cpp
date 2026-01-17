@@ -19,6 +19,10 @@ unsigned int imgui_bridge_get_id(const char *str_id) {
   return ImGui::GetID(str_id);
 }
 
+float imgui_bridge_get_framerate(void) {
+  return ImGui::GetIO().Framerate;
+}
+
 void imgui_bridge_viewport_get_work_pos(const ImGuiViewport *viewport,
                                         ImVec2 *out_pos) {
   *out_pos = viewport->WorkPos;
@@ -469,6 +473,15 @@ bool imgui_bridge_combo(const char *label, int *current_item,
                         int popup_max_height_in_items) {
   return ImGui::Combo(label, current_item, items, items_count,
                       popup_max_height_in_items);
+}
+
+void imgui_bridge_plot_lines(const char *label, const float *values,
+                             int values_count, int values_offset,
+                             const char *overlay_text, float scale_min,
+                             float scale_max, const ImVec2 *graph_size,
+                             int stride) {
+  ImGui::PlotLines(label, values, values_count, values_offset, overlay_text,
+                   scale_min, scale_max, *graph_size, stride);
 }
 
 float imgui_bridge_get_io_delta_time(void) { return ImGui::GetIO().DeltaTime; }

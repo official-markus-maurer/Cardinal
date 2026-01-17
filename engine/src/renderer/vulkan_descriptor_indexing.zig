@@ -339,62 +339,8 @@ pub export fn vk_bindless_texture_allocate(pool: ?*types.BindlessTexturePool, cr
     image_info.sharingMode = c.VK_SHARING_MODE_EXCLUSIVE;
     image_info.initialLayout = c.VK_IMAGE_LAYOUT_UNDEFINED;
 
-    var result = c.vkCreateImage(p.device, &image_info, null, &texture.image);
-    if (result != c.VK_SUCCESS) {
-        desc_idx_log.err("Failed to create bindless texture image: {d}", .{result});
-        p.free_indices.?[p.free_count] = index;
-        p.free_count += 1;
-        return false;
-    }
-
-    // Allocate memory for image
-    var mem_requirements: c.VkMemoryRequirements = undefined;
-    c.vkGetImageMemoryRequirements(p.device, texture.image, &mem_requirements);
-
-    var alloc_info = std.mem.zeroes(c.VkMemoryAllocateInfo);
-    alloc_info.sType = c.VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO;
-    alloc_info.allocationSize = mem_requirements.size;
-    alloc_info.memoryTypeIndex = 0; // Will be found
-
-    // Find memory type
-    var mem_properties: c.VkPhysicalDeviceMemoryProperties = undefined;
-    c.vkGetPhysicalDeviceMemoryProperties(p.physical_device, &mem_properties);
-
-    var memory_type_index: u32 = c.UINT32_MAX;
-    var j: u32 = 0;
-    while (j < mem_properties.memoryTypeCount) : (j += 1) {
-        if ((mem_requirements.memoryTypeBits & (@as(u32, 1) << @intCast(j))) != 0 and
-            (mem_properties.memoryTypes[j].propertyFlags & c.VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT) != 0)
-        {
-            memory_type_index = j;
-            break;
-        }
-    }
-
-    if (memory_type_index == c.UINT32_MAX) {
-        desc_idx_log.err("Failed to find suitable memory type for bindless texture", .{});
-        c.vkDestroyImage(p.device, texture.image, null);
-        p.free_indices.?[p.free_count] = index;
-        p.free_count += 1;
-        return false;
-    }
-
-    alloc_info.memoryTypeIndex = memory_type_index;
-
-    result = c.vkAllocateMemory(p.device, &alloc_info, null, &texture.memory);
-    if (result != c.VK_SUCCESS) {
-        desc_idx_log.err("Failed to allocate memory for bindless texture: {d}", .{result});
-        c.vkDestroyImage(p.device, texture.image, null);
-        p.free_indices.?[p.free_count] = index;
-        p.free_count += 1;
-        return false;
-    }
-
-    result = c.vkBindImageMemory(p.device, texture.image, texture.memory, 0);
-    if (result != c.VK_SUCCESS) {
-        desc_idx_log.err("Failed to bind memory to bindless texture: {d}", .{result});
-        c.vkFreeMemory(p.device, texture.memory, null);
-        c.vkDestroyImage(p.device, texture.image, null);
+    if (!vk_allocator.allocate_image(p.allocator, &image_info, &texture.image, &texture.memory, &texture.allocation, c.VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT)) {
+        desc_idx_log.err("Failed to allocate bindless texture image", .{});
         p.free_indices.?[p.free_count] = index;
         p.free_count += 1;
         return false;
@@ -412,11 +358,10 @@ pub export fn vk_bindless_texture_allocate(pool: ?*types.BindlessTexturePool, cr
     view_info.subresourceRange.baseArrayLayer = 0;
     view_info.subresourceRange.layerCount = 1;
 
-    result = c.vkCreateImageView(p.device, &view_info, null, &texture.image_view);
+    const result = c.vkCreateImageView(p.device, &view_info, null, &texture.image_view);
     if (result != c.VK_SUCCESS) {
         desc_idx_log.err("Failed to create image view for bindless texture: {d}", .{result});
-        c.vkFreeMemory(p.device, texture.memory, null);
-        c.vkDestroyImage(p.device, texture.image, null);
+        vk_allocator.free_image(p.allocator, texture.image, texture.allocation);
         p.free_indices.?[p.free_count] = index;
         p.free_count += 1;
         return false;
@@ -491,13 +436,7 @@ pub export fn vk_bindless_texture_free(pool: ?*types.BindlessTexturePool, textur
             c.vkDestroyImageView(p.device, texture.image_view, null);
         }
 
-        if (texture.image != null) {
-            c.vkDestroyImage(p.device, texture.image, null);
-        }
-
-        if (texture.memory != null) {
-            c.vkFreeMemory(p.device, texture.memory, null);
-        }
+        vk_allocator.free_image(p.allocator, texture.image, texture.allocation);
     }
 
     // Reset texture

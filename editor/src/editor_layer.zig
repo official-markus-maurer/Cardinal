@@ -20,9 +20,9 @@ const AssetState = editor_state.AssetState;
 const hierarchy_panel = @import("panels/hierarchy_panel.zig");
 const content_browser = @import("panels/content_browser.zig");
 const inspector = @import("panels/inspector.zig");
-const memory_stats = @import("panels/memory_stats.zig");
 const animation_panel = @import("panels/animation_panel.zig");
 const scene_manager_panel = @import("panels/scene_manager_panel.zig");
+const performance_panel = @import("panels/performance_panel.zig");
 const input_system = @import("systems/input.zig");
 const camera_controller = @import("systems/camera_controller.zig");
 const scene_io = @import("systems/scene_io.zig");
@@ -726,7 +726,7 @@ pub fn update() void {
                 if (c.imgui_bridge_menu_item("Scene Manager", null, state.show_scene_manager, true)) state.show_scene_manager = !state.show_scene_manager;
                 if (c.imgui_bridge_menu_item("PBR Settings", null, state.show_pbr_settings, true)) state.show_pbr_settings = !state.show_pbr_settings;
                 if (c.imgui_bridge_menu_item("Animation", null, state.show_animation, true)) state.show_animation = !state.show_animation;
-                if (c.imgui_bridge_menu_item("Memory Stats", null, state.show_memory_stats, true)) state.show_memory_stats = !state.show_memory_stats;
+                if (c.imgui_bridge_menu_item("Performance", null, state.show_performance_panel, true)) state.show_performance_panel = !state.show_performance_panel;
                 c.imgui_bridge_end_menu();
             }
             c.imgui_bridge_end_menu_bar();
@@ -738,8 +738,8 @@ pub fn update() void {
         inspector.draw_inspector_panel(&state);
         draw_pbr_settings_panel();
         animation_panel.draw_animation_panel(&state);
+        performance_panel.draw_performance_panel(&state);
         scene_manager_panel.draw_scene_manager_panel(&state, allocator);
-        memory_stats.draw_memory_stats_panel(&state);
 
         // Check for dirty model manager and update combined scene
         if (state.model_manager.scene_dirty) {

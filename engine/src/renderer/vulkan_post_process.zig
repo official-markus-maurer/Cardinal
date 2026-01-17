@@ -133,6 +133,17 @@ pub fn vk_post_process_init(s: *types.VulkanState) bool {
         params.bloomKnee = 0.1;
     }
 
+    // Initialize current_params with defaults
+    s.pipelines.post_process_pipeline.current_params = .{
+        .exposure = 1.0,
+        .contrast = 1.0,
+        .saturation = 1.0,
+        .bloomIntensity = 0.04,
+        .bloomThreshold = 1.0,
+        .bloomKnee = 0.1,
+        .padding = .{ 0.0, 0.0 },
+    };
+
     // 6. Initialize Bloom Compute Pipeline
     // Create Descriptor Layout for Compute
     var bloom_bindings = [_]c.VkDescriptorSetLayoutBinding{
@@ -399,6 +410,14 @@ pub fn draw(s: *types.VulkanState, cmd: c.VkCommandBuffer, frame_index: u32, inp
 
     const use_buffers = if (pp.descriptorManager) |mgr| mgr.useDescriptorBuffers else false;
     const descSet = pp.descriptorSets[frame_index];
+
+    // Update Params Buffer for current frame from current_params
+    // This happens before binding/draw, and updates the buffer that is about to be used for this frame.
+    // Since we are recording the command buffer for this frame, we know it's safe to update its resources (timeline semaphore wait happened).
+    if (pp.params_mapped[frame_index]) |ptr| {
+        const dst = @as(*types.PostProcessParams, @ptrCast(@alignCast(ptr)));
+        dst.* = pp.current_params;
+    }
 
     if (!use_buffers and @intFromPtr(descSet) == 0) {
         pp_log.err("Render skipped: Descriptor Set is NULL", .{});

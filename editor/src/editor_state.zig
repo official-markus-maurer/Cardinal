@@ -96,7 +96,6 @@ pub const EditorState = struct {
     show_scene_manager: bool = true,
     show_pbr_settings: bool = true,
     show_animation: bool = true,
-    show_memory_stats: bool = false,
 
     // Assets
     assets: AssetState = .{},
@@ -145,4 +144,7 @@ pub const EditorState = struct {
     // UI Toggles
     show_material_0_toggle: bool = true,
     tab_key_pressed: bool = false,
+
+    // Optimization Settings
+    show_performance_panel: bool = true,
 };

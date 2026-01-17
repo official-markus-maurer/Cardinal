@@ -1,6 +1,7 @@
 const std = @import("std");
 const config_pkg = @import("config.zig");
 const log = @import("log.zig");
+const tracy = @import("tracy.zig");
 const eng_log = log.ScopedLogger("ENGINE");
 const memory = @import("memory.zig");
 const ref_counting = @import("ref_counting.zig");
@@ -135,6 +136,9 @@ pub const CardinalEngine = struct {
     }
 
     pub fn update(self: *CardinalEngine) !void {
+        const zone = tracy.zoneS(@src(), "Engine Update");
+        defer zone.end();
+
         // Calculate delta time
         const current_time = platform.get_time_ns();
         const dt_ns = current_time - self.last_frame_time;

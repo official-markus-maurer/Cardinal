@@ -13,6 +13,26 @@ pub fn vk_compute_init(vulkan_state: ?*types.VulkanState) bool {
         compute_log.err("Invalid vulkan state for compute initialization", .{});
         return false;
     }
+    const vs = vulkan_state.?;
+
+    // Create Descriptor Pool
+    var pool_sizes = [_]c.VkDescriptorPoolSize{
+        .{ .type = c.VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, .descriptorCount = 100 },
+        .{ .type = c.VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, .descriptorCount = 100 },
+        .{ .type = c.VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, .descriptorCount = 100 },
+        .{ .type = c.VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, .descriptorCount = 100 },
+    };
+
+    var pool_info = std.mem.zeroes(c.VkDescriptorPoolCreateInfo);
+    pool_info.sType = c.VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO;
+    pool_info.poolSizeCount = pool_sizes.len;
+    pool_info.pPoolSizes = &pool_sizes;
+    pool_info.maxSets = 100;
+
+    if (c.vkCreateDescriptorPool(vs.context.device, &pool_info, null, &vs.pipelines.compute_descriptor_pool) != c.VK_SUCCESS) {
+        compute_log.err("Failed to create compute descriptor pool", .{});
+        return false;
+    }
 
     compute_log.info("Compute shader support initialized", .{});
     return true;
@@ -21,6 +41,12 @@ pub fn vk_compute_init(vulkan_state: ?*types.VulkanState) bool {
 pub fn vk_compute_cleanup(vulkan_state: ?*types.VulkanState) void {
     if (vulkan_state == null) {
         return;
+    }
+    const vs = vulkan_state.?;
+
+    if (vs.pipelines.compute_descriptor_pool != null) {
+        c.vkDestroyDescriptorPool(vs.context.device, vs.pipelines.compute_descriptor_pool, null);
+        vs.pipelines.compute_descriptor_pool = null;
     }
 
     compute_log.info("Compute shader support cleaned up", .{});
@@ -220,6 +246,7 @@ pub fn vk_compute_create_pipeline(vulkan_state: ?*types.VulkanState, config: ?*c
         pipeline_layout_info.pSetLayouts = reflected_layouts;
         pipe.descriptor_layouts = reflected_layouts;
         pipe.descriptor_set_count = reflected_layout_count;
+        pipe.owns_layouts = true;
     } else {
         pipeline_layout_info.setLayoutCount = cfg.descriptor_set_count;
         pipeline_layout_info.pSetLayouts = cfg.descriptor_layouts;
@@ -311,6 +338,14 @@ pub fn vk_compute_destroy_pipeline(vulkan_state: ?*types.VulkanState, pipeline: 
     }
 
     if (pipe.descriptor_layouts != null) {
+        if (pipe.owns_layouts) {
+            var i: u32 = 0;
+            while (i < pipe.descriptor_set_count) : (i += 1) {
+                if (pipe.descriptor_layouts.?[i] != null) {
+                    c.vkDestroyDescriptorSetLayout(vs.context.device, pipe.descriptor_layouts.?[i], null);
+                }
+            }
+        }
         const mem_alloc = memory.cardinal_get_allocator_for_category(.RENDERER);
         memory.cardinal_free(mem_alloc, @as(?*anyopaque, @ptrCast(pipe.descriptor_layouts)));
         pipe.descriptor_layouts = null;

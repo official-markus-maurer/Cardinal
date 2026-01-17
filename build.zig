@@ -7,6 +7,40 @@ pub fn build(b: *std.Build) void {
     // Check for VULKAN_SDK
     const vulkan_sdk = std.process.getEnvVarOwned(b.allocator, "VULKAN_SDK") catch null;
 
+    const enable_tracy = b.option(bool, "enable_tracy", "Enable Tracy Profiler") orelse true;
+
+    // =========================================================================
+    // Tracy (Static Library)
+    // =========================================================================
+    const tracy = b.addLibrary(.{
+        .name = "tracy",
+        .root_module = b.createModule(.{
+            .target = target,
+            .optimize = optimize,
+        }),
+        .linkage = .static,
+    });
+
+    tracy.linkLibCpp();
+    tracy.addIncludePath(b.path("libs/tracy/public"));
+
+    if (enable_tracy) {
+        tracy.root_module.addCMacro("TRACY_ENABLE", "");
+        tracy.root_module.addCMacro("TRACY_NO_SYSTEM_TRACING", "");
+        tracy.addCSourceFile(.{
+            .file = b.path("libs/tracy/public/TracyClient.cpp"),
+            .flags = &.{ "-DTRACY_ENABLE", "-DTRACY_NO_SYSTEM_TRACING", "-fno-sanitize=undefined" },
+        });
+
+        if (target.result.os.tag == .windows) {
+            tracy.linkSystemLibrary("ws2_32");
+            tracy.linkSystemLibrary("dbghelp");
+            tracy.linkSystemLibrary("user32");
+            tracy.linkSystemLibrary("secur32");
+            tracy.linkSystemLibrary("advapi32");
+        }
+    }
+
     // =========================================================================
     // GLFW (Static Library)
     // =========================================================================
@@ -119,6 +153,7 @@ pub fn build(b: *std.Build) void {
     engine.addIncludePath(b.path("libs/tinyexr"));
     engine.addIncludePath(b.path("libs/tinyexr/deps/miniz"));
     engine.addIncludePath(b.path("libs/glfw/include"));
+    engine.addIncludePath(b.path("libs/tracy/public"));
 
     if (vulkan_sdk) |sdk| {
         engine.addIncludePath(.{ .cwd_relative = b.fmt("{s}/Include", .{sdk}) });
@@ -128,6 +163,14 @@ pub fn build(b: *std.Build) void {
     engine.root_module.addCMacro("VK_USE_PLATFORM_WIN32_KHR", "");
     engine.root_module.addCMacro("CARDINAL_ENGINE_INTERNAL", "");
     engine.root_module.addCMacro("_CRT_SECURE_NO_WARNINGS", "");
+
+    const options = b.addOptions();
+    options.addOption(bool, "enable_tracy", enable_tracy);
+    engine.root_module.addOptions("build_options", options);
+
+    if (enable_tracy) {
+        engine.root_module.addCMacro("TRACY_ENABLE", "");
+    }
 
     // Generate C implementation files
     const gen_c_files = b.addWriteFiles();
@@ -168,7 +211,7 @@ pub fn build(b: *std.Build) void {
     // Compile tinyexr implementation
     engine.addCSourceFile(.{
         .file = tinyexr_impl_cpp,
-        .flags = &.{"-std=c++14", "-fno-sanitize=undefined"},
+        .flags = &.{ "-std=c++14", "-fno-sanitize=undefined" },
     });
 
     // Compile miniz
@@ -207,6 +250,7 @@ pub fn build(b: *std.Build) void {
     client.addIncludePath(b.path("libs/stb"));
 
     client.linkLibCpp();
+    client.linkLibrary(tracy);
     // client.linkLibrary(engine); // Use module import instead to avoid duplicate symbols
     client.linkLibrary(glfw);
     if (vulkan_sdk) |sdk| {
@@ -248,12 +292,18 @@ pub fn build(b: *std.Build) void {
     editor.addIncludePath(b.path("libs/imgui"));
     editor.addIncludePath(b.path("libs/imgui/backends"));
     editor.addIncludePath(b.path("libs/glfw/include"));
+    editor.addIncludePath(b.path("libs/tracy/public"));
 
     editor.root_module.addCMacro("GLFW_INCLUDE_VULKAN", "");
     editor.root_module.addCMacro("IMGUI_DISABLE_OBSOLETE_FUNCTIONS", "");
     editor.root_module.addCMacro("IMGUI_ENABLE_DOCKING", "");
 
+    if (enable_tracy) {
+        editor.root_module.addCMacro("TRACY_ENABLE", "");
+    }
+
     editor.linkLibCpp();
+    editor.linkLibrary(tracy);
     // editor.linkLibrary(engine); // Use module import instead to avoid duplicate symbols
     editor.linkLibrary(imgui);
     editor.linkLibrary(glfw);

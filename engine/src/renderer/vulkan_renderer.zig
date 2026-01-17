@@ -17,6 +17,7 @@ const vk_pso = @import("vulkan_pso.zig");
 const vk_commands = @import("vulkan_commands.zig");
 const vk_sync_manager = @import("vulkan_sync_manager.zig");
 const vk_pbr = @import("vulkan_pbr.zig");
+const vk_ssao = @import("vulkan_ssao.zig");
 const vk_skybox = @import("vulkan_skybox.zig");
 const vk_mesh_shader = @import("vulkan_mesh_shader.zig");
 const vk_compute = @import("vulkan_compute.zig");
@@ -70,7 +71,9 @@ fn pbr_pass_callback(cmd: c.VkCommandBuffer, state: *types.VulkanState) void {
     const use_secondary = (state.commands.scene_secondary_buffers != null);
     const flags: c.VkRenderingFlags = if (use_secondary) c.VK_RENDERING_CONTENTS_SECONDARY_COMMAND_BUFFERS_BIT else 0;
 
-    if (vk_commands.begin_dynamic_rendering_ext(state, cmd, state.current_image_index, use_depth, depth_view, color_view, &clears, true, flags)) {
+    const should_clear_depth = (state.pipelines.depth_pipeline == null or state.current_rendering_mode != types.CardinalRenderingMode.NORMAL);
+
+    if (vk_commands.begin_dynamic_rendering_ext(state, cmd, state.current_image_index, use_depth, depth_view, color_view, &clears, true, should_clear_depth, flags, true)) {
         if (use_depth and depth_view != null) {
             // Log the image view used for rendering
         }
@@ -107,7 +110,7 @@ fn post_process_pass_callback(cmd: c.VkCommandBuffer, state: *types.VulkanState)
 
     // Render to Swapchain (Backbuffer)
     // begin_dynamic_rendering_ext defaults to swapchain view if color_view is null
-    if (vk_commands.begin_dynamic_rendering_ext(state, cmd, state.current_image_index, false, null, null, &clears, true, 0)) {
+    if (vk_commands.begin_dynamic_rendering_ext(state, cmd, state.current_image_index, false, null, null, &clears, true, false, 0, true)) {
         if (input_view) |view| {
             vk_post_process.draw(state, cmd, state.sync.current_frame, view);
         }
@@ -149,14 +152,10 @@ pub export fn cardinal_renderer_set_post_process_params(renderer: ?*types.Cardin
     const s = get_state(renderer) orelse return;
     const pp = params orelse return;
 
-    // Update the buffer for the current frame
-    const frame_index = if (s.sync.current_frame >= types.MAX_FRAMES_IN_FLIGHT) 0 else s.sync.current_frame;
-
+    // Update the current params. The actual buffer update happens in the render loop (vk_post_process_draw)
+    // for the current frame, ensuring we don't modify buffers currently in use by the GPU.
     if (s.pipelines.post_process_pipeline.initialized) {
-        if (s.pipelines.post_process_pipeline.params_mapped[frame_index]) |ptr| {
-            const dst = @as(*types.PostProcessParams, @ptrCast(@alignCast(ptr)));
-            dst.* = pp.*;
-        }
+        s.pipelines.post_process_pipeline.current_params = pp.*;
     }
 }
 
@@ -267,6 +266,14 @@ fn init_pbr_pipeline_helper(s: *types.VulkanState) void {
     // PBR Pipeline renders to HDR attachment (Float16), not directly to swapchain
     if (vk_pbr.vk_pbr_pipeline_create(@ptrCast(&s.pipelines.pbr_pipeline), s.context.device, s.context.physical_device, c.VK_FORMAT_R16G16B16A16_SFLOAT, s.swapchain.depth_format, s.commands.pools.?[0], s.context.graphics_queue, @ptrCast(&s.allocator), @ptrCast(s), s.pipelines.pipeline_cache)) {
         s.pipelines.use_pbr_pipeline = true;
+
+        // Initialize Depth Pre-pass pipeline
+        if (vk_pbr.vk_pbr_create_depth_prepass(s)) {
+            renderer_log.info("renderer_create: Depth Pre-pass pipeline", .{});
+        } else {
+            renderer_log.err("vk_pbr_create_depth_prepass failed", .{});
+        }
+
         renderer_log.info("renderer_create: PBR pipeline", .{});
     } else {
         renderer_log.err("vk_pbr_pipeline_create failed", .{});
@@ -376,6 +383,13 @@ fn init_pipelines(s: *types.VulkanState) bool {
     init_mesh_shader_pipeline_helper(s);
     init_compute_pipeline_helper(s);
     init_skybox_pipeline_helper(s);
+
+    // Initialize SSAO
+    if (vk_ssao.vk_ssao_init(s)) {
+        renderer_log.info("renderer_create: SSAO pipeline", .{});
+    } else {
+        renderer_log.err("vk_ssao_init failed", .{});
+    }
 
     // Initialize Post Process Pipeline
     if (vk_post_process.vk_post_process_init(s)) {
@@ -796,6 +810,12 @@ pub export fn cardinal_renderer_destroy(renderer: ?*types.CardinalRenderer) call
     // Shutdown barrier validation system
     vk_barrier_validation.cardinal_barrier_validation_shutdown();
 
+    // Destroy SSAO pipeline
+    if (s.pipelines.use_ssao) {
+        renderer_log.debug("Destroying SSAO pipeline", .{});
+        vk_ssao.vk_ssao_destroy(s);
+    }
+
     // Destroy simple pipelines
     renderer_log.debug("Destroying simple pipelines", .{});
     vk_simple_pipelines.vk_destroy_simple_pipelines(s);
@@ -810,6 +830,16 @@ pub export fn cardinal_renderer_destroy(renderer: ?*types.CardinalRenderer) call
         renderer_log.debug("Destroying PBR pipeline", .{});
         vk_pbr.vk_pbr_pipeline_destroy(@ptrCast(&s.pipelines.pbr_pipeline), s.context.device, @ptrCast(&s.allocator));
         s.pipelines.use_pbr_pipeline = false;
+
+        // Destroy Depth Pipeline
+        if (s.pipelines.depth_pipeline != null) {
+            c.vkDestroyPipeline(s.context.device, s.pipelines.depth_pipeline, null);
+            s.pipelines.depth_pipeline = null;
+        }
+        if (s.pipelines.depth_pipeline_layout != null) {
+            c.vkDestroyPipelineLayout(s.context.device, s.pipelines.depth_pipeline_layout, null);
+            s.pipelines.depth_pipeline_layout = null;
+        }
     }
 
     // Destroy Skybox pipeline
@@ -1054,6 +1084,13 @@ pub export fn cardinal_renderer_enable_pbr(renderer: ?*types.CardinalRenderer, e
         if (vk_pbr.vk_pbr_pipeline_create(@ptrCast(&s.pipelines.pbr_pipeline), s.context.device, s.context.physical_device, c.VK_FORMAT_R16G16B16A16_SFLOAT, s.swapchain.depth_format, s.commands.pools.?[0], s.context.graphics_queue, @ptrCast(&s.allocator), @ptrCast(s), s.pipelines.pipeline_cache)) {
             s.pipelines.use_pbr_pipeline = true;
 
+            // Initialize Depth Pre-pass pipeline
+            if (vk_pbr.vk_pbr_create_depth_prepass(s)) {
+                renderer_log.info("Depth Pre-pass pipeline enabled", .{});
+            } else {
+                renderer_log.err("vk_pbr_create_depth_prepass failed", .{});
+            }
+
             if (s.current_scene != null) {
                 if (!vk_pbr.vk_pbr_load_scene(@ptrCast(&s.pipelines.pbr_pipeline), @ptrCast(s.context.device), @ptrCast(s.context.physical_device), @ptrCast(s.commands.pools.?[0]), @ptrCast(s.context.graphics_queue), @ptrCast(s.current_scene), @ptrCast(&s.allocator), @ptrCast(@alignCast(s)))) {
                     renderer_log.err("Failed to load scene into PBR pipeline", .{});
@@ -1069,6 +1106,17 @@ pub export fn cardinal_renderer_enable_pbr(renderer: ?*types.CardinalRenderer, e
         _ = c.vkDeviceWaitIdle(s.context.device);
         vk_pbr.vk_pbr_pipeline_destroy(@ptrCast(&s.pipelines.pbr_pipeline), @ptrCast(s.context.device), @ptrCast(&s.allocator));
         s.pipelines.use_pbr_pipeline = false;
+
+        // Destroy Depth Pipeline
+        if (s.pipelines.depth_pipeline != null) {
+            c.vkDestroyPipeline(s.context.device, s.pipelines.depth_pipeline, null);
+            s.pipelines.depth_pipeline = null;
+        }
+        if (s.pipelines.depth_pipeline_layout != null) {
+            c.vkDestroyPipelineLayout(s.context.device, s.pipelines.depth_pipeline_layout, null);
+            s.pipelines.depth_pipeline_layout = null;
+        }
+
         renderer_log.info("PBR pipeline disabled", .{});
     }
 }
@@ -1489,6 +1537,9 @@ pub export fn cardinal_renderer_upload_scene(renderer: ?*types.CardinalRenderer,
         renderer_log.info("Loading scene into PBR pipeline", .{});
         if (!vk_pbr.vk_pbr_load_scene(@ptrCast(&s.pipelines.pbr_pipeline), s.context.device, s.context.physical_device, s.commands.pools.?[0], s.context.graphics_queue, @ptrCast(scene), @ptrCast(&s.allocator), @ptrCast(s))) {
             renderer_log.err("Failed to load scene into PBR pipeline", .{});
+            // If PBR load fails, we should not set current_scene as valid to prevent rendering with mismatched buffers
+            s.current_scene = null;
+            return;
         }
     }
 

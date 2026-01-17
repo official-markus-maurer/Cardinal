@@ -273,26 +273,28 @@ pub const RenderGraph = struct {
             if (match) return; // No change needed
 
             // Release old resource to pool if allocated
-            if (res.handle != null) {
+            if (res.handle != null and res.lifecycle == .Transient) {
                 switch (res.handle.?) {
                     .Image => |image| {
                         if (res.desc) |d| {
                             switch (d) {
                                 .Image => |old_desc| {
-                                    const pooled = PooledImage{
-                                        .image = image,
-                                        .allocation = res.allocation.?,
-                                        .memory = res.memory.?,
-                                        .image_view = res.image_view,
-                                        .desc = old_desc,
-                                    };
-                                    self.release_image_to_pool(pooled) catch {
-                                        // Fallback to destroy if pool fails
-                                        if (res.image_view) |view| {
-                                            c.vkDestroyImageView(state.context.device, view, null);
-                                        }
-                                        vk_allocator.free_image(&state.allocator, image, res.allocation.?);
-                                    };
+                                    if (res.allocation) |alloc| {
+                                        const pooled = PooledImage{
+                                            .image = image,
+                                            .allocation = alloc,
+                                            .memory = res.memory.?,
+                                            .image_view = res.image_view,
+                                            .desc = old_desc,
+                                        };
+                                        self.release_image_to_pool(pooled) catch {
+                                            // Fallback to destroy if pool fails
+                                            if (res.image_view) |view| {
+                                                c.vkDestroyImageView(state.context.device, view, null);
+                                            }
+                                            vk_allocator.free_image(&state.allocator, image, alloc);
+                                        };
+                                    }
                                 },
                                 else => {},
                             }
@@ -350,12 +352,12 @@ pub const RenderGraph = struct {
                     res_state.layout = c.VK_IMAGE_LAYOUT_UNDEFINED;
                     res_state.access_mask = c.VK_ACCESS_2_NONE;
                     res_state.stage_mask = c.VK_PIPELINE_STAGE_2_TOP_OF_PIPE_BIT;
-                    res_state.queue_family = c.VK_QUEUE_FAMILY_IGNORED;
                 }
             }
         }
 
-        // Destroy pooled resources
+        // Clean up Image Pool
+        rg_log.debug("Cleaning up image pool ({d} items)", .{self.image_pool.items.len});
         for (self.image_pool.items) |pooled| {
             if (pooled.image_view) |view| {
                 c.vkDestroyImageView(state.context.device, view, null);
@@ -366,6 +368,8 @@ pub const RenderGraph = struct {
         }
         self.image_pool.clearRetainingCapacity();
 
+        // Clean up Buffer Pool
+        rg_log.debug("Cleaning up buffer pool ({d} items)", .{self.buffer_pool.items.len});
         for (self.buffer_pool.items) |pooled| {
             if (pooled.allocation) |alloc| {
                 vk_allocator.free_buffer(&state.allocator, pooled.buffer, alloc);

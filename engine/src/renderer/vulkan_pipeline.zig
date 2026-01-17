@@ -38,7 +38,7 @@ fn create_depth_resources(s: *types.VulkanState) bool {
     imageInfo.format = s.swapchain.depth_format;
     imageInfo.tiling = c.VK_IMAGE_TILING_OPTIMAL;
     imageInfo.initialLayout = c.VK_IMAGE_LAYOUT_UNDEFINED;
-    imageInfo.usage = c.VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT;
+    imageInfo.usage = c.VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT | c.VK_IMAGE_USAGE_SAMPLED_BIT;
     imageInfo.samples = c.VK_SAMPLE_COUNT_1_BIT;
     imageInfo.sharingMode = c.VK_SHARING_MODE_EXCLUSIVE;
 

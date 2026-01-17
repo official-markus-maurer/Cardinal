@@ -300,6 +300,8 @@ pub const RenderGraph = @import("render_graph.zig").RenderGraph;
 pub const RESOURCE_ID_BACKBUFFER: u64 = 1;
 pub const RESOURCE_ID_DEPTHBUFFER: u64 = 2;
 pub const RESOURCE_ID_HDR_COLOR: u64 = 3;
+pub const RESOURCE_ID_SSAO_RAW: u64 = 4;
+pub const RESOURCE_ID_SSAO_BLURRED: u64 = 5;
 
 pub const VulkanDescriptorManager = extern struct {
     bindings: ?[*]const VulkanDescriptorBinding,
@@ -556,6 +558,10 @@ pub const VulkanTextureManager = extern struct {
     hasPlaceholder: bool,
     bindless_pool: BindlessTexturePool,
     pending_updates: ?*anyopaque,
+
+    upload_command_buffers: [MAX_FRAMES_IN_FLIGHT]c.VkCommandBuffer,
+    upload_fence_values: [MAX_FRAMES_IN_FLIGHT]u64,
+    upload_buffer_index: u32,
 };
 
 // Compute Pipeline Types
@@ -580,6 +586,7 @@ pub const ComputePipeline = extern struct {
     local_size_x: u32,
     local_size_y: u32,
     local_size_z: u32,
+    owns_layouts: bool,
     initialized: bool,
 };
 
@@ -787,6 +794,33 @@ pub const PostProcessPipeline = extern struct {
     params_memory: [MAX_FRAMES_IN_FLIGHT]c.VkDeviceMemory,
     params_allocation: [MAX_FRAMES_IN_FLIGHT]c.VmaAllocation,
     params_mapped: [MAX_FRAMES_IN_FLIGHT]?*anyopaque,
+    current_params: PostProcessParams,
+};
+
+pub const SSAOPipeline = extern struct {
+    pipeline: ComputePipeline,
+    blur_pipeline: ComputePipeline,
+
+    // Resources (Per Frame)
+    ssao_image: [MAX_FRAMES_IN_FLIGHT]c.VkImage,
+    ssao_view: [MAX_FRAMES_IN_FLIGHT]c.VkImageView,
+    ssao_memory: [MAX_FRAMES_IN_FLIGHT]c.VkDeviceMemory,
+    ssao_allocation: [MAX_FRAMES_IN_FLIGHT]c.VmaAllocation,
+
+    ssao_blur_image: [MAX_FRAMES_IN_FLIGHT]c.VkImage,
+    ssao_blur_view: [MAX_FRAMES_IN_FLIGHT]c.VkImageView,
+    ssao_blur_memory: [MAX_FRAMES_IN_FLIGHT]c.VkDeviceMemory,
+    ssao_blur_allocation: [MAX_FRAMES_IN_FLIGHT]c.VmaAllocation,
+
+    noise_texture: VulkanManagedTexture,
+    kernel_buffer: c.VkBuffer,
+    kernel_memory: c.VkDeviceMemory,
+    kernel_allocation: c.VmaAllocation,
+
+    descriptor_sets: [MAX_FRAMES_IN_FLIGHT]c.VkDescriptorSet, // For SSAO pass
+    blur_descriptor_sets: [MAX_FRAMES_IN_FLIGHT]c.VkDescriptorSet, // For Blur pass
+
+    initialized: bool,
 };
 
 pub const VulkanPipelines = extern struct {
@@ -795,9 +829,11 @@ pub const VulkanPipelines = extern struct {
     pbr_pipeline: VulkanPBRPipeline,
     skybox_pipeline: SkyboxPipeline,
     post_process_pipeline: PostProcessPipeline,
+    ssao_pipeline: SSAOPipeline,
     use_pbr_pipeline: bool,
     use_skybox_pipeline: bool,
     use_post_process: bool,
+    use_ssao: bool,
 
     use_mesh_shader_pipeline: bool,
     compute_shader_initialized: bool,
@@ -811,6 +847,9 @@ pub const VulkanPipelines = extern struct {
 
     wireframe_pipeline: c.VkPipeline,
     wireframe_pipeline_layout: c.VkPipelineLayout,
+
+    depth_pipeline: c.VkPipeline,
+    depth_pipeline_layout: c.VkPipelineLayout,
 
     compute_descriptor_pool: c.VkDescriptorPool,
     compute_command_pool: c.VkCommandPool,
@@ -879,6 +918,10 @@ pub const VulkanPBRPipeline = extern struct {
     // Staging state for multi-buffered updates
     current_ubo: PBRUniformBufferObject,
     current_lighting: PBRLightingBuffer,
+
+    // Cached Descriptor Buffer Info
+    set0_binding_info: c.VkDescriptorBufferBindingInfoEXT,
+    set0_binding_info_valid: bool,
 };
 
 pub const RendererConfig = extern struct {

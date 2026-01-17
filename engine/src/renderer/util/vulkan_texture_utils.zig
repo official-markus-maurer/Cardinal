@@ -499,6 +499,86 @@ pub export fn vk_texture_create_from_data(allocator: ?*types.VulkanAllocator, de
     return true;
 }
 
+pub fn transition_image_layout(device: c.VkDevice, graphicsQueue: c.VkQueue, commandPool: c.VkCommandPool, image: c.VkImage, format: c.VkFormat, oldLayout: c.VkImageLayout, newLayout: c.VkImageLayout) void {
+    _ = format;
+
+    var commandBuffer: c.VkCommandBuffer = null;
+
+    var allocInfo = std.mem.zeroes(c.VkCommandBufferAllocateInfo);
+    allocInfo.sType = c.VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO;
+    allocInfo.level = c.VK_COMMAND_BUFFER_LEVEL_PRIMARY;
+    allocInfo.commandPool = commandPool;
+    allocInfo.commandBufferCount = 1;
+
+    _ = c.vkAllocateCommandBuffers(device, &allocInfo, &commandBuffer);
+
+    var beginInfo = std.mem.zeroes(c.VkCommandBufferBeginInfo);
+    beginInfo.sType = c.VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
+    beginInfo.flags = c.VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
+
+    _ = c.vkBeginCommandBuffer(commandBuffer, &beginInfo);
+
+    var barrier = std.mem.zeroes(c.VkImageMemoryBarrier2);
+    barrier.sType = c.VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2;
+    barrier.oldLayout = oldLayout;
+    barrier.newLayout = newLayout;
+    barrier.srcQueueFamilyIndex = c.VK_QUEUE_FAMILY_IGNORED;
+    barrier.dstQueueFamilyIndex = c.VK_QUEUE_FAMILY_IGNORED;
+    barrier.image = image;
+    barrier.subresourceRange.aspectMask = c.VK_IMAGE_ASPECT_COLOR_BIT;
+    barrier.subresourceRange.baseMipLevel = 0;
+    barrier.subresourceRange.levelCount = 1;
+    barrier.subresourceRange.baseArrayLayer = 0;
+    barrier.subresourceRange.layerCount = 1;
+
+    var srcStageMask: c.VkPipelineStageFlags2 = c.VK_PIPELINE_STAGE_2_TOP_OF_PIPE_BIT;
+    var dstStageMask: c.VkPipelineStageFlags2 = c.VK_PIPELINE_STAGE_2_BOTTOM_OF_PIPE_BIT;
+
+    if (oldLayout == c.VK_IMAGE_LAYOUT_UNDEFINED) {
+        barrier.srcAccessMask = 0;
+        srcStageMask = c.VK_PIPELINE_STAGE_2_TOP_OF_PIPE_BIT;
+    } else if (oldLayout == c.VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL) {
+        barrier.srcAccessMask = c.VK_ACCESS_2_TRANSFER_WRITE_BIT;
+        srcStageMask = c.VK_PIPELINE_STAGE_2_TRANSFER_BIT;
+    } else if (oldLayout == c.VK_IMAGE_LAYOUT_GENERAL) {
+        barrier.srcAccessMask = c.VK_ACCESS_2_SHADER_WRITE_BIT;
+        srcStageMask = c.VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT;
+    }
+
+    if (newLayout == c.VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL) {
+        barrier.dstAccessMask = c.VK_ACCESS_2_TRANSFER_WRITE_BIT;
+        dstStageMask = c.VK_PIPELINE_STAGE_2_TRANSFER_BIT;
+    } else if (newLayout == c.VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL) {
+        barrier.dstAccessMask = c.VK_ACCESS_2_SHADER_READ_BIT;
+        dstStageMask = c.VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT;
+    } else if (newLayout == c.VK_IMAGE_LAYOUT_GENERAL) {
+        barrier.dstAccessMask = c.VK_ACCESS_2_SHADER_READ_BIT | c.VK_ACCESS_2_SHADER_WRITE_BIT;
+        dstStageMask = c.VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT;
+    }
+
+    barrier.srcStageMask = srcStageMask;
+    barrier.dstStageMask = dstStageMask;
+
+    var depInfo = std.mem.zeroes(c.VkDependencyInfo);
+    depInfo.sType = c.VK_STRUCTURE_TYPE_DEPENDENCY_INFO;
+    depInfo.imageMemoryBarrierCount = 1;
+    depInfo.pImageMemoryBarriers = &barrier;
+
+    c.vkCmdPipelineBarrier2(commandBuffer, &depInfo);
+
+    _ = c.vkEndCommandBuffer(commandBuffer);
+
+    var submitInfo = std.mem.zeroes(c.VkSubmitInfo);
+    submitInfo.sType = c.VK_STRUCTURE_TYPE_SUBMIT_INFO;
+    submitInfo.commandBufferCount = 1;
+    submitInfo.pCommandBuffers = &commandBuffer;
+
+    _ = c.vkQueueSubmit(graphicsQueue, 1, &submitInfo, null);
+    _ = c.vkQueueWaitIdle(graphicsQueue);
+
+    c.vkFreeCommandBuffers(device, commandPool, 1, &commandBuffer);
+}
+
 pub export fn vk_texture_create_placeholder(allocator: ?*types.VulkanAllocator, device: c.VkDevice, commandPool: c.VkCommandPool, graphicsQueue: c.VkQueue, textureImage: ?*c.VkImage, textureImageMemory: ?*c.VkDeviceMemory, textureImageView: ?*c.VkImageView, format: ?*c.VkFormat, textureAllocation: ?*c.VmaAllocation) callconv(.c) bool {
     if (format) |fmt| {
         fmt.* = c.VK_FORMAT_R8G8B8A8_SRGB;
@@ -513,6 +593,49 @@ pub export fn vk_texture_create_placeholder(allocator: ?*types.VulkanAllocator, 
     placeholderTexture.path = @as([*c]u8, @constCast("placeholder"));
 
     return vk_texture_create_from_data(allocator, device, commandPool, graphicsQueue, null, @ptrCast(&placeholderTexture), textureImage, textureImageMemory, textureImageView, null, textureAllocation);
+}
+
+pub fn copy_buffer_to_image(device: c.VkDevice, graphicsQueue: c.VkQueue, commandPool: c.VkCommandPool, buffer: c.VkBuffer, image: c.VkImage, width: u32, height: u32) void {
+    var commandBuffer: c.VkCommandBuffer = null;
+
+    var allocInfo = std.mem.zeroes(c.VkCommandBufferAllocateInfo);
+    allocInfo.sType = c.VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO;
+    allocInfo.level = c.VK_COMMAND_BUFFER_LEVEL_PRIMARY;
+    allocInfo.commandPool = commandPool;
+    allocInfo.commandBufferCount = 1;
+
+    _ = c.vkAllocateCommandBuffers(device, &allocInfo, &commandBuffer);
+
+    var beginInfo = std.mem.zeroes(c.VkCommandBufferBeginInfo);
+    beginInfo.sType = c.VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
+    beginInfo.flags = c.VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
+
+    _ = c.vkBeginCommandBuffer(commandBuffer, &beginInfo);
+
+    var region = std.mem.zeroes(c.VkBufferImageCopy);
+    region.bufferOffset = 0;
+    region.bufferRowLength = 0;
+    region.bufferImageHeight = 0;
+    region.imageSubresource.aspectMask = c.VK_IMAGE_ASPECT_COLOR_BIT;
+    region.imageSubresource.mipLevel = 0;
+    region.imageSubresource.baseArrayLayer = 0;
+    region.imageSubresource.layerCount = 1;
+    region.imageOffset = .{ .x = 0, .y = 0, .z = 0 };
+    region.imageExtent = .{ .width = width, .height = height, .depth = 1 };
+
+    c.vkCmdCopyBufferToImage(commandBuffer, buffer, image, c.VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &region);
+
+    _ = c.vkEndCommandBuffer(commandBuffer);
+
+    var submitInfo = std.mem.zeroes(c.VkSubmitInfo);
+    submitInfo.sType = c.VK_STRUCTURE_TYPE_SUBMIT_INFO;
+    submitInfo.commandBufferCount = 1;
+    submitInfo.pCommandBuffers = &commandBuffer;
+
+    _ = c.vkQueueSubmit(graphicsQueue, 1, &submitInfo, null);
+    _ = c.vkQueueWaitIdle(graphicsQueue);
+
+    c.vkFreeCommandBuffers(device, commandPool, 1, &commandBuffer);
 }
 
 pub export fn vk_texture_create_sampler(device: c.VkDevice, physicalDevice: c.VkPhysicalDevice, sampler: ?*c.VkSampler) callconv(.c) bool {

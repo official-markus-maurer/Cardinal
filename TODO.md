@@ -49,7 +49,7 @@ This document outlines the roadmap for the Cardinal Engine, focusing on robustne
 
 ## 3. Rendering (Vulkan)
 - [ ] **IBL**: Implement Environment Maps, Irradiance Maps, and Prefiltered Specular maps.
-- [ ] **Ambient Occlusion**: SSAO or HBAO.
+- [x] **Ambient Occlusion**: SSAO or HBAO.
 
 ### Materials & Shaders
 - [ ] **Property ID Hashing**: Replace string lookups in `MaterialSystem` with hashed IDs (or pre-baked offsets) for performance.
@@ -75,7 +75,7 @@ This document outlines the roadmap for the Cardinal Engine, focusing on robustne
 - [ ] **GPU-Driven Rendering**: Implement GPU-driven frustum/occlusion culling and scene traversal (Mesh Shaders / Compute Shaders).
 
 ### Debugging & Profiling
-- [ ] **Profiler Integration**: Integrate **Tracy Profiler** for real-time CPU/GPU performance analysis.
+- [x] **Profiler Integration**: Integrate **Tracy Profiler** for real-time CPU/GPU performance analysis.
 - [ ] **Timeline Debug Config**: Make `VULKAN_TIMELINE_DEBUG_MAX_EVENTS` configurable or dynamic (`vulkan_timeline_types.zig`).
 
 ### Networking
