@@ -43,14 +43,21 @@ pub fn vk_ssao_init(s: *types.VulkanState) bool {
         return false;
     }
 
-    // 3. Create Pipelines
+    // 3. Create Descriptor Managers
+    if (!create_descriptor_managers(s)) {
+        ssao_log.err("Failed to create SSAO descriptor managers", .{});
+        vk_ssao_destroy(s);
+        return false;
+    }
+
+    // 4. Create Pipelines
     if (!create_pipelines(s)) {
         ssao_log.err("Failed to create SSAO pipelines", .{});
         vk_ssao_destroy(s);
         return false;
     }
 
-    // 4. Update Descriptors
+    // 5. Update Descriptors
     if (!update_descriptors(s)) {
         ssao_log.err("Failed to update SSAO descriptors", .{});
         vk_ssao_destroy(s);
@@ -90,6 +97,19 @@ pub fn vk_ssao_destroy(s: *types.VulkanState) void {
             s.pipelines.ssao_pipeline.ssao_blur_image[i] = null;
             s.pipelines.ssao_pipeline.ssao_blur_allocation[i] = null;
         }
+    }
+
+    // Destroy Descriptor Managers
+    const mem_alloc = memory.cardinal_get_allocator_for_category(.RENDERER);
+    if (s.pipelines.ssao_pipeline.descriptorManager) |mgr| {
+        vk_descriptor_manager.vk_descriptor_manager_destroy(mgr);
+        memory.cardinal_free(mem_alloc, mgr);
+        s.pipelines.ssao_pipeline.descriptorManager = null;
+    }
+    if (s.pipelines.ssao_pipeline.blurDescriptorManager) |mgr| {
+        vk_descriptor_manager.vk_descriptor_manager_destroy(mgr);
+        memory.cardinal_free(mem_alloc, mgr);
+        s.pipelines.ssao_pipeline.blurDescriptorManager = null;
     }
 
     // Destroy Noise & Kernel
@@ -211,7 +231,8 @@ pub fn vk_ssao_compute(s: *types.VulkanState, cmd: c.VkCommandBuffer, frame_inde
 
     // 2. Dispatch SSAO
     c.vkCmdBindPipeline(cmd, c.VK_PIPELINE_BIND_POINT_COMPUTE, ssao.pipeline.pipeline);
-    c.vkCmdBindDescriptorSets(cmd, c.VK_PIPELINE_BIND_POINT_COMPUTE, ssao.pipeline.pipeline_layout, 0, 1, &ssao.descriptor_sets[frame_index], 0, null);
+    var sets = [_]c.VkDescriptorSet{ssao.descriptor_sets[frame_index]};
+    vk_descriptor_manager.vk_descriptor_manager_bind_sets(ssao.descriptorManager, cmd, c.VK_PIPELINE_BIND_POINT_COMPUTE, ssao.pipeline.pipeline_layout, 0, 1, &sets, 0, null);
 
     const group_x = (width + 15) / 16;
     const group_y = (height + 15) / 16;
@@ -242,7 +263,8 @@ pub fn vk_ssao_compute(s: *types.VulkanState, cmd: c.VkCommandBuffer, frame_inde
 
     // 3. Dispatch Blur
     c.vkCmdBindPipeline(cmd, c.VK_PIPELINE_BIND_POINT_COMPUTE, ssao.blur_pipeline.pipeline);
-    c.vkCmdBindDescriptorSets(cmd, c.VK_PIPELINE_BIND_POINT_COMPUTE, ssao.blur_pipeline.pipeline_layout, 0, 1, &ssao.blur_descriptor_sets[frame_index], 0, null);
+    var blur_sets = [_]c.VkDescriptorSet{ssao.blur_descriptor_sets[frame_index]};
+    vk_descriptor_manager.vk_descriptor_manager_bind_sets(ssao.blurDescriptorManager, cmd, c.VK_PIPELINE_BIND_POINT_COMPUTE, ssao.blur_pipeline.pipeline_layout, 0, 1, &blur_sets, 0, null);
 
     c.vkCmdDispatch(cmd, group_x, group_y, 1);
 
@@ -412,6 +434,60 @@ fn create_noise_and_kernel(s: *types.VulkanState) bool {
     return true;
 }
 
+fn create_descriptor_managers(s: *types.VulkanState) bool {
+    const mem_alloc = memory.cardinal_get_allocator_for_category(.RENDERER);
+
+    // --- SSAO Manager ---
+    const ssao_ptr = memory.cardinal_alloc(mem_alloc, @sizeOf(types.VulkanDescriptorManager));
+    if (ssao_ptr == null) return false;
+    s.pipelines.ssao_pipeline.descriptorManager = @as(*types.VulkanDescriptorManager, @ptrCast(@alignCast(ssao_ptr)));
+
+    var ssao_builder = vk_descriptor_manager.DescriptorBuilder.init(std.heap.page_allocator);
+    defer ssao_builder.deinit();
+
+    // Binding 0: Storage Image (Write)
+    ssao_builder.add_binding(0, c.VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, 1, c.VK_SHADER_STAGE_COMPUTE_BIT) catch return false;
+    // Binding 1: Depth (Sampler)
+    ssao_builder.add_binding(1, c.VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1, c.VK_SHADER_STAGE_COMPUTE_BIT) catch return false;
+    // Binding 2: Noise (Sampler)
+    ssao_builder.add_binding(2, c.VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1, c.VK_SHADER_STAGE_COMPUTE_BIT) catch return false;
+    // Binding 3: Kernel (UBO)
+    ssao_builder.add_binding(3, c.VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, 1, c.VK_SHADER_STAGE_COMPUTE_BIT) catch return false;
+
+    if (!ssao_builder.build(s.pipelines.ssao_pipeline.descriptorManager.?, s.context.device, @as(*types.VulkanAllocator, @ptrCast(&s.allocator)), s, types.MAX_FRAMES_IN_FLIGHT, true)) {
+        return false;
+    }
+
+    // Allocate SSAO Sets
+    if (!vk_descriptor_manager.vk_descriptor_manager_allocate_sets(s.pipelines.ssao_pipeline.descriptorManager, types.MAX_FRAMES_IN_FLIGHT, @as([*]c.VkDescriptorSet, @ptrCast(&s.pipelines.ssao_pipeline.descriptor_sets)))) {
+        return false;
+    }
+
+    // --- Blur Manager ---
+    const blur_ptr = memory.cardinal_alloc(mem_alloc, @sizeOf(types.VulkanDescriptorManager));
+    if (blur_ptr == null) return false;
+    s.pipelines.ssao_pipeline.blurDescriptorManager = @as(*types.VulkanDescriptorManager, @ptrCast(@alignCast(blur_ptr)));
+
+    var blur_builder = vk_descriptor_manager.DescriptorBuilder.init(std.heap.page_allocator);
+    defer blur_builder.deinit();
+
+    // Binding 0: Storage Image (Write)
+    blur_builder.add_binding(0, c.VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, 1, c.VK_SHADER_STAGE_COMPUTE_BIT) catch return false;
+    // Binding 1: SSAO Input (Sampler)
+    blur_builder.add_binding(1, c.VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1, c.VK_SHADER_STAGE_COMPUTE_BIT) catch return false;
+
+    if (!blur_builder.build(s.pipelines.ssao_pipeline.blurDescriptorManager.?, s.context.device, @as(*types.VulkanAllocator, @ptrCast(&s.allocator)), s, types.MAX_FRAMES_IN_FLIGHT, true)) {
+        return false;
+    }
+
+    // Allocate Blur Sets
+    if (!vk_descriptor_manager.vk_descriptor_manager_allocate_sets(s.pipelines.ssao_pipeline.blurDescriptorManager, types.MAX_FRAMES_IN_FLIGHT, @as([*]c.VkDescriptorSet, @ptrCast(&s.pipelines.ssao_pipeline.blur_descriptor_sets)))) {
+        return false;
+    }
+
+    return true;
+}
+
 fn create_pipelines(s: *types.VulkanState) bool {
     const shaders_dir = std.mem.span(@as([*:0]const u8, @ptrCast(&s.config.shader_dir)));
     const renderer_allocator = memory.cardinal_get_allocator_for_category(.RENDERER).as_allocator();
@@ -427,6 +503,11 @@ fn create_pipelines(s: *types.VulkanState) bool {
         config.local_size_x = 16;
         config.local_size_y = 16;
         config.local_size_z = 1;
+
+        // Use Descriptor Manager Layout
+        var layouts = [_]c.VkDescriptorSetLayout{vk_descriptor_manager.vk_descriptor_manager_get_layout(s.pipelines.ssao_pipeline.descriptorManager)};
+        config.descriptor_set_count = 1;
+        config.descriptor_layouts = &layouts;
 
         if (!vk_compute.vk_compute_create_pipeline(s, &config, &s.pipelines.ssao_pipeline.pipeline)) {
             return false;
@@ -445,6 +526,11 @@ fn create_pipelines(s: *types.VulkanState) bool {
         config.local_size_y = 16;
         config.local_size_z = 1;
 
+        // Use Descriptor Manager Layout
+        var layouts = [_]c.VkDescriptorSetLayout{vk_descriptor_manager.vk_descriptor_manager_get_layout(s.pipelines.ssao_pipeline.blurDescriptorManager)};
+        config.descriptor_set_count = 1;
+        config.descriptor_layouts = &layouts;
+
         if (!vk_compute.vk_compute_create_pipeline(s, &config, &s.pipelines.ssao_pipeline.blur_pipeline)) {
             return false;
         }
@@ -455,128 +541,32 @@ fn create_pipelines(s: *types.VulkanState) bool {
 
 fn update_descriptors(s: *types.VulkanState) bool {
     const ssao = &s.pipelines.ssao_pipeline;
-    const device = s.context.device;
 
     var i: u32 = 0;
     while (i < types.MAX_FRAMES_IN_FLIGHT) : (i += 1) {
         // 1. SSAO Descriptors
+        const set = ssao.descriptor_sets[i];
 
-        // Allocate SSAO Set
-        if (ssao.descriptor_sets[i] == null) {
-            var alloc_info = std.mem.zeroes(c.VkDescriptorSetAllocateInfo);
-            alloc_info.sType = c.VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO;
-            alloc_info.descriptorPool = s.pipelines.compute_descriptor_pool;
-            alloc_info.descriptorSetCount = 1;
-            alloc_info.pSetLayouts = &ssao.pipeline.descriptor_layouts.?[0]; // Set 0
-
-            if (c.vkAllocateDescriptorSets(device, &alloc_info, &ssao.descriptor_sets[i]) != c.VK_SUCCESS) {
-                ssao_log.err("Failed to allocate SSAO descriptor set for frame {d}", .{i});
-                return false;
-            }
-        }
-
-        // Update SSAO Set
         // Binding 0: Image Write (SSAO Image)
-        var image_info = std.mem.zeroes(c.VkDescriptorImageInfo);
-        image_info.imageLayout = c.VK_IMAGE_LAYOUT_GENERAL;
-        image_info.imageView = ssao.ssao_view[i]; // Use per-frame view
-
-        var write0 = std.mem.zeroes(c.VkWriteDescriptorSet);
-        write0.sType = c.VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
-        write0.dstSet = ssao.descriptor_sets[i];
-        write0.dstBinding = 0;
-        write0.descriptorType = c.VK_DESCRIPTOR_TYPE_STORAGE_IMAGE;
-        write0.descriptorCount = 1;
-        write0.pImageInfo = &image_info;
+        if (!vk_descriptor_manager.vk_descriptor_manager_update_image(ssao.descriptorManager, set, 0, ssao.ssao_view[i], null, c.VK_IMAGE_LAYOUT_GENERAL)) return false;
 
         // Binding 1: Depth Map (Sampler)
-        var depth_info = std.mem.zeroes(c.VkDescriptorImageInfo);
-        depth_info.imageLayout = c.VK_IMAGE_LAYOUT_DEPTH_STENCIL_READ_ONLY_OPTIMAL;
-        depth_info.imageView = s.swapchain.depth_image_view;
-        depth_info.sampler = s.pipelines.post_process_pipeline.sampler; // Linear clamp
-
-        var write1 = std.mem.zeroes(c.VkWriteDescriptorSet);
-        write1.sType = c.VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
-        write1.dstSet = ssao.descriptor_sets[i];
-        write1.dstBinding = 1;
-        write1.descriptorType = c.VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
-        write1.descriptorCount = 1;
-        write1.pImageInfo = &depth_info;
+        if (!vk_descriptor_manager.vk_descriptor_manager_update_image(ssao.descriptorManager, set, 1, s.swapchain.depth_image_view, s.pipelines.post_process_pipeline.sampler, c.VK_IMAGE_LAYOUT_DEPTH_STENCIL_READ_ONLY_OPTIMAL)) return false;
 
         // Binding 2: Noise Map
-        var noise_info = std.mem.zeroes(c.VkDescriptorImageInfo);
-        noise_info.imageLayout = c.VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
-        noise_info.imageView = ssao.noise_texture.view;
-        noise_info.sampler = ssao.noise_texture.sampler;
-
-        var write2 = std.mem.zeroes(c.VkWriteDescriptorSet);
-        write2.sType = c.VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
-        write2.dstSet = ssao.descriptor_sets[i];
-        write2.dstBinding = 2;
-        write2.descriptorType = c.VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
-        write2.descriptorCount = 1;
-        write2.pImageInfo = &noise_info;
+        if (!vk_descriptor_manager.vk_descriptor_manager_update_image(ssao.descriptorManager, set, 2, ssao.noise_texture.view, ssao.noise_texture.sampler, c.VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL)) return false;
 
         // Binding 3: Kernel UBO
-        var buffer_info = std.mem.zeroes(c.VkDescriptorBufferInfo);
-        buffer_info.buffer = ssao.kernel_buffer;
-        buffer_info.offset = 0;
-        buffer_info.range = @sizeOf(SSAOKernel);
-
-        var write3 = std.mem.zeroes(c.VkWriteDescriptorSet);
-        write3.sType = c.VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
-        write3.dstSet = ssao.descriptor_sets[i];
-        write3.dstBinding = 3;
-        write3.descriptorType = c.VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
-        write3.descriptorCount = 1;
-        write3.pBufferInfo = &buffer_info;
-
-        const writes = [_]c.VkWriteDescriptorSet{ write0, write1, write2, write3 };
-        c.vkUpdateDescriptorSets(device, 4, &writes, 0, null);
+        if (!vk_descriptor_manager.vk_descriptor_manager_update_buffer(ssao.descriptorManager, set, 3, ssao.kernel_buffer, 0, @sizeOf(SSAOKernel))) return false;
 
         // 2. Blur Descriptors
-        if (ssao.blur_descriptor_sets[i] == null) {
-            var alloc_info = std.mem.zeroes(c.VkDescriptorSetAllocateInfo);
-            alloc_info.sType = c.VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO;
-            alloc_info.descriptorPool = s.pipelines.compute_descriptor_pool;
-            alloc_info.descriptorSetCount = 1;
-            alloc_info.pSetLayouts = &ssao.blur_pipeline.descriptor_layouts.?[0];
-
-            if (c.vkAllocateDescriptorSets(device, &alloc_info, &ssao.blur_descriptor_sets[i]) != c.VK_SUCCESS) {
-                ssao_log.err("Failed to allocate Blur descriptor set for frame {d}", .{i});
-                return false;
-            }
-        }
+        const blur_set = ssao.blur_descriptor_sets[i];
 
         // Binding 0: Image Write (Blur Output)
-        var blur_out_info = std.mem.zeroes(c.VkDescriptorImageInfo);
-        blur_out_info.imageLayout = c.VK_IMAGE_LAYOUT_GENERAL;
-        blur_out_info.imageView = ssao.ssao_blur_view[i]; // Use per-frame view
-
-        var b_write0 = std.mem.zeroes(c.VkWriteDescriptorSet);
-        b_write0.sType = c.VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
-        b_write0.dstSet = ssao.blur_descriptor_sets[i];
-        b_write0.dstBinding = 0;
-        b_write0.descriptorType = c.VK_DESCRIPTOR_TYPE_STORAGE_IMAGE;
-        b_write0.descriptorCount = 1;
-        b_write0.pImageInfo = &blur_out_info;
+        if (!vk_descriptor_manager.vk_descriptor_manager_update_image(ssao.blurDescriptorManager, blur_set, 0, ssao.ssao_blur_view[i], null, c.VK_IMAGE_LAYOUT_GENERAL)) return false;
 
         // Binding 1: SSAO Input
-        var ssao_in_info = std.mem.zeroes(c.VkDescriptorImageInfo);
-        ssao_in_info.imageLayout = c.VK_IMAGE_LAYOUT_GENERAL;
-        ssao_in_info.imageView = ssao.ssao_view[i]; // Use per-frame view
-        ssao_in_info.sampler = s.pipelines.post_process_pipeline.sampler; // Linear sampler
-
-        var b_write1 = std.mem.zeroes(c.VkWriteDescriptorSet);
-        b_write1.sType = c.VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
-        b_write1.dstSet = ssao.blur_descriptor_sets[i];
-        b_write1.dstBinding = 1;
-        b_write1.descriptorType = c.VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
-        b_write1.descriptorCount = 1;
-        b_write1.pImageInfo = &ssao_in_info;
-
-        const b_writes = [_]c.VkWriteDescriptorSet{ b_write0, b_write1 };
-        c.vkUpdateDescriptorSets(device, 2, &b_writes, 0, null);
+        if (!vk_descriptor_manager.vk_descriptor_manager_update_image(ssao.blurDescriptorManager, blur_set, 1, ssao.ssao_view[i], s.pipelines.post_process_pipeline.sampler, c.VK_IMAGE_LAYOUT_GENERAL)) return false;
     }
 
     return true;

@@ -9,8 +9,6 @@ const desc_log = log.ScopedLogger("DESC_MGR");
 
 const c = @import("vulkan_c.zig").c;
 
-const SetPoolMap = std.AutoHashMapUnmanaged(c.VkDescriptorSet, c.VkDescriptorPool);
-
 pub const VulkanDescriptorManagerCreateInfo = extern struct {
     bindings: ?[*]types.VulkanDescriptorBinding,
     bindingCount: u32,
@@ -19,8 +17,7 @@ pub const VulkanDescriptorManagerCreateInfo = extern struct {
     poolFlags: c.VkDescriptorPoolCreateFlags,
 };
 
-// --- Zig Builder API ---
-
+// Zig Builder API
 pub const DescriptorBuilder = struct {
     bindings: std.ArrayListUnmanaged(types.VulkanDescriptorBinding),
     allocator: std.mem.Allocator,
@@ -81,54 +78,11 @@ fn get_descriptor_size_for_type(state: *const types.VulkanState, dtype: c.VkDesc
         c.VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER => state.context.descriptor_buffer_uniform_buffer_size,
         c.VK_DESCRIPTOR_TYPE_STORAGE_BUFFER => state.context.descriptor_buffer_storage_buffer_size,
         c.VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER => state.context.descriptor_buffer_combined_image_sampler_size,
+        c.VK_DESCRIPTOR_TYPE_STORAGE_IMAGE => state.context.descriptor_buffer_storage_image_size,
+        c.VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE => state.context.descriptor_buffer_sampled_image_size,
+        c.VK_DESCRIPTOR_TYPE_SAMPLER => state.context.descriptor_buffer_sampler_size,
         else => 0,
     };
-}
-
-fn create_descriptor_pool(manager: *types.VulkanDescriptorManager, maxSets: u32, flags: c.VkDescriptorPoolCreateFlags) bool {
-    var poolSizes: [16]c.VkDescriptorPoolSize = undefined;
-    var poolSizeCount: u32 = 0;
-
-    var i: u32 = 0;
-    while (i < manager.bindingCount) : (i += 1) {
-        const dtype = manager.bindings.?[i].descriptorType;
-
-        var found = false;
-        var j: u32 = 0;
-        while (j < poolSizeCount) : (j += 1) {
-            if (poolSizes[j].type == dtype) {
-                poolSizes[j].descriptorCount += manager.bindings.?[i].descriptorCount * maxSets;
-                found = true;
-                break;
-            }
-        }
-
-        if (!found and poolSizeCount < 16) {
-            poolSizes[poolSizeCount].type = dtype;
-            poolSizes[poolSizeCount].descriptorCount = manager.bindings.?[i].descriptorCount * maxSets;
-            poolSizeCount += 1;
-        }
-    }
-
-    if (poolSizeCount == 0) {
-        desc_log.err("No descriptor types found for pool creation", .{});
-        return false;
-    }
-
-    var poolInfo = std.mem.zeroes(c.VkDescriptorPoolCreateInfo);
-    poolInfo.sType = c.VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO;
-    poolInfo.flags = flags;
-    poolInfo.maxSets = maxSets;
-    poolInfo.poolSizeCount = poolSizeCount;
-    poolInfo.pPoolSizes = &poolSizes;
-
-    if (c.vkCreateDescriptorPool(manager.device, &poolInfo, null, &manager.descriptorPool) != c.VK_SUCCESS) {
-        desc_log.err("Failed to create descriptor pool", .{});
-        return false;
-    }
-
-    desc_log.debug("Created descriptor pool with {d} sets and {d} pool sizes", .{ maxSets, poolSizeCount });
-    return true;
 }
 
 fn create_descriptor_set_layout(manager: *types.VulkanDescriptorManager) bool {
@@ -158,8 +112,6 @@ fn create_descriptor_set_layout(manager: *types.VulkanDescriptorManager) bool {
     const ptr2 = memory.cardinal_calloc(mem_alloc, manager.bindingCount, @sizeOf(c.VkDescriptorBindingFlags));
     const bindingFlags = if (ptr2) |p| @as([*]c.VkDescriptorBindingFlags, @ptrCast(@alignCast(p))) else null;
 
-    var hasUpdateAfterBind = false;
-
     if (bindingFlags != null) {
         defer memory.cardinal_free(mem_alloc, ptr2);
 
@@ -170,10 +122,6 @@ fn create_descriptor_set_layout(manager: *types.VulkanDescriptorManager) bool {
             {
                 bindingFlags.?[i] = c.VK_DESCRIPTOR_BINDING_VARIABLE_DESCRIPTOR_COUNT_BIT |
                     c.VK_DESCRIPTOR_BINDING_PARTIALLY_BOUND_BIT;
-                if (!manager.useDescriptorBuffers) {
-                    bindingFlags.?[i] |= c.VK_DESCRIPTOR_BINDING_UPDATE_AFTER_BIND_BIT;
-                    hasUpdateAfterBind = true;
-                }
             } else {
                 bindingFlags.?[i] = 0;
             }
@@ -185,11 +133,7 @@ fn create_descriptor_set_layout(manager: *types.VulkanDescriptorManager) bool {
         flagsInfo.pBindingFlags = bindingFlags;
         layoutInfo.pNext = &flagsInfo;
 
-        if (manager.useDescriptorBuffers) {
-            layoutInfo.flags |= c.VK_DESCRIPTOR_SET_LAYOUT_CREATE_DESCRIPTOR_BUFFER_BIT_EXT;
-        } else if (hasUpdateAfterBind) {
-            layoutInfo.flags |= c.VK_DESCRIPTOR_SET_LAYOUT_CREATE_UPDATE_AFTER_BIND_POOL_BIT;
-        }
+        layoutInfo.flags |= c.VK_DESCRIPTOR_SET_LAYOUT_CREATE_DESCRIPTOR_BUFFER_BIT_EXT;
 
         const result = c.vkCreateDescriptorSetLayout(manager.device, &layoutInfo, null, &manager.descriptorSetLayout);
         if (result != c.VK_SUCCESS) {
@@ -198,9 +142,7 @@ fn create_descriptor_set_layout(manager: *types.VulkanDescriptorManager) bool {
         }
     } else {
         // Fallback if allocation failed, though unlikely
-        if (manager.useDescriptorBuffers) {
-            layoutInfo.flags |= c.VK_DESCRIPTOR_SET_LAYOUT_CREATE_DESCRIPTOR_BUFFER_BIT_EXT;
-        }
+        layoutInfo.flags |= c.VK_DESCRIPTOR_SET_LAYOUT_CREATE_DESCRIPTOR_BUFFER_BIT_EXT;
         const result = c.vkCreateDescriptorSetLayout(manager.device, &layoutInfo, null, &manager.descriptorSetLayout);
         if (result != c.VK_SUCCESS) {
             desc_log.err("Failed to create descriptor set layout", .{});
@@ -287,37 +229,7 @@ fn setup_descriptor_buffer(manager: *types.VulkanDescriptorManager, maxSets: u32
     return true;
 }
 
-fn add_retired_pool(manager: *types.VulkanDescriptorManager, pool: c.VkDescriptorPool) bool {
-    const mem_alloc = memory.cardinal_get_allocator_for_category(.RENDERER);
-
-    if (manager.retiredPoolCount >= manager.retiredPoolCapacity) {
-        const new_capacity = if (manager.retiredPoolCapacity == 0) 4 else manager.retiredPoolCapacity * 2;
-        const new_size = new_capacity * @sizeOf(c.VkDescriptorPool);
-        const new_ptr = memory.cardinal_alloc(mem_alloc, new_size);
-
-        if (new_ptr == null) {
-            desc_log.err("Failed to grow retired pools array", .{});
-            return false;
-        }
-
-        const new_pools = @as([*]c.VkDescriptorPool, @ptrCast(@alignCast(new_ptr)));
-
-        if (manager.retiredPools != null) {
-            @memcpy(new_pools[0..manager.retiredPoolCount], manager.retiredPools.?[0..manager.retiredPoolCount]);
-            memory.cardinal_free(mem_alloc, @as(?*anyopaque, @ptrCast(manager.retiredPools)));
-        }
-
-        manager.retiredPools = new_pools;
-        manager.retiredPoolCapacity = new_capacity;
-    }
-
-    manager.retiredPools.?[manager.retiredPoolCount] = pool;
-    manager.retiredPoolCount += 1;
-    return true;
-}
-
 // Exported functions
-
 pub export fn vk_descriptor_manager_create(manager: ?*types.VulkanDescriptorManager, device: c.VkDevice, allocator: ?*types.VulkanAllocator, createInfo: ?*const VulkanDescriptorManagerCreateInfo, vulkan_state: ?*types.VulkanState) callconv(.c) bool {
     if (manager == null or device == null or allocator == null or createInfo == null or createInfo.?.bindings == null or createInfo.?.bindingCount == 0) {
         desc_log.err("Invalid parameters for descriptor manager creation", .{});
@@ -332,20 +244,9 @@ pub export fn vk_descriptor_manager_create(manager: ?*types.VulkanDescriptorMana
     mgr.allocator = allocator;
     mgr.bindingCount = info.bindingCount;
     mgr.maxSets = info.maxSets;
-    mgr.poolFlags = info.poolFlags;
     mgr.vulkan_state = vulkan_state;
 
     const mem_alloc = memory.cardinal_get_allocator_for_category(.RENDERER);
-
-    const map_ptr = memory.cardinal_alloc(mem_alloc, @sizeOf(SetPoolMap));
-    if (map_ptr != null) {
-        const map = @as(*SetPoolMap, @ptrCast(@alignCast(map_ptr)));
-        map.* = .{};
-        mgr.setPoolMapping = map;
-    } else {
-        desc_log.err("Failed to allocate setPoolMapping", .{});
-        return false;
-    }
 
     const ptr = memory.cardinal_alloc(mem_alloc, info.bindingCount * @sizeOf(types.VulkanDescriptorBinding));
     if (ptr == null) {
@@ -415,15 +316,6 @@ pub export fn vk_descriptor_manager_destroy(manager: ?*types.VulkanDescriptorMan
             memory.cardinal_free(mem_alloc, @as(?*anyopaque, @ptrCast(mgr.freeIndices)));
             mgr.freeIndices = null;
         }
-    } else {
-        // Legacy cleanup (should not happen if creation enforces buffers)
-        const mem_alloc = memory.cardinal_get_allocator_for_category(.RENDERER);
-        if (mgr.descriptorSets != null) {
-            memory.cardinal_free(mem_alloc, @as(?*anyopaque, @ptrCast(mgr.descriptorSets)));
-        }
-        if (mgr.descriptorPool != null) {
-            c.vkDestroyDescriptorPool(mgr.device, mgr.descriptorPool, null);
-        }
     }
 
     if (mgr.descriptorSetLayout != null) {
@@ -433,14 +325,6 @@ pub export fn vk_descriptor_manager_destroy(manager: ?*types.VulkanDescriptorMan
     if (mgr.bindings != null) {
         const mem_alloc = memory.cardinal_get_allocator_for_category(.RENDERER);
         memory.cardinal_free(mem_alloc, @as(?*anyopaque, @ptrCast(@constCast(mgr.bindings))));
-    }
-
-    if (mgr.setPoolMapping != null) {
-        const mem_alloc = memory.cardinal_get_allocator_for_category(.RENDERER);
-        const map = @as(*SetPoolMap, @ptrCast(@alignCast(mgr.setPoolMapping)));
-        map.deinit(mem_alloc.as_allocator());
-        memory.cardinal_free(mem_alloc, map);
-        mgr.setPoolMapping = null;
     }
 
     @memset(@as([*]u8, @ptrCast(mgr))[0..@sizeOf(types.VulkanDescriptorManager)], 0);
@@ -456,106 +340,47 @@ pub export fn vk_descriptor_manager_allocate_sets(manager: ?*types.VulkanDescrip
         return false;
     }
 
-    if (mgr.useDescriptorBuffers) {
-        var i: u32 = 0;
-        while (i < setCount) : (i += 1) {
-            var setIndex: u32 = 0;
-            // Check free list first
-            if (mgr.freeCount > 0 and mgr.freeIndices != null) {
-                mgr.freeCount -= 1;
-                setIndex = mgr.freeIndices.?[mgr.freeCount];
-            } else {
-                // Allocate new
-                if (mgr.descriptorSetCount >= mgr.maxSets) {
-                    desc_log.err("Descriptor buffer out of memory", .{});
-                    return false;
-                }
-                setIndex = mgr.descriptorSetCount;
-                mgr.descriptorSetCount += 1;
-            }
-            // Cast index to pseudo-handle
-            // VkDescriptorSet is a pointer, so we cast the index to a pointer
-            // We offset by 1 to ensure we never return NULL (0) which is considered an invalid handle
-            pDescriptorSets.?[i] = @ptrFromInt(setIndex + 1);
-        }
-        return true;
-    }
-
-    if (mgr.device == null or mgr.descriptorPool == null) {
-        desc_log.err("Invalid device or descriptor pool for allocation", .{});
+    if (!mgr.useDescriptorBuffers) {
+        desc_log.err("Descriptor buffers required but not enabled", .{});
         return false;
     }
-
-    const mem_alloc = memory.cardinal_get_allocator_for_category(.RENDERER);
-    const ptr = memory.cardinal_alloc(mem_alloc, setCount * @sizeOf(c.VkDescriptorSetLayout));
-    if (ptr == null) {
-        desc_log.err("Failed to allocate memory for descriptor set layouts", .{});
-        return false;
-    }
-    const layouts = @as([*]c.VkDescriptorSetLayout, @ptrCast(@alignCast(ptr)));
-    defer memory.cardinal_free(mem_alloc, ptr);
 
     var i: u32 = 0;
     while (i < setCount) : (i += 1) {
-        layouts[i] = mgr.descriptorSetLayout;
-    }
-
-    var allocInfo = std.mem.zeroes(c.VkDescriptorSetAllocateInfo);
-    allocInfo.sType = c.VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO;
-    allocInfo.descriptorPool = mgr.descriptorPool;
-    allocInfo.descriptorSetCount = setCount;
-    allocInfo.pSetLayouts = layouts;
-
-    var result = c.vkAllocateDescriptorSets(mgr.device, &allocInfo, pDescriptorSets);
-
-    if (result == c.VK_ERROR_OUT_OF_POOL_MEMORY or result == c.VK_ERROR_FRAGMENTATION) {
-        // Pool is full or fragmented, create a new one
-        if (add_retired_pool(mgr, mgr.descriptorPool)) {
-            // Create new pool with same configuration
-            // Note: This overwrites mgr.descriptorPool with the new handle
-            if (create_descriptor_pool(mgr, mgr.maxSets, mgr.poolFlags)) {
-                allocInfo.descriptorPool = mgr.descriptorPool;
-                result = c.vkAllocateDescriptorSets(mgr.device, &allocInfo, pDescriptorSets);
-            }
-        }
-    }
-
-    if (result != c.VK_SUCCESS) {
-        desc_log.err("Failed to allocate descriptor sets: error {d}", .{result});
-        return false;
-    }
-
-    i = 0;
-    while (i < setCount) : (i += 1) {
-        if (mgr.descriptorSetCount < mgr.maxSets) {
-            // Ensure descriptorSets array is allocated before accessing
-            if (mgr.descriptorSets == null) {
-                const descriptor_sets_ptr = memory.cardinal_alloc(mem_alloc, mgr.maxSets * @sizeOf(c.VkDescriptorSet));
-                if (descriptor_sets_ptr == null) {
-                    desc_log.err("Failed to allocate memory for descriptor sets array", .{});
-                    return false;
-                }
-                mgr.descriptorSets = @as([*]c.VkDescriptorSet, @ptrCast(@alignCast(descriptor_sets_ptr)));
-            }
-            mgr.descriptorSets.?[mgr.descriptorSetCount] = pDescriptorSets.?[i];
-            mgr.descriptorSetCount += 1;
+        var setIndex: u32 = 0;
+        // Check free list first
+        if (mgr.freeCount > 0 and mgr.freeIndices != null) {
+            mgr.freeCount -= 1;
+            setIndex = mgr.freeIndices.?[mgr.freeCount];
         } else {
-            desc_log.warn("Descriptor set limit reached ({d}), not tracking new set", .{mgr.maxSets});
+            // Allocate new
+            if (mgr.descriptorSetCount >= mgr.maxSets) {
+                desc_log.err("Descriptor buffer out of memory", .{});
+                return false;
+            }
+            setIndex = mgr.descriptorSetCount;
+            mgr.descriptorSetCount += 1;
+        }
+        // Cast index to pseudo-handle
+        // VkDescriptorSet is a pointer, so we cast the index to a pointer
+        // We offset by 1 to ensure we never return NULL (0) which is considered an invalid handle
+        pDescriptorSets.?[i] = @ptrFromInt(setIndex + 1);
+
+        // Track in descriptorSets array for legacy compatibility (e.g. PBR manager)
+        if (mgr.descriptorSets == null) {
+            const mem_alloc = memory.cardinal_get_allocator_for_category(.RENDERER);
+            const descriptor_sets_ptr = memory.cardinal_alloc(mem_alloc, mgr.maxSets * @sizeOf(c.VkDescriptorSet));
+            if (descriptor_sets_ptr != null) {
+                mgr.descriptorSets = @as([*]c.VkDescriptorSet, @ptrCast(@alignCast(descriptor_sets_ptr)));
+            } else {
+                desc_log.err("Failed to allocate memory for descriptor sets array", .{});
+            }
+        }
+
+        if (mgr.descriptorSets != null and setIndex < mgr.maxSets) {
+            mgr.descriptorSets.?[setIndex] = pDescriptorSets.?[i];
         }
     }
-
-    if (mgr.setPoolMapping != null) {
-        const map = @as(*SetPoolMap, @ptrCast(@alignCast(mgr.setPoolMapping)));
-        i = 0;
-        while (i < setCount) : (i += 1) {
-            // Ensure we track which pool this set came from!
-            // allocInfo.descriptorPool was updated if we created a new pool.
-            // desc_log.debug("Mapping set 0x{x} to pool 0x{x}", .{ @intFromPtr(pDescriptorSets.?[i]), @intFromPtr(allocInfo.descriptorPool) });
-            map.put(std.heap.c_allocator, pDescriptorSets.?[i], allocInfo.descriptorPool) catch {};
-        }
-    }
-
-    desc_log.debug("Allocated {d} descriptor sets", .{setCount});
     return true;
 }
 
@@ -576,76 +401,61 @@ pub export fn vk_descriptor_manager_update_buffer(manager: ?*types.VulkanDescrip
         return false;
     }
 
-    if (mgr.useDescriptorBuffers) {
-        // Adjust for 1-based index
-        const setHandle = @as(u32, @intCast(@intFromPtr(set)));
-        if (setHandle == 0) return false;
-        const setIndex = setHandle - 1;
-
-        if (dtype != c.VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER and dtype != c.VK_DESCRIPTOR_TYPE_STORAGE_BUFFER) {
-            desc_log.warn("Descriptor buffer update only implemented for UNIFORM_BUFFER and STORAGE_BUFFER", .{});
-            return false;
-        }
-
-        if (mgr.vulkan_state == null) {
-            desc_log.err("Descriptor buffer extension not available for updates", .{});
-            return false;
-        }
-        const vs = @as(*types.VulkanState, @ptrCast(@alignCast(mgr.vulkan_state)));
-        if (vs.context.vkGetDescriptorEXT == null) {
-            desc_log.err("Descriptor buffer extension not available for updates", .{});
-            return false;
-        }
-
-        var addrInfo = std.mem.zeroes(c.VkBufferDeviceAddressInfo);
-        addrInfo.sType = c.VK_STRUCTURE_TYPE_BUFFER_DEVICE_ADDRESS_INFO;
-        addrInfo.buffer = buffer;
-
-        const bufferAddress = vs.context.vkGetBufferDeviceAddress.?(mgr.device, &addrInfo);
-
-        var addressDesc = std.mem.zeroes(c.VkDescriptorAddressInfoEXT);
-        addressDesc.sType = c.VK_STRUCTURE_TYPE_DESCRIPTOR_ADDRESS_INFO_EXT;
-        addressDesc.address = bufferAddress + offset;
-        addressDesc.range = range;
-
-        var getInfo = std.mem.zeroes(c.VkDescriptorGetInfoEXT);
-        getInfo.sType = c.VK_STRUCTURE_TYPE_DESCRIPTOR_GET_INFO_EXT;
-        getInfo.type = dtype;
-        if (dtype == c.VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER) {
-            getInfo.data.pUniformBuffer = &addressDesc;
-        } else {
-            getInfo.data.pStorageBuffer = &addressDesc;
-        }
-
-        const setOffset = mgr.descriptorSetSize * setIndex;
-        const bindingOffset = if (binding < mgr.bindingOffsetCount) mgr.bindingOffsets.?[binding] else 0;
-        const dstOffset = setOffset + bindingOffset;
-
-        const descSize = get_descriptor_size_for_type(vs, dtype);
-        if (descSize == 0) return false;
-
-        const dstPtr = @as([*]u8, @ptrCast(mgr.descriptorBuffer.mapped)) + dstOffset;
-        vs.context.vkGetDescriptorEXT.?(mgr.device, &getInfo, descSize, @ptrCast(dstPtr));
-
-        return true;
-    } else {
-        var bufferInfo = std.mem.zeroes(c.VkDescriptorBufferInfo);
-        bufferInfo.buffer = buffer;
-        bufferInfo.offset = offset;
-        bufferInfo.range = range;
-
-        var descriptorWrite = std.mem.zeroes(c.VkWriteDescriptorSet);
-        descriptorWrite.sType = c.VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
-        descriptorWrite.dstSet = set;
-        descriptorWrite.dstBinding = binding;
-        descriptorWrite.dstArrayElement = 0;
-        descriptorWrite.descriptorType = dtype;
-        descriptorWrite.descriptorCount = 1;
-        descriptorWrite.pBufferInfo = &bufferInfo;
-
-        c.vkUpdateDescriptorSets(mgr.device, 1, &descriptorWrite, 0, null);
-        return true;
+    if (!mgr.useDescriptorBuffers) {
+        return false;
     }
+
+    // Adjust for 1-based index
+    const setHandle = @as(u32, @intCast(@intFromPtr(set)));
+    if (setHandle == 0) return false;
+    const setIndex = setHandle - 1;
+
+    if (dtype != c.VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER and dtype != c.VK_DESCRIPTOR_TYPE_STORAGE_BUFFER) {
+        desc_log.warn("Descriptor buffer update only implemented for UNIFORM_BUFFER and STORAGE_BUFFER", .{});
+        return false;
+    }
+
+    if (mgr.vulkan_state == null) {
+        desc_log.err("Descriptor buffer extension not available for updates", .{});
+        return false;
+    }
+    const vs = @as(*types.VulkanState, @ptrCast(@alignCast(mgr.vulkan_state)));
+    if (vs.context.vkGetDescriptorEXT == null) {
+        desc_log.err("Descriptor buffer extension not available for updates", .{});
+        return false;
+    }
+
+    var addrInfo = std.mem.zeroes(c.VkBufferDeviceAddressInfo);
+    addrInfo.sType = c.VK_STRUCTURE_TYPE_BUFFER_DEVICE_ADDRESS_INFO;
+    addrInfo.buffer = buffer;
+
+    const bufferAddress = vs.context.vkGetBufferDeviceAddress.?(mgr.device, &addrInfo);
+
+    var addressDesc = std.mem.zeroes(c.VkDescriptorAddressInfoEXT);
+    addressDesc.sType = c.VK_STRUCTURE_TYPE_DESCRIPTOR_ADDRESS_INFO_EXT;
+    addressDesc.address = bufferAddress + offset;
+    addressDesc.range = range;
+
+    var getInfo = std.mem.zeroes(c.VkDescriptorGetInfoEXT);
+    getInfo.sType = c.VK_STRUCTURE_TYPE_DESCRIPTOR_GET_INFO_EXT;
+    getInfo.type = dtype;
+    if (dtype == c.VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER) {
+        getInfo.data.pUniformBuffer = &addressDesc;
+    } else {
+        getInfo.data.pStorageBuffer = &addressDesc;
+    }
+
+    const setOffset = mgr.descriptorSetSize * setIndex;
+    const bindingOffset = if (binding < mgr.bindingOffsetCount) mgr.bindingOffsets.?[binding] else 0;
+    const dstOffset = setOffset + bindingOffset;
+
+    const descSize = get_descriptor_size_for_type(vs, dtype);
+    if (descSize == 0) return false;
+
+    const dstPtr = @as([*]u8, @ptrCast(mgr.descriptorBuffer.mapped)) + dstOffset;
+    vs.context.vkGetDescriptorEXT.?(mgr.device, &getInfo, descSize, @ptrCast(dstPtr));
+
+    return true;
 }
 
 pub export fn vk_descriptor_manager_update_image(manager: ?*types.VulkanDescriptorManager, set: c.VkDescriptorSet, binding: u32, imageView: c.VkImageView, sampler: c.VkSampler, imageLayout: c.VkImageLayout) callconv(.c) bool {
@@ -662,7 +472,13 @@ pub export fn vk_descriptor_manager_update_image(manager: ?*types.VulkanDescript
         if (setHandle == 0) return false;
         const setIndex = setHandle - 1;
 
-        if (dtype != c.VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER) return false;
+        if (dtype != c.VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER and
+            dtype != c.VK_DESCRIPTOR_TYPE_STORAGE_IMAGE and
+            dtype != c.VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE)
+        {
+            return false;
+        }
+
         if (mgr.vulkan_state == null) return false;
         const vs = @as(*types.VulkanState, @ptrCast(@alignCast(mgr.vulkan_state)));
 
@@ -673,13 +489,20 @@ pub export fn vk_descriptor_manager_update_image(manager: ?*types.VulkanDescript
 
         var getInfo = std.mem.zeroes(c.VkDescriptorGetInfoEXT);
         getInfo.sType = c.VK_STRUCTURE_TYPE_DESCRIPTOR_GET_INFO_EXT;
-        getInfo.type = c.VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
-        getInfo.data.pCombinedImageSampler = &imageInfo;
+        getInfo.type = dtype;
+
+        if (dtype == c.VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER) {
+            getInfo.data.pCombinedImageSampler = &imageInfo;
+        } else if (dtype == c.VK_DESCRIPTOR_TYPE_STORAGE_IMAGE) {
+            getInfo.data.pStorageImage = &imageInfo;
+        } else if (dtype == c.VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE) {
+            getInfo.data.pSampledImage = &imageInfo;
+        }
 
         const setOffset = mgr.descriptorSetSize * setIndex;
         const bindingOffset = if (binding < mgr.bindingOffsetCount) mgr.bindingOffsets.?[binding] else 0;
         const dstOffset = setOffset + bindingOffset;
-        const descSize = get_descriptor_size_for_type(vs, c.VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER);
+        const descSize = get_descriptor_size_for_type(vs, dtype);
 
         const dstPtr = @as([*]u8, @ptrCast(mgr.descriptorBuffer.mapped)) + dstOffset;
         vs.context.vkGetDescriptorEXT.?(mgr.device, &getInfo, descSize, @ptrCast(dstPtr));
@@ -702,7 +525,7 @@ fn update_textures_internal(manager: *types.VulkanDescriptorManager, set: c.VkDe
 
         const setOffset = manager.descriptorSetSize * setIndex;
         const bindingOffset = if (binding < manager.bindingOffsetCount) manager.bindingOffsets.?[binding] else 0;
-        const descSize = get_descriptor_size_for_type(vs, c.VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER);
+        const descSize = get_descriptor_size_for_type(vs, dtype);
 
         var i: u32 = 0;
         while (i < count) : (i += 1) {
@@ -713,39 +536,27 @@ fn update_textures_internal(manager: *types.VulkanDescriptorManager, set: c.VkDe
 
             var getInfo = std.mem.zeroes(c.VkDescriptorGetInfoEXT);
             getInfo.sType = c.VK_STRUCTURE_TYPE_DESCRIPTOR_GET_INFO_EXT;
-            getInfo.type = c.VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
-            getInfo.data.pCombinedImageSampler = &imageInfo;
+            getInfo.type = dtype;
+
+            if (dtype == c.VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER) {
+                getInfo.data.pCombinedImageSampler = &imageInfo;
+            } else if (dtype == c.VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE) {
+                getInfo.data.pSampledImage = &imageInfo;
+            } else if (dtype == c.VK_DESCRIPTOR_TYPE_STORAGE_IMAGE) {
+                getInfo.data.pStorageImage = &imageInfo;
+            } else {
+                // Fallback / Default
+                getInfo.data.pCombinedImageSampler = &imageInfo;
+            }
 
             const dstOffset = setOffset + bindingOffset + (i * descSize);
             const dstPtr = @as([*]u8, @ptrCast(manager.descriptorBuffer.mapped)) + dstOffset;
             vs.context.vkGetDescriptorEXT.?(manager.device, &getInfo, descSize, @ptrCast(dstPtr));
         }
         return true;
-    } else {
-        const mem_alloc = memory.cardinal_get_allocator_for_category(.RENDERER);
-        const ptr = memory.cardinal_alloc(mem_alloc, count * @sizeOf(c.VkDescriptorImageInfo));
-        if (ptr == null) return false;
-        const imageInfos = @as([*]c.VkDescriptorImageInfo, @ptrCast(@alignCast(ptr)));
-        defer memory.cardinal_free(mem_alloc, ptr);
-
-        var i: u32 = 0;
-        while (i < count) : (i += 1) {
-            imageInfos[i].imageLayout = imageLayout;
-            imageInfos[i].imageView = imageViews[i];
-            imageInfos[i].sampler = if (samplers) |s| s[i] else singleSampler;
-        }
-
-        var descriptorWrite = std.mem.zeroes(c.VkWriteDescriptorSet);
-        descriptorWrite.sType = c.VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
-        descriptorWrite.dstSet = set;
-        descriptorWrite.dstBinding = binding;
-        descriptorWrite.descriptorType = dtype;
-        descriptorWrite.descriptorCount = count;
-        descriptorWrite.pImageInfo = imageInfos;
-
-        c.vkUpdateDescriptorSets(manager.device, 1, &descriptorWrite, 0, null);
-        return true;
     }
+
+    return false;
 }
 
 // Re-implement exports using helper
@@ -767,16 +578,21 @@ pub export fn vk_descriptor_manager_update_textures_with_samplers(manager: ?*typ
     return update_textures_internal(mgr, set, binding, imageViews.?, samplers, null, imageLayout, count, dtype);
 }
 
-pub export fn vk_descriptor_manager_bind_sets(manager: ?*types.VulkanDescriptorManager, commandBuffer: c.VkCommandBuffer, pipelineLayout: c.VkPipelineLayout, firstSet: u32, setCount: u32, pDescriptorSets: ?[*]const c.VkDescriptorSet, dynamicOffsetCount: u32, pDynamicOffsets: ?[*]const u32) callconv(.c) void {
-    vk_descriptor_manager_bind_sets_with_buffer_index(manager, commandBuffer, pipelineLayout, firstSet, setCount, pDescriptorSets, dynamicOffsetCount, pDynamicOffsets, 0);
+pub export fn vk_descriptor_manager_bind_sets(manager: ?*types.VulkanDescriptorManager, commandBuffer: c.VkCommandBuffer, pipelineBindPoint: c.VkPipelineBindPoint, pipelineLayout: c.VkPipelineLayout, firstSet: u32, setCount: u32, pDescriptorSets: ?[*]const c.VkDescriptorSet, dynamicOffsetCount: u32, pDynamicOffsets: ?[*]const u32) callconv(.c) void {
+    vk_descriptor_manager_bind_sets_with_buffer_index(manager, commandBuffer, pipelineBindPoint, pipelineLayout, firstSet, setCount, pDescriptorSets, dynamicOffsetCount, pDynamicOffsets, 0);
 }
 
-pub export fn vk_descriptor_manager_bind_sets_with_buffer_index(manager: ?*types.VulkanDescriptorManager, commandBuffer: c.VkCommandBuffer, pipelineLayout: c.VkPipelineLayout, firstSet: u32, setCount: u32, pDescriptorSets: ?[*]const c.VkDescriptorSet, dynamicOffsetCount: u32, pDynamicOffsets: ?[*]const u32, bufferIndex: u32) callconv(.c) void {
+pub export fn vk_descriptor_manager_bind_sets_with_buffer_index(manager: ?*types.VulkanDescriptorManager, commandBuffer: c.VkCommandBuffer, pipelineBindPoint: c.VkPipelineBindPoint, pipelineLayout: c.VkPipelineLayout, firstSet: u32, setCount: u32, pDescriptorSets: ?[*]const c.VkDescriptorSet, dynamicOffsetCount: u32, pDynamicOffsets: ?[*]const u32, bufferIndex: u32) callconv(.c) void {
     if (manager == null) return;
     const mgr = manager.?;
     if (!mgr.initialized or setCount == 0) return;
 
     if (mgr.useDescriptorBuffers) {
+        // Descriptor buffers don't use dynamic offsets in the same way (they use buffer offsets)
+        // so we ignore dynamicOffsetCount and pDynamicOffsets
+        _ = dynamicOffsetCount;
+        _ = pDynamicOffsets;
+
         if (mgr.vulkan_state == null) return;
         const vs = @as(*types.VulkanState, @ptrCast(@alignCast(mgr.vulkan_state)));
 
@@ -795,10 +611,7 @@ pub export fn vk_descriptor_manager_bind_sets_with_buffer_index(manager: ?*types
             vs.context.vkCmdBindDescriptorBuffersEXT.?(commandBuffer, 1, &bindingInfo);
         }
 
-        vk_descriptor_manager_set_offsets(manager, commandBuffer, pipelineLayout, firstSet, setCount, pDescriptorSets, bufferIndex);
-    } else {
-        if (pDescriptorSets == null) return;
-        c.vkCmdBindDescriptorSets(commandBuffer, c.VK_PIPELINE_BIND_POINT_GRAPHICS, pipelineLayout, firstSet, setCount, pDescriptorSets, dynamicOffsetCount, pDynamicOffsets);
+        vk_descriptor_manager_set_offsets(manager, commandBuffer, pipelineBindPoint, pipelineLayout, firstSet, setCount, pDescriptorSets, bufferIndex);
     }
 }
 
@@ -830,7 +643,7 @@ pub export fn vk_descriptor_manager_get_binding_info(manager: ?*types.VulkanDesc
     return true;
 }
 
-pub export fn vk_descriptor_manager_set_offsets(manager: ?*types.VulkanDescriptorManager, commandBuffer: c.VkCommandBuffer, pipelineLayout: c.VkPipelineLayout, firstSet: u32, setCount: u32, pDescriptorSets: ?[*]const c.VkDescriptorSet, bufferIndex: u32) callconv(.c) void {
+pub export fn vk_descriptor_manager_set_offsets(manager: ?*types.VulkanDescriptorManager, commandBuffer: c.VkCommandBuffer, pipelineBindPoint: c.VkPipelineBindPoint, pipelineLayout: c.VkPipelineLayout, firstSet: u32, setCount: u32, pDescriptorSets: ?[*]const c.VkDescriptorSet, bufferIndex: u32) callconv(.c) void {
     if (manager == null) return;
     const mgr = manager.?;
     if (!mgr.initialized or !mgr.useDescriptorBuffers or mgr.vulkan_state == null) return;
@@ -881,7 +694,7 @@ pub export fn vk_descriptor_manager_set_offsets(manager: ?*types.VulkanDescripto
         }
     }
 
-    vs.context.vkCmdSetDescriptorBufferOffsetsEXT.?(commandBuffer, c.VK_PIPELINE_BIND_POINT_GRAPHICS, pipelineLayout, firstSet, setCount, bufferIndices, offsets);
+    vs.context.vkCmdSetDescriptorBufferOffsetsEXT.?(commandBuffer, pipelineBindPoint, pipelineLayout, firstSet, setCount, bufferIndices, offsets);
 }
 
 pub export fn vk_descriptor_manager_get_layout(manager: ?*const types.VulkanDescriptorManager) callconv(.c) c.VkDescriptorSetLayout {
@@ -930,21 +743,5 @@ pub export fn vk_descriptor_manager_reset(manager: ?*types.VulkanDescriptorManag
     if (mgr.useDescriptorBuffers) {
         mgr.descriptorSetCount = 0;
         mgr.freeCount = 0;
-    } else {
-        if (mgr.retiredPools != null) {
-            var i: u32 = 0;
-            while (i < mgr.retiredPoolCount) : (i += 1) {
-                c.vkDestroyDescriptorPool(mgr.device, mgr.retiredPools.?[i], null);
-            }
-            mgr.retiredPoolCount = 0;
-        }
-        _ = c.vkResetDescriptorPool(mgr.device, mgr.descriptorPool, 0);
-
-        if (mgr.setPoolMapping != null) {
-            const map = @as(*SetPoolMap, @ptrCast(@alignCast(mgr.setPoolMapping)));
-            map.clearAndFree(std.heap.c_allocator);
-        }
-
-        mgr.descriptorSetCount = 0;
     }
 }

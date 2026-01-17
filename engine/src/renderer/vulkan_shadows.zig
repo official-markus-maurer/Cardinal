@@ -380,7 +380,7 @@ pub fn vk_shadow_render(s: *types.VulkanState, cmd: c.VkCommandBuffer) void {
             if (use_buffers or (pipe.shadowDescriptorSets[frame_check] != null and @intFromPtr(pipe.shadowDescriptorSets[frame_check]) != 0)) {
                 sets = &descriptorSets;
             }
-            descriptor_mgr.vk_descriptor_manager_bind_sets(mgr, cmd, pipe.shadowPipelineLayout, 0, 1, sets, 0, null);
+            descriptor_mgr.vk_descriptor_manager_bind_sets(mgr, cmd, c.VK_PIPELINE_BIND_POINT_GRAPHICS, pipe.shadowPipelineLayout, 0, 1, sets, 0, null);
         } else {
             if (pipe.shadowDescriptorSets[frame_check] != null and @intFromPtr(pipe.shadowDescriptorSets[frame_check]) != 0) {
                 const descriptorSets = [_]c.VkDescriptorSet{pipe.shadowDescriptorSets[frame_check]};

@@ -40,29 +40,7 @@ fn create_default_sampler(device: c.VkDevice, out_sampler: *c.VkSampler) bool {
     return true;
 }
 
-// Helper function to create descriptor pool for bindless textures
-fn create_bindless_descriptor_pool(device: c.VkDevice, max_textures: u32, out_pool: *c.VkDescriptorPool) bool {
-    const pool_sizes = [_]c.VkDescriptorPoolSize{
-        .{ .type = c.VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, .descriptorCount = max_textures },
-    };
 
-    var pool_info = std.mem.zeroes(c.VkDescriptorPoolCreateInfo);
-    pool_info.sType = c.VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO;
-    pool_info.flags = c.VK_DESCRIPTOR_POOL_CREATE_UPDATE_AFTER_BIND_BIT;
-    pool_info.maxSets = 100; // Increased from 1 to support multiple bindless sets
-    pool_info.poolSizeCount = 1;
-    pool_info.pPoolSizes = &pool_sizes;
-
-    desc_idx_log.info("Creating bindless descriptor pool with {d} max sets", .{pool_info.maxSets});
-
-    const result = c.vkCreateDescriptorPool(device, &pool_info, null, out_pool);
-    if (result != c.VK_SUCCESS) {
-        desc_idx_log.err("Failed to create bindless descriptor pool: {d}", .{result});
-        return false;
-    }
-
-    return true;
-}
 
 pub export fn vk_bindless_texture_pool_init(pool: ?*types.BindlessTexturePool, vulkan_state: ?*types.VulkanState, max_textures: u32) callconv(.c) bool {
     if (pool == null or vulkan_state == null) {
@@ -132,7 +110,11 @@ pub export fn vk_bindless_texture_pool_init(pool: ?*types.BindlessTexturePool, v
     if (state.context.supports_descriptor_buffer and state.context.descriptor_buffer_extension_available) {
         p.use_descriptor_buffer = true;
     } else {
-        p.use_descriptor_buffer = false;
+        desc_idx_log.err("Descriptor buffers are required but not supported", .{});
+        memory.cardinal_free(mem_alloc, p.textures);
+        memory.cardinal_free(mem_alloc, p.free_indices);
+        memory.cardinal_free(mem_alloc, p.pending_updates);
+        return false;
     }
 
     // Create descriptor set layout
@@ -154,76 +136,51 @@ pub export fn vk_bindless_texture_pool_init(pool: ?*types.BindlessTexturePool, v
         return false;
     }
 
-    if (p.use_descriptor_buffer) {
-        desc_idx_log.info("Using descriptor buffer for bindless textures", .{});
+    desc_idx_log.info("Using descriptor buffer for bindless textures", .{});
 
-        p.descriptor_size = state.context.descriptor_buffer_combined_image_sampler_size;
-        p.vkGetDescriptorEXT = state.context.vkGetDescriptorEXT;
-        p.vkCmdBindDescriptorBuffersEXT = state.context.vkCmdBindDescriptorBuffersEXT;
-        p.vkCmdSetDescriptorBufferOffsetsEXT = state.context.vkCmdSetDescriptorBufferOffsetsEXT;
+    p.descriptor_size = state.context.descriptor_buffer_combined_image_sampler_size;
+    p.vkGetDescriptorEXT = state.context.vkGetDescriptorEXT;
+    p.vkCmdBindDescriptorBuffersEXT = state.context.vkCmdBindDescriptorBuffersEXT;
+    p.vkCmdSetDescriptorBufferOffsetsEXT = state.context.vkCmdSetDescriptorBufferOffsetsEXT;
 
-        // 1. Get Layout Size
-        if (state.context.vkGetDescriptorSetLayoutSizeEXT == null) {
-            desc_idx_log.err("vkGetDescriptorSetLayoutSizeEXT not loaded", .{});
-            return false;
-        }
-        state.context.vkGetDescriptorSetLayoutSizeEXT.?(p.device, p.descriptor_layout, &p.descriptor_set_size);
-
-        // 2. Get Binding Offset
-        if (state.context.vkGetDescriptorSetLayoutBindingOffsetEXT == null) {
-            desc_idx_log.err("vkGetDescriptorSetLayoutBindingOffsetEXT not loaded", .{});
-            return false;
-        }
-        state.context.vkGetDescriptorSetLayoutBindingOffsetEXT.?(p.device, p.descriptor_layout, CARDINAL_BINDLESS_TEXTURE_BINDING, &p.descriptor_offset);
-
-        // 3. Create Buffer
-        var bufferInfo = std.mem.zeroes(c.VkBufferCreateInfo);
-        bufferInfo.sType = c.VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO;
-        bufferInfo.size = p.descriptor_set_size;
-        bufferInfo.usage = c.VK_BUFFER_USAGE_RESOURCE_DESCRIPTOR_BUFFER_BIT_EXT | c.VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT;
-        bufferInfo.sharingMode = c.VK_SHARING_MODE_EXCLUSIVE;
-
-        if (!vk_allocator.allocate_buffer(p.allocator, &bufferInfo, &p.descriptor_buffer.handle, &p.descriptor_buffer.memory, &p.descriptor_buffer.allocation, c.VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | c.VK_MEMORY_PROPERTY_HOST_COHERENT_BIT, true, &p.descriptor_buffer.mapped)) {
-            desc_idx_log.err("Failed to create descriptor buffer for bindless pool", .{});
-            return false;
-        }
-
-        // Get buffer address
-        if (state.context.vkGetBufferDeviceAddress != null) {
-            var addressInfo = std.mem.zeroes(c.VkBufferDeviceAddressInfo);
-            addressInfo.sType = c.VK_STRUCTURE_TYPE_BUFFER_DEVICE_ADDRESS_INFO;
-            addressInfo.buffer = p.descriptor_buffer.handle;
-            p.descriptor_buffer_address = state.context.vkGetBufferDeviceAddress.?(p.device, &addressInfo);
-        } else {
-            desc_idx_log.err("vkGetBufferDeviceAddress not loaded, cannot get descriptor buffer address", .{});
-            return false;
-        }
-
-        // We can use a dummy value for descriptor_set if needed, but we should rely on use_descriptor_buffer flag
-        p.descriptor_set = null;
-
-    } else {
-        // Create descriptor pool
-        if (!create_bindless_descriptor_pool(p.device, max_textures, &p.descriptor_pool)) {
-            c.vkDestroyDescriptorSetLayout(p.device, p.descriptor_layout, null);
-            c.vkDestroySampler(p.device, p.default_sampler, null);
-            memory.cardinal_free(mem_alloc, p.textures);
-            memory.cardinal_free(mem_alloc, p.free_indices);
-            memory.cardinal_free(mem_alloc, p.pending_updates);
-            return false;
-        }
-
-        // Allocate descriptor set
-        if (!vk_allocate_variable_descriptor_set(p.device, p.descriptor_pool, p.descriptor_layout, max_textures, &p.descriptor_set)) {
-            c.vkDestroyDescriptorPool(p.device, p.descriptor_pool, null);
-            c.vkDestroyDescriptorSetLayout(p.device, p.descriptor_layout, null);
-            c.vkDestroySampler(p.device, p.default_sampler, null);
-            memory.cardinal_free(mem_alloc, p.textures);
-            memory.cardinal_free(mem_alloc, p.free_indices);
-            memory.cardinal_free(mem_alloc, p.pending_updates);
-            return false;
-        }
+    // 1. Get Layout Size
+    if (state.context.vkGetDescriptorSetLayoutSizeEXT == null) {
+        desc_idx_log.err("vkGetDescriptorSetLayoutSizeEXT not loaded", .{});
+        return false;
     }
+    state.context.vkGetDescriptorSetLayoutSizeEXT.?(p.device, p.descriptor_layout, &p.descriptor_set_size);
+
+    // 2. Get Binding Offset
+    if (state.context.vkGetDescriptorSetLayoutBindingOffsetEXT == null) {
+        desc_idx_log.err("vkGetDescriptorSetLayoutBindingOffsetEXT not loaded", .{});
+        return false;
+    }
+    state.context.vkGetDescriptorSetLayoutBindingOffsetEXT.?(p.device, p.descriptor_layout, CARDINAL_BINDLESS_TEXTURE_BINDING, &p.descriptor_offset);
+
+    // 3. Create Buffer
+    var bufferInfo = std.mem.zeroes(c.VkBufferCreateInfo);
+    bufferInfo.sType = c.VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO;
+    bufferInfo.size = p.descriptor_set_size;
+    bufferInfo.usage = c.VK_BUFFER_USAGE_RESOURCE_DESCRIPTOR_BUFFER_BIT_EXT | c.VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT;
+    bufferInfo.sharingMode = c.VK_SHARING_MODE_EXCLUSIVE;
+
+    if (!vk_allocator.allocate_buffer(p.allocator, &bufferInfo, &p.descriptor_buffer.handle, &p.descriptor_buffer.memory, &p.descriptor_buffer.allocation, c.VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | c.VK_MEMORY_PROPERTY_HOST_COHERENT_BIT, true, &p.descriptor_buffer.mapped)) {
+        desc_idx_log.err("Failed to create descriptor buffer for bindless pool", .{});
+        return false;
+    }
+
+    // Get buffer address
+    if (state.context.vkGetBufferDeviceAddress != null) {
+        var addressInfo = std.mem.zeroes(c.VkBufferDeviceAddressInfo);
+        addressInfo.sType = c.VK_STRUCTURE_TYPE_BUFFER_DEVICE_ADDRESS_INFO;
+        addressInfo.buffer = p.descriptor_buffer.handle;
+        p.descriptor_buffer_address = state.context.vkGetBufferDeviceAddress.?(p.device, &addressInfo);
+    } else {
+        desc_idx_log.err("vkGetBufferDeviceAddress not loaded, cannot get descriptor buffer address", .{});
+        return false;
+    }
+
+
 
     desc_idx_log.info("Bindless texture pool initialized with {d} max textures", .{max_textures});
     return true;
@@ -252,10 +209,7 @@ pub export fn vk_bindless_texture_pool_destroy(pool: ?*types.BindlessTexturePool
         vk_allocator.free_buffer(p.allocator, p.descriptor_buffer.handle, p.descriptor_buffer.allocation);
     }
 
-    // Destroy Vulkan objects
-    if (p.descriptor_pool != null) {
-        c.vkDestroyDescriptorPool(p.device, p.descriptor_pool, null);
-    }
+
 
     if (p.descriptor_layout != null) {
         c.vkDestroyDescriptorSetLayout(p.device, p.descriptor_layout, null);
@@ -548,8 +502,8 @@ pub export fn vk_bindless_texture_update_data(pool: ?*types.BindlessTexturePool,
 }
 
 pub export fn vk_bindless_texture_get_descriptor_set(pool: ?*const types.BindlessTexturePool) callconv(.c) c.VkDescriptorSet {
-    if (pool == null) return null;
-    return pool.?.descriptor_set;
+    _ = pool;
+    return null;
 }
 
 pub export fn vk_bindless_texture_get_layout(pool: ?*const types.BindlessTexturePool) callconv(.c) c.VkDescriptorSetLayout {
@@ -603,70 +557,11 @@ pub export fn vk_bindless_texture_flush_updates(pool: ?*types.BindlessTexturePoo
         p.needs_descriptor_update = false;
         p.pending_update_count = 0;
         return true;
-    }
-
-    // Prepare descriptor writes for updated textures
-    const mem_alloc = memory.cardinal_get_allocator_for_category(.RENDERER);
-    const writes_ptr = memory.cardinal_alloc(mem_alloc, p.pending_update_count * @sizeOf(c.VkWriteDescriptorSet));
-    const image_infos_ptr = memory.cardinal_alloc(mem_alloc, p.pending_update_count * @sizeOf(c.VkDescriptorImageInfo));
-
-    if (writes_ptr == null or image_infos_ptr == null) {
-        desc_idx_log.err("Failed to allocate memory for descriptor updates", .{});
-        if (writes_ptr != null) memory.cardinal_free(mem_alloc, writes_ptr);
-        if (image_infos_ptr != null) memory.cardinal_free(mem_alloc, image_infos_ptr);
+    } else {
+        // Fallback removed - Descriptor buffers are required
+        desc_idx_log.err("Descriptor buffers are required but not active", .{});
         return false;
     }
-
-    const writes = @as([*]c.VkWriteDescriptorSet, @ptrCast(@alignCast(writes_ptr)));
-    const image_infos = @as([*]c.VkDescriptorImageInfo, @ptrCast(@alignCast(image_infos_ptr)));
-
-    var write_count: u32 = 0;
-
-    var i: u32 = 0;
-    while (i < p.pending_update_count) : (i += 1) {
-        const texture_index = p.pending_updates.?[i];
-        const texture = &p.textures.?[texture_index];
-
-        if (!texture.is_allocated) {
-            continue;
-        }
-
-        // Image descriptor write
-        image_infos[i] = .{
-            .imageLayout = c.VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
-            .imageView = texture.image_view,
-            .sampler = texture.sampler,
-        };
-
-        writes[write_count] = .{
-            .sType = c.VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
-            .dstSet = p.descriptor_set,
-            .dstBinding = CARDINAL_BINDLESS_TEXTURE_BINDING,
-            .dstArrayElement = texture_index,
-            .descriptorType = c.VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
-            .descriptorCount = 1,
-            .pImageInfo = &image_infos[i],
-            .pNext = null,
-            .pBufferInfo = null,
-            .pTexelBufferView = null,
-        };
-        write_count += 1;
-    }
-
-    // Update descriptor sets
-    if (write_count > 0) {
-        c.vkUpdateDescriptorSets(p.device, write_count, writes, 0, null);
-        desc_idx_log.debug("Updated {d} bindless texture descriptors", .{write_count});
-    }
-
-    // Clean up
-    memory.cardinal_free(mem_alloc, writes_ptr);
-    memory.cardinal_free(mem_alloc, image_infos_ptr);
-
-    p.needs_descriptor_update = false;
-    p.pending_update_count = 0;
-
-    return true;
 }
 
 pub export fn vk_bindless_texture_get(pool: ?*const types.BindlessTexturePool, texture_index: u32) callconv(.c) ?*const types.BindlessTexture {
@@ -684,6 +579,7 @@ pub export fn vk_descriptor_indexing_supported(vulkan_state: ?*const types.Vulka
 
 pub export fn vk_create_variable_descriptor_layout(device: c.VkDevice, binding_count: u32, bindings: [*c]const c.VkDescriptorSetLayoutBinding, variable_binding_index: u32, max_variable_count: u32, out_layout: ?*c.VkDescriptorSetLayout, use_descriptor_buffer: bool) callconv(.c) bool {
     _ = max_variable_count;
+    _ = use_descriptor_buffer;
     if (device == null or bindings == null or out_layout == null) {
         desc_idx_log.err("Invalid parameters for variable descriptor layout creation", .{});
         return false;
@@ -700,24 +596,8 @@ pub export fn vk_create_variable_descriptor_layout(device: c.VkDevice, binding_c
     const binding_flags = @as([*]c.VkDescriptorBindingFlags, @ptrCast(@alignCast(binding_flags_ptr)));
 
     // Set flags for variable binding
-    if (!use_descriptor_buffer) {
-        binding_flags[variable_binding_index] = c.VK_DESCRIPTOR_BINDING_VARIABLE_DESCRIPTOR_COUNT_BIT |
-            c.VK_DESCRIPTOR_BINDING_UPDATE_AFTER_BIND_BIT |
-            c.VK_DESCRIPTOR_BINDING_PARTIALLY_BOUND_BIT;
-    } else {
-        binding_flags[variable_binding_index] = c.VK_DESCRIPTOR_BINDING_VARIABLE_DESCRIPTOR_COUNT_BIT |
-            c.VK_DESCRIPTOR_BINDING_PARTIALLY_BOUND_BIT;
-    }
-
-    // Set update-after-bind flag for other bindings if needed
-    var i: u32 = 0;
-    while (i < binding_count) : (i += 1) {
-        if (i != variable_binding_index) {
-            if (!use_descriptor_buffer) {
-                binding_flags[i] = c.VK_DESCRIPTOR_BINDING_UPDATE_AFTER_BIND_BIT;
-            }
-        }
-    }
+    binding_flags[variable_binding_index] = c.VK_DESCRIPTOR_BINDING_VARIABLE_DESCRIPTOR_COUNT_BIT |
+        c.VK_DESCRIPTOR_BINDING_PARTIALLY_BOUND_BIT;
 
     var binding_flags_info = std.mem.zeroes(c.VkDescriptorSetLayoutBindingFlagsCreateInfo);
     binding_flags_info.sType = c.VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_BINDING_FLAGS_CREATE_INFO;
@@ -728,11 +608,7 @@ pub export fn vk_create_variable_descriptor_layout(device: c.VkDevice, binding_c
     layout_info.sType = c.VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO;
     layout_info.pNext = &binding_flags_info;
 
-    if (use_descriptor_buffer) {
-        layout_info.flags = c.VK_DESCRIPTOR_SET_LAYOUT_CREATE_DESCRIPTOR_BUFFER_BIT_EXT;
-    } else {
-        layout_info.flags = c.VK_DESCRIPTOR_SET_LAYOUT_CREATE_UPDATE_AFTER_BIND_POOL_BIT;
-    }
+    layout_info.flags = c.VK_DESCRIPTOR_SET_LAYOUT_CREATE_DESCRIPTOR_BUFFER_BIT_EXT;
 
     layout_info.bindingCount = binding_count;
     layout_info.pBindings = bindings;
@@ -749,29 +625,4 @@ pub export fn vk_create_variable_descriptor_layout(device: c.VkDevice, binding_c
     return true;
 }
 
-pub export fn vk_allocate_variable_descriptor_set(device: c.VkDevice, descriptor_pool: c.VkDescriptorPool, layout: c.VkDescriptorSetLayout, variable_count: u32, out_set: ?*c.VkDescriptorSet) callconv(.c) bool {
-    if (device == null or descriptor_pool == null or layout == null or out_set == null) {
-        desc_idx_log.err("Invalid parameters for variable descriptor set allocation", .{});
-        return false;
-    }
 
-    var variable_info = std.mem.zeroes(c.VkDescriptorSetVariableDescriptorCountAllocateInfo);
-    variable_info.sType = c.VK_STRUCTURE_TYPE_DESCRIPTOR_SET_VARIABLE_DESCRIPTOR_COUNT_ALLOCATE_INFO;
-    variable_info.descriptorSetCount = 1;
-    variable_info.pDescriptorCounts = &variable_count;
-
-    var alloc_info = std.mem.zeroes(c.VkDescriptorSetAllocateInfo);
-    alloc_info.sType = c.VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO;
-    alloc_info.pNext = &variable_info;
-    alloc_info.descriptorPool = descriptor_pool;
-    alloc_info.descriptorSetCount = 1;
-    alloc_info.pSetLayouts = &layout;
-
-    const result = c.vkAllocateDescriptorSets(device, &alloc_info, out_set.?);
-    if (result != c.VK_SUCCESS) {
-        desc_idx_log.err("Failed to allocate variable descriptor set: {d}", .{result});
-        return false;
-    }
-
-    return true;
-}

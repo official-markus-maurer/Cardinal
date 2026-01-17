@@ -272,7 +272,7 @@ pub fn render_simple(s: *types.VulkanState, commandBufferHandle: c.VkCommandBuff
     cmd.bindPipeline(c.VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline);
 
     var descriptorSets = [_]c.VkDescriptorSet{s.pipelines.simple_descriptor_set};
-    descriptor_mgr.vk_descriptor_manager_bind_sets(s.pipelines.simple_descriptor_manager, commandBufferHandle, pipelineLayout, 0, 1, &descriptorSets, 0, null);
+    descriptor_mgr.vk_descriptor_manager_bind_sets(s.pipelines.simple_descriptor_manager, commandBufferHandle, c.VK_PIPELINE_BIND_POINT_GRAPHICS, pipelineLayout, 0, 1, &descriptorSets, 0, null);
 
     // Dynamic State: Viewport and Scissor
     var vp = std.mem.zeroes(c.VkViewport);

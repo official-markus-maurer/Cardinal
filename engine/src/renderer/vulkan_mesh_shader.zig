@@ -539,52 +539,34 @@ pub export fn vk_mesh_shader_draw(cmd_buffer: c.VkCommandBuffer, s: ?*types.Vulk
         use_buffers_1 = vk_desc_mgr.vk_descriptor_manager_uses_buffers(mgr);
     }
     
-    // Fallback Set 0
-    if (!use_buffers_0) {
-        if (use_buffers_0 or (data.descriptor_set != null and @intFromPtr(data.descriptor_set) != 0)) {
-            const sets = [_]c.VkDescriptorSet{data.descriptor_set};
-            vk_desc_mgr.vk_descriptor_manager_bind_sets(pipe.set0_manager, cmd_buffer, pipe.pipeline_layout, 0, 1, &sets, 0, null);
-        }
-    }
-    
-    // Fallback Set 1
-    if (!use_buffers_1) {
-        if (use_buffers_1 or (pipe.global_descriptor_set != null and @intFromPtr(pipe.global_descriptor_set) != 0)) {
-            const sets = [_]c.VkDescriptorSet{pipe.global_descriptor_set};
-            vk_desc_mgr.vk_descriptor_manager_bind_sets(pipe.set1_manager, cmd_buffer, pipe.pipeline_layout, 1, 1, &sets, 0, null);
-        }
-    }
-    
     // Buffer Path
-    if (use_buffers_0 or use_buffers_1) {
-        var binding_infos: [2]c.VkDescriptorBufferBindingInfoEXT = undefined;
-        var binding_count: u32 = 0;
-        var set0_idx: u32 = 0;
-        var set1_idx: u32 = 0;
-        
-        if (use_buffers_0) {
-            set0_idx = binding_count;
-            _ = vk_desc_mgr.vk_descriptor_manager_get_binding_info(pipe.set0_manager, &binding_infos[binding_count]);
-            binding_count += 1;
-        }
-        if (use_buffers_1) {
-            set1_idx = binding_count;
-            _ = vk_desc_mgr.vk_descriptor_manager_get_binding_info(pipe.set1_manager, &binding_infos[binding_count]);
-            binding_count += 1;
-        }
-        
-        if (binding_count > 0) {
-            vs.context.vkCmdBindDescriptorBuffersEXT.?(cmd_buffer, binding_count, &binding_infos);
-        }
-        
-        if (use_buffers_0) {
-             const sets = [_]c.VkDescriptorSet{data.descriptor_set};
-             vk_desc_mgr.vk_descriptor_manager_set_offsets(pipe.set0_manager, cmd_buffer, pipe.pipeline_layout, 0, 1, &sets, set0_idx);
-        }
-        if (use_buffers_1) {
-             const sets = [_]c.VkDescriptorSet{pipe.global_descriptor_set};
-             vk_desc_mgr.vk_descriptor_manager_set_offsets(pipe.set1_manager, cmd_buffer, pipe.pipeline_layout, 1, 1, &sets, set1_idx);
-        }
+    var binding_infos: [2]c.VkDescriptorBufferBindingInfoEXT = undefined;
+    var binding_count: u32 = 0;
+    var set0_idx: u32 = 0;
+    var set1_idx: u32 = 0;
+    
+    if (use_buffers_0) {
+        set0_idx = binding_count;
+        _ = vk_desc_mgr.vk_descriptor_manager_get_binding_info(pipe.set0_manager, &binding_infos[binding_count]);
+        binding_count += 1;
+    }
+    if (use_buffers_1) {
+        set1_idx = binding_count;
+        _ = vk_desc_mgr.vk_descriptor_manager_get_binding_info(pipe.set1_manager, &binding_infos[binding_count]);
+        binding_count += 1;
+    }
+    
+    if (binding_count > 0) {
+        vs.context.vkCmdBindDescriptorBuffersEXT.?(cmd_buffer, binding_count, &binding_infos);
+    }
+    
+    if (use_buffers_0) {
+            const sets = [_]c.VkDescriptorSet{data.descriptor_set};
+            vk_desc_mgr.vk_descriptor_manager_set_offsets(pipe.set0_manager, cmd_buffer, c.VK_PIPELINE_BIND_POINT_GRAPHICS, pipe.pipeline_layout, 0, 1, &sets, set0_idx);
+    }
+    if (use_buffers_1) {
+            const sets = [_]c.VkDescriptorSet{pipe.global_descriptor_set};
+            vk_desc_mgr.vk_descriptor_manager_set_offsets(pipe.set1_manager, cmd_buffer, c.VK_PIPELINE_BIND_POINT_GRAPHICS, pipe.pipeline_layout, 1, 1, &sets, set1_idx);
     }
 
     // PFN_vkCmdDrawMeshTasksEXT loading and calling

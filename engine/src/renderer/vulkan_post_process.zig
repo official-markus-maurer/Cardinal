@@ -144,64 +144,30 @@ pub fn vk_post_process_init(s: *types.VulkanState) bool {
     };
 
     // 6. Initialize Bloom Compute Pipeline
-    // Create Descriptor Layout for Compute
-    var bloom_bindings = [_]c.VkDescriptorSetLayoutBinding{
-        .{
-            .binding = 0,
-            .descriptorType = c.VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
-            .descriptorCount = 1,
-            .stageFlags = c.VK_SHADER_STAGE_COMPUTE_BIT,
-            .pImmutableSamplers = null,
-        },
-        .{
-            .binding = 1,
-            .descriptorType = c.VK_DESCRIPTOR_TYPE_STORAGE_IMAGE,
-            .descriptorCount = 1,
-            .stageFlags = c.VK_SHADER_STAGE_COMPUTE_BIT,
-            .pImmutableSamplers = null,
-        },
-    };
-
-    var layoutInfo = std.mem.zeroes(c.VkDescriptorSetLayoutCreateInfo);
-    layoutInfo.sType = c.VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO;
-    layoutInfo.bindingCount = 2;
-    layoutInfo.pBindings = &bloom_bindings;
-
-    if (c.vkCreateDescriptorSetLayout(s.context.device, &layoutInfo, null, &s.pipelines.post_process_pipeline.bloom_descriptor_layout) != c.VK_SUCCESS) {
-        pp_log.err("Failed to create bloom descriptor layout", .{});
+    // Create Descriptor Manager for Bloom
+    const bloom_mem_alloc = memory.cardinal_get_allocator_for_category(.RENDERER);
+    const bloom_ptr = memory.cardinal_alloc(bloom_mem_alloc, @sizeOf(types.VulkanDescriptorManager));
+    if (bloom_ptr == null) {
+        pp_log.err("Failed to allocate memory for bloom descriptor manager", .{});
         return false;
     }
+    s.pipelines.post_process_pipeline.bloomDescriptorManager = @as(*types.VulkanDescriptorManager, @ptrCast(@alignCast(bloom_ptr)));
 
-    // Create Descriptor Pool for Bloom
-    var poolSizes = [_]c.VkDescriptorPoolSize{
-        .{ .type = c.VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, .descriptorCount = types.MAX_FRAMES_IN_FLIGHT },
-        .{ .type = c.VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, .descriptorCount = types.MAX_FRAMES_IN_FLIGHT },
-    };
+    var bloom_builder = descriptor_mgr.DescriptorBuilder.init(std.heap.page_allocator);
+    defer bloom_builder.deinit();
 
-    var poolInfo = std.mem.zeroes(c.VkDescriptorPoolCreateInfo);
-    poolInfo.sType = c.VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO;
-    poolInfo.maxSets = types.MAX_FRAMES_IN_FLIGHT;
-    poolInfo.poolSizeCount = 2;
-    poolInfo.pPoolSizes = &poolSizes;
+    // Binding 0: Combined Image Sampler (Input)
+    bloom_builder.add_binding(0, c.VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1, c.VK_SHADER_STAGE_COMPUTE_BIT) catch return false;
+    // Binding 1: Storage Image (Output)
+    bloom_builder.add_binding(1, c.VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, 1, c.VK_SHADER_STAGE_COMPUTE_BIT) catch return false;
 
-    if (c.vkCreateDescriptorPool(s.context.device, &poolInfo, null, &s.pipelines.post_process_pipeline.bloom_descriptor_pool) != c.VK_SUCCESS) {
-        pp_log.err("Failed to create bloom descriptor pool", .{});
+    if (!bloom_builder.build(s.pipelines.post_process_pipeline.bloomDescriptorManager.?, s.context.device, @as(*types.VulkanAllocator, @ptrCast(&s.allocator)), s, types.MAX_FRAMES_IN_FLIGHT, true)) {
+        pp_log.err("Failed to build bloom descriptor manager", .{});
         return false;
     }
 
     // Allocate Bloom Descriptor Sets
-    var layouts_arr: [types.MAX_FRAMES_IN_FLIGHT]c.VkDescriptorSetLayout = undefined;
-    for (0..types.MAX_FRAMES_IN_FLIGHT) |j| {
-        layouts_arr[j] = s.pipelines.post_process_pipeline.bloom_descriptor_layout;
-    }
-
-    var allocInfo = std.mem.zeroes(c.VkDescriptorSetAllocateInfo);
-    allocInfo.sType = c.VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO;
-    allocInfo.descriptorPool = s.pipelines.post_process_pipeline.bloom_descriptor_pool;
-    allocInfo.descriptorSetCount = types.MAX_FRAMES_IN_FLIGHT;
-    allocInfo.pSetLayouts = &layouts_arr;
-
-    if (c.vkAllocateDescriptorSets(s.context.device, &allocInfo, @as([*]c.VkDescriptorSet, @ptrCast(&s.pipelines.post_process_pipeline.bloom_descriptor_sets))) != c.VK_SUCCESS) {
+    if (!descriptor_mgr.vk_descriptor_manager_allocate_sets(s.pipelines.post_process_pipeline.bloomDescriptorManager, types.MAX_FRAMES_IN_FLIGHT, @as([*]c.VkDescriptorSet, @ptrCast(&s.pipelines.post_process_pipeline.bloomDescriptorSets)))) {
         pp_log.err("Failed to allocate bloom descriptor sets", .{});
         return false;
     }
@@ -209,19 +175,10 @@ pub fn vk_post_process_init(s: *types.VulkanState) bool {
     // Update Bloom Descriptor Sets (Output Image is static)
     i = 0;
     while (i < types.MAX_FRAMES_IN_FLIGHT) : (i += 1) {
-        var imageInfoOut = std.mem.zeroes(c.VkDescriptorImageInfo);
-        imageInfoOut.imageView = s.pipelines.post_process_pipeline.bloom_view;
-        imageInfoOut.imageLayout = c.VK_IMAGE_LAYOUT_GENERAL;
-
-        var writeDesc = std.mem.zeroes(c.VkWriteDescriptorSet);
-        writeDesc.sType = c.VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
-        writeDesc.dstSet = s.pipelines.post_process_pipeline.bloom_descriptor_sets[i];
-        writeDesc.dstBinding = 1;
-        writeDesc.descriptorCount = 1;
-        writeDesc.descriptorType = c.VK_DESCRIPTOR_TYPE_STORAGE_IMAGE;
-        writeDesc.pImageInfo = &imageInfoOut;
-
-        c.vkUpdateDescriptorSets(s.context.device, 1, &writeDesc, 0, null);
+        if (!descriptor_mgr.vk_descriptor_manager_update_image(s.pipelines.post_process_pipeline.bloomDescriptorManager, s.pipelines.post_process_pipeline.bloomDescriptorSets[i], 1, s.pipelines.post_process_pipeline.bloom_view, null, c.VK_IMAGE_LAYOUT_GENERAL)) {
+            pp_log.err("Failed to update bloom output descriptor", .{});
+            return false;
+        }
     }
 
     // Create Bloom Compute Pipeline
@@ -233,7 +190,7 @@ pub fn vk_post_process_init(s: *types.VulkanState) bool {
     bloom_config.push_constant_size = 16; // vec4
     bloom_config.push_constant_stages = c.VK_SHADER_STAGE_COMPUTE_BIT;
 
-    var bloom_layout = [_]c.VkDescriptorSetLayout{s.pipelines.post_process_pipeline.bloom_descriptor_layout};
+    var bloom_layout = [_]c.VkDescriptorSetLayout{descriptor_mgr.vk_descriptor_manager_get_layout(s.pipelines.post_process_pipeline.bloomDescriptorManager)};
     bloom_config.descriptor_set_count = 1;
     bloom_config.descriptor_layouts = &bloom_layout;
 
@@ -304,8 +261,13 @@ pub fn vk_post_process_destroy(s: *types.VulkanState) void {
 
         // Bloom cleanup
         vk_compute.vk_compute_destroy_pipeline(s, &s.pipelines.post_process_pipeline.bloom_pipeline);
-        c.vkDestroyDescriptorPool(s.context.device, s.pipelines.post_process_pipeline.bloom_descriptor_pool, null);
-        c.vkDestroyDescriptorSetLayout(s.context.device, s.pipelines.post_process_pipeline.bloom_descriptor_layout, null);
+
+        if (s.pipelines.post_process_pipeline.bloomDescriptorManager) |mgr| {
+            descriptor_mgr.vk_descriptor_manager_destroy(mgr);
+            const mem_alloc = memory.cardinal_get_allocator_for_category(.RENDERER);
+            memory.cardinal_free(mem_alloc, mgr);
+            s.pipelines.post_process_pipeline.bloomDescriptorManager = null;
+        }
 
         c.vkDestroyImageView(s.context.device, s.pipelines.post_process_pipeline.bloom_view, null);
         vk_allocator.free_image(&s.allocator, s.pipelines.post_process_pipeline.bloom_image, s.pipelines.post_process_pipeline.bloom_allocation);
@@ -360,23 +322,13 @@ pub fn compute_bloom(s: *types.VulkanState, cmd: c.VkCommandBuffer, frame_index:
     c.vkCmdBindPipeline(cmd, c.VK_PIPELINE_BIND_POINT_COMPUTE, pp.bloom_pipeline.pipeline);
 
     // Update Input Descriptor (Binding 0) - this changes per frame based on input_view
-    var imageInfoIn = std.mem.zeroes(c.VkDescriptorImageInfo);
-    imageInfoIn.imageView = input_view;
-    imageInfoIn.imageLayout = c.VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
-    imageInfoIn.sampler = pp.sampler;
-
-    var writeDesc = std.mem.zeroes(c.VkWriteDescriptorSet);
-    writeDesc.sType = c.VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
-    writeDesc.dstSet = pp.bloom_descriptor_sets[frame_index];
-    writeDesc.dstBinding = 0;
-    writeDesc.descriptorCount = 1;
-    writeDesc.descriptorType = c.VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
-    writeDesc.pImageInfo = &imageInfoIn;
-
-    c.vkUpdateDescriptorSets(s.context.device, 1, &writeDesc, 0, null);
+    if (!descriptor_mgr.vk_descriptor_manager_update_image(pp.bloomDescriptorManager, pp.bloomDescriptorSets[frame_index], 0, input_view, pp.sampler, c.VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL)) {
+        pp_log.err("Failed to update bloom input descriptor", .{});
+    }
 
     // Bind Descriptor Set
-    c.vkCmdBindDescriptorSets(cmd, c.VK_PIPELINE_BIND_POINT_COMPUTE, pp.bloom_pipeline.pipeline_layout, 0, 1, &pp.bloom_descriptor_sets[frame_index], 0, null);
+    var sets = [_]c.VkDescriptorSet{pp.bloomDescriptorSets[frame_index]};
+    descriptor_mgr.vk_descriptor_manager_bind_sets(pp.bloomDescriptorManager, cmd, c.VK_PIPELINE_BIND_POINT_COMPUTE, pp.bloom_pipeline.pipeline_layout, 0, 1, &sets, 0, null);
 
     // Push Constants (Threshold/Knee)
     var params: [4]f32 = .{ 1.0, 0.1, 0.0, 0.0 };
@@ -441,7 +393,7 @@ pub fn draw(s: *types.VulkanState, cmd: c.VkCommandBuffer, frame_index: u32, inp
     c.vkCmdBindPipeline(cmd, c.VK_PIPELINE_BIND_POINT_GRAPHICS, pp.pipeline);
 
     var sets = [_]c.VkDescriptorSet{descSet};
-    descriptor_mgr.vk_descriptor_manager_bind_sets(pp.descriptorManager, cmd, pp.pipelineLayout, 0, 1, &sets, 0, null);
+    descriptor_mgr.vk_descriptor_manager_bind_sets(pp.descriptorManager, cmd, c.VK_PIPELINE_BIND_POINT_GRAPHICS, pp.pipelineLayout, 0, 1, &sets, 0, null);
 
     c.vkCmdDraw(cmd, 3, 1, 0, 0);
 }

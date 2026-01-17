@@ -42,7 +42,6 @@ pub const vulkan_swapchain = @import("renderer/vulkan_swapchain.zig");
 pub const vulkan_mesh_shader = @import("renderer/vulkan_mesh_shader.zig");
 pub const vulkan_pbr = @import("renderer/vulkan_pbr.zig");
 pub const vulkan_descriptor_indexing = @import("renderer/vulkan_descriptor_indexing.zig");
-pub const vulkan_descriptor_utils = @import("renderer/util/vulkan_descriptor_utils.zig");
 pub const vulkan_shader_utils = @import("renderer/util/vulkan_shader_utils.zig");
 pub const vulkan_instance = @import("renderer/vulkan_instance.zig");
 pub const vulkan_compute = @import("renderer/vulkan_compute.zig");
@@ -105,7 +104,6 @@ comptime {
     _ = ecs_archetype;
     _ = ecs_command_buffer;
     _ = vulkan_descriptor_indexing;
-    _ = vulkan_descriptor_utils;
     _ = vulkan_shader_utils;
     _ = vulkan_instance;
     _ = vulkan_compute;

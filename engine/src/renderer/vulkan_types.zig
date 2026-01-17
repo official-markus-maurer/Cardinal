@@ -307,9 +307,7 @@ pub const VulkanDescriptorManager = extern struct {
     bindings: ?[*]const VulkanDescriptorBinding,
     bindingCount: u32,
     maxSets: u32,
-    poolFlags: c.VkDescriptorPoolCreateFlags,
     useDescriptorBuffers: bool,
-    descriptorPool: c.VkDescriptorPool,
     device: c.VkDevice,
     descriptorSetLayout: c.VkDescriptorSetLayout,
     descriptorSetSize: c.VkDeviceSize,
@@ -327,10 +325,6 @@ pub const VulkanDescriptorManager = extern struct {
     freeIndices: ?[*]u32,
     freeCount: u32,
     freeCapacity: u32,
-    retiredPools: ?[*]c.VkDescriptorPool,
-    retiredPoolCount: u32,
-    retiredPoolCapacity: u32,
-    setPoolMapping: ?*anyopaque,
 };
 
 pub const DescriptorBufferCreateInfo = extern struct {
@@ -360,6 +354,9 @@ pub const VulkanContext = extern struct {
     descriptor_buffer_uniform_buffer_size: c.VkDeviceSize,
     descriptor_buffer_storage_buffer_size: c.VkDeviceSize,
     descriptor_buffer_combined_image_sampler_size: c.VkDeviceSize,
+    descriptor_buffer_storage_image_size: c.VkDeviceSize,
+    descriptor_buffer_sampled_image_size: c.VkDeviceSize,
+    descriptor_buffer_sampler_size: c.VkDeviceSize,
 
     vkGetDescriptorSetLayoutSizeEXT: c.PFN_vkGetDescriptorSetLayoutSizeEXT,
     vkGetDescriptorSetLayoutBindingOffsetEXT: c.PFN_vkGetDescriptorSetLayoutBindingOffsetEXT,
@@ -643,9 +640,7 @@ pub const BindlessTexturePool = extern struct {
     free_indices: ?[*]u32,
     free_count: u32,
 
-    descriptor_pool: c.VkDescriptorPool,
     descriptor_layout: c.VkDescriptorSetLayout,
-    descriptor_set: c.VkDescriptorSet,
 
     // Descriptor Buffer Support
     use_descriptor_buffer: bool,
@@ -785,9 +780,8 @@ pub const PostProcessPipeline = extern struct {
     bloom_view: c.VkImageView,
     bloom_memory: c.VkDeviceMemory,
     bloom_allocation: c.VmaAllocation,
-    bloom_descriptor_pool: c.VkDescriptorPool,
-    bloom_descriptor_layout: c.VkDescriptorSetLayout,
-    bloom_descriptor_sets: [MAX_FRAMES_IN_FLIGHT]c.VkDescriptorSet,
+    bloomDescriptorManager: ?*VulkanDescriptorManager,
+    bloomDescriptorSets: [MAX_FRAMES_IN_FLIGHT]c.VkDescriptorSet,
 
     // Params
     params_buffer: [MAX_FRAMES_IN_FLIGHT]c.VkBuffer,
@@ -819,6 +813,8 @@ pub const SSAOPipeline = extern struct {
 
     descriptor_sets: [MAX_FRAMES_IN_FLIGHT]c.VkDescriptorSet, // For SSAO pass
     blur_descriptor_sets: [MAX_FRAMES_IN_FLIGHT]c.VkDescriptorSet, // For Blur pass
+    descriptorManager: ?*VulkanDescriptorManager,
+    blurDescriptorManager: ?*VulkanDescriptorManager,
 
     initialized: bool,
 };

@@ -803,6 +803,9 @@ pub export fn vk_create_device(s: ?*types.VulkanState) callconv(.c) bool {
             vs.context.descriptor_buffer_uniform_buffer_size = desc_buffer_props.uniformBufferDescriptorSize;
             vs.context.descriptor_buffer_storage_buffer_size = desc_buffer_props.storageBufferDescriptorSize;
             vs.context.descriptor_buffer_combined_image_sampler_size = desc_buffer_props.combinedImageSamplerDescriptorSize;
+            vs.context.descriptor_buffer_storage_image_size = desc_buffer_props.storageImageDescriptorSize;
+            vs.context.descriptor_buffer_sampled_image_size = desc_buffer_props.sampledImageDescriptorSize;
+            vs.context.descriptor_buffer_sampler_size = desc_buffer_props.samplerDescriptorSize;
         } else {
             vs.context.supports_descriptor_buffer = false;
         }

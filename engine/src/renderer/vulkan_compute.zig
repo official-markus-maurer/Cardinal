@@ -295,6 +295,10 @@ pub fn vk_compute_create_pipeline(vulkan_state: ?*types.VulkanState, config: ?*c
     pipeline_info.basePipelineHandle = null;
     pipeline_info.basePipelineIndex = -1;
 
+    if (vs.context.supports_descriptor_buffer) {
+        pipeline_info.flags |= c.VK_PIPELINE_CREATE_DESCRIPTOR_BUFFER_BIT_EXT;
+    }
+
     result = c.vkCreateComputePipelines(vs.context.device, null, 1, &pipeline_info, null, &pipe.pipeline);
     if (result != c.VK_SUCCESS) {
         compute_log.err("Failed to create compute pipeline: {d}", .{result});
