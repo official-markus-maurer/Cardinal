@@ -248,6 +248,15 @@ fn cleanup_buffer_resources(buffer: *VulkanBuffer, device: c.VkDevice, allocator
     @memset(@as([*]u8, @ptrCast(buffer))[0..@sizeOf(VulkanBuffer)], 0);
 }
 
+pub export fn vk_buffer_destroy_immediate(buffer_ptr: ?*VulkanBuffer, device: c.VkDevice, allocator: ?*types.VulkanAllocator) callconv(.c) void {
+    if (buffer_ptr == null) return;
+    const buffer = buffer_ptr.?;
+    if (buffer.handle == null) return;
+
+    // Direct cleanup without waiting
+    cleanup_buffer_resources(buffer, device, allocator);
+}
+
 pub export fn vk_buffer_destroy(buffer_ptr: ?*VulkanBuffer, device: c.VkDevice, allocator: ?*types.VulkanAllocator, vulkan_state: ?*types.VulkanState) callconv(.c) void {
     if (buffer_ptr == null) {
         buf_log.warn("DESTROY_SKIP: Invalid buffer pointer", .{});

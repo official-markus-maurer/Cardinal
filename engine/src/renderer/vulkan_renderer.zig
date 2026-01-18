@@ -73,7 +73,7 @@ fn pbr_pass_callback(cmd: c.VkCommandBuffer, state: *types.VulkanState) void {
 
     const should_clear_depth = (state.pipelines.depth_pipeline == null or state.current_rendering_mode != types.CardinalRenderingMode.NORMAL);
 
-    if (vk_commands.begin_dynamic_rendering_ext(state, cmd, state.current_image_index, use_depth, depth_view, color_view, &clears, true, should_clear_depth, flags, true)) {
+    if (vk_commands.vk_begin_rendering_impl(state, cmd, state.current_image_index, use_depth, depth_view, color_view, &clears, true, should_clear_depth, flags, true)) {
         if (use_depth and depth_view != null) {
             // Log the image view used for rendering
         }
@@ -84,7 +84,7 @@ fn pbr_pass_callback(cmd: c.VkCommandBuffer, state: *types.VulkanState) void {
             vk_commands.vk_record_scene_content(state, cmd);
         }
 
-        vk_commands.end_dynamic_rendering(state, cmd);
+        vk_commands.vk_end_rendering(state, cmd);
     }
 }
 
@@ -110,11 +110,11 @@ fn post_process_pass_callback(cmd: c.VkCommandBuffer, state: *types.VulkanState)
 
     // Render to Swapchain (Backbuffer)
     // begin_dynamic_rendering_ext defaults to swapchain view if color_view is null
-    if (vk_commands.begin_dynamic_rendering_ext(state, cmd, state.current_image_index, false, null, null, &clears, true, false, 0, true)) {
+    if (vk_commands.vk_begin_rendering_impl(state, cmd, state.current_image_index, false, null, null, &clears, true, false, 0, true)) {
         if (input_view) |view| {
             vk_post_process.draw(state, cmd, state.sync.current_frame, view);
         }
-        vk_commands.end_dynamic_rendering(state, cmd);
+        vk_commands.vk_end_rendering(state, cmd);
     }
 }
 
@@ -977,8 +977,6 @@ pub export fn cardinal_renderer_set_lights(renderer: ?*types.CardinalRenderer, l
     if (renderer == null) return;
     const s = get_state(renderer) orelse return;
 
-    renderer_log.info("Setting lights: count={d}", .{count});
-
     if (!s.pipelines.use_pbr_pipeline) return;
 
     var lighting = std.mem.zeroes(types.PBRLightingBuffer);
@@ -1424,53 +1422,6 @@ pub export fn cardinal_renderer_immediate_submit_with_secondary(renderer: ?*type
     cardinal_renderer_immediate_submit(renderer, record);
 }
 
-fn upload_single_mesh(s: *types.VulkanState, src: *const types.CardinalMesh, dst: *types.GpuMesh, mesh_index: u32) bool {
-    dst.vbuf = null;
-    dst.vmem = null;
-    dst.ibuf = null;
-    dst.imem = null;
-    dst.vertex_count = 0;
-    dst.index_count = 0;
-
-    dst.vtx_stride = @sizeOf(types.CardinalVertex);
-    const vsize: c.VkDeviceSize = src.vertex_count * dst.vtx_stride;
-    const index_size: c.VkDeviceSize = src.index_count * @sizeOf(u32);
-
-    renderer_log.debug("Mesh {d}: vsize={d}, isize={d}, vertices={d}, indices={d}", .{ mesh_index, vsize, index_size, src.vertex_count, src.index_count });
-
-    if (src.vertices == null or src.vertex_count == 0) {
-        renderer_log.err("Mesh {d} has no vertices", .{mesh_index});
-        return false;
-    }
-
-    renderer_log.debug("Mesh {d}: staging vertex buffer", .{mesh_index});
-    var vbuf = std.mem.zeroes(buffer_mgr.VulkanBuffer);
-    if (!buffer_mgr.vk_buffer_create_device_local(&vbuf, s.context.device, @ptrCast(&s.allocator), s.commands.pools.?[0], s.context.graphics_queue, src.vertices, vsize, c.VK_BUFFER_USAGE_VERTEX_BUFFER_BIT, s)) {
-        renderer_log.err("Failed to create vertex buffer for mesh {d}", .{mesh_index});
-        return false;
-    }
-    dst.vbuf = vbuf.handle;
-    dst.vmem = vbuf.memory;
-    dst.v_allocation = vbuf.allocation;
-
-    if (src.index_count > 0 and src.indices != null) {
-        renderer_log.debug("Mesh {d}: staging index buffer", .{mesh_index});
-        var ibuf = std.mem.zeroes(buffer_mgr.VulkanBuffer);
-        if (buffer_mgr.vk_buffer_create_device_local(&ibuf, s.context.device, @ptrCast(&s.allocator), s.commands.pools.?[0], s.context.graphics_queue, src.indices, index_size, c.VK_BUFFER_USAGE_INDEX_BUFFER_BIT, s)) {
-            dst.ibuf = ibuf.handle;
-            dst.imem = ibuf.memory;
-            dst.i_allocation = ibuf.allocation;
-            dst.index_count = src.index_count;
-        } else {
-            renderer_log.err("Failed to create index buffer for mesh {d}", .{mesh_index});
-        }
-    }
-    dst.vertex_count = src.vertex_count;
-
-    renderer_log.debug("Successfully uploaded mesh {d}: {d} vertices, {d} indices", .{ mesh_index, src.vertex_count, src.index_count });
-    return true;
-}
-
 pub export fn cardinal_renderer_upload_scene(renderer: ?*types.CardinalRenderer, scene: ?*const types.CardinalScene) callconv(.c) void {
     const s = get_state(renderer) orelse return;
 
@@ -1508,26 +1459,10 @@ pub export fn cardinal_renderer_upload_scene(renderer: ?*types.CardinalRenderer,
         return;
     }
 
-    s.scene_mesh_count = scene.?.mesh_count;
-    const mem_alloc = memory.cardinal_get_allocator_for_category(.RENDERER);
-    const meshes_ptr = memory.cardinal_calloc(mem_alloc, s.scene_mesh_count, @sizeOf(types.GpuMesh));
-    if (meshes_ptr == null) {
-        renderer_log.err("Failed to allocate memory for scene meshes", .{});
-        return;
-    }
-    s.scene_meshes = @ptrCast(@alignCast(meshes_ptr));
-
-    renderer_log.info("Uploading scene with {d} meshes using batched staging operations", .{scene.?.mesh_count});
-
-    var i: u32 = 0;
-    while (i < scene.?.mesh_count) : (i += 1) {
-        const src = &scene.?.meshes.?[i];
-        const dst = &s.scene_meshes.?[i];
-
-        if (!upload_single_mesh(s, @ptrCast(src), dst, i)) {
-            continue;
-        }
-    }
+    // We no longer use individual scene meshes (legacy path).
+    // PBR pipeline handles its own batched buffer creation in vk_pbr_load_scene.
+    // s.scene_mesh_count = scene.?.mesh_count;
+    s.scene_meshes = null;
 
     if (s.pipelines.use_pbr_pipeline) {
         renderer_log.info("Loading scene into PBR pipeline", .{});

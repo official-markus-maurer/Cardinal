@@ -19,6 +19,8 @@ struct Material {
     uint packedInfo; // Bits 0-15: uvSetIndices, Bits 16-31: flags
     vec4 textureTransforms[5]; // xy = offset, zw = scale
     float textureRotations[5]; // Array of rotations
+    float emissiveStrength;
+    vec2 _padding;
 };
 
 // Push constants for per-mesh data (matching PBRPushConstants)

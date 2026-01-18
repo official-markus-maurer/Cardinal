@@ -242,12 +242,49 @@ pub const PBRPushConstants = extern struct {
     _padding_end: [2]u32,
 };
 
+pub const MeshShaderPushConstants = extern struct {
+    // Material data (offset 0)
+    albedoFactor: [4]f32, // RGBA
+
+    // vec4 emissiveAndRoughness;
+    emissiveFactor: [3]f32,
+    roughnessFactor: f32,
+
+    // vec4 metallicNormalAO;
+    metallicNormalAO: [4]f32, // x=metallic, y=normalScale, z=aoStrength, w=alphaCutoff
+
+    albedoTextureIndex: u32,
+    normalTextureIndex: u32,
+    metallicRoughnessTextureIndex: u32,
+    aoTextureIndex: u32,
+    emissiveTextureIndex: u32,
+
+    packedInfo: u32, // Bits 0-15: uvSetIndices, Bits 16-31: flags
+
+    // Padding to align textureTransforms to 16 bytes (std430 alignment for vec4 array)
+    _padding: [2]u32,
+
+    // Packed texture transforms: xy = offset, zw = scale
+    textureTransforms: [5][4]f32,
+    // Texture rotations
+    textureRotations: [5]f32,
+
+    // Emissive strength
+    emissiveStrength: f32,
+
+    // Padding to match shader size (alignment)
+    _padding_end: [2]u32,
+};
+
 pub const MeshShaderUniformBuffer = extern struct {
     model: [16]f32,
     view: [16]f32,
     proj: [16]f32,
+    mvp: [16]f32,
     materialIndex: u32,
     _padding: [3]u32,
+    viewPos: [4]f32, // xyz = pos, w = unused
+    ambientColor: [4]f32, // xyz = color, w = range/unused
 };
 
 pub const VkQueueFamilyOwnershipTransferInfo = extern struct {
@@ -598,10 +635,10 @@ pub const ComputeDispatchInfo = extern struct {
 };
 
 pub const ComputeMemoryBarrier = extern struct {
-    src_access_mask: c.VkAccessFlags,
-    dst_access_mask: c.VkAccessFlags,
-    src_stage_mask: c.VkPipelineStageFlags,
-    dst_stage_mask: c.VkPipelineStageFlags,
+    src_access_mask: c.VkAccessFlags2,
+    dst_access_mask: c.VkAccessFlags2,
+    src_stage_mask: c.VkPipelineStageFlags2,
+    dst_stage_mask: c.VkPipelineStageFlags2,
 };
 
 // Bindless Texture Types
@@ -727,6 +764,10 @@ pub const GpuMeshlet = extern struct {
     vertex_count: u32,
     primitive_offset: u32,
     primitive_count: u32,
+    center: [3]f32,
+    radius: f32,
+    cone_axis: [3]f32,
+    cone_cutoff: f32,
 };
 
 pub const GpuMesh = extern struct {

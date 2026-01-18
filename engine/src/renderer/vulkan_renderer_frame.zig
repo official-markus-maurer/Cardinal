@@ -588,6 +588,12 @@ pub export fn cardinal_renderer_draw_frame(renderer: ?*types.CardinalRenderer) c
         vk_commands.vk_prepare_mesh_shader_rendering(@ptrCast(s));
     }
 
+    // Update PBR Uniforms (UBO + Lights)
+    if (s.pipelines.use_pbr_pipeline) {
+        // Ensure lighting is uploaded every frame
+        vk_pbr.vk_pbr_update_uniforms(@ptrCast(&s.pipelines.pbr_pipeline), @ptrCast(&s.pipelines.pbr_pipeline.current_ubo), @ptrCast(&s.pipelines.pbr_pipeline.current_lighting), s.sync.current_frame);
+    }
+
     var signal_after_render: u64 = 0;
 
     if (s.swapchain.headless_mode) {
@@ -611,13 +617,13 @@ pub export fn cardinal_renderer_draw_frame(renderer: ?*types.CardinalRenderer) c
         vk_texture_manager.vk_texture_manager_update_textures(s.pipelines.pbr_pipeline.textureManager.?);
     }
 
+    vk_commands.vk_record_cmd(@ptrCast(s), image_index);
+
     if (s.sync_manager != null) {
         signal_after_render = vk_sync_manager.vulkan_sync_manager_get_next_timeline_value(s.sync_manager);
     } else {
         signal_after_render = s.sync.current_frame_value + 1;
     }
-
-    vk_commands.vk_record_cmd(@ptrCast(s), image_index);
 
     const cmd_buf = if (s.commands.current_buffer_index == 0)
         s.commands.buffers.?[s.sync.current_frame]

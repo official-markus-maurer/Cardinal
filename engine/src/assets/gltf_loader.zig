@@ -987,6 +987,25 @@ fn load_lights_from_gltf(data: *const c.cgltf_data, out_lights: *?[*]scene.Cardi
     return true;
 }
 
+fn contains_ignore_case(haystack: []const u8, needle: []const u8) bool {
+    if (needle.len == 0) return true;
+    if (haystack.len < needle.len) return false;
+
+    var i: usize = 0;
+    while (i <= haystack.len - needle.len) : (i += 1) {
+        var match = true;
+        var j: usize = 0;
+        while (j < needle.len) : (j += 1) {
+            if (std.ascii.toLower(haystack[i + j]) != std.ascii.toLower(needle[j])) {
+                match = false;
+                break;
+            }
+        }
+        if (match) return true;
+    }
+    return false;
+}
+
 pub export fn cardinal_gltf_load_scene(path: [*:0]const u8, out_scene: *scene.CardinalScene) callconv(.c) bool {
     gltf_log.debug("[GLTF] cardinal_gltf_load_scene start: {s}\n", .{path});
     // Log with Error level to ensure it shows up in user logs (temporary debugging)
@@ -1640,6 +1659,81 @@ pub export fn cardinal_gltf_load_scene(path: [*:0]const u8, out_scene: *scene.Ca
                     node.light_index = @intCast(light_idx);
                     if (light_idx < light_count) {
                         lights.?[light_idx].node_index = @intCast(ni);
+                    }
+                }
+            }
+        }
+    }
+
+    // Auto-generate lights for nodes with specific names (Lantern, Lamp, etc.)
+    // Only if they don't already have a light attached
+    if (out_scene.all_nodes) |all_nodes| {
+        // assets_allocator is already defined in the outer scope
+        var ni: usize = 0;
+        while (ni < out_scene.all_node_count) : (ni += 1) {
+            if (all_nodes[ni]) |node| {
+                if (node.light_index >= 0) continue; // Already has a light
+
+                var match_found = false;
+                const gltf_node = &d.nodes[ni];
+
+                // Check Node Name
+                if (gltf_node.name) |n| {
+                    const name_slice = std.mem.span(n);
+                    if (contains_ignore_case(name_slice, "lantern") or
+                        contains_ignore_case(name_slice, "lamp") or
+                        contains_ignore_case(name_slice, "torch") or
+                        contains_ignore_case(name_slice, "sponza_373") or
+                        contains_ignore_case(name_slice, "light_source"))
+                    {
+                        match_found = true;
+                        gltf_log.info("Found light node by Node Name: {s}", .{name_slice});
+                    }
+                }
+
+                // Check Mesh Name (if not found yet)
+                if (!match_found and gltf_node.mesh != null and gltf_node.mesh.*.name != null) {
+                    const m_name = gltf_node.mesh.*.name;
+                    const name_slice = std.mem.span(m_name);
+                    if (contains_ignore_case(name_slice, "lantern") or
+                        contains_ignore_case(name_slice, "lamp") or
+                        contains_ignore_case(name_slice, "torch") or
+                        contains_ignore_case(name_slice, "sponza_373") or
+                        contains_ignore_case(name_slice, "light_source"))
+                    {
+                        match_found = true;
+                        gltf_log.info("Found light node by Mesh Name: {s}", .{name_slice});
+                    }
+                }
+
+                if (match_found) {
+                    // Heuristic: If it's a "Lantern", it might be the mesh itself.
+                    // We attach a Point Light.
+
+                    const new_count = light_count + 1;
+                    // Note: memory.cardinal_realloc handles null ptr (alloc)
+                    const new_lights_ptr = memory.cardinal_realloc(assets_allocator, lights, new_count * @sizeOf(scene.CardinalLight));
+
+                    if (new_lights_ptr) |ptr| {
+                        lights = @ptrCast(@alignCast(ptr));
+                        const new_light = &lights.?[light_count];
+
+                        // Setup default Point Light parameters
+                        new_light.type = .POINT;
+                        new_light.color = .{ 1.0, 0.90, 0.70 }; // Warm light
+                        new_light.intensity = 50.0; // Increased intensity (was 20.0)
+                        new_light.range = 50.0; // Increased range (was 15.0)
+                        new_light.inner_cone_angle = 0.0;
+                        new_light.outer_cone_angle = 0.0;
+                        new_light.node_index = @intCast(ni);
+                        new_light._padding = 0;
+
+                        node.light_index = @intCast(light_count);
+
+                        light_count = new_count;
+                        gltf_log.info("Auto-generated Point Light for node index: {d}", .{ni});
+                    } else {
+                        gltf_log.err("Failed to reallocate lights array for auto-generation", .{});
                     }
                 }
             }

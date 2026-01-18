@@ -382,6 +382,10 @@ pub fn vulkan_sync_manager_get_next_timeline_value(sync_manager: ?*types.VulkanS
     var current_device_value: u64 = 0;
     var result = c.vkGetSemaphoreCounterValue(mgr.device, mgr.timeline_semaphore, &current_device_value);
 
+    if (result != c.VK_SUCCESS) {
+        sync_log.err("vkGetSemaphoreCounterValue failed: {d}. Mgr: {*}, Sem: {any}", .{ result, mgr, mgr.timeline_semaphore });
+    }
+
     const atom_ptr = atomic(&mgr.global_timeline_counter);
 
     while (true) {

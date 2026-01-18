@@ -12,12 +12,19 @@ struct GpuMeshlet {
     uint vertex_count;
     uint primitive_offset;
     uint primitive_count;
+    vec3 center;
+    float radius;
+    vec3 cone_axis;
+    float cone_cutoff;
 };
 
 struct Vertex {
     vec3 position;
     vec3 normal;
     vec2 texcoord;
+    vec2 texcoord1;
+    vec4 boneWeights;
+    uvec4 boneIndices;
 };
 
 // Storage buffers
@@ -44,6 +51,8 @@ layout(set = 0, binding = 5) uniform UniformBuffer {
     mat4 proj;
     mat4 mvp;
     uint materialIndex;
+    vec4 viewPos; // xyz = pos, w = unused
+    vec4 ambientColor; // xyz = color, w = range/unused
 } ubo;
 
 // Output vertex attributes
@@ -51,6 +60,8 @@ layout(location = 0) out vec3 fragWorldPos[];
 layout(location = 1) out vec3 fragNormal[];
 layout(location = 2) out vec2 fragTexCoord[];
 layout(location = 3) out flat uint fragMaterialIndex[];
+layout(location = 4) out flat vec3 fragCameraPos[];
+layout(location = 5) out vec2 fragTexCoord1[];
 
 void main() {
     uint meshlet_index = gl_WorkGroupID.x;
@@ -80,6 +91,8 @@ void main() {
         fragNormal[thread_id] = normalize(mat3(ubo.model) * vertex.normal);
         fragTexCoord[thread_id] = vertex.texcoord;
         fragMaterialIndex[thread_id] = ubo.materialIndex;
+        fragCameraPos[thread_id] = ubo.viewPos.xyz;
+        fragTexCoord1[thread_id] = vertex.texcoord1;
     }
     
     // Process primitives (triangles)

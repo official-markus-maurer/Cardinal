@@ -9,6 +9,7 @@ const shader_utils = @import("util/vulkan_shader_utils.zig");
 const vk_texture_utils = @import("util/vulkan_texture_utils.zig");
 const scene = @import("../assets/scene.zig");
 const vk_allocator = @import("vulkan_allocator.zig");
+const math = @import("../core/math.zig");
 
 const vk_pso = @import("vulkan_pso.zig");
 const vk_desc_mgr = @import("vulkan_descriptor_manager.zig");
@@ -286,8 +287,8 @@ pub export fn vk_mesh_shader_create_pipeline(s: ?*types.VulkanState, config: ?*c
         }
     }
 
-    if (!create_manager(allocator, &set0_bindings, &pipe.set0_manager, vs, 1000)) return false;
-    if (!create_manager(allocator, &set1_bindings, &pipe.set1_manager, vs, 1000)) return false;
+    if (!create_manager(allocator, &set0_bindings, &pipe.set0_manager, vs, 10000)) return false;
+    if (!create_manager(allocator, &set1_bindings, &pipe.set1_manager, vs, 10000)) return false;
 
     pipe.global_descriptor_set = null;
 
@@ -714,6 +715,34 @@ pub export fn vk_mesh_shader_generate_meshlets(vertices: ?*const anyopaque, vert
         meshlet.primitive_offset = current_index;
         meshlet.primitive_count = indices_to_process / 3;
 
+        // Compute Bounds
+        var min_pos = math.Vec3{ .x = std.math.floatMax(f32), .y = std.math.floatMax(f32), .z = std.math.floatMax(f32) };
+        var max_pos = math.Vec3{ .x = -std.math.floatMax(f32), .y = -std.math.floatMax(f32), .z = -std.math.floatMax(f32) };
+        
+        const indices_ptr = @as([*]const u32, @ptrCast(@alignCast(indices)));
+        const vertices_ptr = @as([*]const scene.CardinalVertex, @ptrCast(@alignCast(vertices)));
+
+        var p: u32 = 0;
+        while (p < indices_to_process) : (p += 1) {
+            const idx = indices_ptr[current_index + p];
+            const v_raw = vertices_ptr[idx];
+            
+            if (v_raw.px < min_pos.x) min_pos.x = v_raw.px;
+            if (v_raw.py < min_pos.y) min_pos.y = v_raw.py;
+            if (v_raw.pz < min_pos.z) min_pos.z = v_raw.pz;
+            
+            if (v_raw.px > max_pos.x) max_pos.x = v_raw.px;
+            if (v_raw.py > max_pos.y) max_pos.y = v_raw.py;
+            if (v_raw.pz > max_pos.z) max_pos.z = v_raw.pz;
+        }
+        
+        const center = min_pos.add(max_pos).mul(0.5);
+        const extent = max_pos.sub(min_pos).mul(0.5);
+        meshlet.center = .{center.x, center.y, center.z};
+        meshlet.radius = @max(extent.x, @max(extent.y, extent.z));
+        meshlet.cone_axis = .{0, 0, 0};
+        meshlet.cone_cutoff = 0;
+
         current_index += indices_to_process;
         current_meshlet += 1;
     }
@@ -843,6 +872,9 @@ pub export fn vk_mesh_shader_update_descriptor_buffers(
     texture_views: ?[*]c.VkImageView,
     samplers: ?[*]c.VkSampler,
     texture_count: u32,
+    shadow_map_view: c.VkImageView,
+    shadow_map_sampler: c.VkSampler,
+    shadow_ubo: c.VkBuffer,
 ) callconv(.c) bool {
     if (s == null or pipeline == null) return false;
     const pipe = pipeline.?;
@@ -861,7 +893,19 @@ pub export fn vk_mesh_shader_update_descriptor_buffers(
     }
 
     if (texture_count > 0 and texture_views != null and samplers != null) {
-        _ = vk_desc_mgr.vk_descriptor_manager_update_textures_with_samplers(pipe.set1_manager, pipe.global_descriptor_set, 3, texture_views, samplers, c.VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, texture_count);
+        _ = vk_desc_mgr.vk_descriptor_manager_update_textures_with_samplers(pipe.set1_manager, pipe.global_descriptor_set, 5, texture_views, samplers, c.VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, texture_count);
+    }
+
+    if (shadow_map_view != null and shadow_map_sampler != null) {
+        var views = [_]c.VkImageView{shadow_map_view};
+        var s_samplers = [_]c.VkSampler{shadow_map_sampler};
+        _ = vk_desc_mgr.vk_descriptor_manager_update_textures_with_samplers(pipe.set1_manager, pipe.global_descriptor_set, 3, &views, &s_samplers, c.VK_IMAGE_LAYOUT_DEPTH_STENCIL_READ_ONLY_OPTIMAL, 1);
+    }
+
+    if (shadow_ubo != null) {
+        const cascade_count = @min(s.?.config.shadow_cascade_count, types.MAX_SHADOW_CASCADES);
+        const shadowUBOSize = @sizeOf(math.Mat4) * @as(u64, cascade_count) + @sizeOf(f32) * 4;
+        _ = vk_desc_mgr.vk_descriptor_manager_update_buffer(pipe.set1_manager, pipe.global_descriptor_set, 4, shadow_ubo, 0, shadowUBOSize);
     }
 
     // 2. Allocate and Update Set 0 (Mesh Data)
@@ -932,16 +976,65 @@ pub export fn vk_mesh_shader_record_frame(s: ?*types.VulkanState, cmd: c.VkComma
                         @memcpy(meshUbo.view[0..16], pbrUbo.view[0..16]);
                         @memcpy(meshUbo.proj[0..16], pbrUbo.proj[0..16]);
                         meshUbo.materialIndex = mesh.material_index;
+                        @memcpy(meshUbo.viewPos[0..3], pbrUbo.viewPos[0..3]);
+                        @memcpy(meshUbo.ambientColor[0..4], pbrUbo.ambientColor[0..4]);
 
                         if (draw_data.uniform_mapped != null) {
                             @memcpy(@as([*]u8, @ptrCast(draw_data.uniform_mapped))[0..@sizeOf(types.MeshShaderUniformBuffer)], @as([*]const u8, @ptrCast(&meshUbo))[0..@sizeOf(types.MeshShaderUniformBuffer)]);
                         }
                     }
 
+                    // Push Constants
+                    var pushConstants = std.mem.zeroes(types.MeshShaderPushConstants);
+                    if (mesh.material_index < current_scene.material_count) {
+                        const mat = &current_scene.materials.?[mesh.material_index];
+                        @memcpy(pushConstants.albedoFactor[0..4], mat.albedo_factor[0..4]);
+                        pushConstants.emissiveFactor = mat.emissive_factor;
+                        pushConstants.roughnessFactor = mat.roughness_factor;
+                        pushConstants.metallicNormalAO[0] = mat.metallic_factor;
+                        pushConstants.metallicNormalAO[1] = 1.0; // Normal scale
+                        pushConstants.metallicNormalAO[2] = 1.0; // AO strength
+                        pushConstants.metallicNormalAO[3] = mat.alpha_cutoff;
+
+                        pushConstants.albedoTextureIndex = if (mat.albedo_texture.index != 4294967295) mat.albedo_texture.index else 4294967295;
+                        pushConstants.normalTextureIndex = if (mat.normal_texture.index != 4294967295) mat.normal_texture.index else 4294967295;
+                        pushConstants.metallicRoughnessTextureIndex = if (mat.metallic_roughness_texture.index != 4294967295) mat.metallic_roughness_texture.index else 4294967295;
+                        pushConstants.aoTextureIndex = if (mat.ao_texture.index != 4294967295) mat.ao_texture.index else 4294967295;
+                        pushConstants.emissiveTextureIndex = if (mat.emissive_texture.index != 4294967295) mat.emissive_texture.index else 4294967295;
+                        
+                        pushConstants.emissiveStrength = mat.emissive_strength;
+
+                        var packedInfo: u32 = 0;
+                        packedInfo |= @as(u32, @intCast(@intFromEnum(mat.alpha_mode)));
+                        if (vs.pipelines.pbr_pipeline.supportsDescriptorIndexing) {
+                             packedInfo |= 8;
+                        }
+                        pushConstants.packedInfo = packedInfo;
+                        
+                        const transforms = [_]scene.CardinalTextureTransform{
+                            mat.albedo_transform,
+                            mat.normal_transform,
+                            mat.metallic_roughness_transform,
+                            mat.ao_transform,
+                            mat.emissive_transform,
+                        };
+
+                        for (transforms, 0..) |t, idx| {
+                            pushConstants.textureTransforms[idx][0] = t.offset[0];
+                            pushConstants.textureTransforms[idx][1] = t.offset[1];
+                            pushConstants.textureTransforms[idx][2] = t.scale[0];
+                            pushConstants.textureTransforms[idx][3] = t.scale[1];
+                            pushConstants.textureRotations[idx] = t.rotation;
+                        }
+                    }
+
+                    c.vkCmdPushConstants(cmd, vs.pipelines.mesh_shader_pipeline.pipeline_layout, c.VK_SHADER_STAGE_FRAGMENT_BIT, 0, @sizeOf(types.MeshShaderPushConstants), &pushConstants);
+
                     // Update descriptors
-                    // const material_buffer = if (vs.pipelines.use_pbr_pipeline) vs.pipelines.pbr_pipeline.materialBuffer else null;
-                    // const material_buffer: c.VkBuffer = null; // Removed from pipeline
                     const lighting_buffer = if (vs.pipelines.use_pbr_pipeline) vs.pipelines.pbr_pipeline.lightingBuffers[frame] else null;
+                    const shadow_map_view = if (vs.pipelines.use_pbr_pipeline) vs.pipelines.pbr_pipeline.shadowMapView else null;
+                    const shadow_map_sampler = if (vs.pipelines.use_pbr_pipeline) vs.pipelines.pbr_pipeline.shadowMapSampler else null;
+                    const shadow_ubo = if (vs.pipelines.use_pbr_pipeline) vs.pipelines.pbr_pipeline.shadowUBOs[frame] else null;
 
                     var texture_views: ?[*]c.VkImageView = null;
                     var samplers: ?[*]c.VkSampler = null;
@@ -972,7 +1065,7 @@ pub export fn vk_mesh_shader_record_frame(s: ?*types.VulkanState, cmd: c.VkComma
                         if (samplers) |ptr| c.free(@as(?*anyopaque, @ptrCast(ptr)));
                     }
 
-                    if (vk_mesh_shader_update_descriptor_buffers(vs, &vs.pipelines.mesh_shader_pipeline, &draw_data, lighting_buffer, texture_views, samplers, texture_count)) {
+                    if (vk_mesh_shader_update_descriptor_buffers(vs, &vs.pipelines.mesh_shader_pipeline, &draw_data, lighting_buffer, texture_views, samplers, texture_count, shadow_map_view, shadow_map_sampler, shadow_ubo)) {
                         vk_mesh_shader_draw(cmd, vs, &vs.pipelines.mesh_shader_pipeline, &draw_data);
                     }
 

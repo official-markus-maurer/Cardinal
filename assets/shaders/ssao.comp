@@ -37,6 +37,9 @@ void main() {
     vec3 pU = getViewPos(uv + vec2(0.0, 1.0/size.y));
     vec3 n = normalize(cross(pR - fragPos, pU - fragPos));
     
+    // Noise sampling
+    // Assuming 4x4 tiling noise texture. 
+    // noiseScale = screen_res / noise_res = size / 4.0
     vec2 noiseScale = vec2(size) / 4.0;
     vec3 randomVec = texture(noiseMap, uv * noiseScale).xyz;
     

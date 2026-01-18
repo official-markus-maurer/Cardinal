@@ -392,12 +392,19 @@ pub fn vk_compute_memory_barrier(cmd_buffer: c.VkCommandBuffer, barrier: ?*const
     }
     const b = barrier.?;
 
-    var memory_barrier = std.mem.zeroes(c.VkMemoryBarrier);
-    memory_barrier.sType = c.VK_STRUCTURE_TYPE_MEMORY_BARRIER;
+    var memory_barrier = std.mem.zeroes(c.VkMemoryBarrier2);
+    memory_barrier.sType = c.VK_STRUCTURE_TYPE_MEMORY_BARRIER_2;
     memory_barrier.srcAccessMask = b.src_access_mask;
     memory_barrier.dstAccessMask = b.dst_access_mask;
+    memory_barrier.srcStageMask = b.src_stage_mask;
+    memory_barrier.dstStageMask = b.dst_stage_mask;
 
-    c.vkCmdPipelineBarrier(cmd_buffer, b.src_stage_mask, b.dst_stage_mask, 0, 1, &memory_barrier, 0, null, 0, null);
+    var dep_info = std.mem.zeroes(c.VkDependencyInfo);
+    dep_info.sType = c.VK_STRUCTURE_TYPE_DEPENDENCY_INFO;
+    dep_info.memoryBarrierCount = 1;
+    dep_info.pMemoryBarriers = &memory_barrier;
+
+    c.vkCmdPipelineBarrier2(cmd_buffer, &dep_info);
 }
 
 pub fn vk_compute_calculate_workgroups(total_work_items: u32, local_size: u32) u32 {

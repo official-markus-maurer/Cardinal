@@ -285,7 +285,7 @@ fn initialize_pbr_defaults(pipeline: *types.VulkanPBRPipeline, config: *const ty
     }
 }
 
-fn create_pbr_mesh_buffers(pipeline: *types.VulkanPBRPipeline, device: c.VkDevice, allocator: *types.VulkanAllocator, commandPool: c.VkCommandPool, graphicsQueue: c.VkQueue, scene_data: *const scene.CardinalScene, vulkan_state: ?*types.VulkanState) bool {
+fn create_pbr_mesh_buffers(pipeline: *types.VulkanPBRPipeline, device: c.VkDevice, allocator: *types.VulkanAllocator, commandPool: c.VkCommandPool, graphicsQueue: c.VkQueue, scene_data: *const scene.CardinalScene) bool {
     var totalVertices: u32 = 0;
     var totalIndices: u32 = 0;
 
@@ -300,82 +300,149 @@ fn create_pbr_mesh_buffers(pipeline: *types.VulkanPBRPipeline, device: c.VkDevic
         return true;
     }
 
-    // Prepare vertex data for upload
+    // Batched Staging Buffer Creation
+    // We create ONE staging buffer for both vertex and index data to minimize allocations and synchronizations
+    var stagingBuffer = std.mem.zeroes(buffer_mgr.VulkanBuffer);
+    var stagingInfo = std.mem.zeroes(buffer_mgr.VulkanBufferCreateInfo);
+
+    // Calculate total size and offsets (align to 16 bytes for safety)
     const vertexBufferSize = totalVertices * @sizeOf(scene.CardinalVertex);
-    const mem_alloc = memory.cardinal_get_allocator_for_category(.RENDERER);
-    const vertexData = memory.cardinal_alloc(mem_alloc, vertexBufferSize);
-    if (vertexData == null) {
-        pbr_log.err("Failed to allocate memory for vertex data", .{});
+    const vertexStagingSize = (vertexBufferSize + 15) & ~@as(c.VkDeviceSize, 15);
+
+    const indexBufferSize = if (totalIndices > 0) totalIndices * @sizeOf(u32) else 0;
+    const indexStagingSize = (indexBufferSize + 15) & ~@as(c.VkDeviceSize, 15);
+
+    stagingInfo.size = vertexStagingSize + indexStagingSize;
+    stagingInfo.usage = c.VK_BUFFER_USAGE_TRANSFER_SRC_BIT;
+    stagingInfo.properties = c.VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | c.VK_MEMORY_PROPERTY_HOST_COHERENT_BIT;
+    stagingInfo.persistentlyMapped = true; // Map immediately
+
+    if (!buffer_mgr.vk_buffer_create(&stagingBuffer, device, @ptrCast(allocator), &stagingInfo)) {
+        pbr_log.err("Failed to create batched staging buffer", .{});
         return false;
     }
-    defer memory.cardinal_free(mem_alloc, vertexData);
-    const vertices = @as([*]scene.CardinalVertex, @ptrCast(@alignCast(vertexData)));
+    // Ensure we clean up the staging buffer (without waiting, as we handle sync manually)
+    defer buffer_mgr.vk_buffer_destroy_immediate(&stagingBuffer, device, @ptrCast(allocator));
 
-    // Copy all vertex data into contiguous buffer
-    var vertexOffset: u32 = 0;
-    i = 0;
-    while (i < scene_data.mesh_count) : (i += 1) {
-        const mesh = &scene_data.meshes.?[i];
-        if (mesh.vertices != null) {
-            @memcpy(vertices[vertexOffset .. vertexOffset + mesh.vertex_count], mesh.vertices.?[0..mesh.vertex_count]);
+    // Copy Vertex Data to Staging
+    if (stagingBuffer.mapped) |ptr| {
+        const stagingBytes = @as([*]u8, @ptrCast(ptr));
+        const vertices = @as([*]scene.CardinalVertex, @ptrCast(@alignCast(stagingBytes)));
+
+        var vertexOffset: u32 = 0;
+        i = 0;
+        while (i < scene_data.mesh_count) : (i += 1) {
+            const mesh = &scene_data.meshes.?[i];
+            if (mesh.vertices != null) {
+                @memcpy(vertices[vertexOffset .. vertexOffset + mesh.vertex_count], mesh.vertices.?[0..mesh.vertex_count]);
+            }
+            vertexOffset += mesh.vertex_count;
         }
-        vertexOffset += mesh.vertex_count;
+
+        // Copy Index Data to Staging (if any)
+        if (totalIndices > 0) {
+            const indicesBytes = stagingBytes[vertexStagingSize..];
+            const indices = @as([*]u32, @ptrCast(@alignCast(indicesBytes)));
+
+            var indexOffset: u32 = 0;
+            var vertexBaseOffset: u32 = 0;
+            i = 0;
+            while (i < scene_data.mesh_count) : (i += 1) {
+                const mesh = &scene_data.meshes.?[i];
+                if (mesh.index_count > 0 and mesh.indices != null) {
+                    var j: u32 = 0;
+                    while (j < mesh.index_count) : (j += 1) {
+                        indices[indexOffset + j] = mesh.indices.?[j] + vertexBaseOffset;
+                    }
+                    indexOffset += mesh.index_count;
+                }
+                vertexBaseOffset += mesh.vertex_count;
+            }
+        }
+    } else {
+        pbr_log.err("Staging buffer not mapped", .{});
+        return false;
     }
 
-    // Create vertex buffer using staging buffer
+    // Create Device Local Vertex Buffer
     var vertexBufferObj = std.mem.zeroes(buffer_mgr.VulkanBuffer);
-    if (!buffer_mgr.vk_buffer_create_device_local(&vertexBufferObj, device, @ptrCast(allocator), commandPool, graphicsQueue, vertexData, vertexBufferSize, c.VK_BUFFER_USAGE_VERTEX_BUFFER_BIT, vulkan_state)) {
-        pbr_log.err("Failed to create vertex buffer with staging", .{});
+    var vertexInfo = std.mem.zeroes(buffer_mgr.VulkanBufferCreateInfo);
+    vertexInfo.size = vertexBufferSize;
+    vertexInfo.usage = c.VK_BUFFER_USAGE_VERTEX_BUFFER_BIT | c.VK_BUFFER_USAGE_TRANSFER_DST_BIT | c.VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT;
+    vertexInfo.properties = c.VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT;
+
+    if (!buffer_mgr.vk_buffer_create(&vertexBufferObj, device, @ptrCast(allocator), &vertexInfo)) {
+        pbr_log.err("Failed to create vertex buffer", .{});
         return false;
     }
     pipeline.vertexBuffer = vertexBufferObj.handle;
     pipeline.vertexBufferMemory = vertexBufferObj.memory;
     pipeline.vertexBufferAllocation = vertexBufferObj.allocation;
 
-    pbr_log.debug("Vertex buffer created with staging: {d} vertices", .{totalVertices});
-
-    // Create index buffer if we have indices
+    // Create Device Local Index Buffer (if needed)
+    var indexBufferObj = std.mem.zeroes(buffer_mgr.VulkanBuffer);
     if (totalIndices > 0) {
-        const indexBufferSize = @sizeOf(u32) * totalIndices;
+        var indexInfo = std.mem.zeroes(buffer_mgr.VulkanBufferCreateInfo);
+        indexInfo.size = indexBufferSize;
+        indexInfo.usage = c.VK_BUFFER_USAGE_INDEX_BUFFER_BIT | c.VK_BUFFER_USAGE_TRANSFER_DST_BIT | c.VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT;
+        indexInfo.properties = c.VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT;
 
-        const indexData = memory.cardinal_alloc(mem_alloc, indexBufferSize);
-        if (indexData == null) {
-            pbr_log.err("Failed to allocate memory for index data", .{});
-            return false;
-        }
-        defer memory.cardinal_free(mem_alloc, indexData);
-        const indices = @as([*]u32, @ptrCast(@alignCast(indexData)));
-
-        // Copy all index data into contiguous buffer with vertex base offset adjustment
-        var indexOffset: u32 = 0;
-        var vertexBaseOffset: u32 = 0;
-        i = 0;
-        while (i < scene_data.mesh_count) : (i += 1) {
-            const mesh = &scene_data.meshes.?[i];
-            if (mesh.index_count > 0 and mesh.indices != null) {
-                var j: u32 = 0;
-                while (j < mesh.index_count) : (j += 1) {
-                    indices[indexOffset + j] = mesh.indices.?[j] + vertexBaseOffset;
-                }
-                indexOffset += mesh.index_count;
-            }
-            vertexBaseOffset += mesh.vertex_count;
-        }
-
-        // Create index buffer using staging buffer
-        var indexBufferObj = std.mem.zeroes(buffer_mgr.VulkanBuffer);
-        if (!buffer_mgr.vk_buffer_create_device_local(&indexBufferObj, device, @ptrCast(allocator), commandPool, graphicsQueue, indexData, indexBufferSize, c.VK_BUFFER_USAGE_INDEX_BUFFER_BIT, vulkan_state)) {
-            pbr_log.err("Failed to create index buffer with staging", .{});
+        if (!buffer_mgr.vk_buffer_create(&indexBufferObj, device, @ptrCast(allocator), &indexInfo)) {
+            pbr_log.err("Failed to create index buffer", .{});
             return false;
         }
         pipeline.indexBuffer = indexBufferObj.handle;
         pipeline.indexBufferMemory = indexBufferObj.memory;
         pipeline.indexBufferAllocation = indexBufferObj.allocation;
-
         pipeline.totalIndexCount = totalIndices;
-        pbr_log.debug("Index buffer created with staging: {d} indices", .{totalIndices});
     }
 
+    // Record Transfer Commands
+    var cmdAllocInfo = std.mem.zeroes(c.VkCommandBufferAllocateInfo);
+    cmdAllocInfo.sType = c.VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO;
+    cmdAllocInfo.level = c.VK_COMMAND_BUFFER_LEVEL_PRIMARY;
+    cmdAllocInfo.commandPool = commandPool;
+    cmdAllocInfo.commandBufferCount = 1;
+
+    var commandBuffer: c.VkCommandBuffer = null;
+    _ = c.vkAllocateCommandBuffers(device, &cmdAllocInfo, &commandBuffer);
+
+    var beginInfo = std.mem.zeroes(c.VkCommandBufferBeginInfo);
+    beginInfo.sType = c.VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
+    beginInfo.flags = c.VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
+
+    _ = c.vkBeginCommandBuffer(commandBuffer, &beginInfo);
+
+    // Copy Vertex Region
+    var vCopy = std.mem.zeroes(c.VkBufferCopy);
+    vCopy.srcOffset = 0;
+    vCopy.dstOffset = 0;
+    vCopy.size = vertexBufferSize;
+    c.vkCmdCopyBuffer(commandBuffer, stagingBuffer.handle, vertexBufferObj.handle, 1, &vCopy);
+
+    // Copy Index Region
+    if (totalIndices > 0) {
+        var iCopy = std.mem.zeroes(c.VkBufferCopy);
+        iCopy.srcOffset = vertexStagingSize;
+        iCopy.dstOffset = 0;
+        iCopy.size = indexBufferSize;
+        c.vkCmdCopyBuffer(commandBuffer, stagingBuffer.handle, indexBufferObj.handle, 1, &iCopy);
+    }
+
+    _ = c.vkEndCommandBuffer(commandBuffer);
+
+    // Submit and Wait (Queue Idle is simplest here and robust)
+    var submitInfo = std.mem.zeroes(c.VkSubmitInfo);
+    submitInfo.sType = c.VK_STRUCTURE_TYPE_SUBMIT_INFO;
+    submitInfo.commandBufferCount = 1;
+    submitInfo.pCommandBuffers = &commandBuffer;
+
+    _ = c.vkQueueSubmit(graphicsQueue, 1, &submitInfo, null);
+    _ = c.vkQueueWaitIdle(graphicsQueue);
+
+    c.vkFreeCommandBuffers(device, commandPool, 1, &commandBuffer);
+
+    pbr_log.debug("Batched buffer creation completed: {d} vertices, {d} indices", .{ totalVertices, totalIndices });
     return true;
 }
 
@@ -501,13 +568,6 @@ pub export fn vk_pbr_load_scene(pipeline: ?*types.VulkanPBRPipeline, device: c.V
         pbr_log.info("Clearing scene (null scene)", .{});
     }
 
-    // Clean up previous buffers if they exist (after ensuring GPU idle)
-    // We use vkDeviceWaitIdle instead of timeline semaphore wait to avoid issues with
-    // timeline resets/overflows during scene loading.
-    if (vulkan_state != null and vulkan_state.?.context.device != null) {
-        wrappers.Device.init(vulkan_state.?.context.device).waitIdle() catch {};
-    }
-
     if (pipe.vertexBuffer != null or pipe.vertexBufferMemory != null) {
         vk_allocator.free_buffer(alloc, pipe.vertexBuffer, pipe.vertexBufferAllocation);
         pipe.vertexBuffer = null;
@@ -532,7 +592,7 @@ pub export fn vk_pbr_load_scene(pipeline: ?*types.VulkanPBRPipeline, device: c.V
     }
 
     // Create vertex and index buffers
-    if (!create_pbr_mesh_buffers(pipe, device, alloc, commandPool, graphicsQueue, scn, vulkan_state)) {
+    if (!create_pbr_mesh_buffers(pipe, device, alloc, commandPool, graphicsQueue, scn)) {
         return false;
     }
 
@@ -559,13 +619,6 @@ pub export fn vk_pbr_load_scene(pipeline: ?*types.VulkanPBRPipeline, device: c.V
 
     if (!descriptor_mgr.vk_descriptor_manager_allocate(dm)) {
         pbr_log.err("Failed to allocate descriptor set", .{});
-        return false;
-    }
-
-    // Wait for graphics queue to complete before updating descriptor sets
-    const result = c.vkQueueWaitIdle(graphicsQueue);
-    if (result != c.VK_SUCCESS) {
-        pbr_log.warn("Graphics queue wait idle failed before descriptor update: {d}", .{result});
         return false;
     }
 
@@ -1743,6 +1796,10 @@ pub export fn vk_pbr_render(pipeline: ?*types.VulkanPBRPipeline, commandBuffer: 
     }
 
     std.sort.block(SortItem, transparent_meshes.items, {}, SortItem.lessThan);
+
+    if (transparent_meshes.items.len > 0 and pipe.pipelineBlend != null) {
+        cmd.bindPipeline(c.VK_PIPELINE_BIND_POINT_GRAPHICS, pipe.pipelineBlend);
+    }
 
     for (transparent_meshes.items) |item| {
         const mesh = &scn.meshes.?[item.index];

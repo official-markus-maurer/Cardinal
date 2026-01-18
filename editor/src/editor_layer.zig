@@ -58,7 +58,6 @@ fn check_loading_status() void {
 
                 const model_id = model_manager.cardinal_model_manager_add_scene(&state.model_manager, &loaded_scene, path, filename_z);
 
-                // loaded_scene resources are moved to model manager on success (and loaded_scene is zeroed)
                 // On failure, we must destroy loaded_scene to prevent leaks.
                 // If success, this is a no-op as loaded_scene is zeroed.
                 scene.cardinal_scene_destroy(&loaded_scene);
@@ -153,40 +152,19 @@ fn draw_pbr_settings_panel() void {
             if (c.imgui_bridge_collapsing_header("Lighting", c.ImGuiTreeNodeFlags_DefaultOpen)) {
                 var light_changed = false;
 
-                // Add Directional Light Toggle
-                if (c.imgui_bridge_checkbox("Enable Directional Light", &state.enable_directional_light)) {
-                    light_changed = true;
-                }
+                // Enforce Directional Light (User request: remove choosing, always have direct light controls)
+                state.enable_directional_light = true;
+                state.light.type = 0; // Directional
 
-                var light_type = state.light.type;
-                var items: [3][*c]const u8 = undefined;
-                items[0] = "Directional";
-                items[1] = "Point";
-                items[2] = "Spot";
-
-                if (state.enable_directional_light) {
-                    c.imgui_bridge_text_disabled("Type locked to Directional");
-                    state.light.type = 0;
-                } else {
-                    if (c.imgui_bridge_combo("Type", &light_type, &items, 3, -1)) {
-                        state.light.type = light_type;
-                        light_changed = true;
-                    }
-                }
-
-                if (state.light.type == 0) { // Directional
-                    if (c.imgui_bridge_drag_float3("Direction", @ptrCast(&state.light.direction), 0.01, -1.0, 1.0, "%.3f", 0)) light_changed = true;
-                } else { // Point or Spot
-                    if (c.imgui_bridge_drag_float3("Position", @ptrCast(&state.light.position), 0.1, 0.0, 0.0, "%.3f", 0)) light_changed = true;
-                    if (c.imgui_bridge_drag_float("Range", &state.light.range, 0.5, 0.0, 1000.0, "%.1f", 0)) light_changed = true;
-                }
+                c.imgui_bridge_text("Directional Light (Sun)");
+                if (c.imgui_bridge_drag_float3("Direction", @ptrCast(&state.light.direction), 0.01, -1.0, 1.0, "%.3f", 0)) light_changed = true;
 
                 if (c.imgui_bridge_color_edit3("Color", @ptrCast(&state.light.color), 0)) light_changed = true;
                 if (c.imgui_bridge_slider_float("Intensity", &state.light.intensity, 0.0, 20.0, "%.2f")) light_changed = true;
                 if (c.imgui_bridge_color_edit3("Ambient", @ptrCast(&state.light.ambient), 0)) light_changed = true;
 
-                if (light_changed and state.pbr_enabled) {
-                    renderer.cardinal_renderer_set_lighting(state.renderer, &state.light);
+                if (light_changed) {
+                    // Light will be updated in process_pending_uploads
                 }
             }
 
@@ -773,7 +751,6 @@ pub fn render() void {
 pub fn process_pending_uploads() void {
     if (state.scene_upload_pending and initialized) {
         log.cardinal_log_info("[EDITOR] Pending upload detected", .{});
-        renderer.cardinal_renderer_wait_idle(state.renderer);
         renderer.cardinal_renderer_upload_scene(state.renderer, &state.pending_scene);
 
         state.combined_scene = state.pending_scene;
@@ -798,75 +775,68 @@ pub fn process_pending_uploads() void {
                     log.cardinal_log_info("Updated light transform from node {d}: Pos=({d:.2},{d:.2},{d:.2})", .{ sl.node_index, state.light.position.x, state.light.position.y, state.light.position.z });
                 }
             }
+        }
+    }
 
-            // Boost intensity if it looks like a raw unit (e.g. < 100) to make it visible in PBR
-            if (state.light.intensity < 100.0) {
-                state.light.intensity *= 100.0;
-                log.cardinal_log_info("Auto-boosted light intensity to {d:.2}", .{state.light.intensity});
-            }
+    if (state.pbr_enabled) {
+        renderer.cardinal_renderer_set_camera(state.renderer, &state.camera);
 
-            log.cardinal_log_info("Updated editor light from scene: Type={d}, Intensity={d}, Range={d}", .{ state.light.type, state.light.intensity, state.light.range });
+        var pbr_lights: [types.MAX_LIGHTS]types.PBRLight = undefined;
+        var light_count: u32 = 0;
+
+        // 1. Add Manual Directional Light (if enabled)
+        if (state.enable_directional_light) {
+            pbr_lights[light_count] = std.mem.zeroes(types.PBRLight);
+            // Ensure type is Directional (0)
+            pbr_lights[light_count].lightDirection = .{ state.light.direction.x, state.light.direction.y, state.light.direction.z, 0.0 };
+            pbr_lights[light_count].lightPosition = .{ state.light.position.x, state.light.position.y, state.light.position.z, 0.0 };
+            pbr_lights[light_count].lightColor = .{ state.light.color.x, state.light.color.y, state.light.color.z, state.light.intensity };
+            pbr_lights[light_count].params = .{ state.light.range, @cos(state.light.inner_cone), @cos(state.light.outer_cone), 0.0 };
+            light_count += 1;
         }
 
-        if (state.pbr_enabled) {
-            renderer.cardinal_renderer_set_camera(state.renderer, &state.camera);
+        // 2. Add Scene Lights (Point/Spot)
+        if (state.combined_scene.light_count > 0 and state.combined_scene.lights != null) {
+            var i: u32 = 0;
+            while (i < state.combined_scene.light_count and light_count < types.MAX_LIGHTS) : (i += 1) {
+                const sl = &state.combined_scene.lights.?[i];
 
-            var pbr_lights: [types.MAX_LIGHTS]types.PBRLight = undefined;
-            var light_count: u32 = 0;
+                // User requested that manual controls be used for Directional Light (Sun),
+                // and scene lights be used for Point/Spot.
+                // We skip scene directional lights to ensure the manual sun is the only one.
+                if (sl.type == .DIRECTIONAL) continue;
 
-            // 1. Add Manual Directional Light (if enabled)
-            if (state.enable_directional_light) {
+                var pos = math.Vec3{ .x = 0, .y = 0, .z = 0 };
+                var dir = math.Vec3{ .x = 0, .y = -1, .z = 0 };
+
+                if (sl.node_index < state.combined_scene.all_node_count and state.combined_scene.all_nodes != null) {
+                    if (state.combined_scene.all_nodes.?[sl.node_index]) |node| {
+                        const m = node.world_transform;
+                        dir = .{ .x = -m[8], .y = -m[9], .z = -m[10] };
+                        pos = .{ .x = m[12], .y = m[13], .z = m[14] };
+                    }
+                }
+
+                var intensity = sl.intensity;
+                if (intensity < 100.0) intensity *= 100.0; // Auto-boost
+
                 pbr_lights[light_count] = std.mem.zeroes(types.PBRLight);
-                // Ensure type is Directional (0)
-                pbr_lights[light_count].lightDirection = .{ state.light.direction.x, state.light.direction.y, state.light.direction.z, 0.0 };
-                pbr_lights[light_count].lightPosition = .{ state.light.position.x, state.light.position.y, state.light.position.z, 0.0 };
-                pbr_lights[light_count].lightColor = .{ state.light.color.x, state.light.color.y, state.light.color.z, state.light.intensity };
-                pbr_lights[light_count].params = .{ state.light.range, @cos(state.light.inner_cone), @cos(state.light.outer_cone), 0.0 };
+                pbr_lights[light_count].lightDirection = .{ dir.x, dir.y, dir.z, @floatFromInt(@intFromEnum(sl.type)) };
+                pbr_lights[light_count].lightPosition = .{ pos.x, pos.y, pos.z, 0.0 };
+                pbr_lights[light_count].lightColor = .{ sl.color[0], sl.color[1], sl.color[2], intensity };
+                // Set params (range, inner, outer)
+                pbr_lights[light_count].params = .{ sl.range, @cos(sl.inner_cone_angle), @cos(sl.outer_cone_angle), 0.0 };
+
                 light_count += 1;
             }
+        }
 
-            // 2. Add Scene Lights (Point/Spot)
-            if (state.combined_scene.light_count > 0 and state.combined_scene.lights != null) {
-                var i: u32 = 0;
-                while (i < state.combined_scene.light_count and light_count < types.MAX_LIGHTS) : (i += 1) {
-                    const sl = &state.combined_scene.lights.?[i];
-
-                    // Skip Directional lights from scene if manual is enabled (or just prioritize manual)
-                    // The user requested "point and spotlights should be used by the models"
-                    // If the scene has a directional light, we'll include it, but manual one is already added as #0 (shadow caster)
-
-                    var pos = math.Vec3{ .x = 0, .y = 0, .z = 0 };
-                    var dir = math.Vec3{ .x = 0, .y = -1, .z = 0 };
-
-                    if (sl.node_index < state.combined_scene.all_node_count and state.combined_scene.all_nodes != null) {
-                        if (state.combined_scene.all_nodes.?[sl.node_index]) |node| {
-                            const m = node.world_transform;
-                            dir = .{ .x = -m[8], .y = -m[9], .z = -m[10] };
-                            pos = .{ .x = m[12], .y = m[13], .z = m[14] };
-                        }
-                    }
-
-                    var intensity = sl.intensity;
-                    if (intensity < 100.0) intensity *= 100.0; // Auto-boost
-
-                    pbr_lights[light_count] = std.mem.zeroes(types.PBRLight);
-                    pbr_lights[light_count].lightDirection = .{ dir.x, dir.y, dir.z, @floatFromInt(@intFromEnum(sl.type)) };
-                    pbr_lights[light_count].lightPosition = .{ pos.x, pos.y, pos.z, 0.0 };
-                    pbr_lights[light_count].lightColor = .{ sl.color[0], sl.color[1], sl.color[2], intensity };
-                    // Set params (range, inner, outer)
-                    pbr_lights[light_count].params = .{ sl.range, @cos(sl.inner_cone_angle), @cos(sl.outer_cone_angle), 0.0 };
-
-                    light_count += 1;
-                }
-            }
-
-            if (light_count > 0) {
-                renderer.cardinal_renderer_set_lights(state.renderer, &pbr_lights, light_count);
-            } else {
-                // Fallback if no lights enabled (prevent crash or undefined state)
-                // Just send 0 lights
-                renderer.cardinal_renderer_set_lights(state.renderer, null, 0);
-            }
+        if (light_count > 0) {
+            renderer.cardinal_renderer_set_lights(state.renderer, &pbr_lights, light_count);
+        } else {
+            // Fallback if no lights enabled (prevent crash or undefined state)
+            // Just send 0 lights
+            renderer.cardinal_renderer_set_lights(state.renderer, null, 0);
         }
     }
 }

@@ -247,10 +247,8 @@ fn transition_images(s: *types.VulkanState, cmd: c.VkCommandBuffer, image_index:
             cmd_log.warn("Pipeline barrier validation failed for depth image transition", .{});
         }
 
-        if (s.context.vkCmdPipelineBarrier2 != null) {
-            s.context.vkCmdPipelineBarrier2.?(cmd, &dep);
-            s.swapchain.depth_layout_initialized = true;
-        }
+        s.context.vkCmdPipelineBarrier2.?(cmd, &dep);
+        s.swapchain.depth_layout_initialized = true;
     }
 
     // Color attachment transition
@@ -289,16 +287,14 @@ fn transition_images(s: *types.VulkanState, cmd: c.VkCommandBuffer, image_index:
         cmd_log.warn("Pipeline barrier validation failed for swapchain image transition", .{});
     }
 
-    if (s.context.vkCmdPipelineBarrier2 != null) {
-        s.context.vkCmdPipelineBarrier2.?(cmd, &dep);
-    }
+    s.context.vkCmdPipelineBarrier2.?(cmd, &dep);
 }
 
-pub fn begin_dynamic_rendering(s: *types.VulkanState, cmd: c.VkCommandBuffer, image_index: u32, use_depth: bool, depth_view: ?c.VkImageView, clears: [*]const c.VkClearValue, should_clear: bool, flags: c.VkRenderingFlags) bool {
-    return begin_dynamic_rendering_ext(s, cmd, image_index, use_depth, depth_view, null, clears, should_clear, should_clear, flags, true);
+pub fn vk_begin_rendering(s: *types.VulkanState, cmd: c.VkCommandBuffer, image_index: u32, use_depth: bool, depth_view: ?c.VkImageView, clears: [*]const c.VkClearValue, should_clear: bool, flags: c.VkRenderingFlags) bool {
+    return vk_begin_rendering_impl(s, cmd, image_index, use_depth, depth_view, null, clears, should_clear, should_clear, flags, true);
 }
 
-pub fn begin_dynamic_rendering_ext(s: *types.VulkanState, cmd: c.VkCommandBuffer, image_index: u32, use_depth: bool, depth_view: ?c.VkImageView, color_view: ?c.VkImageView, clears: [*]const c.VkClearValue, should_clear_color: bool, should_clear_depth: bool, flags: c.VkRenderingFlags, use_color: bool) bool {
+pub fn vk_begin_rendering_impl(s: *types.VulkanState, cmd: c.VkCommandBuffer, image_index: u32, use_depth: bool, depth_view: ?c.VkImageView, color_view: ?c.VkImageView, clears: [*]const c.VkClearValue, should_clear_color: bool, should_clear_depth: bool, flags: c.VkRenderingFlags, use_color: bool) bool {
     if (s.context.vkCmdBeginRendering == null or s.context.vkCmdEndRendering == null or s.context.vkCmdPipelineBarrier2 == null) {
         cmd_log.err("Frame {d}: Dynamic rendering functions not loaded", .{s.sync.current_frame});
         return false;
@@ -357,7 +353,7 @@ pub fn begin_dynamic_rendering_ext(s: *types.VulkanState, cmd: c.VkCommandBuffer
     return true;
 }
 
-pub fn end_dynamic_rendering(s: *types.VulkanState, cmd: c.VkCommandBuffer) void {
+pub fn vk_end_rendering(s: *types.VulkanState, cmd: c.VkCommandBuffer) void {
     if (s.context.vkCmdEndRendering != null) {
         s.context.vkCmdEndRendering.?(cmd);
     }
@@ -393,9 +389,7 @@ fn end_recording(s: *types.VulkanState, cmd: c.VkCommandBuffer, image_index: u32
         cmd_log.warn("Pipeline barrier validation failed for swapchain present transition", .{});
     }
 
-    if (s.context.vkCmdPipelineBarrier2 != null) {
-        s.context.vkCmdPipelineBarrier2.?(cmd, &dep);
-    }
+    s.context.vkCmdPipelineBarrier2.?(cmd, &dep);
 
     cmd_log.info("Frame {d}: Ending command buffer {any}", .{ s.sync.current_frame, cmd });
     const end_result = c.vkEndCommandBuffer(cmd);
@@ -749,11 +743,9 @@ pub export fn vk_record_cmd(s: ?*types.VulkanState, image_index: u32) callconv(.
             depthClears[1].depthStencil.depth = 1.0;
             depthClears[1].depthStencil.stencil = 0;
 
-
-
-            if (begin_dynamic_rendering_ext(vs, cmd, image_index, true, null, null, &depthClears, false, true, 0, false)) {
+            if (vk_begin_rendering_impl(vs, cmd, image_index, true, null, null, &depthClears, false, true, 0, false)) {
                 vk_pbr.vk_pbr_render_depth_prepass(vs, cmd, vs.current_scene, vs.sync.current_frame);
-                end_dynamic_rendering(vs, cmd);
+                vk_end_rendering(vs, cmd);
             }
 
             // SSAO Pass
@@ -876,21 +868,19 @@ pub export fn vk_record_cmd(s: ?*types.VulkanState, image_index: u32) callconv(.
         if (vs.pipelines.use_pbr_pipeline and vs.pipelines.pbr_pipeline.uniformBuffersMapped[vs.sync.current_frame] != null) {
             const ubo = @as(*types.PBRUniformBufferObject, @ptrCast(@alignCast(vs.pipelines.pbr_pipeline.uniformBuffersMapped[vs.sync.current_frame])));
 
-            if (begin_dynamic_rendering(vs, cmd, image_index, use_depth, null, &clears, false, 0)) {
+            if (vk_begin_rendering(vs, cmd, image_index, use_depth, null, &clears, false, 0)) {
                 var view: math.Mat4 = undefined;
                 var proj: math.Mat4 = undefined;
                 view.data = ubo.view;
                 proj.data = ubo.proj;
                 vk_skybox.render(&vs.pipelines.skybox_pipeline, cmd, view, proj);
-                end_dynamic_rendering(vs, cmd);
+                vk_end_rendering(vs, cmd);
             }
         }
     }
 
-    // Transparent Pass (if any)
-    // For now, we don't have a separate transparent pass structure in this simple renderer.
-    // Transparency is currently handled by the PBR pass (if supported) or requires a dedicated pass.
-    // Future Improvement: Implement OIT or sorted transparency pass.
+    // Transparent Pass is handled inside vk_pbr_render using sorted back-to-front rendering with the Blend pipeline.
+    // See vk_pbr.zig for implementation.
 
     // Lighting Debug Rendering (Visualizes light positions)
     const lighting_buffer = if (vs.pipelines.use_pbr_pipeline) vs.pipelines.pbr_pipeline.lightingBuffers[vs.sync.current_frame] else null;
@@ -898,9 +888,9 @@ pub export fn vk_record_cmd(s: ?*types.VulkanState, image_index: u32) callconv(.
 
     if (vs.ui_record_callback != null) {
         // Load contents from previous pass (whether scene was drawn or just cleared)
-        if (begin_dynamic_rendering(vs, cmd, image_index, use_depth, null, &clears, false, 0)) {
+        if (vk_begin_rendering(vs, cmd, image_index, use_depth, null, &clears, false, 0)) {
             vs.ui_record_callback.?(cmd);
-            end_dynamic_rendering(vs, cmd);
+            vk_end_rendering(vs, cmd);
         }
     }
 
@@ -919,6 +909,9 @@ pub export fn vk_prepare_mesh_shader_rendering(s: ?*types.VulkanState) callconv(
     }
 
     const lighting_buffer = if (vs.pipelines.use_pbr_pipeline) vs.pipelines.pbr_pipeline.lightingBuffers[vs.sync.current_frame] else null;
+    const shadow_map_view = if (vs.pipelines.use_pbr_pipeline) vs.pipelines.pbr_pipeline.shadowMapView else null;
+    const shadow_map_sampler = if (vs.pipelines.use_pbr_pipeline) vs.pipelines.pbr_pipeline.shadowMapSampler else null;
+    const shadow_ubo = if (vs.pipelines.use_pbr_pipeline) vs.pipelines.pbr_pipeline.shadowUBOs[vs.sync.current_frame] else null;
 
     var texture_views: ?[*]c.VkImageView = null;
     var samplers: ?[*]c.VkSampler = null;
@@ -968,7 +961,7 @@ pub export fn vk_prepare_mesh_shader_rendering(s: ?*types.VulkanState) callconv(
         }
     }
 
-    if (!vk_mesh_shader.vk_mesh_shader_update_descriptor_buffers(@ptrCast(vs), &vs.pipelines.mesh_shader_pipeline, null, lighting_buffer, texture_views, samplers, texture_count)) {
+    if (!vk_mesh_shader.vk_mesh_shader_update_descriptor_buffers(@ptrCast(vs), &vs.pipelines.mesh_shader_pipeline, null, lighting_buffer, texture_views, samplers, texture_count, shadow_map_view, shadow_map_sampler, shadow_ubo)) {
         cmd_log.err("Failed to update descriptor buffers during preparation", .{});
     } else {
         cmd_log.debug("Updated descriptor buffers during preparation (bindless textures: {d})", .{texture_count});

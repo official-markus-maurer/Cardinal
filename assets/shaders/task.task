@@ -3,10 +3,7 @@
 #extension GL_KHR_shader_subgroup_ballot : require
 
 // Task shader for GPU-driven culling and meshlet dispatch
-// Optimized for VK_KHR_shader_maximal_reconvergence:
-// - Threads processing spatially coherent meshlets will have similar culling results
-// - Branching patterns in frustum/LOD culling benefit from maximal reconvergence
-// - Reduces divergence when threads take different paths through culling logic
+// Optimized for VK_KHR_shader_maximal_reconvergence
 
 layout(local_size_x = 32, local_size_y = 1, local_size_z = 1) in;
 
@@ -23,6 +20,10 @@ struct GpuMeshlet {
     uint vertex_count;
     uint primitive_offset;
     uint primitive_count;
+    vec3 center;
+    float radius;
+    vec3 cone_axis;
+    float cone_cutoff;
 };
 
 // Storage buffers
@@ -58,10 +59,8 @@ bool is_meshlet_visible(uint meshlet_index) {
     // Get meshlet data
     GpuMeshlet meshlet = meshlets[meshlet_index];
     
-    // Calculate meshlet bounding sphere center (simplified)
-    // In a real implementation, this would be precomputed and stored
-    vec3 meshlet_center = vec3(0.0); // Placeholder - would be actual center
-    float meshlet_radius = 1.0; // Placeholder - would be actual radius
+    vec3 meshlet_center = meshlet.center;
+    float meshlet_radius = meshlet.radius;
     
     // Early exit for degenerate meshlets
     if (meshlet.vertex_count == 0 || meshlet.primitive_count == 0) {
@@ -89,81 +88,47 @@ bool is_meshlet_visible(uint meshlet_index) {
         }
     }
     
-    // Additional culling tests that benefit from reconvergence
     // Near/far plane culling
-    if (distance_to_camera < culling.near_plane || distance_to_camera > culling.far_plane) {
+    if (distance_to_camera < culling.near_plane - meshlet_radius || distance_to_camera > culling.far_plane + meshlet_radius) {
         return false;
     }
     
     // Backface culling for meshlets (simplified)
-    vec3 view_dir = normalize(culling.camera_pos - meshlet_center);
-    // In a real implementation, you'd use the meshlet's normal cone
+    // Uses cone culling if available (cone_cutoff > 0)
+    // Currently placeholder as cone_cutoff is 0 in generation
+    if (meshlet.cone_cutoff > 0.0) {
+        vec3 view_dir = normalize(culling.camera_pos - meshlet_center);
+        if (dot(view_dir, meshlet.cone_axis) < meshlet.cone_cutoff) {
+             return false;
+        }
+    }
     
     return true;
 }
 
-// Distance-based LOD calculation
-float calculate_lod(vec3 meshlet_center) {
-    float distance = length(culling.camera_pos - meshlet_center);
-    return distance * culling.lod_bias;
-}
-
 void main() {
-    uint thread_id = gl_LocalInvocationID.x;
-    uint group_id = gl_WorkGroupID.x;
+    uint dt_id = gl_GlobalInvocationID.x;
     
-    // Initialize payload
-    if (thread_id == 0) {
-        payload.visible_count = 0;
+    // Assume one draw command for now (index 0)
+    // In robust implementation, use draw_id or push constants
+    uint meshlet_count = draw_commands[0].meshlet_count;
+    
+    if (dt_id >= meshlet_count) return;
+    
+    uint meshlet_index = draw_commands[0].meshlet_offset + dt_id;
+    bool visible = is_meshlet_visible(meshlet_index);
+    
+    // Subgroup ballot to collect visible meshlets
+    uvec4 ballot = subgroupBallot(visible);
+    uint visible_count_subgroup = subgroupBallotBitCount(ballot);
+    uint index_in_subgroup = subgroupBallotExclusiveBitCount(ballot);
+    
+    if (visible) {
+        payload.meshlet_indices[index_in_subgroup] = meshlet_index;
     }
     
-    barrier();
-    
-    // Bounds check for draw commands
-    if (group_id >= draw_commands.length()) {
-        return;
-    }
-    
-    GpuDrawCommand draw_cmd = draw_commands[group_id];
-    
-    // Process meshlets in this draw command
-    // Organize work to maximize spatial coherence for better reconvergence
-    uint meshlets_per_thread = (draw_cmd.meshlet_count + 31) / 32; // Round up
-    
-    // Process meshlets in spatially coherent groups to benefit from maximal reconvergence
-    for (uint i = 0; i < meshlets_per_thread; i++) {
-        uint meshlet_local_index = thread_id + i * 32;
-        
-        if (meshlet_local_index < draw_cmd.meshlet_count) {
-            uint meshlet_global_index = draw_cmd.meshlet_offset + meshlet_local_index;
-            
-            // Bounds check for meshlets
-            if (meshlet_global_index < meshlets.length()) {
-                // Perform culling tests - threads processing nearby meshlets
-                // will likely have similar results, benefiting from reconvergence
-                bool is_visible = is_meshlet_visible(meshlet_global_index);
-                
-                // Use ballot to check how many threads in the warp passed culling
-                // This helps with divergence analysis and can guide future optimizations
-                uvec4 visibility_mask = subgroupBallot(is_visible);
-                
-                if (is_visible) {
-                    // Add to visible list (atomic operation)
-                    uint visible_index = atomicAdd(payload.visible_count, 1);
-                    
-                    if (visible_index < 32) { // Limit to payload size
-                        payload.meshlet_indices[visible_index] = meshlet_global_index;
-                    }
-                }
-            }
-        }
-    }
-    
-    barrier();
-    
-    // Dispatch mesh shader workgroups for visible meshlets
-    if (thread_id == 0) {
-        uint mesh_workgroups = min(payload.visible_count, 32);
-        EmitMeshTasksEXT(mesh_workgroups, 1, 1);
+    if (gl_LocalInvocationID.x == 0) {
+        payload.visible_count = visible_count_subgroup;
+        EmitMeshTasksEXT(visible_count_subgroup, 1, 1);
     }
 }

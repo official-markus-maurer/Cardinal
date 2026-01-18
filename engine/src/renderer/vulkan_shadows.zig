@@ -615,18 +615,7 @@ pub fn vk_shadow_render(s: *types.VulkanState, cmd: c.VkCommandBuffer) void {
         if (s.context.vkCmdPipelineBarrier2) |func| {
             func(cmd, &dep);
         } else {
-            var barrier_v1 = std.mem.zeroes(c.VkImageMemoryBarrier);
-            barrier_v1.sType = c.VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
-            barrier_v1.srcAccessMask = c.VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT;
-            barrier_v1.dstAccessMask = c.VK_ACCESS_SHADER_READ_BIT;
-            barrier_v1.oldLayout = c.VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
-            barrier_v1.newLayout = c.VK_IMAGE_LAYOUT_DEPTH_STENCIL_READ_ONLY_OPTIMAL;
-            barrier_v1.image = pipe.shadowMapImage;
-            barrier_v1.subresourceRange = barrier.subresourceRange;
-            barrier_v1.srcQueueFamilyIndex = c.VK_QUEUE_FAMILY_IGNORED;
-            barrier_v1.dstQueueFamilyIndex = c.VK_QUEUE_FAMILY_IGNORED;
-
-            c.vkCmdPipelineBarrier(cmd, c.VK_PIPELINE_STAGE_LATE_FRAGMENT_TESTS_BIT, c.VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT, 0, 0, null, 0, null, 1, &barrier_v1);
+            c.vkCmdPipelineBarrier2(cmd, &dep);
         }
     }
 }

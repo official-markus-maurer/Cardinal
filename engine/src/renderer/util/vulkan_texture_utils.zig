@@ -567,12 +567,16 @@ pub fn transition_image_layout(device: c.VkDevice, graphicsQueue: c.VkQueue, com
 
     _ = c.vkEndCommandBuffer(commandBuffer);
 
-    var submitInfo = std.mem.zeroes(c.VkSubmitInfo);
-    submitInfo.sType = c.VK_STRUCTURE_TYPE_SUBMIT_INFO;
-    submitInfo.commandBufferCount = 1;
-    submitInfo.pCommandBuffers = &commandBuffer;
+    var cmdBufferInfo = std.mem.zeroes(c.VkCommandBufferSubmitInfo);
+    cmdBufferInfo.sType = c.VK_STRUCTURE_TYPE_COMMAND_BUFFER_SUBMIT_INFO;
+    cmdBufferInfo.commandBuffer = commandBuffer;
 
-    _ = c.vkQueueSubmit(graphicsQueue, 1, &submitInfo, null);
+    var submitInfo = std.mem.zeroes(c.VkSubmitInfo2);
+    submitInfo.sType = c.VK_STRUCTURE_TYPE_SUBMIT_INFO_2;
+    submitInfo.commandBufferInfoCount = 1;
+    submitInfo.pCommandBufferInfos = &cmdBufferInfo;
+
+    _ = c.vkQueueSubmit2(graphicsQueue, 1, &submitInfo, null);
     _ = c.vkQueueWaitIdle(graphicsQueue);
 
     c.vkFreeCommandBuffers(device, commandPool, 1, &commandBuffer);
@@ -626,12 +630,16 @@ pub fn copy_buffer_to_image(device: c.VkDevice, graphicsQueue: c.VkQueue, comman
 
     _ = c.vkEndCommandBuffer(commandBuffer);
 
-    var submitInfo = std.mem.zeroes(c.VkSubmitInfo);
-    submitInfo.sType = c.VK_STRUCTURE_TYPE_SUBMIT_INFO;
-    submitInfo.commandBufferCount = 1;
-    submitInfo.pCommandBuffers = &commandBuffer;
+    var cmdBufferInfo = std.mem.zeroes(c.VkCommandBufferSubmitInfo);
+    cmdBufferInfo.sType = c.VK_STRUCTURE_TYPE_COMMAND_BUFFER_SUBMIT_INFO;
+    cmdBufferInfo.commandBuffer = commandBuffer;
 
-    _ = c.vkQueueSubmit(graphicsQueue, 1, &submitInfo, null);
+    var submitInfo = std.mem.zeroes(c.VkSubmitInfo2);
+    submitInfo.sType = c.VK_STRUCTURE_TYPE_SUBMIT_INFO_2;
+    submitInfo.commandBufferInfoCount = 1;
+    submitInfo.pCommandBufferInfos = &cmdBufferInfo;
+
+    _ = c.vkQueueSubmit2(graphicsQueue, 1, &submitInfo, null);
     _ = c.vkQueueWaitIdle(graphicsQueue);
 
     c.vkFreeCommandBuffers(device, commandPool, 1, &commandBuffer);
