@@ -263,8 +263,8 @@ pub const VertexInputAttributeDescriptor = struct {
 pub const VertexInputDescriptor = struct {
     use_standard_layout: bool = true,
     // If using standard layout, how many attributes to use (starting from 0)
-    // 0 = Px, 1 = Nx, 2 = UV, 3 = Weights, 4 = Indices, 5 = U1
-    standard_layout_attribute_count: u32 = 6,
+    // 0 = Px, 1 = Nx, 2 = UV, 3 = Weights, 4 = Indices, 5 = U1, 6 = Color
+    standard_layout_attribute_count: u32 = 7,
 
     // Custom layout (used if use_standard_layout is false)
     bindings: []const VertexInputBindingDescriptor = &.{},
@@ -430,7 +430,7 @@ pub const PipelineBuilder = struct {
 
         // Keep these alive during the function scope
         var binding_desc: c.VkVertexInputBindingDescription = undefined;
-        var attribute_descs: [6]c.VkVertexInputAttributeDescription = undefined;
+        var attribute_descs: [7]c.VkVertexInputAttributeDescription = undefined;
 
         // For custom layout
         var custom_bindings: []c.VkVertexInputBindingDescription = &.{};
@@ -449,12 +449,13 @@ pub const PipelineBuilder = struct {
             };
 
             attribute_descs = [_]c.VkVertexInputAttributeDescription{
-                .{ .binding = 0, .location = 0, .format = c.VK_FORMAT_R32G32B32_SFLOAT, .offset = 0 },
-                .{ .binding = 0, .location = 1, .format = c.VK_FORMAT_R32G32B32_SFLOAT, .offset = @sizeOf(f32) * 3 },
-                .{ .binding = 0, .location = 2, .format = c.VK_FORMAT_R32G32_SFLOAT, .offset = @sizeOf(f32) * 6 },
+                .{ .binding = 0, .location = 0, .format = c.VK_FORMAT_R32G32B32_SFLOAT, .offset = @offsetOf(scene_import.CardinalVertex, "px") },
+                .{ .binding = 0, .location = 1, .format = c.VK_FORMAT_R32G32B32_SFLOAT, .offset = @offsetOf(scene_import.CardinalVertex, "nx") },
+                .{ .binding = 0, .location = 2, .format = c.VK_FORMAT_R32G32_SFLOAT, .offset = @offsetOf(scene_import.CardinalVertex, "u") },
                 .{ .binding = 0, .location = 3, .format = c.VK_FORMAT_R32G32B32A32_SFLOAT, .offset = @offsetOf(scene_import.CardinalVertex, "bone_weights") },
                 .{ .binding = 0, .location = 4, .format = c.VK_FORMAT_R32G32B32A32_UINT, .offset = @offsetOf(scene_import.CardinalVertex, "bone_indices") },
                 .{ .binding = 0, .location = 5, .format = c.VK_FORMAT_R32G32_SFLOAT, .offset = @offsetOf(scene_import.CardinalVertex, "u1") },
+                .{ .binding = 0, .location = 6, .format = c.VK_FORMAT_R32G32B32A32_SFLOAT, .offset = @offsetOf(scene_import.CardinalVertex, "color") },
             };
 
             vertex_input_info.vertexBindingDescriptionCount = 1;

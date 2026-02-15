@@ -15,6 +15,7 @@ This document outlines the roadmap for the Cardinal Engine, focusing on robustne
     - Integrated with `Scheduler` to provide thread-local command buffers to systems.
     - Updated `SystemFn` signature to accept `*CommandBuffer`.
     - Flushed command buffers at the end of the frame in `Scheduler.run()`.
+- [ ] **Camera System**: Implement "main" camera tag or flag in `systems.zig` (L52).
 
 ### Core Systems
 - [ ] **Transform System**: Implement a dedicated system to handle hierarchy updates and dirty flags, ensuring world matrices are only recomputed when necessary.
@@ -30,6 +31,7 @@ This document outlines the roadmap for the Cardinal Engine, focusing on robustne
     - Switch to a **Fiber-based** architecture (Naughty Dog / GDC 2015 style).
     - Enable finer-grained concurrency.
     - Avoid blocking worker threads during dependency waits.
+- [ ] **Command Pool Expansion**: Handle thread command pool exhaustion dynamically instead of failing (`vulkan_mt.zig` L472).
 
 ## 2. Data & Assets
 
@@ -46,6 +48,12 @@ This document outlines the roadmap for the Cardinal Engine, focusing on robustne
 - [x] **Thread Safety**: Fix double-checked locking in `gltf_loader.zig` (texture cache) using `std.once`.
 - [ ] **Hot-Reloading**: Generic hot-reloading support for all asset types.
 - [ ] **Shader Compilation**: Integrate runtime shader compilation (e.g., shaderc or slang) to compile `.glsl` to `.spv` on the fly.
+- [x] **NIF Loader**: Improve return robustness in `nif_loader.zig` (L1767).
+- [x] **NIF Loader**: Support appending to existing lists in `nif_loader.zig` (L1823).
+- [ ] **NIF Loader**: Implement auto-generation of UVs for meshes with 0 UV sets (`nif_loader.zig` L584).
+- [ ] **NIF Loader**: Optimize material allocation (shrink to fit) in `nif_loader.zig` (L1164).
+- [ ] **GLTF Loader**: Remove temporary debugging logs (`gltf_loader.zig` L1030).
+- [ ] **Texture Manager**: Ensure texture format is correctly updated from AssetManager when replacing placeholders (`vulkan_texture_manager.zig` L575).
 
 ## 3. Rendering (Vulkan)
 - [ ] **IBL**: Implement Environment Maps, Irradiance Maps, and Prefiltered Specular maps.
@@ -108,6 +116,7 @@ This document outlines the roadmap for the Cardinal Engine, focusing on robustne
 - [ ] **Scene State Serialization**: Save/Restore full editor state (camera position, selected entity, open panels) to `editor.ini` or similar.
 - [ ] **Game View**: Separate "Game" view from "Scene" view to preview the camera's perspective.
 - [ ] **Console Panel**: Interactive console for logging and executing commands/scripts.
+- [ ] **File Dialogs**: Implement file dialogs for Save/Open scene in `editor_layer.zig` (L114, L119).
 
 ### Editor Core
 - [ ] **Project Management**: Implement "Project" concept (folder-based) to allow switching between different projects with isolated assets/configs.

@@ -239,8 +239,44 @@ pub fn shutdown_staging_buffer_cleanups(allocator: *types.VulkanAllocator) void 
 
 pub fn create_staging_buffer_with_data(allocator: ?*types.VulkanAllocator, device: c.VkDevice, texture: *const scene.CardinalTexture, outBuffer: *c.VkBuffer, outMemory: *c.VkDeviceMemory, outAllocation: *c.VmaAllocation) bool {
     _ = device; // unused if using VMA
-    const pixel_size: u64 = if (texture.is_hdr) 16 else 4;
-    const imageSize = @as(c.VkDeviceSize, texture.width) * texture.height * pixel_size;
+
+    var imageSize: c.VkDeviceSize = 0;
+    if (texture.data_size > 0) {
+        imageSize = texture.data_size;
+    } else {
+        const pixel_size: u64 = if (texture.is_hdr != 0) 16 else 4;
+        imageSize = @as(c.VkDeviceSize, texture.width) * texture.height * pixel_size;
+    }
+
+    // Ensure imageSize is at least 4 bytes to avoid validation errors for tiny/empty textures
+    if (imageSize < 4) imageSize = 4;
+
+    // Validation: Check if imageSize is sufficient for the texture dimensions
+    // Note: Compressed textures (BC1-BC5) are much smaller than uncompressed (R8G8B8A8).
+    // If data_size was provided explicitly (e.g. from DDS loader), we trust it.
+    // We only enforce the W*H*4 size check if we calculated the size ourselves (data_size == 0) OR if the format implies uncompressed data.
+
+    if (texture.data_size == 0) {
+        const pixel_size_check: u64 = if (texture.is_hdr != 0) 16 else 4;
+        const required_size = @as(c.VkDeviceSize, texture.width) * texture.height * pixel_size_check;
+        if (imageSize < required_size) {
+            tex_utils_log.warn("Staging buffer size {d} is smaller than required {d} for {d}x{d} texture. Adjusting.", .{ imageSize, required_size, texture.width, texture.height });
+            imageSize = required_size;
+        }
+    } else {
+        // Data size provided explicitly.
+        // If it's absurdly small (e.g. 4 bytes for 512x512), we should probably warn, but respecting the loader's decision is usually safer for compressed formats.
+        // However, if we get the "size 4" issue, we need to know why.
+        if (texture.width > 4 and imageSize <= 4) {
+            tex_utils_log.warn("Staging buffer size is extremely small ({d}) for {d}x{d} texture. Format: {d}. This might be a placeholder or corrupted data.", .{ imageSize, texture.width, texture.height, texture.format });
+            // Force adjust if it looks like a placeholder mismatch
+            const safe_min = @as(c.VkDeviceSize, texture.width) * texture.height / 2; // Rough lower bound for high compression
+            if (imageSize < safe_min) {
+                tex_utils_log.warn("Adjusting buffer size to {d} to prevent crash.", .{safe_min});
+                imageSize = safe_min;
+            }
+        }
+    }
 
     var bufferInfo = std.mem.zeroes(c.VkBufferCreateInfo);
     bufferInfo.sType = c.VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO;
@@ -279,6 +315,14 @@ pub fn create_image_and_memory(allocator: ?*types.VulkanAllocator, device: c.VkD
     imageInfo.mipLevels = 1;
     imageInfo.arrayLayers = 1;
     imageInfo.format = format;
+    if (imageInfo.format == c.VK_FORMAT_UNDEFINED) {
+        // Fallback or guess
+        // We can't access texture.is_hdr here easily unless we pass it or check format family
+        // But the caller usually passes a valid format.
+        // If caller passed UNDEFINED, we might have a problem.
+        tex_utils_log.warn("create_image_and_memory received VK_FORMAT_UNDEFINED", .{});
+        imageInfo.format = c.VK_FORMAT_R8G8B8A8_SRGB;
+    }
     imageInfo.tiling = c.VK_IMAGE_TILING_OPTIMAL;
     imageInfo.initialLayout = c.VK_IMAGE_LAYOUT_UNDEFINED;
     imageInfo.usage = c.VK_IMAGE_USAGE_TRANSFER_DST_BIT | c.VK_IMAGE_USAGE_SAMPLED_BIT;
@@ -415,19 +459,22 @@ fn submit_texture_upload(device: c.VkDevice, graphicsQueue: c.VkQueue, commandBu
     return true;
 }
 
-pub fn create_texture_image_view(device: c.VkDevice, image: c.VkImage, outImageView: *c.VkImageView, format: c.VkFormat) bool {
+pub fn create_texture_image_view(device: c.VkDevice, image: c.VkImage, outView: *c.VkImageView, format: c.VkFormat) bool {
     var viewInfo = std.mem.zeroes(c.VkImageViewCreateInfo);
     viewInfo.sType = c.VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO;
     viewInfo.image = image;
     viewInfo.viewType = c.VK_IMAGE_VIEW_TYPE_2D;
     viewInfo.format = format;
+    if (viewInfo.format == c.VK_FORMAT_UNDEFINED) {
+        viewInfo.format = c.VK_FORMAT_R8G8B8A8_SRGB;
+    }
     viewInfo.subresourceRange.aspectMask = c.VK_IMAGE_ASPECT_COLOR_BIT;
     viewInfo.subresourceRange.baseMipLevel = 0;
     viewInfo.subresourceRange.levelCount = 1;
     viewInfo.subresourceRange.baseArrayLayer = 0;
     viewInfo.subresourceRange.layerCount = 1;
 
-    if (c.vkCreateImageView(device, &viewInfo, null, outImageView) != c.VK_SUCCESS) {
+    if (c.vkCreateImageView(device, &viewInfo, null, outView) != c.VK_SUCCESS) {
         tex_utils_log.err("Failed to create texture image view", .{});
         return false;
     }
@@ -447,7 +494,15 @@ pub export fn vk_texture_create_from_data(allocator: ?*types.VulkanAllocator, de
         return false;
     }
 
-    const format: c.VkFormat = if (texture.?.is_hdr) c.VK_FORMAT_R32G32B32A32_SFLOAT else c.VK_FORMAT_R8G8B8A8_SRGB;
+    var format: c.VkFormat = if (texture.?.format != 0) @intCast(texture.?.format) else c.VK_FORMAT_UNDEFINED;
+    if (format == c.VK_FORMAT_UNDEFINED) {
+        if (texture == null) {
+            // Fallback for null texture pointer
+            format = c.VK_FORMAT_R8G8B8A8_SRGB;
+        } else {
+            format = if (texture.?.is_hdr != 0) c.VK_FORMAT_R32G32B32A32_SFLOAT else c.VK_FORMAT_R8G8B8A8_SRGB;
+        }
+    }
 
     if (!create_image_and_memory(allocator, device, texture.?.width, texture.?.height, format, textureImage.?, textureImageMemory.?, textureAllocation.?)) {
         vk_allocator.free_buffer(allocator, stagingBuffer, stagingBufferAllocation);

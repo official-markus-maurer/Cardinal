@@ -179,7 +179,7 @@ pub fn vk_skybox_load_from_data(pipeline: *types.SkyboxPipeline, device: c.VkDev
     pipeline.texture.is_allocated = true;
     pipeline.texture.width = textureData.width;
     pipeline.texture.height = textureData.height;
-    pipeline.texture.format = if (textureData.is_hdr) c.VK_FORMAT_R32G32B32A32_SFLOAT else c.VK_FORMAT_R8G8B8A8_SRGB;
+    pipeline.texture.format = if (textureData.is_hdr != 0) c.VK_FORMAT_R32G32B32A32_SFLOAT else c.VK_FORMAT_R8G8B8A8_SRGB;
 
     // Update Descriptor Set
     if (!descriptor_mgr.vk_descriptor_manager_update_textures(pipeline.descriptorManager, pipeline.descriptorSet, 0, @ptrCast(&pipeline.texture.view), pipeline.texture.sampler, c.VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, 1)) {

@@ -17,7 +17,7 @@ const vk_descriptor_indexing = @import("vulkan_descriptor_indexing.zig");
 const wrappers = @import("vulkan_wrappers.zig");
 const vk_pso = @import("vulkan_pso.zig");
 const scene = @import("../assets/scene.zig");
-const animation = @import("../core/animation.zig");
+const animation = @import("../assets/animation.zig");
 
 const c = @import("vulkan_c.zig").c;
 

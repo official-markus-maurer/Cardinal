@@ -6,7 +6,7 @@ const log = @import("../core/log.zig");
 const ref_counting = @import("../core/ref_counting.zig");
 const async_loader = @import("../core/async_loader.zig");
 const texture_loader = @import("texture_loader.zig");
-const animation = @import("../core/animation.zig");
+const animation = @import("animation.zig");
 
 const model_log = log.ScopedLogger("MODEL");
 
@@ -441,6 +441,8 @@ fn rebuild_combined_scene(manager: *CardinalModelManager) void {
                         dst_texture.height = tex_data.height;
                         dst_texture.channels = tex_data.channels;
                         dst_texture.is_hdr = tex_data.is_hdr;
+                        dst_texture.format = tex_data.format;
+                        dst_texture.data_size = tex_data.data_size;
                     } else {
                         dst_texture.data = src_texture.data;
                     }

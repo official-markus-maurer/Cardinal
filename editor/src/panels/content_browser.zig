@@ -14,6 +14,8 @@ fn get_asset_type(path: []const u8) AssetState.AssetType {
     const ext = std.fs.path.extension(path);
     if (std.mem.eql(u8, ext, ".gltf")) return .GLTF;
     if (std.mem.eql(u8, ext, ".glb")) return .GLB;
+    if (std.mem.eql(u8, ext, ".kfm")) return .KFM;
+    if (std.mem.eql(u8, ext, ".nif")) return .NIF;
     if (std.mem.eql(u8, ext, ".png") or std.mem.eql(u8, ext, ".jpg") or
         std.mem.eql(u8, ext, ".tga") or std.mem.eql(u8, ext, ".bmp") or
         std.mem.eql(u8, ext, ".jpeg") or
@@ -138,7 +140,7 @@ pub fn scan_assets_dir(state: *EditorState, allocator: std.mem.Allocator) void {
         }
 
         if (state.assets.show_folders_only and !entry.is_directory) continue;
-        if (state.assets.show_gltf_only and entry.type != .GLTF and entry.type != .GLB) continue;
+        if (state.assets.show_gltf_only and entry.type != .GLTF and entry.type != .GLB and entry.type != .KFM and entry.type != .NIF) continue;
         if (state.assets.show_textures_only and entry.type != .TEXTURE) continue;
 
         state.assets.filtered_entries.append(allocator, entry) catch continue;
@@ -252,7 +254,7 @@ pub fn draw_asset_browser_panel(state: *EditorState, allocator: std.mem.Allocato
             var filter_changed = false;
             if (c.imgui_bridge_checkbox("Folders Only", &state.assets.show_folders_only)) filter_changed = true;
             c.imgui_bridge_same_line(0, -1);
-            if (c.imgui_bridge_checkbox("glTF/GLB", &state.assets.show_gltf_only)) filter_changed = true;
+            if (c.imgui_bridge_checkbox("Models", &state.assets.show_gltf_only)) filter_changed = true;
             c.imgui_bridge_same_line(0, -1);
             if (c.imgui_bridge_checkbox("Textures", &state.assets.show_textures_only)) filter_changed = true;
 
@@ -270,9 +272,9 @@ pub fn draw_asset_browser_panel(state: *EditorState, allocator: std.mem.Allocato
 
             c.imgui_bridge_separator();
 
-            c.imgui_bridge_text("Import Model (glTF/glb)");
+            c.imgui_bridge_text("Import Model");
             c.imgui_bridge_set_next_item_width(-1.0);
-            if (c.imgui_bridge_input_text_with_hint("##scene_path", "C:/path/to/model.gltf or .glb", @ptrCast(&state.scene_path), state.scene_path.len)) {
+            if (c.imgui_bridge_input_text_with_hint("##scene_path", "C:/path/to/model.gltf, .glb, .kfm", @ptrCast(&state.scene_path), state.scene_path.len)) {
                 // Input handling
             }
             if (c.imgui_bridge_button("Import")) {
@@ -296,7 +298,7 @@ pub fn draw_asset_browser_panel(state: *EditorState, allocator: std.mem.Allocato
                     for (state.assets.filtered_entries.items) |entry| {
                         const icon = switch (entry.type) {
                             .FOLDER => "[D]",
-                            .GLTF, .GLB => "[M]",
+                            .GLTF, .GLB, .KFM, .NIF => "[M]",
                             .TEXTURE => "[T]",
                             else => "[F]",
                         };
@@ -316,7 +318,7 @@ pub fn draw_asset_browser_panel(state: *EditorState, allocator: std.mem.Allocato
                                 if (state.assets.current_dir.ptr != old_dir.ptr) allocator.free(old_dir[0 .. old_dir.len + 1]);
                                 scan_assets_dir(state, allocator);
                                 break;
-                            } else if (entry.type == .GLTF or entry.type == .GLB) {
+                            } else if (entry.type == .GLTF or entry.type == .GLB or entry.type == .KFM or entry.type == .NIF) {
                                 load_scene(state, allocator, entry.full_path);
                             } else if (entry.type == .TEXTURE) {
                                 load_skybox(state, allocator, entry.full_path);
@@ -324,7 +326,7 @@ pub fn draw_asset_browser_panel(state: *EditorState, allocator: std.mem.Allocato
                         }
 
                         if (!entry.is_directory and c.imgui_bridge_is_item_hovered(0) and c.imgui_bridge_is_mouse_double_clicked(0)) {
-                            if (entry.type == .GLTF or entry.type == .GLB) {
+                            if (entry.type == .GLTF or entry.type == .GLB or entry.type == .KFM or entry.type == .NIF) {
                                 load_scene(state, allocator, entry.full_path);
                             } else if (entry.type == .TEXTURE) {
                                 load_skybox(state, allocator, entry.full_path);

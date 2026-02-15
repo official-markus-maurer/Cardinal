@@ -6,6 +6,7 @@ layout(location = 2) in vec2 inTexCoord;
 layout(location = 3) in vec4 inBoneWeights;
 layout(location = 4) in uvec4 inBoneIndices;
 layout(location = 5) in vec2 inTexCoord1;
+layout(location = 6) in vec4 inColor;
 
 layout(binding = 0) uniform ShadowUBO {
     mat4 lightSpaceMatrices[4];
@@ -25,10 +26,12 @@ layout(push_constant) uniform PushConstants {
 } pushConstants;
 
 layout(location = 0) out vec2 fragTexCoord;
+layout(location = 1) out vec4 fragColor;
 
 void main() {
     vec3 finalPosition = inPosition;
     fragTexCoord = inTexCoord;
+    fragColor = inColor;
     
     // Extract hasSkeleton from packedInfo (bit 2)
     bool hasSkeleton = ((pushConstants.packedInfo >> 16) & 4u) != 0u;

@@ -3,7 +3,8 @@ const scene = @import("scene.zig");
 const texture_loader = @import("texture_loader.zig");
 const material_loader = @import("material_loader.zig");
 const ref_counting = @import("../core/ref_counting.zig");
-const animation = @import("../core/animation.zig");
+const resource_state = @import("../core/resource_state.zig");
+const animation = @import("animation.zig");
 const transform_math = @import("../core/transform.zig");
 const log = @import("../core/log.zig");
 const memory = @import("../core/memory.zig");
@@ -180,7 +181,7 @@ fn create_fallback_texture(out_texture: *scene.CardinalTexture) bool {
     out_texture.width = 2;
     out_texture.height = 2;
     out_texture.channels = 4;
-    out_texture.is_hdr = false;
+    out_texture.is_hdr = 0;
 
     const fallback_id = "[fallback]";
     if (ref_counting.cardinal_ref_acquire(fallback_id)) |ref| {
@@ -216,7 +217,9 @@ fn create_fallback_texture(out_texture: *scene.CardinalTexture) bool {
         tex_data.width = 2;
         tex_data.height = 2;
         tex_data.channels = 4;
-        tex_data.is_hdr = false;
+        tex_data.is_hdr = 0;
+        tex_data.format = 0;
+        tex_data.data_size = 16;
 
         if (ref_counting.cardinal_ref_create(fallback_id, tex_data, @sizeOf(texture_loader.TextureData), fallback_texture_data_destructor)) |ref| {
             out_texture.data = tex_data.data;
@@ -269,6 +272,8 @@ fn load_texture_with_fallback(original_uri: [*:0]const u8, base_path: [*:0]const
             out_texture.width = tex_data.width;
             out_texture.height = tex_data.height;
             out_texture.channels = tex_data.channels;
+            out_texture.format = tex_data.format;
+            out_texture.data_size = tex_data.data_size;
 
             const allocator = memory.cardinal_get_allocator_for_category(.ASSETS);
             const path_ptr = memory.cardinal_alloc(allocator, cached_path.len + 1);
@@ -303,6 +308,8 @@ fn load_texture_with_fallback(original_uri: [*:0]const u8, base_path: [*:0]const
             out_texture.width = tex_data.width;
             out_texture.height = tex_data.height;
             out_texture.channels = tex_data.channels;
+            out_texture.format = tex_data.format;
+            out_texture.data_size = tex_data.data_size;
             const allocator = memory.cardinal_get_allocator_for_category(.ASSETS);
             const path_ptr = memory.cardinal_alloc(allocator, path.len + 1);
             if (path_ptr) |ptr| {
@@ -354,6 +361,8 @@ fn load_texture_with_fallback(original_uri: [*:0]const u8, base_path: [*:0]const
                 out_texture.width = tex_data.width;
                 out_texture.height = tex_data.height;
                 out_texture.channels = tex_data.channels;
+                out_texture.format = tex_data.format;
+                out_texture.data_size = tex_data.data_size;
                 const allocator = memory.cardinal_get_allocator_for_category(.ASSETS);
                 const path_ptr = memory.cardinal_alloc(allocator, p.len + 1);
                 if (path_ptr) |ptr| {
@@ -379,6 +388,8 @@ fn load_texture_with_fallback(original_uri: [*:0]const u8, base_path: [*:0]const
         out_texture.width = tex_data.width;
         out_texture.height = tex_data.height;
         out_texture.channels = tex_data.channels;
+        out_texture.format = tex_data.format;
+        out_texture.data_size = tex_data.data_size;
         const allocator = memory.cardinal_get_allocator_for_category(.ASSETS);
         const path_ptr = memory.cardinal_alloc(allocator, path.len + 1);
         if (path_ptr) |ptr| {
@@ -499,17 +510,24 @@ fn load_texture_from_gltf(data: *const c.cgltf_data, img_idx: usize, base_path: 
 
                 if (texture_loader.texture_load_from_memory(buffer_slice.ptr, decoded_len, tex_data)) {
                     // Create ref resource
-                    // We need a unique ID for embedded textures. Using pointer address + index?
-                    var buf: [64]u8 = undefined;
-                    const id = std.fmt.bufPrintZ(&buf, "embedded_img_{d}", .{img_idx}) catch "embedded_unknown";
+                    // We need a unique ID for embedded textures. Using base_path + index.
+                    var buf: [512]u8 = undefined;
+                    const id = std.fmt.bufPrintZ(&buf, "{s}_embedded_img_{d}", .{ std.mem.span(base_path), img_idx }) catch "embedded_unknown";
 
                     if (ref_counting.cardinal_ref_create(id, tex_data, @sizeOf(texture_loader.TextureData), fallback_texture_data_destructor)) |ref| {
                         out_texture.data = tex_data.data;
                         out_texture.width = tex_data.width;
                         out_texture.height = tex_data.height;
                         out_texture.channels = tex_data.channels;
+                        out_texture.format = tex_data.format;
+                        out_texture.data_size = tex_data.data_size;
                         out_texture.is_hdr = tex_data.is_hdr;
                         out_texture.ref_resource = ref;
+                        _ = resource_state.cardinal_resource_state_register(ref);
+                        const tid: u32 = 1;
+                        if (resource_state.cardinal_resource_state_try_acquire_loading(ref.identifier.?, tid)) {
+                            _ = resource_state.cardinal_resource_state_set(ref.identifier.?, .LOADED, tid);
+                        }
 
                         // Copy ID to path
                         const path_ptr = memory.cardinal_alloc(allocator, id.len + 1);
@@ -520,9 +538,11 @@ fn load_texture_from_gltf(data: *const c.cgltf_data, img_idx: usize, base_path: 
                             out_texture.path = @ptrCast(ptr);
                         }
 
+                        gltf_log.debug("Loaded embedded texture {d} from base64 (size: {d})", .{ img_idx, decoded_len });
                         return true;
                     } else {
                         // Failed to create ref
+                        gltf_log.err("Failed to create ref for embedded texture {s}. Possible ID collision?", .{id});
                         texture_loader.texture_data_free(tex_data);
                         memory.cardinal_free(allocator, td_ptr);
                     }
@@ -538,20 +558,49 @@ fn load_texture_from_gltf(data: *const c.cgltf_data, img_idx: usize, base_path: 
     } else if (img.buffer_view != null) {
         // Embedded texture in buffer view
         const bv = img.buffer_view;
-        if (bv.*.buffer == null or bv.*.buffer.*.data == null) {
-            gltf_log.err("Buffer view has no data", .{});
+        var data_ptr: [*]const u8 = undefined;
+        var buffer_size: usize = 0;
+
+        if (bv.*.buffer != null and bv.*.buffer.*.data != null) {
+            data_ptr = @as([*]const u8, @ptrCast(bv.*.buffer.*.data));
+            buffer_size = bv.*.buffer.*.size;
+        } else if (data.bin != null) {
+            // Fallback: assume it's in the BIN chunk
+            gltf_log.warn("BufferView buffer data is null, falling back to d.bin", .{});
+            data_ptr = @as([*]const u8, @ptrCast(data.bin));
+            buffer_size = data.bin_size;
+        } else {
+            gltf_log.err("Buffer view for image {d} has no data and no BIN chunk available", .{img_idx});
             return create_fallback_texture(out_texture);
         }
 
-        // Calculate pointer to data
-        const data_ptr = @as([*]const u8, @ptrCast(bv.*.buffer.*.data));
         const offset = bv.*.offset; // byte offset in buffer
         const size = bv.*.size;
+
+        // Bounds check
+        if (offset + size > buffer_size) {
+            gltf_log.err("BufferView out of bounds: offset {d} + size {d} > buffer size {d}", .{ offset, size, buffer_size });
+            return create_fallback_texture(out_texture);
+        }
+
+        gltf_log.debug("Loading embedded buffer view texture {d}: offset={d}, size={d}", .{ img_idx, offset, size });
 
         // Stride is usually 0 for images, but respect it if non-zero?
         // Images are contiguous usually.
 
         const img_data = data_ptr + offset;
+
+        // Debug: Log texture details (WARN for visibility)
+        const err_mime = if (img.mime_type) |m| std.mem.span(m) else "unknown";
+        if (size >= 4) {
+            gltf_log.warn("Texture {d} details: Size={d}, Mime={s}, Magic={X:0>2} {X:0>2} {X:0>2} {X:0>2}", .{ img_idx, size, err_mime, img_data[0], img_data[1], img_data[2], img_data[3] });
+        }
+
+        // Explicit check for unsupported formats
+        if (std.mem.eql(u8, err_mime, "image/ktx2") or std.mem.eql(u8, err_mime, "image/basis")) {
+            gltf_log.err("Texture {d} uses unsupported format: {s}", .{ img_idx, err_mime });
+            return create_fallback_texture(out_texture);
+        }
 
         const allocator = memory.cardinal_get_allocator_for_category(.ASSETS);
         const td_ptr = memory.cardinal_alloc(allocator, @sizeOf(texture_loader.TextureData));
@@ -560,16 +609,23 @@ fn load_texture_from_gltf(data: *const c.cgltf_data, img_idx: usize, base_path: 
 
         if (texture_loader.texture_load_from_memory(img_data, size, tex_data)) {
             // Create ref resource
-            var buf: [64]u8 = undefined;
-            const id = std.fmt.bufPrintZ(&buf, "buffer_img_{d}", .{img_idx}) catch "buffer_unknown";
+            var buf: [512]u8 = undefined;
+            const id = std.fmt.bufPrintZ(&buf, "{s}_buffer_img_{d}", .{ std.mem.span(base_path), img_idx }) catch "buffer_unknown";
 
             if (ref_counting.cardinal_ref_create(id, tex_data, @sizeOf(texture_loader.TextureData), fallback_texture_data_destructor)) |ref| {
                 out_texture.data = tex_data.data;
                 out_texture.width = tex_data.width;
                 out_texture.height = tex_data.height;
                 out_texture.channels = tex_data.channels;
+                out_texture.format = tex_data.format;
+                out_texture.data_size = tex_data.data_size;
                 out_texture.is_hdr = tex_data.is_hdr;
                 out_texture.ref_resource = ref;
+                _ = resource_state.cardinal_resource_state_register(ref);
+                const tid: u32 = 1;
+                if (resource_state.cardinal_resource_state_try_acquire_loading(ref.identifier.?, tid)) {
+                    _ = resource_state.cardinal_resource_state_set(ref.identifier.?, .LOADED, tid);
+                }
 
                 // Copy ID to path
                 const path_ptr = memory.cardinal_alloc(allocator, id.len + 1);
@@ -583,12 +639,13 @@ fn load_texture_from_gltf(data: *const c.cgltf_data, img_idx: usize, base_path: 
                 gltf_log.debug("Loaded embedded texture {d} from buffer view (size: {d})", .{ img_idx, size });
                 return true;
             } else {
+                gltf_log.err("Failed to create ref for buffer texture {s}. Possible ID collision?", .{id});
                 texture_loader.texture_data_free(tex_data);
                 memory.cardinal_free(allocator, td_ptr);
             }
         } else {
             memory.cardinal_free(allocator, td_ptr);
-            gltf_log.err("Failed to load embedded texture from memory", .{});
+            gltf_log.err("Failed to load embedded texture {d} from memory (BufferView size: {d}, Mime: {s})", .{ img_idx, size, err_mime });
         }
 
         return create_fallback_texture(out_texture);
@@ -1057,6 +1114,20 @@ pub export fn cardinal_gltf_load_scene(path: [*:0]const u8, out_scene: *scene.Ca
     }
     gltf_log.debug("[GLTF] Buffers loaded. Textures: {d}, Meshes: {d}, Materials: {d}\n", .{ d.textures_count, d.meshes_count, d.materials_count });
 
+    // Fix for GLB: Ensure buffers point to the BIN chunk if cgltf didn't set them
+    if (d.file_type == c.cgltf_file_type_glb and d.bin != null and d.buffers_count > 0) {
+        var i: usize = 0;
+        while (i < d.buffers_count) : (i += 1) {
+            if (d.buffers[i].data == null and d.buffers[i].uri == null) {
+                gltf_log.warn("GLB buffer[{d}] data is NULL, patching to point to BIN chunk", .{i});
+                d.buffers[i].data = @constCast(d.bin);
+                if (d.buffers[i].size == 0) {
+                    d.buffers[i].size = d.bin_size;
+                }
+            }
+        }
+    }
+
     // Load textures
     const num_textures = if (d.textures_count > 0) d.textures_count else d.images_count;
     var textures: ?[*]scene.CardinalTexture = null;
@@ -1076,29 +1147,31 @@ pub export fn cardinal_gltf_load_scene(path: [*:0]const u8, out_scene: *scene.Ca
             var i: usize = 0;
             while (i < d.textures_count) : (i += 1) {
                 const tex = &d.textures[i];
-                var success = false;
-
+                var loaded = false;
                 if (tex.image != null) {
                     const img_idx = (@intFromPtr(tex.image) - @intFromPtr(d.images)) / @sizeOf(c.cgltf_image);
-                    if (load_texture_from_gltf(d, img_idx, local_path, &textures.?[texture_count])) {
-                        success = true;
+                    if (load_texture_from_gltf(d, img_idx, local_path, &textures.?[i])) {
+                        loaded = true;
                     }
-                } else {
-                    success = create_fallback_texture(&textures.?[texture_count]);
                 }
-
-                if (success) {
-                    convert_sampler(tex.sampler, &textures.?[texture_count].sampler);
-                    texture_count += 1;
+                if (!loaded) {
+                    _ = create_fallback_texture(&textures.?[i]);
                 }
+                convert_sampler(tex.sampler, &textures.?[i].sampler);
+                texture_count += 1;
             }
         } else {
             var i: usize = 0;
             while (i < d.images_count) : (i += 1) {
-                if (load_texture_from_gltf(d, i, local_path, &textures.?[texture_count])) {
-                    convert_sampler(null, &textures.?[texture_count].sampler);
-                    texture_count += 1;
+                var loaded = false;
+                if (load_texture_from_gltf(d, i, local_path, &textures.?[i])) {
+                    loaded = true;
                 }
+                if (!loaded) {
+                    _ = create_fallback_texture(&textures.?[i]);
+                }
+                convert_sampler(null, &textures.?[i].sampler);
+                texture_count += 1;
             }
         }
     }
@@ -1204,7 +1277,16 @@ pub export fn cardinal_gltf_load_scene(path: [*:0]const u8, out_scene: *scene.Ca
                     } else {
                         tex_idx = @intCast((@intFromPtr(pbr.metallic_roughness_texture.texture.*.image) - @intFromPtr(d.images)) / @sizeOf(c.cgltf_image));
                     }
-                    if (tex_idx < texture_count) card_mat.metallic_roughness_texture = .{ .index = tex_idx, .generation = 1 };
+                    if (tex_idx < texture_count) {
+                        card_mat.metallic_roughness_texture = .{ .index = tex_idx, .generation = 1 };
+                        // Force UNORM format for metallic/roughness maps (data, not color)
+                        // Only override if it's currently SRGB (default) or Undefined, don't break HDR
+                        if (textures) |texs| {
+                            if (texs[tex_idx].format == c.VK_FORMAT_R8G8B8A8_SRGB or texs[tex_idx].format == 0) {
+                                texs[tex_idx].format = c.VK_FORMAT_R8G8B8A8_UNORM;
+                            }
+                        }
+                    }
                     card_mat.uv_indices[2] = @intCast(pbr.metallic_roughness_texture.texcoord);
                     extract_texture_transform(&pbr.metallic_roughness_texture, &card_mat.metallic_roughness_transform);
                 }
@@ -1224,7 +1306,15 @@ pub export fn cardinal_gltf_load_scene(path: [*:0]const u8, out_scene: *scene.Ca
                 } else {
                     tex_idx = @intCast((@intFromPtr(mat.normal_texture.texture.*.image) - @intFromPtr(d.images)) / @sizeOf(c.cgltf_image));
                 }
-                if (tex_idx < texture_count) card_mat.normal_texture = .{ .index = tex_idx, .generation = 1 };
+                if (tex_idx < texture_count) {
+                    card_mat.normal_texture = .{ .index = tex_idx, .generation = 1 };
+                    // Force UNORM format for normal maps (data, not color)
+                    if (textures) |texs| {
+                        if (texs[tex_idx].format == c.VK_FORMAT_R8G8B8A8_SRGB or texs[tex_idx].format == 0) {
+                            texs[tex_idx].format = c.VK_FORMAT_R8G8B8A8_UNORM;
+                        }
+                    }
+                }
                 card_mat.uv_indices[1] = @intCast(mat.normal_texture.texcoord);
                 card_mat.normal_scale = mat.normal_texture.scale;
                 extract_texture_transform(&mat.normal_texture, &card_mat.normal_transform);
@@ -1237,7 +1327,15 @@ pub export fn cardinal_gltf_load_scene(path: [*:0]const u8, out_scene: *scene.Ca
                 } else {
                     tex_idx = @intCast((@intFromPtr(mat.occlusion_texture.texture.*.image) - @intFromPtr(d.images)) / @sizeOf(c.cgltf_image));
                 }
-                if (tex_idx < texture_count) card_mat.ao_texture = .{ .index = tex_idx, .generation = 1 };
+                if (tex_idx < texture_count) {
+                    card_mat.ao_texture = .{ .index = tex_idx, .generation = 1 };
+                    // Force UNORM format for occlusion maps (data, not color)
+                    if (textures) |texs| {
+                        if (texs[tex_idx].format == c.VK_FORMAT_R8G8B8A8_SRGB or texs[tex_idx].format == 0) {
+                            texs[tex_idx].format = c.VK_FORMAT_R8G8B8A8_UNORM;
+                        }
+                    }
+                }
                 card_mat.uv_indices[3] = @intCast(mat.occlusion_texture.texcoord);
                 card_mat.ao_strength = mat.occlusion_texture.scale;
                 extract_texture_transform(&mat.occlusion_texture, &card_mat.ao_transform);
@@ -1316,6 +1414,7 @@ pub export fn cardinal_gltf_load_scene(path: [*:0]const u8, out_scene: *scene.Ca
             var uv1_acc: ?*const c.cgltf_accessor = null;
             var joints_acc: ?*const c.cgltf_accessor = null;
             var weights_acc: ?*const c.cgltf_accessor = null;
+            var color_acc: ?*const c.cgltf_accessor = null;
 
             var ai: usize = 0;
             while (ai < p.attributes_count) : (ai += 1) {
@@ -1329,6 +1428,7 @@ pub export fn cardinal_gltf_load_scene(path: [*:0]const u8, out_scene: *scene.Ca
                     },
                     c.cgltf_attribute_type_joints => joints_acc = a.data,
                     c.cgltf_attribute_type_weights => weights_acc = a.data,
+                    c.cgltf_attribute_type_color => color_acc = a.data,
                     else => {},
                 }
             }
@@ -1388,6 +1488,37 @@ pub export fn cardinal_gltf_load_scene(path: [*:0]const u8, out_scene: *scene.Ca
                     var w: [4]f32 = .{ 0, 0, 0, 0 };
                     _ = c.cgltf_accessor_read_float(acc, vi, &w[0], 4);
                     vertices[vi].bone_weights = w;
+                }
+
+                if (color_acc) |acc| {
+                    var c_val: [4]f32 = .{ 1, 1, 1, 1 };
+                    // Read color, cgltf handles vec3 vs vec4 automatically (fills alpha with 1.0 if vec3)
+                    _ = c.cgltf_accessor_read_float(acc, vi, &c_val[0], 4);
+                    vertices[vi].color = c_val;
+                } else {
+                    // Default to white if no vertex color
+                    vertices[vi].color = .{ 1, 1, 1, 1 };
+                }
+            }
+
+            // Heuristic: Check for all-black vertex colors in GLTF
+            // Some GLTF exporters might export 0-initialized colors or black colors which cause the model to disappear
+            if (color_acc != null and vcount > 0) {
+                var all_black = true;
+                var v_check: usize = 0;
+                while (v_check < vcount) : (v_check += 1) {
+                    const v = vertices[v_check];
+                    if (v.color[0] > 0.001 or v.color[1] > 0.001 or v.color[2] > 0.001) {
+                        all_black = false;
+                        break;
+                    }
+                }
+                if (all_black) {
+                    gltf_log.warn("Primitive has ALL BLACK vertex colors. Forcing to WHITE.", .{});
+                    var v_fix: usize = 0;
+                    while (v_fix < vcount) : (v_fix += 1) {
+                        vertices[v_fix].color = .{ 1.0, 1.0, 1.0, 1.0 };
+                    }
                 }
             }
 

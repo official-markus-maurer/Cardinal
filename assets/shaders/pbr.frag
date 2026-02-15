@@ -7,6 +7,7 @@ layout(location = 1) in vec3 fragNormal;
 layout(location = 2) in vec2 fragTexCoord;
 layout(location = 3) in vec3 fragViewPos;
 layout(location = 4) in vec2 fragTexCoord1;
+layout(location = 5) in vec4 fragColor;
 
 layout(binding = 0) uniform UniformBufferObject {
     mat4 view;
@@ -360,7 +361,10 @@ void main() {
     }
 
     // Alpha Handling
-    float alpha = albedoSample.a * material.albedo.a;
+    float alpha = albedoSample.a * material.albedo.a * fragColor.a;
+
+    // Multiply albedo by vertex color
+    albedo *= fragColor.rgb;
     
     // MASK mode (1): Discard if alpha is below cutoff
     uint alphaMode = getAlphaMode();
@@ -484,7 +488,7 @@ void main() {
             L = normalize(-light.lightDirection.xyz);
         }
 
-        float shadow = 0.0;
+        float shadow = 1.0;
         if (type == 0) { // Directional
             // Pass geometry normal (fragNormal) instead of perturbed normal (N) for shadow bias calculation
             // This prevents shadow acne on surfaces with strong normal maps

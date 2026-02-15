@@ -51,7 +51,7 @@ fn set_default_material_properties(pushConstants: *types.PBRPushConstants, hasTe
     }
 }
 
-fn resolve_texture_index(textureHandle: handles.TextureHandle, manager: ?*const types.VulkanTextureManager) u32 {
+pub fn resolve_texture_index(textureHandle: handles.TextureHandle, manager: ?*const types.VulkanTextureManager) u32 {
     if (manager == null or !textureHandle.is_valid()) {
         return c.UINT32_MAX;
     }
@@ -64,9 +64,25 @@ fn resolve_texture_index(textureHandle: handles.TextureHandle, manager: ?*const 
 
     if (mappedIndex < manager.?.textureCount) {
         const tex = &manager.?.textures.?[mappedIndex];
-        mat_utils_log.debug("Resolving texture handle {d} -> mapped index {d}, bindless index: {d}", .{ textureIndex, mappedIndex, tex.bindless_index });
+        // Don't log debug every frame, it's too spammy. Use warning if it helps.
+        // mat_utils_log.debug("Resolving texture handle {d} -> mapped index {d}, bindless index: {d}", .{ textureIndex, mappedIndex, tex.bindless_index });
+        
+        // If bindless index is valid, return it.
+        // If it's invalid (UINT32_MAX), it might be unallocated.
+        // However, if we are in fallback mode (no bindless), we might return the mapped index?
+        // No, resolve_texture_index is specifically for bindless indices in push constants.
+        
         if (tex.bindless_index != c.UINT32_MAX) {
             return tex.bindless_index;
+        } else {
+            // Fallback: If bindless index is not set, use placeholder (index 0 of bindless pool usually)
+            // Or return UINT32_MAX to indicate "no texture"
+            // If the texture is loading, it should have a placeholder bindless index!
+            // If tex.bindless_index is UINT32_MAX, something is wrong with initialization.
+            // Check if placeholder exists
+            if (manager.?.hasPlaceholder and manager.?.textures.?[0].bindless_index != c.UINT32_MAX) {
+                 return manager.?.textures.?[0].bindless_index;
+            }
         }
     }
 

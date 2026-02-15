@@ -2,6 +2,7 @@
 #extension GL_EXT_nonuniform_qualifier : enable
 
 layout(location = 0) in vec2 fragTexCoord;
+layout(location = 1) in vec4 fragColor;
 
 // Bindless textures (Set 1)
 layout(set = 1, binding = 0) uniform sampler2D textures[];
@@ -16,7 +17,7 @@ void main() {
         return;
     }
 
-    float alpha = texture(textures[nonuniformEXT(material.textureIndex)], fragTexCoord).a;
+    float alpha = texture(textures[nonuniformEXT(material.textureIndex)], fragTexCoord).a * fragColor.a;
 
     if (alpha < material.alphaCutoff) {
         discard;

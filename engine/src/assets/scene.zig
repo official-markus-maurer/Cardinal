@@ -5,7 +5,7 @@ const log = @import("../core/log.zig");
 const transform_math = @import("../core/transform.zig");
 const pool_alloc = @import("../core/pool_allocator.zig");
 const handles = @import("../core/handles.zig");
-const animation = @import("../core/animation.zig");
+const animation = @import("animation.zig");
 
 // --- Global Pool for Scene Nodes ---
 var g_node_pool: ?pool_alloc.PoolAllocator(CardinalSceneNode) = null;
@@ -57,15 +57,18 @@ pub const CardinalVertex = extern struct {
     px: f32,
     py: f32,
     pz: f32,
+    _pad0: f32,
     nx: f32,
     ny: f32,
     nz: f32,
+    _pad1: f32,
     u: f32,
     v: f32,
     u1: f32,
     v1: f32,
     bone_weights: [4]f32,
     bone_indices: [4]u32,
+    color: [4]f32,
 };
 
 pub const CardinalTextureTransform = extern struct {
@@ -127,7 +130,9 @@ pub const CardinalTexture = extern struct {
     sampler: CardinalSampler,
     path: ?[*:0]u8,
     ref_resource: ?*ref_counting.CardinalRefCountedResource,
-    is_hdr: bool,
+    is_hdr: u32, // Changed from bool to u32 for ABI stability
+    format: u32, // VkFormat (0 = undefined/auto)
+    data_size: u64, // Size of data in bytes (0 if calculated from w*h*c)
 };
 
 pub const CardinalMorphTarget = extern struct {

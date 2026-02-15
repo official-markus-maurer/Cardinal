@@ -1,9 +1,9 @@
 const std = @import("std");
 const builtin = @import("builtin");
-const transform = @import("transform.zig");
-const scene = @import("../assets/scene.zig");
-const memory = @import("memory.zig");
-const log = @import("log.zig");
+const transform = @import("../core/transform.zig");
+const scene = @import("scene.zig");
+const memory = @import("../core/memory.zig");
+const log = @import("../core/log.zig");
 
 const anim_log = log.ScopedLogger("ANIMATION");
 
@@ -728,9 +728,9 @@ pub export fn cardinal_animation_system_update(system: ?*CardinalAnimationSystem
             const scene_node = node.?;
 
             // Base values
-            var current_t: [3]f32 = .{0, 0, 0};
-            var current_r: [4]f32 = .{0, 0, 0, 1};
-            var current_s: [3]f32 = .{1, 1, 1};
+            var current_t: [3]f32 = .{ 0, 0, 0 };
+            var current_r: [4]f32 = .{ 0, 0, 0, 1 };
+            var current_s: [3]f32 = .{ 1, 1, 1 };
 
             // Use current transform as base if no animation data for that channel
             const local_matrix = &scene_node.local_transform;

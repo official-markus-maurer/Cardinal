@@ -79,9 +79,6 @@ fn vk_recover_from_device_loss(s: *types.VulkanState) bool {
     // Destroy scene buffers first (they might rely on sync objects)
     vk_renderer.destroy_scene_buffers(s);
 
-    // Destroy command buffers and synchronization objects
-    vk_commands.vk_destroy_commands_sync(@ptrCast(s));
-
     // Destroy pipelines
     if (s.pipelines.use_pbr_pipeline) {
         vk_pbr.vk_pbr_pipeline_destroy(&s.pipelines.pbr_pipeline, s.context.device, &s.allocator);
@@ -98,6 +95,9 @@ fn vk_recover_from_device_loss(s: *types.VulkanState) bool {
     vk_simple_pipelines.vk_destroy_simple_pipelines(s);
     vk_post_process.vk_post_process_destroy(s);
     vk_pipeline.vk_destroy_pipeline(s);
+
+    // Destroy command buffers and synchronization objects
+    vk_commands.vk_destroy_commands_sync(@ptrCast(s));
 
     // Destroy swapchain
     vk_swapchain.vk_destroy_swapchain(s);
@@ -121,6 +121,12 @@ fn vk_recover_from_device_loss(s: *types.VulkanState) bool {
     // Recreate pipeline
     if (success and !vk_pipeline.vk_create_pipeline(s)) {
         failure_point = "pipeline";
+        success = false;
+    }
+
+    // Recreate commands and sync objects
+    if (success and !vk_commands.vk_create_commands_sync(@ptrCast(s))) {
+        failure_point = "commands sync";
         success = false;
     }
 
@@ -439,11 +445,11 @@ fn acquire_next_image(s: *types.VulkanState, out_image_index: *u32) bool {
     return true;
 }
 
-fn submit_command_buffer(s: *types.VulkanState, cmd: c.VkCommandBuffer, acquire_sem: c.VkSemaphore, signal_value: u64) bool {
+fn submit_command_buffer(s: *types.VulkanState, cmd: c.VkCommandBuffer, acquire_sem: c.VkSemaphore, signal_value: u64, wait_timeline_value: ?u64) bool {
     const zone = tracy.zoneS(@src(), "Submit Command Buffer");
     defer zone.end();
 
-    var wait_info = c.VkSemaphoreSubmitInfo{
+    const wait_info = c.VkSemaphoreSubmitInfo{
         .sType = c.VK_STRUCTURE_TYPE_SEMAPHORE_SUBMIT_INFO,
         .pNext = null,
         .semaphore = acquire_sem,
@@ -451,6 +457,17 @@ fn submit_command_buffer(s: *types.VulkanState, cmd: c.VkCommandBuffer, acquire_
         .stageMask = c.VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT,
         .deviceIndex = 0,
     };
+
+    const timeline_wait_info = c.VkSemaphoreSubmitInfo{
+        .sType = c.VK_STRUCTURE_TYPE_SEMAPHORE_SUBMIT_INFO,
+        .pNext = null,
+        .semaphore = s.sync.timeline_semaphore,
+        .value = if (wait_timeline_value) |v| v else 0,
+        .stageMask = c.VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT, // Wait for all commands (transfers)
+        .deviceIndex = 0,
+    };
+
+    var wait_infos = [2]c.VkSemaphoreSubmitInfo{ wait_info, timeline_wait_info };
 
     var signal_infos = [2]c.VkSemaphoreSubmitInfo{ .{
         .sType = c.VK_STRUCTURE_TYPE_SEMAPHORE_SUBMIT_INFO,
@@ -479,8 +496,8 @@ fn submit_command_buffer(s: *types.VulkanState, cmd: c.VkCommandBuffer, acquire_
         .sType = c.VK_STRUCTURE_TYPE_SUBMIT_INFO_2,
         .pNext = null,
         .flags = 0,
-        .waitSemaphoreInfoCount = 1,
-        .pWaitSemaphoreInfos = &wait_info,
+        .waitSemaphoreInfoCount = if (wait_timeline_value != null) 2 else 1,
+        .pWaitSemaphoreInfos = &wait_infos[0],
         .commandBufferInfoCount = 1,
         .pCommandBufferInfos = &cmd_info,
         .signalSemaphoreInfoCount = 2,
@@ -613,8 +630,9 @@ pub export fn cardinal_renderer_draw_frame(renderer: ?*types.CardinalRenderer) c
     // Update textures (process async uploads)
     // This MUST happen before we reserve the timeline value for the frame signal,
     // because update_textures might submit its own command buffer and advance the timeline.
+    var texture_upload_signal: ?u64 = null;
     if (s.pipelines.use_pbr_pipeline and s.pipelines.pbr_pipeline.textureManager != null) {
-        vk_texture_manager.vk_texture_manager_update_textures(s.pipelines.pbr_pipeline.textureManager.?);
+        texture_upload_signal = vk_texture_manager.vk_texture_manager_update_textures(s.pipelines.pbr_pipeline.textureManager.?);
     }
 
     vk_commands.vk_record_cmd(@ptrCast(s), image_index);
@@ -633,7 +651,7 @@ pub export fn cardinal_renderer_draw_frame(renderer: ?*types.CardinalRenderer) c
     if (cmd_buf == null)
         return;
 
-    if (!submit_command_buffer(s, cmd_buf, s.sync.image_acquired_semaphores.?[s.sync.current_frame], signal_after_render))
+    if (!submit_command_buffer(s, cmd_buf, s.sync.image_acquired_semaphores.?[s.sync.current_frame], signal_after_render, texture_upload_signal))
         return;
 
     present_swapchain_image(s, image_index, signal_after_render);

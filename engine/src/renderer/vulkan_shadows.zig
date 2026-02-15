@@ -5,7 +5,7 @@ const math = @import("../core/math.zig");
 const log = @import("../core/log.zig");
 const vk_pbr = @import("vulkan_pbr.zig");
 const scene = @import("../assets/scene.zig");
-const animation = @import("../core/animation.zig");
+const animation = @import("../assets/animation.zig");
 const wrappers = @import("vulkan_wrappers.zig");
 const vk_pso = @import("vulkan_pso.zig");
 const material_utils = @import("util/vulkan_material_utils.zig");
@@ -542,7 +542,7 @@ pub fn vk_shadow_render(s: *types.VulkanState, cmd: c.VkCommandBuffer) void {
                 @memcpy(pushData[68..72], cutPtr[0..4]);
 
                 // Has Skeleton
-                var hasSkeleton: u32 = 0;
+                var packedInfo: u32 = 0;
                 if (scn.animation_system != null and scn.skin_count > 0) {
                     const skins = @as([*]animation.CardinalSkin, @ptrCast(@alignCast(scn.skins.?)));
                     var skin_idx: u32 = 0;
@@ -551,16 +551,16 @@ pub fn vk_shadow_render(s: *types.VulkanState, cmd: c.VkCommandBuffer) void {
                         var mesh_idx: u32 = 0;
                         while (mesh_idx < skin.mesh_count) : (mesh_idx += 1) {
                             if (skin.mesh_indices.?[mesh_idx] == m_i) {
-                                hasSkeleton = 1;
+                                packedInfo |= (4 << 16);
                                 break;
                             }
                         }
-                        if (hasSkeleton == 1) break;
+                        if ((packedInfo & (4 << 16)) != 0) break;
                     }
                 }
 
-                const skelPtr = @as([*]const u8, @ptrCast(&hasSkeleton));
-                @memcpy(pushData[148..152], skelPtr[0..4]);
+                const infoPtr = @as([*]const u8, @ptrCast(&packedInfo));
+                @memcpy(pushData[132..136], infoPtr[0..4]);
 
                 // Cascade Index
                 const cascadeIdx = @as(u32, @intCast(j_layer));

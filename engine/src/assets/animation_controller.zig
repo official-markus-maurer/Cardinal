@@ -1,5 +1,5 @@
 const std = @import("std");
-const memory = @import("memory.zig");
+const memory = @import("../core/memory.zig");
 const animation = @import("animation.zig");
 const c = @cImport({
     @cInclude("string.h");

@@ -4,6 +4,12 @@ const log = @import("../core/log.zig");
 const ref_counting = @import("../core/ref_counting.zig");
 const async_loader = @import("../core/async_loader.zig");
 const resource_state = @import("../core/resource_state.zig");
+const dds_loader = @import("dds_loader.zig");
+
+// Vulkan Formats
+const VK_FORMAT_UNDEFINED = 0;
+const VK_FORMAT_R8G8B8A8_SRGB = 43;
+const VK_FORMAT_R32G32B32A32_SFLOAT = 109;
 
 const texture_log = log.ScopedLogger("TEXTURE");
 
@@ -43,7 +49,9 @@ pub const TextureData = extern struct {
     width: u32,
     height: u32,
     channels: u32,
-    is_hdr: bool,
+    is_hdr: u32, // Changed from bool to u32 for explicit alignment/size
+    format: u32, // VkFormat (0 = undefined/auto)
+    data_size: u64, // Size of data in bytes (0 if calculated from w*h*c)
 };
 
 pub const TextureCacheStats = extern struct {
@@ -85,7 +93,9 @@ var g_placeholder_texture = TextureData{
     .width = 1,
     .height = 1,
     .channels = 4,
-    .is_hdr = false,
+    .is_hdr = 0,
+    .format = 0, // VK_FORMAT_UNDEFINED (will be treated as SRGB)
+    .data_size = 4,
 };
 
 pub export fn cardinal_texture_check_cache(path: [*:0]const u8) ?*ref_counting.CardinalRefCountedResource {
@@ -134,6 +144,27 @@ pub export fn texture_load_from_memory(data: [*]const u8, size: usize, out_textu
     var h: c_int = 0;
     var c: c_int = 0;
 
+    // Check for DDS
+    // Magic bytes: "DDS " (0x44, 0x44, 0x53, 0x20)
+    var is_dds = false;
+    if (size >= 4) {
+        if (data[0] == 0x44 and data[1] == 0x44 and data[2] == 0x53 and data[3] == 0x20) {
+            is_dds = true;
+        }
+    }
+
+    if (is_dds) {
+        // Create a temporary slice for the buffer
+        const buffer = data[0..size];
+        if (dds_loader.load_dds_from_memory(buffer, out_texture)) {
+            texture_log.warn("DDS loaded: {d}x{d}, Size: {d}, Format: {d}", .{ out_texture.width, out_texture.height, out_texture.data_size, out_texture.format });
+            return true;
+        } else {
+            texture_log.err("Failed to load DDS texture from memory", .{});
+            return false;
+        }
+    }
+
     // Check for EXR
     // Note: IsEXRFromMemory seems to return true for PNGs/others in some cases, so we enforce the magic byte check.
     // Magic bytes: 0x76, 0x2f, 0x31, 0x01
@@ -168,7 +199,8 @@ pub export fn texture_load_from_memory(data: [*]const u8, size: usize, out_textu
         out_texture.width = @intCast(w);
         out_texture.height = @intCast(h);
         out_texture.channels = 4;
-        out_texture.is_hdr = true;
+        out_texture.is_hdr = 1;
+        out_texture.data_size = @as(u64, out_texture.width) * out_texture.height * 16; // 4 floats * 4 bytes
         return true;
     }
 
@@ -184,10 +216,22 @@ pub export fn texture_load_from_memory(data: [*]const u8, size: usize, out_textu
 
     if (pixels == null) {
         const reason = stbi_failure_reason();
-        texture_log.err("Failed to load texture from memory", .{});
+        texture_log.err("Failed to load texture from memory (Size: {d})", .{size});
         if (reason) |r| {
             const r_c: [*:0]const u8 = @ptrCast(r);
             texture_log.err("STB failure reason: {s}", .{std.mem.span(r_c)});
+        }
+        if (size >= 4) {
+            texture_log.err("Magic Bytes: {X:0>2} {X:0>2} {X:0>2} {X:0>2}", .{ data[0], data[1], data[2], data[3] });
+            if (data[0] == 0x89 and data[1] == 0x50 and data[2] == 0x4E and data[3] == 0x47) {
+                texture_log.err("Format appears to be PNG.", .{});
+            } else if (data[0] == 0xFF and data[1] == 0xD8) {
+                texture_log.err("Format appears to be JPEG.", .{});
+            } else if (data[0] == 0x52 and data[1] == 0x49 and data[2] == 0x46 and data[3] == 0x46) {
+                texture_log.err("Format appears to be WEBP (RIFF). STB might not support WebP.", .{});
+            } else if (data[0] == 0xAB and data[1] == 0x4B and data[2] == 0x54 and data[3] == 0x58) {
+                texture_log.err("Format appears to be KTX. Not supported.", .{});
+            }
         }
         return false;
     }
@@ -202,7 +246,12 @@ pub export fn texture_load_from_memory(data: [*]const u8, size: usize, out_textu
     out_texture.width = @intCast(w);
     out_texture.height = @intCast(h);
     out_texture.channels = 4;
-    out_texture.is_hdr = is_hdr;
+    out_texture.is_hdr = if (is_hdr) 1 else 0;
+    out_texture.format = if (is_hdr) VK_FORMAT_R32G32B32A32_SFLOAT else VK_FORMAT_R8G8B8A8_SRGB;
+    const pixel_size: u64 = if (is_hdr) 16 else 4;
+    out_texture.data_size = @as(u64, out_texture.width) * out_texture.height * pixel_size;
+
+    texture_log.debug("STB loaded: {d}x{d}, Size: {d}, Format: {d} (is_hdr: {any})", .{ out_texture.width, out_texture.height, out_texture.data_size, out_texture.format, is_hdr });
 
     return true;
 }
@@ -262,14 +311,19 @@ fn texture_load_async_func(task: ?*async_loader.CardinalAsyncTask, user_data: ?*
     if (resource.identifier == null) return false;
     const path: [*:0]const u8 = @ptrCast(resource.identifier);
 
+    texture_log.debug("Async loading texture: {s}", .{std.mem.span(path)});
+
     var tex_data: TextureData = undefined;
     if (texture_load_from_disk(path, &tex_data)) {
+        texture_log.debug("Async load success: {s} ({d}x{d})", .{ std.mem.span(path), tex_data.width, tex_data.height });
         const existing_data = @as(*TextureData, @ptrCast(@alignCast(resource.resource.?)));
+        texture_log.warn("Writing texture data to {*}: Size={d}, Format={d}", .{ existing_data, tex_data.data_size, tex_data.format });
         existing_data.* = tex_data;
 
         _ = resource_state.cardinal_resource_state_set(resource.identifier.?, .LOADED, loading_thread_id);
         return true;
     } else {
+        texture_log.err("Async load failed: {s}", .{std.mem.span(path)});
         _ = resource_state.cardinal_resource_state_set(resource.identifier.?, .ERROR, loading_thread_id);
         return false;
     }
@@ -652,7 +706,13 @@ pub export fn texture_load_with_ref_counting(filepath: ?[*]const u8, out_texture
     }
     const tex_data = @as(*TextureData, @ptrCast(@alignCast(data_ptr)));
     // Initialize with placeholder
-    tex_data.* = g_placeholder_texture;
+    tex_data.data = g_placeholder_texture.data;
+    tex_data.width = g_placeholder_texture.width;
+    tex_data.height = g_placeholder_texture.height;
+    tex_data.channels = g_placeholder_texture.channels;
+    tex_data.is_hdr = g_placeholder_texture.is_hdr;
+    tex_data.format = g_placeholder_texture.format;
+    tex_data.data_size = g_placeholder_texture.data_size;
 
     const path_c_id: [*:0]const u8 = @ptrCast(path.ptr);
     const temp_ref_opt = ref_counting.cardinal_ref_create(path_c_id, tex_data, @sizeOf(TextureData), texture_data_destructor);

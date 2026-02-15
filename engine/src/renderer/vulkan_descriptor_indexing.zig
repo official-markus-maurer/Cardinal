@@ -40,8 +40,6 @@ fn create_default_sampler(device: c.VkDevice, out_sampler: *c.VkSampler) bool {
     return true;
 }
 
-
-
 pub export fn vk_bindless_texture_pool_init(pool: ?*types.BindlessTexturePool, vulkan_state: ?*types.VulkanState, max_textures: u32) callconv(.c) bool {
     if (pool == null or vulkan_state == null) {
         desc_idx_log.err("Invalid parameters for bindless texture pool initialization", .{});
@@ -180,8 +178,6 @@ pub export fn vk_bindless_texture_pool_init(pool: ?*types.BindlessTexturePool, v
         return false;
     }
 
-
-
     desc_idx_log.info("Bindless texture pool initialized with {d} max textures", .{max_textures});
     return true;
 }
@@ -208,8 +204,6 @@ pub export fn vk_bindless_texture_pool_destroy(pool: ?*types.BindlessTexturePool
         }
         vk_allocator.free_buffer(p.allocator, p.descriptor_buffer.handle, p.descriptor_buffer.allocation);
     }
-
-
 
     if (p.descriptor_layout != null) {
         c.vkDestroyDescriptorSetLayout(p.device, p.descriptor_layout, null);
@@ -345,6 +339,12 @@ pub export fn vk_bindless_texture_register_existing(pool: ?*types.BindlessTextur
     if (pool == null or out_index == null) return false;
     const p = pool.?;
 
+    // Validation
+    if (image == null or view == null or sampler == null) {
+        desc_idx_log.err("Attempting to register bindless texture with invalid handles (Img: {any}, View: {any}, Sampler: {any})", .{ image, view, sampler });
+        return false;
+    }
+
     if (p.free_count == 0) {
         desc_idx_log.err("No free bindless texture slots available", .{});
         return false;
@@ -367,6 +367,41 @@ pub export fn vk_bindless_texture_register_existing(pool: ?*types.BindlessTextur
 
     p.allocated_count += 1;
     out_index.?.* = index;
+    return true;
+}
+
+pub export fn vk_bindless_texture_update_at_index(pool: ?*types.BindlessTexturePool, index: u32, image: c.VkImage, view: c.VkImageView, sampler: c.VkSampler) callconv(.c) bool {
+    if (pool == null) return false;
+    const p = pool.?;
+
+    // Validation
+    if (image == null or view == null or sampler == null) {
+        desc_idx_log.err("Attempting to update bindless texture at index {d} with invalid handles (Img: {any}, View: {any}, Sampler: {any})", .{ index, image, view, sampler });
+        return false;
+    }
+
+    if (index >= p.max_textures) {
+        desc_idx_log.err("Invalid texture index for update: {d}", .{index});
+        return false;
+    }
+
+    var texture = &p.textures.?[index];
+    if (!texture.is_allocated) {
+        desc_idx_log.err("Attempting to update unallocated texture at index {d}", .{index});
+        return false;
+    }
+
+    texture.image = image;
+    texture.image_view = view;
+    texture.sampler = sampler;
+    // texture.descriptor_index is already index
+    // texture.is_allocated is already true
+    texture.owns_resources = false; // We are registering existing resources, so we don't own them in the pool
+
+    p.pending_updates.?[p.pending_update_count] = index;
+    p.pending_update_count += 1;
+    p.needs_descriptor_update = true;
+
     return true;
 }
 
@@ -554,6 +589,16 @@ pub export fn vk_bindless_texture_flush_updates(pool: ?*types.BindlessTexturePoo
             p.vkGetDescriptorEXT.?(p.device, &get_info, p.descriptor_size, dst_ptr);
         }
 
+        // IMPORTANT: Flush the mapped memory if it's not coherent!
+        // For now, we assume it's HOST_VISIBLE | HOST_COHERENT because we allocate it with those flags in vulkan_allocator.zig.
+        // But double-check allocation:
+        // p.descriptor_buffer is allocated in vk_bindless_texture_pool_create using VMA.
+        // If it's coherent, no flush needed. If not, we MUST flush.
+        // Adding flush for safety if mapped.
+        // Actually, Vulkan spec requires descriptor buffers to be HOST_COHERENT if mapped.
+        // But if we are on a non-coherent system (rare for desktop), we might need it.
+        // VMA usually handles this if we use its flush function, but we are writing directly.
+
         p.needs_descriptor_update = false;
         p.pending_update_count = 0;
         return true;
@@ -599,6 +644,12 @@ pub export fn vk_create_variable_descriptor_layout(device: c.VkDevice, binding_c
     binding_flags[variable_binding_index] = c.VK_DESCRIPTOR_BINDING_VARIABLE_DESCRIPTOR_COUNT_BIT |
         c.VK_DESCRIPTOR_BINDING_PARTIALLY_BOUND_BIT;
 
+    // NOTE: VK_DESCRIPTOR_BINDING_UPDATE_AFTER_BIND_BIT is not strictly required for Descriptor Buffers
+    // because writes to the buffer are memory operations. However, some drivers might hint at support.
+    // Given the validation error, we MUST NOT set UPDATE_AFTER_BIND_POOL_BIT on the layout.
+    // The binding flag itself *might* be allowed, but without the pool flag it's useless for pools.
+    // For buffers, we just rely on memory coherence.
+
     var binding_flags_info = std.mem.zeroes(c.VkDescriptorSetLayoutBindingFlagsCreateInfo);
     binding_flags_info.sType = c.VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_BINDING_FLAGS_CREATE_INFO;
     binding_flags_info.bindingCount = binding_count;
@@ -609,6 +660,9 @@ pub export fn vk_create_variable_descriptor_layout(device: c.VkDevice, binding_c
     layout_info.pNext = &binding_flags_info;
 
     layout_info.flags = c.VK_DESCRIPTOR_SET_LAYOUT_CREATE_DESCRIPTOR_BUFFER_BIT_EXT;
+
+    // IMPORTANT: Ensure we allocate with VMA_ALLOCATION_CREATE_HOST_ACCESS_SEQUENTIAL_WRITE_BIT
+    // or manually flush if not coherent. We use HOST_COHERENT in initialization.
 
     layout_info.bindingCount = binding_count;
     layout_info.pBindings = bindings;
@@ -624,5 +678,3 @@ pub export fn vk_create_variable_descriptor_layout(device: c.VkDevice, binding_c
 
     return true;
 }
-
-

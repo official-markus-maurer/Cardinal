@@ -2,7 +2,7 @@
     "name": "Debug UV",
     "vertex_shader": { "path": "assets/shaders/uv.vert.spv", "stage": 1 },
     "fragment_shader": { "path": "assets/shaders/uv.frag.spv", "stage": 16 },
-    "vertex_input": { "use_standard_layout": true, "standard_layout_attribute_count": 3 },
+    "vertex_input": { "use_standard_layout": true, "standard_layout_attribute_count": 7 },
     "input_assembly": { "topology": "triangle_list" },
     "rasterization": { "cull_mode": "back", "front_face": "counter_clockwise" },
     "depth_stencil": { "depth_test_enable": true, "depth_write_enable": true, "depth_compare_op": "less" },

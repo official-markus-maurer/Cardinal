@@ -4,6 +4,9 @@ const async_loader = @import("../core/async_loader.zig");
 const log = @import("../core/log.zig");
 const scene_serializer = @import("scene_serializer.zig");
 const memory = @import("../core/memory.zig");
+const nif_loader = @import("nif_loader.zig");
+const kfm_loader = @import("kfm_loader.zig");
+const asset_utils = @import("asset_utils.zig");
 
 const loader_log = log.ScopedLogger("LOADER");
 
@@ -12,38 +15,7 @@ extern fn cardinal_gltf_load_scene(path: [*:0]const u8, scene: *scene.CardinalSc
 
 // --- Helper Functions ---
 
-fn find_ext(path: ?[*:0]const u8) ?[*:0]const u8 {
-    if (path == null) return null;
-    const p = std.mem.span(path.?);
 
-    // Find last dot
-    var last_dot: ?usize = null;
-    var i: usize = 0;
-    while (i < p.len) : (i += 1) {
-        if (p[i] == '.') {
-            last_dot = i;
-        }
-    }
-
-    if (last_dot) |idx| {
-        // Return slice from after dot
-        // We need to return a sentinel-terminated pointer.
-        // The original string is sentinel-terminated, so a slice from middle to end is also valid if we cast.
-        // But Zig slices carry length. We want [*:0]const u8.
-        // We can just return pointer to char after dot.
-        return @as([*:0]const u8, @ptrCast(path.?)) + idx + 1;
-    }
-
-    return null;
-}
-
-fn tolower_str(s: ?[*:0]u8) void {
-    if (s == null) return;
-    var ptr = s.?;
-    while (ptr[0] != 0) : (ptr += 1) {
-        ptr[0] = std.ascii.toLower(ptr[0]);
-    }
-}
 
 // --- Public API ---
 
@@ -55,7 +27,7 @@ pub export fn cardinal_scene_load(path: ?[*:0]const u8, out_scene: ?*scene.Cardi
 
     loader_log.info("Scene loading requested: {s}", .{path.?});
 
-    const ext = find_ext(path);
+    const ext = asset_utils.find_extension(path);
     if (ext == null) {
         loader_log.err("No file extension found in path: {s}", .{path.?});
         return false;
@@ -86,6 +58,21 @@ pub export fn cardinal_scene_load(path: ?[*:0]const u8, out_scene: ?*scene.Cardi
         return cardinal_gltf_load_scene(path.?, out_scene.?);
     }
 
+    if (std.mem.eql(u8, ext_slice, "nif")) {
+        loader_log.debug("Routing to NIF loader", .{});
+        return nif_loader.cardinal_nif_load_scene(path.?, out_scene.?);
+    }
+
+    if (std.mem.eql(u8, ext_slice, "kfm")) {
+        loader_log.debug("Routing to KFM loader", .{});
+        return kfm_loader.cardinal_kfm_load_scene(path.?, out_scene.?);
+    }
+
+    if (std.mem.eql(u8, ext_slice, "kf")) {
+        loader_log.debug("Routing to KF loader (merge)", .{});
+        return nif_loader.cardinal_nif_merge_kf(path.?, out_scene.?);
+    }
+
     loader_log.err("Unsupported file format: {s} (extension: {s})", .{ path.?, ext_slice });
     return false;
 }
@@ -103,7 +90,7 @@ pub export fn cardinal_scene_load_async(path: ?[*:0]const u8, priority: async_lo
 
     loader_log.info("Async scene loading requested: {s}", .{path.?});
 
-    const ext = find_ext(path);
+    const ext = asset_utils.find_extension(path);
     if (ext == null) {
         loader_log.err("No file extension found in path: {s}", .{path.?});
         return null;
@@ -124,7 +111,10 @@ pub export fn cardinal_scene_load_async(path: ?[*:0]const u8, priority: async_lo
         c.* = std.ascii.toLower(c.*);
     }
 
-    if (!std.mem.eql(u8, ext_slice, "gltf") and !std.mem.eql(u8, ext_slice, "glb")) {
+    if (!std.mem.eql(u8, ext_slice, "gltf") and !std.mem.eql(u8, ext_slice, "glb") and
+        !std.mem.eql(u8, ext_slice, "kfm") and !std.mem.eql(u8, ext_slice, "nif") and
+        !std.mem.eql(u8, ext_slice, "kf"))
+    {
         loader_log.err("Unsupported file format for async loading: {s} (extension: {s})", .{ path.?, ext_slice });
         return null;
     }
@@ -134,7 +124,7 @@ pub export fn cardinal_scene_load_async(path: ?[*:0]const u8, priority: async_lo
 
 fn ecs_scene_loader_impl(file_path: ?[*:0]const u8) callconv(.c) ?*anyopaque {
     if (file_path == null) return null;
-    
+
     const allocator_handle = memory.cardinal_get_allocator_for_category(.ASSETS);
     const allocator = allocator_handle.as_allocator();
 
@@ -159,7 +149,7 @@ fn ecs_scene_loader_impl(file_path: ?[*:0]const u8) callconv(.c) ?*anyopaque {
 
     const ptr = allocator.create(scene_serializer.SceneSerializer.ParsedScene) catch return null;
     ptr.* = parsed;
-    
+
     return ptr;
 }
 

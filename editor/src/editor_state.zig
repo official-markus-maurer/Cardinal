@@ -27,6 +27,8 @@ pub const AssetState = struct {
         GLTF,
         GLB,
         TEXTURE,
+        KFM,
+        NIF,
         OTHER,
     };
 

@@ -559,6 +559,7 @@ pub const VulkanManagedTexture = extern struct {
     is_hdr: bool,
     resource: ?*anyopaque, // ref_counting.CardinalRefCountedResource (void* to avoid circular dep)
     is_updating: bool,
+    update_failed: bool,
 };
 
 pub const VulkanTextureManagerConfig = extern struct {

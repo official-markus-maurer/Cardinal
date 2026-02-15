@@ -29,61 +29,28 @@ layout(push_constant, std430) uniform PushConstants {
     layout(offset = 64) Material material;
 } pushConstants;
 
-// Function to apply texture transform (same as PBR pipeline)
-vec2 applyTextureTransform(vec2 uv, vec4 transform, float rotation) {
-    vec2 offset = transform.xy;
-    vec2 scale = transform.zw;
-    
-    // Apply transformations in correct order: translate to origin, scale, rotate, translate back, apply offset
-    vec2 transformedUV = uv;
-    
-    // First, translate to origin (0.5, 0.5) for rotation
-    vec2 center = vec2(0.5);
-    transformedUV -= center;
-    
-    // Apply scale
-    transformedUV *= scale;
-    
-    // Apply rotation
-    if (rotation != 0.0) {
-        float cosR = cos(rotation);
-        float sinR = sin(rotation);
-        mat2 rotMatrix = mat2(cosR, -sinR, sinR, cosR);
-        transformedUV = rotMatrix * transformedUV;
-    }
-    
-    // Translate back from origin
-    transformedUV += center;
-    
-    // Apply offset
-    transformedUV += offset;
-    
-    return transformedUV;
-}
-
 void main() {
-    // Apply albedo texture transform to UV coordinates for visualization
-    vec2 transformedUV = applyTextureTransform(fragTexCoord, pushConstants.material.textureTransforms[0], pushConstants.material.textureRotations[0]);
-    
-    // Visualize transformed UV coordinates as colors
-    // U coordinate maps to red channel
-    // V coordinate maps to green channel
-    // Blue channel is set to a constant value for better visibility
-    
-    vec3 uvColor = vec3(transformedUV.x, transformedUV.y, 0.5);
-    
-    // Enhanced grid pattern with quad control for better derivative calculations
-    vec2 gridUV = transformedUV * 10.0;
-    vec2 dxGrid = dFdxFine(gridUV);
-    vec2 dyGrid = dFdyFine(gridUV);
-    vec2 gridWidth = sqrt(dxGrid * dxGrid + dyGrid * dyGrid);
-    
-    vec2 grid = abs(fract(gridUV) - 0.5) / gridWidth;
-    float gridLine = min(grid.x, grid.y);
-    
-    // Blend the UV color with grid lines
-    vec3 finalColor = mix(vec3(0.0), uvColor, smoothstep(0.0, 1.0, gridLine));
-    
-    // Output final color
-    outColor = vec4(finalColor, 1.0);
+    vec2 uv = fragTexCoord;
+
+    // Base color: Wrapped UV gradient (U=Red, V=Green)
+    vec3 color = vec3(fract(uv.x), fract(uv.y), 0.0);
+
+    // Minor Grid (10x10 per UV unit)
+    // Using fwidth for consistent line width (anti-aliased)
+    vec2 grid_uv = uv * 10.0;
+    vec2 grid = abs(fract(grid_uv - 0.5) - 0.5) / fwidth(grid_uv);
+    float line = min(grid.x, grid.y);
+    float gridVal = 1.0 - min(line, 1.0);
+
+    // Major Grid (1x1 per UV unit)
+    vec2 major_grid = abs(fract(uv - 0.5) - 0.5) / fwidth(uv);
+    float major_line = min(major_grid.x, major_grid.y);
+    float major_gridVal = 1.0 - min(major_line, 1.0);
+
+    // Mix grid lines (White) onto base color
+    // Minor lines are 50% opacity, Major lines are 100% opacity
+    color = mix(color, vec3(1.0), gridVal * 0.5);
+    color = mix(color, vec3(1.0), major_gridVal);
+
+    outColor = vec4(color, 1.0);
 }

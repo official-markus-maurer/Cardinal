@@ -160,7 +160,7 @@ fn draw_pbr_settings_panel() void {
                 if (c.imgui_bridge_drag_float3("Direction", @ptrCast(&state.light.direction), 0.01, -1.0, 1.0, "%.3f", 0)) light_changed = true;
 
                 if (c.imgui_bridge_color_edit3("Color", @ptrCast(&state.light.color), 0)) light_changed = true;
-                if (c.imgui_bridge_slider_float("Intensity", &state.light.intensity, 0.0, 20.0, "%.2f")) light_changed = true;
+                if (c.imgui_bridge_slider_float("Intensity##DirectionalLight", &state.light.intensity, 0.0, 20.0, "%.2f")) light_changed = true;
                 if (c.imgui_bridge_color_edit3("Ambient", @ptrCast(&state.light.ambient), 0)) light_changed = true;
 
                 if (light_changed) {
@@ -219,7 +219,7 @@ fn draw_pbr_settings_panel() void {
 
                 c.imgui_bridge_separator();
                 c.imgui_bridge_text("Bloom");
-                if (c.imgui_bridge_slider_float("Intensity", &state.post_process.bloomIntensity, 0.0, 1.0, "%.3f")) pp_changed = true;
+                if (c.imgui_bridge_slider_float("Bloom Intensity", &state.post_process.bloomIntensity, 0.0, 1.0, "%.3f")) pp_changed = true;
                 if (c.imgui_bridge_slider_float("Threshold", &state.post_process.bloomThreshold, 0.0, 5.0, "%.2f")) pp_changed = true;
                 if (c.imgui_bridge_slider_float("Knee", &state.post_process.bloomKnee, 0.0, 1.0, "%.2f")) pp_changed = true;
 

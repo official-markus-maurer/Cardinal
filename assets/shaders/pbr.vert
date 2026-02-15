@@ -7,6 +7,7 @@ layout(location = 2) in vec2 inTexCoord;
 layout(location = 3) in vec4 inBoneWeights;
 layout(location = 4) in uvec4 inBoneIndices;
 layout(location = 5) in vec2 inTexCoord1;
+layout(location = 6) in vec4 inColor;
 
 // Uniform buffer for camera and transform data
 layout(binding = 0) uniform UniformBufferObject {
@@ -35,6 +36,7 @@ layout(location = 1) out vec3 fragNormal;
 layout(location = 2) out vec2 fragTexCoord;
 layout(location = 3) out vec3 fragViewPos;
 layout(location = 4) out vec2 fragTexCoord1;
+layout(location = 5) out vec4 fragColor;
 
 void main() {
     vec3 finalPosition = inPosition;
@@ -80,6 +82,9 @@ void main() {
     // Pass view position for lighting calculations
     fragViewPos = ubo.viewPosAndDebug.xyz;
     
+    // Pass vertex color
+    fragColor = inColor;
+
     // Final position in clip space
     gl_Position = ubo.proj * ubo.view * worldPos;
 }

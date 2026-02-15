@@ -7,9 +7,11 @@ const types = @import("vulkan_types.zig");
 const c = @import("vulkan_c.zig").c;
 const shader_utils = @import("util/vulkan_shader_utils.zig");
 const vk_texture_utils = @import("util/vulkan_texture_utils.zig");
+const material_utils = @import("util/vulkan_material_utils.zig");
 const scene = @import("../assets/scene.zig");
 const vk_allocator = @import("vulkan_allocator.zig");
 const math = @import("../core/math.zig");
+const handles = @import("../core/handles.zig");
 
 const vk_pso = @import("vulkan_pso.zig");
 const vk_desc_mgr = @import("vulkan_descriptor_manager.zig");
@@ -171,11 +173,17 @@ pub export fn vk_mesh_shader_create_pipeline(s: ?*types.VulkanState, config: ?*c
                 if (entry.found_existing) {
                     entry.value_ptr.binding.stageFlags |= res.stage_flags;
                 } else {
+                    // Force bindless for Set 1, Binding 5 (Textures)
+                    var count = res.count;
+                    if (res.set == 1 and res.binding == 5 and res.type == c.VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER) {
+                        count = 1024; // Force large count for bindless
+                    }
+
                     entry.value_ptr.* = BindingInfo{
                         .binding = .{
                             .binding = res.binding,
                             .descriptorType = res.type,
-                            .descriptorCount = res.count,
+                            .descriptorCount = count,
                             .stageFlags = res.stage_flags,
                             .pImmutableSamplers = null,
                         },
@@ -996,13 +1004,35 @@ pub export fn vk_mesh_shader_record_frame(s: ?*types.VulkanState, cmd: c.VkComma
                         pushConstants.metallicNormalAO[2] = 1.0; // AO strength
                         pushConstants.metallicNormalAO[3] = mat.alpha_cutoff;
 
-                        pushConstants.albedoTextureIndex = if (mat.albedo_texture.index != 4294967295) mat.albedo_texture.index else 4294967295;
-                        pushConstants.normalTextureIndex = if (mat.normal_texture.index != 4294967295) mat.normal_texture.index else 4294967295;
-                        pushConstants.metallicRoughnessTextureIndex = if (mat.metallic_roughness_texture.index != 4294967295) mat.metallic_roughness_texture.index else 4294967295;
-                        pushConstants.aoTextureIndex = if (mat.ao_texture.index != 4294967295) mat.ao_texture.index else 4294967295;
-                        pushConstants.emissiveTextureIndex = if (mat.emissive_texture.index != 4294967295) mat.emissive_texture.index else 4294967295;
+                        // Manual resolution for Mesh Shader (uses local descriptor array, not global bindless pool)
+                        const tm = vs.pipelines.pbr_pipeline.textureManager;
+                        
+                        const resolve_local = struct {
+                            fn f(h: handles.TextureHandle, m: ?*const types.VulkanTextureManager) u32 {
+                                if (m == null or !h.is_valid()) return c.UINT32_MAX;
+                                const mgr = m.?;
+                                const idx = h.index;
+                                const mapped = if (mgr.hasPlaceholder) idx + 1 else idx;
+                                if (mapped < mgr.textureCount) return mapped;
+                                return c.UINT32_MAX;
+                            }
+                        }.f;
+
+                        pushConstants.albedoTextureIndex = resolve_local(mat.albedo_texture, tm);
+                        pushConstants.normalTextureIndex = resolve_local(mat.normal_texture, tm);
+                        pushConstants.metallicRoughnessTextureIndex = resolve_local(mat.metallic_roughness_texture, tm);
+                        pushConstants.aoTextureIndex = resolve_local(mat.ao_texture, tm);
+                        pushConstants.emissiveTextureIndex = resolve_local(mat.emissive_texture, tm);
                         
                         pushConstants.emissiveStrength = mat.emissive_strength;
+
+                        // Debug logging for texture indices (Throttle: only log for first mesh of first frame or periodically)
+                        if (vs.sync.current_frame == 0 and i == 0) {
+                            mesh_shader_log.info("Mesh {d} Material {d}: AlbedoTexIdx={d} (Resolved), Handle={d}, TM Count={d}", .{
+                                i, mesh.material_index, pushConstants.albedoTextureIndex, mat.albedo_texture.index,
+                                if (tm) |t| t.textureCount else 0
+                            });
+                        }
 
                         var packedInfo: u32 = 0;
                         packedInfo |= @as(u32, @intCast(@intFromEnum(mat.alpha_mode)));
