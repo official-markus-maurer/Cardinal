@@ -1671,6 +1671,8 @@ pub export fn vk_pbr_render(pipeline: ?*types.VulkanPBRPipeline, commandBuffer: 
         indexOffset += mesh.index_count;
     }
 
+    pbr_log.info("vk_pbr_render frame {d}: meshes={d}, drawn_opaque={d}", .{ frame, scn.mesh_count, drawn_count });
+
     // Pass 2: Blend
     cmd.bindPipeline(c.VK_PIPELINE_BIND_POINT_GRAPHICS, pipe.pipelineBlend);
 

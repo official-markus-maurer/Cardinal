@@ -439,11 +439,30 @@ pub export fn vk_create_device(s: ?*types.VulkanState) callconv(.c) bool {
     vk_log.info("[DEVICE] Selected graphics family: {d}", .{vs.context.graphics_queue_family});
 
     var prio: f32 = 1.0;
-    var qci = std.mem.zeroes(c.VkDeviceQueueCreateInfo);
-    qci.sType = c.VK_STRUCTURE_TYPE_DEVICE_QUEUE_CREATE_INFO;
-    qci.queueFamilyIndex = vs.context.graphics_queue_family;
-    qci.queueCount = 1;
-    qci.pQueuePriorities = &prio;
+    // Find compute queue family (prefer one different from graphics)
+    vs.context.compute_queue_family = vs.context.graphics_queue_family;
+    i = 0;
+    while (i < qf_count) : (i += 1) {
+        const flags = qfp_ptr[i].queueFlags;
+        if ((flags & c.VK_QUEUE_COMPUTE_BIT) != 0 and i != vs.context.graphics_queue_family) {
+            vs.context.compute_queue_family = i;
+            break;
+        }
+    }
+    vk_log.info("[DEVICE] Selected compute family: {d}", .{vs.context.compute_queue_family});
+
+    // Prepare queue create infos (graphics + optional compute)
+    var qci_graphics = std.mem.zeroes(c.VkDeviceQueueCreateInfo);
+    qci_graphics.sType = c.VK_STRUCTURE_TYPE_DEVICE_QUEUE_CREATE_INFO;
+    qci_graphics.queueFamilyIndex = vs.context.graphics_queue_family;
+    qci_graphics.queueCount = 1;
+    qci_graphics.pQueuePriorities = &prio;
+
+    var qci_compute = std.mem.zeroes(c.VkDeviceQueueCreateInfo);
+    qci_compute.sType = c.VK_STRUCTURE_TYPE_DEVICE_QUEUE_CREATE_INFO;
+    qci_compute.queueFamilyIndex = vs.context.compute_queue_family;
+    qci_compute.queueCount = 1;
+    qci_compute.pQueuePriorities = &prio;
 
     var physicalDeviceProperties: c.VkPhysicalDeviceProperties = undefined;
     c.vkGetPhysicalDeviceProperties(vs.context.physical_device, &physicalDeviceProperties);
@@ -716,8 +735,10 @@ pub export fn vk_create_device(s: ?*types.VulkanState) callconv(.c) bool {
 
     var dci = std.mem.zeroes(c.VkDeviceCreateInfo);
     dci.sType = c.VK_STRUCTURE_TYPE_DEVICE_CREATE_INFO;
-    dci.queueCreateInfoCount = 1;
-    dci.pQueueCreateInfos = &qci;
+    const two_queues = vs.context.compute_queue_family != vs.context.graphics_queue_family;
+    var qcis: [2]c.VkDeviceQueueCreateInfo = .{ qci_graphics, qci_compute };
+    dci.queueCreateInfoCount = if (two_queues) 2 else 1;
+    dci.pQueueCreateInfos = if (two_queues) &qcis else &qci_graphics;
     dci.enabledExtensionCount = enabled_extension_count;
     dci.ppEnabledExtensionNames = &device_extensions;
     dci.pNext = &deviceFeatures2;
@@ -736,6 +757,7 @@ pub export fn vk_create_device(s: ?*types.VulkanState) callconv(.c) bool {
     }
 
     c.vkGetDeviceQueue(vs.context.device, vs.context.graphics_queue_family, 0, &vs.context.graphics_queue);
+    c.vkGetDeviceQueue(vs.context.device, vs.context.compute_queue_family, 0, &vs.context.compute_queue);
     vs.context.present_queue_family = vs.context.graphics_queue_family;
     vs.context.present_queue = vs.context.graphics_queue;
 

@@ -339,6 +339,8 @@ pub const RESOURCE_ID_DEPTHBUFFER: u64 = 2;
 pub const RESOURCE_ID_HDR_COLOR: u64 = 3;
 pub const RESOURCE_ID_SSAO_RAW: u64 = 4;
 pub const RESOURCE_ID_SSAO_BLURRED: u64 = 5;
+pub const RESOURCE_ID_BLOOM: u64 = 6;
+pub const RESOURCE_ID_SHADOW_MAP: u64 = 7;
 
 pub const VulkanDescriptorManager = extern struct {
     bindings: ?[*]const VulkanDescriptorBinding,
@@ -388,6 +390,7 @@ pub const VulkanContext = extern struct {
     physical_device: c.VkPhysicalDevice,
     device: c.VkDevice,
     graphics_queue_family: u32,
+    compute_queue_family: u32,
     descriptor_buffer_uniform_buffer_size: c.VkDeviceSize,
     descriptor_buffer_storage_buffer_size: c.VkDeviceSize,
     descriptor_buffer_combined_image_sampler_size: c.VkDeviceSize,
@@ -411,6 +414,8 @@ pub const VulkanContext = extern struct {
     supports_descriptor_indexing: bool,
     debug_messenger: c.VkDebugUtilsMessengerEXT,
     present_queue: c.VkQueue,
+    graphics_queue: c.VkQueue,
+    compute_queue: c.VkQueue,
     vkCmdBeginRendering: c.PFN_vkCmdBeginRendering,
     vkCmdEndRendering: c.PFN_vkCmdEndRendering,
     vkWaitSemaphores: c.PFN_vkWaitSemaphores,
@@ -433,7 +438,6 @@ pub const VulkanContext = extern struct {
     supports_vulkan_14_features: bool,
     supports_maintenance4: bool,
 
-    graphics_queue: c.VkQueue,
     surface: c.VkSurfaceKHR,
     present_queue_family: u32,
 
@@ -529,10 +533,13 @@ pub const VulkanSyncManager = extern struct {
 
 pub const VulkanCommands = extern struct {
     pools: ?[*]c.VkCommandPool,
+    transient_pools: ?[*]c.VkCommandPool,
+    compute_transient_pools: ?[*]c.VkCommandPool,
     buffers: ?[*]c.VkCommandBuffer,
     // Note: These are allocated as VK_COMMAND_BUFFER_LEVEL_PRIMARY and used as alternate primary buffers.
     // Do not confuse with actual secondary command buffers (VK_COMMAND_BUFFER_LEVEL_SECONDARY).
     alternate_primary_buffers: ?[*]c.VkCommandBuffer,
+    compute_primary_buffers: ?[*]c.VkCommandBuffer,
     current_buffer_index: u32,
     scene_secondary_buffers: ?[*]c.VkCommandBuffer,
 };
@@ -986,6 +993,7 @@ pub const RendererConfig = extern struct {
     max_lights: u32 = 128,
     max_frames_in_flight: u32 = 3,
     timeline_max_ahead: u64 = 1000000,
+    enable_async_compute: bool = true,
 };
 
 // Main State

@@ -9,6 +9,7 @@ pub const input = @import("core/input.zig");
 pub const memory = @import("core/memory.zig");
 pub const stack_allocator = @import("core/stack_allocator.zig");
 pub const window = @import("core/window.zig");
+pub const platform = @import("core/platform.zig");
 pub const resource_state = @import("core/resource_state.zig");
 pub const transform = @import("core/transform.zig");
 pub const math = @import("core/math.zig");

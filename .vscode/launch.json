@@ -108,6 +108,33 @@
                 }
             ],
             "preLaunchTask": "Build Project (Release)"
+        },
+        {
+            "name": "Cardinal Editor (Trace Logs Only)",
+            "type": "cppdbg",
+            "request": "launch",
+            "program": "${workspaceFolder}/zig-out/bin/CardinalEditor.exe",
+            "args": ["--log-level", "TRACE"],
+            "stopAtEntry": false,
+            "cwd": "${workspaceFolder}",
+            "environment": [
+                {
+                    "name": "CARDINAL_SHADERS_DIR",
+                    "value": "${workspaceFolder}/assets/shaders"
+                }
+            ],
+            "externalConsole": false,
+            "console": "integratedTerminal",
+            "MIMode": "gdb",
+            "miDebuggerPath": "gdb",
+            "setupCommands": [
+                {
+                    "description": "Enable pretty-printing for gdb",
+                    "text": "-enable-pretty-printing",
+                    "ignoreFailures": true
+                }
+            ],
+            "preLaunchTask": "Build Project (Debug)"
         }
     ]
 }

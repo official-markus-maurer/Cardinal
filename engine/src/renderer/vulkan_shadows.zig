@@ -269,47 +269,6 @@ pub fn vk_shadow_render(s: *types.VulkanState, cmd: c.VkCommandBuffer) void {
     // Render
     const scn = s.current_scene orelse return;
 
-    // Image Barrier for Shadow Map (Undefined -> Depth Attachment)
-    // We assume it starts Undefined or Shader Read Only from previous frame
-    {
-        var barrier = std.mem.zeroes(c.VkImageMemoryBarrier2);
-        barrier.sType = c.VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2;
-        barrier.srcStageMask = c.VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT;
-        barrier.srcAccessMask = c.VK_ACCESS_2_SHADER_READ_BIT;
-        barrier.dstStageMask = c.VK_PIPELINE_STAGE_2_EARLY_FRAGMENT_TESTS_BIT;
-        barrier.dstAccessMask = c.VK_ACCESS_2_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT;
-        barrier.oldLayout = c.VK_IMAGE_LAYOUT_UNDEFINED; // Discard contents
-        barrier.newLayout = c.VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
-        barrier.image = pipe.shadowMapImage;
-        barrier.subresourceRange.aspectMask = c.VK_IMAGE_ASPECT_DEPTH_BIT;
-        barrier.subresourceRange.baseMipLevel = 0;
-        barrier.subresourceRange.levelCount = 1;
-        barrier.subresourceRange.baseArrayLayer = 0;
-        barrier.subresourceRange.layerCount = cascade_count;
-
-        var dep = std.mem.zeroes(c.VkDependencyInfo);
-        dep.sType = c.VK_STRUCTURE_TYPE_DEPENDENCY_INFO;
-        dep.imageMemoryBarrierCount = 1;
-        dep.pImageMemoryBarriers = &barrier;
-
-        if (s.context.vkCmdPipelineBarrier2) |func| {
-            func(cmd, &dep);
-        } else {
-            var barrier_v1 = std.mem.zeroes(c.VkImageMemoryBarrier);
-            barrier_v1.sType = c.VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
-            barrier_v1.srcAccessMask = c.VK_ACCESS_SHADER_READ_BIT;
-            barrier_v1.dstAccessMask = c.VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT;
-            barrier_v1.oldLayout = c.VK_IMAGE_LAYOUT_UNDEFINED;
-            barrier_v1.newLayout = c.VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
-            barrier_v1.image = pipe.shadowMapImage;
-            barrier_v1.subresourceRange = barrier.subresourceRange;
-            barrier_v1.srcQueueFamilyIndex = c.VK_QUEUE_FAMILY_IGNORED;
-            barrier_v1.dstQueueFamilyIndex = c.VK_QUEUE_FAMILY_IGNORED;
-
-            c.vkCmdPipelineBarrier(cmd, c.VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT, c.VK_PIPELINE_STAGE_EARLY_FRAGMENT_TESTS_BIT, 0, 0, null, 0, null, 1, &barrier_v1);
-        }
-    }
-
     // Check descriptors upfront
     if (pipe.shadowDescriptorSets[frame_check] == null and pipe.shadowDescriptorManager == null) {
         shadows_log.err("Shadow descriptor set is null (and no manager)", .{});
@@ -328,18 +287,6 @@ pub fn vk_shadow_render(s: *types.VulkanState, cmd: c.VkCommandBuffer) void {
         var depthAttachment = std.mem.zeroes(c.VkRenderingAttachmentInfo);
         depthAttachment.sType = c.VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO;
         depthAttachment.imageView = pipe.shadowCascadeViews[j_layer];
-
-        // Transition to attachment optimal BEFORE rendering
-        {
-            var barrier = std.mem.zeroes(c.VkImageMemoryBarrier2);
-            barrier.sType = c.VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2;
-            barrier.srcStageMask = c.VK_PIPELINE_STAGE_2_EARLY_FRAGMENT_TESTS_BIT | c.VK_PIPELINE_STAGE_2_LATE_FRAGMENT_TESTS_BIT;
-            barrier.srcAccessMask = c.VK_ACCESS_2_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT;
-            barrier.dstStageMask = c.VK_PIPELINE_STAGE_2_EARLY_FRAGMENT_TESTS_BIT | c.VK_PIPELINE_STAGE_2_LATE_FRAGMENT_TESTS_BIT;
-            barrier.dstAccessMask = c.VK_ACCESS_2_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT;
-            barrier.oldLayout = c.VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
-            barrier.newLayout = c.VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
-        }
 
         depthAttachment.imageLayout = c.VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
         depthAttachment.loadOp = c.VK_ATTACHMENT_LOAD_OP_CLEAR;
@@ -587,35 +534,6 @@ pub fn vk_shadow_render(s: *types.VulkanState, cmd: c.VkCommandBuffer) void {
         // End Rendering
         if (s.context.vkCmdEndRendering) |func| {
             func(cmd);
-        }
-    }
-
-    // Transition Shadow Map to Shader Read (All layers)
-    {
-        var barrier = std.mem.zeroes(c.VkImageMemoryBarrier2);
-        barrier.sType = c.VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2;
-        barrier.srcStageMask = c.VK_PIPELINE_STAGE_2_LATE_FRAGMENT_TESTS_BIT;
-        barrier.srcAccessMask = c.VK_ACCESS_2_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT;
-        barrier.dstStageMask = c.VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT;
-        barrier.dstAccessMask = c.VK_ACCESS_2_SHADER_READ_BIT;
-        barrier.oldLayout = c.VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
-        barrier.newLayout = c.VK_IMAGE_LAYOUT_DEPTH_STENCIL_READ_ONLY_OPTIMAL;
-        barrier.image = pipe.shadowMapImage;
-        barrier.subresourceRange.aspectMask = c.VK_IMAGE_ASPECT_DEPTH_BIT;
-        barrier.subresourceRange.baseMipLevel = 0;
-        barrier.subresourceRange.levelCount = 1;
-        barrier.subresourceRange.baseArrayLayer = 0;
-        barrier.subresourceRange.layerCount = cascade_count;
-
-        var dep = std.mem.zeroes(c.VkDependencyInfo);
-        dep.sType = c.VK_STRUCTURE_TYPE_DEPENDENCY_INFO;
-        dep.imageMemoryBarrierCount = 1;
-        dep.pImageMemoryBarriers = &barrier;
-
-        if (s.context.vkCmdPipelineBarrier2) |func| {
-            func(cmd, &dep);
-        } else {
-            c.vkCmdPipelineBarrier2(cmd, &dep);
         }
     }
 }

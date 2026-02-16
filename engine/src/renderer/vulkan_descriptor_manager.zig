@@ -466,6 +466,12 @@ pub export fn vk_descriptor_manager_update_image(manager: ?*types.VulkanDescript
     const dtype = get_binding_descriptor_type(mgr, binding);
     if (dtype == c.VK_DESCRIPTOR_TYPE_MAX_ENUM) return false;
 
+    if (dtype == c.VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER) {
+        if (sampler == null or imageView == null) {
+            return false;
+        }
+    }
+
     if (mgr.useDescriptorBuffers) {
         // Adjust for 1-based index
         const setHandle = @as(u32, @intCast(@intFromPtr(set)));
@@ -529,10 +535,19 @@ fn update_textures_internal(manager: *types.VulkanDescriptorManager, set: c.VkDe
 
         var i: u32 = 0;
         while (i < count) : (i += 1) {
+            const view_handle = imageViews[i];
+            const sampler_handle = if (samplers) |s| s[i] else singleSampler;
+
+            if (dtype == c.VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER) {
+                if (sampler_handle == null or view_handle == null) {
+                    return false;
+                }
+            }
+
             var imageInfo = std.mem.zeroes(c.VkDescriptorImageInfo);
             imageInfo.imageLayout = imageLayout;
-            imageInfo.imageView = imageViews[i];
-            imageInfo.sampler = if (samplers) |s| s[i] else singleSampler;
+            imageInfo.imageView = view_handle;
+            imageInfo.sampler = sampler_handle;
 
             var getInfo = std.mem.zeroes(c.VkDescriptorGetInfoEXT);
             getInfo.sType = c.VK_STRUCTURE_TYPE_DESCRIPTOR_GET_INFO_EXT;

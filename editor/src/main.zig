@@ -1,5 +1,6 @@
 const std = @import("std");
-const log = @import("cardinal_engine").log;
+const engine = @import("cardinal_engine");
+const log = engine.log;
 const EditorApp = @import("app.zig").EditorApp;
 const EditorConfig = @import("app.zig").EditorConfig;
 
@@ -13,13 +14,13 @@ fn print_usage(program_name: []const u8) void {
 }
 
 pub fn main() !u8 {
-    // Initialize memory system first
-    const memory = @import("cardinal_engine").memory;
+    const memory = engine.memory;
     memory.cardinal_memory_init(1024 * 1024 * 512); // Increased to 512MB
 
     const allocator = memory.cardinal_get_allocator_for_category(.ENGINE).as_allocator();
 
     var log_level: log.CardinalLogLevel = .WARN;
+    var test_minidump = false;
 
     const args = try std.process.argsAlloc(allocator);
     defer std.process.argsFree(allocator, args);
@@ -33,6 +34,8 @@ pub fn main() !u8 {
         } else if (std.mem.eql(u8, arg, "--help")) {
             print_usage(args[0]);
             return 0;
+        } else if (std.mem.eql(u8, arg, "--test-minidump")) {
+            test_minidump = true;
         }
     }
 
@@ -40,6 +43,12 @@ pub fn main() !u8 {
     log.cardinal_log_init_async(true);
     defer log.cardinal_log_shutdown();
     defer memory.cardinal_memory_shutdown();
+
+    if (test_minidump) {
+        const ok = engine.platform.write_minidump();
+        std.debug.print("Test minidump result: {s}\n", .{if (ok) "OK" else "FAILED"});
+        return if (ok) 0 else 1;
+    }
 
     var config = EditorConfig{
         .window_title = "Cardinal Editor",
@@ -55,6 +64,7 @@ pub fn main() !u8 {
     std.debug.print("[MAIN] App created. Calling run()...\n", .{});
     app.run() catch |err| {
         editor_log.err("Runtime error: {}", .{err});
+        _ = engine.platform.write_minidump();
         return 255;
     };
 

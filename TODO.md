@@ -5,16 +5,6 @@ This document outlines the roadmap for the Cardinal Engine, focusing on robustne
 ## 1. Core Architecture (Robustness & Extensibility)
 
 ### ECS (Entity Component System)
-- [x] **Entity References**: Fix `Hierarchy` component storing `u32` indices instead of full `Entity` (index + generation) to prevent ABA problems.
-- [x] **Multi-Component Views**: Implement `view<A, B>()` iterator to efficiently iterate entities with multiple specific components.
-- [x] **System Parallelization**: Build a dependency graph for systems to allow parallel execution of non-conflicting systems.
-- [x] **Archetype Storage**: Investigate moving from Sparse Sets to Archetypes for better cache locality when iterating components together.
-    - *Investigation Complete*: Implemented core `Archetype` and `Chunk` structures in `engine/src/ecs/archetype.zig`. Ready for gradual migration.
-- [x] **Component Command Buffer**: Defer structural changes (add/remove components) to the end of the frame to allow safe parallel system execution.
-    - Implemented `CommandBuffer` struct in `engine/src/ecs/command_buffer.zig`.
-    - Integrated with `Scheduler` to provide thread-local command buffers to systems.
-    - Updated `SystemFn` signature to accept `*CommandBuffer`.
-    - Flushed command buffers at the end of the frame in `Scheduler.run()`.
 - [ ] **Camera System**: Implement "main" camera tag or flag in `systems.zig` (L52).
 
 ### Core Systems
@@ -45,11 +35,8 @@ This document outlines the roadmap for the Cardinal Engine, focusing on robustne
 - [ ] **Binary Asset Format**: Implement offline conversion of textures/meshes to binary formats (e.g., KTX2, custom mesh format) for faster loading.
 - [ ] **Asset Streaming**: Implement a streaming system for large assets (textures/meshes) to load chunks on demand.
 - [ ] **Texture Loading**: Support HDR texture loading directly from memory in `texture_loader.zig`.
-- [x] **Thread Safety**: Fix double-checked locking in `gltf_loader.zig` (texture cache) using `std.once`.
 - [ ] **Hot-Reloading**: Generic hot-reloading support for all asset types.
 - [ ] **Shader Compilation**: Integrate runtime shader compilation (e.g., shaderc or slang) to compile `.glsl` to `.spv` on the fly.
-- [x] **NIF Loader**: Improve return robustness in `nif_loader.zig` (L1767).
-- [x] **NIF Loader**: Support appending to existing lists in `nif_loader.zig` (L1823).
 - [ ] **NIF Loader**: Implement auto-generation of UVs for meshes with 0 UV sets (`nif_loader.zig` L584).
 - [ ] **NIF Loader**: Optimize material allocation (shrink to fit) in `nif_loader.zig` (L1164).
 - [ ] **GLTF Loader**: Remove temporary debugging logs (`gltf_loader.zig` L1030).
@@ -57,7 +44,6 @@ This document outlines the roadmap for the Cardinal Engine, focusing on robustne
 
 ## 3. Rendering (Vulkan)
 - [ ] **IBL**: Implement Environment Maps, Irradiance Maps, and Prefiltered Specular maps.
-- [x] **Ambient Occlusion**: SSAO or HBAO.
 
 ### Materials & Shaders
 - [ ] **Property ID Hashing**: Replace string lookups in `MaterialSystem` with hashed IDs (or pre-baked offsets) for performance.
@@ -66,24 +52,21 @@ This document outlines the roadmap for the Cardinal Engine, focusing on robustne
 
 ### Rendering Quality
 - [ ] **Anti-Aliasing**: Implement MSAA (Multisample Anti-Aliasing) or TAA (Temporal Anti-Aliasing).
-- [x] **Shadow Improvements**: Implement PCF (Percentage Closer Filtering) for softer shadows and CSM (Cascaded Shadow Maps) for better large-scale shadows.
-- [x] **Post-Processing Stack**: Add support for Bloom, Tone Mapping (ACES), and Color Correction.
 
 ### Swapchain & Presentation
 - [ ] **Frame Pacing**: Improve frame pacing logic in `vulkan_swapchain.zig` to handle VSync and different refresh rates more smoothly.
 - [ ] **HDR Support**: Fully validate and calibrate HDR10 output (ST2084) on supported displays.
 
 ### Optimization
-- [x] **Bindless Descriptors**: Implement "Bindless" resource binding to reduce descriptor set overhead.
-- [x] **Pipeline Caching**: Save and load `VkPipelineCache` to disk to speed up startup.
-- [ ] **Transient Command Buffers**: Use separate pools for short-lived command buffers.
-- [ ] **Render Graph**: Fully drive the rendering loop via the Render Graph, removing hardcoded pass callbacks.
-    - Automatic Barrier Generation.
-    - Memory Aliasing (reuse memory for non-overlapping transient resources).
+- [x] **Render Graph**: Fully drive the rendering loop via the Render Graph, removing hardcoded pass callbacks.
+- [ ] **Render Graph Refinements**: Tighten integration and remove remaining manual barriers.
+    - `engine/src/renderer/render_graph.zig`: Refine transient image/buffer aliasing heuristics (pooling policy and reuse conditions).
+    - `engine/src/renderer/vulkan_mesh_shader.zig`: When adding a dedicated mesh shader render pass, wire it into the Render Graph with `RESOURCE_ID_SHADOW_MAP` and other relevant inputs so shadow sampling is fully tracked.
+- [ ] **Pipeline Creation Consistency**: Unify pipeline init log messages and error paths using small helpers to reduce duplication across PBR, Skybox, SSAO, and simple pipelines.
+- [ ] **Mode Toggles Cleanup**: Wrap UV/Wireframe recovery logic into a single function to avoid repeated recreation sequences and reduce conditional clutter in `cardinal_renderer_set_rendering_mode`.
 - [ ] **GPU-Driven Rendering**: Implement GPU-driven frustum/occlusion culling and scene traversal (Mesh Shaders / Compute Shaders).
 
 ### Debugging & Profiling
-- [x] **Profiler Integration**: Integrate **Tracy Profiler** for real-time CPU/GPU performance analysis.
 - [ ] **Timeline Debug Config**: Make `VULKAN_TIMELINE_DEBUG_MAX_EVENTS` configurable or dynamic (`vulkan_timeline_types.zig`).
 
 ### Networking
@@ -138,6 +121,10 @@ This document outlines the roadmap for the Cardinal Engine, focusing on robustne
 - [ ] **Integration Tests**: Add headless engine tests to verify scene loading and basic system updates without a window.
 - [ ] **Graphics Tests**: Implement screenshot comparison tests to catch regression in rendering.
 
+### Validation & Cleanup
+- [ ] **Vulkan Object Lifetime**: Fix validation errors reporting live VkCommandBuffer/VkBuffer/VkImage/VkDeviceMemory at vkDestroyDevice shutdown (ensure all GPU resources are destroyed before device teardown).
+
+
 ### Documentation
 - [ ] **Auto-Docs**: Set up a documentation generator (like `zig-autodoc`) to build API docs from source comments.
 - [ ] **Architecture Overview**: Create high-level diagrams of the engine structure.
@@ -159,7 +146,5 @@ This document outlines the roadmap for the Cardinal Engine, focusing on robustne
 
 ### OS Integration
 - [ ] **Cross-Platform Build**: Abstract platform-specific linking (Windows/Linux/macOS) in `build.zig`.
-- [x] **Async Logging**: Move log formatting and writing to a background thread to reduce main thread overhead.
-- [x] **High DPI**: Proper scaling support for high-resolution displays.
 - [ ] **Virtual File System (VFS)**: Abstract file system operations to support archives (Zip/Pak) and virtual paths (`asset://`).
 - [ ] **Crash Reporting**: Implement a crash handler to save stack traces and minidumps on failure.

@@ -42,6 +42,42 @@ fn create_command_pools(s: *types.VulkanState) bool {
     return true;
 }
 
+fn create_transient_command_pools(s: *types.VulkanState) bool {
+    const mem_alloc = memory.cardinal_get_allocator_for_category(.RENDERER);
+    const pools_ptr = memory.cardinal_alloc(mem_alloc, s.sync.max_frames_in_flight * @sizeOf(c.VkCommandPool));
+    if (pools_ptr == null) return false;
+
+    s.commands.transient_pools = @as([*]c.VkCommandPool, @ptrCast(@alignCast(pools_ptr)));
+
+    var i: u32 = 0;
+    while (i < s.sync.max_frames_in_flight) : (i += 1) {
+        const flags: c.VkCommandPoolCreateFlags = c.VK_COMMAND_POOL_CREATE_RESET_COMMAND_BUFFER_BIT | c.VK_COMMAND_POOL_CREATE_TRANSIENT_BIT;
+        if (!vk_utils.vk_utils_create_command_pool(s.context.device, s.context.graphics_queue_family, flags, &s.commands.transient_pools.?[i], "transient command pool")) {
+            return false;
+        }
+    }
+    cmd_log.warn("Created {d} transient command pools", .{s.sync.max_frames_in_flight});
+    return true;
+}
+
+fn create_compute_transient_command_pools(s: *types.VulkanState) bool {
+    const mem_alloc = memory.cardinal_get_allocator_for_category(.RENDERER);
+    const pools_ptr = memory.cardinal_alloc(mem_alloc, s.sync.max_frames_in_flight * @sizeOf(c.VkCommandPool));
+    if (pools_ptr == null) return false;
+
+    s.commands.compute_transient_pools = @as([*]c.VkCommandPool, @ptrCast(@alignCast(pools_ptr)));
+
+    var i: u32 = 0;
+    while (i < s.sync.max_frames_in_flight) : (i += 1) {
+        const flags: c.VkCommandPoolCreateFlags = c.VK_COMMAND_POOL_CREATE_RESET_COMMAND_BUFFER_BIT | c.VK_COMMAND_POOL_CREATE_TRANSIENT_BIT;
+        if (!vk_utils.vk_utils_create_command_pool(s.context.device, s.context.compute_queue_family, flags, &s.commands.compute_transient_pools.?[i], "compute transient command pool")) {
+            return false;
+        }
+    }
+    cmd_log.warn("Created {d} compute transient command pools", .{s.sync.max_frames_in_flight});
+    return true;
+}
+
 fn allocate_command_buffers(s: *types.VulkanState) bool {
     // Primary buffers
     const mem_alloc = memory.cardinal_get_allocator_for_category(.RENDERER);
@@ -85,6 +121,25 @@ fn allocate_command_buffers(s: *types.VulkanState) bool {
         }
     }
     cmd_log.warn("Allocated {d} alternate primary command buffers", .{s.sync.max_frames_in_flight});
+
+    // Compute primary buffers (recorded on compute transient pools)
+    const comp_buffers_ptr = memory.cardinal_alloc(mem_alloc, (s.sync.max_frames_in_flight + 1) * @sizeOf(c.VkCommandBuffer));
+    if (comp_buffers_ptr == null) return false;
+    s.commands.compute_primary_buffers = @as([*]c.VkCommandBuffer, @ptrCast(@alignCast(comp_buffers_ptr)));
+
+    i = 0;
+    while (i < s.sync.max_frames_in_flight) : (i += 1) {
+        var ai = std.mem.zeroes(c.VkCommandBufferAllocateInfo);
+        ai.sType = c.VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO;
+        ai.commandPool = if (s.commands.compute_transient_pools != null) s.commands.compute_transient_pools.?[i] else s.commands.pools.?[i];
+        ai.level = c.VK_COMMAND_BUFFER_LEVEL_PRIMARY;
+        ai.commandBufferCount = 1;
+
+        if (c.vkAllocateCommandBuffers(s.context.device, &ai, &s.commands.compute_primary_buffers.?[i]) != c.VK_SUCCESS) {
+            return false;
+        }
+    }
+    cmd_log.warn("Allocated {d} compute primary command buffers", .{s.sync.max_frames_in_flight});
 
     // Scene secondary buffers (real secondary level)
     const scene_sec_ptr = memory.cardinal_alloc(mem_alloc, (s.sync.max_frames_in_flight + 1) * @sizeOf(c.VkCommandBuffer));
@@ -362,34 +417,37 @@ pub fn vk_end_rendering(s: *types.VulkanState, cmd: c.VkCommandBuffer) void {
 fn end_recording(s: *types.VulkanState, cmd: c.VkCommandBuffer, image_index: u32) void {
     // Note: vkCmdEndRendering is now handled by end_dynamic_rendering or caller
 
-    var barrier = std.mem.zeroes(c.VkImageMemoryBarrier2);
-    barrier.sType = c.VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2;
-    barrier.srcStageMask = c.VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT;
-    barrier.srcAccessMask = c.VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT;
-    barrier.dstStageMask = c.VK_PIPELINE_STAGE_2_BOTTOM_OF_PIPE_BIT;
-    barrier.dstAccessMask = 0;
-    barrier.oldLayout = c.VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
-    barrier.newLayout = c.VK_IMAGE_LAYOUT_PRESENT_SRC_KHR;
-    barrier.srcQueueFamilyIndex = c.VK_QUEUE_FAMILY_IGNORED;
-    barrier.dstQueueFamilyIndex = c.VK_QUEUE_FAMILY_IGNORED;
-    barrier.image = s.swapchain.images.?[image_index];
-    barrier.subresourceRange.aspectMask = c.VK_IMAGE_ASPECT_COLOR_BIT;
-    barrier.subresourceRange.baseMipLevel = 0;
-    barrier.subresourceRange.levelCount = 1;
-    barrier.subresourceRange.baseArrayLayer = 0;
-    barrier.subresourceRange.layerCount = 1;
+    // Present barrier handled by Render Graph 'Present Pass' when available
+    if (s.render_graph == null) {
+        var barrier = std.mem.zeroes(c.VkImageMemoryBarrier2);
+        barrier.sType = c.VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2;
+        barrier.srcStageMask = c.VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT;
+        barrier.srcAccessMask = c.VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT;
+        barrier.dstStageMask = c.VK_PIPELINE_STAGE_2_BOTTOM_OF_PIPE_BIT;
+        barrier.dstAccessMask = 0;
+        barrier.oldLayout = c.VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
+        barrier.newLayout = c.VK_IMAGE_LAYOUT_PRESENT_SRC_KHR;
+        barrier.srcQueueFamilyIndex = c.VK_QUEUE_FAMILY_IGNORED;
+        barrier.dstQueueFamilyIndex = c.VK_QUEUE_FAMILY_IGNORED;
+        barrier.image = s.swapchain.images.?[image_index];
+        barrier.subresourceRange.aspectMask = c.VK_IMAGE_ASPECT_COLOR_BIT;
+        barrier.subresourceRange.baseMipLevel = 0;
+        barrier.subresourceRange.levelCount = 1;
+        barrier.subresourceRange.baseArrayLayer = 0;
+        barrier.subresourceRange.layerCount = 1;
 
-    var dep = std.mem.zeroes(c.VkDependencyInfo);
-    dep.sType = c.VK_STRUCTURE_TYPE_DEPENDENCY_INFO;
-    dep.imageMemoryBarrierCount = 1;
-    dep.pImageMemoryBarriers = &barrier;
+        var dep = std.mem.zeroes(c.VkDependencyInfo);
+        dep.sType = c.VK_STRUCTURE_TYPE_DEPENDENCY_INFO;
+        dep.imageMemoryBarrierCount = 1;
+        dep.pImageMemoryBarriers = &barrier;
 
-    const thread_id = platform.get_current_thread_id();
-    if (!vk_barrier_validation.cardinal_barrier_validation_validate_pipeline_barrier(&dep, cmd, thread_id)) {
-        cmd_log.warn("Pipeline barrier validation failed for swapchain present transition", .{});
+        const thread_id = platform.get_current_thread_id();
+        if (!vk_barrier_validation.cardinal_barrier_validation_validate_pipeline_barrier(&dep, cmd, thread_id)) {
+            cmd_log.warn("Pipeline barrier validation failed for swapchain present transition", .{});
+        }
+
+        s.context.vkCmdPipelineBarrier2.?(cmd, &dep);
     }
-
-    s.context.vkCmdPipelineBarrier2.?(cmd, &dep);
 
     cmd_log.info("Frame {d}: Ending command buffer {any}", .{ s.sync.current_frame, cmd });
     const end_result = c.vkEndCommandBuffer(cmd);
@@ -534,6 +592,15 @@ pub export fn vk_create_commands_sync(s: ?*types.VulkanState) callconv(.c) bool 
     vs.sync.current_frame = 0;
 
     if (!create_command_pools(vs)) return false;
+    if (!create_transient_command_pools(vs)) {
+        cmd_log.warn("Failed to create transient command pools, continuing without them", .{});
+        // Not fatal; immediate operations will fall back to main pools
+        vs.commands.transient_pools = null;
+    }
+    if (!create_compute_transient_command_pools(vs)) {
+        cmd_log.warn("Failed to create compute transient command pools, continuing without them", .{});
+        vs.commands.compute_transient_pools = null;
+    }
     if (!allocate_command_buffers(vs)) return false;
 
     vs.commands.current_buffer_index = 0;
@@ -668,6 +735,11 @@ pub export fn vk_destroy_commands_sync(s: ?*types.VulkanState) callconv(.c) void
         vs.commands.alternate_primary_buffers = null;
     }
 
+    if (vs.commands.compute_primary_buffers != null) {
+        memory.cardinal_free(mem_alloc, @as(?*anyopaque, @ptrCast(vs.commands.compute_primary_buffers)));
+        vs.commands.compute_primary_buffers = null;
+    }
+
     if (vs.commands.scene_secondary_buffers != null) {
         memory.cardinal_free(mem_alloc, @as(?*anyopaque, @ptrCast(vs.commands.scene_secondary_buffers)));
         vs.commands.scene_secondary_buffers = null;
@@ -682,6 +754,26 @@ pub export fn vk_destroy_commands_sync(s: ?*types.VulkanState) callconv(.c) void
         }
         memory.cardinal_free(mem_alloc, @as(?*anyopaque, @ptrCast(vs.commands.pools)));
         vs.commands.pools = null;
+    }
+    if (vs.commands.transient_pools != null) {
+        var i: u32 = 0;
+        while (i < vs.sync.max_frames_in_flight) : (i += 1) {
+            if (vs.commands.transient_pools.?[i] != null) {
+                c.vkDestroyCommandPool(vs.context.device, vs.commands.transient_pools.?[i], null);
+            }
+        }
+        memory.cardinal_free(mem_alloc, @as(?*anyopaque, @ptrCast(vs.commands.transient_pools)));
+        vs.commands.transient_pools = null;
+    }
+    if (vs.commands.compute_transient_pools != null) {
+        var i: u32 = 0;
+        while (i < vs.sync.max_frames_in_flight) : (i += 1) {
+            if (vs.commands.compute_transient_pools.?[i] != null) {
+                c.vkDestroyCommandPool(vs.context.device, vs.commands.compute_transient_pools.?[i], null);
+            }
+        }
+        memory.cardinal_free(mem_alloc, @as(?*anyopaque, @ptrCast(vs.commands.compute_transient_pools)));
+        vs.commands.compute_transient_pools = null;
     }
 }
 
@@ -708,105 +800,9 @@ pub export fn vk_record_cmd(s: ?*types.VulkanState, image_index: u32) callconv(.
 
     // cmd_log.debug("Started command buffer", .{});
 
-    // Transition Depth to ATTACHMENT_OPTIMAL for all modes (required for Main Pass even if Pre-pass is skipped)
-    if (vs.swapchain.depth_image != null) {
-        var barrier = std.mem.zeroes(c.VkImageMemoryBarrier2);
-        barrier.sType = c.VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2;
-        barrier.srcStageMask = c.VK_PIPELINE_STAGE_2_TOP_OF_PIPE_BIT;
-        barrier.srcAccessMask = 0;
-        barrier.dstStageMask = c.VK_PIPELINE_STAGE_2_EARLY_FRAGMENT_TESTS_BIT;
-        barrier.dstAccessMask = c.VK_ACCESS_2_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT;
-        barrier.oldLayout = c.VK_IMAGE_LAYOUT_UNDEFINED;
-        barrier.newLayout = c.VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
-        barrier.image = vs.swapchain.depth_image;
-        barrier.subresourceRange.aspectMask = c.VK_IMAGE_ASPECT_DEPTH_BIT;
-        barrier.subresourceRange.levelCount = 1;
-        barrier.subresourceRange.layerCount = 1;
+    // Depth layout transitions handled by RenderGraph passes
 
-        var dep = std.mem.zeroes(c.VkDependencyInfo);
-        dep.sType = c.VK_STRUCTURE_TYPE_DEPENDENCY_INFO;
-        dep.imageMemoryBarrierCount = 1;
-        dep.pImageMemoryBarriers = &barrier;
-
-        c.vkCmdPipelineBarrier2(cmd, &dep);
-    }
-
-    // Shadow Pass
-    if (vs.pipelines.use_pbr_pipeline and vs.current_rendering_mode == types.CardinalRenderingMode.NORMAL) {
-        // cmd_log.debug("Recording Shadow Pass", .{});
-        vk_shadows.vk_shadow_render(vs, cmd);
-        // cmd_log.debug("Finished Shadow Pass", .{});
-
-        // Depth Pre-pass
-        if (vs.pipelines.depth_pipeline != null) {
-            var depthClears: [2]c.VkClearValue = undefined;
-            depthClears[1].depthStencil.depth = 1.0;
-            depthClears[1].depthStencil.stencil = 0;
-
-            if (vk_begin_rendering_impl(vs, cmd, image_index, true, null, null, &depthClears, false, true, 0, false)) {
-                vk_pbr.vk_pbr_render_depth_prepass(vs, cmd, vs.current_scene, vs.sync.current_frame);
-                vk_end_rendering(vs, cmd);
-            }
-
-            // SSAO Pass
-            if (vs.pipelines.use_ssao and vs.pipelines.ssao_pipeline.initialized) {
-                var barrier = std.mem.zeroes(c.VkImageMemoryBarrier2);
-                barrier.sType = c.VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2;
-                var dep = std.mem.zeroes(c.VkDependencyInfo);
-                dep.sType = c.VK_STRUCTURE_TYPE_DEPENDENCY_INFO;
-                dep.imageMemoryBarrierCount = 1;
-                dep.pImageMemoryBarriers = &barrier;
-
-                // 1. Transition Depth to READ_ONLY
-                barrier.srcStageMask = c.VK_PIPELINE_STAGE_2_LATE_FRAGMENT_TESTS_BIT;
-                barrier.srcAccessMask = c.VK_ACCESS_2_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT;
-                barrier.dstStageMask = c.VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT;
-                barrier.dstAccessMask = c.VK_ACCESS_2_SHADER_READ_BIT;
-                barrier.oldLayout = c.VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
-                barrier.newLayout = c.VK_IMAGE_LAYOUT_DEPTH_STENCIL_READ_ONLY_OPTIMAL;
-                barrier.image = vs.swapchain.depth_image;
-                barrier.subresourceRange.aspectMask = c.VK_IMAGE_ASPECT_DEPTH_BIT;
-                barrier.subresourceRange.levelCount = 1;
-                barrier.subresourceRange.layerCount = 1;
-                c.vkCmdPipelineBarrier2(cmd, &dep);
-
-                // 2. Transition SSAO Blur Image to GENERAL (for writing)
-                barrier.srcStageMask = c.VK_PIPELINE_STAGE_2_TOP_OF_PIPE_BIT;
-                barrier.srcAccessMask = 0;
-                barrier.dstStageMask = c.VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT;
-                barrier.dstAccessMask = c.VK_ACCESS_2_SHADER_WRITE_BIT;
-                barrier.oldLayout = c.VK_IMAGE_LAYOUT_UNDEFINED;
-                barrier.newLayout = c.VK_IMAGE_LAYOUT_GENERAL;
-                barrier.image = vs.pipelines.ssao_pipeline.ssao_blur_image[vs.sync.current_frame];
-                barrier.subresourceRange.aspectMask = c.VK_IMAGE_ASPECT_COLOR_BIT;
-                c.vkCmdPipelineBarrier2(cmd, &dep);
-
-                // 3. Dispatch SSAO
-                vk_ssao.vk_ssao_compute(vs, cmd, vs.sync.current_frame);
-
-                // 4. Transition SSAO Blur Image to SHADER_READ_ONLY (for PBR)
-                barrier.srcStageMask = c.VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT;
-                barrier.srcAccessMask = c.VK_ACCESS_2_SHADER_WRITE_BIT;
-                barrier.dstStageMask = c.VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT;
-                barrier.dstAccessMask = c.VK_ACCESS_2_SHADER_READ_BIT;
-                barrier.oldLayout = c.VK_IMAGE_LAYOUT_GENERAL;
-                barrier.newLayout = c.VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
-                barrier.image = vs.pipelines.ssao_pipeline.ssao_blur_image[vs.sync.current_frame];
-                c.vkCmdPipelineBarrier2(cmd, &dep);
-
-                // 5. Transition Depth back to ATTACHMENT_OPTIMAL
-                barrier.srcStageMask = c.VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT;
-                barrier.srcAccessMask = c.VK_ACCESS_2_SHADER_READ_BIT;
-                barrier.dstStageMask = c.VK_PIPELINE_STAGE_2_EARLY_FRAGMENT_TESTS_BIT;
-                barrier.dstAccessMask = c.VK_ACCESS_2_DEPTH_STENCIL_ATTACHMENT_READ_BIT | c.VK_ACCESS_2_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT;
-                barrier.oldLayout = c.VK_IMAGE_LAYOUT_DEPTH_STENCIL_READ_ONLY_OPTIMAL;
-                barrier.newLayout = c.VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
-                barrier.image = vs.swapchain.depth_image;
-                barrier.subresourceRange.aspectMask = c.VK_IMAGE_ASPECT_DEPTH_BIT;
-                c.vkCmdPipelineBarrier2(cmd, &dep);
-            }
-        }
-    }
+    // Shadow/Depth/SSAO are scheduled via RenderGraph passes
 
     var clears: [2]c.VkClearValue = undefined;
     clears[0].color.float32[0] = 0.05;
@@ -831,7 +827,7 @@ pub export fn vk_record_cmd(s: ?*types.VulkanState, image_index: u32) callconv(.
             rg.register_image(types.RESOURCE_ID_DEPTHBUFFER, vs.swapchain.depth_image) catch {};
         }
 
-        // Update HDR Color Transient Image
+        // Update HDR Color Transient Image and reset its state for this frame
         const hdr_desc = render_graph.ImageDesc{
             .format = c.VK_FORMAT_R16G16B16A16_SFLOAT,
             .width = vs.swapchain.extent.width,
@@ -840,8 +836,26 @@ pub export fn vk_record_cmd(s: ?*types.VulkanState, image_index: u32) callconv(.
             .aspect_mask = c.VK_IMAGE_ASPECT_COLOR_BIT,
         };
         rg.update_transient_image(types.RESOURCE_ID_HDR_COLOR, hdr_desc, vs) catch {};
+        const hdr_state = render_graph.ResourceState{
+            .access_mask = 0,
+            .stage_mask = c.VK_PIPELINE_STAGE_2_TOP_OF_PIPE_BIT,
+            .layout = c.VK_IMAGE_LAYOUT_UNDEFINED,
+        };
+        rg.set_resource_state(types.RESOURCE_ID_HDR_COLOR, hdr_state) catch |err| {
+            cmd_log.err("Failed to set HDR color state: {s}", .{@errorName(err)});
+        };
+        if (vs.pipelines.use_ssao and vs.pipelines.ssao_pipeline.initialized) {
+            rg.register_image(types.RESOURCE_ID_SSAO_BLURRED, vs.pipelines.ssao_pipeline.ssao_blur_image[vs.sync.current_frame]) catch {};
+        }
+        if (vs.pipelines.use_post_process and vs.pipelines.post_process_pipeline.initialized) {
+            rg.register_image(types.RESOURCE_ID_BLOOM, vs.pipelines.post_process_pipeline.bloom_image) catch {};
+        }
+        if (vs.pipelines.use_pbr_pipeline and vs.pipelines.pbr_pipeline.shadowMapImage != null) {
+            rg.register_image(types.RESOURCE_ID_SHADOW_MAP, vs.pipelines.pbr_pipeline.shadowMapImage) catch {};
+        }
 
         // Update Initial States
+        // Backbuffer (swapchain image)
         var bb_state = render_graph.ResourceState{
             .access_mask = 0,
             .stage_mask = c.VK_PIPELINE_STAGE_2_TOP_OF_PIPE_BIT,
@@ -857,27 +871,78 @@ pub export fn vk_record_cmd(s: ?*types.VulkanState, image_index: u32) callconv(.
             cmd_log.err("Failed to set backbuffer state: {s}", .{@errorName(err)});
         };
 
+        // Depth buffer: treat as coming from an undefined state at the start of each frame.
+        // The depth pre-pass will transition it to the correct attachment layout and clear it.
+        if (use_depth) {
+            const depth_state = render_graph.ResourceState{
+                .access_mask = 0,
+                .stage_mask = c.VK_PIPELINE_STAGE_2_TOP_OF_PIPE_BIT,
+                .layout = c.VK_IMAGE_LAYOUT_UNDEFINED,
+            };
+            rg.set_resource_state(types.RESOURCE_ID_DEPTHBUFFER, depth_state) catch |err| {
+                cmd_log.err("Failed to set depth buffer state: {s}", .{@errorName(err)});
+            };
+        }
+
+        // SSAO blurred texture: also start from an undefined state each frame so the SSAO
+        // pass can transition and write it before PBR samples it.
+        if (vs.pipelines.use_ssao and vs.pipelines.ssao_pipeline.initialized) {
+            const ssao_state = render_graph.ResourceState{
+                .access_mask = 0,
+                .stage_mask = c.VK_PIPELINE_STAGE_2_TOP_OF_PIPE_BIT,
+                .layout = c.VK_IMAGE_LAYOUT_UNDEFINED,
+            };
+            rg.set_resource_state(types.RESOURCE_ID_SSAO_BLURRED, ssao_state) catch |err| {
+                cmd_log.err("Failed to set SSAO blurred state: {s}", .{@errorName(err)});
+            };
+        }
+
+        if (vs.pipelines.use_post_process and vs.pipelines.post_process_pipeline.initialized) {
+            const bloom_state = render_graph.ResourceState{
+                .access_mask = 0,
+                .stage_mask = c.VK_PIPELINE_STAGE_2_TOP_OF_PIPE_BIT,
+                .layout = c.VK_IMAGE_LAYOUT_UNDEFINED,
+            };
+            rg.set_resource_state(types.RESOURCE_ID_BLOOM, bloom_state) catch |err| {
+                cmd_log.err("Failed to set bloom state: {s}", .{@errorName(err)});
+            };
+        }
+
+        if (vs.pipelines.use_pbr_pipeline and vs.pipelines.pbr_pipeline.shadowMapImage != null) {
+            const shadow_state = render_graph.ResourceState{
+                .access_mask = 0,
+                .stage_mask = c.VK_PIPELINE_STAGE_2_TOP_OF_PIPE_BIT,
+                .layout = c.VK_IMAGE_LAYOUT_UNDEFINED,
+            };
+            rg.set_resource_state(types.RESOURCE_ID_SHADOW_MAP, shadow_state) catch |err| {
+                cmd_log.err("Failed to set shadow map state: {s}", .{@errorName(err)});
+            };
+        }
+
+        // Begin compute command buffer if async compute is enabled
+        var compute_cmd: c.VkCommandBuffer = null;
+        if (vs.config.enable_async_compute and vs.commands.compute_primary_buffers != null) {
+            compute_cmd = vs.commands.compute_primary_buffers.?[vs.sync.current_frame];
+            if (compute_cmd != null) {
+                var bi_comp = std.mem.zeroes(c.VkCommandBufferBeginInfo);
+                bi_comp.sType = c.VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
+                bi_comp.flags = c.VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
+                _ = c.vkBeginCommandBuffer(compute_cmd, &bi_comp);
+            }
+        }
+
         // Execute Graph (This inserts barriers and calls pass callback)
-        rg.execute(cmd, vs);
+        rg.execute(cmd, compute_cmd, vs);
+
+        // End compute command buffer if it has any commands
+        if (compute_cmd != null) {
+            _ = c.vkEndCommandBuffer(compute_cmd);
+        }
     } else {
         cmd_log.err("RenderGraph is null! Cannot record scene.", .{});
     }
 
-    // Skybox Rendering
-    if (vs.pipelines.use_skybox_pipeline and vs.pipelines.skybox_pipeline.initialized and vs.pipelines.skybox_pipeline.texture.is_allocated) {
-        if (vs.pipelines.use_pbr_pipeline and vs.pipelines.pbr_pipeline.uniformBuffersMapped[vs.sync.current_frame] != null) {
-            const ubo = @as(*types.PBRUniformBufferObject, @ptrCast(@alignCast(vs.pipelines.pbr_pipeline.uniformBuffersMapped[vs.sync.current_frame])));
-
-            if (vk_begin_rendering(vs, cmd, image_index, use_depth, null, &clears, false, 0)) {
-                var view: math.Mat4 = undefined;
-                var proj: math.Mat4 = undefined;
-                view.data = ubo.view;
-                proj.data = ubo.proj;
-                vk_skybox.render(&vs.pipelines.skybox_pipeline, cmd, view, proj);
-                vk_end_rendering(vs, cmd);
-            }
-        }
-    }
+    // Skybox handled by RenderGraph passes
 
     // Transparent Pass is handled inside vk_pbr_render using sorted back-to-front rendering with the Blend pipeline.
     // See vk_pbr.zig for implementation.
@@ -886,13 +951,7 @@ pub export fn vk_record_cmd(s: ?*types.VulkanState, image_index: u32) callconv(.
     const lighting_buffer = if (vs.pipelines.use_pbr_pipeline) vs.pipelines.pbr_pipeline.lightingBuffers[vs.sync.current_frame] else null;
     if (vs.pipelines.use_pbr_pipeline and lighting_buffer != null and vs.pipelines.pbr_pipeline.debug_flags > 0.0) {}
 
-    if (vs.ui_record_callback != null) {
-        // Load contents from previous pass (whether scene was drawn or just cleared)
-        if (vk_begin_rendering(vs, cmd, image_index, use_depth, null, &clears, false, 0)) {
-            vs.ui_record_callback.?(cmd);
-            vk_end_rendering(vs, cmd);
-        }
-    }
+    // UI handled by RenderGraph passes
 
     end_recording(vs, cmd, image_index);
 }

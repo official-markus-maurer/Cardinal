@@ -33,6 +33,7 @@ const transform = @import("../core/transform.zig");
 const render_graph = @import("render_graph.zig");
 const vk_post_process = @import("vulkan_post_process.zig");
 const vk_texture_manager = @import("vulkan_texture_manager.zig");
+const vk_shadows = @import("vulkan_shadows.zig");
 
 // Helper to cast opaque pointer to VulkanState
 fn get_state(renderer: ?*types.CardinalRenderer) ?*types.VulkanState {
@@ -73,6 +74,8 @@ fn pbr_pass_callback(cmd: c.VkCommandBuffer, state: *types.VulkanState) void {
 
     const should_clear_depth = (state.pipelines.depth_pipeline == null or state.current_rendering_mode != types.CardinalRenderingMode.NORMAL);
 
+    renderer_log.info("PBR pass frame {d}: use_depth={any}, depth_view={any}, color_view={any}, clear_depth={any}, mode={any}", .{ state.sync.current_frame, use_depth, depth_view, color_view, should_clear_depth, state.current_rendering_mode });
+
     if (vk_commands.vk_begin_rendering_impl(state, cmd, state.current_image_index, use_depth, depth_view, color_view, &clears, true, should_clear_depth, flags, true)) {
         if (use_depth and depth_view != null) {
             // Log the image view used for rendering
@@ -97,11 +100,6 @@ fn post_process_pass_callback(cmd: c.VkCommandBuffer, state: *types.VulkanState)
         }
     }
 
-    // 1. Compute Pass (Outside Render Pass)
-    if (input_view) |view| {
-        vk_post_process.compute_bloom(state, cmd, state.sync.current_frame, view);
-    }
-
     var clears: [1]c.VkClearValue = undefined;
     clears[0].color.float32[0] = 0.0;
     clears[0].color.float32[1] = 0.0;
@@ -110,12 +108,88 @@ fn post_process_pass_callback(cmd: c.VkCommandBuffer, state: *types.VulkanState)
 
     // Render to Swapchain (Backbuffer)
     // begin_dynamic_rendering_ext defaults to swapchain view if color_view is null
+    renderer_log.info("Post-process pass frame {d}: hdr_view={any}", .{ state.sync.current_frame, input_view });
+
     if (vk_commands.vk_begin_rendering_impl(state, cmd, state.current_image_index, false, null, null, &clears, true, false, 0, true)) {
         if (input_view) |view| {
             vk_post_process.draw(state, cmd, state.sync.current_frame, view);
         }
         vk_commands.vk_end_rendering(state, cmd);
     }
+}
+
+fn bloom_compute_pass_callback(cmd: c.VkCommandBuffer, state: *types.VulkanState) void {
+    var input_view: ?c.VkImageView = null;
+    if (state.render_graph) |rg_ptr| {
+        const rg = @as(*render_graph.RenderGraph, @ptrCast(@alignCast(rg_ptr)));
+        if (rg.resources.get(types.RESOURCE_ID_HDR_COLOR)) |res| {
+            input_view = res.image_view;
+        }
+    }
+
+    if (input_view) |view| {
+        vk_post_process.compute_bloom(state, cmd, state.sync.current_frame, view);
+    }
+}
+
+fn skybox_pass_callback(cmd: c.VkCommandBuffer, state: *types.VulkanState) void {
+    var clears: [1]c.VkClearValue = undefined;
+    clears[0].color.float32[0] = 0.0;
+    clears[0].color.float32[1] = 0.0;
+    clears[0].color.float32[2] = 0.0;
+    clears[0].color.float32[3] = 1.0;
+
+    var use_depth = false;
+    if (state.render_graph) |rg_ptr| {
+        const rg = @as(*render_graph.RenderGraph, @ptrCast(@alignCast(rg_ptr)));
+        use_depth = rg.resources.get(types.RESOURCE_ID_DEPTHBUFFER) != null;
+    }
+    if (!use_depth) {
+        use_depth = state.swapchain.depth_image_view != null and state.swapchain.depth_image != null;
+    }
+
+    if (state.pipelines.use_skybox_pipeline and state.pipelines.skybox_pipeline.initialized and state.pipelines.skybox_pipeline.texture.is_allocated) {
+        if (state.pipelines.use_pbr_pipeline and state.pipelines.pbr_pipeline.uniformBuffersMapped[state.sync.current_frame] != null) {
+            const ubo = @as(*types.PBRUniformBufferObject, @ptrCast(@alignCast(state.pipelines.pbr_pipeline.uniformBuffersMapped[state.sync.current_frame])));
+            if (vk_commands.vk_begin_rendering_impl(state, cmd, state.current_image_index, use_depth, null, null, &clears, false, false, 0, true)) {
+                var view: math.Mat4 = undefined;
+                var proj: math.Mat4 = undefined;
+                view.data = ubo.view;
+                proj.data = ubo.proj;
+                vk_skybox.render(&state.pipelines.skybox_pipeline, cmd, view, proj);
+                vk_commands.vk_end_rendering(state, cmd);
+            }
+        }
+    }
+}
+
+fn ui_pass_callback(cmd: c.VkCommandBuffer, state: *types.VulkanState) void {
+    if (state.ui_record_callback == null) return;
+    var clears: [1]c.VkClearValue = undefined;
+    clears[0].color.float32[0] = 0.0;
+    clears[0].color.float32[1] = 0.0;
+    clears[0].color.float32[2] = 0.0;
+    clears[0].color.float32[3] = 1.0;
+
+    var use_depth = false;
+    if (state.render_graph) |rg_ptr| {
+        const rg = @as(*render_graph.RenderGraph, @ptrCast(@alignCast(rg_ptr)));
+        use_depth = rg.resources.get(types.RESOURCE_ID_DEPTHBUFFER) != null;
+    }
+    if (!use_depth) {
+        use_depth = state.swapchain.depth_image_view != null and state.swapchain.depth_image != null;
+    }
+
+    if (vk_commands.vk_begin_rendering_impl(state, cmd, state.current_image_index, use_depth, null, null, &clears, false, false, 0, true)) {
+        state.ui_record_callback.?(cmd);
+        vk_commands.vk_end_rendering(state, cmd);
+    }
+}
+
+fn present_pass_callback(cmd: c.VkCommandBuffer, state: *types.VulkanState) void {
+    _ = cmd;
+    _ = state;
+    // No drawing; Render Graph will insert the transition to PRESENT_SRC_KHR via outputs/state.
 }
 
 // Window resize callback
@@ -280,6 +354,65 @@ fn init_pbr_pipeline_helper(s: *types.VulkanState) void {
     }
 }
 
+fn shadow_pass_callback(cmd: c.VkCommandBuffer, state: *types.VulkanState) void {
+    vk_shadows.vk_shadow_render(state, cmd);
+}
+
+fn depth_prepass_pass_callback(cmd: c.VkCommandBuffer, state: *types.VulkanState) void {
+    var clears: [2]c.VkClearValue = undefined;
+    clears[1].depthStencil.depth = 1.0;
+    clears[1].depthStencil.stencil = 0;
+
+    var depth_view: ?c.VkImageView = null;
+    var use_depth = false;
+
+    if (state.render_graph) |rg_ptr| {
+        const rg = @as(*render_graph.RenderGraph, @ptrCast(@alignCast(rg_ptr)));
+        if (rg.resources.get(types.RESOURCE_ID_DEPTHBUFFER)) |res| {
+            depth_view = res.image_view;
+            use_depth = (depth_view != null);
+        }
+    }
+
+    if (!use_depth) {
+        use_depth = state.swapchain.depth_image_view != null and state.swapchain.depth_image != null;
+    }
+
+    renderer_log.info("Depth pre-pass frame {d}: use_depth={any}, depth_view={any}", .{ state.sync.current_frame, use_depth, depth_view });
+
+    if (vk_commands.vk_begin_rendering_impl(state, cmd, state.current_image_index, use_depth, depth_view, null, &clears, false, true, 0, false)) {
+        if (state.pipelines.use_pbr_pipeline and state.pipelines.depth_pipeline != null) {
+            vk_pbr.vk_pbr_render_depth_prepass(state, cmd, state.current_scene, state.sync.current_frame);
+        }
+        vk_commands.vk_end_rendering(state, cmd);
+    }
+}
+
+fn ssao_pass_callback(cmd: c.VkCommandBuffer, state: *types.VulkanState) void {
+    if (!state.pipelines.use_ssao or !state.pipelines.ssao_pipeline.initialized) return;
+    renderer_log.info("SSAO pass frame {d}: running", .{state.sync.current_frame});
+    vk_ssao.vk_ssao_compute(state, cmd, state.sync.current_frame);
+}
+
+fn init_mesh_shader_paths(s: *types.VulkanState, mesh_path: *[512]u8, task_path: *[512]u8, frag_path: *[512]u8) void {
+    var shaders_dir: []const u8 = std.mem.span(@as([*:0]const u8, @ptrCast(&s.config.shader_dir)));
+
+    const env_dir_c = c.getenv("CARDINAL_SHADERS_DIR");
+    if (env_dir_c != null) {
+        shaders_dir = std.mem.span(env_dir_c);
+    }
+
+    _ = std.fmt.bufPrintZ(mesh_path, "{s}/mesh.mesh.spv", .{shaders_dir}) catch |err| {
+        renderer_log.warn("bufPrintZ failed for mesh shader path: {s}", .{@errorName(err)});
+    };
+    _ = std.fmt.bufPrintZ(task_path, "{s}/task.task.spv", .{shaders_dir}) catch |err| {
+        renderer_log.warn("bufPrintZ failed for task shader path: {s}", .{@errorName(err)});
+    };
+    _ = std.fmt.bufPrintZ(frag_path, "{s}/mesh.frag.spv", .{shaders_dir}) catch |err| {
+        renderer_log.warn("bufPrintZ failed for fragment shader path: {s}", .{@errorName(err)});
+    };
+}
+
 fn init_mesh_shader_pipeline_helper(s: *types.VulkanState) void {
     s.pipelines.use_mesh_shader_pipeline = false;
     if (!s.context.supports_mesh_shader) {
@@ -294,26 +427,11 @@ fn init_mesh_shader_pipeline_helper(s: *types.VulkanState) void {
 
     var config = std.mem.zeroes(types.MeshShaderPipelineConfig);
 
-    var shaders_dir: []const u8 = std.mem.span(@as([*:0]const u8, @ptrCast(&s.config.shader_dir)));
-
-    const env_dir_c = c.getenv("CARDINAL_SHADERS_DIR");
-    if (env_dir_c != null) {
-        shaders_dir = std.mem.span(env_dir_c);
-    }
-
     var mesh_path: [512]u8 = undefined;
     var task_path: [512]u8 = undefined;
     var frag_path: [512]u8 = undefined;
 
-    _ = std.fmt.bufPrintZ(&mesh_path, "{s}/mesh.mesh.spv", .{shaders_dir}) catch |err| {
-        renderer_log.warn("bufPrintZ failed for mesh shader path: {s}", .{@errorName(err)});
-    };
-    _ = std.fmt.bufPrintZ(&task_path, "{s}/task.task.spv", .{shaders_dir}) catch |err| {
-        renderer_log.warn("bufPrintZ failed for task shader path: {s}", .{@errorName(err)});
-    };
-    _ = std.fmt.bufPrintZ(&frag_path, "{s}/mesh.frag.spv", .{shaders_dir}) catch |err| {
-        renderer_log.warn("bufPrintZ failed for fragment shader path: {s}", .{@errorName(err)});
-    };
+    init_mesh_shader_paths(s, &mesh_path, &task_path, &frag_path);
 
     config.mesh_shader_path = @ptrCast(&mesh_path);
     config.task_shader_path = @ptrCast(&task_path);
@@ -381,19 +499,18 @@ fn init_pipelines(s: *types.VulkanState) bool {
     init_mesh_shader_pipeline_helper(s);
     init_compute_pipeline_helper(s);
     init_skybox_pipeline_helper(s);
-
-    // Initialize SSAO
-    if (vk_ssao.vk_ssao_init(s)) {
-        renderer_log.info("renderer_create: SSAO pipeline", .{});
-    } else {
-        renderer_log.err("vk_ssao_init failed", .{});
-    }
-
-    // Initialize Post Process Pipeline
+    // Initialize Post Process Pipeline first so its sampler is available to SSAO
     if (vk_post_process.vk_post_process_init(s)) {
         renderer_log.info("renderer_create: Post Process pipeline", .{});
     } else {
         renderer_log.err("vk_post_process_init failed", .{});
+    }
+
+    // Initialize SSAO (depends on post-process sampler)
+    if (vk_ssao.vk_ssao_init(s)) {
+        renderer_log.info("renderer_create: SSAO pipeline", .{});
+    } else {
+        renderer_log.err("vk_ssao_init failed", .{});
     }
 
     // Initialize rendering mode
@@ -434,11 +551,67 @@ pub export fn cardinal_renderer_create(out_renderer: ?*types.CardinalRenderer, w
         const renderer_alloc = memory.cardinal_get_allocator_for_category(.RENDERER).as_allocator();
         rg.* = render_graph.RenderGraph.init(renderer_alloc);
 
+        // Mesh Shader Prep (runs before rendering)
+        const mesh_prep_pass = render_graph.RenderPass.init(renderer_alloc, "MeshShader Prep", (struct {
+            fn cb(cmd: c.VkCommandBuffer, vs: *types.VulkanState) void {
+                _ = cmd;
+                vk_commands.vk_prepare_mesh_shader_rendering(@ptrCast(vs));
+            }
+        }).cb);
+        rg.add_pass(mesh_prep_pass) catch {};
+
+        // Shadow Pass (renders cascaded shadow maps for directional lights)
+        var shadow_pass = render_graph.RenderPass.init(renderer_alloc, "Shadow Pass", shadow_pass_callback);
+        shadow_pass.use_graphics_queue(s);
+        shadow_pass.can_be_culled = false;
+        shadow_pass.add_output(renderer_alloc, .{
+            .id = types.RESOURCE_ID_SHADOW_MAP,
+            .type = .Image,
+            .access_mask = c.VK_ACCESS_2_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT | c.VK_ACCESS_2_DEPTH_STENCIL_ATTACHMENT_READ_BIT,
+            .stage_mask = c.VK_PIPELINE_STAGE_2_EARLY_FRAGMENT_TESTS_BIT | c.VK_PIPELINE_STAGE_2_LATE_FRAGMENT_TESTS_BIT,
+            .layout = c.VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL,
+            .aspect_mask = c.VK_IMAGE_ASPECT_DEPTH_BIT,
+        }) catch {};
+        rg.add_pass(shadow_pass) catch {};
+
+        // Depth Pre-pass
+        var depth_pass = render_graph.RenderPass.init(renderer_alloc, "Depth Pre-pass", depth_prepass_pass_callback);
+        depth_pass.add_output(renderer_alloc, .{
+            .id = types.RESOURCE_ID_DEPTHBUFFER,
+            .type = .Image,
+            .access_mask = c.VK_ACCESS_2_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT | c.VK_ACCESS_2_DEPTH_STENCIL_ATTACHMENT_READ_BIT,
+            .stage_mask = c.VK_PIPELINE_STAGE_2_EARLY_FRAGMENT_TESTS_BIT | c.VK_PIPELINE_STAGE_2_LATE_FRAGMENT_TESTS_BIT,
+            .layout = c.VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL,
+            .aspect_mask = c.VK_IMAGE_ASPECT_DEPTH_BIT,
+        }) catch {};
+        rg.add_pass(depth_pass) catch {};
+
+        // SSAO Pass (Compute)
+        var ssao_pass = render_graph.RenderPass.init(renderer_alloc, "SSAO Pass", ssao_pass_callback);
+        if (s.config.enable_async_compute) {
+            ssao_pass.use_compute_queue(s);
+        }
+        ssao_pass.add_input(renderer_alloc, .{
+            .id = types.RESOURCE_ID_DEPTHBUFFER,
+            .type = .Image,
+            .access_mask = c.VK_ACCESS_2_SHADER_READ_BIT,
+            .stage_mask = c.VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
+            .layout = c.VK_IMAGE_LAYOUT_DEPTH_STENCIL_READ_ONLY_OPTIMAL,
+            .aspect_mask = c.VK_IMAGE_ASPECT_DEPTH_BIT,
+        }) catch {};
+        ssao_pass.add_output(renderer_alloc, .{
+            .id = types.RESOURCE_ID_SSAO_BLURRED,
+            .type = .Image,
+            .access_mask = c.VK_ACCESS_2_SHADER_WRITE_BIT,
+            .stage_mask = c.VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
+            .layout = c.VK_IMAGE_LAYOUT_GENERAL,
+            .aspect_mask = c.VK_IMAGE_ASPECT_COLOR_BIT,
+        }) catch {};
+        rg.add_pass(ssao_pass) catch {};
+
         // Add PBR Pass
         var pass = render_graph.RenderPass.init(renderer_alloc, "PBR Pass", pbr_pass_callback);
 
-        // Define outputs for automatic barriers
-        // HDR Color (Color Attachment)
         pass.add_output(renderer_alloc, .{
             .id = types.RESOURCE_ID_HDR_COLOR,
             .type = .Image,
@@ -450,23 +623,64 @@ pub export fn cardinal_renderer_create(out_renderer: ?*types.CardinalRenderer, w
             renderer_log.err("Failed to add PBR pass color output: {s}", .{@errorName(err)});
         };
 
-        // Depthbuffer (Depth Attachment)
-        pass.add_output(renderer_alloc, .{
+        pass.add_input(renderer_alloc, .{
             .id = types.RESOURCE_ID_DEPTHBUFFER,
             .type = .Image,
-            .access_mask = c.VK_ACCESS_2_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT | c.VK_ACCESS_2_DEPTH_STENCIL_ATTACHMENT_READ_BIT,
+            .access_mask = c.VK_ACCESS_2_DEPTH_STENCIL_ATTACHMENT_READ_BIT,
             .stage_mask = c.VK_PIPELINE_STAGE_2_EARLY_FRAGMENT_TESTS_BIT | c.VK_PIPELINE_STAGE_2_LATE_FRAGMENT_TESTS_BIT,
             .layout = c.VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL,
             .aspect_mask = c.VK_IMAGE_ASPECT_DEPTH_BIT,
         }) catch {
-            renderer_log.err("Failed to add PBR pass depth output", .{});
+            renderer_log.err("Failed to add PBR pass depth input", .{});
         };
+        pass.add_input(renderer_alloc, .{
+            .id = types.RESOURCE_ID_SHADOW_MAP,
+            .type = .Image,
+            .access_mask = c.VK_ACCESS_2_SHADER_READ_BIT,
+            .stage_mask = c.VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT,
+            .layout = c.VK_IMAGE_LAYOUT_DEPTH_STENCIL_READ_ONLY_OPTIMAL,
+            .aspect_mask = c.VK_IMAGE_ASPECT_DEPTH_BIT,
+        }) catch {
+            renderer_log.err("Failed to add PBR pass shadow map input", .{});
+        };
+        pass.add_input(renderer_alloc, .{
+            .id = types.RESOURCE_ID_SSAO_BLURRED,
+            .type = .Image,
+            .access_mask = c.VK_ACCESS_2_SHADER_READ_BIT,
+            .stage_mask = c.VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT,
+            .layout = c.VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+            .aspect_mask = c.VK_IMAGE_ASPECT_COLOR_BIT,
+        }) catch {};
 
+        pass.use_graphics_queue(s);
         rg.add_pass(pass) catch {
             renderer_log.err("Failed to add PBR pass", .{});
         };
 
-        // Add Post Process Pass
+        // Bloom Compute Pass
+        var bloom_pass = render_graph.RenderPass.init(renderer_alloc, "Bloom Compute Pass", bloom_compute_pass_callback);
+        if (s.config.enable_async_compute) {
+            bloom_pass.use_compute_queue(s);
+        }
+        bloom_pass.add_input(renderer_alloc, .{
+            .id = types.RESOURCE_ID_HDR_COLOR,
+            .type = .Image,
+            .access_mask = c.VK_ACCESS_2_SHADER_READ_BIT,
+            .stage_mask = c.VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
+            .layout = c.VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+            .aspect_mask = c.VK_IMAGE_ASPECT_COLOR_BIT,
+        }) catch {};
+        bloom_pass.add_output(renderer_alloc, .{
+            .id = types.RESOURCE_ID_BLOOM,
+            .type = .Image,
+            .access_mask = c.VK_ACCESS_2_SHADER_WRITE_BIT,
+            .stage_mask = c.VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
+            .layout = c.VK_IMAGE_LAYOUT_GENERAL,
+            .aspect_mask = c.VK_IMAGE_ASPECT_COLOR_BIT,
+        }) catch {};
+        rg.add_pass(bloom_pass) catch {};
+
+        // Add Post Process Composite Pass
         var pp_pass = render_graph.RenderPass.init(renderer_alloc, "PostProcess Pass", post_process_pass_callback);
 
         pp_pass.add_input(renderer_alloc, .{
@@ -477,7 +691,17 @@ pub export fn cardinal_renderer_create(out_renderer: ?*types.CardinalRenderer, w
             .layout = c.VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
             .aspect_mask = c.VK_IMAGE_ASPECT_COLOR_BIT,
         }) catch |err| {
-            renderer_log.err("Failed to add PostProcess pass input: {s}", .{@errorName(err)});
+            renderer_log.err("Failed to add PostProcess pass HDR input: {s}", .{@errorName(err)});
+        };
+        pp_pass.add_input(renderer_alloc, .{
+            .id = types.RESOURCE_ID_BLOOM,
+            .type = .Image,
+            .access_mask = c.VK_ACCESS_2_SHADER_READ_BIT,
+            .stage_mask = c.VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT,
+            .layout = c.VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+            .aspect_mask = c.VK_IMAGE_ASPECT_COLOR_BIT,
+        }) catch |err| {
+            renderer_log.err("Failed to add PostProcess pass bloom input: {s}", .{@errorName(err)});
         };
 
         pp_pass.add_output(renderer_alloc, .{
@@ -491,13 +715,51 @@ pub export fn cardinal_renderer_create(out_renderer: ?*types.CardinalRenderer, w
             renderer_log.err("Failed to add PostProcess pass output: {s}", .{@errorName(err)});
         };
 
+        pp_pass.use_graphics_queue(s);
         rg.add_pass(pp_pass) catch {
             renderer_log.err("Failed to add PostProcess pass", .{});
         };
 
+        var skybox_pass = render_graph.RenderPass.init(renderer_alloc, "Skybox Pass", skybox_pass_callback);
+        skybox_pass.add_output(renderer_alloc, .{
+            .id = types.RESOURCE_ID_BACKBUFFER,
+            .type = .Image,
+            .access_mask = c.VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT | c.VK_ACCESS_2_COLOR_ATTACHMENT_READ_BIT,
+            .stage_mask = c.VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT,
+            .layout = c.VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
+            .aspect_mask = c.VK_IMAGE_ASPECT_COLOR_BIT,
+        }) catch {};
+        skybox_pass.use_graphics_queue(s);
+        rg.add_pass(skybox_pass) catch {};
+
+        var ui_pass = render_graph.RenderPass.init(renderer_alloc, "UI Pass", ui_pass_callback);
+        ui_pass.add_output(renderer_alloc, .{
+            .id = types.RESOURCE_ID_BACKBUFFER,
+            .type = .Image,
+            .access_mask = c.VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT | c.VK_ACCESS_2_COLOR_ATTACHMENT_READ_BIT,
+            .stage_mask = c.VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT,
+            .layout = c.VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
+            .aspect_mask = c.VK_IMAGE_ASPECT_COLOR_BIT,
+        }) catch {};
+        ui_pass.use_graphics_queue(s);
+        rg.add_pass(ui_pass) catch {};
+
+        var present_pass = render_graph.RenderPass.init(renderer_alloc, "Present Pass", present_pass_callback);
+        present_pass.add_output(renderer_alloc, .{
+            .id = types.RESOURCE_ID_BACKBUFFER,
+            .type = .Image,
+            .access_mask = 0,
+            .stage_mask = c.VK_PIPELINE_STAGE_2_BOTTOM_OF_PIPE_BIT,
+            .layout = c.VK_IMAGE_LAYOUT_PRESENT_SRC_KHR,
+            .aspect_mask = c.VK_IMAGE_ASPECT_COLOR_BIT,
+        }) catch {};
+        present_pass.use_graphics_queue(s);
+        rg.add_pass(present_pass) catch {};
+
         rg.compile() catch {
             renderer_log.err("Failed to compile render graph", .{});
         };
+        renderer_log.info("Render Graph initialized: passes={d}", .{rg.passes.items.len});
 
         s.render_graph = rg;
     } else {
@@ -563,11 +825,6 @@ pub export fn cardinal_renderer_create(out_renderer: ?*types.CardinalRenderer, w
     }
     renderer_log.warn("renderer_create: pipeline created", .{});
 
-    if (!vk_post_process.vk_post_process_init(s)) {
-        renderer_log.err("Failed to initialize post process pipeline", .{});
-        return false;
-    }
-
     if (!vk_commands.vk_create_commands_sync(@ptrCast(@alignCast(s)))) {
         renderer_log.err("vk_create_commands_sync failed", .{});
         return false;
@@ -623,8 +880,6 @@ pub export fn cardinal_renderer_create_headless(out_renderer: ?*types.CardinalRe
         // Add PBR Pass
         var pass = render_graph.RenderPass.init(renderer_alloc, "PBR Pass", pbr_pass_callback);
 
-        // Define outputs for automatic barriers
-        // Backbuffer (Color Attachment)
         pass.add_output(renderer_alloc, .{
             .id = types.RESOURCE_ID_BACKBUFFER,
             .type = .Image,
@@ -636,16 +891,15 @@ pub export fn cardinal_renderer_create_headless(out_renderer: ?*types.CardinalRe
             renderer_log.err("Failed to add PBR pass backbuffer output: {s}", .{@errorName(err)});
         };
 
-        // Depthbuffer (Depth Attachment)
-        pass.add_output(renderer_alloc, .{
+        pass.add_input(renderer_alloc, .{
             .id = types.RESOURCE_ID_DEPTHBUFFER,
             .type = .Image,
-            .access_mask = c.VK_ACCESS_2_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT | c.VK_ACCESS_2_DEPTH_STENCIL_ATTACHMENT_READ_BIT,
+            .access_mask = c.VK_ACCESS_2_DEPTH_STENCIL_ATTACHMENT_READ_BIT,
             .stage_mask = c.VK_PIPELINE_STAGE_2_EARLY_FRAGMENT_TESTS_BIT | c.VK_PIPELINE_STAGE_2_LATE_FRAGMENT_TESTS_BIT,
             .layout = c.VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL,
             .aspect_mask = c.VK_IMAGE_ASPECT_DEPTH_BIT,
         }) catch {
-            renderer_log.err("Failed to add PBR pass depth output", .{});
+            renderer_log.err("Failed to add PBR pass depth input", .{});
         };
 
         rg.add_pass(pass) catch {
@@ -1118,28 +1372,13 @@ pub export fn cardinal_renderer_enable_mesh_shader(renderer: ?*types.CardinalRen
     const s = get_state(renderer) orelse return;
 
     if (enable and !s.pipelines.use_mesh_shader_pipeline and s.context.supports_mesh_shader) {
-        // Create default mesh shader pipeline configuration
         var config = std.mem.zeroes(types.MeshShaderPipelineConfig);
-
-        var shaders_dir: []const u8 = std.mem.span(@as([*:0]const u8, @ptrCast(&s.config.shader_dir)));
-        const env_dir_c = c.getenv("CARDINAL_SHADERS_DIR");
-        if (env_dir_c != null) {
-            shaders_dir = std.mem.span(env_dir_c);
-        }
 
         var mesh_path: [512]u8 = undefined;
         var task_path: [512]u8 = undefined;
         var frag_path: [512]u8 = undefined;
 
-        _ = std.fmt.bufPrintZ(&mesh_path, "{s}/mesh.mesh.spv", .{shaders_dir}) catch |err| {
-            renderer_log.warn("bufPrintZ failed for mesh shader path: {s}", .{@errorName(err)});
-        };
-        _ = std.fmt.bufPrintZ(&task_path, "{s}/task.task.spv", .{shaders_dir}) catch |err| {
-            renderer_log.warn("bufPrintZ failed for task shader path: {s}", .{@errorName(err)});
-        };
-        _ = std.fmt.bufPrintZ(&frag_path, "{s}/mesh.frag.spv", .{shaders_dir}) catch |err| {
-            renderer_log.warn("bufPrintZ failed for fragment shader path: {s}", .{@errorName(err)});
-        };
+        init_mesh_shader_paths(s, &mesh_path, &task_path, &frag_path);
 
         config.mesh_shader_path = @ptrCast(&mesh_path);
         config.task_shader_path = @ptrCast(&task_path);
@@ -1261,7 +1500,8 @@ fn submit_and_wait(s: *types.VulkanState, cmd: c.VkCommandBuffer) void {
             // Wait for completion using timeline semaphore
             const wait_result = vk_sync_manager.vulkan_sync_manager_wait_timeline(sm, timeline_value, c.UINT64_MAX);
             if (wait_result == c.VK_SUCCESS) {
-                c.vkFreeCommandBuffers(s.context.device, s.commands.pools.?[s.sync.current_frame], 1, &cmd);
+                const free_pool: c.VkCommandPool = if (s.commands.transient_pools != null) s.commands.transient_pools.?[s.sync.current_frame] else s.commands.pools.?[s.sync.current_frame];
+                c.vkFreeCommandBuffers(s.context.device, free_pool, 1, &cmd);
             } else {
                 renderer_log.warn("Timeline wait failed for immediate submit: {d}", .{wait_result});
             }
@@ -1274,7 +1514,8 @@ fn submit_and_wait(s: *types.VulkanState, cmd: c.VkCommandBuffer) void {
         const wait_result = c.vkQueueWaitIdle(s.context.graphics_queue);
 
         if (wait_result == c.VK_SUCCESS) {
-            c.vkFreeCommandBuffers(s.context.device, s.commands.pools.?[s.sync.current_frame], 1, &cmd);
+            const free_pool: c.VkCommandPool = if (s.commands.transient_pools != null) s.commands.transient_pools.?[s.sync.current_frame] else s.commands.pools.?[s.sync.current_frame];
+            c.vkFreeCommandBuffers(s.context.device, free_pool, 1, &cmd);
         } else {
             renderer_log.warn("Skipping command buffer free due to queue wait failure: {d}", .{wait_result});
         }
@@ -1287,7 +1528,7 @@ pub export fn cardinal_renderer_immediate_submit(renderer: ?*types.CardinalRende
     var ai = c.VkCommandBufferAllocateInfo{
         .sType = c.VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO,
         .pNext = null,
-        .commandPool = s.commands.pools.?[s.sync.current_frame],
+        .commandPool = if (s.commands.transient_pools != null) s.commands.transient_pools.?[s.sync.current_frame] else s.commands.pools.?[s.sync.current_frame],
         .level = c.VK_COMMAND_BUFFER_LEVEL_PRIMARY,
         .commandBufferCount = 1,
     };
@@ -1321,7 +1562,7 @@ fn try_submit_secondary(s: *types.VulkanState, record: ?*const fn (c.VkCommandBu
     var ai = c.VkCommandBufferAllocateInfo{
         .sType = c.VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO,
         .pNext = null,
-        .commandPool = s.commands.pools.?[s.sync.current_frame],
+        .commandPool = if (s.commands.transient_pools != null) s.commands.transient_pools.?[s.sync.current_frame] else s.commands.pools.?[s.sync.current_frame],
         .level = c.VK_COMMAND_BUFFER_LEVEL_PRIMARY,
         .commandBufferCount = 1,
     };

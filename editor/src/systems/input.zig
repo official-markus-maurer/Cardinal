@@ -20,4 +20,10 @@ pub fn update(state: *EditorState) void {
         }
     }
     state.tab_key_pressed = tab_pressed;
+
+    // Manual minidump trigger (Print Screen)
+    if (engine.input.isActionPressed(win, "CreateMinidump")) {
+        const ok = engine.platform.write_minidump();
+        std.debug.print("CreateMinidump action: {s}\n", .{if (ok) "OK" else "FAILED"});
+    }
 }

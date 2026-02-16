@@ -34,6 +34,7 @@ const allocator = engine.memory.cardinal_get_allocator_for_category(.ENGINE).as_
 
 var state: EditorState = undefined;
 var initialized: bool = false;
+var device_recovery_failed: bool = false;
 
 fn check_loading_status() void {
     if (state.loading_tasks.items.len == 0) {
@@ -429,6 +430,8 @@ pub fn init(win_ptr: *window.CardinalWindow, rnd_ptr: *types.CardinalRenderer, r
 pub fn on_device_loss(_: ?*anyopaque) callconv(.c) void {
     log.cardinal_log_warn("[EDITOR_LAYER] Device loss detected, shutting down ImGui", .{});
 
+    device_recovery_failed = false;
+
     // We can use the global 'initialized' flag or check descriptor_pool.
     // If descriptor_pool is set, we definitely initialized.
     if (state.descriptor_pool != null or initialized) {
@@ -444,6 +447,8 @@ pub fn on_device_restored(user_data: ?*anyopaque, success: bool) callconv(.c) vo
     _ = user_data;
     if (!success) {
         log.cardinal_log_error("[EDITOR_LAYER] Device recovery failed, cannot restore ImGui", .{});
+        device_recovery_failed = true;
+        _ = std.fmt.bufPrintZ(&state.status_msg, "Vulkan device lost; please restart editor", .{}) catch {};
         return;
     }
 
@@ -509,6 +514,11 @@ pub fn on_device_restored(user_data: ?*anyopaque, success: bool) callconv(.c) vo
 
     // Mark as initialized again to resume update loop
     initialized = true;
+    device_recovery_failed = false;
+}
+
+pub fn has_device_recovery_failed() bool {
+    return device_recovery_failed;
 }
 
 pub fn shutdown() void {

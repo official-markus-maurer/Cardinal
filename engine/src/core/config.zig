@@ -79,6 +79,7 @@ pub const ConfigManager = struct {
             max_lights: ?u32 = null,
             max_frames_in_flight: ?u32 = null,
             timeline_max_ahead: ?u64 = null,
+            enable_async_compute: ?bool = null,
             shader_dir: ?[]const u8 = null,
             pipeline_dir: ?[]const u8 = null,
             texture_dir: ?[]const u8 = null,
@@ -128,6 +129,7 @@ pub const ConfigManager = struct {
             if (r.max_lights) |v| self.config.renderer.max_lights = v;
             if (r.max_frames_in_flight) |v| self.config.renderer.max_frames_in_flight = v;
             if (r.timeline_max_ahead) |v| self.config.renderer.timeline_max_ahead = v;
+            if (r.enable_async_compute) |v| self.config.renderer.enable_async_compute = v;
 
             if (r.shader_dir) |v| {
                 @memset(&self.config.renderer.shader_dir, 0);

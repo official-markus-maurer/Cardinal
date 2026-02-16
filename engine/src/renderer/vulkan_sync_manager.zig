@@ -384,6 +384,7 @@ pub fn vulkan_sync_manager_get_next_timeline_value(sync_manager: ?*types.VulkanS
 
     if (result != c.VK_SUCCESS) {
         sync_log.err("vkGetSemaphoreCounterValue failed: {d}. Mgr: {*}, Sem: {any}", .{ result, mgr, mgr.timeline_semaphore });
+        return 0;
     }
 
     const atom_ptr = atomic(&mgr.global_timeline_counter);
@@ -397,12 +398,9 @@ pub fn vulkan_sync_manager_get_next_timeline_value(sync_manager: ?*types.VulkanS
             base_val = current_device_value;
         }
 
-        if (result == c.VK_SUCCESS) {
-            // Log warning if value is extremely high (nearing u64 max / 2)
-            // This warns before the overflow logic triggers
-            if (current_device_value > 0x7FFFFFFFFFFFFFFF) {
-                sync_log.warn("Huge timeline value detected: base={d}, old={d}, dev={d}, res={d}", .{ base_val, old_val, current_device_value, result });
-            }
+        if (current_device_value > mgr.value_strategy.max_safe_value) {
+            sync_log.err("Timeline value exceeds max_safe_value: base={d}, old={d}, dev={d}", .{ base_val, old_val, current_device_value });
+            return 0;
         }
 
         // Check for overflow risk (leaving some headroom)
@@ -834,6 +832,11 @@ pub fn vulkan_sync_manager_reset_timeline_values(sync_manager: ?*types.VulkanSyn
     var current_dev_val: u64 = 0;
     const dev_res = c.vkGetSemaphoreCounterValue(mgr.device, mgr.timeline_semaphore, &current_dev_val);
 
+    if (dev_res == c.VK_ERROR_DEVICE_LOST) {
+        sync_log.err("Timeline reset aborted: device is lost (vkGetSemaphoreCounterValue={d})", .{dev_res});
+        return false;
+    }
+
     if (current_atomic < mgr.max_ahead_value and (dev_res == c.VK_SUCCESS and current_dev_val < mgr.max_ahead_value)) {
         // Already reset, return success
         return true;
@@ -843,10 +846,10 @@ pub fn vulkan_sync_manager_reset_timeline_values(sync_manager: ?*types.VulkanSyn
 
     // Wait for device idle to ensure no commands are using the semaphore
     // This is crucial because we are about to destroy it
-    // NOTE: vkDeviceWaitIdle might fail if the device is lost, but we proceed anyway to reset state
     const wait_result = c.vkDeviceWaitIdle(mgr.device);
     if (wait_result != c.VK_SUCCESS) {
-        sync_log.warn("vkDeviceWaitIdle failed during reset: {d}", .{wait_result});
+        sync_log.err("vkDeviceWaitIdle failed during reset: {d}", .{wait_result});
+        return false;
     }
 
     if (mgr.timeline_semaphore != null) {

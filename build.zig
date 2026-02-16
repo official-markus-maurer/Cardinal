@@ -332,4 +332,11 @@ pub fn build(b: *std.Build) void {
     run_editor_cmd.step.dependOn(b.getInstallStep());
     const run_editor_step = b.step("run-editor", "Run the editor application");
     run_editor_step.dependOn(&run_editor_cmd.step);
+
+    const run_editor_trace_cmd = b.addRunArtifact(editor);
+    run_editor_trace_cmd.step.dependOn(b.getInstallStep());
+    run_editor_trace_cmd.addArg("--log-level");
+    run_editor_trace_cmd.addArg("TRACE");
+    const run_editor_trace_step = b.step("run-editor-trace", "Run the editor application with TRACE logging");
+    run_editor_trace_step.dependOn(&run_editor_trace_cmd.step);
 }

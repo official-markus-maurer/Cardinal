@@ -445,7 +445,7 @@ fn acquire_next_image(s: *types.VulkanState, out_image_index: *u32) bool {
     return true;
 }
 
-fn submit_command_buffer(s: *types.VulkanState, cmd: c.VkCommandBuffer, acquire_sem: c.VkSemaphore, signal_value: u64, wait_timeline_value: ?u64) bool {
+fn submit_command_buffer(s: *types.VulkanState, cmd: c.VkCommandBuffer, acquire_sem: c.VkSemaphore, wait_timeline_value: ?u64) bool {
     const zone = tracy.zoneS(@src(), "Submit Command Buffer");
     defer zone.end();
 
@@ -469,21 +469,14 @@ fn submit_command_buffer(s: *types.VulkanState, cmd: c.VkCommandBuffer, acquire_
 
     var wait_infos = [2]c.VkSemaphoreSubmitInfo{ wait_info, timeline_wait_info };
 
-    var signal_infos = [2]c.VkSemaphoreSubmitInfo{ .{
+    var signal_infos = [1]c.VkSemaphoreSubmitInfo{.{
         .sType = c.VK_STRUCTURE_TYPE_SEMAPHORE_SUBMIT_INFO,
         .pNext = null,
         .semaphore = s.sync.render_finished_semaphores.?[s.sync.current_frame],
         .value = 0,
         .stageMask = c.VK_PIPELINE_STAGE_2_ALL_GRAPHICS_BIT,
         .deviceIndex = 0,
-    }, .{
-        .sType = c.VK_STRUCTURE_TYPE_SEMAPHORE_SUBMIT_INFO,
-        .pNext = null,
-        .semaphore = s.sync.timeline_semaphore,
-        .value = signal_value,
-        .stageMask = c.VK_PIPELINE_STAGE_2_ALL_GRAPHICS_BIT,
-        .deviceIndex = 0,
-    } };
+    }};
 
     var cmd_info = c.VkCommandBufferSubmitInfo{
         .sType = c.VK_STRUCTURE_TYPE_COMMAND_BUFFER_SUBMIT_INFO,
@@ -500,7 +493,7 @@ fn submit_command_buffer(s: *types.VulkanState, cmd: c.VkCommandBuffer, acquire_
         .pWaitSemaphoreInfos = &wait_infos[0],
         .commandBufferInfoCount = 1,
         .pCommandBufferInfos = &cmd_info,
-        .signalSemaphoreInfoCount = 2,
+        .signalSemaphoreInfoCount = 1,
         .pSignalSemaphoreInfos = &signal_infos[0],
     };
 
@@ -517,6 +510,63 @@ fn submit_command_buffer(s: *types.VulkanState, cmd: c.VkCommandBuffer, acquire_
         return false;
     } else if (res != c.VK_SUCCESS) {
         frame_log.err("Queue submit failed: {d}", .{res});
+        return false;
+    }
+    return true;
+}
+
+fn submit_compute_command_buffer(s: *types.VulkanState, cmd: c.VkCommandBuffer, signal_value: u64, wait_timeline_value: ?u64) bool {
+    const zone = tracy.zoneS(@src(), "Submit Compute Command Buffer");
+    defer zone.end();
+
+    const timeline_wait_info = c.VkSemaphoreSubmitInfo{
+        .sType = c.VK_STRUCTURE_TYPE_SEMAPHORE_SUBMIT_INFO,
+        .pNext = null,
+        .semaphore = s.sync.timeline_semaphore,
+        .value = if (wait_timeline_value) |v| v else 0,
+        .stageMask = c.VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT,
+        .deviceIndex = 0,
+    };
+
+    var wait_infos = [1]c.VkSemaphoreSubmitInfo{timeline_wait_info};
+
+    var signal_infos = [1]c.VkSemaphoreSubmitInfo{.{
+        .sType = c.VK_STRUCTURE_TYPE_SEMAPHORE_SUBMIT_INFO,
+        .pNext = null,
+        .semaphore = s.sync.timeline_semaphore,
+        .value = signal_value,
+        .stageMask = c.VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
+        .deviceIndex = 0,
+    }};
+
+    var cmd_info = c.VkCommandBufferSubmitInfo{
+        .sType = c.VK_STRUCTURE_TYPE_COMMAND_BUFFER_SUBMIT_INFO,
+        .pNext = null,
+        .commandBuffer = cmd,
+        .deviceMask = 0,
+    };
+
+    var submit_info = c.VkSubmitInfo2{
+        .sType = c.VK_STRUCTURE_TYPE_SUBMIT_INFO_2,
+        .pNext = null,
+        .flags = 0,
+        .waitSemaphoreInfoCount = if (wait_timeline_value != null) 1 else 0,
+        .pWaitSemaphoreInfos = if (wait_timeline_value != null) &wait_infos[0] else null,
+        .commandBufferInfoCount = 1,
+        .pCommandBufferInfos = &cmd_info,
+        .signalSemaphoreInfoCount = 1,
+        .pSignalSemaphoreInfos = &signal_infos[0],
+    };
+
+    var res: c.VkResult = c.VK_SUCCESS;
+    res = vk_sync_manager.vulkan_sync_manager_submit_queue2(s.context.compute_queue, 1, @ptrCast(&submit_info), null, s.context.vkQueueSubmit2);
+    if (res == c.VK_ERROR_DEVICE_LOST) {
+        s.recovery.device_lost = true;
+        if (s.recovery.attempt_count < s.recovery.max_attempts)
+            _ = vk_recover_from_device_loss(s);
+        return false;
+    } else if (res != c.VK_SUCCESS) {
+        frame_log.err("Compute queue submit failed: {d}", .{res});
         return false;
     }
     return true;
@@ -637,6 +687,20 @@ pub export fn cardinal_renderer_draw_frame(renderer: ?*types.CardinalRenderer) c
 
     vk_commands.vk_record_cmd(@ptrCast(s), image_index);
 
+    // If async compute is enabled and a compute command buffer was recorded,
+    // submit it first and wait on its timeline in graphics
+    var compute_wait_value: ?u64 = null;
+    if (s.config.enable_async_compute and s.commands.compute_primary_buffers != null) {
+        const comp_cmd = s.commands.compute_primary_buffers.?[s.sync.current_frame];
+        if (comp_cmd != null) {
+            const comp_signal = if (s.sync_manager != null) vk_sync_manager.vulkan_sync_manager_get_next_timeline_value(s.sync_manager) else s.sync.current_frame_value + 1;
+            if (!submit_compute_command_buffer(s, comp_cmd, comp_signal, texture_upload_signal)) {
+                return;
+            }
+            compute_wait_value = comp_signal;
+        }
+    }
+
     if (s.sync_manager != null) {
         signal_after_render = vk_sync_manager.vulkan_sync_manager_get_next_timeline_value(s.sync_manager);
     } else {
@@ -651,7 +715,12 @@ pub export fn cardinal_renderer_draw_frame(renderer: ?*types.CardinalRenderer) c
     if (cmd_buf == null)
         return;
 
-    if (!submit_command_buffer(s, cmd_buf, s.sync.image_acquired_semaphores.?[s.sync.current_frame], signal_after_render, texture_upload_signal))
+    if (!submit_command_buffer(
+        s,
+        cmd_buf,
+        s.sync.image_acquired_semaphores.?[s.sync.current_frame],
+        if (compute_wait_value != null) compute_wait_value else texture_upload_signal,
+    ))
         return;
 
     present_swapchain_image(s, image_index, signal_after_render);

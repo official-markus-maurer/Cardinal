@@ -267,15 +267,6 @@ pub fn vk_ssao_compute(s: *types.VulkanState, cmd: c.VkCommandBuffer, frame_inde
     vk_descriptor_manager.vk_descriptor_manager_bind_sets(ssao.blurDescriptorManager, cmd, c.VK_PIPELINE_BIND_POINT_COMPUTE, ssao.blur_pipeline.pipeline_layout, 0, 1, &blur_sets, 0, null);
 
     c.vkCmdDispatch(cmd, group_x, group_y, 1);
-
-    // Barrier: Wait for Blur write before PBR read
-    barrier.image = ssao.ssao_blur_image[frame_index];
-    barrier.dstStageMask = c.VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT;
-    barrier.dstAccessMask = c.VK_ACCESS_2_SHADER_READ_BIT;
-    // PBR reads as shader read only optimal usually, but General is fine if we transition.
-    // For now keep as General.
-
-    c.vkCmdPipelineBarrier2(cmd, &dep);
 }
 
 // Internal Helpers

@@ -51,6 +51,7 @@ pub const EditorApp = struct {
         _ = self;
         // Base layer actions (always active unless blocked by something very high priority)
         engine.input.registerActionWithLayer("ToggleCursor", &[_]c_int{engine.input.KEY_TAB}, "Base");
+        engine.input.registerActionWithLayer("CreateMinidump", &[_]c_int{engine.input.KEY_KP_0}, "Base");
 
         // Game layer actions
         engine.input.registerActionWithLayer("MoveForward", &[_]c_int{engine.input.KEY_W}, "Game");
@@ -68,6 +69,11 @@ pub const EditorApp = struct {
 
     pub fn run(self: *EditorApp) !void {
         while (!self.engine.shouldClose()) {
+            if (editor_layer.has_device_recovery_failed()) {
+                app_log.err("Device recovery failed, closing editor", .{});
+                break;
+            }
+
             try self.engine.update();
 
             editor_layer.update();

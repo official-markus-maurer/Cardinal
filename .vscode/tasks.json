@@ -142,6 +142,30 @@
             "problemMatcher": ["$gcc"]
         },
         {
+            "label": "Run Editor (Debug, Trace Logs)",
+            "type": "shell",
+            "command": "zig",
+            "args": [
+                "build",
+                "run-editor-trace",
+                "-Doptimize=Debug"
+            ],
+            "group": "test",
+            "dependsOn": ["Compile Shaders"],
+            "presentation": {
+                "echo": true,
+                "reveal": "always",
+                "focus": true,
+                "panel": "new",
+                "showReuseMessage": false,
+                "clear": true
+            },
+            "options": {
+                "cwd": "${workspaceFolder}"
+            },
+            "problemMatcher": ["$gcc"]
+        },
+        {
             "label": "Run Editor (Release)",
             "type": "shell",
             "command": "zig",

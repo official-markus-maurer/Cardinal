@@ -295,29 +295,6 @@ pub fn compute_bloom(s: *types.VulkanState, cmd: c.VkCommandBuffer, frame_index:
     if (!s.pipelines.post_process_pipeline.initialized) return;
     const pp = &s.pipelines.post_process_pipeline;
 
-    // Transition Bloom Image to General (Compute Write)
-    var barrier = std.mem.zeroes(c.VkImageMemoryBarrier2);
-    barrier.sType = c.VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2;
-    barrier.srcStageMask = c.VK_PIPELINE_STAGE_2_TOP_OF_PIPE_BIT;
-    barrier.srcAccessMask = 0;
-    barrier.dstStageMask = c.VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT;
-    barrier.dstAccessMask = c.VK_ACCESS_2_SHADER_WRITE_BIT;
-    barrier.oldLayout = c.VK_IMAGE_LAYOUT_UNDEFINED;
-    barrier.newLayout = c.VK_IMAGE_LAYOUT_GENERAL;
-    barrier.image = pp.bloom_image;
-    barrier.subresourceRange.aspectMask = c.VK_IMAGE_ASPECT_COLOR_BIT;
-    barrier.subresourceRange.baseMipLevel = 0;
-    barrier.subresourceRange.levelCount = 1;
-    barrier.subresourceRange.baseArrayLayer = 0;
-    barrier.subresourceRange.layerCount = 1;
-
-    var depInfo = std.mem.zeroes(c.VkDependencyInfo);
-    depInfo.sType = c.VK_STRUCTURE_TYPE_DEPENDENCY_INFO;
-    depInfo.imageMemoryBarrierCount = 1;
-    depInfo.pImageMemoryBarriers = &barrier;
-
-    c.vkCmdPipelineBarrier2(cmd, &depInfo);
-
     // Bind Compute Pipeline
     c.vkCmdBindPipeline(cmd, c.VK_PIPELINE_BIND_POINT_COMPUTE, pp.bloom_pipeline.pipeline);
 
@@ -343,16 +320,6 @@ pub fn compute_bloom(s: *types.VulkanState, cmd: c.VkCommandBuffer, frame_index:
     const group_x = (s.swapchain.extent.width / 2 + 15) / 16;
     const group_y = (s.swapchain.extent.height / 2 + 15) / 16;
     c.vkCmdDispatch(cmd, group_x, group_y, 1);
-
-    // Barrier: Compute Write -> Fragment Read
-    barrier.srcStageMask = c.VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT;
-    barrier.srcAccessMask = c.VK_ACCESS_2_SHADER_WRITE_BIT;
-    barrier.dstStageMask = c.VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT;
-    barrier.dstAccessMask = c.VK_ACCESS_2_SHADER_READ_BIT;
-    barrier.oldLayout = c.VK_IMAGE_LAYOUT_GENERAL;
-    barrier.newLayout = c.VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
-
-    c.vkCmdPipelineBarrier2(cmd, &depInfo);
 }
 
 pub fn draw(s: *types.VulkanState, cmd: c.VkCommandBuffer, frame_index: u32, input_view: c.VkImageView) void {
