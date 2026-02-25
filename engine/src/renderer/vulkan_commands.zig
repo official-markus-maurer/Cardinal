@@ -479,6 +479,7 @@ pub fn vk_record_scene_content(s: *types.VulkanState, cmd: c.VkCommandBuffer) vo
     switch (s.current_rendering_mode) {
         types.CardinalRenderingMode.NORMAL => {
             if (s.pipelines.use_pbr_pipeline and s.pipelines.pbr_pipeline.initialized) {
+                vk_simple_pipelines.render_grid(s, cmd);
                 vk_pbr.vk_pbr_render(&s.pipelines.pbr_pipeline, cmd, s.current_scene, s.sync.current_frame);
             }
         },

@@ -1,0 +1,146 @@
+{
+  "name": "PBRPushConstants",
+  "description": "Push-constant layout for the default PBR material. Used by the main PBR graphics pipelines to pass per-mesh material data (colors, roughness, texture indices, UV transforms) to the GPU without per-object uniform buffers.",
+  "usage": "Register this layout via MaterialSystem.register_layout_from_json and use it when creating MaterialInstances for PBR meshes. Property names must match what the engine and shaders expect so set_property/set_texture can locate the correct offsets.",
+
+  "pipeline": {
+    "intended_pipelines": [
+      "assets/pipelines/pbr_opaque.json",
+      "assets/pipelines/pbr_transparent.json"
+    ],
+    "shader_stage": "VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT",
+    "notes": "Push-constant range must be defined in the pipeline layout with size >= push_constant_size and offset 0."
+  },
+
+  "push_constant_size": 256,
+  "push_constant_description": "Total size in bytes of the push-constant block as seen by Vulkan and the shaders. Must match sizeof(PBRPushConstants) in Zig and the corresponding struct in the shader.",
+
+  "properties": [
+    {
+      "name": "modelMatrix",
+      "type": "Matrix4",
+      "offset": 0,
+      "size": 64,
+      "binding": 0,
+      "description": "Per-mesh world transform (4x4 matrix). Used to transform vertices from local to world space in the vertex shader.",
+      "usage": "Set once per draw call based on the mesh or entity transform. Typically filled by higher-level render code, not by gameplay scripts."
+    },
+    {
+      "name": "albedoFactor",
+      "type": "Vec4",
+      "offset": 64,
+      "size": 16,
+      "binding": 0,
+      "description": "Base color tint (RGBA). Multiplies the sampled albedo texture or acts as a flat color when no texture is bound.",
+      "usage": "Set from material authoring UI or imported material data such as glTF baseColorFactor."
+    },
+    {
+      "name": "emissiveFactor",
+      "type": "Vec3",
+      "offset": 80,
+      "size": 12,
+      "binding": 0,
+      "description": "Emissive color (RGB). Controls glow color emitted by the material.",
+      "usage": "Used for self-illuminated surfaces like lights, screens, and emissive details."
+    },
+    {
+      "name": "roughnessFactor",
+      "type": "Float",
+      "offset": 92,
+      "size": 4,
+      "binding": 0,
+      "description": "Surface roughness in the range [0, 1]. Lower values are glossy, higher values are diffuse.",
+      "usage": "Mapped from material definitions or edited in the material editor."
+    },
+    {
+      "name": "metallicNormalAO",
+      "type": "Vec4",
+      "offset": 96,
+      "size": 16,
+      "binding": 0,
+      "description": "Packed scalar factors: x = metallic, y = normal scale, z = ambient occlusion strength, w = alpha cutoff threshold.",
+      "usage": "Controls PBR response (metallic), normal map strength, AO contribution, and alpha test threshold for masked materials."
+    },
+    {
+      "name": "albedoTextureIndex",
+      "type": "UInt",
+      "offset": 112,
+      "size": 4,
+      "binding": 0,
+      "description": "Bindless index into the global texture array for the albedo or base color texture.",
+      "usage": "Provided by the texture or bindless system. Materials set this via set_texture or during import."
+    },
+    {
+      "name": "normalTextureIndex",
+      "type": "UInt",
+      "offset": 116,
+      "size": 4,
+      "binding": 0,
+      "description": "Bindless index for the normal map texture.",
+      "usage": "Enables per-pixel normal mapping when a normal map is available."
+    },
+    {
+      "name": "metallicRoughnessTextureIndex",
+      "type": "UInt",
+      "offset": 120,
+      "size": 4,
+      "binding": 0,
+      "description": "Bindless index for the packed metallic and roughness texture.",
+      "usage": "Used in physically based shading to vary metallic and roughness across the surface."
+    },
+    {
+      "name": "aoTextureIndex",
+      "type": "UInt",
+      "offset": 124,
+      "size": 4,
+      "binding": 0,
+      "description": "Bindless index for the ambient occlusion texture.",
+      "usage": "Modulates indirect lighting to darken creases and cavities."
+    },
+    {
+      "name": "emissiveTextureIndex",
+      "type": "UInt",
+      "offset": 128,
+      "size": 4,
+      "binding": 0,
+      "description": "Bindless index for the emissive texture.",
+      "usage": "Combined with emissiveFactor to drive emissive contribution in the lighting pass."
+    },
+    {
+      "name": "packedInfo",
+      "type": "UInt",
+      "offset": 132,
+      "size": 4,
+      "binding": 0,
+      "description": "Bit-packed flags and UV set indices. Lower 16 bits store UV indices for each texture; upper 16 bits store feature flags such as skeletal animation or descriptor indexing.",
+      "usage": "Filled by engine-side utilities. The shader decodes this to choose the correct UV channels and runtime features."
+    },
+    {
+      "name": "textureTransforms",
+      "type": "Vec4",
+      "offset": 144,
+      "size": 80,
+      "binding": 0,
+      "description": "Array of 5 vec4 entries. Each entry packs texture transform data: xy = offset, zw = scale for a specific texture slot (albedo, normal, metallic-roughness, AO, emissive).",
+      "usage": "Used to pan and scale textures per material or per layer, for UV tiling and offsets."
+    },
+    {
+      "name": "textureRotations",
+      "type": "Float",
+      "offset": 224,
+      "size": 20,
+      "binding": 0,
+      "description": "Array of 5 floats. Each value stores a rotation angle in radians for the corresponding texture slot.",
+      "usage": "Allows rotating individual textures (for example rotating a normal map or decal) without changing mesh UVs."
+    },
+    {
+      "name": "emissiveStrength",
+      "type": "Float",
+      "offset": 244,
+      "size": 4,
+      "binding": 0,
+      "description": "Scalar multiplier for emissive intensity.",
+      "usage": "Separates color (emissiveFactor) from brightness. Useful for boosting glow without changing hue."
+    }
+  ]
+}

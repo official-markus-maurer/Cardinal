@@ -93,6 +93,7 @@ pub const EditorState = struct {
 
     // Panel Visibility
     show_scene_graph: bool = true,
+    show_scene_view: bool = true,
     show_assets: bool = true,
     show_model_manager: bool = true,
     show_scene_manager: bool = true,
@@ -146,6 +147,7 @@ pub const EditorState = struct {
     // UI Toggles
     show_material_0_toggle: bool = true,
     tab_key_pressed: bool = false,
+    show_grid_axes: bool = true,
 
     // Optimization Settings
     show_performance_panel: bool = true,

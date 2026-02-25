@@ -579,9 +579,35 @@ pub const NifReader = struct {
                 if (num_uv_sets == 0 and !has_vertex_colors) {
                     // Heuristic: If mesh has Vertices but No UVs and No Vertex Colors,
                     // it is likely a billboard or crossed-quad plant that relies on implicit UVs (0-1).
-                    // We can generate them later if we detect this pattern.
-                    // Do NOT allocate empty UVs here, so the loader knows to auto-generate them.
-                    nif_log.warn("Mesh has 0 UV sets. Will attempt to auto-generate UVs later.", .{});
+                    // We auto-generate them here.
+                    nif_log.warn("Mesh has 0 UV sets. Auto-generating planar UVs.", .{});
+                    
+                    data.uvs = try self.allocator.alloc([2]f32, data.num_vertices);
+                    
+                    // Calculate bounds
+                    var min_x: f32 = std.math.floatMax(f32);
+                    var min_y: f32 = std.math.floatMax(f32);
+                    var max_x: f32 = -std.math.floatMax(f32);
+                    var max_y: f32 = -std.math.floatMax(f32);
+                    
+                    for (data.vertices) |v| {
+                        if (v[0] < min_x) min_x = v[0];
+                        if (v[1] < min_y) min_y = v[1];
+                        if (v[0] > max_x) max_x = v[0];
+                        if (v[1] > max_y) max_y = v[1];
+                    }
+                    
+                    const size_x = max_x - min_x;
+                    const size_y = max_y - min_y;
+                    
+                    for (data.vertices, 0..) |v, idx| {
+                        const u = if (size_x > 0.001) (v[0] - min_x) / size_x else 0.5;
+                        const v_coord = if (size_y > 0.001) (v[1] - min_y) / size_y else 0.5;
+                        data.uvs[idx] = .{u, 1.0 - v_coord};
+                    }
+                    
+                    // Mark as having UVs so they are processed later
+                    num_uv_sets = 1;
                 }
 
                 // NiTriShapeData Specific
@@ -1597,6 +1623,9 @@ pub export fn cardinal_nif_load_scene(path: [*:0]const u8, out_scene: *scene.Car
                                 if (v_mem) |vm| {
                                     const vertices_ptr = @as([*]scene.CardinalVertex, @ptrCast(@alignCast(vm)));
                                     var v_i: usize = 0;
+                                    var aabb_min = [3]f32{ std.math.floatMax(f32), std.math.floatMax(f32), std.math.floatMax(f32) };
+                                    var aabb_max = [3]f32{ -std.math.floatMax(f32), -std.math.floatMax(f32), -std.math.floatMax(f32) };
+
                                     while (v_i < vertex_count) : (v_i += 1) {
                                         var v = &vertices_ptr[v_i];
                                         // Pos
@@ -1604,6 +1633,14 @@ pub export fn cardinal_nif_load_scene(path: [*:0]const u8, out_scene: *scene.Car
                                             v.px = data.vertices[v_i][0];
                                             v.py = data.vertices[v_i][1];
                                             v.pz = data.vertices[v_i][2];
+
+                                            aabb_min[0] = @min(aabb_min[0], v.px);
+                                            aabb_min[1] = @min(aabb_min[1], v.py);
+                                            aabb_min[2] = @min(aabb_min[2], v.pz);
+
+                                            aabb_max[0] = @max(aabb_max[0], v.px);
+                                            aabb_max[1] = @max(aabb_max[1], v.py);
+                                            aabb_max[2] = @max(aabb_max[2], v.pz);
                                         }
                                         v._pad0 = 0.0;
                                         // Normal
@@ -1698,6 +1735,9 @@ pub export fn cardinal_nif_load_scene(path: [*:0]const u8, out_scene: *scene.Car
                                         }
                                     }
 
+                                    mesh.bounding_box_min = aabb_min;
+                                    mesh.bounding_box_max = aabb_max;
+
                                     mesh.vertices = vertices_ptr;
                                     mesh.vertex_count = @intCast(vertex_count);
 
@@ -1741,14 +1781,10 @@ pub export fn cardinal_nif_load_scene(path: [*:0]const u8, out_scene: *scene.Car
             }
 
             // Copy materials to scene
-            out_scene.material_count = @intCast(material_list.items.len);
-            const mats_ptr = memory.cardinal_calloc(memory.cardinal_get_allocator_for_category(.ASSETS), out_scene.material_count, @sizeOf(scene.CardinalMaterial));
-            out_scene.materials = @ptrCast(@alignCast(mats_ptr));
-            if (out_scene.materials) |mats| {
-                for (material_list.items, 0..) |m, mi| {
-                    mats[mi] = m;
-                }
-            }
+            // Shrink to fit allocation to avoid waste
+            const final_mats = material_list.toOwnedSlice(allocator) catch return false;
+            out_scene.material_count = @intCast(final_mats.len);
+            out_scene.materials = final_mats.ptr;
 
             // Copy textures to scene
             out_scene.texture_count = @intCast(texture_list.items.len);

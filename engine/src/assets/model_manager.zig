@@ -41,6 +41,7 @@ pub const CardinalModelManager = extern struct {
     next_id: u32,
     combined_scene: scene.CardinalScene,
     scene_dirty: bool,
+    transform_dirty: bool,
     selected_model_id: u32,
 };
 
@@ -1113,8 +1114,10 @@ pub export fn cardinal_model_manager_get_combined_scene(manager: ?*CardinalModel
     if (manager == null) return null;
     const mgr = manager.?;
 
-    if (mgr.scene_dirty) {
+    if (mgr.scene_dirty or mgr.transform_dirty) {
         rebuild_combined_scene(mgr);
+        mgr.scene_dirty = false;
+        mgr.transform_dirty = false;
     }
 
     return &mgr.combined_scene;

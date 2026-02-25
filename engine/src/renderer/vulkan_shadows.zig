@@ -277,6 +277,9 @@ pub fn vk_shadow_render(s: *types.VulkanState, cmd: c.VkCommandBuffer) void {
 
     var j_layer: u32 = 0;
     while (j_layer < s.config.shadow_cascade_count) : (j_layer += 1) {
+        // Reset index offset for each cascade pass since we re-iterate the same meshes
+        var indexOffset: u32 = 0;
+
         // Begin Rendering
         var renderingInfo = std.mem.zeroes(c.VkRenderingInfo);
         renderingInfo.sType = c.VK_STRUCTURE_TYPE_RENDERING_INFO;
@@ -342,7 +345,6 @@ pub fn vk_shadow_render(s: *types.VulkanState, cmd: c.VkCommandBuffer) void {
         c.vkCmdBindIndexBuffer(cmd, pipe.indexBuffer, 0, c.VK_INDEX_TYPE_UINT32);
 
         // --- Pass 1: Opaque Meshes ---
-        var indexOffset: u32 = 0;
         var m_i: u32 = 0;
         var drawn_count: u32 = 0;
         while (m_i < scn.mesh_count) : (m_i += 1) {
@@ -363,12 +365,12 @@ pub fn vk_shadow_render(s: *types.VulkanState, cmd: c.VkCommandBuffer) void {
 
             if (is_alpha_tested) {
                 // Skip alpha tested meshes in this pass
-                indexOffset += mesh.index_count;
+                indexOffset +%= mesh.index_count;
                 continue;
             }
 
             if (mesh.vertex_count == 0 or !mesh.visible) {
-                indexOffset += mesh.index_count;
+                indexOffset +%= mesh.index_count;
                 continue;
             }
 
@@ -422,13 +424,13 @@ pub fn vk_shadow_render(s: *types.VulkanState, cmd: c.VkCommandBuffer) void {
             c.vkCmdPushConstants(cmd, pipe.shadowPipelineLayout, c.VK_SHADER_STAGE_VERTEX_BIT | c.VK_SHADER_STAGE_FRAGMENT_BIT, 0, 156, &pushData);
 
             // Validate index buffer bounds
-            if (indexOffset + mesh.index_count > pipe.totalIndexCount) {
+            if (@as(u64, indexOffset) + @as(u64, mesh.index_count) > pipe.totalIndexCount) {
                 break;
             }
 
             c.vkCmdDrawIndexed(cmd, mesh.index_count, 1, indexOffset, 0, 0);
 
-            indexOffset += mesh.index_count;
+            indexOffset +%= mesh.index_count;
         }
 
         // --- Pass 2: Alpha Tested Meshes ---
@@ -461,12 +463,12 @@ pub fn vk_shadow_render(s: *types.VulkanState, cmd: c.VkCommandBuffer) void {
                 }
 
                 if (!is_alpha_tested) {
-                    indexOffset += mesh.index_count;
+                    indexOffset +%= mesh.index_count;
                     continue;
                 }
 
                 if (mesh.vertex_count == 0 or !mesh.visible) {
-                    indexOffset += mesh.index_count;
+                    indexOffset +%= mesh.index_count;
                     continue;
                 }
 
@@ -517,13 +519,13 @@ pub fn vk_shadow_render(s: *types.VulkanState, cmd: c.VkCommandBuffer) void {
                 c.vkCmdPushConstants(cmd, pipe.shadowPipelineLayout, c.VK_SHADER_STAGE_VERTEX_BIT | c.VK_SHADER_STAGE_FRAGMENT_BIT, 0, 156, &pushData);
 
                 // Validate index buffer bounds
-                if (indexOffset + mesh.index_count > pipe.totalIndexCount) {
+                if (@as(u64, indexOffset) + @as(u64, mesh.index_count) > pipe.totalIndexCount) {
                     break;
                 }
 
                 c.vkCmdDrawIndexed(cmd, mesh.index_count, 1, indexOffset, 0, 0);
 
-                indexOffset += mesh.index_count;
+                indexOffset +%= mesh.index_count;
             }
         }
 

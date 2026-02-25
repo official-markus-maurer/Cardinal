@@ -1425,7 +1425,7 @@ pub export fn vk_pbr_render_depth_prepass(vulkan_state: ?*types.VulkanState, com
         if (mesh.material_index < scn.material_count) {
             const mat = &scn.materials.?[mesh.material_index];
             if (mat.alpha_mode == scene.CardinalAlphaMode.BLEND) {
-                indexOffset += mesh.index_count;
+                indexOffset +%= mesh.index_count;
                 continue;
             }
             if (mat.alpha_mode == scene.CardinalAlphaMode.MASK) {
@@ -1438,12 +1438,12 @@ pub export fn vk_pbr_render_depth_prepass(vulkan_state: ?*types.VulkanState, com
         if (mesh.vertices == null or mesh.vertex_count == 0 or mesh.indices == null or mesh.index_count == 0) {
             // Even if we skip rendering (e.g. no vertices), we MUST increment indexOffset if indices were added to the buffer
             if (mesh.index_count > 0 and mesh.indices != null) {
-                indexOffset += mesh.index_count;
+                indexOffset +%= mesh.index_count;
             }
             continue;
         }
         if (!mesh.visible) {
-            indexOffset += mesh.index_count;
+            indexOffset +%= mesh.index_count;
             continue;
         }
 
@@ -1453,10 +1453,10 @@ pub export fn vk_pbr_render_depth_prepass(vulkan_state: ?*types.VulkanState, com
 
         cmd.pushConstants(s.pipelines.depth_pipeline_layout, c.VK_SHADER_STAGE_VERTEX_BIT | c.VK_SHADER_STAGE_FRAGMENT_BIT, 0, @sizeOf(types.PBRPushConstants), &pushConstants);
 
-        if (indexOffset + mesh.index_count > pipe.totalIndexCount) break;
+        if (@as(u64, indexOffset) + @as(u64, mesh.index_count) > pipe.totalIndexCount) break;
 
         cmd.drawIndexed(mesh.index_count, 1, indexOffset, 0, 0);
-        indexOffset += mesh.index_count;
+        indexOffset +%= mesh.index_count;
     }
 }
 
@@ -1612,7 +1612,7 @@ pub export fn vk_pbr_render(pipeline: ?*types.VulkanPBRPipeline, commandBuffer: 
 
         if (is_blend) {
             if (mesh.index_count > 0 and mesh.indices != null) {
-                indexOffset += mesh.index_count;
+                indexOffset +%= mesh.index_count;
             }
             continue;
         }
@@ -1628,12 +1628,12 @@ pub export fn vk_pbr_render(pipeline: ?*types.VulkanPBRPipeline, commandBuffer: 
             // Even if we skip rendering (e.g. no vertices), we MUST increment indexOffset if indices were added to the buffer
             // to keep alignment with the buffer layout created in create_pbr_mesh_buffers.
             if (mesh.index_count > 0 and mesh.indices != null) {
-                indexOffset += mesh.index_count;
+                indexOffset +%= mesh.index_count;
             }
             continue;
         }
         if (!mesh.visible) {
-            indexOffset += mesh.index_count;
+            indexOffset +%= mesh.index_count;
             continue;
         }
 
@@ -1664,11 +1664,11 @@ pub export fn vk_pbr_render(pipeline: ?*types.VulkanPBRPipeline, commandBuffer: 
 
         cmd.pushConstants(pipe.pipelineLayout, c.VK_SHADER_STAGE_VERTEX_BIT | c.VK_SHADER_STAGE_FRAGMENT_BIT, 0, @sizeOf(types.PBRPushConstants), &pushConstants);
 
-        if (indexOffset + mesh.index_count > pipe.totalIndexCount) break;
+        if (@as(u64, indexOffset) + @as(u64, mesh.index_count) > pipe.totalIndexCount) break;
 
         cmd.drawIndexed(mesh.index_count, 1, indexOffset, 0, 0);
         drawn_count += 1;
-        indexOffset += mesh.index_count;
+        indexOffset +%= mesh.index_count;
     }
 
     pbr_log.info("vk_pbr_render frame {d}: meshes={d}, drawn_opaque={d}", .{ frame, scn.mesh_count, drawn_count });
@@ -1793,7 +1793,7 @@ pub export fn vk_pbr_render(pipeline: ?*types.VulkanPBRPipeline, commandBuffer: 
         }
 
         if (mesh.index_count > 0 and mesh.indices != null) {
-            currentIndexOffset += mesh.index_count;
+            currentIndexOffset +%= mesh.index_count;
         }
     }
 

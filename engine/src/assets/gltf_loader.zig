@@ -1064,10 +1064,6 @@ fn contains_ignore_case(haystack: []const u8, needle: []const u8) bool {
 }
 
 pub export fn cardinal_gltf_load_scene(path: [*:0]const u8, out_scene: *scene.CardinalScene) callconv(.c) bool {
-    gltf_log.debug("[GLTF] cardinal_gltf_load_scene start: {s}\n", .{path});
-    // Log with Error level to ensure it shows up in user logs (temporary debugging)
-    // gltf_log.info("Starting GLTF scene loading: {s}", .{path});
-
     // Validate path (basic check)
     if (path[0] == 0) {
         gltf_log.err("Empty path passed to GLTF loader", .{});
@@ -1439,6 +1435,9 @@ pub export fn cardinal_gltf_load_scene(path: [*:0]const u8, out_scene: *scene.Ca
             const vertices_ptr = memory.cardinal_calloc(assets_allocator, vcount, @sizeOf(scene.CardinalVertex));
             const vertices = @as([*]scene.CardinalVertex, @ptrCast(@alignCast(vertices_ptr)));
 
+            var aabb_min = [3]f32{ std.math.floatMax(f32), std.math.floatMax(f32), std.math.floatMax(f32) };
+            var aabb_max = [3]f32{ -std.math.floatMax(f32), -std.math.floatMax(f32), -std.math.floatMax(f32) };
+
             var vi: usize = 0;
             while (vi < vcount) : (vi += 1) {
                 var v: [3]f32 = .{ 0, 0, 0 };
@@ -1449,6 +1448,15 @@ pub export fn cardinal_gltf_load_scene(path: [*:0]const u8, out_scene: *scene.Ca
                 vertices[vi].px = v[0];
                 vertices[vi].py = v[1];
                 vertices[vi].pz = v[2];
+
+                // Update AABB
+                aabb_min[0] = @min(aabb_min[0], v[0]);
+                aabb_min[1] = @min(aabb_min[1], v[1]);
+                aabb_min[2] = @min(aabb_min[2], v[2]);
+
+                aabb_max[0] = @max(aabb_max[0], v[0]);
+                aabb_max[1] = @max(aabb_max[1], v[1]);
+                aabb_max[2] = @max(aabb_max[2], v[2]);
 
                 if (nrm_acc) |acc| {
                     if (c.cgltf_accessor_read_float(acc, vi, &v[0], 3) == 0) {
@@ -1633,6 +1641,8 @@ pub export fn cardinal_gltf_load_scene(path: [*:0]const u8, out_scene: *scene.Ca
             dst.transform[10] = 1;
             dst.transform[15] = 1;
             dst.visible = true;
+            dst.bounding_box_min = aabb_min;
+            dst.bounding_box_max = aabb_max;
         }
     }
 

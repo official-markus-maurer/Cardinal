@@ -335,23 +335,24 @@ fn init_sync_manager(s: *types.VulkanState) bool {
     return true;
 }
 
+fn log_pipeline_init_result(success: bool, success_msg: []const u8, failure_msg: []const u8) void {
+    if (success) {
+        renderer_log.info("{s}", .{success_msg});
+    } else {
+        renderer_log.err("{s}", .{failure_msg});
+    }
+}
+
 fn init_pbr_pipeline_helper(s: *types.VulkanState) void {
     s.pipelines.use_pbr_pipeline = false;
-    // PBR Pipeline renders to HDR attachment (Float16), not directly to swapchain
-    if (vk_pbr.vk_pbr_pipeline_create(@ptrCast(&s.pipelines.pbr_pipeline), s.context.device, s.context.physical_device, c.VK_FORMAT_R16G16B16A16_SFLOAT, s.swapchain.depth_format, s.commands.pools.?[0], s.context.graphics_queue, @ptrCast(&s.allocator), @ptrCast(s), s.pipelines.pipeline_cache)) {
-        s.pipelines.use_pbr_pipeline = true;
+    const created = vk_pbr.vk_pbr_pipeline_create(@ptrCast(&s.pipelines.pbr_pipeline), s.context.device, s.context.physical_device, c.VK_FORMAT_R16G16B16A16_SFLOAT, s.swapchain.depth_format, s.commands.pools.?[0], s.context.graphics_queue, @ptrCast(&s.allocator), @ptrCast(s), s.pipelines.pipeline_cache);
+    log_pipeline_init_result(created, "renderer_create: PBR pipeline", "vk_pbr_pipeline_create failed");
+    if (!created) return;
 
-        // Initialize Depth Pre-pass pipeline
-        if (vk_pbr.vk_pbr_create_depth_prepass(s)) {
-            renderer_log.info("renderer_create: Depth Pre-pass pipeline", .{});
-        } else {
-            renderer_log.err("vk_pbr_create_depth_prepass failed", .{});
-        }
+    s.pipelines.use_pbr_pipeline = true;
 
-        renderer_log.info("renderer_create: PBR pipeline", .{});
-    } else {
-        renderer_log.err("vk_pbr_pipeline_create failed", .{});
-    }
+    const depth_created = vk_pbr.vk_pbr_create_depth_prepass(s);
+    log_pipeline_init_result(depth_created, "renderer_create: Depth Pre-pass pipeline", "vk_pbr_create_depth_prepass failed");
 }
 
 fn shadow_pass_callback(cmd: c.VkCommandBuffer, state: *types.VulkanState) void {
@@ -446,12 +447,11 @@ fn init_mesh_shader_pipeline_helper(s: *types.VulkanState) void {
     config.depth_write_enable = true;
     config.depth_compare_op = c.VK_COMPARE_OP_LESS;
 
-    if (vk_mesh_shader.vk_mesh_shader_create_pipeline(@ptrCast(s), @ptrCast(&config), s.swapchain.format, s.swapchain.depth_format, @ptrCast(&s.pipelines.mesh_shader_pipeline), null)) {
+    const created = vk_mesh_shader.vk_mesh_shader_create_pipeline(@ptrCast(s), @ptrCast(&config), s.swapchain.format, s.swapchain.depth_format, @ptrCast(&s.pipelines.mesh_shader_pipeline), null);
+    if (created) {
         s.pipelines.use_mesh_shader_pipeline = true;
-        renderer_log.info("renderer_create: Mesh shader pipeline", .{});
-    } else {
-        renderer_log.err("vk_mesh_shader_create_pipeline failed", .{});
     }
+    log_pipeline_init_result(created, "renderer_create: Mesh shader pipeline", "vk_mesh_shader_create_pipeline failed");
 }
 
 fn init_compute_pipeline_helper(s: *types.VulkanState) void {
@@ -460,38 +460,27 @@ fn init_compute_pipeline_helper(s: *types.VulkanState) void {
     s.pipelines.compute_command_pool = null;
     s.pipelines.compute_command_buffer = null;
 
-    if (vk_compute.vk_compute_init(@ptrCast(s))) {
+    const initialized = vk_compute.vk_compute_init(@ptrCast(s));
+    if (initialized) {
         s.pipelines.compute_shader_initialized = true;
-        renderer_log.info("renderer_create: Compute shader support", .{});
-    } else {
-        renderer_log.err("vk_compute_init failed", .{});
     }
+    log_pipeline_init_result(initialized, "renderer_create: Compute shader support", "vk_compute_init failed");
 }
 
 fn init_simple_pipelines_helper(s: *types.VulkanState) void {
-    s.pipelines.uv_pipeline = null;
-    s.pipelines.uv_pipeline_layout = null;
-    s.pipelines.wireframe_pipeline = null;
-    s.pipelines.wireframe_pipeline_layout = null;
-    s.pipelines.simple_descriptor_manager = null;
-    s.pipelines.simple_descriptor_set = null;
+    vk_simple_pipelines.vk_destroy_simple_pipelines(s);
     s.pipelines.simple_uniform_buffer = std.mem.zeroes(types.VulkanBuffer);
-
-    if (!vk_simple_pipelines.vk_create_simple_pipelines(s, null)) {
-        renderer_log.err("vk_create_simple_pipelines failed", .{});
-    } else {
-        renderer_log.info("renderer_create: simple pipelines", .{});
-    }
+    const created = vk_simple_pipelines.vk_create_simple_pipelines(s, null);
+    log_pipeline_init_result(created, "renderer_create: simple pipelines", "vk_create_simple_pipelines failed");
 }
 
 fn init_skybox_pipeline_helper(s: *types.VulkanState) void {
     s.pipelines.use_skybox_pipeline = false;
-    if (vk_skybox.vk_skybox_pipeline_init(@ptrCast(&s.pipelines.skybox_pipeline), s.context.device, s.swapchain.format, s.swapchain.depth_format, @ptrCast(&s.allocator), @ptrCast(s))) {
+    const initialized = vk_skybox.vk_skybox_pipeline_init(@ptrCast(&s.pipelines.skybox_pipeline), s.context.device, s.swapchain.format, s.swapchain.depth_format, @ptrCast(&s.allocator), @ptrCast(s));
+    if (initialized) {
         s.pipelines.use_skybox_pipeline = true;
-        renderer_log.info("renderer_create: Skybox pipeline", .{});
-    } else {
-        renderer_log.err("vk_skybox_pipeline_init failed", .{});
     }
+    log_pipeline_init_result(initialized, "renderer_create: Skybox pipeline", "vk_skybox_pipeline_init failed");
 }
 
 fn init_pipelines(s: *types.VulkanState) bool {
@@ -500,18 +489,11 @@ fn init_pipelines(s: *types.VulkanState) bool {
     init_compute_pipeline_helper(s);
     init_skybox_pipeline_helper(s);
     // Initialize Post Process Pipeline first so its sampler is available to SSAO
-    if (vk_post_process.vk_post_process_init(s)) {
-        renderer_log.info("renderer_create: Post Process pipeline", .{});
-    } else {
-        renderer_log.err("vk_post_process_init failed", .{});
-    }
+    const post_ok = vk_post_process.vk_post_process_init(s);
+    log_pipeline_init_result(post_ok, "renderer_create: Post Process pipeline", "vk_post_process_init failed");
 
-    // Initialize SSAO (depends on post-process sampler)
-    if (vk_ssao.vk_ssao_init(s)) {
-        renderer_log.info("renderer_create: SSAO pipeline", .{});
-    } else {
-        renderer_log.err("vk_ssao_init failed", .{});
-    }
+    const ssao_ok = vk_ssao.vk_ssao_init(s);
+    log_pipeline_init_result(ssao_ok, "renderer_create: SSAO pipeline", "vk_ssao_init failed");
 
     // Initialize rendering mode
     s.current_rendering_mode = types.CardinalRenderingMode.NORMAL;
@@ -571,6 +553,7 @@ pub export fn cardinal_renderer_create(out_renderer: ?*types.CardinalRenderer, w
             .stage_mask = c.VK_PIPELINE_STAGE_2_EARLY_FRAGMENT_TESTS_BIT | c.VK_PIPELINE_STAGE_2_LATE_FRAGMENT_TESTS_BIT,
             .layout = c.VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL,
             .aspect_mask = c.VK_IMAGE_ASPECT_DEPTH_BIT,
+            .layer_count = s.config.shadow_cascade_count,
         }) catch {};
         rg.add_pass(shadow_pass) catch {};
 
@@ -640,6 +623,7 @@ pub export fn cardinal_renderer_create(out_renderer: ?*types.CardinalRenderer, w
             .stage_mask = c.VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT,
             .layout = c.VK_IMAGE_LAYOUT_DEPTH_STENCIL_READ_ONLY_OPTIMAL,
             .aspect_mask = c.VK_IMAGE_ASPECT_DEPTH_BIT,
+            .layer_count = s.config.shadow_cascade_count,
         }) catch {
             renderer_log.err("Failed to add PBR pass shadow map input", .{});
         };
@@ -1735,6 +1719,15 @@ pub export fn cardinal_renderer_clear_scene(renderer: ?*types.CardinalRenderer) 
     }
 }
 
+fn ensure_simple_pipelines_for_mode(s: *types.VulkanState, mode: types.CardinalRenderingMode) void {
+    if (mode != .UV and mode != .WIREFRAME) return;
+
+    if (s.pipelines.uv_pipeline == null or s.pipelines.wireframe_pipeline == null) {
+        renderer_log.warn("UV/Wireframe pipelines missing, attempting to recreate...", .{});
+        init_simple_pipelines_helper(s);
+    }
+}
+
 pub export fn cardinal_renderer_set_rendering_mode(renderer: ?*types.CardinalRenderer, mode: types.CardinalRenderingMode) callconv(.c) void {
     const s = get_state(renderer) orelse {
         renderer_log.err("Invalid renderer state", .{});
@@ -1750,17 +1743,7 @@ pub export fn cardinal_renderer_set_rendering_mode(renderer: ?*types.CardinalRen
         cardinal_renderer_enable_mesh_shader(renderer, false);
     }
 
-    // Fix for UV/Wireframe mode when pipelines are missing (e.g. after post-process toggle or resize)
-    if (mode == .UV or mode == .WIREFRAME) {
-        if (s.pipelines.uv_pipeline == null or s.pipelines.wireframe_pipeline == null) {
-            renderer_log.warn("UV/Wireframe pipelines missing, attempting to recreate...", .{});
-            // Ensure clean state to avoid leaks
-            vk_simple_pipelines.vk_destroy_simple_pipelines(s);
-            if (!vk_simple_pipelines.vk_create_simple_pipelines(s, null)) {
-                renderer_log.err("Failed to recreate simple pipelines for mode {any}", .{mode});
-            }
-        }
-    }
+    ensure_simple_pipelines_for_mode(s, mode);
 
     renderer_log.info("Rendering mode changed to: {d}", .{@intFromEnum(mode)});
 }
@@ -1772,6 +1755,11 @@ pub export fn cardinal_renderer_get_rendering_mode(renderer: ?*types.CardinalRen
     };
 
     return s.current_rendering_mode;
+}
+
+pub export fn cardinal_renderer_set_debug_grid(renderer: ?*types.CardinalRenderer, enable: bool) callconv(.c) void {
+    const s = get_state(renderer) orelse return;
+    s.debug_grid_enabled = enable;
 }
 
 pub export fn cardinal_renderer_set_device_loss_callbacks(renderer: ?*types.CardinalRenderer, device_loss_callback: ?*const fn (?*anyopaque) callconv(.c) void, recovery_complete_callback: ?*const fn (?*anyopaque, bool) callconv(.c) void, user_data: ?*anyopaque) callconv(.c) void {

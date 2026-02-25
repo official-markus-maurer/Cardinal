@@ -8,7 +8,7 @@ const c = @import("../c.zig").c;
 const EditorState = @import("../editor_state.zig").EditorState;
 const scene_io = @import("../systems/scene_io.zig");
 
-fn draw_scene_node(state: *EditorState, node: *scene.CardinalSceneNode, depth: i32) void {
+fn draw_scene_node(state: *EditorState, scene_ptr: *scene.CardinalScene, node: *scene.CardinalSceneNode, depth: i32) void {
     // Node ID
     var node_id_buf: [256]u8 = undefined;
     const node_name = if (node.name) |n| std.mem.span(n) else "Unnamed Node";
@@ -34,8 +34,8 @@ fn draw_scene_node(state: *EditorState, node: *scene.CardinalSceneNode, depth: i
             while (i < node.mesh_count) : (i += 1) {
                 if (node.mesh_indices) |indices| {
                     const mesh_idx = indices[i];
-                    if (mesh_idx < state.combined_scene.mesh_count) {
-                        if (state.combined_scene.meshes) |meshes| {
+                    if (mesh_idx < scene_ptr.mesh_count) {
+                        if (scene_ptr.meshes) |meshes| {
                             const m = &meshes[mesh_idx];
 
                             var cb_id: [64]u8 = undefined;
@@ -55,7 +55,7 @@ fn draw_scene_node(state: *EditorState, node: *scene.CardinalSceneNode, depth: i
         while (i < node.child_count) : (i += 1) {
             if (node.children) |children| {
                 if (children[i]) |child| {
-                    draw_scene_node(state, child, depth + 1);
+                    draw_scene_node(state, scene_ptr, child, depth + 1);
                 }
             }
         }
@@ -74,8 +74,52 @@ pub fn draw_hierarchy_panel(state: *EditorState) void {
                 c.imgui_bridge_bullet_text("Camera");
                 c.imgui_bridge_bullet_text("Directional Light");
 
+                // Models List
+                if (c.imgui_bridge_tree_node("Models")) {
+                     if (state.model_manager.models) |models| {
+                        var i: u32 = 0;
+                        while (i < state.model_manager.model_count) : (i += 1) {
+                            const model = &models[i];
+                            const model_name = if (model.name) |n| std.mem.span(n) else "Unnamed Model";
+                            
+                            var flags: i32 = c.ImGuiTreeNodeFlags_OpenOnArrow;
+                            if (state.selected_model_id == model.id) {
+                                flags |= c.ImGuiTreeNodeFlags_Selected;
+                            }
+                            
+                            const model_open = c.imgui_bridge_tree_node_ex(model_name.ptr, flags);
+                            
+                            if (c.imgui_bridge_is_item_clicked(0)) {
+                                state.selected_model_id = model.id;
+                            }
+                            
+                            if (model_open) {
+                                // Draw Model Properties
+                                c.imgui_bridge_text("ID: %d", model.id);
+                                _ = c.imgui_bridge_checkbox("Visible", &model.visible);
+                                
+                                // Draw Scene Hierarchy for this model
+                                const scn = &model.scene;
+                                if (scn.root_node_count > 0 and scn.root_nodes != null) {
+                                    if (c.imgui_bridge_tree_node("Hierarchy")) {
+                                        var r: u32 = 0;
+                                        while (r < scn.root_node_count) : (r += 1) {
+                                            if (scn.root_nodes.?[r]) |root| {
+                                                draw_scene_node(state, scn, root, 0);
+                                            }
+                                        }
+                                        c.imgui_bridge_tree_pop();
+                                    }
+                                }
+                                c.imgui_bridge_tree_pop();
+                            }
+                        }
+                    }
+                    c.imgui_bridge_tree_pop();
+                }
+
                 if (state.scene_loaded) {
-                    if (c.imgui_bridge_tree_node("Loaded Scene")) {
+                    if (c.imgui_bridge_tree_node("Combined Scene (Debug)")) {
                         c.imgui_bridge_text("Total Meshes: %d", state.combined_scene.mesh_count);
                         c.imgui_bridge_text("Root Nodes: %d", state.combined_scene.root_node_count);
 
@@ -139,7 +183,7 @@ pub fn draw_hierarchy_panel(state: *EditorState) void {
                             while (i < state.combined_scene.root_node_count) : (i += 1) {
                                 if (state.combined_scene.root_nodes) |root_nodes| {
                                     if (root_nodes[i]) |root| {
-                                        draw_scene_node(state, root, 0);
+                                        draw_scene_node(state, &state.combined_scene, root, 0);
                                     }
                                 }
                             }

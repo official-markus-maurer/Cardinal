@@ -39,6 +39,7 @@ pub const CardinalAnimationSampler = extern struct {
     input_count: u32,
     output_count: u32,
     interpolation: CardinalAnimationInterpolation,
+    last_index: u32,
 };
 
 pub const CardinalAnimationTarget = extern struct {
@@ -155,6 +156,71 @@ fn find_keyframe_indices(input: [*]const f32, input_count: u32, time: f32, prev_
     return true;
 }
 
+fn find_keyframe_indices_with_hint(input: [*]const f32, input_count: u32, time: f32, last_index: *u32, prev_index: *u32, next_index: *u32, factor: *f32) bool {
+    if (input_count == 0) return false;
+
+    if (time <= input[0]) {
+        prev_index.* = 0;
+        next_index.* = 0;
+        factor.* = 0.0;
+        last_index.* = 0;
+        return true;
+    }
+
+    if (time >= input[input_count - 1]) {
+        const last = input_count - 1;
+        prev_index.* = last;
+        next_index.* = last;
+        factor.* = 0.0;
+        last_index.* = last;
+        return true;
+    }
+
+    var idx = last_index.*;
+    if (idx >= input_count) {
+        idx = 0;
+    }
+
+    while (idx + 1 < input_count and time > input[idx + 1]) {
+        idx += 1;
+    }
+
+    while (idx > 0 and time < input[idx]) {
+        idx -= 1;
+    }
+
+    if (idx + 1 < input_count and input[idx] <= time and time <= input[idx + 1]) {
+        prev_index.* = idx;
+        next_index.* = idx + 1;
+    } else {
+        var left: u32 = 0;
+        var right: u32 = input_count - 1;
+
+        while (left < right - 1) {
+            const mid = (left + right) / 2;
+            if (input[mid] <= time) {
+                left = mid;
+            } else {
+                right = mid;
+            }
+        }
+
+        prev_index.* = left;
+        next_index.* = right;
+    }
+
+    last_index.* = prev_index.*;
+
+    const time_diff = input[next_index.*] - input[prev_index.*];
+    if (time_diff > 0.0) {
+        factor.* = (time - input[prev_index.*]) / time_diff;
+    } else {
+        factor.* = 0.0;
+    }
+
+    return true;
+}
+
 // Linear interpolation for vectors
 fn lerp_vector(a: [*]const f32, b: [*]const f32, t: f32, component_count: u32, result: [*]f32) void {
     var i: u32 = 0;
@@ -258,6 +324,48 @@ pub export fn cardinal_animation_interpolate(interpolation: CardinalAnimationInt
         },
         .CUBICSPLINE => {
             cubic_spline_interpolate(output.?, prev_index, next_index, factor, component_count, result.?);
+        },
+    }
+
+    return true;
+}
+
+fn sampler_interpolate_cached(sampler: *CardinalAnimationSampler, time: f32, component_count: u32, result: ?[*]f32) bool {
+    if (sampler.input == null or sampler.output == null or result == null or sampler.input_count == 0 or component_count == 0) {
+        return false;
+    }
+
+    var prev_index: u32 = 0;
+    var next_index: u32 = 0;
+    var factor: f32 = 0.0;
+    var last_index = sampler.last_index;
+
+    if (!find_keyframe_indices_with_hint(sampler.input.?, sampler.input_count, time, &last_index, &prev_index, &next_index, &factor)) {
+        return false;
+    }
+
+    sampler.last_index = last_index;
+
+    const prev_offset = prev_index * component_count;
+    const next_offset = next_index * component_count;
+    const prev_ptr = sampler.output.? + prev_offset;
+    const next_ptr = sampler.output.? + next_offset;
+
+    switch (sampler.interpolation) {
+        .STEP => {
+            const src_slice = sampler.output.?[prev_offset .. prev_offset + component_count];
+            const dst_slice = result.?[0..component_count];
+            @memcpy(dst_slice, src_slice);
+        },
+        .LINEAR => {
+            if (component_count == 4) {
+                slerp_quaternion(prev_ptr, next_ptr, factor, result.?);
+            } else {
+                lerp_vector(prev_ptr, next_ptr, factor, component_count, result.?);
+            }
+        },
+        .CUBICSPLINE => {
+            cubic_spline_interpolate(sampler.output.?, prev_index, next_index, factor, component_count, result.?);
         },
     }
 
@@ -664,7 +772,7 @@ pub export fn cardinal_animation_system_update(system: ?*CardinalAnimationSystem
                 component_count = 4;
             }
 
-            if (cardinal_animation_interpolate(sampler.interpolation, state.current_time, sampler.input, sampler.output, sampler.input_count, component_count, &result)) {
+            if (sampler_interpolate_cached(sampler, state.current_time, component_count, &result)) {
                 // Accumulate
                 const weight = state.blend_weight;
                 if (weight <= 0.001) continue;
@@ -921,6 +1029,7 @@ pub export fn cardinal_animation_optimize(animation: ?*CardinalAnimation, tolera
                 sampler.output = no;
                 sampler.input_count = new_count;
                 sampler.output_count = new_count * component_count;
+                sampler.last_index = 0;
 
                 anim_log.debug("Optimized sampler {d}: {d} -> {d} frames", .{ i, kept_indices.items.len, new_count });
             } else {

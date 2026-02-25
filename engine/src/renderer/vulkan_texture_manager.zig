@@ -88,6 +88,9 @@ fn update_texture_task(data: ?*anyopaque) callconv(.c) void {
     if (format == c.VK_FORMAT_UNDEFINED) {
         format = if (ctx.texture_data.is_hdr != 0) c.VK_FORMAT_R32G32B32A32_SFLOAT else c.VK_FORMAT_R8G8B8A8_SRGB;
     }
+    // Update format in context so manager knows what we picked
+    ctx.texture_data.format = @intCast(format);
+
     if (!vk_texture_utils.create_image_and_memory(ctx.allocator, ctx.device, ctx.texture_data.width, ctx.texture_data.height, format, &ctx.new_image, &ctx.new_memory, &ctx.new_allocation)) {
         tex_mgr_log.err("Failed to create new image for update: {d}x{d} fmt={d}", .{ ctx.texture_data.width, ctx.texture_data.height, format });
         ctx.finished.store(true, .release);
@@ -882,6 +885,8 @@ pub fn vk_texture_manager_update_textures(manager: *types.VulkanTextureManager) 
                 tex.width = ctx.texture_data.width;
                 tex.height = ctx.texture_data.height;
                 tex.channels = ctx.texture_data.channels;
+                // Update format from context (which was updated in task)
+                tex.format = ctx.texture_data.format;
                 tex.isPlaceholder = false;
                 tex.is_allocated = true;
                 tex.is_updating = false;

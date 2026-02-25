@@ -66,12 +66,12 @@ pub fn resolve_texture_index(textureHandle: handles.TextureHandle, manager: ?*co
         const tex = &manager.?.textures.?[mappedIndex];
         // Don't log debug every frame, it's too spammy. Use warning if it helps.
         // mat_utils_log.debug("Resolving texture handle {d} -> mapped index {d}, bindless index: {d}", .{ textureIndex, mappedIndex, tex.bindless_index });
-        
+
         // If bindless index is valid, return it.
         // If it's invalid (UINT32_MAX), it might be unallocated.
         // However, if we are in fallback mode (no bindless), we might return the mapped index?
         // No, resolve_texture_index is specifically for bindless indices in push constants.
-        
+
         if (tex.bindless_index != c.UINT32_MAX) {
             return tex.bindless_index;
         } else {
@@ -81,7 +81,7 @@ pub fn resolve_texture_index(textureHandle: handles.TextureHandle, manager: ?*co
             // If tex.bindless_index is UINT32_MAX, something is wrong with initialization.
             // Check if placeholder exists
             if (manager.?.hasPlaceholder and manager.?.textures.?[0].bindless_index != c.UINT32_MAX) {
-                 return manager.?.textures.?[0].bindless_index;
+                return manager.?.textures.?[0].bindless_index;
             }
         }
     }
@@ -149,7 +149,9 @@ fn set_material_properties(pushConstants: *types.PBRPushConstants, material: *co
     // Bits 16-31: Flags
 
     var flags: u32 = 0;
-    flags |= (@as(u32, @intCast(@intFromEnum(material.alpha_mode))) & 3); // Bits 0-1: Alpha Mode
+    // Use bitCast to avoid panic if enum value is negative (e.g. garbage memory or -1)
+    // We mask with 3 anyway, so we just want the bits.
+    flags |= (@as(u32, @bitCast(@intFromEnum(material.alpha_mode))) & 3); // Bits 0-1: Alpha Mode
     // Skeleton bit (bit 2) will be set in vk_pbr_render
     // Descriptor indexing bit (bit 3) is set below
 

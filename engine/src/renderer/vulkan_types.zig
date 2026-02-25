@@ -455,6 +455,8 @@ pub const VulkanSwapchain = extern struct {
     format: c.VkFormat,
     image_layout_initialized: ?[*]bool,
 
+    image_present_semaphores: ?[*]c.VkSemaphore,
+
     headless_mode: bool,
     skip_present: bool,
     depth_format: c.VkFormat,
@@ -890,6 +892,11 @@ pub const VulkanPipelines = extern struct {
     wireframe_pipeline: c.VkPipeline,
     wireframe_pipeline_layout: c.VkPipelineLayout,
 
+    grid_pipeline: c.VkPipeline,
+    grid_pipeline_layout: c.VkPipelineLayout,
+    grid_vertex_buffer: VulkanBuffer,
+    grid_vertex_count: u32,
+
     depth_pipeline: c.VkPipeline,
     depth_pipeline_layout: c.VkPipelineLayout,
 
@@ -983,6 +990,8 @@ pub const RendererConfig = extern struct {
 
     prefer_hdr: bool = false,
 
+    present_mode: c.VkPresentModeKHR = c.VK_PRESENT_MODE_FIFO_KHR,
+
     // Asset Paths
     shader_dir: [64]u8,
     pipeline_dir: [64]u8,
@@ -1029,6 +1038,8 @@ pub const VulkanState = extern struct {
 
     // Frame Allocator
     frame_allocator: ?*anyopaque, // Pointer to StackAllocator
+
+    debug_grid_enabled: bool,
 };
 
 // Secondary Command Context (from texture manager usage)

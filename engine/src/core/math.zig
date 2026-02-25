@@ -36,6 +36,22 @@ pub const Vec2 = extern struct {
         return .{ .x = self.x * s, .y = self.y * s };
     }
 
+    pub fn lengthSq(self: Vec2) f32 {
+        return self.x * self.x + self.y * self.y;
+    }
+
+    pub fn length(self: Vec2) f32 {
+        return std.math.sqrt(self.lengthSq());
+    }
+
+    pub fn normalize(self: Vec2) Vec2 {
+        const len = self.length();
+        if (len > 0) {
+            return self.scale(1.0 / len);
+        }
+        return self;
+    }
+
     pub fn toArray(self: Vec2) [2]f32 {
         return .{ self.x, self.y };
     }
@@ -380,6 +396,22 @@ pub const Mat4 = extern struct {
         return .{ .x = res[0], .y = res[1], .z = res[2] };
     }
 
+    pub fn mulVec4(self: Mat4, v: Vec4) Vec4 {
+        const x_splat = @as(@Vector(4, f32), @splat(v.x));
+        const y_splat = @as(@Vector(4, f32), @splat(v.y));
+        const z_splat = @as(@Vector(4, f32), @splat(v.z));
+        const w_splat = @as(@Vector(4, f32), @splat(v.w));
+
+        const col0: @Vector(4, f32) = self.data[0..4].*;
+        const col1: @Vector(4, f32) = self.data[4..8].*;
+        const col2: @Vector(4, f32) = self.data[8..12].*;
+        const col3: @Vector(4, f32) = self.data[12..16].*;
+
+        const res = x_splat * col0 + y_splat * col1 + z_splat * col2 + w_splat * col3;
+        
+        return @bitCast(res);
+    }
+
     pub fn fromArray(arr: [16]f32) Mat4 {
         return .{ .data = arr };
     }
@@ -465,13 +497,16 @@ pub const Mat4 = extern struct {
 
         // Check for negative determinant (3x3)
         // det = row0 . (row1 x row2)
-        const row1_yzx = @shuffle(f32, row1, undefined, @Vector(4, i32){ 1, 2, 0, 3 });
-        const row2_zxy = @shuffle(f32, row2, undefined, @Vector(4, i32){ 2, 0, 1, 3 });
-        const row1_zxy = @shuffle(f32, row1, undefined, @Vector(4, i32){ 2, 0, 1, 3 });
-        const row2_yzx = @shuffle(f32, row2, undefined, @Vector(4, i32){ 1, 2, 0, 3 });
+        const row0_xyz = @Vector(3, f32){ row0[0], row0[1], row0[2] };
+        const row1_xyz = @Vector(3, f32){ row1[0], row1[1], row1[2] };
+        const row2_xyz = @Vector(3, f32){ row2[0], row2[1], row2[2] };
 
-        const cross_res = row1_yzx * row2_zxy - row1_zxy * row2_yzx;
-        const det = @reduce(.Add, row0 * cross_res * mask);
+        // Cross product row1 x row2
+        const cross_x = row1_xyz[1] * row2_xyz[2] - row1_xyz[2] * row2_xyz[1];
+        const cross_y = row1_xyz[2] * row2_xyz[0] - row1_xyz[0] * row2_xyz[2];
+        const cross_z = row1_xyz[0] * row2_xyz[1] - row1_xyz[1] * row2_xyz[0];
+        
+        const det = row0_xyz[0] * cross_x + row0_xyz[1] * cross_y + row0_xyz[2] * cross_z;
 
         if (det < 0) {
             sx = -sx;
@@ -520,7 +555,7 @@ pub const Mat4 = extern struct {
             r.z = 0.25 * val;
         }
 
-        return .{ .t = t, .r = r, .s = s };
+        return .{ .t = t, .r = r.normalize(), .s = s };
     }
 
     pub fn perspective(fov_y_radians: f32, aspect: f32, z_near: f32, z_far: f32) Mat4 {
@@ -651,20 +686,17 @@ pub const Mat4 = extern struct {
             matrix[8] * matrix[1] * matrix[6] - matrix[8] * matrix[2] * matrix[5];
 
         var det = matrix[0] * inv[0] + matrix[1] * inv[4] + matrix[2] * inv[8] + matrix[3] * inv[12];
-        const FLT_EPSILON = 1.19209290e-07;
 
-        if (@abs(det) < FLT_EPSILON)
-            return null;
+        if (det == 0) return null;
 
         det = 1.0 / det;
 
-        var result = Mat4{ .data = undefined };
-        var i: usize = 0;
-        while (i < 16) : (i += 1) {
-            result.data[i] = inv[i] * det;
+        var ret = Mat4{ .data = undefined };
+        for (0..16) |i| {
+            ret.data[i] = inv[i] * det;
         }
 
-        return result;
+        return ret;
     }
 
     pub fn transpose(self: Mat4) Mat4 {
@@ -703,11 +735,135 @@ pub const Mat4 = extern struct {
     }
 };
 
-pub const Ray = extern struct {
+pub const Ray = struct {
     origin: Vec3,
-    direction: Vec3,
+    direction: Vec3, // normalized
 
-    pub fn at(self: Ray, t: f32) Vec3 {
+    pub fn getPoint(self: Ray, t: f32) Vec3 {
         return self.origin.add(self.direction.mul(t));
     }
 };
+
+pub const AABB = struct {
+    min: Vec3,
+    max: Vec3,
+
+    pub fn isValid(self: AABB) bool {
+        return self.max.x >= self.min.x and self.max.y >= self.min.y and self.max.z >= self.min.z;
+    }
+    
+    pub fn center(self: AABB) Vec3 {
+        return self.min.add(self.max).mul(0.5);
+    }
+    
+    pub fn size(self: AABB) Vec3 {
+        return self.max.sub(self.min);
+    }
+
+    pub fn transform(self: AABB, matrix: Mat4) AABB {
+        // Transform AABB by matrix
+        const corners = [_]Vec3{
+            .{ .x = self.min.x, .y = self.min.y, .z = self.min.z },
+            .{ .x = self.max.x, .y = self.min.y, .z = self.min.z },
+            .{ .x = self.min.x, .y = self.max.y, .z = self.min.z },
+            .{ .x = self.max.x, .y = self.max.y, .z = self.min.z },
+            .{ .x = self.min.x, .y = self.min.y, .z = self.max.z },
+            .{ .x = self.max.x, .y = self.min.y, .z = self.max.z },
+            .{ .x = self.min.x, .y = self.max.y, .z = self.max.z },
+            .{ .x = self.max.x, .y = self.max.y, .z = self.max.z },
+        };
+
+        var new_min = Vec3{ .x = std.math.floatMax(f32), .y = std.math.floatMax(f32), .z = std.math.floatMax(f32) };
+        var new_max = Vec3{ .x = -std.math.floatMax(f32), .y = -std.math.floatMax(f32), .z = -std.math.floatMax(f32) };
+
+        for (corners) |corner| {
+             // Homogeneous multiply
+             const x = corner.x;
+             const y = corner.y;
+             const z = corner.z;
+             
+             const nx = matrix.data[0]*x + matrix.data[4]*y + matrix.data[8]*z + matrix.data[12];
+             const ny = matrix.data[1]*x + matrix.data[5]*y + matrix.data[9]*z + matrix.data[13];
+             const nz = matrix.data[2]*x + matrix.data[6]*y + matrix.data[10]*z + matrix.data[14];
+             // We assume w=1 for points and rigid transforms mostly, but technically:
+             // const nw = matrix.data[3]*x + matrix.data[7]*y + matrix.data[11]*z + matrix.data[15];
+             // if (nw != 1.0 and nw != 0.0) { nx /= nw; ny /= nw; nz /= nw; }
+
+             new_min.x = @min(new_min.x, nx);
+             new_min.y = @min(new_min.y, ny);
+             new_min.z = @min(new_min.z, nz);
+             
+             new_max.x = @max(new_max.x, nx);
+             new_max.y = @max(new_max.y, ny);
+             new_max.z = @max(new_max.z, nz);
+        }
+        
+        return .{ .min = new_min, .max = new_max };
+    }
+};
+
+pub fn intersectRayAABB(ray: Ray, aabb: AABB, t_min: f32, t_max: f32) ?f32 {
+    var t0 = t_min;
+    var t1 = t_max;
+
+    const r_origin = ray.origin;
+    const r_dir = ray.direction;
+    const box_min = aabb.min;
+    const box_max = aabb.max;
+
+    // X axis
+    {
+        const inv_d = 1.0 / r_dir.x;
+        var t_near = (box_min.x - r_origin.x) * inv_d;
+        var t_far = (box_max.x - r_origin.x) * inv_d;
+
+        if (inv_d < 0.0) {
+            const temp = t_near;
+            t_near = t_far;
+            t_far = temp;
+        }
+
+        t0 = if (t_near > t0) t_near else t0;
+        t1 = if (t_far < t1) t_far else t1;
+
+        if (t1 <= t0) return null;
+    }
+
+    // Y axis
+    {
+        const inv_d = 1.0 / r_dir.y;
+        var t_near = (box_min.y - r_origin.y) * inv_d;
+        var t_far = (box_max.y - r_origin.y) * inv_d;
+
+        if (inv_d < 0.0) {
+            const temp = t_near;
+            t_near = t_far;
+            t_far = temp;
+        }
+
+        t0 = if (t_near > t0) t_near else t0;
+        t1 = if (t_far < t1) t_far else t1;
+
+        if (t1 <= t0) return null;
+    }
+
+    // Z axis
+    {
+        const inv_d = 1.0 / r_dir.z;
+        var t_near = (box_min.z - r_origin.z) * inv_d;
+        var t_far = (box_max.z - r_origin.z) * inv_d;
+
+        if (inv_d < 0.0) {
+            const temp = t_near;
+            t_near = t_far;
+            t_far = temp;
+        }
+
+        t0 = if (t_near > t0) t_near else t0;
+        t1 = if (t_far < t1) t_far else t1;
+
+        if (t1 <= t0) return null;
+    }
+
+    return t0;
+}

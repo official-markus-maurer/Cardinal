@@ -116,12 +116,50 @@ fn choose_surface_format(formats: [*]const c.VkSurfaceFormatKHR, count: u32, pre
     return best;
 }
 
-fn choose_present_mode(modes: [*]const c.VkPresentModeKHR, count: u32) c.VkPresentModeKHR {
+fn choose_present_mode(modes: [*]const c.VkPresentModeKHR, count: u32, preferred: c.VkPresentModeKHR) c.VkPresentModeKHR {
+    var has_mailbox = false;
+    var has_fifo_relaxed = false;
+    var has_immediate = false;
+
     var i: u32 = 0;
     while (i < count) : (i += 1) {
-        if (modes[i] == c.VK_PRESENT_MODE_MAILBOX_KHR)
-            return c.VK_PRESENT_MODE_MAILBOX_KHR;
+        const mode = modes[i];
+        if (mode == c.VK_PRESENT_MODE_MAILBOX_KHR) {
+            has_mailbox = true;
+        } else if (mode == c.VK_PRESENT_MODE_FIFO_RELAXED_KHR) {
+            has_fifo_relaxed = true;
+        } else if (mode == c.VK_PRESENT_MODE_IMMEDIATE_KHR) {
+            has_immediate = true;
+        }
     }
+
+    if (builtin.mode == .Debug) {
+        swap_log.info("Present modes: MAILBOX={any}, FIFO_RELAXED={any}, IMMEDIATE={any}", .{ has_mailbox, has_fifo_relaxed, has_immediate });
+    }
+
+    if (preferred != 0) {
+        var idx: u32 = 0;
+        while (idx < count) : (idx += 1) {
+            if (modes[idx] == preferred) {
+                return preferred;
+            }
+        }
+    }
+
+    if (builtin.mode == .Debug or builtin.mode == .ReleaseSafe) {
+        if (has_fifo_relaxed) {
+            return c.VK_PRESENT_MODE_FIFO_RELAXED_KHR;
+        }
+        return c.VK_PRESENT_MODE_FIFO_KHR;
+    }
+
+    if (has_mailbox) {
+        return c.VK_PRESENT_MODE_MAILBOX_KHR;
+    }
+    if (has_immediate) {
+        return c.VK_PRESENT_MODE_IMMEDIATE_KHR;
+    }
+
     return c.VK_PRESENT_MODE_FIFO_KHR;
 }
 
@@ -174,6 +212,14 @@ fn get_surface_details(s: *types.VulkanState, caps: *c.VkSurfaceCapabilitiesKHR,
     }
     out_fmt.* = choose_surface_format(fmts, count, s.config.prefer_hdr);
 
+    const is_hdr10 = out_fmt.colorSpace == c.VK_COLOR_SPACE_HDR10_ST2084_EXT;
+    const is_bt2020 = out_fmt.colorSpace == c.VK_COLOR_SPACE_BT2020_LINEAR_EXT or out_fmt.colorSpace == c.VK_COLOR_SPACE_EXTENDED_SRGB_LINEAR_EXT;
+    const is_hdr = is_hdr10 or is_bt2020;
+
+    if (builtin.mode == .Debug) {
+        swap_log.info("Swapchain format selected: fmt={d}, colorSpace={d}, HDR={any}, HDR10={any}", .{ out_fmt.format, out_fmt.colorSpace, is_hdr, is_hdr10 });
+    }
+
     if (c.vkGetPhysicalDeviceSurfacePresentModesKHR(s.context.physical_device, s.context.surface, &count, null) != c.VK_SUCCESS or count == 0) {
         swap_log.err("Failed to get present modes", .{});
         return false;
@@ -188,7 +234,11 @@ fn get_surface_details(s: *types.VulkanState, caps: *c.VkSurfaceCapabilitiesKHR,
         swap_log.err("Failed to retrieve present modes", .{});
         return false;
     }
-    out_mode.* = choose_present_mode(modes, count);
+    out_mode.* = choose_present_mode(modes, count, s.config.present_mode);
+
+    if (builtin.mode == .Debug) {
+        swap_log.info("Swapchain present mode selected: mode={d}", .{out_mode.*});
+    }
 
     return true;
 }
@@ -329,6 +379,7 @@ const SwapchainBackupState = struct {
     extent: c.VkExtent2D,
     format: c.VkFormat,
     layout_initialized: ?[*]bool,
+    present_semaphores: ?[*]c.VkSemaphore,
 };
 
 fn backup_swapchain_state(s: *types.VulkanState, backup: *SwapchainBackupState) void {
@@ -339,12 +390,14 @@ fn backup_swapchain_state(s: *types.VulkanState, backup: *SwapchainBackupState) 
     backup.extent = s.swapchain.extent;
     backup.format = s.swapchain.format;
     backup.layout_initialized = s.swapchain.image_layout_initialized;
+    backup.present_semaphores = s.swapchain.image_present_semaphores;
 
     s.swapchain.handle = null;
     s.swapchain.images = null;
     s.swapchain.image_views = null;
     s.swapchain.image_count = 0;
     s.swapchain.image_layout_initialized = null;
+    s.swapchain.image_present_semaphores = null;
 }
 
 fn restore_swapchain_state(s: *types.VulkanState, backup: *const SwapchainBackupState) void {
@@ -402,6 +455,48 @@ fn destroy_backup_resources(s: *types.VulkanState, backup: *const SwapchainBacku
     if (backup.layout_initialized) |ptr| {
         c.free(@as(?*anyopaque, @ptrCast(ptr)));
     }
+    if (backup.present_semaphores) |sems| {
+        var i: u32 = 0;
+        while (i < backup.image_count) : (i += 1) {
+            if (sems[i] != null) {
+                c.vkDestroySemaphore(s.context.device, sems[i], null);
+            }
+        }
+        const mem_alloc = memory.cardinal_get_allocator_for_category(.RENDERER);
+        memory.cardinal_free(mem_alloc, @as(?*anyopaque, @ptrCast(sems)));
+    }
+}
+
+fn create_present_semaphores(s: *types.VulkanState) bool {
+    const mem_alloc = memory.cardinal_get_allocator_for_category(.RENDERER);
+    const ptr = memory.cardinal_alloc(mem_alloc, @sizeOf(c.VkSemaphore) * s.swapchain.image_count);
+    if (ptr == null) return false;
+    s.swapchain.image_present_semaphores = @as([*]c.VkSemaphore, @ptrCast(@alignCast(ptr)));
+
+    var i: u32 = 0;
+    while (i < s.swapchain.image_count) : (i += 1) {
+        s.swapchain.image_present_semaphores.?[i] = null;
+    }
+
+    i = 0;
+    while (i < s.swapchain.image_count) : (i += 1) {
+        var info = std.mem.zeroes(c.VkSemaphoreCreateInfo);
+        info.sType = c.VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO;
+        if (c.vkCreateSemaphore(s.context.device, &info, null, &s.swapchain.image_present_semaphores.?[i]) != c.VK_SUCCESS) {
+            var j: u32 = 0;
+            while (j < i) : (j += 1) {
+                if (s.swapchain.image_present_semaphores.?[j] != null) {
+                    c.vkDestroySemaphore(s.context.device, s.swapchain.image_present_semaphores.?[j], null);
+                }
+            }
+            memory.cardinal_free(mem_alloc, @as(?*anyopaque, @ptrCast(s.swapchain.image_present_semaphores)));
+            s.swapchain.image_present_semaphores = null;
+            return false;
+        }
+        i += 1;
+    }
+
+    return true;
 }
 
 fn recreate_mesh_shader_pipeline_logic(s: *types.VulkanState) bool {
@@ -484,6 +579,29 @@ pub export fn vk_create_swapchain(s: ?*types.VulkanState) callconv(.c) bool {
         return false;
     }
 
+    if (!create_present_semaphores(vs)) {
+        const mem_alloc = memory.cardinal_get_allocator_for_category(.RENDERER);
+        if (vs.swapchain.image_views != null) {
+            var i: u32 = 0;
+            while (i < vs.swapchain.image_count) : (i += 1) {
+                if (vs.swapchain.image_views.?[i] != null) {
+                    c.vkDestroyImageView(vs.context.device, vs.swapchain.image_views.?[i], null);
+                }
+            }
+            memory.cardinal_free(mem_alloc, @as(?*anyopaque, @ptrCast(vs.swapchain.image_views)));
+            vs.swapchain.image_views = null;
+        }
+        if (vs.swapchain.images != null) {
+            memory.cardinal_free(mem_alloc, @as(?*anyopaque, @ptrCast(vs.swapchain.images)));
+            vs.swapchain.images = null;
+        }
+        if (vs.swapchain.handle != null) {
+            c.vkDestroySwapchainKHR(vs.context.device, vs.swapchain.handle, null);
+            vs.swapchain.handle = null;
+        }
+        return false;
+    }
+
     vs.swapchain.recreation_pending = false;
     vs.swapchain.last_recreation_time = platform.get_time_ms();
     vs.swapchain.recreation_count += 1;
@@ -514,6 +632,18 @@ pub export fn vk_destroy_swapchain(s: ?*types.VulkanState) callconv(.c) void {
         const mem_alloc = memory.cardinal_get_allocator_for_category(.RENDERER);
         memory.cardinal_free(mem_alloc, @as(?*anyopaque, @ptrCast(vs.swapchain.images)));
         vs.swapchain.images = null;
+    }
+
+    if (vs.swapchain.image_present_semaphores != null) {
+        var i: u32 = 0;
+        while (i < vs.swapchain.image_count) : (i += 1) {
+            if (vs.swapchain.image_present_semaphores.?[i] != null) {
+                c.vkDestroySemaphore(vs.context.device, vs.swapchain.image_present_semaphores.?[i], null);
+            }
+        }
+        const mem_alloc = memory.cardinal_get_allocator_for_category(.RENDERER);
+        memory.cardinal_free(mem_alloc, @as(?*anyopaque, @ptrCast(vs.swapchain.image_present_semaphores)));
+        vs.swapchain.image_present_semaphores = null;
     }
 
     if (vs.swapchain.handle != null) {

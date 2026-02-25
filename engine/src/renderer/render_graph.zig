@@ -280,18 +280,22 @@ pub const RenderGraph = struct {
     pub fn update_transient_image(self: *RenderGraph, id: ResourceId, desc: ImageDesc, state: *types.VulkanState) !void {
         const existing = self.resources.getPtr(id);
         if (existing) |res| {
-            // Check if description matches
+            // Check if description matches (format, size, usage, and aspect)
             var match = false;
             if (res.desc) |d| {
                 switch (d) {
                     .Image => |img| {
-                        match = (img.width == desc.width and img.height == desc.height and img.format == desc.format);
+                        match = (img.width == desc.width and
+                            img.height == desc.height and
+                            img.format == desc.format and
+                            img.usage == desc.usage and
+                            img.aspect_mask == desc.aspect_mask);
                     },
                     else => {},
                 }
             }
 
-            if (match) return; // No change needed
+            if (match) return;
 
             // Release old resource to pool if allocated
             if (res.handle != null and res.lifecycle == .Transient) {

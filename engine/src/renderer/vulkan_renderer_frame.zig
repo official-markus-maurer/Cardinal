@@ -445,7 +445,7 @@ fn acquire_next_image(s: *types.VulkanState, out_image_index: *u32) bool {
     return true;
 }
 
-fn submit_command_buffer(s: *types.VulkanState, cmd: c.VkCommandBuffer, acquire_sem: c.VkSemaphore, wait_timeline_value: ?u64) bool {
+fn submit_command_buffer(s: *types.VulkanState, cmd: c.VkCommandBuffer, acquire_sem: c.VkSemaphore, wait_timeline_value: ?u64, image_index: u32) bool {
     const zone = tracy.zoneS(@src(), "Submit Command Buffer");
     defer zone.end();
 
@@ -472,7 +472,13 @@ fn submit_command_buffer(s: *types.VulkanState, cmd: c.VkCommandBuffer, acquire_
     var signal_infos = [1]c.VkSemaphoreSubmitInfo{.{
         .sType = c.VK_STRUCTURE_TYPE_SEMAPHORE_SUBMIT_INFO,
         .pNext = null,
-        .semaphore = s.sync.render_finished_semaphores.?[s.sync.current_frame],
+        .semaphore = blk: {
+            if (s.swapchain.image_present_semaphores != null and image_index < s.swapchain.image_count) {
+                const img_sem = s.swapchain.image_present_semaphores.?[image_index];
+                if (img_sem != null) break :blk img_sem;
+            }
+            break :blk s.sync.render_finished_semaphores.?[s.sync.current_frame];
+        },
         .value = 0,
         .stageMask = c.VK_PIPELINE_STAGE_2_ALL_GRAPHICS_BIT,
         .deviceIndex = 0,
@@ -582,7 +588,13 @@ fn present_swapchain_image(s: *types.VulkanState, image_index: u32, signal_value
         return;
     }
 
-    var wait_sem = s.sync.render_finished_semaphores.?[s.sync.current_frame];
+    var wait_sem: c.VkSemaphore = s.sync.render_finished_semaphores.?[s.sync.current_frame];
+    if (s.swapchain.image_present_semaphores != null and image_index < s.swapchain.image_count) {
+        const img_sem = s.swapchain.image_present_semaphores.?[image_index];
+        if (img_sem != null) {
+            wait_sem = img_sem;
+        }
+    }
     var present_info = c.VkPresentInfoKHR{
         .sType = c.VK_STRUCTURE_TYPE_PRESENT_INFO_KHR,
         .pNext = null,
@@ -720,6 +732,7 @@ pub export fn cardinal_renderer_draw_frame(renderer: ?*types.CardinalRenderer) c
         cmd_buf,
         s.sync.image_acquired_semaphores.?[s.sync.current_frame],
         if (compute_wait_value != null) compute_wait_value else texture_upload_signal,
+        image_index,
     ))
         return;
 

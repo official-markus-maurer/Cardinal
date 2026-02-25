@@ -2,6 +2,7 @@ const std = @import("std");
 const builtin = @import("builtin");
 const memory = @import("../core/memory.zig");
 const log = @import("../core/log.zig");
+const math = @import("../core/math.zig");
 const buffer_mgr = @import("vulkan_buffer_manager.zig");
 const descriptor_mgr = @import("vulkan_descriptor_manager.zig");
 const types = @import("vulkan_types.zig");
@@ -23,6 +24,82 @@ const SimpleUniformBufferObject = extern struct {
     viewPos: [3]f32,
     debugFlags: f32,
 };
+
+fn create_grid_vertex_buffer(s: *types.VulkanState) bool {
+    const steps: i32 = 20;
+    const spacing: f32 = 1.0;
+    const extent: f32 = @as(f32, @floatFromInt(steps)) * spacing;
+
+    const lines_per_axis: i32 = steps * 2 + 1;
+    const total_lines: i32 = lines_per_axis * 2;
+    const total_vertices: i32 = total_lines * 2;
+
+    const vertex_count: usize = @intCast(total_vertices);
+    const buffer_size: usize = vertex_count * @sizeOf(scene.CardinalVertex);
+
+    var createInfo = std.mem.zeroes(buffer_mgr.VulkanBufferCreateInfo);
+    createInfo.size = buffer_size;
+    createInfo.usage = c.VK_BUFFER_USAGE_VERTEX_BUFFER_BIT;
+    createInfo.properties = c.VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | c.VK_MEMORY_PROPERTY_HOST_COHERENT_BIT;
+    createInfo.persistentlyMapped = true;
+
+    if (!buffer_mgr.vk_buffer_create(&s.pipelines.grid_vertex_buffer, s.context.device, @ptrCast(&s.allocator), &createInfo)) {
+        simple_log.err("Failed to create grid vertex buffer", .{});
+        return false;
+    }
+
+    if (s.pipelines.grid_vertex_buffer.mapped == null) {
+        simple_log.err("Grid vertex buffer is not mapped", .{});
+        return false;
+    }
+
+    const verts_ptr = @as([*]scene.CardinalVertex, @ptrCast(@alignCast(s.pipelines.grid_vertex_buffer.mapped.?)));
+
+    var index: usize = 0;
+
+    var i: i32 = -steps;
+    while (i <= steps) : (i += 1) {
+        const z = @as(f32, @floatFromInt(i)) * spacing;
+
+        var v0 = std.mem.zeroes(scene.CardinalVertex);
+        v0.px = -extent;
+        v0.py = 0.0;
+        v0.pz = z;
+
+        var v1 = std.mem.zeroes(scene.CardinalVertex);
+        v1.px = extent;
+        v1.py = 0.0;
+        v1.pz = z;
+
+        verts_ptr[index] = v0;
+        index += 1;
+        verts_ptr[index] = v1;
+        index += 1;
+    }
+
+    i = -steps;
+    while (i <= steps) : (i += 1) {
+        const x = @as(f32, @floatFromInt(i)) * spacing;
+
+        var v0 = std.mem.zeroes(scene.CardinalVertex);
+        v0.px = x;
+        v0.py = 0.0;
+        v0.pz = -extent;
+
+        var v1 = std.mem.zeroes(scene.CardinalVertex);
+        v1.px = x;
+        v1.py = 0.0;
+        v1.pz = extent;
+
+        verts_ptr[index] = v0;
+        index += 1;
+        verts_ptr[index] = v1;
+        index += 1;
+    }
+
+    s.pipelines.grid_vertex_count = @intCast(vertex_count);
+    return true;
+}
 
 fn create_simple_descriptor_resources(s: *types.VulkanState) bool {
     // Create Descriptor Manager
@@ -187,6 +264,21 @@ pub fn vk_create_simple_pipelines(s: *types.VulkanState, pipelineCache: c.VkPipe
     }
     simple_log.info("Created Wireframe pipeline handle: {any}", .{s.pipelines.wireframe_pipeline});
 
+    // Create grid pipeline (reuses wireframe shaders but with different depth settings)
+    const grid_path = std.fmt.allocPrint(renderer_allocator, "{s}/debug_grid.json", .{pipeline_dir_span}) catch return false;
+    defer renderer_allocator.free(grid_path);
+
+    if (!create_simple_pipeline_from_json(s, grid_path, &s.pipelines.grid_pipeline, &s.pipelines.grid_pipeline_layout, pipelineCache)) {
+        simple_log.err("Failed to create grid pipeline", .{});
+        return false;
+    }
+    simple_log.info("Created Grid pipeline handle: {any}", .{s.pipelines.grid_pipeline});
+
+    if (!create_grid_vertex_buffer(s)) {
+        simple_log.err("Failed to create grid vertex buffer", .{});
+        return false;
+    }
+
     simple_log.info("Simple pipelines created successfully", .{});
     return true;
 }
@@ -194,6 +286,11 @@ pub fn vk_create_simple_pipelines(s: *types.VulkanState, pipelineCache: c.VkPipe
 pub fn vk_destroy_simple_pipelines(s: *types.VulkanState) void {
     if (s.pipelines.simple_uniform_buffer.handle != null) {
         buffer_mgr.vk_buffer_destroy(&s.pipelines.simple_uniform_buffer, s.context.device, @ptrCast(&s.allocator), s);
+    }
+
+    if (s.pipelines.grid_vertex_buffer.handle != null) {
+        buffer_mgr.vk_buffer_destroy(&s.pipelines.grid_vertex_buffer, s.context.device, @ptrCast(&s.allocator), s);
+        s.pipelines.grid_vertex_count = 0;
     }
 
     if (s.pipelines.simple_descriptor_manager != null) {
@@ -222,6 +319,16 @@ pub fn vk_destroy_simple_pipelines(s: *types.VulkanState) void {
     if (s.pipelines.wireframe_pipeline_layout != null) {
         c.vkDestroyPipelineLayout(s.context.device, s.pipelines.wireframe_pipeline_layout, null);
         s.pipelines.wireframe_pipeline_layout = null;
+    }
+
+    if (s.pipelines.grid_pipeline != null) {
+        c.vkDestroyPipeline(s.context.device, s.pipelines.grid_pipeline, null);
+        s.pipelines.grid_pipeline = null;
+    }
+
+    if (s.pipelines.grid_pipeline_layout != null) {
+        c.vkDestroyPipelineLayout(s.context.device, s.pipelines.grid_pipeline_layout, null);
+        s.pipelines.grid_pipeline_layout = null;
     }
 }
 
@@ -324,4 +431,66 @@ pub fn render_simple(s: *types.VulkanState, commandBufferHandle: c.VkCommandBuff
             indexOffset += mesh.index_count;
         }
     }
+}
+
+pub fn render_grid(s: *types.VulkanState, commandBufferHandle: c.VkCommandBuffer) void {
+    if (!s.debug_grid_enabled) return;
+    if (!s.pipelines.use_pbr_pipeline or !s.pipelines.pbr_pipeline.initialized) return;
+
+    if (s.pipelines.grid_pipeline == null or s.pipelines.grid_pipeline_layout == null) {
+        simple_log.err("render_grid: Grid pipeline not initialized", .{});
+        return;
+    }
+
+    if (s.pipelines.simple_descriptor_set == null or s.pipelines.simple_descriptor_manager == null) {
+        simple_log.err("render_grid: Descriptor resources not initialized", .{});
+        return;
+    }
+
+    if (s.pipelines.grid_vertex_buffer.handle == null or s.pipelines.grid_vertex_count == 0) {
+        simple_log.err("render_grid: Grid vertex buffer not initialized", .{});
+        return;
+    }
+
+    const cmd = wrappers.CommandBuffer.init(commandBufferHandle);
+
+    cmd.bindPipeline(c.VK_PIPELINE_BIND_POINT_GRAPHICS, s.pipelines.grid_pipeline);
+
+    var pc = std.mem.zeroes(types.PBRPushConstants);
+    pc.modelMatrix = math.Mat4.identity();
+    cmd.pushConstants(s.pipelines.grid_pipeline_layout, c.VK_SHADER_STAGE_VERTEX_BIT | c.VK_SHADER_STAGE_FRAGMENT_BIT, 0, @sizeOf(types.PBRPushConstants), &pc);
+
+    var model = [_]f32{
+        1, 0, 0, 0,
+        0, 1, 0, 0,
+        0, 0, 1, 0,
+        0, 0, 0, 1,
+    };
+
+    const ubo = s.pipelines.pbr_pipeline.current_ubo;
+    update_simple_uniforms(s, &model, &ubo.view, &ubo.proj, &ubo.viewPos);
+
+    var descriptorSets = [_]c.VkDescriptorSet{s.pipelines.simple_descriptor_set};
+    descriptor_mgr.vk_descriptor_manager_bind_sets(s.pipelines.simple_descriptor_manager, commandBufferHandle, c.VK_PIPELINE_BIND_POINT_GRAPHICS, s.pipelines.grid_pipeline_layout, 0, 1, &descriptorSets, 0, null);
+
+    var vp = std.mem.zeroes(c.VkViewport);
+    vp.x = 0;
+    vp.y = 0;
+    vp.width = @floatFromInt(s.swapchain.extent.width);
+    vp.height = @floatFromInt(s.swapchain.extent.height);
+    vp.minDepth = 0.0;
+    vp.maxDepth = 1.0;
+    c.vkCmdSetViewport(commandBufferHandle, 0, 1, &vp);
+
+    var sc = std.mem.zeroes(c.VkRect2D);
+    sc.offset.x = 0;
+    sc.offset.y = 0;
+    sc.extent = s.swapchain.extent;
+    c.vkCmdSetScissor(commandBufferHandle, 0, 1, &sc);
+
+    var vertexBuffers = [_]c.VkBuffer{s.pipelines.grid_vertex_buffer.handle};
+    var offsets = [_]c.VkDeviceSize{0};
+    cmd.bindVertexBuffers(0, &vertexBuffers, &offsets);
+
+    cmd.draw(s.pipelines.grid_vertex_count, 1, 0, 0);
 }

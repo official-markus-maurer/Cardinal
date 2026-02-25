@@ -6,6 +6,7 @@
 #include <imgui.h>
 #include <stdarg.h>
 #include <stdio.h>
+#include <math.h>
 #include <vulkan/vulkan.h>
 
 extern "C" {
@@ -31,6 +32,14 @@ void imgui_bridge_viewport_get_work_pos(const ImGuiViewport *viewport,
 void imgui_bridge_viewport_get_work_size(const ImGuiViewport *viewport,
                                          ImVec2 *out_size) {
   *out_size = viewport->WorkSize;
+}
+
+void imgui_bridge_get_window_pos(ImVec2 *out_pos) {
+  *out_pos = ImGui::GetWindowPos();
+}
+
+void imgui_bridge_get_window_size(ImVec2 *out_size) {
+  *out_size = ImGui::GetWindowSize();
 }
 
 void imgui_bridge_set_next_window_pos(const ImVec2 *pos, int cond,
@@ -93,39 +102,75 @@ void imgui_bridge_style_colors_cardinal(void) {
   colors[ImGuiCol_TitleBgCollapsed]       = ImVec4(0.117f, 0.117f, 0.117f, 1.00f);
   colors[ImGuiCol_MenuBarBg]              = ImVec4(0.145f, 0.145f, 0.149f, 1.00f);
   colors[ImGuiCol_ScrollbarBg]            = ImVec4(0.117f, 0.117f, 0.117f, 0.53f);
-  colors[ImGuiCol_ScrollbarGrab]          = ImVec4(0.31f, 0.31f, 0.31f, 1.00f);
+  colors[ImGuiCol_ScrollbarGrab]          = ImVec4(0.25f, 0.25f, 0.27f, 1.00f);
   colors[ImGuiCol_ScrollbarGrabHovered]   = ImVec4(0.41f, 0.41f, 0.41f, 1.00f);
   colors[ImGuiCol_ScrollbarGrabActive]    = ImVec4(0.51f, 0.51f, 0.51f, 1.00f);
   colors[ImGuiCol_CheckMark]              = ImVec4(0.768f, 0.117f, 0.227f, 1.00f);
   colors[ImGuiCol_SliderGrab]             = ImVec4(0.768f, 0.117f, 0.227f, 1.00f);
-  colors[ImGuiCol_SliderGrabActive]       = ImVec4(0.868f, 0.217f, 0.327f, 1.00f);
-  colors[ImGuiCol_Button]                 = ImVec4(0.176f, 0.176f, 0.188f, 1.00f);
-  colors[ImGuiCol_ButtonHovered]          = ImVec4(0.768f, 0.117f, 0.227f, 0.50f);
-  colors[ImGuiCol_ButtonActive]           = ImVec4(0.768f, 0.117f, 0.227f, 1.00f);
-  colors[ImGuiCol_Header]                 = ImVec4(0.176f, 0.176f, 0.188f, 1.00f);
-  colors[ImGuiCol_HeaderHovered]          = ImVec4(0.25f, 0.25f, 0.27f, 1.00f);
-  colors[ImGuiCol_HeaderActive]           = ImVec4(0.768f, 0.117f, 0.227f, 0.80f);
-  colors[ImGuiCol_Separator]              = ImVec4(0.25f, 0.25f, 0.27f, 1.00f);
-  colors[ImGuiCol_SeparatorHovered]       = ImVec4(0.35f, 0.35f, 0.37f, 1.00f);
-  colors[ImGuiCol_SeparatorActive]        = ImVec4(0.768f, 0.117f, 0.227f, 1.00f);
-  colors[ImGuiCol_ResizeGrip]             = ImVec4(0.26f, 0.59f, 0.98f, 0.25f);
-  colors[ImGuiCol_ResizeGripHovered]      = ImVec4(0.26f, 0.59f, 0.98f, 0.67f);
-  colors[ImGuiCol_ResizeGripActive]       = ImVec4(0.26f, 0.59f, 0.98f, 0.95f);
-  colors[ImGuiCol_Tab]                    = ImVec4(0.117f, 0.117f, 0.117f, 1.00f);
-  colors[ImGuiCol_TabHovered]             = ImVec4(0.768f, 0.117f, 0.227f, 0.80f);
+  colors[ImGuiCol_SliderGrabActive]       = ImVec4(0.850f, 0.150f, 0.260f, 1.00f);
+  colors[ImGuiCol_Button]                 = ImVec4(0.25f, 0.25f, 0.27f, 0.40f);
+  colors[ImGuiCol_ButtonHovered]          = ImVec4(0.22f, 0.22f, 0.24f, 1.00f);
+  colors[ImGuiCol_ButtonActive]           = ImVec4(0.25f, 0.25f, 0.27f, 1.00f);
+  colors[ImGuiCol_Header]                 = ImVec4(0.25f, 0.25f, 0.27f, 0.31f);
+  colors[ImGuiCol_HeaderHovered]          = ImVec4(0.22f, 0.22f, 0.24f, 0.80f);
+  colors[ImGuiCol_HeaderActive]           = ImVec4(0.25f, 0.25f, 0.27f, 1.00f);
+  colors[ImGuiCol_Separator]              = ImVec4(0.25f, 0.25f, 0.27f, 0.50f);
+  colors[ImGuiCol_SeparatorHovered]       = ImVec4(0.41f, 0.41f, 0.41f, 0.78f);
+  colors[ImGuiCol_SeparatorActive]        = ImVec4(0.51f, 0.51f, 0.51f, 1.00f);
+  colors[ImGuiCol_ResizeGrip]             = ImVec4(0.25f, 0.25f, 0.27f, 0.25f);
+  colors[ImGuiCol_ResizeGripHovered]      = ImVec4(0.41f, 0.41f, 0.41f, 0.67f);
+  colors[ImGuiCol_ResizeGripActive]       = ImVec4(0.51f, 0.51f, 0.51f, 0.95f);
+  colors[ImGuiCol_Tab]                    = ImVec4(0.145f, 0.145f, 0.149f, 0.86f);
+  colors[ImGuiCol_TabHovered]             = ImVec4(0.22f, 0.22f, 0.24f, 0.80f);
   colors[ImGuiCol_TabSelected]            = ImVec4(0.176f, 0.176f, 0.188f, 1.00f);
-  colors[ImGuiCol_TabDimmed]              = ImVec4(0.117f, 0.117f, 0.117f, 1.00f);
+  colors[ImGuiCol_TabDimmed]              = ImVec4(0.117f, 0.117f, 0.117f, 0.97f);
   colors[ImGuiCol_TabDimmedSelected]      = ImVec4(0.176f, 0.176f, 0.188f, 1.00f);
+  colors[ImGuiCol_DockingPreview]         = ImVec4(0.768f, 0.117f, 0.227f, 0.70f);
+  colors[ImGuiCol_DockingEmptyBg]         = ImVec4(0.20f, 0.20f, 0.20f, 1.00f);
   colors[ImGuiCol_PlotLines]              = ImVec4(0.61f, 0.61f, 0.61f, 1.00f);
   colors[ImGuiCol_PlotLinesHovered]       = ImVec4(1.00f, 0.43f, 0.35f, 1.00f);
   colors[ImGuiCol_PlotHistogram]          = ImVec4(0.90f, 0.70f, 0.00f, 1.00f);
   colors[ImGuiCol_PlotHistogramHovered]   = ImVec4(1.00f, 0.60f, 0.00f, 1.00f);
-  colors[ImGuiCol_TextSelectedBg]         = ImVec4(0.26f, 0.59f, 0.98f, 0.35f);
+  colors[ImGuiCol_TableHeaderBg]          = ImVec4(0.19f, 0.19f, 0.20f, 1.00f);
+  colors[ImGuiCol_TableBorderStrong]      = ImVec4(0.31f, 0.31f, 0.35f, 1.00f);
+  colors[ImGuiCol_TableBorderLight]       = ImVec4(0.23f, 0.23f, 0.25f, 1.00f);
+  colors[ImGuiCol_TableRowBg]             = ImVec4(0.00f, 0.00f, 0.00f, 0.00f);
+  colors[ImGuiCol_TableRowBgAlt]          = ImVec4(1.00f, 1.00f, 1.00f, 0.06f);
+  colors[ImGuiCol_TextSelectedBg]         = ImVec4(0.768f, 0.117f, 0.227f, 0.35f);
   colors[ImGuiCol_DragDropTarget]         = ImVec4(1.00f, 1.00f, 0.00f, 0.90f);
-  colors[ImGuiCol_NavCursor]              = ImVec4(0.26f, 0.59f, 0.98f, 1.00f);
+  colors[ImGuiCol_NavCursor]              = ImVec4(0.768f, 0.117f, 0.227f, 1.00f);
   colors[ImGuiCol_NavWindowingHighlight]  = ImVec4(1.00f, 1.00f, 1.00f, 0.70f);
   colors[ImGuiCol_NavWindowingDimBg]      = ImVec4(0.80f, 0.80f, 0.80f, 0.20f);
   colors[ImGuiCol_ModalWindowDimBg]       = ImVec4(0.80f, 0.80f, 0.80f, 0.35f);
+}
+
+// Input & IO
+void imgui_bridge_get_mouse_pos(ImVec2* out_pos) {
+    *out_pos = ImGui::GetIO().MousePos;
+}
+
+bool imgui_bridge_is_mouse_down(int button) {
+    return ImGui::IsMouseDown(button);
+}
+
+bool imgui_bridge_is_mouse_clicked(int button) {
+    return ImGui::IsMouseClicked(button);
+}
+
+bool imgui_bridge_is_shift_down(void) {
+    return ImGui::IsKeyDown(ImGuiKey_LeftShift) || ImGui::IsKeyDown(ImGuiKey_RightShift);
+}
+
+bool imgui_bridge_is_ctrl_down(void) {
+    return ImGui::IsKeyDown(ImGuiKey_LeftCtrl) || ImGui::IsKeyDown(ImGuiKey_RightCtrl);
+}
+
+bool imgui_bridge_is_alt_down(void) {
+    return ImGui::IsKeyDown(ImGuiKey_LeftAlt) || ImGui::IsKeyDown(ImGuiKey_RightAlt);
+}
+
+bool imgui_bridge_want_capture_mouse(void) {
+    return ImGui::GetIO().WantCaptureMouse;
 }
 
 void imgui_bridge_set_display_scale(float scale) {
@@ -365,6 +410,10 @@ bool imgui_bridge_tree_node(const char *label) {
   return ImGui::TreeNode(label);
 }
 
+bool imgui_bridge_tree_node_ex(const char *label, int flags) {
+  return ImGui::TreeNodeEx(label, flags);
+}
+
 void imgui_bridge_tree_pop(void) { ImGui::TreePop(); }
 
 void imgui_bridge_bullet_text(const char *fmt, ...) {
@@ -482,6 +531,125 @@ void imgui_bridge_plot_lines(const char *label, const float *values,
                              int stride) {
   ImGui::PlotLines(label, values, values_count, values_offset, overlay_text,
                    scale_min, scale_max, *graph_size, stride);
+}
+
+void imgui_bridge_draw_grid(const ImVec2 *top_left, const ImVec2 *size,
+                            float spacing, unsigned int color_minor,
+                            unsigned int color_major) {
+  if (!top_left || !size || spacing <= 0.0f) {
+    return;
+  }
+
+  ImDrawList *draw_list = ImGui::GetWindowDrawList();
+  if (!draw_list) {
+    return;
+  }
+
+  const float x0 = top_left->x;
+  const float y0 = top_left->y;
+  const float x1 = top_left->x + size->x;
+  const float y1 = top_left->y + size->y;
+
+  const int first_vertical = (int)floorf(x0 / spacing);
+  const int last_vertical = (int)ceilf(x1 / spacing);
+  const int first_horizontal = (int)floorf(y0 / spacing);
+  const int last_horizontal = (int)ceilf(y1 / spacing);
+
+  for (int i = first_vertical; i <= last_vertical; ++i) {
+    const float x = i * spacing;
+    const bool is_major = (i % 10) == 0;
+    const unsigned int color = is_major ? color_major : color_minor;
+    draw_list->AddLine(ImVec2(x, y0), ImVec2(x, y1), color);
+  }
+
+  for (int j = first_horizontal; j <= last_horizontal; ++j) {
+    const float y = j * spacing;
+    const bool is_major = (j % 10) == 0;
+    const unsigned int color = is_major ? color_major : color_minor;
+    draw_list->AddLine(ImVec2(x0, y), ImVec2(x1, y), color);
+  }
+}
+
+void imgui_bridge_draw_axes_gizmo(const ImVec2 *origin, float size,
+                                  unsigned int color_x, unsigned int color_y,
+                                  unsigned int color_z) {
+  if (!origin || size <= 0.0f) {
+    return;
+  }
+
+  ImDrawList *draw_list = ImGui::GetWindowDrawList();
+  if (!draw_list) {
+    return;
+  }
+
+  const ImVec2 o = *origin;
+
+  const float thickness = 2.0f;
+  const float half_size = size * 0.5f;
+
+  draw_list->AddLine(o, ImVec2(o.x + size, o.y), color_x, thickness);
+  draw_list->AddLine(o, ImVec2(o.x, o.y - size), color_y, thickness);
+  draw_list->AddLine(o, ImVec2(o.x + half_size * 0.7f, o.y + half_size * 0.7f),
+                     color_z, thickness);
+
+  const float radius = 3.0f;
+  draw_list->AddCircleFilled(o, radius, color_z);
+}
+
+void imgui_bridge_draw_line(const ImVec2 *p0, const ImVec2 *p1,
+                            unsigned int color, float thickness) {
+  if (!p0 || !p1 || thickness <= 0.0f) {
+    return;
+  }
+
+  ImDrawList *draw_list = ImGui::GetWindowDrawList();
+  if (!draw_list) {
+    return;
+  }
+
+  draw_list->AddLine(*p0, *p1, color, thickness);
+}
+
+void imgui_bridge_draw_circle(const ImVec2 *center, float radius,
+                              unsigned int color, float thickness) {
+  if (!center || radius <= 0.0f) {
+    return;
+  }
+
+  ImDrawList *draw_list = ImGui::GetWindowDrawList();
+  if (!draw_list) {
+    return;
+  }
+
+  draw_list->AddCircle(*center, radius, color, 0, thickness);
+}
+
+void imgui_bridge_draw_circle_filled(const ImVec2 *center, float radius,
+                                     unsigned int color) {
+  if (!center || radius <= 0.0f) {
+    return;
+  }
+
+  ImDrawList *draw_list = ImGui::GetWindowDrawList();
+  if (!draw_list) {
+    return;
+  }
+
+  draw_list->AddCircleFilled(*center, radius, color);
+}
+
+void imgui_bridge_draw_triangle_filled(const ImVec2 *p1, const ImVec2 *p2,
+                                       const ImVec2 *p3, unsigned int color) {
+  if (!p1 || !p2 || !p3) {
+    return;
+  }
+
+  ImDrawList *draw_list = ImGui::GetWindowDrawList();
+  if (!draw_list) {
+    return;
+  }
+
+  draw_list->AddTriangleFilled(*p1, *p2, *p3, color);
 }
 
 float imgui_bridge_get_io_delta_time(void) { return ImGui::GetIO().DeltaTime; }

@@ -22,6 +22,7 @@ const content_browser = @import("panels/content_browser.zig");
 const inspector = @import("panels/inspector.zig");
 const animation_panel = @import("panels/animation_panel.zig");
 const scene_manager_panel = @import("panels/scene_manager_panel.zig");
+const selection_system = @import("systems/selection_system.zig");
 const performance_panel = @import("panels/performance_panel.zig");
 const input_system = @import("systems/input.zig");
 const camera_controller = @import("systems/camera_controller.zig");
@@ -310,6 +311,8 @@ pub fn init(win_ptr: *window.CardinalWindow, rnd_ptr: *types.CardinalRenderer, r
         .outer_cone = 0.0,
         .type = 0, // Directional
     };
+
+    renderer.cardinal_renderer_set_debug_grid(rnd_ptr, state.show_grid_axes);
 
     if (!model_manager.cardinal_model_manager_init(&state.model_manager)) return false;
 
@@ -689,6 +692,10 @@ pub fn update() void {
         const dock_flags = c.ImGuiDockNodeFlags_PassthruCentralNode;
         c.imgui_bridge_dock_space(dock_id, &zero_vec, dock_flags);
 
+        // Update Selection System (Gizmos)
+        // Drawn into the DockSpace window (which has PassthruCentralNode), so it appears over the scene
+        selection_system.update(&state);
+
         // Main Menu Bar
         if (c.imgui_bridge_begin_menu_bar()) {
             if (c.imgui_bridge_begin_menu("File", true)) {
@@ -708,6 +715,7 @@ pub fn update() void {
             }
 
             if (c.imgui_bridge_begin_menu("View", true)) {
+                if (c.imgui_bridge_menu_item("Scene View", null, state.show_scene_view, true)) state.show_scene_view = !state.show_scene_view;
                 if (c.imgui_bridge_menu_item("Scene Graph", null, state.show_scene_graph, true)) state.show_scene_graph = !state.show_scene_graph;
                 if (c.imgui_bridge_menu_item("Assets", null, state.show_assets, true)) state.show_assets = !state.show_assets;
                 if (c.imgui_bridge_menu_item("Model Manager", null, state.show_model_manager, true)) state.show_model_manager = !state.show_model_manager;
@@ -715,6 +723,10 @@ pub fn update() void {
                 if (c.imgui_bridge_menu_item("PBR Settings", null, state.show_pbr_settings, true)) state.show_pbr_settings = !state.show_pbr_settings;
                 if (c.imgui_bridge_menu_item("Animation", null, state.show_animation, true)) state.show_animation = !state.show_animation;
                 if (c.imgui_bridge_menu_item("Performance", null, state.show_performance_panel, true)) state.show_performance_panel = !state.show_performance_panel;
+                if (c.imgui_bridge_menu_item("Grid & Axes", null, state.show_grid_axes, true)) {
+                    state.show_grid_axes = !state.show_grid_axes;
+                    renderer.cardinal_renderer_set_debug_grid(state.renderer, state.show_grid_axes);
+                }
                 c.imgui_bridge_end_menu();
             }
             c.imgui_bridge_end_menu_bar();
@@ -729,6 +741,91 @@ pub fn update() void {
         performance_panel.draw_performance_panel(&state);
         scene_manager_panel.draw_scene_manager_panel(&state, allocator);
 
+        if (state.show_scene_view) {
+            const open_scene = c.imgui_bridge_begin("Scene", &state.show_scene_view, 0);
+            defer c.imgui_bridge_end();
+
+            if (open_scene) {
+                var win_pos: c.ImVec2 = undefined;
+                var win_size: c.ImVec2 = undefined;
+                c.imgui_bridge_get_window_pos(&win_pos);
+                c.imgui_bridge_get_window_size(&win_size);
+
+                if (state.show_grid_axes) {
+                    // Grid is rendered in world-space by Vulkan; only draw axes gizmo here.
+
+                    const cam = state.camera;
+                    const world_up = Vec3{ .x = 0.0, .y = 1.0, .z = 0.0 };
+                    var forward = Vec3{
+                        .x = cam.target.x - cam.position.x,
+                        .y = cam.target.y - cam.position.y,
+                        .z = cam.target.z - cam.position.z,
+                    };
+                    const forward_len = forward.length();
+                    if (forward_len > 0.0001) {
+                        forward = forward.mul(1.0 / forward_len);
+                    } else {
+                        forward = Vec3{ .x = 0.0, .y = 0.0, .z = -1.0 };
+                    }
+
+                    var right = forward.cross(world_up);
+                    const right_len = right.length();
+                    if (right_len > 0.0001) {
+                        right = right.mul(1.0 / right_len);
+                    } else {
+                        right = Vec3{ .x = 1.0, .y = 0.0, .z = 0.0 };
+                    }
+
+                    var up_cam = right.cross(forward);
+                    const up_len = up_cam.length();
+                    if (up_len > 0.0001) {
+                        up_cam = up_cam.mul(1.0 / up_len);
+                    } else {
+                        up_cam = world_up;
+                    }
+
+                    const origin = c.ImVec2{
+                        .x = win_pos.x + 60.0,
+                        .y = win_pos.y + win_size.y - 60.0,
+                    };
+                    const axis_size: f32 = 40.0;
+
+                    const axes = [_]struct { dir: Vec3, color: u32 }{
+                        .{ .dir = Vec3{ .x = 1.0, .y = 0.0, .z = 0.0 }, .color = 0xFFFF5555 },
+                        .{ .dir = Vec3{ .x = 0.0, .y = 1.0, .z = 0.0 }, .color = 0xFF55FF55 },
+                        .{ .dir = Vec3{ .x = 0.0, .y = 0.0, .z = 1.0 }, .color = 0xFF5599FF },
+                    };
+
+                    var i: usize = 0;
+                    while (i < axes.len) : (i += 1) {
+                        const axis_world = axes[i].dir;
+                        const vx = axis_world.dot(right);
+                        const vy = axis_world.dot(up_cam);
+
+                        var sx = vx;
+                        var sy = -vy;
+                        const len_sq = sx * sx + sy * sy;
+                        if (len_sq <= 0.0001) continue;
+                        const inv_len = 1.0 / @sqrt(len_sq);
+                        sx *= inv_len;
+                        sy *= inv_len;
+
+                        const end = c.ImVec2{
+                            .x = origin.x + sx * axis_size,
+                            .y = origin.y + sy * axis_size,
+                        };
+
+                        var p0 = origin;
+                        var p1 = end;
+                        c.imgui_bridge_draw_line(&p0, &p1, axes[i].color, 2.0);
+                    }
+
+                    var center = origin;
+                    c.imgui_bridge_draw_circle_filled(&center, 3.0, 0xFFFFFFFF);
+                }
+            }
+        }
+
         // Check for dirty model manager and update combined scene
         if (state.model_manager.scene_dirty) {
             const combined = model_manager.cardinal_model_manager_get_combined_scene(&state.model_manager);
@@ -737,6 +834,12 @@ pub fn update() void {
                 state.pending_scene = state.combined_scene;
                 state.scene_upload_pending = true;
                 log.cardinal_log_info("[EDITOR] Model manager dirty, updating combined scene", .{});
+            }
+        } else if (state.model_manager.transform_dirty) {
+            const combined = model_manager.cardinal_model_manager_get_combined_scene(&state.model_manager);
+            if (combined) |comb_ptr| {
+                state.combined_scene = comb_ptr.*;
+                // No upload pending, renderer sees updated pointers in state.combined_scene
             }
         }
 

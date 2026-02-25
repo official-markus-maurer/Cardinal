@@ -222,6 +222,8 @@ void imgui_bridge_viewport_get_work_pos(const ImGuiViewport *viewport,
                                         ImVec2 *out_pos);
 void imgui_bridge_viewport_get_work_size(const ImGuiViewport *viewport,
                                          ImVec2 *out_size);
+void imgui_bridge_get_window_pos(ImVec2 *out_pos);
+void imgui_bridge_get_window_size(ImVec2 *out_size);
 void imgui_bridge_set_next_window_pos(const ImVec2 *pos, int cond,
                                       const ImVec2 *pivot);
 void imgui_bridge_set_next_window_size(const ImVec2 *size, int cond);
@@ -309,6 +311,7 @@ bool imgui_bridge_menu_item(const char *label, const char *shortcut,
 
 // Tree & Layout
 bool imgui_bridge_tree_node(const char *label);
+bool imgui_bridge_tree_node_ex(const char *label, int flags);
 void imgui_bridge_tree_pop(void);
 void imgui_bridge_bullet_text(const char *fmt, ...);
 void imgui_bridge_indent(float indent_w);
@@ -359,9 +362,33 @@ void imgui_bridge_plot_lines(const char *label, const float *values,
                              float scale_max, const ImVec2 *graph_size,
                              int stride);
 
+// Debug drawing helpers
+void imgui_bridge_draw_grid(const ImVec2 *top_left, const ImVec2 *size,
+                            float spacing, unsigned int color_minor,
+                            unsigned int color_major);
+void imgui_bridge_draw_axes_gizmo(const ImVec2 *origin, float size,
+                                  unsigned int color_x, unsigned int color_y,
+                                  unsigned int color_z);
+void imgui_bridge_draw_line(const ImVec2 *p0, const ImVec2 *p1,
+                            unsigned int color, float thickness);
+void imgui_bridge_draw_circle(const ImVec2 *center, float radius,
+                              unsigned int color, float thickness);
+void imgui_bridge_draw_circle_filled(const ImVec2 *center, float radius,
+                                     unsigned int color);
+void imgui_bridge_draw_triangle_filled(const ImVec2 *p1, const ImVec2 *p2,
+                                       const ImVec2 *p3, unsigned int color);
 
 // IO
 float imgui_bridge_get_io_delta_time(void);
+
+// Input & IO
+void imgui_bridge_get_mouse_pos(ImVec2* out_pos);
+bool imgui_bridge_is_mouse_down(int button);
+bool imgui_bridge_is_mouse_clicked(int button);
+bool imgui_bridge_is_shift_down(void);
+bool imgui_bridge_is_ctrl_down(void);
+bool imgui_bridge_is_alt_down(void);
+bool imgui_bridge_want_capture_mouse(void);
 
 #ifdef __cplusplus
 }

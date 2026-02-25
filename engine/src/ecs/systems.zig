@@ -4,6 +4,7 @@ const components = @import("components.zig");
 const system_pkg = @import("system.zig");
 const command_buffer_pkg = @import("command_buffer.zig");
 const log = @import("../core/log.zig");
+const math = @import("../core/math.zig");
 
 const sys_log = log.ScopedLogger("ECS_SYSTEMS");
 
@@ -14,6 +15,18 @@ pub const RenderSystemDesc = system_pkg.System{
     .reads = &.{
         registry_pkg.Registry.get_type_id(components.Camera),
         registry_pkg.Registry.get_type_id(components.MeshRenderer),
+        registry_pkg.Registry.get_type_id(components.Transform),
+    },
+};
+
+pub const TransformSystemDesc = system_pkg.System{
+    .name = "TransformSystem",
+    .update = TransformSystem.update,
+    .reads = &.{
+        registry_pkg.Registry.get_type_id(components.Transform),
+        registry_pkg.Registry.get_type_id(components.Hierarchy),
+    },
+    .writes = &.{
         registry_pkg.Registry.get_type_id(components.Transform),
     },
 };
@@ -105,6 +118,66 @@ pub const ScriptSystem = struct {
             if (script.on_update) |update_fn| {
                 update_fn(script.data, delta_time);
             }
+        }
+    }
+};
+
+pub const TransformSystem = struct {
+    fn update_node(registry: *registry_pkg.Registry, entity: registry_pkg.Entity, parent_world: ?math.Mat4, parent_dirty: bool) void {
+        const transform_opt = registry.get(components.Transform, entity);
+        if (transform_opt == null) return;
+        const transform = transform_opt.?;
+
+        const world_dirty = transform.dirty or parent_dirty;
+
+        if (parent_world) |pw| {
+            if (world_dirty) {
+                const local = math.Mat4.fromTRS(transform.position, transform.rotation, transform.scale);
+                transform.world_matrix = pw.mul(local);
+                transform.dirty = false;
+            }
+        } else {
+            if (world_dirty) {
+                const local = math.Mat4.fromTRS(transform.position, transform.rotation, transform.scale);
+                transform.world_matrix = local;
+                transform.dirty = false;
+            }
+        }
+
+        const current_world = transform.world_matrix;
+
+        if (registry.get(components.Hierarchy, entity)) |hierarchy| {
+            if (hierarchy.first_child) |child_entity| {
+                var c = child_entity;
+                while (true) {
+                    update_node(registry, c, current_world, world_dirty);
+                    const child_h_opt = registry.get(components.Hierarchy, c);
+                    if (child_h_opt == null or child_h_opt.?.next_sibling == null) {
+                        break;
+                    }
+                    c = child_h_opt.?.next_sibling.?;
+                }
+            }
+        }
+    }
+
+    pub fn update(registry: *registry_pkg.Registry, ecb: *command_buffer_pkg.CommandBuffer, delta_time: f32) void {
+        _ = ecb;
+        _ = delta_time;
+
+        var view = registry.view(components.Transform);
+        var it = view.iterator();
+
+        while (it.next()) |entry| {
+            const entity = entry.entity;
+            const hierarchy = registry.get(components.Hierarchy, entity);
+            if (hierarchy) |h| {
+                if (h.parent != null) {
+                    continue;
+                }
+            }
+
+            update_node(registry, entity, null, false);
         }
     }
 };

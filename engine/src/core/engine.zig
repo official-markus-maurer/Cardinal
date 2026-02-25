@@ -172,6 +172,7 @@ pub const CardinalEngine = struct {
         // Register default ECS Systems
         try self.scheduler.add(ecs_systems.ScriptSystemDesc);
         try self.scheduler.add(ecs_systems.PhysicsSystemDesc);
+        try self.scheduler.add(ecs_systems.TransformSystemDesc);
         try self.scheduler.add(ecs_systems.RenderSystemDesc);
 
         eng_log.info("Initializing memory management system...", .{});

@@ -27,6 +27,7 @@ pub const CardinalEngineConfig = struct {
         .pipeline_dir = "assets/pipelines".* ++ .{0} ** (64 - "assets/pipelines".len),
         .texture_dir = "assets/textures".* ++ .{0} ** (64 - "assets/textures".len),
         .model_dir = "assets/models".* ++ .{0} ** (64 - "assets/models".len),
+        .present_mode = c.VK_PRESENT_MODE_FIFO_KHR,
     },
 
     // Helper to ensure title is null-terminated if needed, though usually handled by duplication
@@ -76,6 +77,7 @@ pub const ConfigManager = struct {
             shadow_near_clip: ?f32 = null,
             shadow_far_clip: ?f32 = null,
             prefer_hdr: ?bool = null,
+            present_mode: ?c.VkPresentModeKHR = null,
             max_lights: ?u32 = null,
             max_frames_in_flight: ?u32 = null,
             timeline_max_ahead: ?u64 = null,
@@ -126,6 +128,7 @@ pub const ConfigManager = struct {
             if (r.shadow_near_clip) |v| self.config.renderer.shadow_near_clip = v;
             if (r.shadow_far_clip) |v| self.config.renderer.shadow_far_clip = v;
             if (r.prefer_hdr) |v| self.config.renderer.prefer_hdr = v;
+            if (r.present_mode) |v| self.config.renderer.present_mode = v;
             if (r.max_lights) |v| self.config.renderer.max_lights = v;
             if (r.max_frames_in_flight) |v| self.config.renderer.max_frames_in_flight = v;
             if (r.timeline_max_ahead) |v| self.config.renderer.timeline_max_ahead = v;
