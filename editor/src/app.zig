@@ -23,6 +23,13 @@ pub const EditorApp = struct {
         // Create engine
         app.engine = try CardinalEngine.create(allocator, config);
 
+        // Configure window for Project Manager (Launcher Mode)
+        if (app.engine.window) |win| {
+            engine.window.cardinal_window_set_size(win, 600, 400);
+            engine.window.cardinal_window_set_title(win, "Cardinal Project Manager");
+            engine.window.cardinal_window_center(win);
+        }
+
         errdefer {
             allocator.destroy(app);
         }
@@ -93,7 +100,6 @@ pub const EditorApp = struct {
         if (self.editor_layer_initialized) {
             editor_layer.shutdown();
         }
-
         self.engine.deinit();
         self.allocator.destroy(self.engine);
         self.allocator.destroy(self);

@@ -27,6 +27,7 @@ const performance_panel = @import("panels/performance_panel.zig");
 const input_system = @import("systems/input.zig");
 const camera_controller = @import("systems/camera_controller.zig");
 const scene_io = @import("systems/scene_io.zig");
+const project_manager = @import("panels/project_manager.zig");
 
 const c = @import("c.zig").c;
 
@@ -71,22 +72,33 @@ fn check_loading_status() void {
                         state.combined_scene = comb_ptr.*;
                         state.scene_loaded = true;
 
-                        // Re-init ECS Registry and Import Scene
-                        state.registry.deinit();
-                        state.registry.* = engine.ecs_registry.Registry.init(allocator);
-                        scene_io.import_scene_graph(&state);
+                        // If this was an incremental load (drag & drop to entity), just instantiate.
+                        // Otherwise, rebuild the whole scene graph.
+                        if (info.target_entity) |parent| {
+                            scene_io.instantiate_model(&state, model_id, parent);
+                            
+                            // We still need to upload the new combined scene to the GPU
+                            if (initialized) {
+                                state.pending_scene = state.combined_scene;
+                                state.scene_upload_pending = true;
+                            }
+                        } else {
+                            // Full reload
+                            state.registry.deinit();
+                            state.registry.* = engine.ecs_registry.Registry.init(allocator);
+                            scene_io.import_scene_graph(&state);
 
-                        if (initialized) {
-                            state.pending_scene = state.combined_scene;
-                            state.scene_upload_pending = true;
-                            // Reset animation selection when new scene is loaded
-                            state.selected_animation = -1;
-                            state.animation_time = 0.0;
-                            state.animation_playing = false;
-
-                            log.cardinal_log_info("[EDITOR] Deferred scene upload scheduled", .{});
+                            if (initialized) {
+                                state.pending_scene = state.combined_scene;
+                                state.scene_upload_pending = true;
+                                // Reset animation selection when new scene is loaded
+                                state.selected_animation = -1;
+                                state.animation_time = 0.0;
+                                state.animation_playing = false;
+                            }
                         }
 
+                        log.cardinal_log_info("[EDITOR] Deferred scene upload scheduled", .{});
                         _ = std.fmt.bufPrintZ(&state.status_msg, "Loaded model: {d} meshes from {s} (ID: {d})", .{ loaded_scene.mesh_count, filename, model_id }) catch {};
                     }
                 }
@@ -326,8 +338,14 @@ pub fn init(win_ptr: *window.CardinalWindow, rnd_ptr: *types.CardinalRenderer, r
     var assets_path: []const u8 = undefined;
 
     // Check if configured path exists
-    if (std.fs.openDirAbsolute(state.config_manager.config.assets_path, .{})) |_| {
-        assets_path = state.config_manager.config.assets_path;
+    if (std.fs.cwd().openDir(state.config_manager.config.assets_path, .{})) |dir| {
+        var d = dir;
+        d.close();
+        // Resolve to absolute path
+        assets_path = std.fs.cwd().realpath(state.config_manager.config.assets_path, &buffer) catch |e| {
+            log.cardinal_log_error("Failed to resolve absolute path for assets: {}", .{e});
+            return false;
+        };
     } else |err| {
         // Fallback to relative "assets"
         log.cardinal_log_warn("Configured assets path '{s}' invalid ({}), using default", .{ state.config_manager.config.assets_path, err });
@@ -457,6 +475,34 @@ pub fn on_device_restored(user_data: ?*anyopaque, success: bool) callconv(.c) vo
 
     log.cardinal_log_info("[EDITOR_LAYER] Device restored, re-initializing ImGui", .{});
 
+    // Check if we are already initialized to prevent leaks
+    if (initialized or state.descriptor_pool != null) {
+        log.cardinal_log_warn("[EDITOR_LAYER] Device restored but ImGui already initialized. Shutting down old instance.", .{});
+        c.imgui_bridge_impl_vulkan_shutdown();
+        c.imgui_bridge_impl_glfw_shutdown(); // Fully shutdown
+
+        if (state.descriptor_pool != null) {
+            const rnd_ptr = state.renderer;
+            const device = @as(c.VkDevice, @ptrCast(renderer.cardinal_renderer_internal_device(rnd_ptr)));
+            c.vkDestroyDescriptorPool(device, state.descriptor_pool, null);
+            state.descriptor_pool = null;
+        }
+        initialized = false;
+    }
+
+    // Re-init GLFW
+    // We need the GLFW handle (not native HWND)
+    const native_window = @as(?*c.GLFWwindow, @ptrCast(window.cardinal_window_get_glfw_handle(state.window)));
+    if (native_window == null) {
+        log.cardinal_log_error("[EDITOR_LAYER] Failed to get GLFW window handle for ImGui re-init", .{});
+        return;
+    }
+
+    if (!c.imgui_bridge_impl_glfw_init_for_vulkan(native_window.?, true)) {
+        log.cardinal_log_error("[EDITOR_LAYER] Failed to re-initialize ImGui GLFW backend", .{});
+        return;
+    }
+
     // Re-create descriptor pool with NEW device
     const rnd_ptr = state.renderer;
     const device = @as(c.VkDevice, @ptrCast(renderer.cardinal_renderer_internal_device(rnd_ptr)));
@@ -520,6 +566,20 @@ pub fn on_device_restored(user_data: ?*anyopaque, success: bool) callconv(.c) vo
     device_recovery_failed = false;
 }
 
+fn close_project() void {
+    if (state.project) |*proj| {
+        proj.deinit();
+    }
+    state.project = null;
+    state.project_loaded = false;
+
+    // Restore launcher window
+    engine.window.cardinal_window_restore(state.window);
+    engine.window.cardinal_window_set_size(state.window, 600, 400);
+    engine.window.cardinal_window_center(state.window);
+    engine.window.cardinal_window_set_title(state.window, "Cardinal Project Manager");
+}
+
 pub fn has_device_recovery_failed() bool {
     return device_recovery_failed;
 }
@@ -562,6 +622,16 @@ pub fn shutdown() void {
 
 pub fn update() void {
     if (!initialized) return;
+
+    // Project Manager Modal (Blocking)
+    if (!state.project_loaded) {
+        c.imgui_bridge_impl_vulkan_new_frame();
+        c.imgui_bridge_impl_glfw_new_frame();
+        c.imgui_bridge_new_frame();
+
+        project_manager.draw_project_manager_panel(&state, allocator);
+        return;
+    }
 
     // Process async callbacks (frees fire-and-forget tasks like textures)
     _ = async_loader.cardinal_async_process_completed_tasks(0);
@@ -699,6 +769,13 @@ pub fn update() void {
         // Main Menu Bar
         if (c.imgui_bridge_begin_menu_bar()) {
             if (c.imgui_bridge_begin_menu("File", true)) {
+                if (c.imgui_bridge_menu_item("New Project...", null, false, true)) {
+                    close_project();
+                }
+                if (c.imgui_bridge_menu_item("Open Project...", null, false, true)) {
+                    close_project();
+                }
+                c.imgui_bridge_separator();
                 if (c.imgui_bridge_menu_item("Save Scene", "Ctrl+S", false, true)) {
                     save_scene();
                 }

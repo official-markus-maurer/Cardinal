@@ -22,6 +22,8 @@ pub const SelectionState = struct {
     hover_axis: ?u32 = null,
     hover_is_rotation: bool = false,
     drag_is_rotation: bool = false,
+    drag_plane_normal: math.Vec3 = math.Vec3.zero(),
+    drag_start_t: f32 = 0.0,
 };
 
 var selection_state = SelectionState{};
@@ -148,7 +150,7 @@ pub fn update(state: *EditorState) void {
                     if (!model.visible or model.is_loading) continue;
 
                     const scn = &model.scene;
-                    
+
                     // Iterate root nodes to check intersection against world-transformed meshes
                     if (scn.root_nodes) |roots| {
                         var r: u32 = 0;
@@ -253,55 +255,55 @@ fn draw_gizmo(state: *EditorState) void {
             var is_hovered = false;
             // Interaction Check (Ray-Plane Intersection)
             if (!selection_state.is_dragging and can_interact) {
-                 if (get_ray_from_mouse(state)) |ray| {
-                     const denom = axes[i].dot(ray.direction);
-                     if (@abs(denom) > 0.0001) {
-                         const t = axes[i].dot(pos.sub(ray.origin)) / denom;
-                         if (t > 0) {
-                             const hit_point = ray.origin.add(ray.direction.mul(t));
-                             const dist_to_center = hit_point.sub(pos).length();
-                             // Ring radius is scale_factor * 1.2 to be outside arrows
-                             const ring_radius = scale_factor * 1.2;
-                             const ring_thickness = scale_factor * 0.1;
-                             
-                             if (@abs(dist_to_center - ring_radius) < ring_thickness) {
-                                 is_hovered = true;
-                                 hovered = @as(u32, @intCast(i));
-                                 hovered_rot = true;
-                             }
-                         }
-                     }
-                 }
+                if (get_ray_from_mouse(state)) |ray| {
+                    const denom = axes[i].dot(ray.direction);
+                    if (@abs(denom) > 0.0001) {
+                        const t = axes[i].dot(pos.sub(ray.origin)) / denom;
+                        if (t > 0) {
+                            const hit_point = ray.origin.add(ray.direction.mul(t));
+                            const dist_to_center = hit_point.sub(pos).length();
+                            // Ring radius is scale_factor * 1.2 to be outside arrows
+                            const ring_radius = scale_factor * 1.2;
+                            const ring_thickness = scale_factor * 0.1;
+
+                            if (@abs(dist_to_center - ring_radius) < ring_thickness) {
+                                is_hovered = true;
+                                hovered = @as(u32, @intCast(i));
+                                hovered_rot = true;
+                            }
+                        }
+                    }
+                }
             }
             if (selection_state.drag_axis == @as(u32, @intCast(i)) and selection_state.drag_is_rotation) is_hovered = true;
-            
+
             const color = if (is_hovered) 0xFFFFFFFF else axis_colors[i];
-            
+
             // Draw Ring
-            var u = math.Vec3{ .x=0, .y=1, .z=0 };
-            if (@abs(axes[i].dot(u)) > 0.9) u = math.Vec3{ .x=0, .y=0, .z=1 };
+            var u = math.Vec3{ .x = 0, .y = 1, .z = 0 };
+            if (@abs(axes[i].dot(u)) > 0.9) u = math.Vec3{ .x = 0, .y = 0, .z = 1 };
             const v = axes[i].cross(u).normalize();
             u = v.cross(axes[i]).normalize();
-            
+
             const ring_radius = scale_factor * 1.2;
             const segments = 64;
             var prev_p: c.ImVec2 = undefined;
-            
+
             for (0..segments + 1) |s| {
                 const angle = (@as(f32, @floatFromInt(s)) / @as(f32, @floatFromInt(segments))) * std.math.pi * 2.0;
                 const p_local = u.mul(std.math.cos(angle) * ring_radius).add(v.mul(std.math.sin(angle) * ring_radius));
                 const p_world = pos.add(p_local);
-                
-                const p_v4 = view_proj.mulVec4(math.Vec4{ .x=p_world.x, .y=p_world.y, .z=p_world.z, .w=1.0 });
+
+                const p_v4 = view_proj.mulVec4(math.Vec4{ .x = p_world.x, .y = p_world.y, .z = p_world.z, .w = 1.0 });
                 if (p_v4.w <= 0) continue;
-                
+
                 const p_ndc = math.Vec3{ .x = p_v4.x / p_v4.w, .y = p_v4.y / p_v4.w, .z = p_v4.z / p_v4.w };
                 const px = (p_ndc.x + 1.0) * 0.5 * @as(f32, @floatFromInt(win_width));
                 const py = (p_ndc.y + 1.0) * 0.5 * @as(f32, @floatFromInt(win_height));
-                const current_p = c.ImVec2{ .x=px, .y=py };
-                
+                const current_p = c.ImVec2{ .x = px, .y = py };
+
                 if (s > 0) {
-                     c.imgui_bridge_draw_line(&prev_p, &current_p, color, axis_thickness);
+                    c.imgui_bridge_draw_line(&prev_p, &current_p, color, axis_thickness);
                 }
                 prev_p = current_p;
             }
@@ -343,43 +345,43 @@ fn draw_gizmo(state: *EditorState) void {
                 // Draw Pyramid for Scale
                 const pyramid_len = scale_factor * 0.2;
                 const base_width = pyramid_len * 0.5;
-                
+
                 const tip = end_pos_world;
                 const base_center = tip.sub(axes[i].mul(pyramid_len));
-                
+
                 // Find perp vectors
-                var u = math.Vec3{ .x=0, .y=1, .z=0 };
-                if (@abs(axes[i].dot(u)) > 0.9) u = math.Vec3{ .x=0, .y=0, .z=1 };
+                var u = math.Vec3{ .x = 0, .y = 1, .z = 0 };
+                if (@abs(axes[i].dot(u)) > 0.9) u = math.Vec3{ .x = 0, .y = 0, .z = 1 };
                 const right = axes[i].cross(u).normalize();
                 const up_vec = right.cross(axes[i]).normalize();
-                
+
                 // 4 Base corners
                 const c1 = base_center.add(right.mul(base_width)).add(up_vec.mul(base_width));
                 const c2 = base_center.sub(right.mul(base_width)).add(up_vec.mul(base_width));
                 const c3 = base_center.sub(right.mul(base_width)).sub(up_vec.mul(base_width));
                 const c4 = base_center.add(right.mul(base_width)).sub(up_vec.mul(base_width));
-                
+
                 // Helper to project
-                const p_tip_v4 = view_proj.mulVec4(math.Vec4{ .x=tip.x, .y=tip.y, .z=tip.z, .w=1.0 });
-                const p_c1_v4 = view_proj.mulVec4(math.Vec4{ .x=c1.x, .y=c1.y, .z=c1.z, .w=1.0 });
-                const p_c2_v4 = view_proj.mulVec4(math.Vec4{ .x=c2.x, .y=c2.y, .z=c2.z, .w=1.0 });
-                const p_c3_v4 = view_proj.mulVec4(math.Vec4{ .x=c3.x, .y=c3.y, .z=c3.z, .w=1.0 });
-                const p_c4_v4 = view_proj.mulVec4(math.Vec4{ .x=c4.x, .y=c4.y, .z=c4.z, .w=1.0 });
-                
+                const p_tip_v4 = view_proj.mulVec4(math.Vec4{ .x = tip.x, .y = tip.y, .z = tip.z, .w = 1.0 });
+                const p_c1_v4 = view_proj.mulVec4(math.Vec4{ .x = c1.x, .y = c1.y, .z = c1.z, .w = 1.0 });
+                const p_c2_v4 = view_proj.mulVec4(math.Vec4{ .x = c2.x, .y = c2.y, .z = c2.z, .w = 1.0 });
+                const p_c3_v4 = view_proj.mulVec4(math.Vec4{ .x = c3.x, .y = c3.y, .z = c3.z, .w = 1.0 });
+                const p_c4_v4 = view_proj.mulVec4(math.Vec4{ .x = c4.x, .y = c4.y, .z = c4.z, .w = 1.0 });
+
                 if (p_tip_v4.w > 0 and p_c1_v4.w > 0 and p_c2_v4.w > 0 and p_c3_v4.w > 0 and p_c4_v4.w > 0) {
                     const mk_pt = struct {
                         fn call(v4: math.Vec4, w: f32, h: f32) c.ImVec2 {
-                            const n = math.Vec3{ .x=v4.x/v4.w, .y=v4.y/v4.w, .z=v4.z/v4.w };
+                            const n = math.Vec3{ .x = v4.x / v4.w, .y = v4.y / v4.w, .z = v4.z / v4.w };
                             return c.ImVec2{ .x = (n.x + 1.0) * 0.5 * w, .y = (n.y + 1.0) * 0.5 * h };
                         }
                     }.call;
-                    
+
                     const p_tip = mk_pt(p_tip_v4, @floatFromInt(win_width), @floatFromInt(win_height));
                     const p_c1 = mk_pt(p_c1_v4, @floatFromInt(win_width), @floatFromInt(win_height));
                     const p_c2 = mk_pt(p_c2_v4, @floatFromInt(win_width), @floatFromInt(win_height));
                     const p_c3 = mk_pt(p_c3_v4, @floatFromInt(win_width), @floatFromInt(win_height));
                     const p_c4 = mk_pt(p_c4_v4, @floatFromInt(win_width), @floatFromInt(win_height));
-                    
+
                     c.imgui_bridge_draw_triangle_filled(&p_tip, &p_c1, &p_c2, color);
                     c.imgui_bridge_draw_triangle_filled(&p_tip, &p_c2, &p_c3, color);
                     c.imgui_bridge_draw_triangle_filled(&p_tip, &p_c3, &p_c4, color);
@@ -396,7 +398,8 @@ fn draw_gizmo(state: *EditorState) void {
     selection_state.hover_is_rotation = hovered_rot;
 
     // Handle Dragging Start
-    if (c.imgui_bridge_is_mouse_clicked(0) and hovered != null and can_interact) {
+    // Added !selection_state.is_dragging check to prevent state changes while already dragging
+    if (c.imgui_bridge_is_mouse_clicked(0) and hovered != null and can_interact and !selection_state.is_dragging) {
         selection_state.is_dragging = true;
         selection_state.drag_axis = hovered;
         selection_state.drag_is_rotation = hovered_rot;
@@ -404,6 +407,38 @@ fn draw_gizmo(state: *EditorState) void {
         selection_state.drag_start_pos = pos;
         selection_state.drag_start_rot = rot;
         selection_state.drag_start_val = if (selection_state.gizmo_mode == .Translate) pos else scale_vec;
+
+        // Calculate drag plane and start t for 3D dragging
+        if (!hovered_rot) {
+            const axis = axes[hovered.?];
+            const cam_dir = state.camera.target.sub(state.camera.position).normalize();
+
+            // Plane Normal: Cross(Axis, Cross(CamDir, Axis))
+            // This gives a vector perpendicular to Axis, lying in the plane of Axis and CamDir.
+            // This ensures the plane contains the Axis line and is "most perpendicular" to the View.
+            var plane_normal = axis.cross(cam_dir).cross(axis).normalize();
+            if (plane_normal.lengthSq() < 0.001) {
+                plane_normal = axis.cross(state.camera.up).cross(axis).normalize();
+            }
+            selection_state.drag_plane_normal = plane_normal;
+
+            var valid_start = false;
+            if (get_ray_from_mouse(state)) |ray| {
+                const denom = ray.direction.dot(plane_normal);
+                if (@abs(denom) > 0.0001) {
+                    const t_hit = pos.sub(ray.origin).dot(plane_normal) / denom;
+                    const hit_point = ray.origin.add(ray.direction.mul(t_hit));
+                    selection_state.drag_start_t = hit_point.sub(pos).dot(axis);
+                    valid_start = true;
+                }
+            }
+            
+            if (!valid_start) {
+                // Abort drag if we can't determine start point
+                selection_state.is_dragging = false;
+                selection_state.drag_axis = null;
+            }
+        }
     }
 
     // Stop Dragging
@@ -417,81 +452,66 @@ fn draw_gizmo(state: *EditorState) void {
     if (selection_state.is_dragging) {
         if (selection_state.drag_axis) |axis_idx| {
             if (selection_state.drag_is_rotation) {
-                 // Arcball-ish Rotation
-                 const mouse_curr = math.Vec2{ .x = mouse_pos.x, .y = mouse_pos.y };
-                 const center_2d = math.Vec2{ .x = center.x, .y = center.y };
-                 
-                 const v1 = selection_state.drag_start_mouse.sub(center_2d).normalize();
-                 const v2 = mouse_curr.sub(center_2d).normalize();
-                 
-                 // Angle change
-                 // 2D cross product: x1*y2 - y1*x2
-                 const cross = v1.x * v2.y - v1.y * v2.x;
-                 const dot = v1.x * v2.x + v1.y * v2.y;
-                 const angle = std.math.atan2(cross, dot);
-                 
-                 // Apply rotation around axis
-                 // Adjust angle direction if needed?
-                 // Usually depends on if axis is pointing towards or away from camera.
-                 // Simple approximation:
-                 const axis = axes[axis_idx];
-                 const delta_rot = math.Quat.fromAxisAngle(axis, angle);
-                 const new_rot = delta_rot.mul(selection_state.drag_start_rot).normalize();
-                 
-                 const new_mat = math.Mat4.fromTRS(pos, new_rot, scale_vec);
-                 model.transform = new_mat.data;
-                 state.model_manager.transform_dirty = true;
-                 
+                // Arcball-ish Rotation
+                const mouse_curr = math.Vec2{ .x = mouse_pos.x, .y = mouse_pos.y };
+                const center_2d = math.Vec2{ .x = center.x, .y = center.y };
+
+                const v1 = selection_state.drag_start_mouse.sub(center_2d).normalize();
+                const v2 = mouse_curr.sub(center_2d).normalize();
+
+                // Angle change
+                // 2D cross product: x1*y2 - y1*x2
+                const cross = v1.x * v2.y - v1.y * v2.x;
+                const dot = v1.x * v2.x + v1.y * v2.y;
+                const angle = std.math.atan2(cross, dot);
+
+                // Apply rotation around axis
+                const axis = axes[axis_idx];
+                const delta_rot = math.Quat.fromAxisAngle(axis, angle);
+                const new_rot = delta_rot.mul(selection_state.drag_start_rot).normalize();
+
+                const new_mat = math.Mat4.fromTRS(pos, new_rot, scale_vec);
+                model.transform = new_mat.data;
+                state.model_manager.transform_dirty = true;
             } else {
                 // Translate / Scale
-                const mouse_delta_x = mouse_pos.x - selection_state.drag_start_mouse.x;
-                const mouse_delta_y = mouse_pos.y - selection_state.drag_start_mouse.y; 
+                if (get_ray_from_mouse(state)) |ray| {
+                    const axis = axes[axis_idx];
+                    const plane_normal = selection_state.drag_plane_normal;
 
-                // Project axis to screen to find direction
-                const axis_end_world = selection_state.drag_start_pos.add(axes[axis_idx].mul(scale_factor));
-                const axis_end_v4 = view_proj.mulVec4(math.Vec4{ .x = axis_end_world.x, .y = axis_end_world.y, .z = axis_end_world.z, .w = 1.0 });
+                    const denom = ray.direction.dot(plane_normal);
+                    if (@abs(denom) > 0.0001) {
+                        const t_hit = selection_state.drag_start_pos.sub(ray.origin).dot(plane_normal) / denom;
+                        const hit_point = ray.origin.add(ray.direction.mul(t_hit));
 
-                const axis_end_ndc = math.Vec3{ .x = axis_end_v4.x / axis_end_v4.w, .y = axis_end_v4.y / axis_end_v4.w, .z = axis_end_v4.z / axis_end_v4.w };
-                const axis_end_screen_x = (axis_end_ndc.x + 1.0) * 0.5 * @as(f32, @floatFromInt(win_width));
-                const axis_end_screen_y = (axis_end_ndc.y + 1.0) * 0.5 * @as(f32, @floatFromInt(win_height));
+                        // Project onto axis
+                        const current_t = hit_point.sub(selection_state.drag_start_pos).dot(axis);
+                        const delta_t = current_t - selection_state.drag_start_t;
 
-                const axis_dir_x = axis_end_screen_x - center.x;
-                const axis_dir_y = axis_end_screen_y - center.y;
+                        if (selection_state.gizmo_mode == .Translate) {
+                            var new_pos = selection_state.drag_start_val;
+                            new_pos = new_pos.add(axis.mul(delta_t));
 
-                const axis_len_sq = axis_dir_x * axis_dir_x + axis_dir_y * axis_dir_y;
+                            const new_mat = math.Mat4.fromTRS(new_pos, rot, scale_vec);
+                            model.transform = new_mat.data;
+                            state.model_manager.transform_dirty = true;
+                        } else if (selection_state.gizmo_mode == .Scale) {
+                            // Normalize delta by scale_factor (gizmo visual size) to make it consistent
+                            const scale_delta = 1.0 + (delta_t / scale_factor);
 
-                if (axis_len_sq > 0.001) {
-                    const axis_len = std.math.sqrt(axis_len_sq);
-                    const axis_dir_norm_x = axis_dir_x / axis_len;
-                    const axis_dir_norm_y = axis_dir_y / axis_len;
+                            var new_scale = selection_state.drag_start_val;
+                            if (axis_idx == 0) new_scale.x *= scale_delta;
+                            if (axis_idx == 1) new_scale.y *= scale_delta;
+                            if (axis_idx == 2) new_scale.z *= scale_delta;
 
-                    const proj_len = mouse_delta_x * axis_dir_norm_x + mouse_delta_y * axis_dir_norm_y;
-                    const world_delta = (proj_len / axis_len) * scale_factor;
+                            if (@abs(new_scale.x) < 0.001) new_scale.x = 0.001;
+                            if (@abs(new_scale.y) < 0.001) new_scale.y = 0.001;
+                            if (@abs(new_scale.z) < 0.001) new_scale.z = 0.001;
 
-                    if (selection_state.gizmo_mode == .Translate) {
-                        var new_pos = selection_state.drag_start_val;
-                        if (axis_idx == 0) new_pos.x += world_delta;
-                        if (axis_idx == 1) new_pos.y += world_delta;
-                        if (axis_idx == 2) new_pos.z += world_delta;
-
-                        const new_mat = math.Mat4.fromTRS(new_pos, rot, scale_vec);
-                        model.transform = new_mat.data;
-                        state.model_manager.transform_dirty = true;
-                    } else if (selection_state.gizmo_mode == .Scale) {
-                        var new_scale = selection_state.drag_start_val;
-                        const scale_factor_delta = 1.0 + (world_delta * 0.5);
-
-                        if (axis_idx == 0) new_scale.x *= scale_factor_delta;
-                        if (axis_idx == 1) new_scale.y *= scale_factor_delta;
-                        if (axis_idx == 2) new_scale.z *= scale_factor_delta;
-
-                        if (@abs(new_scale.x) < 0.001) new_scale.x = 0.001;
-                        if (@abs(new_scale.y) < 0.001) new_scale.y = 0.001;
-                        if (@abs(new_scale.z) < 0.001) new_scale.z = 0.001;
-
-                        const new_mat = math.Mat4.fromTRS(pos, rot, new_scale);
-                        model.transform = new_mat.data;
-                        state.model_manager.transform_dirty = true;
+                            const new_mat = math.Mat4.fromTRS(pos, rot, new_scale);
+                            model.transform = new_mat.data;
+                            state.model_manager.transform_dirty = true;
+                        }
                     }
                 }
             }

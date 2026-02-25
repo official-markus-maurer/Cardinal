@@ -768,6 +768,15 @@ pub export fn cardinal_async_free_task(task: ?*CardinalAsyncTask) callconv(.c) v
             g_async_loader.state_mutex.lock();
             if (t.next) |job_ptr| {
                 const job = @as(*job_system.Job, @ptrCast(job_ptr));
+                
+                // If running, we cannot free safely without waiting/race
+                if (job.status == .RUNNING) {
+                     // Log error and leak to prevent crash/freeze
+                     // async_log.err("Attempted to free running task {d}. Leaking to prevent crash.", .{t.id});
+                     g_async_loader.state_mutex.unlock();
+                     return;
+                }
+
                 // Detach task from job to signal it's orphaned.
                 // We do NOT free the job here because it might be in the completed queue (or running).
                 // process_completed_tasks handles freeing jobs with null data.

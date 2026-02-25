@@ -98,6 +98,71 @@ const NiControllerSequence = struct {
     stop_time: f32,
 };
 
+// --- NIF Constants ---
+const NIF_VERSION_20_0_0_5: u32 = 0x14000005;
+const NIF_VERSION_20_1_0_3: u32 = 0x14010003;
+const NIF_VERSION_20_2_0_7: u32 = 0x14020007;
+const NIF_VERSION_20_2_0_8: u32 = 0x14020008;
+const NIF_VERSION_10_1_0_0: u32 = 0x0A010000;
+const NIF_VERSION_4_2_2_0: u32 = 0x04020200;
+
+// --- Additional Structs ---
+
+const NiAlphaProperty = struct {
+    flags: u16,
+    threshold: u8,
+};
+
+const NiMaterialProperty = struct {
+    flags: u16,
+    ambient: [3]f32,
+    diffuse: [3]f32,
+    specular: [3]f32,
+    emissive: [3]f32,
+    glossiness: f32,
+    alpha: f32,
+};
+
+const NiStencilProperty = struct {
+    flags: u16,
+};
+
+const NiSourceTexture = struct {
+    use_external: u8,
+    file_name_index: i32,
+    pixel_layout: u32,
+    use_mipmaps: u32,
+    alpha_format: u32,
+    is_static: u8,
+};
+
+const TextureDesc = struct {
+    source_texture_ref: i32,
+    clamp_mode: u16,
+    filter_mode: u16,
+    uv_set: u32,
+    has_texture_transform: u8,
+    translation: [2]f32,
+    tiling: [2]f32,
+    w_rotation: f32,
+    transform_type: u32,
+    center_offset: [2]f32,
+};
+
+const NiTexturingProperty = struct {
+    flags: u16,
+    apply_mode: u32,
+    texture_count: u32,
+    base_texture: ?TextureDesc,
+    dark_texture: ?TextureDesc,
+    detail_texture: ?TextureDesc,
+    gloss_texture: ?TextureDesc,
+    glow_texture: ?TextureDesc,
+    bump_map_texture: ?TextureDesc,
+    decal_0_texture: ?TextureDesc,
+    decal_1_texture: ?TextureDesc,
+};
+
 const ControlledBlock = struct {
     interpolator_ref: i32,
     controller_ref: i32,
@@ -392,6 +457,440 @@ pub const NifReader = struct {
         }
     }
 
+    // --- Block Parsers ---
+
+    fn parse_ni_node(self: *NifReader) !*NiNode {
+        const node = try self.allocator.create(NiNode);
+        node.name_index = try self.read(i32);
+        const num_extra = try self.read(u32);
+        self.pos += num_extra * 4; // refs
+        _ = try self.read(i32); // controller_ref
+
+        node.flags = try self.read(u16);
+        node.translation = try self.read([3]f32);
+        node.rotation = try self.read([9]f32);
+        node.scale = try self.read(f32);
+        node.num_props = try self.read(u32);
+        node.props = try self.allocator.alloc(i32, node.num_props);
+        for (node.props) |*prop| prop.* = try self.read(i32);
+        _ = try self.read(i32); // collision_ref
+
+        node.num_children = try self.read(u32);
+        node.children = try self.allocator.alloc(i32, node.num_children);
+        for (node.children) |*child| child.* = try self.read(i32);
+        return node;
+    }
+
+    fn parse_ni_tri_shape(self: *NifReader) !*NiTriShape {
+        const shape = try self.allocator.create(NiTriShape);
+        shape.name_index = try self.read(i32);
+        const num_extra = try self.read(u32);
+        self.pos += num_extra * 4;
+        _ = try self.read(i32); // controller
+
+        shape.flags = try self.read(u16);
+        shape.translation = try self.read([3]f32);
+        shape.rotation = try self.read([9]f32);
+        shape.scale = try self.read(f32);
+        shape.num_props = try self.read(u32);
+        shape.props = try self.allocator.alloc(i32, shape.num_props);
+        for (shape.props) |*prop| prop.* = try self.read(i32);
+        _ = try self.read(i32); // collision
+
+        shape.data_ref = try self.read(i32);
+        shape.skin_instance_ref = try self.read(i32);
+        // shape.material_data_ref = try self.read(i32); // Not always present?
+        // Assuming consistent struct for now based on previous code.
+        return shape;
+    }
+
+    fn parse_ni_tri_shape_data(self: *NifReader) !*NiTriShapeData {
+        const data = try self.allocator.create(NiTriShapeData);
+        _ = try self.read(i32); // Group ID
+        data.num_vertices = try self.read(u16);
+        _ = try self.read(u8); // Keep Flags
+        _ = try self.read(u8); // Compress Flags
+        const has_vertices = (try self.read(u8) != 0);
+
+        if (has_vertices) {
+            data.vertices = try self.allocator.alloc([3]f32, data.num_vertices);
+            for (data.vertices) |*v| v.* = try self.read([3]f32);
+        } else {
+            data.vertices = &.{};
+        }
+
+        var num_uv_sets: u32 = 0;
+        var has_tangents = false;
+        const has_early_uv_sets = (self.header.version >= NIF_VERSION_4_2_2_0);
+
+        if (has_early_uv_sets) {
+            if (self.header.version >= NIF_VERSION_20_2_0_7) {
+                const val = try self.read(u16);
+                if (self.header.user_version_2 > 34) {
+                    // Bethesda Data Flags
+                    // Bit 0: Has UV (not count! Count is 1 if set)
+                    // Bit 12: Has Tangents
+                    const has_uv = (val & 1) != 0;
+                    num_uv_sets = if (has_uv) 1 else 0;
+                    has_tangents = (val & 0x1000) != 0;
+                } else {
+                    // Standard NIF Data Flags (NiGeometryDataFlags)
+                    // Bits 0-5: Num UV Sets
+                    // Bits 6-11: Havok Material
+                    // Bits 12-15: NBT Method (Tangents)
+                    num_uv_sets = val & 63;
+                    const nbt_method = (val >> 12) & 0xF;
+                    has_tangents = (nbt_method != 0);
+                }
+
+                // Force fix for 20.2.0.7 w/ user version 11/12 (Skyrim/Fallout) sometimes having weird flags
+                // This seems redundant now if we handle BS flags correctly above?
+                // But user_version_2 might be 0 for some BS files?
+                if (num_uv_sets == 0 and (self.header.user_version_2 == 12 or self.header.user_version_2 == 11)) {
+                    nif_log.warn("Force fixing NumUVSets 0 -> 1 for Bethesda NIF (UserVer2={d})", .{self.header.user_version_2});
+                    num_uv_sets = 1;
+                }
+            } else if (self.header.version >= NIF_VERSION_10_1_0_0) {
+                num_uv_sets = try self.read(u32);
+            } else {
+                num_uv_sets = try self.read(u8);
+            }
+        }
+
+        const has_normals = (try self.read(u8) != 0);
+        if (has_normals) {
+            data.normals = try self.allocator.alloc([3]f32, data.num_vertices);
+            for (data.normals) |*n| n.* = try self.read([3]f32);
+            if (has_tangents) {
+                self.pos += @as(usize, data.num_vertices) * 12 * 2;
+            }
+        } else {
+            data.normals = &.{};
+        }
+
+        _ = try self.read([3]f32); // Center
+        _ = try self.read(f32); // Radius
+
+        const has_vertex_colors = (try self.read(u8) != 0);
+        if (has_vertex_colors) {
+            data.colors = try self.allocator.alloc([4]f32, data.num_vertices);
+            for (data.colors) |*col| col.* = try self.read([4]f32);
+        } else {
+            data.colors = &.{};
+        }
+
+        if (!has_early_uv_sets) {
+            const has_uv = (try self.read(u8) != 0);
+            if (has_uv) num_uv_sets = 1;
+        }
+
+        if (num_uv_sets > 0) {
+            data.uvs = try self.allocator.alloc([2]f32, data.num_vertices);
+            for (data.uvs) |*uv| uv.* = try self.read([2]f32);
+            if (num_uv_sets > 1) {
+                self.pos += @as(usize, (num_uv_sets - 1)) * @as(usize, data.num_vertices) * 8;
+            }
+        } else {
+            data.uvs = &.{};
+        }
+
+        _ = try self.read(u16); // Consistency Flags
+        _ = try self.read(i32); // Additional Data Ref
+
+        if (num_uv_sets == 0 and !has_vertex_colors) {
+            nif_log.warn("Mesh has 0 UV sets. Auto-generating planar UVs.", .{});
+            data.uvs = try self.allocator.alloc([2]f32, data.num_vertices);
+
+            var min_x: f32 = std.math.floatMax(f32);
+            var min_y: f32 = std.math.floatMax(f32);
+            var max_x: f32 = -std.math.floatMax(f32);
+            var max_y: f32 = -std.math.floatMax(f32);
+
+            for (data.vertices) |v| {
+                if (v[0] < min_x) min_x = v[0];
+                if (v[1] < min_y) min_y = v[1];
+                if (v[0] > max_x) max_x = v[0];
+                if (v[1] > max_y) max_y = v[1];
+            }
+
+            const size_x = max_x - min_x;
+            const size_y = max_y - min_y;
+
+            for (data.vertices, 0..) |v, idx| {
+                const u = if (size_x > 0.001) (v[0] - min_x) / size_x else 0.5;
+                const v_coord = if (size_y > 0.001) (v[1] - min_y) / size_y else 0.5;
+                data.uvs[idx] = .{ u, 1.0 - v_coord };
+            }
+        }
+
+        const num_triangles = try self.read(u16);
+        data.num_indices = @as(u32, num_triangles) * 3;
+        _ = try self.read(u32); // num_triangle_points
+        const has_triangles = (try self.read(u8) != 0);
+
+        if (has_triangles) {
+            data.indices = try self.allocator.alloc(u32, data.num_indices);
+            var t_i: usize = 0;
+            while (t_i < num_triangles) : (t_i += 1) {
+                data.indices[t_i * 3 + 0] = try self.read(u16);
+                data.indices[t_i * 3 + 1] = try self.read(u16);
+                data.indices[t_i * 3 + 2] = try self.read(u16);
+            }
+        } else {
+            data.indices = &.{};
+        }
+
+        const num_match_groups = try self.read(u16);
+        var mg_i: usize = 0;
+        while (mg_i < num_match_groups) : (mg_i += 1) {
+            const num_verts_in_group = try self.read(u16);
+            self.pos += @as(usize, num_verts_in_group) * 2;
+        }
+
+        return data;
+    }
+
+    fn parse_ni_controller_manager(self: *NifReader) !*NiControllerManager {
+        const mgr = try self.allocator.create(NiControllerManager);
+        _ = try self.read(i32); // next_controller
+        _ = try self.read(u16); // flags
+        _ = try self.read(f32); // frequency
+        _ = try self.read(f32); // phase
+        _ = try self.read(f32); // start_time
+        _ = try self.read(f32); // stop_time
+        _ = try self.read(i32); // target
+
+        mgr.flags = try self.read(u16);
+        mgr.num_sequences = try self.read(u32);
+        mgr.sequences = try self.allocator.alloc(i32, mgr.num_sequences);
+        for (mgr.sequences) |*s| s.* = try self.read(i32);
+        return mgr;
+    }
+
+    fn parse_ni_controller_sequence(self: *NifReader) !*NiControllerSequence {
+        const seq = try self.allocator.create(NiControllerSequence);
+        seq.name_index = try self.read(i32);
+        seq.num_controlled_blocks = try self.read(u32);
+        _ = try self.read(u32); // array grow by
+
+        seq.controlled_blocks = try self.allocator.alloc(ControlledBlock, seq.num_controlled_blocks);
+        for (seq.controlled_blocks) |*cb| {
+            cb.interpolator_ref = try self.read(i32);
+            cb.controller_ref = try self.read(i32);
+            cb.node_name_index = try self.read(i32);
+            _ = try self.read(i32); // prop type
+            _ = try self.read(i32); // ctlr type
+            _ = try self.read(i32); // ctlr id
+            _ = try self.read(i32); // interp id
+        }
+
+        seq.weight = try self.read(f32);
+        _ = try self.read(i32); // text_key_ref
+        seq.cycle_type = try self.read(u32);
+        seq.frequency = try self.read(f32);
+        seq.start_time = try self.read(f32);
+        seq.stop_time = try self.read(f32);
+        return seq;
+    }
+
+    fn parse_ni_transform_interpolator(self: *NifReader) !*NiTransformInterpolator {
+        const interp = try self.allocator.create(NiTransformInterpolator);
+        interp.translation = try self.read([3]f32);
+        interp.rotation = try self.read([4]f32);
+        interp.scale = try self.read(f32);
+        interp.data_ref = try self.read(i32);
+        return interp;
+    }
+
+    fn parse_ni_transform_data(self: *NifReader) !*NiTransformData {
+        const data = try self.allocator.create(NiTransformData);
+        data.num_rot_keys = try self.read(u32);
+        if (data.num_rot_keys > 0) {
+            const rot_type = try self.read(u32);
+            if (rot_type != 0) {
+                data.rot_keys = try self.allocator.alloc([5]f32, data.num_rot_keys);
+                for (data.rot_keys) |*k| {
+                    k.*[0] = try self.read(f32); // time
+                    k.*[1] = try self.read(f32); // x
+                    k.*[2] = try self.read(f32); // y
+                    k.*[3] = try self.read(f32); // z
+                    k.*[4] = try self.read(f32); // w
+                }
+            }
+        } else {
+            data.rot_keys = &.{};
+        }
+
+        data.num_trans_keys = try self.read(u32);
+        if (data.num_trans_keys > 0) {
+            _ = try self.read(u32); // trans_type
+            data.trans_keys = try self.allocator.alloc([4]f32, data.num_trans_keys);
+            for (data.trans_keys) |*k| {
+                k.*[0] = try self.read(f32); // time
+                k.*[1] = try self.read(f32); // x
+                k.*[2] = try self.read(f32); // y
+                k.*[3] = try self.read(f32); // z
+            }
+        } else {
+            data.trans_keys = &.{};
+        }
+
+        data.num_scale_keys = try self.read(u32);
+        if (data.num_scale_keys > 0) {
+            _ = try self.read(u32); // scale_type
+            data.scale_keys = try self.allocator.alloc([2]f32, data.num_scale_keys);
+            for (data.scale_keys) |*k| {
+                k.*[0] = try self.read(f32); // time
+                k.*[1] = try self.read(f32); // val
+            }
+        } else {
+            data.scale_keys = &.{};
+        }
+        return data;
+    }
+
+    fn parse_ni_skin_instance(self: *NifReader) !*NiSkinInstance {
+        const skin = try self.allocator.create(NiSkinInstance);
+        skin.data_ref = try self.read(i32);
+        skin.skin_partition_ref = try self.read(i32);
+        skin.root_parent_ref = try self.read(i32);
+        skin.num_bones = try self.read(u32);
+        skin.bone_refs = try self.allocator.alloc(i32, skin.num_bones);
+        for (skin.bone_refs) |*b| b.* = try self.read(i32);
+        return skin;
+    }
+
+    fn parse_ni_source_texture(self: *NifReader) !*NiSourceTexture {
+        const tex = try self.allocator.create(NiSourceTexture);
+        _ = try self.read(i32); // name
+        const num_extra = try self.read(u32);
+        self.pos += num_extra * 4;
+        _ = try self.read(i32); // controller
+
+        tex.use_external = try self.read(u8);
+        tex.file_name_index = try self.read(i32);
+        tex.pixel_layout = try self.read(u32);
+        tex.use_mipmaps = try self.read(u32);
+        tex.alpha_format = try self.read(u32);
+        tex.is_static = try self.read(u8);
+        _ = try self.read(u8);
+        _ = try self.read(u8);
+        return tex;
+    }
+
+    fn parse_ni_texturing_property(self: *NifReader) !*NiTexturingProperty {
+        const prop = try self.allocator.create(NiTexturingProperty);
+        _ = try self.read(i32); // name
+        const num_extra = try self.read(u32);
+        self.pos += num_extra * 4;
+        _ = try self.read(i32); // controller
+
+        prop.flags = try self.read(u16);
+        prop.apply_mode = try self.read(u32);
+
+        if (self.header.version >= NIF_VERSION_20_1_0_3) {
+            prop.texture_count = 7;
+        } else {
+            prop.texture_count = try self.read(u32);
+        }
+
+        prop.base_texture = try read_texture_desc(self);
+        prop.dark_texture = try read_texture_desc(self);
+        prop.detail_texture = try read_texture_desc(self);
+        prop.gloss_texture = try read_texture_desc(self);
+        prop.glow_texture = try read_texture_desc(self);
+        prop.bump_map_texture = try read_texture_desc(self);
+
+        if (prop.texture_count > 6) {
+            prop.decal_0_texture = try read_texture_desc(self);
+        } else {
+            prop.decal_0_texture = null;
+        }
+
+        if (prop.texture_count > 7) {
+            prop.decal_1_texture = try read_texture_desc(self);
+        } else {
+            prop.decal_1_texture = null;
+        }
+        return prop;
+    }
+
+    fn parse_ni_skin_data(self: *NifReader) !*NiSkinData {
+        const data = try self.allocator.create(NiSkinData);
+        data.rotation = try self.read([9]f32);
+        data.translation = try self.read([3]f32);
+        data.scale = try self.read(f32);
+        data.num_bones = try self.read(u32);
+        data.bone_list = try self.allocator.alloc(NiSkinBoneData, data.num_bones);
+
+        _ = try self.read(u8); // has_vertex_weights
+
+        for (data.bone_list) |*bone| {
+            bone.rotation = try self.read([9]f32);
+            bone.translation = try self.read([3]f32);
+            bone.scale = try self.read(f32);
+            bone.bounding_sphere_center = try self.read([3]f32);
+            bone.bounding_sphere_radius = try self.read(f32);
+
+            const num_verts = try self.read(u16);
+            bone.num_vertices = num_verts;
+
+            bone.vertex_weights = try self.allocator.alloc(NiSkinWeight, num_verts);
+            for (bone.vertex_weights) |*vw| {
+                vw.index = try self.read(u16);
+                vw.weight = try self.read(f32);
+            }
+        }
+        return data;
+    }
+
+    fn parse_ni_alpha_property(self: *NifReader) !*NiAlphaProperty {
+        const prop = try self.allocator.create(NiAlphaProperty);
+        _ = try self.read(i32); // name
+        const num_extra = try self.read(u32);
+        self.pos += num_extra * 4;
+        _ = try self.read(i32); // controller
+
+        prop.flags = try self.read(u16);
+        prop.threshold = try self.read(u8);
+        return prop;
+    }
+
+    fn parse_ni_material_property(self: *NifReader) !*NiMaterialProperty {
+        const prop = try self.allocator.create(NiMaterialProperty);
+        _ = try self.read(i32); // name
+        const num_extra = try self.read(u32);
+        self.pos += num_extra * 4;
+        _ = try self.read(i32); // controller
+
+        prop.flags = try self.read(u16);
+        prop.ambient = try self.read([3]f32);
+        prop.diffuse = try self.read([3]f32);
+        prop.specular = try self.read([3]f32);
+        prop.emissive = try self.read([3]f32);
+        prop.glossiness = try self.read(f32);
+        prop.alpha = try self.read(f32);
+
+        // Ensure alpha is valid (some legacy NIFs might have garbage/negative/NaN if uninitialized)
+        if (std.math.isNan(prop.alpha) or prop.alpha < 0.0) {
+            nif_log.warn("NiMaterialProperty has invalid alpha: {d}. Resetting to 1.0", .{prop.alpha});
+            prop.alpha = 1.0;
+        }
+
+        return prop;
+    }
+
+    fn parse_ni_stencil_property(self: *NifReader) !*NiStencilProperty {
+        const prop = try self.allocator.create(NiStencilProperty);
+        _ = try self.read(i32); // name
+        const num_extra = try self.read(u32);
+        self.pos += num_extra * 4;
+        _ = try self.read(i32); // controller
+
+        prop.flags = try self.read(u16);
+        return prop;
+    }
+
     pub fn parse_blocks(self: *NifReader) !void {
         self.blocks = try self.allocator.alloc(NifBlock, self.header.num_blocks);
 
@@ -404,524 +903,39 @@ pub const NifReader = struct {
             block.parsed = null;
 
             const type_name = self.header.block_types[block.type_index];
-            nif_log.warn("Parsing Block {d}: {s} (Size: {d}, Offset: {d})", .{ i, type_name, block.size, block.data_offset });
 
             // Safe parsing: always restore position to end of block
             const end_pos = block.data_offset + block.size;
             defer self.pos = end_pos;
 
-            // Debug Dump for Texture related blocks
-            // if (std.mem.eql(u8, type_name, "NiTexturingProperty") or std.mem.eql(u8, type_name, "NiSourceTexture")) {
-            //     const dump_len = @min(block.size, 64);
-            //     if (block.data_offset + dump_len <= self.buffer.len) {
-            //         nif_log.warn("HEX DUMP Block {d} ({s}): {any}", .{ i, type_name, self.buffer[block.data_offset .. block.data_offset + dump_len] });
-            //     }
-            // }
-
             if (std.mem.eql(u8, type_name, "NiNode")) {
-                const node = try self.allocator.create(NiNode);
-                // NiObjectNET
-                node.name_index = try self.read(i32);
-                const num_extra = try self.read(u32);
-                self.pos += num_extra * 4; // refs
-                _ = try self.read(i32); // controller_ref
-
-                // NiAVObject
-                node.flags = try self.read(u16);
-                node.translation = try self.read([3]f32);
-                node.rotation = try self.read([9]f32);
-                node.scale = try self.read(f32);
-                node.num_props = try self.read(u32);
-                node.props = try self.allocator.alloc(i32, node.num_props);
-                for (node.props) |*prop| prop.* = try self.read(i32);
-                _ = try self.read(i32); // collision_ref
-
-                // NiNode
-                node.num_children = try self.read(u32);
-                node.children = try self.allocator.alloc(i32, node.num_children);
-                for (node.children) |*child| child.* = try self.read(i32);
-
-                block.parsed = node;
+                block.parsed = try self.parse_ni_node();
             } else if (std.mem.eql(u8, type_name, "NiTriShape")) {
-                const shape = try self.allocator.create(NiTriShape);
-                // NiObjectNET
-                shape.name_index = try self.read(i32);
-                const num_extra = try self.read(u32);
-                self.pos += num_extra * 4;
-                _ = try self.read(i32); // controller
-
-                // NiAVObject
-                shape.flags = try self.read(u16);
-                shape.translation = try self.read([3]f32);
-                shape.rotation = try self.read([9]f32);
-                shape.scale = try self.read(f32);
-                shape.num_props = try self.read(u32);
-                shape.props = try self.allocator.alloc(i32, shape.num_props);
-                for (shape.props) |*prop| prop.* = try self.read(i32);
-                _ = try self.read(i32); // collision
-
-                // NiTriShape
-                shape.data_ref = try self.read(i32);
-                shape.skin_instance_ref = try self.read(i32);
-
-                block.parsed = shape;
+                block.parsed = try self.parse_ni_tri_shape();
             } else if (std.mem.eql(u8, type_name, "NiTriShapeData")) {
-                const data = try self.allocator.create(NiTriShapeData);
-                // NiGeometryData (Base)
-                _ = try self.read(i32); // Group ID
-                data.num_vertices = try self.read(u16);
-                _ = try self.read(u8); // Keep Flags
-                _ = try self.read(u8); // Compress Flags
-                const has_vertices = (try self.read(u8) != 0);
-
-                if (has_vertices) {
-                    data.vertices = try self.allocator.alloc([3]f32, data.num_vertices);
-                    for (data.vertices) |*v| v.* = try self.read([3]f32);
-                } else {
-                    data.vertices = &.{};
-                }
-
-                // 20.2.0.7+ Num UV Sets is u16 (lower 6 bits), bit 12 is Tangents
-                var num_uv_sets: u32 = 0;
-                var has_tangents = false;
-
-                // NIF Version check for UV Sets position
-                // 4.2.2.0 (0x04020200) seems to be when Num UV Sets appeared here
-                const has_early_uv_sets = (self.header.version >= 0x04020200);
-
-                nif_log.warn("NiTriShapeData: Version=0x{x}, HasEarlyUVSets={any}, Pos={d}", .{ self.header.version, has_early_uv_sets, self.pos });
-
-                if (has_early_uv_sets) {
-                    if (self.header.version >= 0x14020007) {
-                        // 20.2.0.7+ uses u16 (Data Flags or Count)
-                        const val = try self.read(u16);
-                        if (self.header.user_version_2 > 34) {
-                            // Bethesda Data Flags
-                            num_uv_sets = val & 63;
-                            has_tangents = (val & 0x1000) != 0;
-                        } else {
-                            // Standard NIF u16 count
-                            num_uv_sets = val;
-                        }
-
-                        // Force fix for 20.2.0.7 w/ user version 11/12 (Skyrim/Fallout) sometimes having weird flags
-                        // If we read 0 but it's a shape, it usually has 1 UV set.
-                        if (num_uv_sets == 0 and (self.header.user_version_2 == 12 or self.header.user_version_2 == 11)) {
-                            nif_log.warn("Force fixing NumUVSets 0 -> 1 for Bethesda NIF", .{});
-                            num_uv_sets = 1;
-                        }
-
-                        nif_log.warn("Read NumUVSets (u16/Flags): {d}, Tangents: {any}", .{ num_uv_sets, has_tangents });
-                    } else if (self.header.version >= 0x0A010000) {
-                        // 10.1.0.0+ uses u32
-                        num_uv_sets = try self.read(u32);
-                        nif_log.warn("Read NumUVSets (u32): {d}", .{num_uv_sets});
-                    } else {
-                        // Older uses u8
-                        num_uv_sets = try self.read(u8);
-                        nif_log.warn("Read NumUVSets (u8): {d}", .{num_uv_sets});
-                    }
-                }
-
-                nif_log.warn("NiTriShapeData: Verts={d}, UVSets={d}, Tangents={any}", .{ data.num_vertices, num_uv_sets, has_tangents });
-
-                const has_normals = (try self.read(u8) != 0);
-                if (has_normals) {
-                    data.normals = try self.allocator.alloc([3]f32, data.num_vertices);
-                    for (data.normals) |*n| n.* = try self.read([3]f32);
-
-                    if (has_tangents) {
-                        // Skip Tangents (Vec3) and Bitangents (Vec3)
-                        self.pos += @as(usize, data.num_vertices) * 12 * 2;
-                    }
-                } else {
-                    data.normals = &.{};
-                }
-
-                // Center/Radius
-                _ = try self.read([3]f32); // Center
-                _ = try self.read(f32); // Radius
-
-                const has_vertex_colors = (try self.read(u8) != 0);
-                if (has_vertex_colors) {
-                    data.colors = try self.allocator.alloc([4]f32, data.num_vertices);
-                    for (data.colors) |*col| col.* = try self.read([4]f32);
-                } else {
-                    data.colors = &.{};
-                }
-
-                if (!has_early_uv_sets) {
-                    // Legacy UV (4.0.0.2 etc)
-                    const has_uv = (try self.read(u8) != 0);
-                    if (has_uv) num_uv_sets = 1;
-                    nif_log.warn("Legacy HasUV: {any}, New UVSets: {d}", .{ has_uv, num_uv_sets });
-                }
-
-                if (num_uv_sets > 0) {
-                    // Read Set 0
-                    data.uvs = try self.allocator.alloc([2]f32, data.num_vertices);
-                    for (data.uvs) |*uv| uv.* = try self.read([2]f32);
-
-                    // Skip remaining sets
-                    if (num_uv_sets > 1) {
-                        self.pos += @as(usize, (num_uv_sets - 1)) * @as(usize, data.num_vertices) * 8;
-                    }
-                } else {
-                    data.uvs = &.{};
-                }
-
-                // Consistency Flags (u16)
-                _ = try self.read(u16);
-                // Additional Data Ref (i32)
-                _ = try self.read(i32);
-
-                // Check for texture but missing UV sets
-                if (num_uv_sets == 0 and !has_vertex_colors) {
-                    // Heuristic: If mesh has Vertices but No UVs and No Vertex Colors,
-                    // it is likely a billboard or crossed-quad plant that relies on implicit UVs (0-1).
-                    // We auto-generate them here.
-                    nif_log.warn("Mesh has 0 UV sets. Auto-generating planar UVs.", .{});
-                    
-                    data.uvs = try self.allocator.alloc([2]f32, data.num_vertices);
-                    
-                    // Calculate bounds
-                    var min_x: f32 = std.math.floatMax(f32);
-                    var min_y: f32 = std.math.floatMax(f32);
-                    var max_x: f32 = -std.math.floatMax(f32);
-                    var max_y: f32 = -std.math.floatMax(f32);
-                    
-                    for (data.vertices) |v| {
-                        if (v[0] < min_x) min_x = v[0];
-                        if (v[1] < min_y) min_y = v[1];
-                        if (v[0] > max_x) max_x = v[0];
-                        if (v[1] > max_y) max_y = v[1];
-                    }
-                    
-                    const size_x = max_x - min_x;
-                    const size_y = max_y - min_y;
-                    
-                    for (data.vertices, 0..) |v, idx| {
-                        const u = if (size_x > 0.001) (v[0] - min_x) / size_x else 0.5;
-                        const v_coord = if (size_y > 0.001) (v[1] - min_y) / size_y else 0.5;
-                        data.uvs[idx] = .{u, 1.0 - v_coord};
-                    }
-                    
-                    // Mark as having UVs so they are processed later
-                    num_uv_sets = 1;
-                }
-
-                // NiTriShapeData Specific
-                const num_triangles = try self.read(u16);
-                data.num_indices = @as(u32, num_triangles) * 3;
-                const num_triangle_points = try self.read(u32); // Usually num_indices?
-                _ = num_triangle_points;
-                const has_triangles = (try self.read(u8) != 0);
-
-                if (has_triangles) {
-                    data.indices = try self.allocator.alloc(u32, data.num_indices);
-                    var t_i: usize = 0;
-                    while (t_i < num_triangles) : (t_i += 1) {
-                        const idx1 = try self.read(u16);
-                        const idx2 = try self.read(u16);
-                        const idx3 = try self.read(u16);
-                        data.indices[t_i * 3 + 0] = idx1;
-                        data.indices[t_i * 3 + 1] = idx2;
-                        data.indices[t_i * 3 + 2] = idx3;
-                    }
-                } else {
-                    data.indices = &.{};
-                }
-
-                // Match Groups (if version >= 20.2.0.7?)
-                // Assuming yes for 20.2.0.8
-                const num_match_groups = try self.read(u16);
-                var mg_i: usize = 0;
-                while (mg_i < num_match_groups) : (mg_i += 1) {
-                    const num_verts_in_group = try self.read(u16);
-                    self.pos += @as(usize, num_verts_in_group) * 2; // u16 indices
-                }
-
-                block.parsed = data;
+                block.parsed = try self.parse_ni_tri_shape_data();
             } else if (std.mem.eql(u8, type_name, "NiControllerManager")) {
-                const mgr = try self.allocator.create(NiControllerManager);
-                // NiTimeController
-                _ = try self.read(i32); // next_controller
-                _ = try self.read(u16); // flags
-                _ = try self.read(f32); // frequency
-                _ = try self.read(f32); // phase
-                _ = try self.read(f32); // start_time
-                _ = try self.read(f32); // stop_time
-                _ = try self.read(i32); // target
-
-                // NiControllerManager
-                mgr.flags = try self.read(u16); // cumulative
-                mgr.num_sequences = try self.read(u32);
-                mgr.sequences = try self.allocator.alloc(i32, mgr.num_sequences);
-                for (mgr.sequences) |*s| s.* = try self.read(i32);
-
-                block.parsed = mgr;
+                block.parsed = try self.parse_ni_controller_manager();
             } else if (std.mem.eql(u8, type_name, "NiControllerSequence")) {
-                const seq = try self.allocator.create(NiControllerSequence);
-                seq.name_index = try self.read(i32);
-                seq.num_controlled_blocks = try self.read(u32);
-                _ = try self.read(u32); // array grow by
-
-                seq.controlled_blocks = try self.allocator.alloc(ControlledBlock, seq.num_controlled_blocks);
-                for (seq.controlled_blocks) |*cb| {
-                    cb.interpolator_ref = try self.read(i32);
-                    cb.controller_ref = try self.read(i32);
-                    // NiStringPalette ref? or Node Name?
-                    // In >= 20.1.0.3:
-                    //   look at version.
-                    // Assuming < 20.1:
-                    //   node_name (string ref)
-                    //   prop_type (string ref)
-                    //   ctlr_type (string ref)
-                    //   ctlr_id (string ref)
-                    //   interpolator_id (string ref)
-                    // This is version dependent!
-                    // Let's assume typical Gamebryo (20.0.0.5):
-                    //   Target Name (string ref) -> node_name_index
-                    //   Property Type (string ref)
-                    //   Controller Type (string ref)
-                    //   Controller ID (string ref)
-                    //   Interpolator ID (string ref)
-
-                    cb.node_name_index = try self.read(i32);
-                    _ = try self.read(i32); // prop type
-                    _ = try self.read(i32); // ctlr type
-                    _ = try self.read(i32); // ctlr id
-                    _ = try self.read(i32); // interp id
-                }
-
-                seq.weight = try self.read(f32);
-                _ = try self.read(i32); // text_key_ref
-                seq.cycle_type = try self.read(u32); // cycle type (enum)
-                seq.frequency = try self.read(f32);
-                seq.start_time = try self.read(f32);
-                seq.stop_time = try self.read(f32);
-
-                block.parsed = seq;
+                block.parsed = try self.parse_ni_controller_sequence();
             } else if (std.mem.eql(u8, type_name, "NiTransformInterpolator")) {
-                const interp = try self.allocator.create(NiTransformInterpolator);
-                // NiKeyBasedInterpolator? No, just fields?
-                // Version dependent. 20.0.0.5:
-                // translation (vec3)
-                // rotation (quat)
-                // scale (float)
-                // data_ref (ref)
-
-                interp.translation = try self.read([3]f32);
-                interp.rotation = try self.read([4]f32);
-                interp.scale = try self.read(f32);
-                interp.data_ref = try self.read(i32);
-
-                block.parsed = interp;
+                block.parsed = try self.parse_ni_transform_interpolator();
             } else if (std.mem.eql(u8, type_name, "NiTransformData")) {
-                const data = try self.allocator.create(NiTransformData);
-                // Key Groups
-                // Rotation
-                data.num_rot_keys = try self.read(u32);
-                if (data.num_rot_keys > 0) {
-                    const rot_type = try self.read(u32); // Key type (1=linear, 2=quad)
-                    if (rot_type != 0) { // XYZ Rotation? No, Quat keys usually.
-                        // This is complex. NiTransformData has separate Rot vs XYZ Rot.
-                        // Let's assume standard Quat keys for now.
-                        // If rot_type == 4 (XYZ), it's different.
-                        // Assuming Quat (type 1 or 2):
-                        // keys: time + quat
-                        data.rot_keys = try self.allocator.alloc([5]f32, data.num_rot_keys);
-                        for (data.rot_keys) |*k| {
-                            k.*[0] = try self.read(f32); // time
-                            k.*[1] = try self.read(f32); // x
-                            k.*[2] = try self.read(f32); // y
-                            k.*[3] = try self.read(f32); // z
-                            k.*[4] = try self.read(f32); // w
-                        }
-                    }
-                } else {
-                    data.rot_keys = &.{};
-                }
-
-                // Translation
-                data.num_trans_keys = try self.read(u32);
-                if (data.num_trans_keys > 0) {
-                    const trans_type = try self.read(u32);
-                    _ = trans_type;
-                    data.trans_keys = try self.allocator.alloc([4]f32, data.num_trans_keys);
-                    for (data.trans_keys) |*k| {
-                        k.*[0] = try self.read(f32); // time
-                        k.*[1] = try self.read(f32); // x
-                        k.*[2] = try self.read(f32); // y
-                        k.*[3] = try self.read(f32); // z
-                    }
-                } else {
-                    data.trans_keys = &.{};
-                }
-
-                // Scale
-                data.num_scale_keys = try self.read(u32);
-                if (data.num_scale_keys > 0) {
-                    const scale_type = try self.read(u32);
-                    _ = scale_type;
-                    data.scale_keys = try self.allocator.alloc([2]f32, data.num_scale_keys);
-                    for (data.scale_keys) |*k| {
-                        k.*[0] = try self.read(f32); // time
-                        k.*[1] = try self.read(f32); // val
-                    }
-                } else {
-                    data.scale_keys = &.{};
-                }
-
-                block.parsed = data;
+                block.parsed = try self.parse_ni_transform_data();
             } else if (std.mem.eql(u8, type_name, "NiSkinInstance")) {
-                const skin = try self.allocator.create(NiSkinInstance);
-                skin.data_ref = try self.read(i32);
-                skin.skin_partition_ref = try self.read(i32);
-                skin.root_parent_ref = try self.read(i32);
-                skin.num_bones = try self.read(u32);
-                skin.bone_refs = try self.allocator.alloc(i32, skin.num_bones);
-                for (skin.bone_refs) |*b| b.* = try self.read(i32);
-                block.parsed = skin;
+                block.parsed = try self.parse_ni_skin_instance();
             } else if (std.mem.eql(u8, type_name, "NiSourceTexture")) {
-                const tex = try self.allocator.create(NiSourceTexture);
-                // NiObjectNET (NiTexture inherits NiObjectNET)
-                _ = try self.read(i32); // name
-                const num_extra = try self.read(u32);
-                self.pos += num_extra * 4; // refs
-                _ = try self.read(i32); // controller
-
-                tex.use_external = try self.read(u8);
-                tex.file_name_index = try self.read(i32);
-                tex.pixel_layout = try self.read(u32);
-                tex.use_mipmaps = try self.read(u32);
-                tex.alpha_format = try self.read(u32);
-                tex.is_static = try self.read(u8);
-                // Direct render support bool (usually 1 byte)
-                _ = try self.read(u8);
-                // Persistence bool (usually 1 byte)
-                _ = try self.read(u8);
-
-                block.parsed = tex;
+                block.parsed = try self.parse_ni_source_texture();
             } else if (std.mem.eql(u8, type_name, "NiTexturingProperty")) {
-                const prop = try self.allocator.create(NiTexturingProperty);
-                // NiObjectNET (NiProperty inherits NiObjectNET)
-                _ = try self.read(i32); // name
-                const num_extra = try self.read(u32);
-                self.pos += num_extra * 4; // refs
-                _ = try self.read(i32); // controller
-
-                prop.flags = try self.read(u16);
-                prop.apply_mode = try self.read(u32);
-
-                // Version 20.1.0.3+ does not have texture_count (fixed at 7)
-                if (self.header.version >= 0x14010003) {
-                    prop.texture_count = 7;
-                    nif_log.warn("  Skipped texture_count for version 0x{x}", .{self.header.version});
-                } else {
-                    prop.texture_count = try self.read(u32);
-                    nif_log.warn("  Read texture_count: {d}", .{prop.texture_count});
-                }
-
-                nif_log.warn("  Reading Base Texture at {d}", .{self.pos});
-                prop.base_texture = try read_texture_desc(self);
-
-                nif_log.warn("  Reading Dark Texture at {d}", .{self.pos});
-                prop.dark_texture = try read_texture_desc(self);
-                prop.detail_texture = try read_texture_desc(self);
-                prop.gloss_texture = try read_texture_desc(self);
-                prop.glow_texture = try read_texture_desc(self);
-                prop.bump_map_texture = try read_texture_desc(self);
-
-                if (prop.texture_count > 6) {
-                    prop.decal_0_texture = try read_texture_desc(self);
-                } else {
-                    prop.decal_0_texture = null;
-                }
-
-                if (prop.texture_count > 7) {
-                    prop.decal_1_texture = try read_texture_desc(self);
-                } else {
-                    prop.decal_1_texture = null;
-                }
-
-                block.parsed = prop;
+                block.parsed = try self.parse_ni_texturing_property();
             } else if (std.mem.eql(u8, type_name, "NiSkinData")) {
-                const data = try self.allocator.create(NiSkinData);
-                data.rotation = try self.read([9]f32);
-                data.translation = try self.read([3]f32);
-                data.scale = try self.read(f32);
-                data.num_bones = try self.read(u32);
-                data.bone_list = try self.allocator.alloc(NiSkinBoneData, data.num_bones);
-
-                // Has Vertex Weights? (bool) - Nif.xml says this exists in NiSkinData
-                _ = try self.read(u8); // has_vertex_weights (usually 1)
-
-                for (data.bone_list) |*bone| {
-                    bone.rotation = try self.read([9]f32);
-                    bone.translation = try self.read([3]f32);
-                    bone.scale = try self.read(f32);
-                    bone.bounding_sphere_center = try self.read([3]f32);
-                    bone.bounding_sphere_radius = try self.read(f32);
-
-                    const num_verts = try self.read(u16);
-                    bone.num_vertices = num_verts;
-
-                    bone.vertex_weights = try self.allocator.alloc(NiSkinWeight, num_verts);
-                    for (bone.vertex_weights) |*vw| {
-                        vw.index = try self.read(u16);
-                        vw.weight = try self.read(f32);
-                    }
-                }
-                block.parsed = data;
+                block.parsed = try self.parse_ni_skin_data();
             } else if (std.mem.eql(u8, type_name, "NiAlphaProperty")) {
-                const prop = try self.allocator.create(NiAlphaProperty);
-                // NiObjectNET
-                _ = try self.read(i32); // name
-                const num_extra = try self.read(u32);
-                self.pos += num_extra * 4; // refs
-                _ = try self.read(i32); // controller
-
-                prop.flags = try self.read(u16);
-                prop.threshold = try self.read(u8);
-
-                nif_log.debug("NiAlphaProperty: Flags=0x{x}, Threshold={d}", .{ prop.flags, prop.threshold });
-
-                block.parsed = prop;
+                block.parsed = try self.parse_ni_alpha_property();
             } else if (std.mem.eql(u8, type_name, "NiMaterialProperty")) {
-                const prop = try self.allocator.create(NiMaterialProperty);
-                // NiObjectNET
-                _ = try self.read(i32); // name
-                const num_extra = try self.read(u32);
-                self.pos += num_extra * 4; // refs
-                _ = try self.read(i32); // controller
-
-                prop.flags = try self.read(u16);
-                prop.ambient = try self.read([3]f32);
-                prop.diffuse = try self.read([3]f32);
-                prop.specular = try self.read([3]f32);
-                prop.emissive = try self.read([3]f32);
-                prop.glossiness = try self.read(f32);
-                prop.alpha = try self.read(f32);
-
-                nif_log.debug("NiMaterialProperty {d}: Amb={any}, Diff={any}, Spec={any}, Emis={any}", .{ i, prop.ambient, prop.diffuse, prop.specular, prop.emissive });
-
-                block.parsed = prop;
+                block.parsed = try self.parse_ni_material_property();
             } else if (std.mem.eql(u8, type_name, "NiStencilProperty")) {
-                const prop = try self.allocator.create(NiStencilProperty);
-                // NiObjectNET
-                _ = try self.read(i32); // name
-                const num_extra = try self.read(u32);
-                self.pos += num_extra * 4; // refs
-                _ = try self.read(i32); // controller
-
-                // In some versions (<= 20.0.0.5) flags is u16?
-                // In >= 20.1.0.3, it is flags(u16) + ...
-                // Let's assume u16 for now as per Nif.xml common
-                prop.flags = try self.read(u16);
-                // Might be more data (Ref)
-                // Just stop here, we only care about flags (double sided)
-                block.parsed = prop;
+                block.parsed = try self.parse_ni_stencil_property();
             }
         }
     }
@@ -929,71 +943,9 @@ pub const NifReader = struct {
 
 // --- Integration ---
 
-// Define Structs for Texture Parsing
-const NiAlphaProperty = struct {
-    flags: u16,
-    threshold: u8,
-};
-
-const NiMaterialProperty = struct {
-    flags: u16,
-    ambient: [3]f32,
-    diffuse: [3]f32,
-    specular: [3]f32,
-    emissive: [3]f32,
-    glossiness: f32,
-    alpha: f32,
-};
-
-const NiStencilProperty = struct {
-    flags: u16,
-};
-
-const NiSourceTexture = struct {
-    use_external: u8,
-    file_name_index: i32,
-    pixel_layout: u32,
-    use_mipmaps: u32,
-    alpha_format: u32,
-    is_static: u8,
-};
-
-const NiTexturingProperty = struct {
-    flags: u16,
-    apply_mode: u32,
-    texture_count: u32,
-    base_texture: ?TextureDesc,
-    dark_texture: ?TextureDesc,
-    detail_texture: ?TextureDesc,
-    gloss_texture: ?TextureDesc,
-    glow_texture: ?TextureDesc,
-    bump_map_texture: ?TextureDesc,
-    decal_0_texture: ?TextureDesc,
-    decal_1_texture: ?TextureDesc,
-};
-
-const TextureDesc = struct {
-    source_texture_ref: i32,
-    clamp_mode: u16,
-    filter_mode: u16,
-    uv_set: u32,
-    ps2_l: i16,
-    ps2_k: i16,
-    has_texture_transform: u8,
-    // Texture Transform (if has_texture_transform)
-    translation: [2]f32,
-    tiling: [2]f32,
-    w_rotation: f32,
-    transform_type: u32,
-    center_offset: [2]f32,
-};
-
 fn read_texture_desc(reader: *NifReader) !?TextureDesc {
-    const start_pos = reader.pos;
     const has_texture_byte = try reader.read(u8);
     const has_texture = (has_texture_byte != 0);
-
-    nif_log.warn("  TextureDesc at {d}: Has={d}", .{ start_pos, has_texture_byte });
 
     if (!has_texture) return null;
 
@@ -1008,8 +960,6 @@ fn read_texture_desc(reader: *NifReader) !?TextureDesc {
     // desc.ps2_k = try reader.read(i16);
 
     desc.has_texture_transform = try reader.read(u8);
-
-    nif_log.warn("    Ref: {d}, Clamp: {d}, Filter: {d}, UV: {d}", .{ desc.source_texture_ref, desc.clamp_mode, desc.filter_mode, desc.uv_set });
 
     if (desc.has_texture_transform != 0) {
         desc.translation = try reader.read([2]f32);
@@ -1139,6 +1089,19 @@ pub export fn cardinal_nif_load_scene(path: [*:0]const u8, out_scene: *scene.Car
 
                     // Mat4 from TRS
                     transform.cardinal_matrix_from_rt_s(&r, &t, s, &transform_mat);
+
+                    // CORRECTION FOR ROOT NODE (Index 0)
+                    // NIF is Z-up. Engine is Y-up.
+                    // Rotate -90 degrees around X axis.
+                    if (i == 0) {
+                        const correction = [16]f32{ 1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, -1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 1.0 };
+
+                        var final: [16]f32 = undefined;
+                        // Correction * Local (Rotate the whole coordinate system)
+                        transform.cardinal_matrix_multiply(&correction, &transform_mat, &final);
+                        @memcpy(&transform_mat, &final);
+                    }
+
                     scene.cardinal_scene_node_set_local_transform(node.?, &transform_mat);
                 }
             }
@@ -1316,9 +1279,9 @@ pub export fn cardinal_nif_load_scene(path: [*:0]const u8, out_scene: *scene.Car
                     if (p_alpha) |a| {
                         // Flags:
                         // Bit 0: Blend Enable
-                        // Bit 9: Test Enable (Alpha Cutoff)
+                        // Bit 8 or 9: Test Enable (Alpha Cutoff) - 0x100 or 0x200 depending on version
                         const blend_enabled = (a.flags & 1) != 0;
-                        const test_enabled = (a.flags & 512) != 0; // 0x200
+                        const test_enabled = (a.flags & 512) != 0 or (a.flags & 256) != 0;
 
                         nif_log.warn("Mesh {d} Alpha: Flags=0x{x}, Blend={any}, Test={any}, Thresh={d}", .{ mesh_idx, a.flags, blend_enabled, test_enabled, a.threshold });
 
@@ -1330,12 +1293,34 @@ pub export fn cardinal_nif_load_scene(path: [*:0]const u8, out_scene: *scene.Car
                             new_mat.alpha_cutoff = @as(f32, @floatFromInt(a.threshold)) / 255.0;
                             // Ensure cutoff is reasonable
                             if (new_mat.alpha_cutoff == 0.0) new_mat.alpha_cutoff = 0.5;
-                            nif_log.warn("Mesh {d} Mode -> MASK (Cutoff: {d:.2})", .{ mesh_idx, new_mat.alpha_cutoff });
+
+                            // HACK: Some legacy NIFs use a very low threshold (like 0 or 10) for "cutout" which fails to cut anything if the texture has fuzzy alpha.
+                            // If threshold is very low but it's MASK mode, bump it up slightly?
+                            // Or, maybe we should respect it.
+                            // But for "Solid Colors" issue, it means alpha is NOT < cutoff.
+                            // If cutoff is 0.49 (125), and we see solid colors, texture alpha must be > 0.49.
+
                         } else if (blend_enabled) {
                             new_mat.alpha_mode = .BLEND;
-                            nif_log.warn("Mesh {d} Mode -> BLEND", .{mesh_idx});
                         } else {
-                            new_mat.alpha_mode = .OPAQUE;
+                            // Some meshes have NiAlphaProperty but with flags 0 or weird values.
+                            // If threshold is set (> 0), assume MASK?
+                            // Or if flags & 0x1400 (Alpha Test Function) is set?
+                            if (a.threshold > 0) {
+                                new_mat.alpha_mode = .MASK;
+                                new_mat.alpha_cutoff = @as(f32, @floatFromInt(a.threshold)) / 255.0;
+                            } else {
+                                // Default for NiAlphaProperty with no flags is usually BLEND (SRC_ALPHA, INV_SRC_ALPHA) in older NIFs?
+                                // Actually, if flags are 0, it means no alpha blending and no alpha testing.
+                                // But why add the property then?
+                                // Sometimes it's just a container for the threshold.
+                                // Let's default to OPAQUE unless alpha < 1.0
+                                if (new_mat.albedo_factor[3] < 0.99) {
+                                    new_mat.alpha_mode = .BLEND;
+                                } else {
+                                    new_mat.alpha_mode = .OPAQUE;
+                                }
+                            }
                         }
                     } else {
                         // No alpha property usually means OPAQUE, unless texture has alpha?
@@ -1714,18 +1699,27 @@ pub export fn cardinal_nif_load_scene(path: [*:0]const u8, out_scene: *scene.Car
                                     // so the textures are visible.
                                     if (data.colors.len > 0 and vertex_count > 0) {
                                         var all_black = true;
+                                        var has_alpha = false;
                                         var v_check: usize = 0;
                                         while (v_check < vertex_count) : (v_check += 1) {
                                             const v = vertices_ptr[v_check];
-                                            // Check if color is non-black (ignore alpha for now, or check alpha too?)
-                                            // Usually if it's uninitialized it's 0,0,0,0.
-                                            // If it's just black (0,0,0,1), it might be intentional?
-                                            // But for legacy assets, 0,0,0,0 is the common failure mode.
                                             if (v.color[0] > 0.001 or v.color[1] > 0.001 or v.color[2] > 0.001) {
                                                 all_black = false;
-                                                break;
+                                            }
+                                            if (v.color[3] > 0.001) {
+                                                has_alpha = true;
                                             }
                                         }
+
+                                        // If ALL vertex alphas are 0, force them to 1.
+                                        if (!has_alpha) {
+                                            nif_log.warn("Mesh {d} has ALL ZERO vertex alpha. Forcing to 1.0.", .{mesh_idx});
+                                            var v_fix: usize = 0;
+                                            while (v_fix < vertex_count) : (v_fix += 1) {
+                                                vertices_ptr[v_fix].color[3] = 1.0;
+                                            }
+                                        }
+
                                         if (all_black) {
                                             nif_log.warn("Mesh {d} has ALL BLACK vertex colors. Forcing to WHITE.", .{mesh_idx});
                                             var v_fix: usize = 0;
@@ -1804,6 +1798,7 @@ pub export fn cardinal_nif_load_scene(path: [*:0]const u8, out_scene: *scene.Car
         nif_log.warn("NIF load resulted in empty scene (no nodes or meshes)", .{});
         return false;
     }
+
     return true;
 }
 

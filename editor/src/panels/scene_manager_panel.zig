@@ -3,6 +3,7 @@ const engine = @import("cardinal_engine");
 const c = @import("../c.zig").c;
 const EditorState = @import("../editor_state.zig").EditorState;
 const scene_io = @import("../systems/scene_io.zig");
+const platform = engine.platform;
 
 pub fn draw_scene_manager_panel(state: *EditorState, allocator: std.mem.Allocator) void {
     if (state.show_scene_manager) {
@@ -11,19 +12,22 @@ pub fn draw_scene_manager_panel(state: *EditorState, allocator: std.mem.Allocato
 
         if (open) {
             // Save Scene
-            c.imgui_bridge_text("Save As:");
-            c.imgui_bridge_set_next_item_width(-1.0);
-            _ = c.imgui_bridge_input_text_with_hint("##save_scene_name", "Scene Name (e.g. my_scene)", @ptrCast(&state.save_scene_name), state.save_scene_name.len);
-
-            if (c.imgui_bridge_button("Save Scene")) {
-                const len = std.mem.indexOf(u8, &state.save_scene_name, &[_]u8{0}) orelse state.save_scene_name.len;
-                if (len > 0) {
-                    const name = state.save_scene_name[0..len];
-                    var path_buf: [512]u8 = undefined;
-                    const full_path = std.fmt.bufPrint(&path_buf, "assets/scenes/{s}{s}", .{ name, if (std.mem.endsWith(u8, name, ".json")) "" else ".json" }) catch "assets/scenes/scene.json";
-
-                    scene_io.save_scene(state, allocator, full_path);
+            c.imgui_bridge_text("Save/Load:");
+            
+            if (c.imgui_bridge_button("Save Scene As...")) {
+                if (platform.save_file_dialog(allocator, "Scene Files\x00*.json\x00All Files\x00*.*\x00", null)) |path| {
+                    defer allocator.free(path);
+                    scene_io.save_scene(state, allocator, path);
                     scene_io.refresh_available_scenes(state, allocator);
+                }
+            }
+
+            c.imgui_bridge_same_line(0, -1);
+
+            if (c.imgui_bridge_button("Load Scene...")) {
+                if (platform.open_file_dialog(allocator, "Scene Files\x00*.json\x00All Files\x00*.*\x00", null)) |path| {
+                    defer allocator.free(path);
+                    scene_io.load_scene(state, allocator, path);
                 }
             }
 

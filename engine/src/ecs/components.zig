@@ -96,3 +96,13 @@ pub const Hierarchy = struct {
     prev_sibling: ?entity_pkg.Entity = null,
     child_count: u32 = 0,
 };
+
+pub const NodeType = enum {
+    Node3D,
+    Node2D,
+    NodeUI,
+};
+
+pub const Node = struct {
+    type: NodeType = .Node3D,
+};

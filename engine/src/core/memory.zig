@@ -1,25 +1,12 @@
 const std = @import("std");
 const builtin = @import("builtin");
+const platform = @import("platform.zig");
 
 const c = @cImport({
     @cInclude("stdlib.h");
     @cInclude("string.h");
     @cInclude("stdio.h");
 });
-
-// External C functions for aligned allocation
-extern "c" fn _aligned_malloc(size: usize, alignment: usize) ?*anyopaque;
-extern "c" fn _aligned_free(ptr: ?*anyopaque) void;
-extern "c" fn posix_memalign(memptr: *?*anyopaque, alignment: usize, size: usize) c_int;
-extern "c" fn _expand(memblock: ?*anyopaque, size: usize) ?*anyopaque;
-
-// Windows Stack Trace
-extern "kernel32" fn RtlCaptureStackBackTrace(
-    FramesToSkip: u32,
-    FramesToCapture: u32,
-    BackTrace: [*]?*anyopaque,
-    BackTraceHash: ?*u32,
-) u16;
 
 // Enums and Structs matching C header
 pub const CardinalMemoryCategory = enum(c_int) { UNKNOWN = 0, ENGINE, RENDERER, VULKAN_BUFFERS, VULKAN_DEVICE, TEXTURES, MESHES, ASSETS, SHADERS, WINDOW, LOGGING, TEMPORARY, MAX };
@@ -91,30 +78,28 @@ pub const CardinalAllocator = extern struct {
 
         switch (self.type) {
             .DYNAMIC => {
-                // On Windows, try _expand for unaligned allocations (malloc based)
-                if (builtin.os.tag == .windows) {
-                    const max_align = @alignOf(c_longdouble);
-                    if (alignment <= max_align) {
-                        // Check if it was aligned-allocated (which we can't _expand)
-                        // We can check our tracking info
-                        if (find_alloc(buf.ptr)) |info| {
-                            if (info.is_aligned) return false; // _aligned_malloc used
+                // Try platform expand for unaligned allocations (malloc based)
+                const max_align = @alignOf(c_longdouble);
+                if (alignment <= max_align) {
+                    // Check if it was aligned-allocated (which we can't _expand)
+                    // We can check our tracking info
+                    if (find_alloc(buf.ptr)) |info| {
+                        if (info.is_aligned) return false; // aligned_alloc used
 
-                            // Try _expand
-                            if (_expand(buf.ptr, new_len)) |_| {
-                                // Success! Update tracking
-                                // We need to update size in map.
-                                // We can't easily modify map value in place without lock, so use untrack/track
-                                var old_size: usize = 0;
-                                var is_aligned: bool = false;
-                                if (untrack_alloc(buf.ptr, &old_size, &is_aligned)) {
-                                    track_alloc(buf.ptr, new_len, is_aligned);
-                                    // Update stats
-                                    stats_on_free(self.category, old_size);
-                                    stats_on_alloc(self.category, new_len);
-                                }
-                                return true;
+                        // Try expand
+                        if (platform.expand(buf.ptr, new_len)) |_| {
+                            // Success! Update tracking
+                            // We need to update size in map.
+                            // We can't easily modify map value in place without lock, so use untrack/track
+                            var old_size: usize = 0;
+                            var is_aligned: bool = false;
+                            if (untrack_alloc(buf.ptr, &old_size, &is_aligned)) {
+                                track_alloc(buf.ptr, new_len, is_aligned);
+                                // Update stats
+                                stats_on_free(self.category, old_size);
+                                stats_on_alloc(self.category, new_len);
                             }
+                            return true;
                         }
                     }
                 }
@@ -286,31 +271,25 @@ fn track_alloc(ptr: ?*anyopaque, size: usize, is_aligned: bool) void {
     @memset(&info.stack_addresses, 0);
 
     // Capture stack trace if debug build
-    if (builtin.mode == .Debug) {
-        if (builtin.os.tag == .windows) {
-            // Use Windows API for faster/safer stack walking
-            // Skip 0 frames (capture current), capture up to 16
-            var stack: [16]?*anyopaque = undefined;
-            const count = RtlCaptureStackBackTrace(0, 16, &stack, null);
+    // Note: Disabled by default to prevent performance issues/freezes during high allocation traffic.
+    // Enable this only when debugging specific memory leaks.
+    const enable_stack_trace = false;
+    if (builtin.mode == .Debug and enable_stack_trace) {
+        // Use platform specific stack walking
+        var stack: [16]?*anyopaque = undefined;
+        // Skip 0 frames (capture current), capture up to 16
+        // Note: platform implementation might not support skipping or might have different semantics
+        // but we just want *some* trace.
+        const count = platform.capture_stack_back_trace(0, 16, &stack, null);
 
+        if (count > 0) {
             var i: usize = 0;
             while (i < count) : (i += 1) {
                 info.stack_addresses[i] = @intFromPtr(stack[i]);
             }
             info.stack_depth = count;
         } else {
-            // Fallback for other OSs using Zig's StackIterator
-            var it = std.debug.StackIterator.init(@returnAddress(), null);
-            var idx: usize = 0;
-            while (it.next()) |return_address| : (idx += 1) {
-                if (idx >= 16) break;
-                info.stack_addresses[idx] = return_address;
-            }
-            info.stack_depth = idx;
-        }
-
-        // Fallback: If stack capture failed to find anything, at least grab the immediate caller
-        if (info.stack_depth == 0) {
+            // Fallback: If stack capture failed to find anything, at least grab the immediate caller
             info.stack_addresses[0] = @returnAddress();
             info.stack_depth = 1;
         }
@@ -376,14 +355,7 @@ fn dyn_alloc(_: *CardinalAllocator, size: usize, alignment: usize) callconv(.c) 
 
     if (alignment > 0 and alignment > max_align) {
         is_aligned = true;
-        if (builtin.os.tag == .windows) {
-            ptr = _aligned_malloc(size, alignment);
-        } else {
-            var temp_ptr: ?*anyopaque = null;
-            if (posix_memalign(&temp_ptr, alignment, size) == 0) {
-                ptr = temp_ptr;
-            }
-        }
+        ptr = platform.aligned_alloc(size, alignment);
     } else {
         ptr = c.malloc(size);
     }
@@ -416,11 +388,7 @@ fn dyn_realloc(self: *CardinalAllocator, ptr: ?*anyopaque, old_size: usize, new_
             }
 
             if (is_aligned) {
-                if (builtin.os.tag == .windows) {
-                    _aligned_free(ptr);
-                } else {
-                    c.free(ptr);
-                }
+                platform.aligned_free(ptr);
             } else {
                 c.free(ptr);
             }
@@ -453,11 +421,7 @@ fn dyn_free(_: *CardinalAllocator, ptr: ?*anyopaque) callconv(.c) void {
     const was_tracked = untrack_alloc(ptr, &size, &is_aligned);
 
     if (was_tracked and is_aligned) {
-        if (builtin.os.tag == .windows) {
-            _aligned_free(ptr);
-        } else {
-            c.free(ptr);
-        }
+        platform.aligned_free(ptr);
     } else {
         c.free(ptr);
     }

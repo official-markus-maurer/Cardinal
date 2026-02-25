@@ -21,6 +21,9 @@ typedef struct VkQueue_T *VkQueue;
 typedef struct VkCommandBuffer_T *VkCommandBuffer;
 typedef struct VkDescriptorPool_T *VkDescriptorPool;
 typedef struct VkRenderPass_T *VkRenderPass;
+#ifndef __cplusplus
+typedef struct ImGuiPayload ImGuiPayload;
+#endif
 
 #ifndef __cplusplus
 
@@ -94,6 +97,14 @@ typedef enum ImGuiWindowFlags_ {
                               ImGuiWindowFlags_NoNavFocus,
 } ImGuiWindowFlags_;
 
+typedef enum ImGuiCond_ {
+  ImGuiCond_None = 0,
+  ImGuiCond_Always = 1 << 0,
+  ImGuiCond_Once = 1 << 1,
+  ImGuiCond_FirstUseEver = 1 << 2,
+  ImGuiCond_Appearing = 1 << 3,
+} ImGuiCond_;
+
 typedef enum ImGuiTreeNodeFlags_ {
   ImGuiTreeNodeFlags_None = 0,
   ImGuiTreeNodeFlags_Selected = 1 << 0,
@@ -142,6 +153,52 @@ typedef enum ImGuiDockNodeFlags_ {
   ImGuiDockNodeFlags_NoResize = 1 << 5,
   ImGuiDockNodeFlags_AutoHideTabBar = 1 << 6,
 } ImGuiDockNodeFlags_;
+
+typedef enum ImGuiInputTextFlags_ {
+  ImGuiInputTextFlags_None = 0,
+  ImGuiInputTextFlags_CharsDecimal = 1 << 0,
+  ImGuiInputTextFlags_CharsHexadecimal = 1 << 1,
+  ImGuiInputTextFlags_CharsScientific = 1 << 2,
+  ImGuiInputTextFlags_CharsUppercase = 1 << 3,
+  ImGuiInputTextFlags_CharsNoBlank = 1 << 4,
+  ImGuiInputTextFlags_AllowTabInput = 1 << 5,
+  ImGuiInputTextFlags_EnterReturnsTrue = 1 << 6,
+  ImGuiInputTextFlags_EscapeClearsAll = 1 << 7,
+  ImGuiInputTextFlags_CtrlEnterForNewLine = 1 << 8,
+  ImGuiInputTextFlags_ReadOnly = 1 << 9,
+  ImGuiInputTextFlags_Password = 1 << 10,
+  ImGuiInputTextFlags_AlwaysOverwrite = 1 << 11,
+  ImGuiInputTextFlags_AutoSelectAll = 1 << 12,
+  ImGuiInputTextFlags_ParseEmptyRefVal = 1 << 13,
+  ImGuiInputTextFlags_DisplayEmptyRefVal = 1 << 14,
+  ImGuiInputTextFlags_NoHorizontalScroll = 1 << 15,
+  ImGuiInputTextFlags_NoUndoRedo = 1 << 16,
+  ImGuiInputTextFlags_CallbackCompletion = 1 << 17,
+  ImGuiInputTextFlags_CallbackHistory = 1 << 18,
+  ImGuiInputTextFlags_CallbackAlways = 1 << 19,
+  ImGuiInputTextFlags_CallbackCharFilter = 1 << 20,
+  ImGuiInputTextFlags_CallbackResize = 1 << 21,
+  ImGuiInputTextFlags_CallbackEdit = 1 << 22,
+} ImGuiInputTextFlags_;
+
+typedef enum ImGuiKey_ {
+  ImGuiKey_None = 0,
+  ImGuiKey_Tab = 512,
+  ImGuiKey_LeftArrow = 513,
+  ImGuiKey_RightArrow = 514,
+  ImGuiKey_UpArrow = 515,
+  ImGuiKey_DownArrow = 516,
+  ImGuiKey_PageUp = 517,
+  ImGuiKey_PageDown = 518,
+  ImGuiKey_Home = 519,
+  ImGuiKey_End = 520,
+  ImGuiKey_Insert = 521,
+  ImGuiKey_Delete = 522,
+  ImGuiKey_Backspace = 523,
+  ImGuiKey_Space = 524,
+  ImGuiKey_Enter = 525,
+  ImGuiKey_Escape = 526,
+} ImGuiKey_;
 
 typedef enum ImGuiTableFlags_ {
   ImGuiTableFlags_None = 0,
@@ -222,6 +279,10 @@ void imgui_bridge_viewport_get_work_pos(const ImGuiViewport *viewport,
                                         ImVec2 *out_pos);
 void imgui_bridge_viewport_get_work_size(const ImGuiViewport *viewport,
                                          ImVec2 *out_size);
+void imgui_bridge_viewport_get_pos(const ImGuiViewport *viewport,
+                                   ImVec2 *out_pos);
+void imgui_bridge_viewport_get_size(const ImGuiViewport *viewport,
+                                    ImVec2 *out_size);
 void imgui_bridge_get_window_pos(ImVec2 *out_pos);
 void imgui_bridge_get_window_size(ImVec2 *out_size);
 void imgui_bridge_set_next_window_pos(const ImVec2 *pos, int cond,
@@ -278,6 +339,7 @@ void imgui_bridge_end(void);
 void imgui_bridge_text(const char *fmt, ...);
 void imgui_bridge_text_disabled(const char *fmt, ...);
 void imgui_bridge_text_wrapped(const char *fmt, ...);
+void imgui_bridge_set_cursor_pos(const ImVec2 *pos);
 bool imgui_bridge_button(const char *label);
 void imgui_bridge_same_line(float offset_from_start_x, float spacing);
 bool imgui_bridge_checkbox(const char *label, bool *v);
@@ -291,7 +353,9 @@ bool imgui_bridge_selectable(const char *label, bool selected, int flags);
 bool imgui_bridge_selectable_size(const char *label, bool selected, int flags,
                                   float width, float height);
 bool imgui_bridge_collapsing_header(const char *label, int flags);
-void imgui_bridge_set_next_item_width(float width);
+void imgui_bridge_push_item_width(float item_width);
+void imgui_bridge_pop_item_width(void);
+void imgui_bridge_set_next_item_width(float item_width);
 float imgui_bridge_get_content_region_avail_x(void);
 bool imgui_bridge_input_text(const char *label, char *buf, size_t buf_size, int flags);
 bool imgui_bridge_input_text_with_hint(const char *label, const char *hint,
@@ -333,17 +397,31 @@ void imgui_bridge_table_set_column_index(int column_n);
 void imgui_bridge_open_popup(const char *str_id);
 bool imgui_bridge_begin_popup(const char *str_id, int flags);
 bool imgui_bridge_begin_popup_modal(const char *name, bool *p_open, int flags);
+bool imgui_bridge_begin_popup_context_item(void);
 void imgui_bridge_end_popup(void);
 void imgui_bridge_close_current_popup(void);
+
+// Drag & Drop
+bool imgui_bridge_begin_drag_drop_source(int flags);
+bool imgui_bridge_set_drag_drop_payload(const char* type, const void* data, size_t sz, int cond);
+void imgui_bridge_end_drag_drop_source(void);
+bool imgui_bridge_begin_drag_drop_target(void);
+const ImGuiPayload* imgui_bridge_accept_drag_drop_payload(const char* type, int flags);
+void imgui_bridge_end_drag_drop_target(void);
+const void* imgui_bridge_payload_get_data(const ImGuiPayload* payload);
+int imgui_bridge_payload_get_data_size(const ImGuiPayload* payload);
 void imgui_bridge_set_keyboard_focus_here(int offset);
 bool imgui_bridge_is_window_appearing(void);
 
 // Tooltips & Interaction
 void imgui_bridge_set_tooltip(const char *fmt, ...);
 bool imgui_bridge_is_item_hovered(int flags);
+bool imgui_bridge_is_item_active(void);
+bool imgui_bridge_is_any_item_active(void);
 bool imgui_bridge_is_item_clicked(int mouse_button);
 bool imgui_bridge_is_mouse_double_clicked(int button);
 bool imgui_bridge_is_key_pressed(int key);
+bool imgui_bridge_is_window_focused(int flags);
 
 // Widgets
 bool imgui_bridge_drag_float(const char *label, float *v, float v_speed,

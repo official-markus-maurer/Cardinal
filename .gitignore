@@ -4,6 +4,7 @@ docs/
 assets/models/
 assets/audio/
 assets/textures/
+assets/skybox/
 
 # Cardinal log files
 cardinal_log.txt

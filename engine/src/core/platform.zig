@@ -1,14 +1,17 @@
 const std = @import("std");
 const builtin = @import("builtin");
 
-const win_c = if (builtin.os.tag == .windows) @cImport({
-    @cInclude("windows.h");
-    @cInclude("DbgHelp.h");
-}) else struct {};
+const impl = switch (builtin.os.tag) {
+    .windows => @import("../platform/windows.zig"),
+    .linux => @import("../platform/linux.zig"),
+    .macos => @import("../platform/macos.zig"),
+    else => @compileError("Unsupported platform"),
+};
+
+pub const c = impl.c;
 
 pub fn get_current_thread_id() u32 {
-    const id = std.Thread.getCurrentId();
-    return @intCast(id);
+    return impl.get_current_thread_id();
 }
 
 pub fn get_time_ms() u64 {
@@ -19,65 +22,35 @@ pub fn get_time_ns() u64 {
     return @intCast(std.time.nanoTimestamp());
 }
 
-fn write_minidump_internal(exception_pointers: ?*win_c.EXCEPTION_POINTERS) bool {
-    if (builtin.os.tag != .windows) {
-        return false;
-    }
-
-    const now_ms = get_time_ms();
-    const seconds: u64 = now_ms / 1000;
-    const millis: u64 = now_ms % 1000;
-
-    var name_buf: [256]u8 = undefined;
-    var name_fbs = std.io.fixedBufferStream(&name_buf);
-    const name_writer = name_fbs.writer();
-
-    name_writer.print("crash_{d}_{d:0>3}.dmp", .{ seconds, millis }) catch return false;
-    const name_slice = name_fbs.getWritten();
-
-    const cwd = std.fs.cwd();
-
-    _ = cwd.makeDir("dumps") catch {};
-
-    var path_buf: [512]u8 = undefined;
-    var path_fbs = std.io.fixedBufferStream(&path_buf);
-    const path_writer = path_fbs.writer();
-    path_writer.print("dumps/{s}", .{name_slice}) catch return false;
-    const path_slice = path_fbs.getWritten();
-
-    var file = cwd.createFile(path_slice, .{}) catch return false;
-    defer file.close();
-
-    const handle = file.handle;
-
-    const process_handle: win_c.HANDLE = win_c.GetCurrentProcess();
-    const process_id: win_c.DWORD = win_c.GetCurrentProcessId();
-
-    var ex_info: win_c.MINIDUMP_EXCEPTION_INFORMATION = std.mem.zeroes(win_c.MINIDUMP_EXCEPTION_INFORMATION);
-    ex_info.ThreadId = win_c.GetCurrentThreadId();
-    ex_info.ExceptionPointers = exception_pointers;
-    ex_info.ClientPointers = win_c.FALSE;
-
-    const ok = win_c.MiniDumpWriteDump(
-        process_handle,
-        process_id,
-        handle,
-        win_c.MiniDumpWithIndirectlyReferencedMemory,
-        if (exception_pointers) |_| &ex_info else null,
-        null,
-        null,
-    );
-
-    const success = ok != win_c.FALSE;
-
-    return success;
-}
-
 pub fn write_minidump() bool {
-    return write_minidump_internal(null);
+    return impl.write_minidump(null);
 }
 
-// Unhandled exception filter support is intentionally disabled for now because
-// the exact function pointer type signature on this Zig/Windows toolchain
-// causes calling convention mismatches when passed to SetUnhandledExceptionFilter.
-// If needed later, this can be reintroduced with a small C shim.
+pub fn aligned_alloc(size: usize, alignment: usize) ?*anyopaque {
+    return impl.aligned_alloc(size, alignment);
+}
+
+pub fn aligned_free(ptr: ?*anyopaque) void {
+    impl.aligned_free(ptr);
+}
+
+pub fn expand(memblock: ?*anyopaque, size: usize) ?*anyopaque {
+    return impl.expand(memblock, size);
+}
+
+pub fn capture_stack_back_trace(frames_to_skip: u32, frames_to_capture: u32, back_trace: [*]?*anyopaque, back_trace_hash: ?*u32) u16 {
+    return impl.capture_stack_back_trace(frames_to_skip, frames_to_capture, back_trace, back_trace_hash);
+}
+
+pub fn open_file_dialog(allocator: std.mem.Allocator, filter: ?[:0]const u8, default_path: ?[:0]const u8) ?[]const u8 {
+    return impl.open_file_dialog(allocator, filter, default_path);
+}
+
+pub fn save_file_dialog(allocator: std.mem.Allocator, filter: ?[:0]const u8, default_path: ?[:0]const u8) ?[]const u8 {
+    return impl.save_file_dialog(allocator, filter, default_path);
+}
+
+pub fn open_folder_dialog(allocator: std.mem.Allocator, default_path: ?[:0]const u8) ?[]const u8 {
+    return impl.open_folder_dialog(allocator, default_path);
+}
+

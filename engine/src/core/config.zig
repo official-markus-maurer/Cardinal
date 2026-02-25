@@ -20,6 +20,7 @@ pub const CardinalEngineConfig = struct {
 
     // Paths
     assets_path: []const u8 = "assets",
+    recent_projects: []const []const u8 = &[_][]const u8{},
 
     // Renderer settings
     renderer: vk_types.RendererConfig = .{
@@ -99,6 +100,7 @@ pub const ConfigManager = struct {
             async_queue_size: ?u32 = null,
             cache_size: ?u32 = null,
             assets_path: ?[]const u8 = null,
+            recent_projects: ?[]const []const u8 = null,
             renderer: ?ParsedRendererConfig = null,
         };
 
@@ -115,6 +117,13 @@ pub const ConfigManager = struct {
         if (parsed.value.async_queue_size) |val| self.config.async_queue_size = val;
         if (parsed.value.cache_size) |val| self.config.cache_size = val;
         if (parsed.value.assets_path) |val| self.config.assets_path = try self.allocator.dupe(u8, val);
+        if (parsed.value.recent_projects) |val| {
+            const new_list = try self.allocator.alloc([]const u8, val.len);
+            for (val, 0..) |path, i| {
+                new_list[i] = try self.allocator.dupeZ(u8, path);
+            }
+            self.config.recent_projects = new_list;
+        }
 
         if (parsed.value.renderer) |r| {
             if (r.pbr_clear_color) |v| self.config.renderer.pbr_clear_color = v;
@@ -158,21 +167,124 @@ pub const ConfigManager = struct {
 
         log.cardinal_log_info("Config loaded from {s}", .{self.config_path});
 
-        // Save back to ensure new fields are populated, while preserving unknown fields
-        try self.save_merged(content);
+        // Do NOT automatically save back, as this destroys comments in the JSON file.
+        // Only save if explicitly requested or if file was missing.
+        // try self.save_merged(content);
     }
 
+    // Helper for serialization to handle [N]u8 as slices
+    const SerializableRendererConfig = struct {
+        pbr_clear_color: [4]f32,
+        pbr_ambient_color: [4]f32,
+        pbr_default_light_direction: [4]f32,
+        pbr_default_light_color: [4]f32,
+        shadow_map_format: c.VkFormat,
+        shadow_cascade_count: u32,
+        shadow_map_size: u32,
+        shadow_split_lambda: f32,
+        shadow_near_clip: f32,
+        shadow_far_clip: f32,
+        prefer_hdr: bool,
+        present_mode: c.VkPresentModeKHR,
+        max_lights: u32,
+        max_frames_in_flight: u32,
+        timeline_max_ahead: u64,
+        enable_async_compute: bool,
+        shader_dir: []const u8,
+        pipeline_dir: []const u8,
+        texture_dir: []const u8,
+        model_dir: []const u8,
+
+        pub fn from(cfg: vk_types.RendererConfig) SerializableRendererConfig {
+            return .{
+                .pbr_clear_color = cfg.pbr_clear_color,
+                .pbr_ambient_color = cfg.pbr_ambient_color,
+                .pbr_default_light_direction = cfg.pbr_default_light_direction,
+                .pbr_default_light_color = cfg.pbr_default_light_color,
+                .shadow_map_format = cfg.shadow_map_format,
+                .shadow_cascade_count = cfg.shadow_cascade_count,
+                .shadow_map_size = cfg.shadow_map_size,
+                .shadow_split_lambda = cfg.shadow_split_lambda,
+                .shadow_near_clip = cfg.shadow_near_clip,
+                .shadow_far_clip = cfg.shadow_far_clip,
+                .prefer_hdr = cfg.prefer_hdr,
+                .present_mode = cfg.present_mode,
+                .max_lights = cfg.max_lights,
+                .max_frames_in_flight = cfg.max_frames_in_flight,
+                .timeline_max_ahead = cfg.timeline_max_ahead,
+                .enable_async_compute = cfg.enable_async_compute,
+                .shader_dir = std.mem.sliceTo(&cfg.shader_dir, 0),
+                .pipeline_dir = std.mem.sliceTo(&cfg.pipeline_dir, 0),
+                .texture_dir = std.mem.sliceTo(&cfg.texture_dir, 0),
+                .model_dir = std.mem.sliceTo(&cfg.model_dir, 0),
+            };
+        }
+    };
+
+    const SerializableConfig = struct {
+        window_title: []const u8,
+        window_width: u32,
+        window_height: u32,
+        window_resizable: bool,
+        memory_size: usize,
+        ref_counting_buckets: u32,
+        async_worker_threads: u32,
+        async_queue_size: u32,
+        cache_size: u32,
+        assets_path: []const u8,
+        recent_projects: []const []const u8,
+        renderer: SerializableRendererConfig,
+
+        pub fn from(cfg: CardinalEngineConfig) SerializableConfig {
+            return .{
+                .window_title = cfg.window_title,
+                .window_width = cfg.window_width,
+                .window_height = cfg.window_height,
+                .window_resizable = cfg.window_resizable,
+                .memory_size = cfg.memory_size,
+                .ref_counting_buckets = cfg.ref_counting_buckets,
+                .async_worker_threads = cfg.async_worker_threads,
+                .async_queue_size = cfg.async_queue_size,
+                .cache_size = cfg.cache_size,
+                .assets_path = cfg.assets_path,
+                .recent_projects = cfg.recent_projects,
+                .renderer = SerializableRendererConfig.from(cfg.renderer),
+            };
+        }
+    };
+
     pub fn save(self: *ConfigManager) !void {
+        // Try to preserve existing content (structure/comments)
+        const file = std.fs.cwd().openFile(self.config_path, .{}) catch |err| {
+            if (err == error.FileNotFound) {
+                return self.save_new();
+            }
+            return err;
+        };
+        const content = file.readToEndAlloc(self.allocator, 1024 * 1024) catch {
+            file.close();
+            return self.save_new();
+        };
+        file.close();
+        defer self.allocator.free(content);
+
+        return self.save_merged(content);
+    }
+
+    fn save_new(self: *ConfigManager) !void {
         const file = try std.fs.cwd().createFile(self.config_path, .{});
         defer file.close();
-        // Use stringify
+
         var list = std.ArrayListUnmanaged(u8){};
         defer list.deinit(self.allocator);
 
-        try list.writer(self.allocator).print("{f}", .{std.json.fmt(self.config, .{ .whitespace = .indent_4 })});
+        // Use SerializableConfig wrapper
+        const serializable = SerializableConfig.from(self.config);
+
+        try list.writer(self.allocator).print("{f}", .{std.json.fmt(serializable, .{ .whitespace = .indent_4 })});
         try file.writeAll(list.items);
 
-        log.cardinal_log_info("Config saved to {s}", .{self.config_path});
+        log.cardinal_log_info("Config saved (new) to {s}", .{self.config_path});
     }
 
     fn save_merged(self: *ConfigManager, original_content: []const u8) !void {
@@ -182,12 +294,17 @@ pub const ConfigManager = struct {
 
         if (tree.value != .object) {
             // If not an object, just overwrite
-            try self.save();
+            try self.save_new();
             return;
         }
 
         // Merge current config into the tree
-        try merge_struct_into_value(self.allocator, &tree.value, self.config);
+        // Note: For merging, we still rely on reflection over the struct.
+        // We need to be careful with [N]u8 arrays here too.
+        // However, converting the whole struct to a serializable one and then merging THAT
+        // is cleaner.
+        const serializable = SerializableConfig.from(self.config);
+        try merge_struct_into_value(self.allocator, &tree.value, serializable);
 
         // Save the merged tree
         const file = try std.fs.cwd().createFile(self.config_path, .{});

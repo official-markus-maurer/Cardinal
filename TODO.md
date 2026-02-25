@@ -81,10 +81,10 @@ This document outlines the roadmap for the Cardinal Engine, focusing on robustne
 - [ ] **Scene State Serialization**: Save/Restore full editor state (camera position, selected entity, open panels) to `editor.ini` or similar.
 - [ ] **Game View**: Separate "Game" view from "Scene" view to preview the camera's perspective.
 - [ ] **Console Panel**: Interactive console for logging and executing commands/scripts.
-- [ ] **File Dialogs**: Implement file dialogs for Save/Open scene in `editor_layer.zig` (L114, L119).
+- [x] **File Dialogs**: Implement file dialogs for Save/Open scene
 
 ### Editor Core
-- [ ] **Project Management**: Implement "Project" concept (folder-based) to allow switching between different projects with isolated assets/configs.
+- [x] **Project Management**: Implement "Project" concept (folder-based) to allow switching between different projects with isolated assets/configs.
 - [ ] **Command Pattern**: Implement Undo/Redo system for all editor actions.
 
 ### UI/UX
@@ -116,6 +116,6 @@ This document outlines the roadmap for the Cardinal Engine, focusing on robustne
 - [ ] **Gamepad Support**: Full gamepad polling and vibration support.
 
 ### OS Integration
-- [ ] **Cross-Platform Build**: Abstract platform-specific linking (Windows/Linux/macOS) in `build.zig`.
+- [x] **Cross-Platform Build**: Abstract platform-specific linking (Windows/Linux/macOS) in `build.zig`.
 - [ ] **Virtual File System (VFS)**: Abstract file system operations to support archives (Zip/Pak) and virtual paths (`asset://`).
 - [ ] **Crash Reporting**: Implement a crash handler to save stack traces and minidumps on failure.

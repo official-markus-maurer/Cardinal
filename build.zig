@@ -38,6 +38,9 @@ pub fn build(b: *std.Build) void {
             tracy.linkSystemLibrary("user32");
             tracy.linkSystemLibrary("secur32");
             tracy.linkSystemLibrary("advapi32");
+        } else {
+            tracy.linkSystemLibrary("pthread");
+            tracy.linkSystemLibrary("dl");
         }
     }
 
@@ -57,9 +60,11 @@ pub fn build(b: *std.Build) void {
     glfw.addIncludePath(b.path("libs/glfw/include"));
     glfw.addIncludePath(b.path("libs/glfw/src")); // for internal headers
 
-    glfw.root_module.addCMacro("_GLFW_WIN32", "");
+    var glfw_sources = std.ArrayListUnmanaged([]const u8){};
+    defer glfw_sources.deinit(b.allocator);
 
-    const glfw_sources = &[_][]const u8{
+    // Common sources
+    glfw_sources.appendSlice(b.allocator, &[_][]const u8{
         "libs/glfw/src/context.c",
         "libs/glfw/src/init.c",
         "libs/glfw/src/input.c",
@@ -67,30 +72,76 @@ pub fn build(b: *std.Build) void {
         "libs/glfw/src/platform.c",
         "libs/glfw/src/vulkan.c",
         "libs/glfw/src/window.c",
-        "libs/glfw/src/win32_init.c",
-        "libs/glfw/src/win32_joystick.c",
-        "libs/glfw/src/win32_monitor.c",
-        "libs/glfw/src/win32_time.c",
-        "libs/glfw/src/win32_thread.c",
-        "libs/glfw/src/win32_window.c",
-        "libs/glfw/src/win32_module.c",
-        "libs/glfw/src/wgl_context.c",
-        "libs/glfw/src/egl_context.c",
-        "libs/glfw/src/osmesa_context.c",
         "libs/glfw/src/null_init.c",
         "libs/glfw/src/null_monitor.c",
         "libs/glfw/src/null_window.c",
         "libs/glfw/src/null_joystick.c",
-    };
+    }) catch @panic("OOM");
+
+    if (target.result.os.tag == .windows) {
+        glfw.root_module.addCMacro("_GLFW_WIN32", "");
+        glfw_sources.appendSlice(b.allocator, &[_][]const u8{
+            "libs/glfw/src/win32_init.c",
+            "libs/glfw/src/win32_joystick.c",
+            "libs/glfw/src/win32_monitor.c",
+            "libs/glfw/src/win32_time.c",
+            "libs/glfw/src/win32_thread.c",
+            "libs/glfw/src/win32_window.c",
+            "libs/glfw/src/win32_module.c",
+            "libs/glfw/src/wgl_context.c",
+            "libs/glfw/src/egl_context.c",
+            "libs/glfw/src/osmesa_context.c",
+        }) catch @panic("OOM");
+
+        glfw.linkSystemLibrary("gdi32");
+        glfw.linkSystemLibrary("user32");
+        glfw.linkSystemLibrary("shell32");
+    } else if (target.result.os.tag == .linux) {
+        glfw.root_module.addCMacro("_GLFW_X11", "");
+        glfw_sources.appendSlice(b.allocator, &[_][]const u8{
+            "libs/glfw/src/x11_init.c",
+            "libs/glfw/src/x11_monitor.c",
+            "libs/glfw/src/x11_window.c",
+            "libs/glfw/src/xkb_unicode.c",
+            "libs/glfw/src/posix_time.c",
+            "libs/glfw/src/posix_thread.c",
+            "libs/glfw/src/glx_context.c",
+            "libs/glfw/src/egl_context.c",
+            "libs/glfw/src/osmesa_context.c",
+            "libs/glfw/src/linux_joystick.c",
+        }) catch @panic("OOM");
+
+        glfw.linkSystemLibrary("X11");
+        glfw.linkSystemLibrary("Xcursor");
+        glfw.linkSystemLibrary("Xrandr");
+        glfw.linkSystemLibrary("Xinerama");
+        glfw.linkSystemLibrary("Xi");
+        glfw.linkSystemLibrary("dl");
+        glfw.linkSystemLibrary("pthread");
+    } else if (target.result.os.tag == .macos) {
+        glfw.root_module.addCMacro("_GLFW_COCOA", "");
+        glfw_sources.appendSlice(b.allocator, &[_][]const u8{
+            "libs/glfw/src/cocoa_init.m",
+            "libs/glfw/src/cocoa_joystick.m",
+            "libs/glfw/src/cocoa_monitor.m",
+            "libs/glfw/src/cocoa_window.m",
+            "libs/glfw/src/cocoa_time.c",
+            "libs/glfw/src/posix_thread.c",
+            "libs/glfw/src/nsgl_context.m",
+            "libs/glfw/src/egl_context.c",
+            "libs/glfw/src/osmesa_context.c",
+        }) catch @panic("OOM");
+
+        glfw.linkFramework("Cocoa");
+        glfw.linkFramework("IOKit");
+        glfw.linkFramework("CoreFoundation");
+        glfw.linkFramework("CoreVideo");
+    }
 
     glfw.addCSourceFiles(.{
-        .files = glfw_sources,
+        .files = glfw_sources.items,
         .flags = &.{},
     });
-
-    glfw.linkSystemLibrary("gdi32");
-    glfw.linkSystemLibrary("user32");
-    glfw.linkSystemLibrary("shell32");
 
     // =========================================================================
     // ImGui (Static Library)
@@ -160,9 +211,22 @@ pub fn build(b: *std.Build) void {
     }
 
     engine.root_module.addCMacro("GLFW_INCLUDE_VULKAN", "");
-    engine.root_module.addCMacro("VK_USE_PLATFORM_WIN32_KHR", "");
     engine.root_module.addCMacro("CARDINAL_ENGINE_INTERNAL", "");
-    engine.root_module.addCMacro("_CRT_SECURE_NO_WARNINGS", "");
+
+    if (target.result.os.tag == .windows) {
+        engine.root_module.addCMacro("VK_USE_PLATFORM_WIN32_KHR", "");
+        engine.root_module.addCMacro("_CRT_SECURE_NO_WARNINGS", "");
+    } else if (target.result.os.tag == .linux) {
+        engine.root_module.addCMacro("VK_USE_PLATFORM_XLIB_KHR", "");
+        engine.linkSystemLibrary("pthread");
+        engine.linkSystemLibrary("dl");
+    } else if (target.result.os.tag == .macos) {
+        engine.root_module.addCMacro("VK_USE_PLATFORM_METAL_EXT", "");
+        engine.linkFramework("Cocoa");
+        engine.linkFramework("IOKit");
+        engine.linkFramework("CoreFoundation");
+        engine.linkFramework("CoreVideo");
+    }
 
     const options = b.addOptions();
     options.addOption(bool, "enable_tracy", enable_tracy);
@@ -232,7 +296,16 @@ pub fn build(b: *std.Build) void {
     if (vulkan_sdk) |sdk| {
         engine.addLibraryPath(.{ .cwd_relative = b.fmt("{s}/Lib", .{sdk}) });
     }
-    engine.linkSystemLibrary("vulkan-1");
+
+    if (target.result.os.tag == .windows) {
+        engine.linkSystemLibrary("vulkan-1");
+    } else {
+        engine.linkSystemLibrary("vulkan");
+    }
+
+    if (target.result.os.tag == .windows) {
+        engine.linkSystemLibrary("comdlg32");
+    }
 
     // =========================================================================
     // Client (Executable)

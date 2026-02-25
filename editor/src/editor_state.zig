@@ -51,6 +51,7 @@ pub const AssetState = struct {
 pub const LoadingTaskInfo = struct {
     task: *async_loader.CardinalAsyncTask,
     path: [:0]u8,
+    target_entity: ?engine.ecs_entity.Entity = null,
 };
 
 pub const EditorState = struct {
@@ -90,6 +91,11 @@ pub const EditorState = struct {
     open_rename_popup: bool = false,
     open_delete_popup: bool = false,
     selected_model_id: u32 = 0,
+    selected_entity: engine.ecs_entity.Entity = .{ .id = std.math.maxInt(u64) },
+    
+    // Entity Renaming
+    renaming_entity: engine.ecs_entity.Entity = .{ .id = std.math.maxInt(u64) },
+    rename_buffer: [256]u8 = [_]u8{0} ** 256,
 
     // Panel Visibility
     show_scene_graph: bool = true,
@@ -99,6 +105,7 @@ pub const EditorState = struct {
     show_scene_manager: bool = true,
     show_pbr_settings: bool = true,
     show_animation: bool = true,
+    show_project_manager: bool = true,
 
     // Assets
     assets: AssetState = .{},
@@ -151,4 +158,8 @@ pub const EditorState = struct {
 
     // Optimization Settings
     show_performance_panel: bool = true,
+
+    // Project
+    project: ?@import("project.zig").Project = null,
+    project_loaded: bool = false,
 };

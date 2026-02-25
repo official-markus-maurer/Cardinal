@@ -34,6 +34,16 @@ void imgui_bridge_viewport_get_work_size(const ImGuiViewport *viewport,
   *out_size = viewport->WorkSize;
 }
 
+void imgui_bridge_viewport_get_pos(const ImGuiViewport *viewport,
+                                   ImVec2 *out_pos) {
+  *out_pos = viewport->Pos;
+}
+
+void imgui_bridge_viewport_get_size(const ImGuiViewport *viewport,
+                                    ImVec2 *out_size) {
+  *out_size = viewport->Size;
+}
+
 void imgui_bridge_get_window_pos(ImVec2 *out_pos) {
   *out_pos = ImGui::GetWindowPos();
 }
@@ -319,7 +329,13 @@ void imgui_bridge_text_wrapped(const char *fmt, ...) {
   va_end(args);
 }
 
-bool imgui_bridge_button(const char *label) { return ImGui::Button(label); }
+void imgui_bridge_set_cursor_pos(const ImVec2 *pos) {
+  ImGui::SetCursorPos(*pos);
+}
+
+bool imgui_bridge_button(const char *label) {
+  return ImGui::Button(label);
+}
 
 void imgui_bridge_same_line(float offset_from_start_x, float spacing) {
   ImGui::SameLine(offset_from_start_x, spacing);
@@ -354,6 +370,14 @@ bool imgui_bridge_selectable_size(const char *label, bool selected, int flags,
 
 bool imgui_bridge_collapsing_header(const char *label, int flags) {
   return ImGui::CollapsingHeader(label, flags);
+}
+
+void imgui_bridge_push_item_width(float item_width) {
+  ImGui::PushItemWidth(item_width);
+}
+
+void imgui_bridge_pop_item_width(void) {
+  ImGui::PopItemWidth();
 }
 
 void imgui_bridge_set_next_item_width(float width) {
@@ -488,6 +512,14 @@ bool imgui_bridge_is_item_hovered(int flags) {
   return ImGui::IsItemHovered(flags);
 }
 
+bool imgui_bridge_is_item_active(void) {
+  return ImGui::IsItemActive();
+}
+
+bool imgui_bridge_is_any_item_active(void) {
+  return ImGui::IsAnyItemActive();
+}
+
 bool imgui_bridge_is_item_clicked(int mouse_button) {
   return ImGui::IsItemClicked(mouse_button);
 }
@@ -498,6 +530,10 @@ bool imgui_bridge_is_mouse_double_clicked(int button) {
 
 bool imgui_bridge_is_key_pressed(int key) {
   return ImGui::IsKeyPressed((ImGuiKey)key);
+}
+
+bool imgui_bridge_is_window_focused(int flags) {
+  return ImGui::IsWindowFocused(flags);
 }
 
 // Widgets
@@ -653,4 +689,41 @@ void imgui_bridge_draw_triangle_filled(const ImVec2 *p1, const ImVec2 *p2,
 }
 
 float imgui_bridge_get_io_delta_time(void) { return ImGui::GetIO().DeltaTime; }
+
+bool imgui_bridge_begin_popup_context_item(void) {
+  return ImGui::BeginPopupContextItem();
+}
+
+// Drag & Drop
+bool imgui_bridge_begin_drag_drop_source(int flags) {
+  return ImGui::BeginDragDropSource(flags);
+}
+
+bool imgui_bridge_set_drag_drop_payload(const char* type, const void* data, size_t sz, int cond) {
+  return ImGui::SetDragDropPayload(type, data, sz, cond);
+}
+
+void imgui_bridge_end_drag_drop_source(void) {
+  ImGui::EndDragDropSource();
+}
+
+bool imgui_bridge_begin_drag_drop_target(void) {
+  return ImGui::BeginDragDropTarget();
+}
+
+const ImGuiPayload* imgui_bridge_accept_drag_drop_payload(const char* type, int flags) {
+  return ImGui::AcceptDragDropPayload(type, flags);
+}
+
+void imgui_bridge_end_drag_drop_target(void) {
+  ImGui::EndDragDropTarget();
+}
+
+const void* imgui_bridge_payload_get_data(const ImGuiPayload* payload) {
+  return payload ? payload->Data : nullptr;
+}
+
+int imgui_bridge_payload_get_data_size(const ImGuiPayload* payload) {
+  return payload ? payload->DataSize : 0;
+}
 }

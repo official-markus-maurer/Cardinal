@@ -31,6 +31,7 @@ pub fn import_scene_graph(state: *EditorState) void {
                 const name_comp = components.Name.init(std.mem.span(name));
                 state.registry.add(entity, name_comp) catch {};
             }
+            state.registry.add(entity, components.Node{ .type = .Node3D }) catch {};
 
             // Transform
             var transform = components.Transform{};
@@ -207,6 +208,180 @@ pub fn save_scene(state: *EditorState, allocator: std.mem.Allocator, path: []con
 
     log.cardinal_log_info("[EDITOR] Scene saved to {s}", .{path});
     _ = std.fmt.bufPrintZ(&state.status_msg, "Scene saved to {s}", .{path}) catch {};
+}
+
+pub fn load_model_to_entity(state: *EditorState, path: []const u8, parent: engine.ecs_entity.Entity) void {
+    // Check if file exists
+    std.fs.cwd().access(path, .{}) catch {
+        log.cardinal_log_error("Model file not found: {s}", .{path});
+        return;
+    };
+
+    // Use loader - need to null terminate if not already
+    var path_z_buf: [512]u8 = undefined;
+    const path_z = std.fmt.bufPrintZ(&path_z_buf, "{s}", .{path}) catch return;
+
+    const task_opt = engine.loader.cardinal_scene_load_async(path_z.ptr, .HIGH, null, null);
+    if (task_opt == null) {
+        log.cardinal_log_error("Failed to start model load task for: {s}", .{path});
+        return;
+    }
+    const task = task_opt.?;
+
+    // Add to loading tasks
+    const path_copy = state.arena_allocator.dupeZ(u8, path) catch return;
+    state.loading_tasks.append(state.arena_allocator, .{
+        .task = task,
+        .path = path_copy,
+        .target_entity = parent,
+    }) catch {};
+
+    state.is_loading = true;
+    _ = std.fmt.bufPrintZ(&state.status_msg, "Loading model: {s}", .{path}) catch {};
+}
+
+pub fn instantiate_model(state: *EditorState, model_id: u32, parent_entity: engine.ecs_entity.Entity) void {
+    const model_ptr = engine.model_manager.cardinal_model_manager_get_model(&state.model_manager, model_id);
+    if (model_ptr == null) return;
+    const model = model_ptr.?;
+    const scene = &model.scene;
+
+    log.cardinal_log_info("[SCENE_IO] Instantiating model {d} under entity {d}...", .{ model_id, parent_entity.id });
+
+    // Calculate mesh offset
+    var mesh_offset: u32 = 0;
+    var m_i: u32 = 0;
+    while (m_i < state.model_manager.model_count) : (m_i += 1) {
+        const m = &state.model_manager.models.?[m_i];
+        if (m.id == model_id) break;
+        mesh_offset += m.scene.mesh_count;
+    }
+
+    // Map from scene node index to Entity ID
+    var node_to_entity = state.arena_allocator.alloc(u64, scene.all_node_count) catch return;
+    @memset(node_to_entity, std.math.maxInt(u64));
+
+    var i: u32 = 0;
+    while (i < scene.all_node_count) : (i += 1) {
+        if (scene.all_nodes.?[i]) |node| {
+            // Create Entity
+            const entity = state.registry.create() catch continue;
+            node_to_entity[i] = entity.id;
+
+            // Name
+            if (node.name) |name| {
+                const name_comp = components.Name.init(std.mem.span(name));
+                state.registry.add(entity, name_comp) catch {};
+            }
+
+            // Add Node component
+            state.registry.add(entity, components.Node{ .type = .Node3D }) catch {};
+
+            // Transform
+            var transform = components.Transform{};
+            const m = math.Mat4.fromArray(node.local_transform); // Use local transform for children
+            const decomposed = m.decompose();
+            transform.position = decomposed.t;
+            transform.rotation = decomposed.r;
+            transform.scale = decomposed.s;
+
+            state.registry.add(entity, transform) catch {};
+
+            // MeshRenderer
+            if (node.mesh_count > 0 and node.mesh_indices != null) {
+                var m_idx: u32 = 0;
+                while (m_idx < node.mesh_count) : (m_idx += 1) {
+                    const local_mesh_index = node.mesh_indices.?[m_idx];
+                    const mesh_index = mesh_offset + local_mesh_index;
+
+                    var target_entity = entity;
+                    if (m_idx > 0) {
+                        target_entity = state.registry.create() catch continue;
+                        state.registry.add(target_entity, transform) catch {};
+                        // Note: Linking multi-mesh entities as siblings/children is skipped for brevity here,
+                        // assuming 1 mesh per node usually. If multiple, they pile up or need hierarchy.
+                        // Ideally we create child entities for extra meshes.
+                    }
+
+                    var material_index: u32 = 0;
+                    if (scene.meshes) |meshes| {
+                        if (local_mesh_index < scene.mesh_count) {
+                            material_index = meshes[local_mesh_index].material_index;
+                        }
+                    }
+
+                    const mesh_renderer = components.MeshRenderer{
+                        .mesh = .{ .index = mesh_index, .generation = 0 },
+                        .material = .{ .index = material_index, .generation = 0 },
+                        .visible = true,
+                        .cast_shadows = true,
+                        .receive_shadows = true,
+                    };
+
+                    state.registry.add(target_entity, mesh_renderer) catch {};
+                }
+            }
+        }
+    }
+
+    // Build Hierarchy
+    i = 0;
+    while (i < scene.all_node_count) : (i += 1) {
+        if (scene.all_nodes.?[i]) |node| {
+            const entity = engine.ecs_entity.Entity{ .id = node_to_entity[i] };
+            if (entity.id == std.math.maxInt(u64)) continue;
+
+            var parent_ent_id: u64 = std.math.maxInt(u64);
+
+            if (node.parent_index >= 0) {
+                // Internal parent
+                parent_ent_id = node_to_entity[@intCast(node.parent_index)];
+            } else {
+                // Root of model -> Parent to target entity
+                parent_ent_id = parent_entity.id;
+            }
+
+            if (parent_ent_id != std.math.maxInt(u64)) {
+                const p_entity = engine.ecs_entity.Entity{ .id = parent_ent_id };
+
+                // Add Hierarchy component
+                var hierarchy = if (state.registry.get(components.Hierarchy, entity)) |h| h.* else components.Hierarchy{};
+                hierarchy.parent = p_entity;
+                state.registry.add(entity, hierarchy) catch {};
+
+                // Update parent's hierarchy
+                var parent_hierarchy = if (state.registry.get(components.Hierarchy, p_entity)) |h| h.* else components.Hierarchy{};
+
+                // Link as child
+                if (parent_hierarchy.first_child) |first_child_entity| {
+                    // Find last child
+                    var curr_entity = first_child_entity;
+                    while (true) {
+                        if (state.registry.get(components.Hierarchy, curr_entity)) |h| {
+                            if (h.next_sibling) |next| {
+                                curr_entity = next;
+                            } else {
+                                // Link
+                                var last_h = h.*;
+                                last_h.next_sibling = entity;
+                                state.registry.add(curr_entity, last_h) catch {};
+                                hierarchy.prev_sibling = curr_entity;
+                                state.registry.add(entity, hierarchy) catch {};
+                                break;
+                            }
+                        } else {
+                            break;
+                        }
+                    }
+                } else {
+                    parent_hierarchy.first_child = entity;
+                }
+
+                parent_hierarchy.child_count += 1;
+                state.registry.add(p_entity, parent_hierarchy) catch {};
+            }
+        }
+    }
 }
 
 pub fn load_scene(state: *EditorState, allocator: std.mem.Allocator, path: []const u8) void {

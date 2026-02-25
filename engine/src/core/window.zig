@@ -1,23 +1,11 @@
 const std = @import("std");
 const log = @import("log.zig");
 const builtin = @import("builtin");
+const platform = @import("platform.zig");
 
 const win_log = log.ScopedLogger("WINDOW");
 
-const c = @cImport({
-    @cInclude("stdlib.h");
-    @cInclude("stdio.h");
-    @cDefine("GLFW_INCLUDE_NONE", {});
-    @cInclude("GLFW/glfw3.h");
-
-    if (builtin.os.tag == .windows) {
-        @cInclude("windows.h");
-        @cDefine("GLFW_EXPOSE_NATIVE_WIN32", {});
-        @cInclude("GLFW/glfw3native.h");
-    } else {
-        @cInclude("pthread.h");
-    }
-});
+const c = platform.c;
 
 pub const CardinalWindowConfig = extern struct {
     title: [*:0]const u8,
@@ -197,7 +185,6 @@ pub export fn cardinal_window_create(config: *const CardinalWindowConfig) callco
 pub export fn cardinal_window_poll(window: ?*CardinalWindow) callconv(.c) void {
     if (window) |win| {
         win.mutex.lock();
-
         c.glfwPollEvents();
         win.should_close = (c.glfwWindowShouldClose(win.handle) != 0);
 
@@ -276,4 +263,66 @@ pub export fn cardinal_window_get_content_scale(window: ?*const CardinalWindow, 
         if (x_scale) |x| x.* = 1.0;
         if (y_scale) |y| y.* = 1.0;
     }
+}
+
+// Additional window functions for Project Manager
+pub export fn cardinal_window_set_size(window: ?*CardinalWindow, width: u32, height: u32) callconv(.c) void {
+    if (window) |win| {
+        if (win.handle) |h| {
+            c.glfwSetWindowSize(h, @intCast(width), @intCast(height));
+            win.width = width;
+            win.height = height;
+        }
+    }
+}
+
+pub export fn cardinal_window_set_title(window: ?*CardinalWindow, title: [*c]const u8) callconv(.c) void {
+    if (window) |win| {
+        if (win.handle) |h| {
+            c.glfwSetWindowTitle(h, title);
+        }
+    }
+}
+
+pub export fn cardinal_window_maximize(window: ?*CardinalWindow) callconv(.c) void {
+    if (window) |win| {
+        if (win.handle) |h| {
+            c.glfwMaximizeWindow(h);
+        }
+    }
+}
+
+pub export fn cardinal_window_center(window: ?*CardinalWindow) callconv(.c) void {
+    if (window) |win| {
+        if (win.handle) |h| {
+            const monitor = c.glfwGetPrimaryMonitor();
+            if (monitor) |m| {
+                const mode = c.glfwGetVideoMode(m);
+                if (mode) |vmode| {
+                    var width: c_int = 0;
+                    var height: c_int = 0;
+                    c.glfwGetWindowSize(h, &width, &height);
+
+                    const x = @divTrunc(vmode.*.width - width, 2);
+                    const y = @divTrunc(vmode.*.height - height, 2);
+                    c.glfwSetWindowPos(h, x, y);
+                }
+            }
+        }
+    }
+}
+
+pub export fn cardinal_window_restore(window: ?*CardinalWindow) callconv(.c) void {
+    if (window) |win| {
+        if (win.handle) |h| {
+            c.glfwRestoreWindow(h);
+        }
+    }
+}
+
+pub export fn cardinal_window_get_glfw_handle(window: ?*const CardinalWindow) callconv(.c) ?*anyopaque {
+    if (window) |win| {
+        return win.handle;
+    }
+    return null;
 }
