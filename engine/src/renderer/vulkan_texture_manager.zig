@@ -546,7 +546,23 @@ pub fn vk_texture_manager_load_scene_textures(manager: *types.VulkanTextureManag
 
         // Check ref resource
         var is_loading_resource = false;
-        if (texture.ref_resource) |res| {
+        var ref_res = texture.ref_resource;
+
+        // Auto-load from path if missing resource (e.g. from NIF loader)
+        if (ref_res == null and texture.path != null) {
+            const path_span = std.mem.span(texture.path.?);
+            // Try to load via AssetManager
+            if (asset_manager.get().loadTexture(path_span)) |handle| {
+                if (asset_manager.get().getTexture(handle)) |loaded_tex| {
+                    ref_res = loaded_tex.ref_resource;
+                    tex_mgr_log.info("Auto-loaded texture from path: {s}", .{path_span});
+                }
+            } else |err| {
+                tex_mgr_log.err("Failed to auto-load texture from path: {s} ({})", .{ path_span, err });
+            }
+        }
+
+        if (ref_res) |res| {
             tex.resource = @ptrCast(res);
             // We always start as placeholder on GPU until we upload the real data
             if (res.identifier) |id| {
@@ -561,27 +577,31 @@ pub fn vk_texture_manager_load_scene_textures(manager: *types.VulkanTextureManag
             // This ensures each texture has a unique slot that materials can reference.
             // When the real texture loads, we just update this slot.
             var bindless_idx: u32 = 0;
-            if (tex.view != null and tex.sampler != null and manager.bindless_pool.textures != null and 
-                vk_descriptor_indexing.vk_bindless_texture_register_existing(&manager.bindless_pool, placeholder.image, tex.view, tex.sampler, &bindless_idx)) 
+            if (tex.view != null and tex.sampler != null and manager.bindless_pool.textures != null and
+                vk_descriptor_indexing.vk_bindless_texture_register_existing(&manager.bindless_pool, placeholder.image, tex.view, tex.sampler, &bindless_idx))
             {
                 tex.bindless_index = bindless_idx;
                 // No need to flush here, we can flush once at the end or let the system handle it
             } else {
-                 tex_mgr_log.err("Failed to allocate bindless slot for texture {d} (View: {any}, Sampler: {any})", .{i, tex.view, tex.sampler});
-                 tex.bindless_index = c.UINT32_MAX;
+                tex_mgr_log.err("Failed to allocate bindless slot for texture {d} (View: {any}, Sampler: {any})", .{ i, tex.view, tex.sampler });
+                tex.bindless_index = c.UINT32_MAX;
             }
         } else {
             tex.bindless_index = c.UINT32_MAX;
         }
 
-    // Try to set desired format from scene texture if available
-    // If it's 0 (undefined), we keep placeholder format for now, but update will pick it up later from AssetManager
-    // Actually, we can't easily change tex.format here if it differs from placeholder image format
-    // because view/image must match. So we rely on update task to swap image and format.
+        // Try to set desired format from scene texture if available
+        // If it's 0 (undefined), we keep placeholder format for now, but update will pick it up later from AssetManager
+        // Actually, we can't easily change tex.format here if it differs from placeholder image format
+        // because view/image must match. So we rely on update task to swap image and format.
 
-    // If texture has data, queue an async update immediately
-    // Skip if resource is still loading (data points to placeholder)
-        if (texture.data != null and texture.width > 0 and texture.height > 0 and !is_loading_resource) {
+        // If texture has data, queue an async update immediately
+        // Skip if resource is still loading (data points to placeholder)
+        // Also allow if we have a loaded resource even if texture.data is null (e.g. NIF auto-load)
+        const has_direct_data = (texture.data != null and texture.width > 0 and texture.height > 0);
+        const has_loaded_res = (ref_res != null and !is_loading_resource);
+
+        if ((has_direct_data or has_loaded_res) and !is_loading_resource) {
             // Allocate context for async update
             const ctx_ptr = memory.cardinal_calloc(allocator, 1, @sizeOf(AsyncTextureUpdateContext));
             if (ctx_ptr) |ptr| {
@@ -593,8 +613,8 @@ pub fn vk_texture_manager_load_scene_textures(manager: *types.VulkanTextureManag
 
                 // If we have a loaded resource, ensure we use its fresh data dimensions/format
                 // (Scene texture data might be stale placeholder data if loaded async before scene setup)
-                if (texture.ref_resource != null) {
-                    const res = @as(*ref_counting.CardinalRefCountedResource, @ptrCast(@alignCast(texture.ref_resource.?)));
+                if (ref_res != null) {
+                    const res = @as(*ref_counting.CardinalRefCountedResource, @ptrCast(@alignCast(ref_res.?)));
                     const res_data = @as(*texture_loader.TextureData, @ptrCast(@alignCast(res.resource.?)));
 
                     ctx.texture_data.data = res_data.data;
@@ -642,8 +662,8 @@ pub fn vk_texture_manager_load_scene_textures(manager: *types.VulkanTextureManag
             } else {
                 tex_mgr_log.err("Failed to allocate context for texture {d}", .{i});
             }
-        } else if (texture.data == null and texture.ref_resource == null) {
-            tex_mgr_log.warn("Texture {d} has no data and no ref_resource, staying as placeholder", .{i});
+        } else if (texture.data == null and ref_res == null) {
+            tex_mgr_log.warn("Texture {d} has no data and no ref_resource (path: {s}), staying as placeholder", .{ i, if (texture.path) |p| std.mem.span(p) else "null" });
         }
     }
 
@@ -686,7 +706,99 @@ fn create_sampler_from_config(device: c.VkDevice, config: *const scene.CardinalS
     return sampler;
 }
 
+fn check_pending_loads(manager: *types.VulkanTextureManager) void {
+    if (manager.textures == null) return;
+
+    var i: u32 = 1; // Skip placeholder
+    while (i < manager.textureCount) : (i += 1) {
+        var tex = &manager.textures.?[i];
+
+        // Check if texture is a placeholder, not updating, not failed, and has a source (resource or path)
+        if (tex.isPlaceholder and !tex.is_updating and !tex.update_failed) {
+            var loaded_resource: ?*ref_counting.CardinalRefCountedResource = null;
+
+            // 1. Resolve resource from path if missing
+            if (tex.resource == null and tex.path != null) {
+                const path_span = std.mem.span(tex.path.?);
+                if (asset_manager.get().loadTexture(path_span)) |handle| {
+                    if (asset_manager.get().getTexture(handle)) |loaded_tex| {
+                        if (loaded_tex.ref_resource) |res| {
+                             tex.resource = @ptrCast(res);
+                        }
+                    }
+                } else |_| {
+                    // Ignore load error for now, will retry next frame
+                }
+            }
+
+            // 2. Check if resource is loaded
+            if (tex.resource) |res_ptr| {
+                const res = @as(*ref_counting.CardinalRefCountedResource, @ptrCast(@alignCast(res_ptr)));
+                 if (res.identifier) |id| {
+                    if (resource_state.cardinal_resource_state_get(id) == .LOADED) {
+                        loaded_resource = res;
+                    }
+                }
+            }
+
+            // 3. Trigger upload if loaded
+            if (loaded_resource) |res| {
+                 const res_data = @as(*texture_loader.TextureData, @ptrCast(@alignCast(res.resource.?)));
+                 
+                 // Construct CardinalTexture for the context
+                 var scene_tex = std.mem.zeroes(scene.CardinalTexture);
+                 scene_tex.width = res_data.width;
+                 scene_tex.height = res_data.height;
+                 scene_tex.channels = res_data.channels;
+                 scene_tex.format = res_data.format;
+                 scene_tex.data_size = res_data.data_size;
+                 scene_tex.data = res_data.data;
+                 scene_tex.is_hdr = res_data.is_hdr;
+                 // path/ref_resource don't matter for upload task logic
+                 
+                 const allocator = memory.cardinal_get_allocator_for_category(.RENDERER);
+                 const ctx_ptr = memory.cardinal_calloc(allocator, 1, @sizeOf(AsyncTextureUpdateContext));
+                 if (ctx_ptr) |ptr| {
+                    const ctx = @as(*AsyncTextureUpdateContext, @ptrCast(@alignCast(ptr)));
+                    ctx.allocator = manager.allocator.?;
+                    ctx.device = manager.device;
+                    ctx.managed_texture = tex;
+                    ctx.texture_data = scene_tex;
+                    
+                    ctx.next = null;
+                    ctx.finished = std.atomic.Value(bool).init(false);
+                    ctx.success = false;
+                    
+                    const task_ptr = memory.cardinal_alloc(allocator, @sizeOf(types.CardinalMTTask));
+                    if (task_ptr) |tptr| {
+                        const task: *types.CardinalMTTask = @ptrCast(@alignCast(tptr));
+                        task.type = types.CardinalMTTaskType.CARDINAL_MT_TASK_COMMAND_RECORD;
+                        task.data = ctx;
+                        task.execute_func = update_texture_task;
+                        task.callback_func = null;
+                        task.is_completed = false;
+                        task.success = false;
+                        task.next = null;
+                        
+                        if (vk_mt.cardinal_mt_submit_task(task)) {
+                            tex.is_updating = true;
+                            // Add to pending updates (prepend)
+                            ctx.next = @ptrCast(@alignCast(manager.pending_updates));
+                            manager.pending_updates = ctx;
+                            tex_mgr_log.info("Triggered async upload for auto-loaded texture {d}", .{i});
+                        } else {
+                            tex_mgr_log.err("Failed to submit async task for texture {d}", .{i});
+                        }
+                    }
+                 }
+            }
+        }
+    }
+}
+
 pub fn vk_texture_manager_update_textures(manager: *types.VulkanTextureManager) ?u64 {
+    check_pending_loads(manager);
+
     if (manager.textures == null) return null;
 
     const mem_alloc = memory.cardinal_get_allocator_for_category(.RENDERER);
@@ -840,16 +952,16 @@ pub fn vk_texture_manager_update_textures(manager: *types.VulkanTextureManager) 
         }
 
         // Process results for all completed tasks
-    var iter = completed_list;
-    while (iter) |ctx| {
-        const next = ctx.next;
+        var iter = completed_list;
+        while (iter) |ctx| {
+            const next = ctx.next;
 
-        // Log completion status for debugging
-        if (!ctx.success) {
-            tex_mgr_log.err("Processing failed task for texture {d}x{d} (fmt: {d})", .{ctx.texture_data.width, ctx.texture_data.height, ctx.texture_data.format});
-        }
+            // Log completion status for debugging
+            if (!ctx.success) {
+                tex_mgr_log.err("Processing failed task for texture {d}x{d} (fmt: {d})", .{ ctx.texture_data.width, ctx.texture_data.height, ctx.texture_data.format });
+            }
 
-        // If the batch submit succeeded AND this specific task was successful
+            // If the batch submit succeeded AND this specific task was successful
             if (submit_success and ctx.success) {
                 // Register cleanup for staging buffer and OLD image
                 if (manager.syncManager != null) {
@@ -861,7 +973,7 @@ pub fn vk_texture_manager_update_textures(manager: *types.VulkanTextureManager) 
 
                 // Update managed texture
                 const tex = ctx.managed_texture;
-                tex_mgr_log.info("Updating texture ptr: {*}, BindlessIndex: {d}", .{tex, tex.bindless_index});
+                tex_mgr_log.info("Updating texture ptr: {*}, BindlessIndex: {d}", .{ tex, tex.bindless_index });
 
                 // Cleanup old placeholder resources
                 if (tex.is_allocated) {
@@ -899,18 +1011,18 @@ pub fn vk_texture_manager_update_textures(manager: *types.VulkanTextureManager) 
 
                     // Try to update existing slot if valid
                     if (old_idx != c.UINT32_MAX) {
-                         if (vk_descriptor_indexing.vk_bindless_texture_update_at_index(&manager.bindless_pool, old_idx, tex.image, tex.view, tex.sampler)) {
+                        if (vk_descriptor_indexing.vk_bindless_texture_update_at_index(&manager.bindless_pool, old_idx, tex.image, tex.view, tex.sampler)) {
                             bindless_idx = old_idx;
                             success = true;
                             tex_mgr_log.info("Async texture upload complete. Updated existing bindless index: {d}", .{old_idx});
-                         }
+                        }
                     }
 
                     if (!success) {
                         if (tex.sampler != null and vk_descriptor_indexing.vk_bindless_texture_register_existing(&manager.bindless_pool, tex.image, tex.view, tex.sampler, &bindless_idx)) {
                             tex.bindless_index = bindless_idx;
                             success = true;
-                            tex_mgr_log.info("Async texture upload complete. Allocated new bindless index: {d} (Old: {d})", .{bindless_idx, old_idx});
+                            tex_mgr_log.info("Async texture upload complete. Allocated new bindless index: {d} (Old: {d})", .{ bindless_idx, old_idx });
                         } else if (tex.sampler == null) {
                             tex_mgr_log.err("Cannot register bindless texture: sampler is null", .{});
                         }

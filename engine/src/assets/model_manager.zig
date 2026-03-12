@@ -152,16 +152,39 @@ fn generate_model_name(file_path: ?[*:0]const u8) ?[*:0]u8 {
 
 fn optimize_scene_animations(scn: *scene.CardinalScene) void {
     if (scn.animation_system) |sys_opaque| {
+        // Check alignment before casting
+        if (@intFromPtr(sys_opaque) % @alignOf(animation.CardinalAnimationSystem) != 0) {
+            model_log.err("Animation system pointer unaligned: {p}. Skipping optimization.", .{sys_opaque});
+            return;
+        }
+
         // Cast the opaque pointer to the actual animation system type
+        // Ensure alignment and pointer validity
         const sys = @as(*animation.CardinalAnimationSystem, @ptrCast(@alignCast(sys_opaque)));
+        
+        // Safety check: if animation_count is 0, we shouldn't access animations array
+        // Also check if the pointer itself is valid (though strict null check handled above)
+        if (sys.animation_count == 0) return;
 
         // We can check if animations array exists
         if (sys.animations) |anims| {
             var i: u32 = 0;
+            // Check animation_count against reasonable limits to avoid OOB
+            if (sys.animation_count > 1000) {
+                 model_log.warn("Scene has unusually high animation count: {d}. Optimization may be slow or unsafe.", .{sys.animation_count});
+            }
+
             while (i < sys.animation_count) : (i += 1) {
                 // Apply RDP optimization with a small tolerance
                 // 0.0001 seems reasonable for visual fidelity while reducing redundant keys
-                animation.cardinal_animation_optimize(&anims[i], 0.0001);
+                // Verify anim pointer is valid
+                const anim_ptr = &anims[i];
+                
+                // Add extra safety check for samplers
+                // CardinalAnimation struct might be partially initialized if from NIF
+                if (anim_ptr.sampler_count > 0 and anim_ptr.samplers != null) {
+                    animation.cardinal_animation_optimize(anim_ptr, 0.0001);
+                }
             }
         }
     }
@@ -706,6 +729,30 @@ fn rebuild_combined_scene(manager: *CardinalModelManager) void {
     model_log.debug("Rebuilt combined scene: {d} meshes, {d} materials, {d} textures, {d} nodes, {d} anims", .{ total_meshes, total_materials, total_textures, total_nodes, total_animations });
 }
 
+fn update_combined_mesh_transforms(manager: *CardinalModelManager) void {
+    if (manager.combined_scene.meshes == null) return;
+    const models = manager.models orelse return;
+
+    var mesh_offset: u32 = 0;
+    var i: u32 = 0;
+    while (i < manager.model_count) : (i += 1) {
+        const model = &models[i];
+        if (!model.visible or model.is_loading) continue;
+
+        const scn = &model.scene;
+        if (scn.mesh_count == 0 or scn.meshes == null) continue;
+
+        var m: u32 = 0;
+        while (m < scn.mesh_count) : (m += 1) {
+            const src_mesh = &scn.meshes.?[m];
+            const dst_mesh = &manager.combined_scene.meshes.?[mesh_offset + m];
+            transform_math.cardinal_matrix_multiply(&model.transform, &src_mesh.transform, &dst_mesh.transform);
+        }
+
+        mesh_offset += scn.mesh_count;
+    }
+}
+
 fn free_model_load_task(task: *async_loader.CardinalAsyncTask) void {
     const status = async_loader.cardinal_async_get_task_status(task);
     // If the task hasn't run (PENDING or CANCELLED), we need to clean up the custom data
@@ -997,9 +1044,20 @@ pub export fn cardinal_model_manager_add_scene(manager: ?*CardinalModelManager, 
 
     // Move scene data
     model.scene = in_scene.?.*;
+    
+    // We must NOT zero out the input scene here if it was allocated on the heap by the loader,
+    // because that would leave us with a dangling pointer or double-free issues if the loader tries to clean up.
+    // However, the loader (cardinal_async_load_scene) likely allocated the scene struct itself.
+    // By zeroing it, we prevent the loader from freeing the internal arrays (meshes, materials) which we just took ownership of.
+    // This is correct transfer of ownership.
     @memset(@as([*]u8, @ptrCast(in_scene.?))[0..@sizeOf(scene.CardinalScene)], 0);
 
+    // Optimize animations
+    // Note: optimization modifies the animation system in-place.
+    // We should only do this if we are sure the animation system is valid and initialized.
+    // The KFM loader might produce an empty animation system or one with 0 animations but non-null pointer?
     optimize_scene_animations(&model.scene);
+    
     calculate_scene_bounds(&model.scene, &model.bbox_min, &model.bbox_max);
 
     mgr.model_count += 1;
@@ -1114,9 +1172,11 @@ pub export fn cardinal_model_manager_get_combined_scene(manager: ?*CardinalModel
     if (manager == null) return null;
     const mgr = manager.?;
 
-    if (mgr.scene_dirty or mgr.transform_dirty) {
+    if (mgr.scene_dirty) {
         rebuild_combined_scene(mgr);
         mgr.scene_dirty = false;
+    } else if (mgr.transform_dirty) {
+        update_combined_mesh_transforms(mgr);
         mgr.transform_dirty = false;
     }
 

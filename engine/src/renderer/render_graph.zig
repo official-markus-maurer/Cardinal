@@ -782,12 +782,14 @@ pub const RenderGraph = struct {
                 }
             }
 
-            // Compute effective queue family for this pass (override if pass specifies one)
-            const effective_queue_family: u32 = if (pass.queue_family != c.VK_QUEUE_FAMILY_IGNORED) pass.queue_family else c.VK_QUEUE_FAMILY_IGNORED;
+            const requested_queue_family: u32 = if (pass.queue_family != c.VK_QUEUE_FAMILY_IGNORED) pass.queue_family else c.VK_QUEUE_FAMILY_IGNORED;
 
-            // Choose command buffer based on queue family
-            const use_compute = (effective_queue_family != c.VK_QUEUE_FAMILY_IGNORED and effective_queue_family == state.context.compute_queue_family and compute_cmd != null);
+            const use_compute = (compute_cmd != null and
+                requested_queue_family != c.VK_QUEUE_FAMILY_IGNORED and
+                requested_queue_family == state.context.compute_queue_family);
+
             const cmd = if (use_compute) compute_cmd else graphics_cmd;
+            const cmd_queue_family: u32 = if (use_compute) state.context.compute_queue_family else state.context.graphics_queue_family;
 
             // Process inputs (Transition to read state)
             for (pass.inputs.items) |input| {
@@ -795,8 +797,8 @@ pub const RenderGraph = struct {
                     if (res.handle) |handle| {
                         if (self.resource_states.get(input.id)) |current_state| {
                             var eff_input = input;
-                            if (effective_queue_family != c.VK_QUEUE_FAMILY_IGNORED and eff_input.queue_family == c.VK_QUEUE_FAMILY_IGNORED) {
-                                eff_input.queue_family = effective_queue_family;
+                            if (eff_input.queue_family == c.VK_QUEUE_FAMILY_IGNORED) {
+                                eff_input.queue_family = cmd_queue_family;
                             }
                             insert_barrier(cmd, handle, current_state, eff_input, state);
 
@@ -820,9 +822,14 @@ pub const RenderGraph = struct {
                     if (res.handle) |handle| {
                         if (self.resource_states.get(output.id)) |current_state| {
                             var eff_output = output;
-                            if (effective_queue_family != c.VK_QUEUE_FAMILY_IGNORED and eff_output.queue_family == c.VK_QUEUE_FAMILY_IGNORED) {
-                                eff_output.queue_family = effective_queue_family;
+                            if (eff_output.queue_family == c.VK_QUEUE_FAMILY_IGNORED) {
+                                eff_output.queue_family = cmd_queue_family;
                             }
+
+                            // Optimization: Check if state actually changes
+                            // If layout, access, and queue are identical, we might skip barrier unless it's a specific read-after-write that needs it.
+                            // For now, let's just insert it to be safe, but we can filter redundant ones.
+
                             insert_barrier(cmd, handle, current_state, eff_output, state);
 
                             // Update state
@@ -840,6 +847,10 @@ pub const RenderGraph = struct {
             }
 
             // Execute pass
+            // IMPORTANT: If this pass uses dynamic rendering (vkCmdBeginRendering), barriers MUST be outside.
+            // insert_barrier writes to the command buffer immediately.
+            // So barriers for inputs/outputs are correctly placed BEFORE the pass execution.
+
             pass.execute_fn(cmd, state);
 
             // Release resources whose lifetime ends here (aliasing)

@@ -324,9 +324,15 @@ fn transition_images(s: *types.VulkanState, cmd: c.VkCommandBuffer, image_index:
         barrier.oldLayout = c.VK_IMAGE_LAYOUT_UNDEFINED;
         s.swapchain.image_layout_initialized.?[image_index] = true;
     } else {
+        // Fix: Use COLOR_ATTACHMENT_OPTIMAL as oldLayout if we are in a render pass loop
+        // However, this barrier is called before rendering, so it transitions FROM present/undefined TO attachment.
+        // If we are getting validation errors about UNDEFINED -> OPTIMAL inside a render pass,
+        // it means this function is called inside a render pass, which is wrong for a barrier.
+        // But wait, vk_record_cmd calls this at the start.
+        
         barrier.srcStageMask = c.VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT;
         barrier.srcAccessMask = 0;
-        barrier.oldLayout = c.VK_IMAGE_LAYOUT_PRESENT_SRC_KHR;
+        barrier.oldLayout = c.VK_IMAGE_LAYOUT_PRESENT_SRC_KHR; // Or UNDEFINED if we don't care
     }
 
     barrier.dstStageMask = c.VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT;
@@ -837,6 +843,8 @@ pub export fn vk_record_cmd(s: ?*types.VulkanState, image_index: u32) callconv(.
             .aspect_mask = c.VK_IMAGE_ASPECT_COLOR_BIT,
         };
         rg.update_transient_image(types.RESOURCE_ID_HDR_COLOR, hdr_desc, vs) catch {};
+        
+        // Fix: Use Undefined layout for HDR color at start of frame
         const hdr_state = render_graph.ResourceState{
             .access_mask = 0,
             .stage_mask = c.VK_PIPELINE_STAGE_2_TOP_OF_PIPE_BIT,
@@ -920,25 +928,7 @@ pub export fn vk_record_cmd(s: ?*types.VulkanState, image_index: u32) callconv(.
             };
         }
 
-        // Begin compute command buffer if async compute is enabled
-        var compute_cmd: c.VkCommandBuffer = null;
-        if (vs.config.enable_async_compute and vs.commands.compute_primary_buffers != null) {
-            compute_cmd = vs.commands.compute_primary_buffers.?[vs.sync.current_frame];
-            if (compute_cmd != null) {
-                var bi_comp = std.mem.zeroes(c.VkCommandBufferBeginInfo);
-                bi_comp.sType = c.VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
-                bi_comp.flags = c.VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
-                _ = c.vkBeginCommandBuffer(compute_cmd, &bi_comp);
-            }
-        }
-
-        // Execute Graph (This inserts barriers and calls pass callback)
-        rg.execute(cmd, compute_cmd, vs);
-
-        // End compute command buffer if it has any commands
-        if (compute_cmd != null) {
-            _ = c.vkEndCommandBuffer(compute_cmd);
-        }
+        rg.execute(cmd, null, vs);
     } else {
         cmd_log.err("RenderGraph is null! Cannot record scene.", .{});
     }

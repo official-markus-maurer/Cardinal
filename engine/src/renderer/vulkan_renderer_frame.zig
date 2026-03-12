@@ -699,20 +699,6 @@ pub export fn cardinal_renderer_draw_frame(renderer: ?*types.CardinalRenderer) c
 
     vk_commands.vk_record_cmd(@ptrCast(s), image_index);
 
-    // If async compute is enabled and a compute command buffer was recorded,
-    // submit it first and wait on its timeline in graphics
-    var compute_wait_value: ?u64 = null;
-    if (s.config.enable_async_compute and s.commands.compute_primary_buffers != null) {
-        const comp_cmd = s.commands.compute_primary_buffers.?[s.sync.current_frame];
-        if (comp_cmd != null) {
-            const comp_signal = if (s.sync_manager != null) vk_sync_manager.vulkan_sync_manager_get_next_timeline_value(s.sync_manager) else s.sync.current_frame_value + 1;
-            if (!submit_compute_command_buffer(s, comp_cmd, comp_signal, texture_upload_signal)) {
-                return;
-            }
-            compute_wait_value = comp_signal;
-        }
-    }
-
     if (s.sync_manager != null) {
         signal_after_render = vk_sync_manager.vulkan_sync_manager_get_next_timeline_value(s.sync_manager);
     } else {
@@ -731,7 +717,7 @@ pub export fn cardinal_renderer_draw_frame(renderer: ?*types.CardinalRenderer) c
         s,
         cmd_buf,
         s.sync.image_acquired_semaphores.?[s.sync.current_frame],
-        if (compute_wait_value != null) compute_wait_value else texture_upload_signal,
+        texture_upload_signal,
         image_index,
     ))
         return;

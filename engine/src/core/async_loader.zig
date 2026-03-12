@@ -231,6 +231,7 @@ fn execute_scene_load_task(task: *CardinalAsyncTask) bool {
         return false;
     }
     const scene_obj = @as(*scene.CardinalScene, @ptrCast(@alignCast(scene_ptr)));
+    @memset(@as([*]u8, @ptrCast(scene_obj))[0..@sizeOf(scene.CardinalScene)], 0);
 
     if (Loaders.scene_load_fn == null) {
         async_log.err("Scene loader function not registered", .{});

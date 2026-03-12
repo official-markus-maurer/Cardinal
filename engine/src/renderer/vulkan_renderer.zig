@@ -1269,6 +1269,15 @@ pub export fn cardinal_renderer_set_lighting(renderer: ?*types.CardinalRenderer,
     s.pipelines.pbr_pipeline.current_lighting = lighting;
 }
 
+pub export fn cardinal_renderer_update_bone_matrices(renderer: ?*types.CardinalRenderer, bone_matrices: ?[*]const f32, count: u32) callconv(.c) void {
+    const s = get_state(renderer) orelse return;
+    if (bone_matrices == null or count == 0) return;
+
+    if (s.pipelines.use_pbr_pipeline) {
+        vk_pbr.vk_pbr_update_bone_matrices(&s.pipelines.pbr_pipeline, s.sync.current_frame, bone_matrices.?, count);
+    }
+}
+
 pub export fn cardinal_renderer_set_skybox_from_data(renderer: ?*types.CardinalRenderer, data: ?*texture_loader.TextureData) callconv(.c) bool {
     if (renderer == null or data == null) return false;
     const s = get_state(renderer) orelse return false;
@@ -1699,7 +1708,28 @@ pub export fn cardinal_renderer_upload_scene(renderer: ?*types.CardinalRenderer,
         }
     }
 
-    s.current_scene = if (scene) |ptr| @ptrCast(@constCast(ptr)) else null;
+    if (s.current_scene) |old_scene| {
+        // Free old scene if it was copied
+        const mem_alloc = memory.cardinal_get_allocator_for_category(.RENDERER);
+        memory.cardinal_free(mem_alloc, old_scene);
+    }
+
+    if (scene == null) {
+        s.current_scene = null;
+        return;
+    }
+
+    // Deep copy the scene to ensure pointer stability
+    const mem_alloc = memory.cardinal_get_allocator_for_category(.RENDERER);
+    const new_scene_ptr = memory.cardinal_alloc(mem_alloc, @sizeOf(types.CardinalScene));
+    if (new_scene_ptr) |ptr| {
+        const new_scene = @as(*types.CardinalScene, @ptrCast(@alignCast(ptr)));
+        new_scene.* = scene.?.*;
+        s.current_scene = new_scene;
+    } else {
+        renderer_log.err("Failed to allocate memory for scene copy", .{});
+        s.current_scene = null;
+    }
 
     renderer_log.info("Scene upload completed successfully with {d} meshes", .{scene.?.mesh_count});
 }

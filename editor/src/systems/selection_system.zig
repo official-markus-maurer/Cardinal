@@ -134,10 +134,18 @@ pub fn update(state: *EditorState) void {
         }
     }
 
+    if (state.mouse_captured) {
+        selection_state.is_dragging = false;
+        selection_state.drag_axis = null;
+        selection_state.drag_is_rotation = false;
+        selection_state.hover_axis = null;
+        selection_state.hover_is_rotation = false;
+    }
+
     // Raycast Selection
     // Only if not interacting with gizmo and not over UI
     const want_capture = c.imgui_bridge_want_capture_mouse();
-    if (c.imgui_bridge_is_mouse_clicked(0) and !want_capture and !selection_state.is_dragging and selection_state.hover_axis == null) {
+    if (!state.mouse_captured and c.imgui_bridge_is_mouse_clicked(0) and !want_capture and !selection_state.is_dragging and selection_state.hover_axis == null) {
         if (get_ray_from_mouse(state)) |ray| {
             var closest_t: f32 = std.math.floatMax(f32);
             var hit_model_id: u32 = 0;
@@ -243,7 +251,7 @@ fn draw_gizmo(state: *EditorState) void {
 
     var hovered: ?u32 = null;
     var hovered_rot: bool = false;
-    const can_interact = !c.imgui_bridge_want_capture_mouse();
+    const can_interact = !state.mouse_captured and !c.imgui_bridge_want_capture_mouse();
 
     // Calculate constant screen size for gizmo
     const dist = state.camera.position.sub(pos).length();

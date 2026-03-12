@@ -48,5 +48,12 @@ void main() {
         finalPosition = (boneTransform * vec4(inPosition, 1.0)).xyz;
     }
     
-    gl_Position = ubo.lightSpaceMatrices[pushConstants.cascadeIndex] * pushConstants.modelMatrix * vec4(finalPosition, 1.0);
+    vec4 worldPos;
+    if (hasSkeleton) {
+        worldPos = vec4(finalPosition, 1.0);
+    } else {
+        worldPos = pushConstants.modelMatrix * vec4(finalPosition, 1.0);
+    }
+    
+    gl_Position = ubo.lightSpaceMatrices[pushConstants.cascadeIndex] * worldPos;
 }

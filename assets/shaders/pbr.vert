@@ -69,11 +69,16 @@ void main() {
     }
     
     // Transform position to world space using push constant model matrix
-    vec4 worldPos = pushConstants.modelMatrix * vec4(finalPosition, 1.0);
-    fragWorldPos = worldPos.xyz;
+    vec4 worldPos;
+    if (hasSkeleton) {
+        worldPos = vec4(finalPosition, 1.0);
+        fragNormal = normalize(finalNormal);
+    } else {
+        worldPos = pushConstants.modelMatrix * vec4(finalPosition, 1.0);
+        fragNormal = normalize(mat3(pushConstants.modelMatrix) * finalNormal);
+    }
     
-    // Transform normal to world space (assuming uniform scaling)
-    fragNormal = normalize(mat3(pushConstants.modelMatrix) * finalNormal);
+    fragWorldPos = worldPos.xyz;
     
     // Pass through texture coordinates
     fragTexCoord = inTexCoord;

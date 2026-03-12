@@ -193,6 +193,10 @@ fn create_pbr_graphics_pipeline(pipeline: *types.VulkanPBRPipeline, device: c.Vk
         }
     }
 
+    // Disable culling to ensure visibility while debugging
+    descriptor.rasterization.cull_mode = .none;
+    // descriptor.rasterization.front_face = .clockwise;
+
     builder.build(descriptor, pipeline.pipelineLayout, outPipeline) catch {
         return false;
     };
@@ -299,6 +303,8 @@ fn create_pbr_mesh_buffers(pipeline: *types.VulkanPBRPipeline, device: c.VkDevic
         pbr_log.warn("Scene has no vertices", .{});
         return true;
     }
+
+    pbr_log.info("create_pbr_mesh_buffers: totalVertices={d}, totalIndices={d}", .{ totalVertices, totalIndices });
 
     // Batched Staging Buffer Creation
     // We create ONE staging buffer for both vertex and index data to minimize allocations and synchronizations
@@ -878,6 +884,16 @@ fn create_shadow_pipeline(pipeline: *types.VulkanPBRPipeline, device: c.VkDevice
     return true;
 }
 
+pub fn vk_pbr_update_bone_matrices(pipeline: *types.VulkanPBRPipeline, current_frame: u32, bone_matrices: [*]const f32, count: u32) void {
+    if (pipeline.boneMatricesBuffersMapped[current_frame]) |ptr| {
+        const dst = @as([*]f32, @ptrCast(@alignCast(ptr)));
+        // Limit to max bones (count is number of floats)
+        const max_floats = pipeline.maxBones * 16;
+        const copy_count = @min(count, max_floats);
+        @memcpy(dst[0..copy_count], bone_matrices[0..copy_count]);
+    }
+}
+
 pub export fn vk_pbr_pipeline_create(pipeline: ?*types.VulkanPBRPipeline, device: c.VkDevice, physicalDevice: c.VkPhysicalDevice, swapchainFormat: c.VkFormat, depthFormat: c.VkFormat, commandPool: c.VkCommandPool, graphicsQueue: c.VkQueue, allocator: ?*types.VulkanAllocator, vulkan_state: ?*types.VulkanState, pipelineCache: c.VkPipelineCache) callconv(.c) bool {
     _ = physicalDevice;
     if (pipeline == null or allocator == null) return false;
@@ -1021,7 +1037,12 @@ pub export fn vk_pbr_pipeline_create(pipeline: ?*types.VulkanPBRPipeline, device
     const opaque_path = std.fmt.allocPrint(renderer_allocator, "{s}/pbr_opaque.json", .{pipeline_dir_span}) catch return false;
     defer renderer_allocator.free(opaque_path);
 
-    if (!create_pbr_graphics_pipeline(pipe, device, vertShader, fragShader, swapchainFormat, depthFormat, opaque_path, &pipe.pipeline, pipelineCache)) {
+    var pbr_color_format: c.VkFormat = swapchainFormat;
+    if (vulkan_state != null and !vulkan_state.?.swapchain.headless_mode) {
+        pbr_color_format = c.VK_FORMAT_R16G16B16A16_SFLOAT;
+    }
+
+    if (!create_pbr_graphics_pipeline(pipe, device, vertShader, fragShader, pbr_color_format, depthFormat, opaque_path, &pipe.pipeline, pipelineCache)) {
         dev.destroyShaderModule(vertShader);
         dev.destroyShaderModule(fragShader);
         vk_pbr_pipeline_destroy(pipeline, device, allocator);
@@ -1031,7 +1052,7 @@ pub export fn vk_pbr_pipeline_create(pipeline: ?*types.VulkanPBRPipeline, device
     const transparent_path = std.fmt.allocPrint(renderer_allocator, "{s}/pbr_transparent.json", .{pipeline_dir_span}) catch return false;
     defer renderer_allocator.free(transparent_path);
 
-    if (!create_pbr_graphics_pipeline(pipe, device, vertShader, fragShader, swapchainFormat, depthFormat, transparent_path, &pipe.pipelineBlend, pipelineCache)) {
+    if (!create_pbr_graphics_pipeline(pipe, device, vertShader, fragShader, pbr_color_format, depthFormat, transparent_path, &pipe.pipelineBlend, pipelineCache)) {
         dev.destroyShaderModule(vertShader);
         dev.destroyShaderModule(fragShader);
         vk_pbr_pipeline_destroy(pipeline, device, allocator);
@@ -1276,7 +1297,7 @@ pub export fn vk_pbr_create_depth_prepass(vulkan_state: ?*types.VulkanState) cal
     descriptor.rendering.color_formats = &.{}; // No color output
 
     // Standard Back-face culling for main camera
-    descriptor.rasterization.cull_mode = .back;
+    descriptor.rasterization.cull_mode = .none;
 
     // Depth Test/Write should already be true in shadow.json
     // Compare Op should be LESS
@@ -1470,15 +1491,19 @@ pub export fn vk_pbr_render(pipeline: ?*types.VulkanPBRPipeline, commandBuffer: 
     const cmd = wrappers.CommandBuffer.init(commandBuffer);
     const frame = if (frame_index >= types.MAX_FRAMES_IN_FLIGHT) 0 else frame_index;
 
-    if (pipe.vertexBuffer == null or pipe.indexBuffer == null) {
-        pbr_log.warn("vk_pbr_render skipped: vertex/index buffer null", .{});
+    if (pipe.vertexBuffer == null) {
+        // pbr_log.warn("vk_pbr_render skipped: vertex buffer null", .{});
         return;
     }
 
     const vertexBuffers = [_]c.VkBuffer{pipe.vertexBuffer};
     const offsets = [_]c.VkDeviceSize{0};
     cmd.bindVertexBuffers(0, &vertexBuffers, &offsets);
-    cmd.bindIndexBuffer(pipe.indexBuffer, 0, c.VK_INDEX_TYPE_UINT32);
+    if (pipe.indexBuffer != null) {
+        cmd.bindIndexBuffer(pipe.indexBuffer, 0, c.VK_INDEX_TYPE_UINT32);
+    } else {
+        pbr_log.warn("vk_pbr_render: index buffer null", .{});
+    }
 
     var descriptorSet: c.VkDescriptorSet = null;
     if (pipe.descriptorManager != null) {
@@ -1496,7 +1521,7 @@ pub export fn vk_pbr_render(pipeline: ?*types.VulkanPBRPipeline, commandBuffer: 
             }
         }
     } else {
-        pbr_log.warn("vk_pbr_render skipped: no descriptor manager", .{});
+        // pbr_log.warn("vk_pbr_render skipped: no descriptor manager", .{});
         return;
     }
 
@@ -1640,6 +1665,22 @@ pub export fn vk_pbr_render(pipeline: ?*types.VulkanPBRPipeline, commandBuffer: 
         var pushConstants = std.mem.zeroes(types.PBRPushConstants);
         const tm_opaque: ?*const anyopaque = if (pipe.textureManager) |tm| @ptrCast(tm) else null;
         material_utils.vk_material_setup_push_constants(@ptrCast(&pushConstants), @ptrCast(mesh), @ptrCast(scn), @ptrCast(@alignCast(tm_opaque)));
+
+        if (i == 0 and frame < 3 and pipe.textureManager != null and mesh.material_index < scn.material_count) {
+            const mat = &scn.materials.?[mesh.material_index];
+            const tm = pipe.textureManager.?;
+            const mapped = if (tm.hasPlaceholder and mat.albedo_texture.is_valid()) (mat.albedo_texture.index + 1) else mat.albedo_texture.index;
+            const slot_bindless = if (mapped < tm.textureCount) tm.textures.?[mapped].bindless_index else c.UINT32_MAX;
+            pbr_log.info("PBR Mesh {d} Mat {d}: handleIdx={d} mappedSlot={d} slotBindless={d} pcAlbedoIdx={d} packedInfo=0x{x}", .{
+                i,
+                mesh.material_index,
+                mat.albedo_texture.index,
+                mapped,
+                slot_bindless,
+                pushConstants.albedoTextureIndex,
+                pushConstants.packedInfo,
+            });
+        }
 
         if (scn.animation_system != null and scn.skin_count > 0) {
             const skins = @as([*]animation.CardinalSkin, @ptrCast(@alignCast(scn.skins.?)));

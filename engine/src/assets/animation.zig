@@ -566,16 +566,18 @@ pub export fn cardinal_animation_system_add_skin(system: ?*CardinalAnimationSyst
         }
     }
 
-    dest.bone_count = skin.?.bone_count;
+    const max_bones: u32 = 256;
+    const bone_count: u32 = @min(skin.?.bone_count, max_bones);
+    dest.bone_count = bone_count;
     dest.mesh_count = skin.?.mesh_count;
-    dest.root_bone_index = skin.?.root_bone_index;
+    dest.root_bone_index = if (bone_count == 0) 0 else @min(skin.?.root_bone_index, bone_count - 1);
 
-    if (skin.?.bone_count > 0) {
-        const bones_ptr = memory.cardinal_calloc(allocator, skin.?.bone_count, @sizeOf(CardinalBone));
+    if (bone_count > 0 and skin.?.bones != null) {
+        const bones_ptr = memory.cardinal_calloc(allocator, bone_count, @sizeOf(CardinalBone));
         if (bones_ptr) |ptr| {
             dest.bones = @ptrCast(@alignCast(ptr));
             var i: u32 = 0;
-            while (i < skin.?.bone_count) : (i += 1) {
+            while (i < bone_count) : (i += 1) {
                 const src_bone = &skin.?.bones.?[i];
                 const dst_bone = &dest.bones.?[i];
 
@@ -593,6 +595,8 @@ pub export fn cardinal_animation_system_add_skin(system: ?*CardinalAnimationSyst
                 @memcpy(&dst_bone.inverse_bind_matrix, &src_bone.inverse_bind_matrix);
                 @memcpy(&dst_bone.current_matrix, &src_bone.current_matrix);
             }
+        } else {
+            dest.bone_count = 0;
         }
     }
 
@@ -601,6 +605,8 @@ pub export fn cardinal_animation_system_add_skin(system: ?*CardinalAnimationSyst
         if (indices_ptr) |ptr| {
             dest.mesh_indices = @ptrCast(@alignCast(ptr));
             @memcpy(dest.mesh_indices.?[0..skin.?.mesh_count], skin.?.mesh_indices.?[0..skin.?.mesh_count]);
+        } else {
+            dest.mesh_count = 0;
         }
     }
 
@@ -885,10 +891,12 @@ pub export fn cardinal_animation_system_update(system: ?*CardinalAnimationSystem
 }
 
 pub export fn cardinal_skin_update_bone_matrices(skin: ?*const CardinalSkin, scene_nodes: ?[*]?*const scene.CardinalSceneNode, bone_matrices: ?[*]f32) callconv(.c) bool {
-    if (skin == null or scene_nodes == null or bone_matrices == null) return false;
+    if (skin == null or scene_nodes == null or bone_matrices == null or skin.?.bones == null) return false;
 
+    const max_bones: u32 = 256;
+    const bone_count: u32 = @min(skin.?.bone_count, max_bones);
     var i: u32 = 0;
-    while (i < skin.?.bone_count) : (i += 1) {
+    while (i < bone_count) : (i += 1) {
         const bone = &skin.?.bones.?[i];
         const node = scene_nodes.?[bone.node_index];
 
@@ -897,6 +905,29 @@ pub export fn cardinal_skin_update_bone_matrices(skin: ?*const CardinalSkin, sce
         const world_transform = scene.cardinal_scene_node_get_world_transform(@constCast(node));
         const bone_matrix = &bone_matrices.?[i * 16];
         // Cast to [16]f32 pointers for the Zig function
+        const wt_ptr: *const [16]f32 = @ptrCast(world_transform);
+        const ibm_ptr: *const [16]f32 = &bone.inverse_bind_matrix;
+        const bm_ptr: *[16]f32 = @ptrCast(bone_matrix);
+        transform.cardinal_matrix_multiply(wt_ptr, ibm_ptr, bm_ptr);
+    }
+
+    return true;
+}
+
+pub export fn cardinal_skin_update_bone_matrices_bounded(skin: ?*const CardinalSkin, scene_nodes: ?[*]?*const scene.CardinalSceneNode, all_node_count: u32, bone_matrices: ?[*]f32) callconv(.c) bool {
+    if (skin == null or scene_nodes == null or bone_matrices == null or skin.?.bones == null) return false;
+
+    const max_bones: u32 = 256;
+    const bone_count: u32 = @min(skin.?.bone_count, max_bones);
+    var i: u32 = 0;
+    while (i < bone_count) : (i += 1) {
+        const bone = &skin.?.bones.?[i];
+        if (bone.node_index >= all_node_count) continue;
+        const node = scene_nodes.?[bone.node_index];
+        if (node == null) continue;
+
+        const world_transform = scene.cardinal_scene_node_get_world_transform(@constCast(node));
+        const bone_matrix = &bone_matrices.?[i * 16];
         const wt_ptr: *const [16]f32 = @ptrCast(world_transform);
         const ibm_ptr: *const [16]f32 = &bone.inverse_bind_matrix;
         const bm_ptr: *[16]f32 = @ptrCast(bone_matrix);

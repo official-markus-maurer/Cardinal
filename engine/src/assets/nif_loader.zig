@@ -6,9 +6,25 @@ const math = @import("../core/math.zig");
 const transform = @import("../core/transform.zig");
 const animation = @import("animation.zig");
 const texture_loader = @import("texture_loader.zig");
+const asset_manager = @import("asset_manager.zig");
 const resource_state = @import("../core/resource_state.zig");
 const handles = @import("../core/handles.zig");
+const ref_counting = @import("../core/ref_counting.zig");
 const builtin = @import("builtin");
+const nif_schema = @import("nif_schema.zig");
+
+fn getNifString(ns: nif_schema.NifString, strings: [][]u8) []const u8 {
+    if (ns.index != 0xffffffff) {
+        if (ns.index < strings.len) {
+            return strings[ns.index];
+        }
+    } else {
+        if (ns.data.len > 0) {
+            return ns.data;
+        }
+    }
+    return "";
+}
 
 const nif_log = log.ScopedLogger("NIF");
 
@@ -17,6 +33,99 @@ const c = @cImport({
     @cInclude("stdlib.h");
     @cInclude("string.h");
 });
+
+const VK_FORMAT_R8G8B8A8_UNORM: u32 = 37;
+const VK_FORMAT_R8G8B8A8_SRGB: u32 = 43;
+const VK_FORMAT_B8G8R8A8_UNORM: u32 = 44;
+const VK_FORMAT_B8G8R8A8_SRGB: u32 = 50;
+
+fn promote_color_format_to_srgb(format: u32) u32 {
+    if (format == VK_FORMAT_R8G8B8A8_UNORM) return VK_FORMAT_R8G8B8A8_SRGB;
+    if (format == VK_FORMAT_B8G8R8A8_UNORM) return VK_FORMAT_B8G8R8A8_SRGB;
+    return format;
+}
+
+fn fixup_skinned_vertex_weights(mesh: *scene.CardinalMesh) void {
+    if (mesh.vertices == null or mesh.vertex_count == 0) return;
+    const verts = mesh.vertices.?;
+    var i: u32 = 0;
+    while (i < mesh.vertex_count) : (i += 1) {
+        var w0 = verts[i].bone_weights[0];
+        var w1 = verts[i].bone_weights[1];
+        var w2 = verts[i].bone_weights[2];
+        var w3 = verts[i].bone_weights[3];
+
+        if (verts[i].bone_indices[0] >= 256) w0 = 0;
+        if (verts[i].bone_indices[1] >= 256) w1 = 0;
+        if (verts[i].bone_indices[2] >= 256) w2 = 0;
+        if (verts[i].bone_indices[3] >= 256) w3 = 0;
+
+        var sum = w0 + w1 + w2 + w3;
+        if (sum < 0.0001) {
+            verts[i].bone_weights = .{ 1, 0, 0, 0 };
+            verts[i].bone_indices = .{ 0, 0, 0, 0 };
+            continue;
+        }
+
+        const inv = 1.0 / sum;
+        w0 *= inv;
+        w1 *= inv;
+        w2 *= inv;
+        w3 *= inv;
+        sum = w0 + w1 + w2 + w3;
+
+        if (sum < 0.0001) {
+            verts[i].bone_weights = .{ 1, 0, 0, 0 };
+            verts[i].bone_indices = .{ 0, 0, 0, 0 };
+            continue;
+        }
+
+        verts[i].bone_weights[0] = w0;
+        verts[i].bone_weights[1] = w1;
+        verts[i].bone_weights[2] = w2;
+        verts[i].bone_weights[3] = w3;
+    }
+}
+
+fn propagate_transforms_to_meshes(node: ?*scene.CardinalSceneNode, meshes: []scene.CardinalMesh) void {
+    if (node == null) return;
+    const n = node.?;
+
+    if (n.mesh_indices) |indices| {
+        var i: u32 = 0;
+        while (i < n.mesh_count) : (i += 1) {
+            const mesh_idx = indices[i];
+            if (mesh_idx < meshes.len) {
+                @memcpy(&meshes[mesh_idx].transform, &n.world_transform);
+            }
+        }
+    }
+
+    if (n.children) |children| {
+        var i: u32 = 0;
+        while (i < n.child_count) : (i += 1) {
+            propagate_transforms_to_meshes(children[i], meshes);
+        }
+    }
+}
+
+fn nif_transform_to_mat(nt: nif_schema.NiTransform) [16]f32 {
+    var out: [16]f32 = undefined;
+    var t: [3]f32 = .{ nt.Translation.x, nt.Translation.y, nt.Translation.z };
+    var r: [9]f32 = .{
+        nt.Rotation.m11,
+        nt.Rotation.m12,
+        nt.Rotation.m13,
+        nt.Rotation.m21,
+        nt.Rotation.m22,
+        nt.Rotation.m23,
+        nt.Rotation.m31,
+        nt.Rotation.m32,
+        nt.Rotation.m33,
+    };
+    transform.cardinal_matrix_from_rt_s(&r, &t, nt.Scale, &out);
+    return out;
+}
 
 // --- NIF Data Structures ---
 
@@ -42,178 +151,7 @@ const NifBlock = struct {
     size: u32,
 
     // Parsed Data (Generic)
-    parsed: ?*anyopaque,
-};
-
-// Common NIF Blocks
-const NiNode = struct {
-    name_index: i32,
-    flags: u16,
-    translation: [3]f32,
-    rotation: [9]f32,
-    scale: f32,
-    num_props: u32,
-    props: []i32,
-    num_children: u32,
-    children: []i32,
-};
-
-const NiTriShape = struct {
-    name_index: i32,
-    flags: u16,
-    translation: [3]f32,
-    rotation: [9]f32,
-    scale: f32,
-    num_props: u32,
-    props: []i32,
-    data_ref: i32,
-    skin_instance_ref: i32,
-    material_data_ref: i32, // Shader property or similar
-};
-
-const NiTriShapeData = struct {
-    num_vertices: u32,
-    vertices: [][3]f32,
-    normals: [][3]f32,
-    colors: [][4]f32,
-    uvs: [][2]f32,
-    num_indices: u32, // num_triangles * 3
-    indices: []u32,
-};
-
-const NiControllerManager = struct {
-    flags: u16,
-    num_sequences: u32,
-    sequences: []i32,
-};
-
-const NiControllerSequence = struct {
-    name_index: i32,
-    num_controlled_blocks: u32,
-    controlled_blocks: []ControlledBlock,
-    weight: f32,
-    cycle_type: u32,
-    frequency: f32,
-    start_time: f32,
-    stop_time: f32,
-};
-
-// --- NIF Constants ---
-const NIF_VERSION_20_0_0_5: u32 = 0x14000005;
-const NIF_VERSION_20_1_0_3: u32 = 0x14010003;
-const NIF_VERSION_20_2_0_7: u32 = 0x14020007;
-const NIF_VERSION_20_2_0_8: u32 = 0x14020008;
-const NIF_VERSION_10_1_0_0: u32 = 0x0A010000;
-const NIF_VERSION_4_2_2_0: u32 = 0x04020200;
-
-// --- Additional Structs ---
-
-const NiAlphaProperty = struct {
-    flags: u16,
-    threshold: u8,
-};
-
-const NiMaterialProperty = struct {
-    flags: u16,
-    ambient: [3]f32,
-    diffuse: [3]f32,
-    specular: [3]f32,
-    emissive: [3]f32,
-    glossiness: f32,
-    alpha: f32,
-};
-
-const NiStencilProperty = struct {
-    flags: u16,
-};
-
-const NiSourceTexture = struct {
-    use_external: u8,
-    file_name_index: i32,
-    pixel_layout: u32,
-    use_mipmaps: u32,
-    alpha_format: u32,
-    is_static: u8,
-};
-
-const TextureDesc = struct {
-    source_texture_ref: i32,
-    clamp_mode: u16,
-    filter_mode: u16,
-    uv_set: u32,
-    has_texture_transform: u8,
-    translation: [2]f32,
-    tiling: [2]f32,
-    w_rotation: f32,
-    transform_type: u32,
-    center_offset: [2]f32,
-};
-
-const NiTexturingProperty = struct {
-    flags: u16,
-    apply_mode: u32,
-    texture_count: u32,
-    base_texture: ?TextureDesc,
-    dark_texture: ?TextureDesc,
-    detail_texture: ?TextureDesc,
-    gloss_texture: ?TextureDesc,
-    glow_texture: ?TextureDesc,
-    bump_map_texture: ?TextureDesc,
-    decal_0_texture: ?TextureDesc,
-    decal_1_texture: ?TextureDesc,
-};
-
-const ControlledBlock = struct {
-    interpolator_ref: i32,
-    controller_ref: i32,
-    node_name_index: i32,
-};
-
-const NiTransformInterpolator = struct {
-    translation: [3]f32,
-    rotation: [4]f32,
-    scale: f32,
-    data_ref: i32,
-};
-
-const NiTransformData = struct {
-    num_rot_keys: u32,
-    rot_keys: [][5]f32, // Time + Quat
-    num_trans_keys: u32,
-    trans_keys: [][4]f32, // Time + Vec3
-    num_scale_keys: u32,
-    scale_keys: [][2]f32, // Time + Float
-};
-
-const NiSkinInstance = struct {
-    data_ref: i32,
-    skin_partition_ref: i32,
-    root_parent_ref: i32,
-    num_bones: u32,
-    bone_refs: []i32,
-};
-
-const NiSkinData = struct {
-    rotation: [9]f32,
-    translation: [3]f32,
-    scale: f32,
-    num_bones: u32,
-    bone_list: []NiSkinBoneData,
-};
-
-const NiSkinBoneData = struct {
-    rotation: [9]f32,
-    translation: [3]f32,
-    scale: f32,
-    bounding_sphere_center: [3]f32,
-    bounding_sphere_radius: f32,
-    num_vertices: u32,
-    vertex_weights: []NiSkinWeight,
-};
-
-const NiSkinWeight = struct {
-    index: u16,
-    weight: f32,
+    parsed: ?nif_schema.NifBlockData,
 };
 
 pub const NifReader = struct {
@@ -280,13 +218,6 @@ pub const NifReader = struct {
         return slice;
     }
 
-    pub fn read_short_string(self: *NifReader) ![]u8 {
-        const len = try self.read(u8);
-        const slice = try self.allocator.dupe(u8, self.buffer[self.pos .. self.pos + len]);
-        self.pos += len;
-        return slice;
-    }
-
     pub fn read_sized_string(self: *NifReader) ![]u8 {
         const len = try self.read(u32);
         if (len > 1024 * 4) return error.StringTooLong;
@@ -294,6 +225,23 @@ pub const NifReader = struct {
         const slice = try self.allocator.dupe(u8, self.buffer[self.pos .. self.pos + len]);
         self.pos += len;
         return slice;
+    }
+
+    // --- Reader Interface for Schema ---
+    pub fn readInt(self: *NifReader, comptime T: type, endian: std.builtin.Endian) !T {
+        _ = endian; // NIF is always Little Endian (mostly)
+        return self.read(T);
+    }
+
+    pub fn readFloat(self: *NifReader, comptime T: type, endian: std.builtin.Endian) !T {
+        _ = endian;
+        return self.read(T);
+    }
+
+    pub fn readNoEof(self: *NifReader, buf: []u8) !void {
+        if (self.pos + buf.len > self.buffer.len) return error.EndOfBuffer;
+        @memcpy(buf, self.buffer[self.pos .. self.pos + buf.len]);
+        self.pos += buf.len;
     }
 
     // --- Parse Header ---
@@ -311,7 +259,6 @@ pub const NifReader = struct {
 
         if (self.header.version >= 0x14010003) {
             // Heuristic: Check if UserVer2 should be skipped
-            // Peek at next 6 bytes (u16 num_types, u32 str_len)
             var looks_like_block_types = false;
             if (self.pos + 6 <= self.buffer.len) {
                 const num_types = std.mem.readInt(u16, self.buffer[self.pos..][0..2], .little);
@@ -336,7 +283,6 @@ pub const NifReader = struct {
             if (looks_like_block_types) {
                 nif_log.warn("Heuristic: Detected Block Types at Pos {d}. Skipping UserVer2.", .{self.pos});
                 self.header.user_version_2 = 0;
-                // If we skip UserVer2, we likely also skip MetaData because we are already at Block Types
                 skip_meta_data = true;
             } else {
                 self.header.user_version_2 = try self.read(u32);
@@ -349,7 +295,6 @@ pub const NifReader = struct {
 
         // NIF File Metadata (Since 20.2.0.7?)
         if (self.header.version >= 0x14020008 and !skip_meta_data) {
-            // Heuristic: Check if MetaData should be skipped
             var looks_like_block_types = false;
             if (self.pos + 6 <= self.buffer.len) {
                 const num_types = std.mem.readInt(u16, self.buffer[self.pos..][0..2], .little);
@@ -375,9 +320,6 @@ pub const NifReader = struct {
             } else {
                 const num_meta = try self.read(u32);
                 nif_log.warn("Num Meta Data: {d} (Pos: {d})", .{ num_meta, self.pos });
-                // We don't support parsing metadata yet, so we just skip the count.
-                // If there IS metadata, we might crash later because we don't consume it.
-                // But usually it's 0.
             }
         }
 
@@ -387,12 +329,11 @@ pub const NifReader = struct {
             nif_log.warn("Num Block Types: {d} (Pos: {d})", .{ self.header.num_block_types, self.pos });
 
             self.header.block_types = try self.allocator.alloc([]u8, self.header.num_block_types);
-            for (self.header.block_types) |*s| s.* = &.{}; // Zero init
+            for (self.header.block_types) |*s| s.* = &.{};
 
             var i: usize = 0;
             while (i < self.header.num_block_types) : (i += 1) {
                 self.header.block_types[i] = try self.read_sized_string();
-                // nif_log.debug("Block Type [{d}]: {s}", .{i, self.header.block_types[i]});
             }
 
             self.header.block_type_indices = try self.allocator.alloc(u16, self.header.num_blocks);
@@ -403,45 +344,32 @@ pub const NifReader = struct {
 
             self.header.block_sizes = try self.allocator.alloc(u32, self.header.num_blocks);
             i = 0;
-            nif_log.warn("Reading Block Sizes at Pos: {d}", .{self.pos});
+            nif_log.debug("Reading Block Sizes at Pos: {d}", .{self.pos});
             while (i < self.header.num_blocks) : (i += 1) {
                 self.header.block_sizes[i] = try self.read(u32);
             }
 
             self.header.num_strings = try self.read(u32);
-            nif_log.warn("Num Strings: {d} (Pos: {d})", .{ self.header.num_strings, self.pos });
+            nif_log.debug("Num Strings: {d} (Pos: {d})", .{ self.header.num_strings, self.pos });
 
             const max_str_len = try self.read(u32);
-            nif_log.warn("Max String Length: {d} (Pos: {d})", .{ max_str_len, self.pos });
+            nif_log.debug("Max String Length: {d} (Pos: {d})", .{ max_str_len, self.pos });
 
             self.header.strings = try self.allocator.alloc([]u8, self.header.num_strings);
-            for (self.header.strings) |*s| s.* = &.{}; // Zero init
-            // self.header.groups = try self.allocator.alloc(u32, self.header.num_blocks);
+            for (self.header.strings) |*s| s.* = &.{};
 
-            // Max string length check to avoid huge allocs on bad reads
             const MAX_STR_LEN = 1024 * 4;
 
             i = 0;
             while (i < self.header.num_strings) : (i += 1) {
                 const len = try self.read(u32);
-                nif_log.warn("String {d} Length: {d} (Pos: {d})", .{ i, len, self.pos });
-                if (len > MAX_STR_LEN) {
-                    nif_log.err("String too long at index {d}: {d} bytes (Max: {d}) (Pos: {d})", .{ i, len, MAX_STR_LEN, self.pos });
-                    // Peek at bytes to see what we are reading
-                    const peek_len = @min(16, self.buffer.len - self.pos);
-                    nif_log.err("Peek bytes at {d}: {any}", .{ self.pos, self.buffer[self.pos..][0..peek_len] });
-                    return error.StringTooLong;
-                }
+                if (len > MAX_STR_LEN) return error.StringTooLong;
                 const slice = try self.allocator.dupe(u8, self.buffer[self.pos .. self.pos + len]);
                 self.pos += len;
                 self.header.strings[i] = slice;
-                nif_log.warn("String {d}: {s}", .{ i, slice });
             }
 
-            // Groups (Num Groups + Array)
             const num_groups = try self.read(u32);
-            nif_log.warn("Num Groups: {d} (Pos: {d})", .{ num_groups, self.pos });
-
             if (num_groups > 0) {
                 self.header.groups = try self.allocator.alloc(u32, num_groups);
                 i = 0;
@@ -452,443 +380,8 @@ pub const NifReader = struct {
                 self.header.groups = &.{};
             }
         } else {
-            // Old versions not supported yet (too different)
             return error.UnsupportedVersion;
         }
-    }
-
-    // --- Block Parsers ---
-
-    fn parse_ni_node(self: *NifReader) !*NiNode {
-        const node = try self.allocator.create(NiNode);
-        node.name_index = try self.read(i32);
-        const num_extra = try self.read(u32);
-        self.pos += num_extra * 4; // refs
-        _ = try self.read(i32); // controller_ref
-
-        node.flags = try self.read(u16);
-        node.translation = try self.read([3]f32);
-        node.rotation = try self.read([9]f32);
-        node.scale = try self.read(f32);
-        node.num_props = try self.read(u32);
-        node.props = try self.allocator.alloc(i32, node.num_props);
-        for (node.props) |*prop| prop.* = try self.read(i32);
-        _ = try self.read(i32); // collision_ref
-
-        node.num_children = try self.read(u32);
-        node.children = try self.allocator.alloc(i32, node.num_children);
-        for (node.children) |*child| child.* = try self.read(i32);
-        return node;
-    }
-
-    fn parse_ni_tri_shape(self: *NifReader) !*NiTriShape {
-        const shape = try self.allocator.create(NiTriShape);
-        shape.name_index = try self.read(i32);
-        const num_extra = try self.read(u32);
-        self.pos += num_extra * 4;
-        _ = try self.read(i32); // controller
-
-        shape.flags = try self.read(u16);
-        shape.translation = try self.read([3]f32);
-        shape.rotation = try self.read([9]f32);
-        shape.scale = try self.read(f32);
-        shape.num_props = try self.read(u32);
-        shape.props = try self.allocator.alloc(i32, shape.num_props);
-        for (shape.props) |*prop| prop.* = try self.read(i32);
-        _ = try self.read(i32); // collision
-
-        shape.data_ref = try self.read(i32);
-        shape.skin_instance_ref = try self.read(i32);
-        // shape.material_data_ref = try self.read(i32); // Not always present?
-        // Assuming consistent struct for now based on previous code.
-        return shape;
-    }
-
-    fn parse_ni_tri_shape_data(self: *NifReader) !*NiTriShapeData {
-        const data = try self.allocator.create(NiTriShapeData);
-        _ = try self.read(i32); // Group ID
-        data.num_vertices = try self.read(u16);
-        _ = try self.read(u8); // Keep Flags
-        _ = try self.read(u8); // Compress Flags
-        const has_vertices = (try self.read(u8) != 0);
-
-        if (has_vertices) {
-            data.vertices = try self.allocator.alloc([3]f32, data.num_vertices);
-            for (data.vertices) |*v| v.* = try self.read([3]f32);
-        } else {
-            data.vertices = &.{};
-        }
-
-        var num_uv_sets: u32 = 0;
-        var has_tangents = false;
-        const has_early_uv_sets = (self.header.version >= NIF_VERSION_4_2_2_0);
-
-        if (has_early_uv_sets) {
-            if (self.header.version >= NIF_VERSION_20_2_0_7) {
-                const val = try self.read(u16);
-                if (self.header.user_version_2 > 34) {
-                    // Bethesda Data Flags
-                    // Bit 0: Has UV (not count! Count is 1 if set)
-                    // Bit 12: Has Tangents
-                    const has_uv = (val & 1) != 0;
-                    num_uv_sets = if (has_uv) 1 else 0;
-                    has_tangents = (val & 0x1000) != 0;
-                } else {
-                    // Standard NIF Data Flags (NiGeometryDataFlags)
-                    // Bits 0-5: Num UV Sets
-                    // Bits 6-11: Havok Material
-                    // Bits 12-15: NBT Method (Tangents)
-                    num_uv_sets = val & 63;
-                    const nbt_method = (val >> 12) & 0xF;
-                    has_tangents = (nbt_method != 0);
-                }
-
-                // Force fix for 20.2.0.7 w/ user version 11/12 (Skyrim/Fallout) sometimes having weird flags
-                // This seems redundant now if we handle BS flags correctly above?
-                // But user_version_2 might be 0 for some BS files?
-                if (num_uv_sets == 0 and (self.header.user_version_2 == 12 or self.header.user_version_2 == 11)) {
-                    nif_log.warn("Force fixing NumUVSets 0 -> 1 for Bethesda NIF (UserVer2={d})", .{self.header.user_version_2});
-                    num_uv_sets = 1;
-                }
-            } else if (self.header.version >= NIF_VERSION_10_1_0_0) {
-                num_uv_sets = try self.read(u32);
-            } else {
-                num_uv_sets = try self.read(u8);
-            }
-        }
-
-        const has_normals = (try self.read(u8) != 0);
-        if (has_normals) {
-            data.normals = try self.allocator.alloc([3]f32, data.num_vertices);
-            for (data.normals) |*n| n.* = try self.read([3]f32);
-            if (has_tangents) {
-                self.pos += @as(usize, data.num_vertices) * 12 * 2;
-            }
-        } else {
-            data.normals = &.{};
-        }
-
-        _ = try self.read([3]f32); // Center
-        _ = try self.read(f32); // Radius
-
-        const has_vertex_colors = (try self.read(u8) != 0);
-        if (has_vertex_colors) {
-            data.colors = try self.allocator.alloc([4]f32, data.num_vertices);
-            for (data.colors) |*col| col.* = try self.read([4]f32);
-        } else {
-            data.colors = &.{};
-        }
-
-        if (!has_early_uv_sets) {
-            const has_uv = (try self.read(u8) != 0);
-            if (has_uv) num_uv_sets = 1;
-        }
-
-        if (num_uv_sets > 0) {
-            data.uvs = try self.allocator.alloc([2]f32, data.num_vertices);
-            for (data.uvs) |*uv| uv.* = try self.read([2]f32);
-            if (num_uv_sets > 1) {
-                self.pos += @as(usize, (num_uv_sets - 1)) * @as(usize, data.num_vertices) * 8;
-            }
-        } else {
-            data.uvs = &.{};
-        }
-
-        _ = try self.read(u16); // Consistency Flags
-        _ = try self.read(i32); // Additional Data Ref
-
-        if (num_uv_sets == 0 and !has_vertex_colors) {
-            nif_log.warn("Mesh has 0 UV sets. Auto-generating planar UVs.", .{});
-            data.uvs = try self.allocator.alloc([2]f32, data.num_vertices);
-
-            var min_x: f32 = std.math.floatMax(f32);
-            var min_y: f32 = std.math.floatMax(f32);
-            var max_x: f32 = -std.math.floatMax(f32);
-            var max_y: f32 = -std.math.floatMax(f32);
-
-            for (data.vertices) |v| {
-                if (v[0] < min_x) min_x = v[0];
-                if (v[1] < min_y) min_y = v[1];
-                if (v[0] > max_x) max_x = v[0];
-                if (v[1] > max_y) max_y = v[1];
-            }
-
-            const size_x = max_x - min_x;
-            const size_y = max_y - min_y;
-
-            for (data.vertices, 0..) |v, idx| {
-                const u = if (size_x > 0.001) (v[0] - min_x) / size_x else 0.5;
-                const v_coord = if (size_y > 0.001) (v[1] - min_y) / size_y else 0.5;
-                data.uvs[idx] = .{ u, 1.0 - v_coord };
-            }
-        }
-
-        const num_triangles = try self.read(u16);
-        data.num_indices = @as(u32, num_triangles) * 3;
-        _ = try self.read(u32); // num_triangle_points
-        const has_triangles = (try self.read(u8) != 0);
-
-        if (has_triangles) {
-            data.indices = try self.allocator.alloc(u32, data.num_indices);
-            var t_i: usize = 0;
-            while (t_i < num_triangles) : (t_i += 1) {
-                data.indices[t_i * 3 + 0] = try self.read(u16);
-                data.indices[t_i * 3 + 1] = try self.read(u16);
-                data.indices[t_i * 3 + 2] = try self.read(u16);
-            }
-        } else {
-            data.indices = &.{};
-        }
-
-        const num_match_groups = try self.read(u16);
-        var mg_i: usize = 0;
-        while (mg_i < num_match_groups) : (mg_i += 1) {
-            const num_verts_in_group = try self.read(u16);
-            self.pos += @as(usize, num_verts_in_group) * 2;
-        }
-
-        return data;
-    }
-
-    fn parse_ni_controller_manager(self: *NifReader) !*NiControllerManager {
-        const mgr = try self.allocator.create(NiControllerManager);
-        _ = try self.read(i32); // next_controller
-        _ = try self.read(u16); // flags
-        _ = try self.read(f32); // frequency
-        _ = try self.read(f32); // phase
-        _ = try self.read(f32); // start_time
-        _ = try self.read(f32); // stop_time
-        _ = try self.read(i32); // target
-
-        mgr.flags = try self.read(u16);
-        mgr.num_sequences = try self.read(u32);
-        mgr.sequences = try self.allocator.alloc(i32, mgr.num_sequences);
-        for (mgr.sequences) |*s| s.* = try self.read(i32);
-        return mgr;
-    }
-
-    fn parse_ni_controller_sequence(self: *NifReader) !*NiControllerSequence {
-        const seq = try self.allocator.create(NiControllerSequence);
-        seq.name_index = try self.read(i32);
-        seq.num_controlled_blocks = try self.read(u32);
-        _ = try self.read(u32); // array grow by
-
-        seq.controlled_blocks = try self.allocator.alloc(ControlledBlock, seq.num_controlled_blocks);
-        for (seq.controlled_blocks) |*cb| {
-            cb.interpolator_ref = try self.read(i32);
-            cb.controller_ref = try self.read(i32);
-            cb.node_name_index = try self.read(i32);
-            _ = try self.read(i32); // prop type
-            _ = try self.read(i32); // ctlr type
-            _ = try self.read(i32); // ctlr id
-            _ = try self.read(i32); // interp id
-        }
-
-        seq.weight = try self.read(f32);
-        _ = try self.read(i32); // text_key_ref
-        seq.cycle_type = try self.read(u32);
-        seq.frequency = try self.read(f32);
-        seq.start_time = try self.read(f32);
-        seq.stop_time = try self.read(f32);
-        return seq;
-    }
-
-    fn parse_ni_transform_interpolator(self: *NifReader) !*NiTransformInterpolator {
-        const interp = try self.allocator.create(NiTransformInterpolator);
-        interp.translation = try self.read([3]f32);
-        interp.rotation = try self.read([4]f32);
-        interp.scale = try self.read(f32);
-        interp.data_ref = try self.read(i32);
-        return interp;
-    }
-
-    fn parse_ni_transform_data(self: *NifReader) !*NiTransformData {
-        const data = try self.allocator.create(NiTransformData);
-        data.num_rot_keys = try self.read(u32);
-        if (data.num_rot_keys > 0) {
-            const rot_type = try self.read(u32);
-            if (rot_type != 0) {
-                data.rot_keys = try self.allocator.alloc([5]f32, data.num_rot_keys);
-                for (data.rot_keys) |*k| {
-                    k.*[0] = try self.read(f32); // time
-                    k.*[1] = try self.read(f32); // x
-                    k.*[2] = try self.read(f32); // y
-                    k.*[3] = try self.read(f32); // z
-                    k.*[4] = try self.read(f32); // w
-                }
-            }
-        } else {
-            data.rot_keys = &.{};
-        }
-
-        data.num_trans_keys = try self.read(u32);
-        if (data.num_trans_keys > 0) {
-            _ = try self.read(u32); // trans_type
-            data.trans_keys = try self.allocator.alloc([4]f32, data.num_trans_keys);
-            for (data.trans_keys) |*k| {
-                k.*[0] = try self.read(f32); // time
-                k.*[1] = try self.read(f32); // x
-                k.*[2] = try self.read(f32); // y
-                k.*[3] = try self.read(f32); // z
-            }
-        } else {
-            data.trans_keys = &.{};
-        }
-
-        data.num_scale_keys = try self.read(u32);
-        if (data.num_scale_keys > 0) {
-            _ = try self.read(u32); // scale_type
-            data.scale_keys = try self.allocator.alloc([2]f32, data.num_scale_keys);
-            for (data.scale_keys) |*k| {
-                k.*[0] = try self.read(f32); // time
-                k.*[1] = try self.read(f32); // val
-            }
-        } else {
-            data.scale_keys = &.{};
-        }
-        return data;
-    }
-
-    fn parse_ni_skin_instance(self: *NifReader) !*NiSkinInstance {
-        const skin = try self.allocator.create(NiSkinInstance);
-        skin.data_ref = try self.read(i32);
-        skin.skin_partition_ref = try self.read(i32);
-        skin.root_parent_ref = try self.read(i32);
-        skin.num_bones = try self.read(u32);
-        skin.bone_refs = try self.allocator.alloc(i32, skin.num_bones);
-        for (skin.bone_refs) |*b| b.* = try self.read(i32);
-        return skin;
-    }
-
-    fn parse_ni_source_texture(self: *NifReader) !*NiSourceTexture {
-        const tex = try self.allocator.create(NiSourceTexture);
-        _ = try self.read(i32); // name
-        const num_extra = try self.read(u32);
-        self.pos += num_extra * 4;
-        _ = try self.read(i32); // controller
-
-        tex.use_external = try self.read(u8);
-        tex.file_name_index = try self.read(i32);
-        tex.pixel_layout = try self.read(u32);
-        tex.use_mipmaps = try self.read(u32);
-        tex.alpha_format = try self.read(u32);
-        tex.is_static = try self.read(u8);
-        _ = try self.read(u8);
-        _ = try self.read(u8);
-        return tex;
-    }
-
-    fn parse_ni_texturing_property(self: *NifReader) !*NiTexturingProperty {
-        const prop = try self.allocator.create(NiTexturingProperty);
-        _ = try self.read(i32); // name
-        const num_extra = try self.read(u32);
-        self.pos += num_extra * 4;
-        _ = try self.read(i32); // controller
-
-        prop.flags = try self.read(u16);
-        prop.apply_mode = try self.read(u32);
-
-        if (self.header.version >= NIF_VERSION_20_1_0_3) {
-            prop.texture_count = 7;
-        } else {
-            prop.texture_count = try self.read(u32);
-        }
-
-        prop.base_texture = try read_texture_desc(self);
-        prop.dark_texture = try read_texture_desc(self);
-        prop.detail_texture = try read_texture_desc(self);
-        prop.gloss_texture = try read_texture_desc(self);
-        prop.glow_texture = try read_texture_desc(self);
-        prop.bump_map_texture = try read_texture_desc(self);
-
-        if (prop.texture_count > 6) {
-            prop.decal_0_texture = try read_texture_desc(self);
-        } else {
-            prop.decal_0_texture = null;
-        }
-
-        if (prop.texture_count > 7) {
-            prop.decal_1_texture = try read_texture_desc(self);
-        } else {
-            prop.decal_1_texture = null;
-        }
-        return prop;
-    }
-
-    fn parse_ni_skin_data(self: *NifReader) !*NiSkinData {
-        const data = try self.allocator.create(NiSkinData);
-        data.rotation = try self.read([9]f32);
-        data.translation = try self.read([3]f32);
-        data.scale = try self.read(f32);
-        data.num_bones = try self.read(u32);
-        data.bone_list = try self.allocator.alloc(NiSkinBoneData, data.num_bones);
-
-        _ = try self.read(u8); // has_vertex_weights
-
-        for (data.bone_list) |*bone| {
-            bone.rotation = try self.read([9]f32);
-            bone.translation = try self.read([3]f32);
-            bone.scale = try self.read(f32);
-            bone.bounding_sphere_center = try self.read([3]f32);
-            bone.bounding_sphere_radius = try self.read(f32);
-
-            const num_verts = try self.read(u16);
-            bone.num_vertices = num_verts;
-
-            bone.vertex_weights = try self.allocator.alloc(NiSkinWeight, num_verts);
-            for (bone.vertex_weights) |*vw| {
-                vw.index = try self.read(u16);
-                vw.weight = try self.read(f32);
-            }
-        }
-        return data;
-    }
-
-    fn parse_ni_alpha_property(self: *NifReader) !*NiAlphaProperty {
-        const prop = try self.allocator.create(NiAlphaProperty);
-        _ = try self.read(i32); // name
-        const num_extra = try self.read(u32);
-        self.pos += num_extra * 4;
-        _ = try self.read(i32); // controller
-
-        prop.flags = try self.read(u16);
-        prop.threshold = try self.read(u8);
-        return prop;
-    }
-
-    fn parse_ni_material_property(self: *NifReader) !*NiMaterialProperty {
-        const prop = try self.allocator.create(NiMaterialProperty);
-        _ = try self.read(i32); // name
-        const num_extra = try self.read(u32);
-        self.pos += num_extra * 4;
-        _ = try self.read(i32); // controller
-
-        prop.flags = try self.read(u16);
-        prop.ambient = try self.read([3]f32);
-        prop.diffuse = try self.read([3]f32);
-        prop.specular = try self.read([3]f32);
-        prop.emissive = try self.read([3]f32);
-        prop.glossiness = try self.read(f32);
-        prop.alpha = try self.read(f32);
-
-        // Ensure alpha is valid (some legacy NIFs might have garbage/negative/NaN if uninitialized)
-        if (std.math.isNan(prop.alpha) or prop.alpha < 0.0) {
-            nif_log.warn("NiMaterialProperty has invalid alpha: {d}. Resetting to 1.0", .{prop.alpha});
-            prop.alpha = 1.0;
-        }
-
-        return prop;
-    }
-
-    fn parse_ni_stencil_property(self: *NifReader) !*NiStencilProperty {
-        const prop = try self.allocator.create(NiStencilProperty);
-        _ = try self.read(i32); // name
-        const num_extra = try self.read(u32);
-        self.pos += num_extra * 4;
-        _ = try self.read(i32); // controller
-
-        prop.flags = try self.read(u16);
-        return prop;
     }
 
     pub fn parse_blocks(self: *NifReader) !void {
@@ -908,1181 +401,1324 @@ pub const NifReader = struct {
             const end_pos = block.data_offset + block.size;
             defer self.pos = end_pos;
 
-            if (std.mem.eql(u8, type_name, "NiNode")) {
-                block.parsed = try self.parse_ni_node();
-            } else if (std.mem.eql(u8, type_name, "NiTriShape")) {
-                block.parsed = try self.parse_ni_tri_shape();
-            } else if (std.mem.eql(u8, type_name, "NiTriShapeData")) {
-                block.parsed = try self.parse_ni_tri_shape_data();
-            } else if (std.mem.eql(u8, type_name, "NiControllerManager")) {
-                block.parsed = try self.parse_ni_controller_manager();
-            } else if (std.mem.eql(u8, type_name, "NiControllerSequence")) {
-                block.parsed = try self.parse_ni_controller_sequence();
-            } else if (std.mem.eql(u8, type_name, "NiTransformInterpolator")) {
-                block.parsed = try self.parse_ni_transform_interpolator();
-            } else if (std.mem.eql(u8, type_name, "NiTransformData")) {
-                block.parsed = try self.parse_ni_transform_data();
-            } else if (std.mem.eql(u8, type_name, "NiSkinInstance")) {
-                block.parsed = try self.parse_ni_skin_instance();
-            } else if (std.mem.eql(u8, type_name, "NiSourceTexture")) {
-                block.parsed = try self.parse_ni_source_texture();
-            } else if (std.mem.eql(u8, type_name, "NiTexturingProperty")) {
-                block.parsed = try self.parse_ni_texturing_property();
-            } else if (std.mem.eql(u8, type_name, "NiSkinData")) {
-                block.parsed = try self.parse_ni_skin_data();
-            } else if (std.mem.eql(u8, type_name, "NiAlphaProperty")) {
-                block.parsed = try self.parse_ni_alpha_property();
-            } else if (std.mem.eql(u8, type_name, "NiMaterialProperty")) {
-                block.parsed = try self.parse_ni_material_property();
-            } else if (std.mem.eql(u8, type_name, "NiStencilProperty")) {
-                block.parsed = try self.parse_ni_stencil_property();
+            if (nif_schema.blockTypeFromString(type_name)) |block_type| {
+                const schema_header = nif_schema.Header{
+                    .version = self.header.version,
+                    .user_version = self.header.user_version,
+                    .user_version_2 = self.header.user_version_2,
+                };
+                nif_log.warn("Parsing block {d}: {s} (Size: {d})", .{ i, type_name, block.size });
+                block.parsed = try nif_schema.read_block(self.allocator, self, schema_header, block_type);
+            } else {
+                nif_log.warn("Unknown block type: {s}", .{type_name});
             }
         }
     }
 };
 
-// --- Integration ---
-
-fn read_texture_desc(reader: *NifReader) !?TextureDesc {
-    const has_texture_byte = try reader.read(u8);
-    const has_texture = (has_texture_byte != 0);
-
-    if (!has_texture) return null;
-
-    var desc: TextureDesc = undefined;
-    desc.source_texture_ref = try reader.read(i32);
-    desc.clamp_mode = try reader.read(u16);
-    desc.filter_mode = try reader.read(u16);
-    desc.uv_set = try reader.read(u32);
-
-    // Version checks: PS2 L/K removed in 20.0.0.5+
-    // desc.ps2_l = try reader.read(i16);
-    // desc.ps2_k = try reader.read(i16);
-
-    desc.has_texture_transform = try reader.read(u8);
-
-    if (desc.has_texture_transform != 0) {
-        desc.translation = try reader.read([2]f32);
-        desc.tiling = try reader.read([2]f32);
-        desc.w_rotation = try reader.read(f32);
-        desc.transform_type = try reader.read(u32);
-        desc.center_offset = try reader.read([2]f32);
-    } else {
-        desc.translation = .{ 0, 0 };
-        desc.tiling = .{ 1, 1 };
-        desc.w_rotation = 0;
-        desc.transform_type = 0;
-        desc.center_offset = .{ 0, 0 };
-    }
-
-    return desc;
-}
-
-fn normalize_texture_path(allocator: std.mem.Allocator, path: []const u8) ?[:0]u8 {
-    const buf = allocator.alloc(u8, path.len + 1) catch return null;
-    @memcpy(buf[0..path.len], path);
-    var i: usize = 0;
-    while (i < path.len) : (i += 1) {
-        if (buf[i] == '\\') buf[i] = '/';
-        if (builtin.os.tag == .windows) {
-            buf[i] = std.ascii.toLower(buf[i]);
+// Helper: Get property block from a list of properties
+fn findProperty(reader: *NifReader, properties: ?[]i32, comptime Tag: std.meta.Tag(nif_schema.NifBlockData)) ?std.meta.TagPayload(nif_schema.NifBlockData, Tag) {
+    @setEvalBranchQuota(100000);
+    if (properties) |props| {
+        for (props) |prop_ref| {
+            if (prop_ref < 0 or prop_ref >= reader.header.num_blocks) continue;
+            const block = &reader.blocks[@as(usize, @intCast(prop_ref))];
+            if (block.parsed) |parsed| {
+                if (std.meta.activeTag(parsed) == Tag) {
+                    return @field(parsed, @tagName(Tag));
+                }
+            }
         }
     }
-    buf[path.len] = 0;
-    return buf[0..path.len :0];
+    return null;
 }
 
-pub export fn cardinal_nif_load_scene(path: [*:0]const u8, out_scene: *scene.CardinalScene) callconv(.c) bool {
-    nif_log.warn("Loading NIF scene: {s}", .{path});
+// Helper: Resolve NIF file path (SizedString or IndexString)
+fn resolveFilePath(reader: *NifReader, file_path: ?nif_schema.FilePath) ?[]const u8 {
+    if (file_path) |fp| {
+        if (fp.Index) |idx| {
+            if (idx >= 0 and idx < reader.header.num_strings) {
+                return reader.header.strings[@as(usize, @intCast(idx))];
+            }
+        } else if (fp.String) |str| {
+            if (str.Value.len > 0) return @ptrCast(str.Value);
+        }
+    }
+    return null;
+}
 
-    // Zero initialize the scene
-    out_scene.* = std.mem.zeroes(scene.CardinalScene);
+fn resolve_texture_path(allocator: std.mem.Allocator, nif_path: []const u8, texture_path: []const u8) ?[:0]u8 {
+    const ExistsCheck = struct {
+        fn exists(path: []const u8) bool {
+            if (std.fs.path.isAbsolute(path)) {
+                var f = std.fs.openFileAbsolute(path, .{}) catch return false;
+                f.close();
+                return true;
+            }
+            var f = std.fs.cwd().openFile(path, .{}) catch return false;
+            f.close();
+            return true;
+        }
+    };
 
-    // 1. Read file
-    const file = std.fs.cwd().openFileZ(path, .{}) catch |err| {
-        nif_log.err("Failed to open file: {s}", .{@errorName(err)});
+    // 1. Normalize basic path (replace \ with / and lower case)
+    var norm_base = allocator.alloc(u8, texture_path.len + 1) catch return null;
+    var i: usize = 0;
+    for (texture_path) |char| {
+        if (char == '\\') {
+            norm_base[i] = '/';
+        } else {
+            norm_base[i] = std.ascii.toLower(char);
+        }
+        i += 1;
+    }
+    norm_base[i] = 0;
+    const norm_base_slice = norm_base[0..i :0];
+    defer allocator.free(norm_base_slice);
+
+    // 2. Check if it exists as is (relative to CWD)
+    if (ExistsCheck.exists(norm_base_slice)) {
+        return allocator.dupeZ(u8, norm_base_slice) catch null;
+    }
+
+    // 3. Try relative to NIF
+    const nif_dir = std.fs.path.dirname(nif_path) orelse ".";
+    const path_rel = std.fs.path.join(allocator, &.{ nif_dir, norm_base_slice }) catch return null;
+    defer allocator.free(path_rel);
+
+    if (ExistsCheck.exists(path_rel)) {
+        return allocator.dupeZ(u8, path_rel) catch null;
+    }
+
+    // 4. Try sibling "texture" directory if in "model" directory (common structure)
+    // Try ../texture/filename relative to NIF dir
+    const sibling_texture_path = std.fs.path.join(allocator, &.{ nif_dir, "../texture", norm_base_slice }) catch return null;
+    defer allocator.free(sibling_texture_path);
+
+    if (ExistsCheck.exists(sibling_texture_path)) {
+        return allocator.dupeZ(u8, sibling_texture_path) catch null;
+    }
+
+    // Fallback: return the normalized base path
+    return allocator.dupeZ(u8, norm_base_slice) catch null;
+}
+
+fn getSkinMaxVertexIndex(reader: *NifReader, skin_inst_idx: usize) u32 {
+    if (skin_inst_idx >= reader.blocks.len) return 0;
+    const block = &reader.blocks[skin_inst_idx];
+    if (block.parsed) |parsed| {
+        if (std.meta.activeTag(parsed) == .NiSkinInstance) {
+            const skin_inst = parsed.NiSkinInstance;
+
+            // Check NiSkinData
+            if (skin_inst.Data >= 0 and skin_inst.Data < reader.header.num_blocks) {
+                const data_block = &reader.blocks[@as(usize, @intCast(skin_inst.Data))];
+                if (data_block.parsed) |data_parsed| {
+                    if (std.meta.activeTag(data_parsed) == .NiSkinData) {
+                        const sd = data_parsed.NiSkinData;
+                        var max_idx: u32 = 0;
+                        for (sd.Bone_List) |bone| {
+                            if (bone.Vertex_Weights) |weights| {
+                                for (weights) |w| {
+                                    if (w.Index > max_idx) max_idx = w.Index;
+                                }
+                            } else if (bone.Vertex_Weights_1) |weights| {
+                                for (weights) |w| {
+                                    if (w.Index > max_idx) max_idx = w.Index;
+                                }
+                            }
+                        }
+                        return max_idx;
+                    }
+                }
+            }
+
+            // Check NiSkinPartition (if data check was insufficient or unavailable)
+            if (skin_inst.Skin_Partition) |part_ref| {
+                if (part_ref >= 0 and part_ref < reader.header.num_blocks) {
+                    const part_block = &reader.blocks[@as(usize, @intCast(part_ref))];
+                    if (part_block.parsed) |part_parsed| {
+                        if (std.meta.activeTag(part_parsed) == .NiSkinPartition) {
+                            const sp = part_parsed.NiSkinPartition;
+                            var max_idx: u32 = 0;
+                            for (sp.Partitions) |p| {
+                                if (p.Vertex_Map) |vm| {
+                                    for (vm) |idx| {
+                                        if (idx > max_idx) max_idx = idx;
+                                    }
+                                } else if (p.Vertex_Map_1) |vm| {
+                                    for (vm) |idx| {
+                                        if (idx > max_idx) max_idx = idx;
+                                    }
+                                } else {
+                                    nif_log.warn("Heuristic: Partition has no Vertex Map! Cannot determine max index.", .{});
+                                }
+                            }
+                            nif_log.warn("Heuristic: NiSkinPartition (Block {d}) Max Index found: {d}", .{ part_ref, max_idx });
+                            return max_idx;
+                        }
+                    }
+                }
+            }
+        }
+    }
+    return 0;
+}
+
+pub export fn cardinal_nif_merge_kf(path: [*:0]const u8, out_scene: *scene.CardinalScene) callconv(.c) bool {
+    const file_path = std.mem.span(path);
+    nif_log.info("Merging KF: {s}", .{file_path});
+
+    var file = std.fs.cwd().openFile(file_path, .{}) catch |err| {
+        nif_log.err("Failed to open KF file: {s} ({})", .{ file_path, err });
         return false;
     };
     defer file.close();
 
-    const size = file.getEndPos() catch 0;
-    if (size == 0) return false;
-
-    // Use Engine allocator (thread-safe, usually)
-    const allocator = memory.cardinal_get_allocator_for_category(.ENGINE).as_allocator();
-    const asset_allocator = memory.cardinal_get_allocator_for_category(.ASSETS).as_allocator();
-
-    const buffer = allocator.alloc(u8, size) catch return false;
-    defer allocator.free(buffer);
-
+    const file_size = file.getEndPos() catch 0;
+    const buffer = std.heap.c_allocator.alloc(u8, file_size) catch return false;
+    defer std.heap.c_allocator.free(buffer);
     _ = file.readAll(buffer) catch return false;
 
-    // 2. Parse
-    var reader = NifReader.init(allocator, buffer);
+    var reader = NifReader.init(std.heap.c_allocator, buffer);
     defer reader.deinit();
 
     reader.parse_header() catch |err| {
-        nif_log.err("Failed to parse NIF header: {s}", .{@errorName(err)});
+        nif_log.err("Failed to parse KF header: {}", .{err});
         return false;
     };
 
     reader.parse_blocks() catch |err| {
-        nif_log.err("Failed to parse NIF blocks: {s}", .{@errorName(err)});
+        nif_log.err("Failed to parse KF blocks: {}", .{err});
         return false;
     };
 
-    // 3. Convert to Scene
-    // For now, just create a root node
-    // Find the root (Block 0 is usually root)
-    if (reader.header.num_blocks > 0) {
-        // We need to build the hierarchy recursively
-        // Allocate node pointers array
-        const all_nodes_ptr = memory.cardinal_calloc(memory.cardinal_get_allocator_for_category(.ASSETS), reader.header.num_blocks, @sizeOf(?*scene.CardinalSceneNode));
-        out_scene.all_nodes = @ptrCast(@alignCast(all_nodes_ptr));
-        out_scene.all_node_count = reader.header.num_blocks;
-
-        // Pass 1: Create Nodes
-        var i: usize = 0;
-        while (i < reader.header.num_blocks) : (i += 1) {
-            const block = &reader.blocks[i];
-            const type_name = reader.header.block_types[block.type_index];
-
-            if (block.parsed) |p| {
-                if (std.mem.eql(u8, type_name, "NiNode") or std.mem.eql(u8, type_name, "NiTriShape")) {
-                    // It's a node
-                    var name_index: i32 = -1;
-                    if (std.mem.eql(u8, type_name, "NiNode")) {
-                        const av = @as(*NiNode, @ptrCast(@alignCast(p)));
-                        name_index = av.name_index;
-                    } else {
-                        const av = @as(*NiTriShape, @ptrCast(@alignCast(p)));
-                        name_index = av.name_index;
-                    }
-
-                    var node_name: ?[*:0]const u8 = null;
-                    // We need a null-terminated string for create, but header strings are slices.
-                    var name_buf: [256]u8 = undefined;
-                    if (name_index >= 0 and name_index < reader.header.num_strings) {
-                        const s = reader.header.strings[@intCast(name_index)];
-                        const len = @min(s.len, 255);
-                        @memcpy(name_buf[0..len], s[0..len]);
-                        name_buf[len] = 0;
-                        node_name = @ptrCast(&name_buf);
-                    } else {
-                        // Fallback
-                        const default_name = if (std.mem.eql(u8, type_name, "NiNode")) "NiNode" else "NiTriShape";
-                        const len = default_name.len;
-                        @memcpy(name_buf[0..len], default_name);
-                        name_buf[len] = 0;
-                        node_name = @ptrCast(&name_buf);
-                    }
-
-                    const node = scene.cardinal_scene_node_create(node_name);
-                    out_scene.all_nodes.?[i] = node;
-
-                    // Set transform
-                    const av = @as(*NiNode, @ptrCast(@alignCast(p)));
-                    var transform_mat: [16]f32 = undefined;
-                    var r: [9]f32 = av.rotation;
-                    var t: [3]f32 = av.translation;
-                    const s: f32 = av.scale;
-
-                    // Mat4 from TRS
-                    transform.cardinal_matrix_from_rt_s(&r, &t, s, &transform_mat);
-
-                    // CORRECTION FOR ROOT NODE (Index 0)
-                    // NIF is Z-up. Engine is Y-up.
-                    // Rotate -90 degrees around X axis.
-                    if (i == 0) {
-                        const correction = [16]f32{ 1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, -1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 1.0 };
-
-                        var final: [16]f32 = undefined;
-                        // Correction * Local (Rotate the whole coordinate system)
-                        transform.cardinal_matrix_multiply(&correction, &transform_mat, &final);
-                        @memcpy(&transform_mat, &final);
-                    }
-
-                    scene.cardinal_scene_node_set_local_transform(node.?, &transform_mat);
-                }
-            }
-        }
-
-        // Pass 2: Link Hierarchy
-        i = 0;
-        while (i < reader.header.num_blocks) : (i += 1) {
-            const block = &reader.blocks[i];
-            const type_name = reader.header.block_types[block.type_index];
-            const parent_node = out_scene.all_nodes.?[i];
-
-            if (parent_node != null and block.parsed != null) {
-                if (std.mem.eql(u8, type_name, "NiNode")) {
-                    const node_data = @as(*NiNode, @ptrCast(@alignCast(block.parsed.?)));
-                    for (node_data.children) |child_idx| {
-                        if (child_idx >= 0 and child_idx < reader.header.num_blocks) {
-                            if (out_scene.all_nodes.?[@intCast(child_idx)]) |child_node| {
-                                _ = scene.cardinal_scene_node_add_child(parent_node.?, child_node);
-                            }
-                        }
-                    }
-                } else if (std.mem.eql(u8, type_name, "NiTriShape")) {
-                    const shape_data = @as(*NiTriShape, @ptrCast(@alignCast(block.parsed.?)));
-                    // Handle Mesh Data
-                    if (shape_data.data_ref >= 0 and shape_data.data_ref < reader.header.num_blocks) {
-                        const data_block = &reader.blocks[@intCast(shape_data.data_ref)];
-                        if (data_block.parsed != null and std.mem.eql(u8, reader.header.block_types[data_block.type_index], "NiTriShapeData")) {
-                            // Valid data block
-                        }
-                    }
-                }
-            }
-        }
-
-        // Pass 3: Collect Meshes
-        var mesh_count: u32 = 0;
-        i = 0;
-        while (i < reader.header.num_blocks) : (i += 1) {
-            const type_name = reader.header.block_types[reader.blocks[i].type_index];
-            if (std.mem.eql(u8, type_name, "NiTriShape")) mesh_count += 1;
-        }
-
-        if (mesh_count > 0) {
-            out_scene.mesh_count = mesh_count;
-            const meshes_ptr = memory.cardinal_calloc(memory.cardinal_get_allocator_for_category(.ASSETS), mesh_count, @sizeOf(scene.CardinalMesh));
-            out_scene.meshes = @ptrCast(@alignCast(meshes_ptr));
-
-            // Create Materials (allocate max potential, shrink later or just use count)
-            // For simplicity, we can just allocate one material per mesh, but that's wasteful.
-            // Better: allocate a list, and reuse.
-            // For now, let's create a list of Materials found in the NIF.
-
-            var material_list = std.ArrayListUnmanaged(scene.CardinalMaterial){};
-            defer material_list.deinit(allocator);
-
-            var texture_list = std.ArrayListUnmanaged(scene.CardinalTexture){};
-            defer texture_list.deinit(allocator);
-
-            // Add default material
-            var default_mat = std.mem.zeroes(scene.CardinalMaterial);
-            default_mat.albedo_factor = .{ 1, 1, 1, 1 };
-            default_mat.roughness_factor = 1.0;
-            default_mat.metallic_factor = 0.0;
-            default_mat.alpha_cutoff = 0.5;
-            default_mat.double_sided = true;
-            default_mat.albedo_texture = handles.TextureHandle.INVALID;
-            default_mat.normal_texture = handles.TextureHandle.INVALID;
-            default_mat.metallic_roughness_texture = handles.TextureHandle.INVALID;
-            default_mat.ao_texture = handles.TextureHandle.INVALID;
-            default_mat.emissive_texture = handles.TextureHandle.INVALID;
-
-            // Initialize transforms to identity
-            default_mat.albedo_transform.scale = .{ 1.0, 1.0 };
-            default_mat.normal_transform.scale = .{ 1.0, 1.0 };
-            default_mat.metallic_roughness_transform.scale = .{ 1.0, 1.0 };
-            default_mat.ao_transform.scale = .{ 1.0, 1.0 };
-            default_mat.emissive_transform.scale = .{ 1.0, 1.0 };
-
-            material_list.append(allocator, default_mat) catch return false;
-
-            var mesh_idx: usize = 0;
-            i = 0;
-            while (i < reader.header.num_blocks) : (i += 1) {
-                const block = &reader.blocks[i];
-                const type_name = reader.header.block_types[block.type_index];
-
-                if (std.mem.eql(u8, type_name, "NiTriShape") and block.parsed != null) {
-                    const shape = @as(*NiTriShape, @ptrCast(@alignCast(block.parsed.?)));
-
-                    // Initialize Mesh in-place
-                    const mesh = &out_scene.meshes.?[mesh_idx];
-                    mesh.* = std.mem.zeroes(scene.CardinalMesh);
-                    // Bit 0 of flags is 'Hidden'
-                    mesh.visible = (shape.flags & 1) == 0;
-
-                    // Determine Material
-                    var mat_index: u32 = 0;
-                    var has_alpha_property = false;
-                    var has_material_property = false;
-                    var has_stencil_property = false;
-
-                    // Temp pointers to properties
-                    var p_alpha: ?*NiAlphaProperty = null;
-                    var p_material: ?*NiMaterialProperty = null;
-                    var p_stencil: ?*NiStencilProperty = null;
-                    var p_texturing: ?*NiTexturingProperty = null;
-
-                    // First pass: gather properties
-                    if (shape.props.len > 0) {
-                        for (shape.props) |prop_ref| {
-                            if (prop_ref >= 0 and prop_ref < reader.header.num_blocks) {
-                                const prop_block = &reader.blocks[@intCast(prop_ref)];
-                                const prop_type = reader.header.block_types[prop_block.type_index];
-
-                                if (prop_block.parsed) |parsed| {
-                                    if (std.mem.eql(u8, prop_type, "NiTexturingProperty")) {
-                                        p_texturing = @as(*NiTexturingProperty, @ptrCast(@alignCast(parsed)));
-                                    } else if (std.mem.eql(u8, prop_type, "NiAlphaProperty")) {
-                                        p_alpha = @as(*NiAlphaProperty, @ptrCast(@alignCast(parsed)));
-                                        has_alpha_property = true;
-                                    } else if (std.mem.eql(u8, prop_type, "NiMaterialProperty")) {
-                                        p_material = @as(*NiMaterialProperty, @ptrCast(@alignCast(parsed)));
-                                        has_material_property = true;
-                                    } else if (std.mem.eql(u8, prop_type, "NiStencilProperty")) {
-                                        p_stencil = @as(*NiStencilProperty, @ptrCast(@alignCast(parsed)));
-                                        has_stencil_property = true;
-                                    }
-                                }
-                            }
-                        }
-                    }
-
-                    // Create new material based on gathered properties
-                    // Start with default
-                    var new_mat = default_mat;
-
-                    // IMPORTANT: Force default albedo to WHITE if no material property exists
-                    // Default was 1,1,1,1 but we should be explicit
-                    // If p_material exists, it overwrites. If not, we have 1,1,1,1.
-                    // However, if we have textures but no material property, we must ensure we don't end up with 0 alpha or black color.
-
-                    // Apply Material Property
-                    if (p_material) |m| {
-                        // Heuristic: If material diffuse is black (0,0,0), force it to white.
-                        // This fixes legacy assets where the material color was zeroed out but textures were expected to provide color.
-                        if (m.diffuse[0] < 0.001 and m.diffuse[1] < 0.001 and m.diffuse[2] < 0.001) {
-                            nif_log.warn("Material {d} has BLACK diffuse color. Forcing to WHITE.", .{mat_index});
-                            new_mat.albedo_factor = .{ 1.0, 1.0, 1.0, m.alpha };
-                        } else {
-                            new_mat.albedo_factor = .{ m.diffuse[0], m.diffuse[1], m.diffuse[2], m.alpha };
-                        }
-
-                        new_mat.emissive_factor = m.emissive;
-                        // Rough approximation of PBR from Phong
-                        // Specular power (glossiness) -> roughness
-                        // Low gloss (small) -> rough (1.0)
-                        // High gloss (large) -> smooth (0.0)
-                        // Roughness = 1 - (log(glossiness) / log(max_gloss))?
-                        // Or just inverse.
-                        // Typical glossiness 10-50.
-                        if (m.glossiness > 0) {
-                            new_mat.roughness_factor = 1.0 - std.math.clamp(m.glossiness / 100.0, 0.0, 1.0);
-                        }
-                        // Metallic? Gamebryo usually non-metallic unless environment map.
-                        new_mat.metallic_factor = 0.0;
-                    } else {
-                        // No material property: Default to white opaque
-                        new_mat.albedo_factor = .{ 1.0, 1.0, 1.0, 1.0 };
-                        new_mat.roughness_factor = 1.0;
-                        new_mat.metallic_factor = 0.0;
-                    }
-
-                    // Apply Alpha Property
-                    if (p_alpha) |a| {
-                        // Flags:
-                        // Bit 0: Blend Enable
-                        // Bit 8 or 9: Test Enable (Alpha Cutoff) - 0x100 or 0x200 depending on version
-                        const blend_enabled = (a.flags & 1) != 0;
-                        const test_enabled = (a.flags & 512) != 0 or (a.flags & 256) != 0;
-
-                        nif_log.warn("Mesh {d} Alpha: Flags=0x{x}, Blend={any}, Test={any}, Thresh={d}", .{ mesh_idx, a.flags, blend_enabled, test_enabled, a.threshold });
-
-                        // Prioritize MASK (Alpha Test) because it handles cutouts (leaves/fences) better than BLEND in our PBR pipeline.
-                        // If both are enabled, it's usually "Alpha Test AND Blend", but we can only pick one mode for glTF.
-                        // MASK ensures depth write and proper sorting for cutouts.
-                        if (test_enabled) {
-                            new_mat.alpha_mode = .MASK;
-                            new_mat.alpha_cutoff = @as(f32, @floatFromInt(a.threshold)) / 255.0;
-                            // Ensure cutoff is reasonable
-                            if (new_mat.alpha_cutoff == 0.0) new_mat.alpha_cutoff = 0.5;
-
-                            // HACK: Some legacy NIFs use a very low threshold (like 0 or 10) for "cutout" which fails to cut anything if the texture has fuzzy alpha.
-                            // If threshold is very low but it's MASK mode, bump it up slightly?
-                            // Or, maybe we should respect it.
-                            // But for "Solid Colors" issue, it means alpha is NOT < cutoff.
-                            // If cutoff is 0.49 (125), and we see solid colors, texture alpha must be > 0.49.
-
-                        } else if (blend_enabled) {
-                            new_mat.alpha_mode = .BLEND;
-                        } else {
-                            // Some meshes have NiAlphaProperty but with flags 0 or weird values.
-                            // If threshold is set (> 0), assume MASK?
-                            // Or if flags & 0x1400 (Alpha Test Function) is set?
-                            if (a.threshold > 0) {
-                                new_mat.alpha_mode = .MASK;
-                                new_mat.alpha_cutoff = @as(f32, @floatFromInt(a.threshold)) / 255.0;
-                            } else {
-                                // Default for NiAlphaProperty with no flags is usually BLEND (SRC_ALPHA, INV_SRC_ALPHA) in older NIFs?
-                                // Actually, if flags are 0, it means no alpha blending and no alpha testing.
-                                // But why add the property then?
-                                // Sometimes it's just a container for the threshold.
-                                // Let's default to OPAQUE unless alpha < 1.0
-                                if (new_mat.albedo_factor[3] < 0.99) {
-                                    new_mat.alpha_mode = .BLEND;
-                                } else {
-                                    new_mat.alpha_mode = .OPAQUE;
-                                }
-                            }
-                        }
-                    } else {
-                        // No alpha property usually means OPAQUE, unless texture has alpha?
-                        // If material alpha < 1.0, set to BLEND?
-                        if (new_mat.albedo_factor[3] < 0.99) {
-                            new_mat.alpha_mode = .BLEND;
-                        }
-                    }
-
-                    // Apply Stencil Property (Double Sided)
-                    if (p_stencil) |s| {
-                        // DRAW_MODE_CCW = 2 (standard)
-                        // DRAW_MODE_BOTH = 3 (double sided)
-                        // Mask bits 11-10-9 ? No, usually an enum.
-                        // Standard Gamebryo:
-                        // Bit 0: Enable
-                        // Bit 1: Fail Action
-                        // ...
-                        // Wait, Double Sided is usually in NiStencilProperty flags?
-                        // Or NiProperty flags.
-                        // Actually NiStencilProperty controls stencil buffer.
-                        // DOUBLE SIDED is often in NiStencilProperty OR specific shader flags.
-                        // Nif.xml says:
-                        // Bit 9-11: Draw Mode
-                        // 0 = DRAW_CCW (Standard)
-                        // 1 = DRAW_CCW ?
-                        // 2 = DRAW_BOTH ?
-                        // Let's assume standard behavior:
-                        const draw_mode = (s.flags >> 9) & 7;
-                        if (draw_mode == 2 or draw_mode == 3) {
-                            new_mat.double_sided = true;
-                        } else {
-                            new_mat.double_sided = false;
-                        }
-                    }
-
-                    // Apply Textures (if present)
-                    if (p_texturing) |tex_prop| {
-                        // ... existing texture logic ...
-                        // We need to move the existing texture logic here and use p_texturing
-                        // Debug log for property linkage
-                        nif_log.debug("Mesh {d} references NiTexturingProperty", .{mesh_idx});
-
-                        if (tex_prop.base_texture) |base_tex| {
-                            nif_log.debug("  Has Base Texture. Ref: {d}", .{base_tex.source_texture_ref});
-                            if (base_tex.source_texture_ref >= 0 and base_tex.source_texture_ref < reader.header.num_blocks) {
-                                const src_block = &reader.blocks[@intCast(base_tex.source_texture_ref)];
-                                const src_type = reader.header.block_types[src_block.type_index];
-                                nif_log.debug("  Texture Block Type: {s}", .{src_type});
-
-                                if (std.mem.eql(u8, src_type, "NiSourceTexture") and src_block.parsed != null) {
-                                    const src_tex = @as(*NiSourceTexture, @ptrCast(@alignCast(src_block.parsed.?)));
-                                    if (src_tex.file_name_index >= 0 and src_tex.file_name_index < reader.header.num_strings) {
-                                        const tex_name = reader.header.strings[@intCast(src_tex.file_name_index)];
-                                        // Found texture name!
-                                        nif_log.debug("Found texture for mesh {d}: {s}", .{ mesh_idx, tex_name });
-
-                                        // Resolve path
-                                        const nif_dir = std.fs.path.dirname(std.mem.span(path)) orelse ".";
-
-                                        // Sanitize basename (handle both / and \)
-                                        var clean_basename_buf: [256]u8 = undefined;
-                                        var clean_len: usize = 0;
-                                        var last_sep: isize = -1;
-                                        for (tex_name, 0..) |char, idx| {
-                                            if (char == '/' or char == '\\') last_sep = @intCast(idx);
-                                        }
-                                        if (last_sep != -1) {
-                                            const start = @as(usize, @intCast(last_sep + 1));
-                                            const len = tex_name.len - start;
-                                            if (len < 256) {
-                                                @memcpy(clean_basename_buf[0..len], tex_name[start..]);
-                                                clean_len = len;
-                                            }
-                                        } else {
-                                            const len = tex_name.len;
-                                            if (len < 256) {
-                                                @memcpy(clean_basename_buf[0..len], tex_name);
-                                                clean_len = len;
-                                            }
-                                        }
-                                        const clean_basename = clean_basename_buf[0..clean_len];
-                                        const stem = std.fs.path.stem(clean_basename);
-
-                                        var full_tex_path: ?[]u8 = null;
-
-                                        // Extensions to try (Prioritize supported formats)
-                                        const extensions = [_][]const u8{ ".dds", ".png", ".tga", ".jpg", ".bmp", "" };
-
-                                        // Strategy 1: Try using the relative path from NIF (if not absolute)
-                                        // This handles cases like "textures/hero.dds" relative to NIF location
-                                        if (!std.fs.path.isAbsolute(tex_name) and tex_name.len < 256) {
-                                            // Normalize separators
-                                            var rel_buf: [256]u8 = undefined;
-                                            @memcpy(rel_buf[0..tex_name.len], tex_name);
-                                            for (rel_buf[0..tex_name.len]) |*char_ptr| {
-                                                if (char_ptr.* == '\\') char_ptr.* = '/';
-                                            }
-                                            const rel_path = rel_buf[0..tex_name.len];
-
-                                            // If it has directory components
-                                            if (std.mem.indexOf(u8, rel_path, "/") != null) {
-                                                const rel_stem = std.fs.path.stem(rel_path);
-                                                const rel_dir = std.fs.path.dirname(rel_path) orelse "";
-
-                                                for (extensions) |ext| {
-                                                    var test_name_buf: [256]u8 = undefined;
-                                                    var test_rel_path: []const u8 = undefined;
-
-                                                    if (ext.len == 0) {
-                                                        test_rel_path = rel_path;
-                                                    } else {
-                                                        // Replace extension or append if none
-                                                        test_rel_path = std.fmt.bufPrint(&test_name_buf, "{s}/{s}{s}", .{ rel_dir, rel_stem, ext }) catch continue;
-                                                    }
-
-                                                    const test_path = std.fs.path.resolve(allocator, &.{ nif_dir, test_rel_path }) catch continue;
-
-                                                    // Check existence
-                                                    const f = std.fs.cwd().openFile(test_path, .{}) catch {
-                                                        allocator.free(test_path);
-                                                        continue;
-                                                    };
-                                                    f.close();
-
-                                                    full_tex_path = test_path;
-                                                    nif_log.debug("Found texture using relative path: {s}", .{test_path});
-                                                    break;
-                                                }
-                                            }
-                                        }
-
-                                        // Strategy 2: Search suffixes relative to NIF dir (Fallback)
-                                        if (full_tex_path == null) {
-                                            const dir_suffixes = [_][]const u8{ "", "textures", "texture", "../textures", "../texture", "..", "../..", "../../textures", "../../texture" };
-
-                                            outer: for (dir_suffixes) |suffix| {
-                                                var search_dir: []u8 = undefined;
-                                                if (suffix.len == 0) {
-                                                    search_dir = allocator.dupe(u8, nif_dir) catch continue;
-                                                } else {
-                                                    search_dir = std.fs.path.join(allocator, &.{ nif_dir, suffix }) catch continue;
-                                                }
-                                                defer allocator.free(search_dir);
-
-                                                for (extensions) |ext| {
-                                                    var test_name_buf: [256]u8 = undefined;
-                                                    var test_name: []const u8 = undefined;
-
-                                                    if (ext.len == 0) {
-                                                        test_name = clean_basename;
-                                                    } else {
-                                                        test_name = std.fmt.bufPrint(&test_name_buf, "{s}{s}", .{ stem, ext }) catch continue;
-                                                    }
-
-                                                    // Use resolve to get canonical path
-                                                    const test_path = std.fs.path.resolve(allocator, &.{ search_dir, test_name }) catch continue;
-
-                                                    // nif_log.warn("Trying texture path: {s}", .{test_path});
-
-                                                    // Check existence
-                                                    const f = std.fs.cwd().openFile(test_path, .{}) catch {
-                                                        allocator.free(test_path);
-                                                        continue;
-                                                    };
-                                                    f.close();
-
-                                                    full_tex_path = test_path; // Ownership passed
-                                                    break :outer;
-                                                }
-                                            }
-                                        }
-
-                                        if (full_tex_path) |ftp| {
-                                            nif_log.debug("Resolved texture path: {s}", .{ftp});
-
-                                            const ext = std.fs.path.extension(ftp);
-                                            if (std.ascii.eqlIgnoreCase(ext, ".dds")) {
-                                                nif_log.debug("DDS texture detected: {s}", .{ftp});
-                                            }
-
-                                            const normalized_path = normalize_texture_path(asset_allocator, ftp) orelse {
-                                                allocator.free(ftp);
-                                                continue;
-                                            };
-                                            const normalized_path_slice = normalized_path;
-
-                                            var tex_idx: i32 = -1;
-                                            for (texture_list.items, 0..) |t, ti| {
-                                                if (t.path) |tp| {
-                                                    const existing_path = std.mem.span(tp);
-                                                    const matches = if (builtin.os.tag == .windows)
-                                                        std.ascii.eqlIgnoreCase(existing_path, normalized_path_slice)
-                                                    else
-                                                        std.mem.eql(u8, existing_path, normalized_path_slice);
-                                                    if (matches) {
-                                                        tex_idx = @intCast(ti);
-                                                        break;
-                                                    }
-                                                }
-                                            }
-
-                                            if (tex_idx == -1) {
-                                                var tex_data = std.mem.zeroes(texture_loader.TextureData);
-                                                const tex_path_z: [:0]u8 = normalized_path;
-
-                                                const ref = texture_loader.texture_load_with_ref_counting(tex_path_z.ptr, &tex_data);
-
-                                                if (ref != null) {
-                                                    nif_log.debug("Texture load started/ref created for {s}", .{ftp});
-                                                } else {
-                                                    nif_log.err("Failed to create texture ref for {s}", .{ftp});
-                                                }
-
-                                                var new_tex = std.mem.zeroes(scene.CardinalTexture);
-                                                new_tex.path = @ptrCast(tex_path_z);
-                                                new_tex.ref_resource = ref;
-                                                if (ref != null and ref.?.identifier != null) {
-                                                    const state = resource_state.cardinal_resource_state_get(ref.?.identifier.?);
-                                                    if (state == .LOADED) {
-                                                        new_tex.data = tex_data.data;
-                                                        new_tex.width = tex_data.width;
-                                                        new_tex.height = tex_data.height;
-                                                        new_tex.channels = tex_data.channels;
-                                                        new_tex.is_hdr = tex_data.is_hdr;
-                                                        new_tex.format = tex_data.format;
-                                                        new_tex.data_size = tex_data.data_size;
-                                                    }
-                                                }
-
-                                                texture_list.append(allocator, new_tex) catch return false;
-                                                tex_idx = @intCast(texture_list.items.len - 1);
-                                            } else {
-                                                asset_allocator.free(normalized_path);
-                                            }
-
-                                            new_mat.albedo_texture = .{ .index = @intCast(tex_idx), .generation = 1 };
-
-                                            // Copy texture transform
-                                            if (base_tex.has_texture_transform != 0) {
-                                                new_mat.albedo_transform.offset = base_tex.translation;
-                                                new_mat.albedo_transform.scale = base_tex.tiling;
-                                                new_mat.albedo_transform.rotation = base_tex.w_rotation;
-                                                // Center offset/transform type not fully supported yet, using basic TRS
-                                            }
-
-                                            allocator.free(ftp);
-                                        } else {
-                                            nif_log.warn("Could not resolve texture: {s}", .{tex_name});
-                                        }
-                                    }
-                                }
-                            }
-                        }
-                    }
-
-                    // Add material to list
-                    material_list.append(allocator, new_mat) catch return false;
-                    mat_index = @intCast(material_list.items.len - 1);
-
-                    mesh.material_index = mat_index;
-                    const identity = [16]f32{ 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1 };
-                    @memcpy(&mesh.transform, &identity);
-
-                    // Link to Node
-                    if (out_scene.all_nodes.?[i]) |node| {
-                        const indices_arr = memory.cardinal_alloc(memory.cardinal_get_allocator_for_category(.ASSETS), 4);
-                        if (indices_arr) |ia| {
-                            node.mesh_indices = @ptrCast(@alignCast(ia));
-                            node.mesh_indices.?[0] = @intCast(mesh_idx);
-                            node.mesh_count = 1;
-                        }
-                    }
-
-                    // Geometry Data
-                    if (shape.data_ref >= 0 and shape.data_ref < reader.header.num_blocks) {
-                        const data_block = &reader.blocks[@intCast(shape.data_ref)];
-                        if (data_block.parsed != null and std.mem.eql(u8, reader.header.block_types[data_block.type_index], "NiTriShapeData")) {
-                            const data = @as(*NiTriShapeData, @ptrCast(@alignCast(data_block.parsed.?)));
-
-                            // Vertices (Interleaved)
-                            const vertex_count = data.num_vertices;
-                            if (vertex_count > 0) {
-                                const v_mem = memory.cardinal_alloc(memory.cardinal_get_allocator_for_category(.ASSETS), @as(usize, vertex_count) * @sizeOf(scene.CardinalVertex));
-                                if (v_mem) |vm| {
-                                    const vertices_ptr = @as([*]scene.CardinalVertex, @ptrCast(@alignCast(vm)));
-                                    var v_i: usize = 0;
-                                    var aabb_min = [3]f32{ std.math.floatMax(f32), std.math.floatMax(f32), std.math.floatMax(f32) };
-                                    var aabb_max = [3]f32{ -std.math.floatMax(f32), -std.math.floatMax(f32), -std.math.floatMax(f32) };
-
-                                    while (v_i < vertex_count) : (v_i += 1) {
-                                        var v = &vertices_ptr[v_i];
-                                        // Pos
-                                        if (data.vertices.len > v_i) {
-                                            v.px = data.vertices[v_i][0];
-                                            v.py = data.vertices[v_i][1];
-                                            v.pz = data.vertices[v_i][2];
-
-                                            aabb_min[0] = @min(aabb_min[0], v.px);
-                                            aabb_min[1] = @min(aabb_min[1], v.py);
-                                            aabb_min[2] = @min(aabb_min[2], v.pz);
-
-                                            aabb_max[0] = @max(aabb_max[0], v.px);
-                                            aabb_max[1] = @max(aabb_max[1], v.py);
-                                            aabb_max[2] = @max(aabb_max[2], v.pz);
-                                        }
-                                        v._pad0 = 0.0;
-                                        // Normal
-                                        if (data.normals.len > v_i) {
-                                            v.nx = data.normals[v_i][0];
-                                            v.ny = data.normals[v_i][1];
-                                            v.nz = data.normals[v_i][2];
-                                        } else {
-                                            v.nx = 0;
-                                            v.ny = 1;
-                                            v.nz = 0;
-                                        }
-                                        v._pad1 = 0.0;
-                                        // UV
-                                        if (data.uvs.len > v_i) {
-                                            v.u = data.uvs[v_i][0];
-                                            v.v = data.uvs[v_i][1];
-                                        } else {
-                                            // Auto-generate planar/billboard UVs for small meshes (e.g. leaves) if missing
-                                            // Assuming quads (4 verts per quad) or standard winding
-                                            if (vertex_count <= 256 and (vertex_count % 4) == 0) {
-                                                const corner = v_i % 4;
-                                                switch (corner) {
-                                                    0 => {
-                                                        // Bottom-Left
-                                                        v.u = 0.0;
-                                                        v.v = 1.0;
-                                                    },
-                                                    1 => {
-                                                        // Bottom-Right
-                                                        v.u = 1.0;
-                                                        v.v = 1.0;
-                                                    },
-                                                    2 => {
-                                                        // Top-Right
-                                                        v.u = 1.0;
-                                                        v.v = 0.0;
-                                                    },
-                                                    3 => {
-                                                        // Top-Left
-                                                        v.u = 0.0;
-                                                        v.v = 0.0;
-                                                    },
-                                                    else => {
-                                                        v.u = 0.0;
-                                                        v.v = 0.0;
-                                                    },
-                                                }
-                                            } else {
-                                                v.u = 0;
-                                                v.v = 0;
-                                            }
-                                        }
-
-                                        // Colors
-                                        if (data.colors.len > v_i) {
-                                            v.color = data.colors[v_i];
-                                        } else {
-                                            v.color = .{ 1.0, 1.0, 1.0, 1.0 };
-                                        }
-
-                                        // Defaults
-                                        v.u1 = 0;
-                                        v.v1 = 0;
-                                        v.bone_weights = .{ 0, 0, 0, 0 };
-                                        v.bone_indices = .{ 0, 0, 0, 0 };
-                                    }
-
-                                    // Heuristic: Check for all-black vertex colors (common in some legacy NIFs/KFMs)
-                                    // If all vertices have 0 alpha or are completely black, we force them to white
-                                    // so the textures are visible.
-                                    if (data.colors.len > 0 and vertex_count > 0) {
-                                        var all_black = true;
-                                        var has_alpha = false;
-                                        var v_check: usize = 0;
-                                        while (v_check < vertex_count) : (v_check += 1) {
-                                            const v = vertices_ptr[v_check];
-                                            if (v.color[0] > 0.001 or v.color[1] > 0.001 or v.color[2] > 0.001) {
-                                                all_black = false;
-                                            }
-                                            if (v.color[3] > 0.001) {
-                                                has_alpha = true;
-                                            }
-                                        }
-
-                                        // If ALL vertex alphas are 0, force them to 1.
-                                        if (!has_alpha) {
-                                            nif_log.warn("Mesh {d} has ALL ZERO vertex alpha. Forcing to 1.0.", .{mesh_idx});
-                                            var v_fix: usize = 0;
-                                            while (v_fix < vertex_count) : (v_fix += 1) {
-                                                vertices_ptr[v_fix].color[3] = 1.0;
-                                            }
-                                        }
-
-                                        if (all_black) {
-                                            nif_log.warn("Mesh {d} has ALL BLACK vertex colors. Forcing to WHITE.", .{mesh_idx});
-                                            var v_fix: usize = 0;
-                                            while (v_fix < vertex_count) : (v_fix += 1) {
-                                                vertices_ptr[v_fix].color = .{ 1.0, 1.0, 1.0, 1.0 };
-                                            }
-                                        }
-                                    }
-
-                                    mesh.bounding_box_min = aabb_min;
-                                    mesh.bounding_box_max = aabb_max;
-
-                                    mesh.vertices = vertices_ptr;
-                                    mesh.vertex_count = @intCast(vertex_count);
-
-                                    // Debug UVs
-                                    if (vertex_count > 0) {
-                                        const v0 = vertices_ptr[0];
-                                        nif_log.info("Mesh {d} UV[0]: {d:.3}, {d:.3}", .{ mesh_idx, v0.u, v0.v });
-
-                                        var found_nonzero = false;
-                                        var v_check: usize = 0;
-                                        while (v_check < vertex_count) : (v_check += 1) {
-                                            const v = vertices_ptr[v_check];
-                                            if (v.u != 0.0 or v.v != 0.0) {
-                                                nif_log.info("Mesh {d} Found Non-Zero UV at [{d}]: {d:.3}, {d:.3}", .{ mesh_idx, v_check, v.u, v.v });
-                                                found_nonzero = true;
-                                                break;
-                                            }
-                                        }
-                                        if (!found_nonzero) {
-                                            nif_log.warn("Mesh {d} has ALL ZERO UVs!", .{mesh_idx});
-                                        }
-                                    }
-                                }
-                            }
-
-                            // Indices
-                            const index_count = data.indices.len;
-                            if (index_count > 0) {
-                                const i_mem = memory.cardinal_alloc(memory.cardinal_get_allocator_for_category(.ASSETS), index_count * 4);
-                                if (i_mem) |im| {
-                                    const indices_ptr = @as([*]u32, @ptrCast(@alignCast(im)));
-                                    @memcpy(indices_ptr[0..index_count], data.indices);
-                                    mesh.indices = indices_ptr;
-                                    mesh.index_count = @intCast(index_count);
-                                }
-                            }
-                        }
-                    }
-                    mesh_idx += 1;
-                }
-            }
-
-            // Copy materials to scene
-            // Shrink to fit allocation to avoid waste
-            const final_mats = material_list.toOwnedSlice(allocator) catch return false;
-            out_scene.material_count = @intCast(final_mats.len);
-            out_scene.materials = final_mats.ptr;
-
-            // Copy textures to scene
-            out_scene.texture_count = @intCast(texture_list.items.len);
-            if (out_scene.texture_count > 0) {
-                const texs_ptr = memory.cardinal_calloc(memory.cardinal_get_allocator_for_category(.ASSETS), out_scene.texture_count, @sizeOf(scene.CardinalTexture));
-                out_scene.textures = @ptrCast(@alignCast(texs_ptr));
-                if (out_scene.textures) |texs| {
-                    for (texture_list.items, 0..) |t, ti| {
-                        texs[ti] = t;
-                    }
-                }
+    // Find NiControllerSequence blocks
+    var seq_count: usize = 0;
+    var i: usize = 0;
+    while (i < reader.header.num_blocks) : (i += 1) {
+        const block = &reader.blocks[i];
+        if (block.parsed) |parsed| {
+            if (std.meta.activeTag(parsed) == .NiControllerSequence) {
+                seq_count += 1;
             }
         }
     }
 
-    if (out_scene.root_node_count == 0 and out_scene.mesh_count == 0) {
-        nif_log.warn("NIF load resulted in empty scene (no nodes or meshes)", .{});
-        return false;
+    if (seq_count == 0) {
+        nif_log.warn("No sequences found in KF.", .{});
+        return true; // Not an error, just nothing to do
+    }
+
+    // Initialize Animation System if not present
+    if (out_scene.animation_system == null) {
+        // Create animation system with capacity for found sequences
+        // We need to import animation module properly or use the function pointer/extern if available?
+        // nif_loader imports animation.zig, so we can use it directly.
+        out_scene.animation_system = @ptrCast(animation.cardinal_animation_system_create(@intCast(seq_count + 10), 10)); // +10 buffer
+        nif_log.info("Initialized Animation System for KF merge (Capacity: {d})", .{seq_count + 10});
+    }
+
+    const anim_sys = @as(*animation.CardinalAnimationSystem, @ptrCast(@alignCast(out_scene.animation_system.?)));
+
+    // Iterate sequences and add to scene
+    i = 0;
+    while (i < reader.header.num_blocks) : (i += 1) {
+        const block = &reader.blocks[i];
+        if (block.parsed) |parsed| {
+            if (std.meta.activeTag(parsed) == .NiControllerSequence) {
+                const seq = parsed.NiControllerSequence;
+                var seq_name: []const u8 = "Unknown";
+
+                const s = getNifString(seq.base.Name, reader.header.strings);
+                if (s.len > 0) {
+                    seq_name = s;
+                }
+
+                nif_log.info("Found Sequence: {s}, Roots: {d}", .{ seq_name, seq.base.Num_Controlled_Blocks });
+
+                // Create CardinalAnimation from NiControllerSequence
+                var anim_desc = std.mem.zeroes(animation.CardinalAnimation);
+
+                // Name
+                // We need to allocate name because animation system takes ownership or copies?
+                // cardinal_animation_system_add_animation copies the name string.
+                // So we can just pass a pointer to our stack/temp string.
+                // But wait, seq_name is a slice. We need a null-terminated string.
+                const name_z = std.heap.c_allocator.dupeZ(u8, seq_name) catch "Unknown";
+                defer if (seq_name.len > 0) std.heap.c_allocator.free(name_z);
+
+                // name_z.ptr is [*:0]u8 if it's from dupeZ, but [*:0]const u8 if it's "Unknown" literal.
+                // We need to handle both cases or ensure we always have a mutable buffer if required,
+                // but "Unknown" is const.
+                // The C struct likely wants [*:0]u8 (non-const) if it modifies it, or it should be const.
+                // Looking at error: expected '?[*:0]u8', found '[*:0]const u8'.
+                // So the struct field is mutable.
+                // If we pass "Unknown", we need to cast away const, BUT we must ensure the C code doesn't write to it.
+                // cardinal_animation_system_add_animation copies the string, so it's safe to read.
+                anim_desc.name = @constCast(name_z.ptr);
+
+                // Duration
+                // Start_Time and Stop_Time might be optional or just f32.
+                // In some NIF schemas they are f32, in others optional.
+                // Error says: invalid operands to binary expression: 'optional' and 'optional'
+                // So they are optional.
+                const start = seq.Start_Time orelse 0.0;
+                const stop = seq.Stop_Time orelse 0.0;
+                anim_desc.duration = stop - start;
+                if (anim_desc.duration < 0) anim_desc.duration = 0;
+
+                // Cycle Type (Loop)
+                // Cycle_Type: 0=Loop, 1=Reverse, 2=Clamp
+                // We don't have a direct field in CardinalAnimation for loop mode yet (it's in state),
+                // but we can store it or use it for defaults.
+
+                // Add to system
+                _ = animation.cardinal_animation_system_add_animation(anim_sys, &anim_desc);
+
+                // Controlled Blocks link to nodes
+                for (seq.base.Controlled_Blocks) |cb| {
+                    var node_name: []const u8 = "None";
+                    if (cb.Node_Name) |nn| {
+                        const ns = getNifString(nn, reader.header.strings);
+                        if (ns.len > 0) {
+                            node_name = ns;
+                        }
+                    }
+                    // nif_log.info("  Target Node: {s}", .{node_name});
+                }
+            }
+        }
     }
 
     return true;
 }
 
-pub export fn cardinal_nif_merge_kf(path: [*:0]const u8, out_scene: *scene.CardinalScene) callconv(.c) bool {
-    nif_log.warn("Merging KF animation: {s}", .{path});
+pub export fn cardinal_nif_load_scene(path: [*:0]const u8, out_scene: *scene.CardinalScene) callconv(.c) bool {
+    @setEvalBranchQuota(100000);
+    const file_path = std.mem.span(path);
+    nif_log.info("Loading NIF: {s}", .{file_path});
 
-    const file = std.fs.cwd().openFileZ(path, .{}) catch |err| {
-        nif_log.err("Failed to open KF file: {s}", .{@errorName(err)});
+    var file = std.fs.cwd().openFile(file_path, .{}) catch |err| {
+        nif_log.err("Failed to open file: {s} ({})", .{ file_path, err });
         return false;
     };
     defer file.close();
 
-    const size = file.getEndPos() catch 0;
-    if (size == 0) return false;
-
-    const allocator = memory.cardinal_get_allocator_for_category(.ENGINE).as_allocator();
-    const asset_allocator = memory.cardinal_get_allocator_for_category(.ASSETS);
-
-    const buffer = allocator.alloc(u8, size) catch return false;
-    defer allocator.free(buffer);
-
+    const file_size = file.getEndPos() catch 0;
+    const buffer = std.heap.c_allocator.alloc(u8, file_size) catch return false;
+    defer std.heap.c_allocator.free(buffer);
     _ = file.readAll(buffer) catch return false;
 
-    var reader = NifReader.init(allocator, buffer);
+    var reader = NifReader.init(std.heap.c_allocator, buffer);
     defer reader.deinit();
 
     reader.parse_header() catch |err| {
-        nif_log.err("Failed to parse KF header: {s}", .{@errorName(err)});
+        nif_log.err("Failed to parse header: {}", .{err});
         return false;
     };
 
     reader.parse_blocks() catch |err| {
-        nif_log.err("Failed to parse KF blocks: {s}", .{@errorName(err)});
+        nif_log.err("Failed to parse blocks: {}", .{err});
         return false;
     };
 
-    // Initialize Animation System if needed
-    if (out_scene.animation_system == null) {
-        const sys = memory.cardinal_alloc(asset_allocator, @sizeOf(animation.CardinalAnimationSystem));
-        if (sys) |s| {
-            const system = @as(*animation.CardinalAnimationSystem, @ptrCast(@alignCast(s)));
-            system.* = std.mem.zeroes(animation.CardinalAnimationSystem);
-            out_scene.animation_system = @ptrCast(system);
-        } else {
-            return false;
-        }
-    }
-    const anim_sys = @as(*animation.CardinalAnimationSystem, @ptrCast(@alignCast(out_scene.animation_system.?)));
+    var nodes = std.ArrayListUnmanaged(?*scene.CardinalSceneNode){};
+    defer nodes.deinit(std.heap.c_allocator);
 
-    // Collect Sequences
-    var anim_list = std.ArrayListUnmanaged(animation.CardinalAnimation){};
-    defer anim_list.deinit(allocator);
+    // Resize nodes to match blocks (some will be null)
+    nodes.appendNTimes(std.heap.c_allocator, null, reader.header.num_blocks) catch return false;
 
-    // If we already have animations, we should copy them?
-    // For now, assuming fresh start or append.
+    var meshes = std.ArrayListUnmanaged(scene.CardinalMesh){};
+    defer meshes.deinit(std.heap.c_allocator);
 
+    // Parallel array to store skin instance block ref for each mesh (block index)
+    var mesh_skin_refs = std.ArrayListUnmanaged(?i32){};
+    defer mesh_skin_refs.deinit(std.heap.c_allocator);
+
+    var materials = std.ArrayListUnmanaged(scene.CardinalMaterial){};
+    defer materials.deinit(std.heap.c_allocator);
+
+    var textures = std.ArrayListUnmanaged(scene.CardinalTexture){};
+    defer textures.deinit(std.heap.c_allocator);
+
+    // Pass 1: Create Nodes
     var i: usize = 0;
     while (i < reader.header.num_blocks) : (i += 1) {
         const block = &reader.blocks[i];
-        const type_name = reader.header.block_types[block.type_index];
+        if (block.parsed) |parsed_data| {
+            // Check for Node-like types (NiNode, NiTriShape, etc.)
+            var is_node = false;
+            var node_name_str: []const u8 = "";
+            var translation: [3]f32 = .{ 0, 0, 0 };
+            var rotation: [9]f32 = .{ 1, 0, 0, 0, 1, 0, 0, 0, 1 };
+            var scale: f32 = 1.0;
+            var properties: ?[]i32 = null;
 
-        if (std.mem.eql(u8, type_name, "NiControllerSequence") and block.parsed != null) {
-            const seq = @as(*NiControllerSequence, @ptrCast(@alignCast(block.parsed.?)));
+            // Extract common node data
+            switch (parsed_data) {
+                .NiNode => |node| {
+                    is_node = true;
+                    node_name_str = getNifString(node.base.base.Name, reader.header.strings);
+                    translation = .{ node.base.Translation.x, node.base.Translation.y, node.base.Translation.z };
+                    rotation[0] = node.base.Rotation.m11;
+                    rotation[1] = node.base.Rotation.m12;
+                    rotation[2] = node.base.Rotation.m13;
+                    rotation[3] = node.base.Rotation.m21;
+                    rotation[4] = node.base.Rotation.m22;
+                    rotation[5] = node.base.Rotation.m23;
+                    rotation[6] = node.base.Rotation.m31;
+                    rotation[7] = node.base.Rotation.m32;
+                    rotation[8] = node.base.Rotation.m33;
+                    scale = node.base.Scale;
+                    properties = node.base.Properties;
+                },
+                .NiTriShape => |shape| {
+                    is_node = true;
+                    node_name_str = getNifString(shape.base.base.base.base.Name, reader.header.strings);
+                    translation = .{ shape.base.base.base.Translation.x, shape.base.base.base.Translation.y, shape.base.base.base.Translation.z };
+                    rotation[0] = shape.base.base.base.Rotation.m11;
+                    rotation[1] = shape.base.base.base.Rotation.m12;
+                    rotation[2] = shape.base.base.base.Rotation.m13;
+                    rotation[3] = shape.base.base.base.Rotation.m21;
+                    rotation[4] = shape.base.base.base.Rotation.m22;
+                    rotation[5] = shape.base.base.base.Rotation.m23;
+                    rotation[6] = shape.base.base.base.Rotation.m31;
+                    rotation[7] = shape.base.base.base.Rotation.m32;
+                    rotation[8] = shape.base.base.base.Rotation.m33;
+                    scale = shape.base.base.base.Scale;
+                    properties = shape.base.base.base.Properties;
+                },
+                else => {},
+            }
 
-            var card_anim = std.mem.zeroes(animation.CardinalAnimation);
+            if (is_node) {
+                var s_z: ?[:0]u8 = null;
+                defer if (s_z) |s| std.heap.c_allocator.free(s);
 
-            // Name
-            if (seq.name_index >= 0 and seq.name_index < reader.header.num_strings) {
-                const s = reader.header.strings[@intCast(seq.name_index)];
-                const name_ptr = memory.cardinal_alloc(asset_allocator, s.len + 1);
-                if (name_ptr) |np| {
-                    const name_slice = @as([*]u8, @ptrCast(np))[0 .. s.len + 1];
-                    @memcpy(name_slice[0..s.len], s);
-                    name_slice[s.len] = 0;
-                    card_anim.name = @ptrCast(np);
+                if (node_name_str.len > 0) {
+                    s_z = std.heap.c_allocator.dupeZ(u8, node_name_str) catch return false;
+                } else {
+                    s_z = std.heap.c_allocator.dupeZ(u8, "Node") catch return false;
+                }
+
+                const sn = scene.cardinal_scene_node_create(s_z.?) orelse return false;
+
+                nodes.items[i] = sn;
+
+                // Transform
+                var transform_mat: [16]f32 = undefined;
+                transform.cardinal_matrix_from_rt_s(&rotation, &translation, scale, &transform_mat);
+                if (i == 0) {
+                    const nif_to_engine = [16]f32{
+                        1, 0, 0,  0,
+                        0, 0, -1, 0,
+                        0, 1, 0,  0,
+                        0, 0, 0,  1,
+                    };
+                    var corrected: [16]f32 = undefined;
+                    transform.cardinal_matrix_multiply(&nif_to_engine, &transform_mat, &corrected);
+                    transform_mat = corrected;
+                }
+                scene.cardinal_scene_node_set_local_transform(sn, &transform_mat);
+
+                // Material & Texture (Create Material if properties exist)
+                var mat_index: i32 = -1;
+
+                // Check for material/texture properties
+                var has_mat_prop = false;
+                var has_tex_prop = false;
+
+                var mat = std.mem.zeroes(scene.CardinalMaterial);
+                mat.albedo_factor = .{ 1, 1, 1, 1 };
+                mat.roughness_factor = 1.0;
+                mat.metallic_factor = 0.0;
+                mat.emissive_strength = 1.0;
+                mat.normal_scale = 1.0;
+                mat.ao_strength = 1.0;
+                mat.alpha_mode = .OPAQUE;
+                mat.alpha_cutoff = 0.5;
+                mat.albedo_texture = handles.TextureHandle.INVALID;
+                mat.normal_texture = handles.TextureHandle.INVALID;
+                mat.metallic_roughness_texture = handles.TextureHandle.INVALID;
+                mat.ao_texture = handles.TextureHandle.INVALID;
+                mat.emissive_texture = handles.TextureHandle.INVALID;
+                mat.albedo_transform.scale = .{ 1, 1 };
+                mat.normal_transform.scale = .{ 1, 1 };
+                mat.metallic_roughness_transform.scale = .{ 1, 1 };
+                mat.ao_transform.scale = .{ 1, 1 };
+                mat.emissive_transform.scale = .{ 1, 1 };
+
+                // Material Property
+                if (findProperty(&reader, properties, .NiMaterialProperty)) |mat_prop| {
+                    has_mat_prop = true;
+                    if (mat_prop.Diffuse_Color) |dc| {
+                        mat.albedo_factor = .{
+                            std.math.clamp(dc.r, 0.0, 1.0),
+                            std.math.clamp(dc.g, 0.0, 1.0),
+                            std.math.clamp(dc.b, 0.0, 1.0),
+                            std.math.clamp(mat_prop.Alpha, 0.0, 1.0),
+                        };
+                    }
+                    mat.emissive_factor = .{ mat_prop.Emissive_Color.r, mat_prop.Emissive_Color.g, mat_prop.Emissive_Color.b };
+                    // Approximate roughness from glossiness? Gloss 0-100 usually.
+                    // Roughness = 1 - (Gloss / 100) or similar.
+                    mat.roughness_factor = std.math.clamp(1.0 - (mat_prop.Glossiness / 100.0), 0.0, 1.0);
+                    nif_log.info("Mesh 3 has MaterialProperty: Alpha={d}", .{mat_prop.Alpha});
+                    if (mat_prop.Diffuse_Color) |dc| {
+                        nif_log.info("  Diffuse({d},{d},{d})", .{ dc.r, dc.g, dc.b });
+                    }
+                    if (findProperty(&reader, properties, .NiAlphaProperty)) |alpha_prop| {
+                        has_mat_prop = true;
+                        const flags_u32: u32 = @bitCast(@as(i32, alpha_prop.Flags));
+                        const flags16: u32 = flags_u32 & 0xFFFF;
+                        const reconstructed_threshold: u8 = @intCast((flags_u32 >> 16) & 0xFF);
+                        const threshold_u8: u8 = if (alpha_prop.Threshold == 0 and flags_u32 > 0xFFFF) reconstructed_threshold else alpha_prop.Threshold;
+
+                        const blend_enabled = (flags16 & 1) != 0;
+                        const test_enabled = (flags16 & (1 << 9)) != 0;
+
+                        if (test_enabled) {
+                            mat.alpha_mode = .MASK;
+                            mat.alpha_cutoff = if (threshold_u8 == 0) (1.0 / 255.0) else (@as(f32, @floatFromInt(threshold_u8)) / 255.0);
+                        } else if (blend_enabled) {
+                            mat.alpha_mode = if (mat_prop.Alpha < 0.99) .BLEND else .OPAQUE;
+                        } else {
+                            mat.alpha_mode = .OPAQUE;
+                        }
+
+                        // Force OPAQUE if flags look garbage (very large number) or if we suspect it's misinterpreting.
+                        // 92082924 (0x057D12EC) has bit 0 (0x1) NOT set (0xC = 1100).
+                        // Bit 9 (0x200) is ... 0x...2EC. E is 1110. C is 1100.
+                        // 9th bit: 0x200.
+                        // 0x...2EC:
+                        // ... 0010 1110 1100
+                        // Bit 0 is 0.
+                        // Bit 9 is 1. (0x200 is set).
+                        // So test_enabled = true.
+                        // Threshold is 0.
+                        // Mode is MASK. Cutoff 0.
+                        // In GLTF/Shader: if (alpha < cutoff) discard.
+                        // if (1.0 < 0.0) discard -> False. Visible.
+                        // But if the shader logic is `if (alpha <= cutoff) discard`, then alpha 0 would be discarded.
+                        // But our vertices have alpha?
+                        // Vertex colors might have alpha.
+                        // Diffuse color has alpha.
+                        // The log said: "Mesh 3 has MaterialProperty: Alpha=1, Diffuse(1,1,1)". So Alpha is 1.0.
+                        // Vertices have color {1,1,1,1}.
+                        // Texture? If texture is present, it might have alpha channel.
+                        // "DDS loaded ... Format: 138".
+                        // If texture alpha is 0 (or absent/black), and we use it...
+
+                        nif_log.info("Mesh Alpha Mode: {any}, Cutoff: {d}, Flags: 0x{x} (flags16=0x{x}, thr={d})", .{ mat.alpha_mode, mat.alpha_cutoff, flags_u32, flags16, threshold_u8 });
+                    }
+
+                    // Stencil Property (Double Sided)
+                    if (findProperty(&reader, properties, .NiStencilProperty)) |stencil_prop| {
+                        // Flags Bit 0: Enabled (if 0, default culling?)
+                        // Flags Bit 1: Double Sided (if 1, no culling)
+                        // Wait, standard NIF:
+                        // Bit 0: Enabled
+                        // Bit 1: FAIL Action...
+                        // Actually, culling is often determined by the "Cull Mode" in Stencil or separate property.
+                        // But in older NIFs, Stencil Property controls double sidedness.
+                        // Flags:
+                        // 0: Standard (Cull Back)
+                        // ?
+                        // Let's check schema. But commonly, if Stencil Property exists and Draw Mode is DOUBLE_SIDED...
+                        // In many NIF versions:
+                        // Bit 0-11: Standard stencil stuff.
+                        // Double sided is often a separate flag or derived.
+                        // However, `NiStencilProperty` often implies "Two Sided" in some exporters if enabled.
+                        // Let's check `stencil_prop.Flags`.
+                        // In NifSkope: "Draw Mode" -> 0=CW, 1=CCW, 2=BOTH.
+                        // Flags bits 16-17? Or bits 0-?
+                        // Let's assume for now if Stencil Property is present, we might want to enable double sided if configured.
+                        // Actually, let's just log it for now.
+                        // But we can check `Draw_Mode`.
+                        // In our schema `NiStencilProperty` has `Flags`.
+                        // Bits 10-11 usually control Face Culling (0=None?, 1=CW, 2=CCW?)
+                        // Wait, NIF default is Cull Back (CCW winding, Cull CW backfaces?).
+                        // If Draw Mode is 2 (BOTH), then double sided.
+
+                        // From NifDocs:
+                        // Bit 0: Enable
+                        // Bit 1-3: Fail Action
+                        // ...
+                        // Bit 10-11: Culling Mode (0=NONE, 1=CW, 2=CCW) -> 0 means Double Sided!
+
+                        const flags = stencil_prop.Flags orelse 0;
+                        const cull_mode = (flags >> 10) & 0x3;
+                        if (cull_mode == 0) {
+                            mat.double_sided = true;
+                            nif_log.info("Mesh {d} is Double Sided (Stencil Cull Mode 0)", .{i});
+                        }
+                    }
+
+                    // Texture Property
+                    if (findProperty(&reader, properties, .NiTexturingProperty)) |tex_prop| {
+                        has_tex_prop = true;
+                        if (tex_prop.Has_Base_Texture and tex_prop.Base_Texture != null) {
+                            const desc = tex_prop.Base_Texture.?;
+                            if (desc.Source) |source_idx| {
+                                if (source_idx >= 0 and source_idx < reader.header.num_blocks) {
+                                    const source_block = &reader.blocks[@as(usize, @intCast(source_idx))];
+                                    if (source_block.parsed) |source_parsed| {
+                                        if (std.meta.activeTag(source_parsed) == .NiSourceTexture) {
+                                            const source = source_parsed.NiSourceTexture;
+                                            var raw_path: ?[]const u8 = null;
+                                            if (source.Use_External == 1) {
+                                                raw_path = resolveFilePath(&reader, source.File_Name);
+                                            } else if (source.File_Name_1 != null) {
+                                                raw_path = resolveFilePath(&reader, source.File_Name_1);
+                                            }
+
+                                            if (raw_path) |p| {
+                                                // Create Texture
+                                                const assets_allocator = memory.cardinal_get_allocator_for_category(.ASSETS);
+                                                const norm_path = resolve_texture_path(assets_allocator.as_allocator(), file_path, p);
+                                                if (norm_path) |np| {
+                                                    // Add texture to scene list
+                                                    // Check if already loaded? Skip for now.
+                                                    var tex = std.mem.zeroes(scene.CardinalTexture);
+                                                    tex.path = @ptrCast(np.ptr);
+
+                                                    var path_owned = true;
+                                                    defer if (path_owned) assets_allocator.as_allocator().free(np);
+
+                                                    var temp_data = std.mem.zeroes(texture_loader.TextureData);
+                                                    const res = texture_loader.texture_load_with_ref_counting(@ptrCast(tex.path.?), &temp_data);
+                                                    if (res) |r| {
+                                                        tex.data = temp_data.data;
+                                                        tex.width = temp_data.width;
+                                                        tex.height = temp_data.height;
+                                                        tex.channels = temp_data.channels;
+                                                        tex.is_hdr = temp_data.is_hdr;
+                                                        tex.format = promote_color_format_to_srgb(temp_data.format);
+                                                        tex.data_size = temp_data.data_size;
+                                                        tex.ref_resource = r;
+                                                    }
+
+                                                    textures.append(std.heap.c_allocator, tex) catch return false;
+                                                    path_owned = false;
+                                                    // 0-based index for texture handle
+                                                    const idx: u32 = @intCast(textures.items.len - 1);
+                                                    mat.albedo_texture = .{ .index = idx, .generation = 0 };
+                                                    const uv_set_raw: u32 = desc.UV_Set orelse 0;
+                                                    mat.uv_indices[0] = @intCast(if (uv_set_raw > 1) 1 else uv_set_raw);
+                                                    nif_log.info("Assigned texture index {d} ({s}) to material", .{ idx, np });
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+
+                    if (has_mat_prop or has_tex_prop) {
+                        materials.append(std.heap.c_allocator, mat) catch return false;
+                        mat_index = @as(i32, @intCast(materials.items.len - 1));
+                    }
+
+                    // Mesh Data
+                    if (std.meta.activeTag(parsed_data) == .NiTriShape) {
+                        const shape = parsed_data.NiTriShape;
+
+                        if (shape.base.base.Skin_Instance) |si| {
+                            nif_log.debug("NiTriShape (Block {d}) Skin Instance Ref: {d}", .{ i, si });
+                        } else {
+                            nif_log.debug("NiTriShape (Block {d}) Skin Instance Ref: null", .{i});
+                        }
+
+                        if (shape.base.base.Data) |d_idx| {
+                            nif_log.debug("NiTriShape (Block {d}) Data Ref: {d}", .{ i, d_idx });
+                            if (d_idx >= 0 and d_idx < reader.header.num_blocks) {
+                                const data_block = &reader.blocks[@as(usize, @intCast(d_idx))];
+                                if (data_block.parsed) |data_parsed| {
+                                    if (std.meta.activeTag(data_parsed) == .NiTriShapeData) {
+                                        nif_log.debug("Found NiTriShapeData at block {d}", .{d_idx});
+                                        const data = data_parsed.NiTriShapeData;
+                                        var mesh = std.mem.zeroes(scene.CardinalMesh);
+                                        mesh.visible = true; // Ensure visible
+
+                                        if (mat_index >= 0) {
+                                            mesh.material_index = @as(u32, @intCast(mat_index));
+                                        }
+
+                                        // Vertices
+                                        if (data.base.base.Vertices) |verts| {
+                                            nif_log.debug("NiTriShapeData: Has {d} vertices", .{verts.len});
+                                            mesh.vertex_count = @intCast(verts.len);
+                                            // Allocate CardinalVertex array
+                                            const c_verts = std.heap.c_allocator.alloc(scene.CardinalVertex, mesh.vertex_count) catch return false;
+
+                                            var min_pt = @import("../core/math.zig").Vec3{ .x = std.math.floatMax(f32), .y = std.math.floatMax(f32), .z = std.math.floatMax(f32) };
+                                            var max_pt = @import("../core/math.zig").Vec3{ .x = -std.math.floatMax(f32), .y = -std.math.floatMax(f32), .z = -std.math.floatMax(f32) };
+
+                                            for (c_verts, 0..) |*v, v_idx| {
+                                                v.* = std.mem.zeroes(scene.CardinalVertex);
+                                                v.px = verts[v_idx].x;
+                                                v.py = verts[v_idx].y;
+                                                v.pz = verts[v_idx].z;
+                                                v.color = .{ 1, 1, 1, 1 }; // Default white
+
+                                                if (v.px < min_pt.x) min_pt.x = v.px;
+                                                if (v.py < min_pt.y) min_pt.y = v.py;
+                                                if (v.pz < min_pt.z) min_pt.z = v.pz;
+                                                if (v.px > max_pt.x) max_pt.x = v.px;
+                                                if (v.py > max_pt.y) max_pt.y = v.py;
+                                                if (v.pz > max_pt.z) max_pt.z = v.pz;
+                                            }
+
+                                            mesh.bounding_box_min = .{ min_pt.x, min_pt.y, min_pt.z };
+                                            mesh.bounding_box_max = .{ max_pt.x, max_pt.y, max_pt.z };
+                                            nif_log.debug("Mesh {d} AABB: Min({d}, {d}, {d}) Max({d}, {d}, {d})", .{ i, min_pt.x, min_pt.y, min_pt.z, max_pt.x, max_pt.y, max_pt.z });
+
+                                            // Normals
+                                            if (data.base.base.Normals) |norms| {
+                                                for (c_verts, 0..) |*v, v_idx| {
+                                                    if (v_idx < norms.len) {
+                                                        v.nx = norms[v_idx].x;
+                                                        v.ny = norms[v_idx].y;
+                                                        v.nz = norms[v_idx].z;
+                                                    }
+                                                }
+                                            }
+
+                                            // UVs
+                                            const uv_sets = data.base.base.UV_Sets;
+                                            if (uv_sets.len > 0) {
+                                                const uvs = uv_sets[0];
+                                                var min_u: f32 = std.math.floatMax(f32);
+                                                var max_u: f32 = -std.math.floatMax(f32);
+                                                var min_v: f32 = std.math.floatMax(f32);
+                                                var max_v: f32 = -std.math.floatMax(f32);
+                                                var non_zero: usize = 0;
+                                                for (c_verts, 0..) |*v, v_idx| {
+                                                    if (v_idx < uvs.len) {
+                                                        const u = uvs[v_idx].u;
+                                                        const vv = uvs[v_idx].v;
+                                                        v.u = u;
+                                                        v.v = vv;
+                                                        if (u != 0 or vv != 0) non_zero += 1;
+                                                        if (u < min_u) min_u = u;
+                                                        if (u > max_u) max_u = u;
+                                                        if (vv < min_v) min_v = vv;
+                                                        if (vv > max_v) max_v = vv;
+                                                    }
+                                                }
+                                                nif_log.info("Mesh {d} UV0: count={d} nonZero={d} u={any}..{any} v={any}..{any}", .{ i, uvs.len, non_zero, min_u, max_u, min_v, max_v });
+                                            } else {
+                                                nif_log.warn("Mesh {d} has no UV sets", .{i});
+                                            }
+
+                                            if (uv_sets.len > 1) {
+                                                const uvs = uv_sets[1];
+                                                var min_u: f32 = std.math.floatMax(f32);
+                                                var max_u: f32 = -std.math.floatMax(f32);
+                                                var min_v: f32 = std.math.floatMax(f32);
+                                                var max_v: f32 = -std.math.floatMax(f32);
+                                                var non_zero: usize = 0;
+                                                for (c_verts, 0..) |*v, v_idx| {
+                                                    if (v_idx < uvs.len) {
+                                                        const u = uvs[v_idx].u;
+                                                        const vv = uvs[v_idx].v;
+                                                        v.u1 = u;
+                                                        v.v1 = vv;
+                                                        if (u != 0 or vv != 0) non_zero += 1;
+                                                        if (u < min_u) min_u = u;
+                                                        if (u > max_u) max_u = u;
+                                                        if (vv < min_v) min_v = vv;
+                                                        if (vv > max_v) max_v = vv;
+                                                    }
+                                                }
+                                                nif_log.info("Mesh {d} UV1: count={d} nonZero={d} u={any}..{any} v={any}..{any}", .{ i, uvs.len, non_zero, min_u, max_u, min_v, max_v });
+                                            }
+
+                                            // Colors
+                                            // Has_Vertex_Colors is in NiGeometryData?
+                                            // nif.xml says "Has Vertex Colors" in NiGeometryData.
+                                            if (data.base.base.Vertex_Colors) |colors| {
+                                                for (c_verts, 0..) |*v, v_idx| {
+                                                    if (v_idx < colors.len) {
+                                                        v.color = .{
+                                                            std.math.clamp(colors[v_idx].r, 0.0, 1.0),
+                                                            std.math.clamp(colors[v_idx].g, 0.0, 1.0),
+                                                            std.math.clamp(colors[v_idx].b, 0.0, 1.0),
+                                                            1.0,
+                                                        };
+                                                    }
+                                                }
+                                            }
+
+                                            mesh.vertices = c_verts.ptr;
+                                        }
+
+                                        // Indices
+                                        var indices: ?[]u32 = null;
+                                        var idx_offset_tris: usize = 0;
+                                        if (data.Triangles) |tris| {
+                                            indices = std.heap.c_allocator.alloc(u32, tris.len * 3) catch return false;
+                                            for (tris) |tri| {
+                                                const v1: u32 = tri.v1;
+                                                const v2: u32 = tri.v2;
+                                                const v3: u32 = tri.v3;
+                                                if (v1 >= mesh.vertex_count or v2 >= mesh.vertex_count or v3 >= mesh.vertex_count) continue;
+                                                indices.?[idx_offset_tris + 0] = v1;
+                                                indices.?[idx_offset_tris + 1] = v2;
+                                                indices.?[idx_offset_tris + 2] = v3;
+                                                idx_offset_tris += 3;
+                                            }
+                                        } else if (data.Has_Triangles.? and data.Triangles_1 != null) {
+                                            const tris = data.Triangles_1.?;
+                                            indices = std.heap.c_allocator.alloc(u32, tris.len * 3) catch return false;
+                                            for (tris) |tri| {
+                                                const v1: u32 = tri.v1;
+                                                const v2: u32 = tri.v2;
+                                                const v3: u32 = tri.v3;
+                                                if (v1 >= mesh.vertex_count or v2 >= mesh.vertex_count or v3 >= mesh.vertex_count) continue;
+                                                indices.?[idx_offset_tris + 0] = v1;
+                                                indices.?[idx_offset_tris + 1] = v2;
+                                                indices.?[idx_offset_tris + 2] = v3;
+                                                idx_offset_tris += 3;
+                                            }
+                                        }
+
+                                        if (indices) |inds| {
+                                            if (idx_offset_tris == 0) {
+                                                std.heap.c_allocator.free(inds);
+                                            } else {
+                                                mesh.index_count = @intCast(idx_offset_tris);
+                                                mesh.indices = inds.ptr;
+                                            }
+                                        }
+
+                                        // Determine Skin Instance
+                                        var skin_inst_ref_final: ?i32 = shape.base.base.Skin_Instance;
+                                        if (skin_inst_ref_final) |si| {
+                                            if (si < 0) skin_inst_ref_final = null;
+                                        }
+
+                                        // --- Debug Logging for Transforms & Material ---
+                                        const local_trans = shape.base.base.base.Translation;
+                                        const local_scale = shape.base.base.base.Scale;
+                                        nif_log.warn("Mesh {d} Transform: Pos({d}, {d}, {d}) Scale({d})", .{ i, local_trans.x, local_trans.y, local_trans.z, local_scale });
+
+                                        if (shape.base.base.base.Properties) |props| {
+                                            for (props) |prop_ref| {
+                                                if (prop_ref >= 0 and prop_ref < reader.header.num_blocks) {
+                                                    const prop_block = &reader.blocks[@as(usize, @intCast(prop_ref))];
+                                                    if (prop_block.parsed) |pp| {
+                                                        switch (std.meta.activeTag(pp)) {
+                                                            .NiAlphaProperty => {
+                                                                const alpha = pp.NiAlphaProperty;
+                                                                nif_log.warn("Mesh {d} has AlphaProperty: Flags={d}, Threshold={d}", .{ i, alpha.Flags, alpha.Threshold });
+                                                            },
+                                                            .NiMaterialProperty => {
+                                                                const debug_mat_prop = pp.NiMaterialProperty;
+                                                                if (debug_mat_prop.Diffuse_Color) |diff| {
+                                                                    nif_log.warn("Mesh {d} has MaterialProperty: Alpha={d}, Diffuse({d},{d},{d})", .{ i, debug_mat_prop.Alpha, diff.r, diff.g, diff.b });
+                                                                } else {
+                                                                    nif_log.warn("Mesh {d} has MaterialProperty: Alpha={d}, Diffuse(null)", .{ i, debug_mat_prop.Alpha });
+                                                                }
+                                                            },
+                                                            else => {},
+                                                        }
+                                                    }
+                                                }
+                                            }
+                                        }
+                                        // -----------------------------------------------
+
+                                        if (mesh.index_count == 0 and skin_inst_ref_final == null) {
+                                            // Heuristic: Search for orphan NiSkinInstance
+                                            var b_idx: usize = 0;
+                                            while (b_idx < reader.header.num_blocks) : (b_idx += 1) {
+                                                const search_block = &reader.blocks[b_idx];
+                                                if (search_block.parsed) |search_parsed| {
+                                                    if (std.meta.activeTag(search_parsed) == .NiSkinInstance) {
+                                                        const max_idx = getSkinMaxVertexIndex(&reader, b_idx);
+                                                        if (max_idx < mesh.vertex_count) {
+                                                            skin_inst_ref_final = @as(i32, @intCast(b_idx));
+                                                            nif_log.warn("Heuristic: Assigned orphan NiSkinInstance {d} to mesh {d} (Max Ref Idx: {d} < Vertex Count: {d})", .{ b_idx, i, max_idx, mesh.vertex_count });
+                                                            break;
+                                                        } else {
+                                                            nif_log.warn("Heuristic: Skipped orphan NiSkinInstance {d} for mesh {d} (Max Ref Idx: {d} >= Vertex Count: {d})", .{ b_idx, i, max_idx, mesh.vertex_count });
+                                                        }
+                                                    }
+                                                }
+                                            }
+                                        }
+
+                                        if (skin_inst_ref_final) |skin_inst_ref| {
+                                            if (skin_inst_ref >= 0 and skin_inst_ref < reader.header.num_blocks) {
+                                                const skin_inst_block = &reader.blocks[@as(usize, @intCast(skin_inst_ref))];
+                                                if (skin_inst_block.parsed) |skin_inst_parsed| {
+                                                    if (std.meta.activeTag(skin_inst_parsed) == .NiSkinInstance) {
+                                                        const skin_inst = skin_inst_parsed.NiSkinInstance;
+                                                        if (skin_inst.Skin_Partition) |part_ref| {
+                                                            if (part_ref >= 0 and part_ref < reader.header.num_blocks) {
+                                                                const part_block = &reader.blocks[@as(usize, @intCast(part_ref))];
+                                                                if (part_block.parsed) |part_parsed| {
+                                                                    if (std.meta.activeTag(part_parsed) == .NiSkinPartition) {
+                                                                        const partition = part_parsed.NiSkinPartition;
+                                                                        // Collect triangles from all partitions
+                                                                        var total_indices: usize = 0;
+                                                                        for (partition.Partitions) |p| {
+                                                                            if (p.Triangles) |tris| {
+                                                                                total_indices += tris.len * 3;
+                                                                            } else if (p.Triangles_1) |tris| {
+                                                                                total_indices += tris.len * 3;
+                                                                            } else if (p.Strips) |strips| {
+                                                                                for (strips) |strip| {
+                                                                                    if (strip.len >= 3) {
+                                                                                        total_indices += (strip.len - 2) * 3;
+                                                                                    }
+                                                                                }
+                                                                            } else if (p.Strips_1) |strips| {
+                                                                                for (strips) |strip| {
+                                                                                    if (strip.len >= 3) {
+                                                                                        total_indices += (strip.len - 2) * 3;
+                                                                                    }
+                                                                                }
+                                                                            }
+                                                                        }
+
+                                                                        if (total_indices > 0) {
+                                                                            const skin_indices = std.heap.c_allocator.alloc(u32, total_indices) catch return false;
+                                                                            var idx_offset: usize = 0;
+                                                                            for (partition.Partitions) |p| {
+                                                                                if (mesh.vertices) |verts| {
+                                                                                    var vmap = p.Vertex_Map;
+                                                                                    if (vmap == null) vmap = p.Vertex_Map_1;
+
+                                                                                    var weights_opt = p.Vertex_Weights;
+                                                                                    if (weights_opt == null) weights_opt = p.Vertex_Weights_1;
+
+                                                                                    if (weights_opt) |weights_arr| {
+                                                                                        if (p.Bone_Indices) |bone_indices_arr| {
+                                                                                            const bones = p.Bones;
+                                                                                            const limit = @min(weights_arr.len, bone_indices_arr.len);
+                                                                                            var pv: usize = 0;
+                                                                                            while (pv < limit) : (pv += 1) {
+                                                                                                const orig_idx: u32 = if (vmap) |vm| blk: {
+                                                                                                    if (pv < vm.len) break :blk vm[pv];
+                                                                                                    break :blk @intCast(pv);
+                                                                                                } else @intCast(pv);
+                                                                                                if (orig_idx >= mesh.vertex_count) continue;
+
+                                                                                                verts[orig_idx].bone_weights = .{ 0, 0, 0, 0 };
+                                                                                                verts[orig_idx].bone_indices = .{ 0, 0, 0, 0 };
+
+                                                                                                const v_weights = weights_arr[pv];
+                                                                                                const v_bones = bone_indices_arr[pv];
+
+                                                                                                var slot: usize = 0;
+                                                                                                const wlimit = @min(v_weights.len, v_bones.len);
+                                                                                                var k: usize = 0;
+                                                                                                while (k < wlimit and slot < 4) : (k += 1) {
+                                                                                                    const w = v_weights[k];
+                                                                                                    if (w <= 0.001) continue;
+                                                                                                    const local_bone_idx: u8 = v_bones[k];
+                                                                                                    if (local_bone_idx >= bones.len) continue;
+                                                                                                    const global_bone_idx = bones[local_bone_idx];
+                                                                                                    verts[orig_idx].bone_weights[slot] = w;
+                                                                                                    verts[orig_idx].bone_indices[slot] = @intCast(global_bone_idx);
+                                                                                                    slot += 1;
+                                                                                                }
+
+                                                                                                const sum: f32 = verts[orig_idx].bone_weights[0] + verts[orig_idx].bone_weights[1] + verts[orig_idx].bone_weights[2] + verts[orig_idx].bone_weights[3];
+                                                                                                if (sum < 0.0001) {
+                                                                                                    verts[orig_idx].bone_weights = .{ 1, 0, 0, 0 };
+                                                                                                    verts[orig_idx].bone_indices = .{ 0, 0, 0, 0 };
+                                                                                                } else {
+                                                                                                    const inv = 1.0 / sum;
+                                                                                                    verts[orig_idx].bone_weights[0] *= inv;
+                                                                                                    verts[orig_idx].bone_weights[1] *= inv;
+                                                                                                    verts[orig_idx].bone_weights[2] *= inv;
+                                                                                                    verts[orig_idx].bone_weights[3] *= inv;
+                                                                                                }
+                                                                                            }
+                                                                                        }
+                                                                                    }
+                                                                                }
+
+                                                                                // Helper to process a triangle
+                                                                                const process_tri = struct {
+                                                                                    fn func(v1_in: u32, v2_in: u32, v3_in: u32, part: anytype, out_indices: []u32, offset: *usize, mesh_ref: *scene.CardinalMesh) void {
+                                                                                        const v1 = v1_in;
+                                                                                        const v2 = v2_in;
+                                                                                        const v3 = v3_in;
+
+                                                                                        var vmap = part.Vertex_Map;
+                                                                                        if (vmap == null) vmap = part.Vertex_Map_1;
+
+                                                                                        var original_v1 = v1;
+                                                                                        var original_v2 = v2;
+                                                                                        var original_v3 = v3;
+
+                                                                                        if (vmap) |vm| {
+                                                                                            if (v1 < vm.len) original_v1 = vm[v1];
+                                                                                            if (v2 < vm.len) original_v2 = vm[v2];
+                                                                                            if (v3 < vm.len) original_v3 = vm[v3];
+                                                                                        }
+
+                                                                                        if (original_v1 >= mesh_ref.vertex_count or original_v2 >= mesh_ref.vertex_count or original_v3 >= mesh_ref.vertex_count) {
+                                                                                            return;
+                                                                                        }
+
+                                                                                        if (offset.* + 3 > out_indices.len) return;
+                                                                                        out_indices[offset.* + 0] = original_v1;
+                                                                                        out_indices[offset.* + 1] = original_v2;
+                                                                                        out_indices[offset.* + 2] = original_v3;
+                                                                                        offset.* += 3;
+                                                                                    }
+                                                                                }.func;
+
+                                                                                if (p.Triangles) |tris| {
+                                                                                    for (tris) |tri| {
+                                                                                        process_tri(tri.v1, tri.v2, tri.v3, p, skin_indices, &idx_offset, &mesh);
+                                                                                    }
+                                                                                } else if (p.Triangles_1) |tris| {
+                                                                                    for (tris) |tri| {
+                                                                                        process_tri(tri.v1, tri.v2, tri.v3, p, skin_indices, &idx_offset, &mesh);
+                                                                                    }
+                                                                                } else if (p.Strips) |strips| {
+                                                                                    for (strips) |strip| {
+                                                                                        if (strip.len < 3) continue;
+                                                                                        var i_strip: usize = 0;
+                                                                                        while (i_strip < strip.len - 2) : (i_strip += 1) {
+                                                                                            const v1 = strip[i_strip];
+                                                                                            const v2 = strip[i_strip + 1];
+                                                                                            const v3 = strip[i_strip + 2];
+                                                                                            if (i_strip % 2 == 0) {
+                                                                                                process_tri(v1, v2, v3, p, skin_indices, &idx_offset, &mesh);
+                                                                                            } else {
+                                                                                                process_tri(v1, v3, v2, p, skin_indices, &idx_offset, &mesh);
+                                                                                            }
+                                                                                        }
+                                                                                    }
+                                                                                } else if (p.Strips_1) |strips| {
+                                                                                    for (strips) |strip| {
+                                                                                        if (strip.len < 3) continue;
+                                                                                        var i_strip: usize = 0;
+                                                                                        while (i_strip < strip.len - 2) : (i_strip += 1) {
+                                                                                            const v1 = strip[i_strip];
+                                                                                            const v2 = strip[i_strip + 1];
+                                                                                            const v3 = strip[i_strip + 2];
+                                                                                            if (i_strip % 2 == 0) {
+                                                                                                process_tri(v1, v2, v3, p, skin_indices, &idx_offset, &mesh);
+                                                                                            } else {
+                                                                                                process_tri(v1, v3, v2, p, skin_indices, &idx_offset, &mesh);
+                                                                                            }
+                                                                                        }
+                                                                                    }
+                                                                                }
+                                                                            }
+                                                                            mesh.index_count = @intCast(idx_offset);
+                                                                            mesh.indices = skin_indices.ptr;
+                                                                            nif_log.info("Loaded {d} indices from NiSkinPartition (Block {d})", .{ total_indices, part_ref });
+                                                                        } else {
+                                                                            nif_log.warn("NiSkinPartition (Block {d}) has 0 indices!", .{part_ref});
+                                                                        }
+                                                                    }
+                                                                }
+                                                            }
+                                                        }
+                                                    }
+                                                }
+                                            }
+                                        }
+
+                                        if (skin_inst_ref_final != null) {
+                                            fixup_skinned_vertex_weights(&mesh);
+                                        }
+
+                                        // Debug: Check weights of first few vertices
+                                        if (mesh.vertex_count > 0 and mesh.vertices != null) {
+                                            const v0 = mesh.vertices.?[0];
+                                            nif_log.info("Vertex 0 Weights: {d}, {d}, {d}, {d}", .{ v0.bone_weights[0], v0.bone_weights[1], v0.bone_weights[2], v0.bone_weights[3] });
+                                            nif_log.info("Vertex 0 Joints: {d}, {d}, {d}, {d}", .{ v0.bone_indices[0], v0.bone_indices[1], v0.bone_indices[2], v0.bone_indices[3] });
+                                            // Check max joint index vs total bones
+                                        }
+
+                                        nif_log.debug("About to append mesh with {d} vertices and {d} indices", .{ mesh.vertex_count, mesh.index_count });
+                                        meshes.append(std.heap.c_allocator, mesh) catch return false;
+                                        mesh_skin_refs.append(std.heap.c_allocator, skin_inst_ref_final) catch return false;
+                                        nif_log.info("Added mesh {d} with {d} vertices and {d} indices", .{ meshes.items.len - 1, mesh.vertex_count, mesh.index_count });
+
+                                        // Assign mesh to node
+                                        // Allocate mesh_indices array for node
+                                        const mesh_idx = @as(u32, @intCast(meshes.items.len - 1));
+                                        const node_mesh_indices = std.heap.c_allocator.alloc(u32, 1) catch return false;
+                                        node_mesh_indices[0] = mesh_idx;
+                                        sn.mesh_indices = node_mesh_indices.ptr;
+                                        sn.mesh_count = 1;
+                                    } else {
+                                        nif_log.warn("NiTriShape (Block {d}) Data Ref {d} is not NiTriShapeData (Tag: {any})", .{ i, d_idx, std.meta.activeTag(data_parsed) });
+                                    }
+                                }
+                            }
+                        } else {
+                            nif_log.warn("NiTriShape (Block {d}) has no Data ref", .{i});
+                        }
+                    }
                 }
             }
-            card_anim.duration = seq.stop_time - seq.start_time;
+        }
+    }
 
-            // Channels/Samplers
-            var samplers = std.ArrayListUnmanaged(animation.CardinalAnimationSampler){};
-            defer samplers.deinit(allocator);
-            var channels = std.ArrayListUnmanaged(animation.CardinalAnimationChannel){};
-            defer channels.deinit(allocator);
+    // Pass 2: Hierarchy
+    {
+        var j: usize = 0;
+        while (j < reader.header.num_blocks) : (j += 1) {
+            const pass2_block = &reader.blocks[j];
+            const parent_node_opt = nodes.items[j];
 
-            for (seq.controlled_blocks) |cb| {
-                // Find Target Node
-                var target_node_index: u32 = 0xFFFFFFFF;
-                if (cb.node_name_index >= 0 and cb.node_name_index < reader.header.num_strings) {
-                    const node_name = reader.header.strings[@intCast(cb.node_name_index)];
+            if (parent_node_opt) |parent_node| {
+                if (pass2_block.parsed) |parsed_data| {
+                    if (std.meta.activeTag(parsed_data) == .NiNode) {
+                        const node = parsed_data.NiNode;
+                        nif_log.info("Node {d} has {d} children", .{ j, node.Children.len });
+                        // Debug transform
+                        // NiNode -> NiAVObject -> Translation
+                        const translation = node.base.Translation;
+                        const scale = node.base.Scale;
 
-                    // Search in scene
-                    // This is slow (O(N)), but scene load is one-time.
-                    if (out_scene.all_nodes) |nodes| {
-                        var n_i: u32 = 0;
-                        while (n_i < out_scene.all_node_count) : (n_i += 1) {
-                            if (nodes[n_i]) |node| {
-                                if (node.name) |nn| {
-                                    if (std.mem.eql(u8, std.mem.span(nn), node_name)) {
-                                        target_node_index = n_i;
+                        nif_log.info("Node {d} Transform: Pos({d},{d},{d}) Rot(Matrix) Scale({d})", .{ j, translation.x, translation.y, translation.z, scale });
+
+                        for (node.Children) |child_ref| {
+                            if (child_ref >= 0 and child_ref < reader.header.num_blocks) {
+                                nif_log.info("  -> Child {d}", .{child_ref});
+                                const child_idx: usize = @intCast(child_ref);
+                                if (nodes.items[child_idx]) |child_node| {
+                                    _ = scene.cardinal_scene_node_add_child(parent_node, child_node);
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    if (nodes.items.len > 0) {
+        var root_count: usize = 0;
+        for (nodes.items) |n_opt| {
+            if (n_opt) |n| {
+                if (n.parent == null) root_count += 1;
+            }
+        }
+
+        const count: usize = if (root_count > 0) root_count else 1;
+        const roots = std.heap.c_allocator.alloc(?*scene.CardinalSceneNode, count) catch return false;
+
+        if (root_count > 0) {
+            var wi: usize = 0;
+            for (nodes.items) |n_opt| {
+                if (n_opt) |n| {
+                    if (n.parent == null) {
+                        roots[wi] = n;
+                        wi += 1;
+                    }
+                }
+            }
+        } else {
+            roots[0] = nodes.items[0];
+        }
+
+        out_scene.root_nodes = roots.ptr;
+        out_scene.root_node_count = @intCast(count);
+
+        var ri: usize = 0;
+        while (ri < count) : (ri += 1) {
+            if (roots[ri]) |root| {
+                scene.cardinal_scene_node_update_transforms(root, null);
+                propagate_transforms_to_meshes(root, meshes.items);
+            }
+        }
+    } else {
+        out_scene.root_nodes = null;
+        out_scene.root_node_count = 0;
+    }
+
+    if (meshes.items.len > 0) {
+        nif_log.warn("Collecting {d} meshes for scene", .{meshes.items.len});
+        out_scene.mesh_count = @intCast(meshes.items.len);
+        const scene_meshes = std.heap.c_allocator.alloc(scene.CardinalMesh, out_scene.mesh_count) catch return false;
+        @memcpy(scene_meshes, meshes.items);
+        out_scene.meshes = scene_meshes.ptr;
+
+        var total_verts: usize = 0;
+        for (meshes.items, 0..) |m, m_idx| {
+            total_verts += m.vertex_count;
+            nif_log.warn("Mesh {d} Final AABB: Min({d:.2}, {d:.2}, {d:.2}) Max({d:.2}, {d:.2}, {d:.2}) Visible={any} VCount={d} ICount={d}", .{ m_idx, m.bounding_box_min[0], m.bounding_box_min[1], m.bounding_box_min[2], m.bounding_box_max[0], m.bounding_box_max[1], m.bounding_box_max[2], m.visible, m.vertex_count, m.index_count });
+        }
+        nif_log.info("Scene has {d} total vertices across {d} meshes", .{ total_verts, out_scene.mesh_count });
+    } else {
+        nif_log.warn("No meshes collected for scene!", .{});
+    }
+
+    if (materials.items.len > 0) {
+        out_scene.material_count = @intCast(materials.items.len);
+        const scene_mats = std.heap.c_allocator.alloc(scene.CardinalMaterial, out_scene.material_count) catch return false;
+        @memcpy(scene_mats, materials.items);
+        out_scene.materials = scene_mats.ptr;
+    }
+
+    if (textures.items.len > 0) {
+        out_scene.texture_count = @intCast(textures.items.len);
+        const assets_allocator = memory.cardinal_get_allocator_for_category(.ASSETS);
+        const texs_ptr = memory.cardinal_calloc(assets_allocator, out_scene.texture_count, @sizeOf(scene.CardinalTexture));
+        if (texs_ptr == null) return false;
+        const scene_texs: [*]scene.CardinalTexture = @ptrCast(@alignCast(texs_ptr));
+        @memcpy(scene_texs[0..out_scene.texture_count], textures.items);
+        out_scene.textures = scene_texs;
+    }
+
+    // Populate all_nodes for the scene (Required for animation system)
+    if (nodes.items.len > 0) {
+        const all_nodes = std.heap.c_allocator.alloc(?*scene.CardinalSceneNode, nodes.items.len) catch return false;
+        @memcpy(all_nodes, nodes.items);
+        out_scene.all_nodes = all_nodes.ptr;
+        out_scene.all_node_count = @intCast(nodes.items.len);
+        nif_log.info("Populated all_nodes with {d} entries", .{out_scene.all_node_count});
+    }
+
+    // Pass 4: Create Skins
+    var skins = std.ArrayListUnmanaged(animation.CardinalSkin){};
+    defer skins.deinit(std.heap.c_allocator);
+
+    var b_idx: usize = 0;
+    while (b_idx < reader.header.num_blocks) : (b_idx += 1) {
+        const block = &reader.blocks[b_idx];
+        if (block.parsed) |parsed| {
+            if (std.meta.activeTag(parsed) == .NiSkinInstance) {
+                const skin_inst = parsed.NiSkinInstance;
+                var new_skin = std.mem.zeroes(animation.CardinalSkin);
+
+                // Name
+                var name_buf: [64]u8 = undefined;
+                const name_slice = std.fmt.bufPrint(&name_buf, "Skin_{d}", .{b_idx}) catch "Skin";
+                const skin_name = std.heap.c_allocator.dupeZ(u8, name_slice) catch return false;
+                new_skin.name = skin_name;
+
+                // Find meshes that use this skin
+                var skin_mesh_indices = std.ArrayListUnmanaged(u32){};
+                defer skin_mesh_indices.deinit(std.heap.c_allocator);
+
+                var m_idx: usize = 0;
+                while (m_idx < mesh_skin_refs.items.len) : (m_idx += 1) {
+                    if (mesh_skin_refs.items[m_idx]) |ref| {
+                        if (ref == @as(i32, @intCast(b_idx))) {
+                            skin_mesh_indices.append(std.heap.c_allocator, @intCast(m_idx)) catch continue;
+                        }
+                    }
+                }
+
+                if (skin_mesh_indices.items.len > 0) {
+                    new_skin.mesh_count = @intCast(skin_mesh_indices.items.len);
+                    const mesh_indices_arr = std.heap.c_allocator.alloc(u32, new_skin.mesh_count) catch return false;
+                    @memcpy(mesh_indices_arr, skin_mesh_indices.items);
+                    new_skin.mesh_indices = mesh_indices_arr.ptr;
+                }
+
+                // Bones
+                if (skin_inst.Data >= 0 and skin_inst.Data < reader.header.num_blocks) {
+                    const data_block = &reader.blocks[@as(usize, @intCast(skin_inst.Data))];
+                    if (data_block.parsed) |data_parsed| {
+                        if (std.meta.activeTag(data_parsed) == .NiSkinData) {
+                            const sd = data_parsed.NiSkinData;
+                            const bone_count = @min(skin_inst.Bones.len, sd.Bone_List.len);
+
+                            new_skin.bone_count = @intCast(bone_count);
+                            if (bone_count > 0) {
+                                const bones_arr = std.heap.c_allocator.alloc(animation.CardinalBone, bone_count) catch return false;
+                                var k: usize = 0;
+                                while (k < bone_count) : (k += 1) {
+                                    var bone = std.mem.zeroes(animation.CardinalBone);
+                                    bone.node_index = @intCast(skin_inst.Bones[k]); // Block Index
+
+                                    // Inverse Bind Matrix
+                                    const bone_data = sd.Bone_List[k];
+
+                                    // Assuming Skin_Transform is the field name for Bone Transform in NiSkinData
+                                    // If compiler fails, check nif_schema.zig
+                                    const bt = bone_data.Skin_Transform;
+
+                                    const skin_bind = nif_transform_to_mat(sd.Skin_Transform);
+                                    const bone_bind = nif_transform_to_mat(bt);
+
+                                    var bone_bind_inv: [16]f32 = undefined;
+                                    if (!transform.cardinal_matrix_invert(&bone_bind, &bone_bind_inv)) {
+                                        bone_bind_inv = [16]f32{ 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1 };
+                                    }
+
+                                    transform.cardinal_matrix_multiply(&bone_bind_inv, &skin_bind, &bone.inverse_bind_matrix);
+
+                                    // Current Matrix (Identity)
+                                    const identity = [16]f32{ 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1 };
+                                    @memcpy(&bone.current_matrix, &identity);
+
+                                    bones_arr[k] = bone;
+                                }
+                                new_skin.bones = bones_arr.ptr;
+                            }
+                        }
+                    }
+                }
+
+                skins.append(std.heap.c_allocator, new_skin) catch return false;
+            }
+        }
+    }
+
+    if (skins.items.len > 0) {
+        out_scene.skin_count = @intCast(skins.items.len);
+        const scene_skins = std.heap.c_allocator.alloc(animation.CardinalSkin, out_scene.skin_count) catch return false;
+        @memcpy(scene_skins, skins.items);
+        out_scene.skins = @ptrCast(scene_skins.ptr);
+        nif_log.info("Added {d} skins to scene", .{out_scene.skin_count});
+
+        // Create Animation System and populate it
+        // This is required for the Model Manager to correctly merge skins into the Combined Scene
+        const anim_sys_ptr = animation.cardinal_animation_system_create(0, out_scene.skin_count);
+        if (anim_sys_ptr) |sys| {
+            for (skins.items) |*skin| {
+                _ = animation.cardinal_animation_system_add_skin(sys, skin);
+            }
+            out_scene.animation_system = @ptrCast(sys);
+            nif_log.info("Created Animation System with {d} skins", .{sys.skin_count});
+        }
+
+        // Fixup Nodes: Set skin_index
+        var n_idx: usize = 0;
+        while (n_idx < nodes.items.len) : (n_idx += 1) {
+            if (nodes.items[n_idx]) |node| {
+                if (node.mesh_count > 0) {
+                    if (node.mesh_indices) |indices| {
+                        const m_idx = indices[0];
+                        var s_idx: usize = 0;
+                        while (s_idx < skins.items.len) : (s_idx += 1) {
+                            const skin = &skins.items[s_idx];
+                            var found = false;
+                            var k: usize = 0;
+                            while (k < skin.mesh_count) : (k += 1) {
+                                if (skin.mesh_indices) |s_indices| {
+                                    if (s_indices[k] == m_idx) {
+                                        found = true;
                                         break;
                                     }
                                 }
                             }
-                        }
-                    }
-                }
-
-                if (target_node_index != 0xFFFFFFFF) {
-                    // Found node. Now get interpolator data.
-                    if (cb.interpolator_ref >= 0 and cb.interpolator_ref < reader.header.num_blocks) {
-                        const interp_block = &reader.blocks[@intCast(cb.interpolator_ref)];
-                        // Assuming NiTransformInterpolator
-                        if (std.mem.eql(u8, reader.header.block_types[interp_block.type_index], "NiTransformInterpolator") and interp_block.parsed != null) {
-                            const interp = @as(*NiTransformInterpolator, @ptrCast(@alignCast(interp_block.parsed.?)));
-
-                            if (interp.data_ref >= 0 and interp.data_ref < reader.header.num_blocks) {
-                                const data_block = &reader.blocks[@intCast(interp.data_ref)];
-                                if (std.mem.eql(u8, reader.header.block_types[data_block.type_index], "NiTransformData") and data_block.parsed != null) {
-                                    const data = @as(*NiTransformData, @ptrCast(@alignCast(data_block.parsed.?)));
-
-                                    // Create Samplers
-                                    // Translation
-                                    if (data.num_trans_keys > 0) {
-                                        const s_idx = samplers.items.len;
-                                        var sampler = std.mem.zeroes(animation.CardinalAnimationSampler);
-                                        sampler.input_count = data.num_trans_keys;
-                                        sampler.output_count = data.num_trans_keys * 3; // Vec3
-
-                                        // Allocate data in asset memory
-                                        const input_ptr = memory.cardinal_alloc(asset_allocator, sampler.input_count * 4);
-                                        const output_ptr = memory.cardinal_alloc(asset_allocator, sampler.output_count * 4);
-
-                                        if (input_ptr != null and output_ptr != null) {
-                                            const inputs = @as([*]f32, @ptrCast(@alignCast(input_ptr)));
-                                            const outputs = @as([*]f32, @ptrCast(@alignCast(output_ptr)));
-
-                                            for (data.trans_keys, 0..) |k, ki| {
-                                                inputs[ki] = k[0]; // Time
-                                                outputs[ki * 3 + 0] = k[1];
-                                                outputs[ki * 3 + 1] = k[2];
-                                                outputs[ki * 3 + 2] = k[3];
-                                            }
-                                            sampler.input = inputs;
-                                            sampler.output = outputs;
-
-                                            samplers.append(allocator, sampler) catch continue;
-
-                                            var channel = std.mem.zeroes(animation.CardinalAnimationChannel);
-                                            channel.sampler_index = @intCast(s_idx);
-                                            channel.target.node_index = target_node_index;
-                                            channel.target.path = .TRANSLATION;
-                                            channels.append(allocator, channel) catch continue;
-                                        }
-                                    }
-
-                                    // Rotation (Quat)
-                                    if (data.num_rot_keys > 0) {
-                                        const s_idx = samplers.items.len;
-                                        var sampler = std.mem.zeroes(animation.CardinalAnimationSampler);
-                                        sampler.input_count = data.num_rot_keys;
-                                        sampler.output_count = data.num_rot_keys * 4; // Quat
-
-                                        const input_ptr = memory.cardinal_alloc(asset_allocator, sampler.input_count * 4);
-                                        const output_ptr = memory.cardinal_alloc(asset_allocator, sampler.output_count * 4);
-
-                                        if (input_ptr != null and output_ptr != null) {
-                                            const inputs = @as([*]f32, @ptrCast(@alignCast(input_ptr)));
-                                            const outputs = @as([*]f32, @ptrCast(@alignCast(output_ptr)));
-
-                                            for (data.rot_keys, 0..) |k, ki| {
-                                                inputs[ki] = k[0]; // Time
-                                                // NIF Quat is w,x,y,z? No, usually x,y,z,w.
-                                                // My parser reads: time, x, y, z, w.
-                                                outputs[ki * 4 + 0] = k[1];
-                                                outputs[ki * 4 + 1] = k[2];
-                                                outputs[ki * 4 + 2] = k[3];
-                                                outputs[ki * 4 + 3] = k[4];
-                                            }
-                                            sampler.input = inputs;
-                                            sampler.output = outputs;
-
-                                            samplers.append(allocator, sampler) catch continue;
-
-                                            var channel = std.mem.zeroes(animation.CardinalAnimationChannel);
-                                            channel.sampler_index = @intCast(s_idx);
-                                            channel.target.node_index = target_node_index;
-                                            channel.target.path = .ROTATION;
-                                            channels.append(allocator, channel) catch continue;
-                                        }
-                                    }
-
-                                    // Scale
-                                    if (data.num_scale_keys > 0) {
-                                        const s_idx = samplers.items.len;
-                                        var sampler = std.mem.zeroes(animation.CardinalAnimationSampler);
-                                        sampler.input_count = data.num_scale_keys;
-                                        sampler.output_count = data.num_scale_keys; // Float
-
-                                        const input_ptr = memory.cardinal_alloc(asset_allocator, sampler.input_count * 4);
-                                        const output_ptr = memory.cardinal_alloc(asset_allocator, sampler.output_count * 4);
-
-                                        if (input_ptr != null and output_ptr != null) {
-                                            const inputs = @as([*]f32, @ptrCast(@alignCast(input_ptr)));
-                                            const outputs = @as([*]f32, @ptrCast(@alignCast(output_ptr)));
-
-                                            for (data.scale_keys, 0..) |k, ki| {
-                                                inputs[ki] = k[0]; // Time
-                                                outputs[ki] = k[1];
-                                            }
-                                            sampler.input = inputs;
-                                            sampler.output = outputs;
-
-                                            samplers.append(allocator, sampler) catch continue;
-
-                                            var channel = std.mem.zeroes(animation.CardinalAnimationChannel);
-                                            channel.sampler_index = @intCast(s_idx);
-                                            channel.target.node_index = target_node_index;
-                                            channel.target.path = .SCALE;
-                                            channels.append(allocator, channel) catch continue;
-                                        }
-                                    }
-                                }
+                            if (found) {
+                                node.skin_index = @intCast(s_idx);
+                                break;
                             }
                         }
                     }
                 }
-            }
-
-            // Copy Samplers/Channels to Asset Memory
-            if (samplers.items.len > 0) {
-                const s_ptr = memory.cardinal_alloc(asset_allocator, samplers.items.len * @sizeOf(animation.CardinalAnimationSampler));
-                if (s_ptr) |sp| {
-                    const s_dest = @as([*]animation.CardinalAnimationSampler, @ptrCast(@alignCast(sp)));
-                    @memcpy(s_dest[0..samplers.items.len], samplers.items);
-                    card_anim.samplers = s_dest;
-                    card_anim.sampler_count = @intCast(samplers.items.len);
-                }
-            }
-            if (channels.items.len > 0) {
-                const c_ptr = memory.cardinal_alloc(asset_allocator, channels.items.len * @sizeOf(animation.CardinalAnimationChannel));
-                if (c_ptr) |cp| {
-                    const c_dest = @as([*]animation.CardinalAnimationChannel, @ptrCast(@alignCast(cp)));
-                    @memcpy(c_dest[0..channels.items.len], channels.items);
-                    card_anim.channels = c_dest;
-                    card_anim.channel_count = @intCast(channels.items.len);
-                }
-            }
-
-            anim_list.append(allocator, card_anim) catch continue;
-        }
-    }
-
-    // Add to System
-    if (anim_list.items.len > 0) {
-        // Extend existing?
-        // For now, just replace or add if empty
-        if (anim_sys.animation_count == 0) {
-            const a_ptr = memory.cardinal_alloc(asset_allocator, anim_list.items.len * @sizeOf(animation.CardinalAnimation));
-            if (a_ptr) |ap| {
-                const a_dest = @as([*]animation.CardinalAnimation, @ptrCast(@alignCast(ap)));
-                @memcpy(a_dest[0..anim_list.items.len], anim_list.items);
-                anim_sys.animations = a_dest;
-                anim_sys.animation_count = @intCast(anim_list.items.len);
-            }
-        } else {
-            // Append
-            const old_count = anim_sys.animation_count;
-            const new_count = old_count + @as(u32, @intCast(anim_list.items.len));
-
-            const a_ptr = memory.cardinal_alloc(asset_allocator, new_count * @sizeOf(animation.CardinalAnimation));
-            if (a_ptr) |ap| {
-                const a_dest = @as([*]animation.CardinalAnimation, @ptrCast(@alignCast(ap)));
-                // Copy old
-                if (anim_sys.animations) |old| {
-                    @memcpy(a_dest[0..old_count], old[0..old_count]);
-                    // Free old array? (Assuming allocated with same allocator)
-                    memory.cardinal_free(asset_allocator, @ptrCast(old));
-                }
-                // Copy new
-                @memcpy(a_dest[old_count..new_count], anim_list.items);
-
-                anim_sys.animations = a_dest;
-                anim_sys.animation_count = new_count;
             }
         }
     }

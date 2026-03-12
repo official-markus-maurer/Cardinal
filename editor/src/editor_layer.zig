@@ -76,7 +76,7 @@ fn check_loading_status() void {
                         // Otherwise, rebuild the whole scene graph.
                         if (info.target_entity) |parent| {
                             scene_io.instantiate_model(&state, model_id, parent);
-                            
+
                             // We still need to upload the new combined scene to the GPU
                             if (initialized) {
                                 state.pending_scene = state.combined_scene;
@@ -706,7 +706,13 @@ pub fn update() void {
             var s_idx: u32 = 0;
             while (s_idx < anim_sys.skin_count) : (s_idx += 1) {
                 const skin = &anim_sys.skins.?[s_idx];
-                _ = animation.cardinal_skin_update_bone_matrices(skin, nodes_ptr, anim_sys.bone_matrices);
+                _ = animation.cardinal_skin_update_bone_matrices_bounded(skin, nodes_ptr, state.combined_scene.all_node_count, anim_sys.bone_matrices);
+            }
+
+            // Upload bone matrices to GPU
+            if (anim_sys.bone_matrix_count > 0 and anim_sys.bone_matrices != null) {
+                const matrices = anim_sys.bone_matrices.?;
+                renderer.cardinal_renderer_update_bone_matrices(state.renderer, matrices, anim_sys.bone_matrix_count * 16);
             }
         }
 

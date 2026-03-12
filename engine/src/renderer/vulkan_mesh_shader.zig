@@ -547,13 +547,13 @@ pub export fn vk_mesh_shader_draw(cmd_buffer: c.VkCommandBuffer, s: ?*types.Vulk
     if (pipe.set1_manager) |mgr| {
         use_buffers_1 = vk_desc_mgr.vk_descriptor_manager_uses_buffers(mgr);
     }
-    
+
     // Buffer Path
     var binding_infos: [2]c.VkDescriptorBufferBindingInfoEXT = undefined;
     var binding_count: u32 = 0;
     var set0_idx: u32 = 0;
     var set1_idx: u32 = 0;
-    
+
     if (use_buffers_0) {
         set0_idx = binding_count;
         _ = vk_desc_mgr.vk_descriptor_manager_get_binding_info(pipe.set0_manager, &binding_infos[binding_count]);
@@ -564,18 +564,18 @@ pub export fn vk_mesh_shader_draw(cmd_buffer: c.VkCommandBuffer, s: ?*types.Vulk
         _ = vk_desc_mgr.vk_descriptor_manager_get_binding_info(pipe.set1_manager, &binding_infos[binding_count]);
         binding_count += 1;
     }
-    
+
     if (binding_count > 0) {
         vs.context.vkCmdBindDescriptorBuffersEXT.?(cmd_buffer, binding_count, &binding_infos);
     }
-    
+
     if (use_buffers_0) {
-            const sets = [_]c.VkDescriptorSet{data.descriptor_set};
-            vk_desc_mgr.vk_descriptor_manager_set_offsets(pipe.set0_manager, cmd_buffer, c.VK_PIPELINE_BIND_POINT_GRAPHICS, pipe.pipeline_layout, 0, 1, &sets, set0_idx);
+        const sets = [_]c.VkDescriptorSet{data.descriptor_set};
+        vk_desc_mgr.vk_descriptor_manager_set_offsets(pipe.set0_manager, cmd_buffer, c.VK_PIPELINE_BIND_POINT_GRAPHICS, pipe.pipeline_layout, 0, 1, &sets, set0_idx);
     }
     if (use_buffers_1) {
-            const sets = [_]c.VkDescriptorSet{pipe.global_descriptor_set};
-            vk_desc_mgr.vk_descriptor_manager_set_offsets(pipe.set1_manager, cmd_buffer, c.VK_PIPELINE_BIND_POINT_GRAPHICS, pipe.pipeline_layout, 1, 1, &sets, set1_idx);
+        const sets = [_]c.VkDescriptorSet{pipe.global_descriptor_set};
+        vk_desc_mgr.vk_descriptor_manager_set_offsets(pipe.set1_manager, cmd_buffer, c.VK_PIPELINE_BIND_POINT_GRAPHICS, pipe.pipeline_layout, 1, 1, &sets, set1_idx);
     }
 
     // PFN_vkCmdDrawMeshTasksEXT loading and calling
@@ -726,7 +726,7 @@ pub export fn vk_mesh_shader_generate_meshlets(vertices: ?*const anyopaque, vert
         // Compute Bounds
         var min_pos = math.Vec3{ .x = std.math.floatMax(f32), .y = std.math.floatMax(f32), .z = std.math.floatMax(f32) };
         var max_pos = math.Vec3{ .x = -std.math.floatMax(f32), .y = -std.math.floatMax(f32), .z = -std.math.floatMax(f32) };
-        
+
         const indices_ptr = @as([*]const u32, @ptrCast(@alignCast(indices)));
         const vertices_ptr = @as([*]const scene.CardinalVertex, @ptrCast(@alignCast(vertices)));
 
@@ -734,21 +734,21 @@ pub export fn vk_mesh_shader_generate_meshlets(vertices: ?*const anyopaque, vert
         while (p < indices_to_process) : (p += 1) {
             const idx = indices_ptr[current_index + p];
             const v_raw = vertices_ptr[idx];
-            
+
             if (v_raw.px < min_pos.x) min_pos.x = v_raw.px;
             if (v_raw.py < min_pos.y) min_pos.y = v_raw.py;
             if (v_raw.pz < min_pos.z) min_pos.z = v_raw.pz;
-            
+
             if (v_raw.px > max_pos.x) max_pos.x = v_raw.px;
             if (v_raw.py > max_pos.y) max_pos.y = v_raw.py;
             if (v_raw.pz > max_pos.z) max_pos.z = v_raw.pz;
         }
-        
+
         const center = min_pos.add(max_pos).mul(0.5);
         const extent = max_pos.sub(min_pos).mul(0.5);
-        meshlet.center = .{center.x, center.y, center.z};
+        meshlet.center = .{ center.x, center.y, center.z };
         meshlet.radius = @max(extent.x, @max(extent.y, extent.z));
-        meshlet.cone_axis = .{0, 0, 0};
+        meshlet.cone_axis = .{ 0, 0, 0 };
         meshlet.cone_cutoff = 0;
 
         current_index += indices_to_process;
@@ -1006,7 +1006,7 @@ pub export fn vk_mesh_shader_record_frame(s: ?*types.VulkanState, cmd: c.VkComma
 
                         // Manual resolution for Mesh Shader (uses local descriptor array, not global bindless pool)
                         const tm = vs.pipelines.pbr_pipeline.textureManager;
-                        
+
                         const resolve_local = struct {
                             fn f(h: handles.TextureHandle, m: ?*const types.VulkanTextureManager) u32 {
                                 if (m == null or !h.is_valid()) return c.UINT32_MAX;
@@ -1023,24 +1023,38 @@ pub export fn vk_mesh_shader_record_frame(s: ?*types.VulkanState, cmd: c.VkComma
                         pushConstants.metallicRoughnessTextureIndex = resolve_local(mat.metallic_roughness_texture, tm);
                         pushConstants.aoTextureIndex = resolve_local(mat.ao_texture, tm);
                         pushConstants.emissiveTextureIndex = resolve_local(mat.emissive_texture, tm);
-                        
+
                         pushConstants.emissiveStrength = mat.emissive_strength;
 
-                        // Debug logging for texture indices (Throttle: only log for first mesh of first frame or periodically)
-                        if (vs.sync.current_frame == 0 and i == 0) {
-                            mesh_shader_log.info("Mesh {d} Material {d}: AlbedoTexIdx={d} (Resolved), Handle={d}, TM Count={d}", .{
-                                i, mesh.material_index, pushConstants.albedoTextureIndex, mat.albedo_texture.index,
-                                if (tm) |t| t.textureCount else 0
+                        if (i == 0 and vs.sync.current_frame < 3) {
+                            mesh_shader_log.info("Mesh {d} Mat {d}: albedoIdx={d} handle={d} packedInfo=0x{x} uv0={d} uv1={d} hasPlaceholder={any} tmCount={d}", .{
+                                i,
+                                mesh.material_index,
+                                pushConstants.albedoTextureIndex,
+                                mat.albedo_texture.index,
+                                pushConstants.packedInfo,
+                                mat.uv_indices[0],
+                                mat.uv_indices[1],
+                                if (tm) |t| t.hasPlaceholder else false,
+                                if (tm) |t| t.textureCount else 0,
                             });
                         }
 
-                        var packedInfo: u32 = 0;
-                        packedInfo |= @as(u32, @intCast(@intFromEnum(mat.alpha_mode)));
+                        var flags: u32 = 0;
+                        flags |= (@as(u32, @bitCast(@intFromEnum(mat.alpha_mode))) & 3);
                         if (vs.pipelines.pbr_pipeline.supportsDescriptorIndexing) {
-                             packedInfo |= 8;
+                            flags |= 8;
                         }
-                        pushConstants.packedInfo = packedInfo;
-                        
+
+                        var packedUVs: u32 = 0;
+                        packedUVs |= @as(u32, mat.uv_indices[0]) & 0x7;
+                        packedUVs |= (@as(u32, mat.uv_indices[1]) & 0x7) << 3;
+                        packedUVs |= (@as(u32, mat.uv_indices[2]) & 0x7) << 6;
+                        packedUVs |= (@as(u32, mat.uv_indices[3]) & 0x7) << 9;
+                        packedUVs |= (@as(u32, mat.uv_indices[4]) & 0x7) << 12;
+
+                        pushConstants.packedInfo = (flags << 16) | (packedUVs & 0xFFFF);
+
                         const transforms = [_]scene.CardinalTextureTransform{
                             mat.albedo_transform,
                             mat.normal_transform,

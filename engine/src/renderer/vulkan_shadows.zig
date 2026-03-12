@@ -103,7 +103,8 @@ pub fn vk_shadow_render(s: *types.VulkanState, cmd: c.VkCommandBuffer) void {
     const range = maxZ - minZ;
 
     const lambda: f32 = s.config.shadow_split_lambda;
-    const cascade_count = @min(s.config.shadow_cascade_count, types.MAX_SHADOW_CASCADES);
+    const cascade_count_u32: u32 = @min(s.config.shadow_cascade_count, @as(u32, pipe.shadowCascadeViews.len));
+    const cascade_count: usize = @intCast(cascade_count_u32);
 
     var lastSplitDist: f32 = 0.0;
 
@@ -275,8 +276,14 @@ pub fn vk_shadow_render(s: *types.VulkanState, cmd: c.VkCommandBuffer) void {
         return;
     }
 
+    // Check vertex/index buffers upfront
+    if (pipe.vertexBuffer == null) {
+        // shadows_log.warn("Shadow pass skipped: vertex buffer null", .{});
+        return;
+    }
+
     var j_layer: u32 = 0;
-    while (j_layer < s.config.shadow_cascade_count) : (j_layer += 1) {
+    while (j_layer < cascade_count_u32) : (j_layer += 1) {
         // Reset index offset for each cascade pass since we re-iterate the same meshes
         var indexOffset: u32 = 0;
 
@@ -339,15 +346,25 @@ pub fn vk_shadow_render(s: *types.VulkanState, cmd: c.VkCommandBuffer) void {
         }
 
         // Bind Vertex/Index Buffers
+        // Vertex buffer already checked upfront
         const vertexBuffers = [_]c.VkBuffer{pipe.vertexBuffer};
         const offsets = [_]c.VkDeviceSize{0};
         c.vkCmdBindVertexBuffers(cmd, 0, 1, &vertexBuffers, &offsets);
-        c.vkCmdBindIndexBuffer(cmd, pipe.indexBuffer, 0, c.VK_INDEX_TYPE_UINT32);
+
+        if (pipe.indexBuffer != null) {
+            c.vkCmdBindIndexBuffer(cmd, pipe.indexBuffer, 0, c.VK_INDEX_TYPE_UINT32);
+        }
 
         // --- Pass 1: Opaque Meshes ---
+        shadows_log.debug("Cascade {d}: Starting Pass 1 (Opaque)", .{j_layer});
         var m_i: u32 = 0;
         var drawn_count: u32 = 0;
         while (m_i < scn.mesh_count) : (m_i += 1) {
+            shadows_log.debug("Pass 1: Mesh {d}", .{m_i});
+            if (scn.meshes == null) {
+                shadows_log.err("scn.meshes is null!", .{});
+                break;
+            }
             const mesh = &scn.meshes.?[m_i];
 
             // Verify mesh has valid indices in the buffer
@@ -357,37 +374,33 @@ pub fn vk_shadow_render(s: *types.VulkanState, cmd: c.VkCommandBuffer) void {
 
             var is_alpha_tested = false;
             if (mesh.material_index < scn.material_count) {
-                const mat = &scn.materials.?[mesh.material_index];
-                if (mat.alpha_mode == scene.CardinalAlphaMode.MASK) {
-                    is_alpha_tested = true;
+                shadows_log.debug("Checking material {d}", .{mesh.material_index});
+                if (scn.materials) |mats| {
+                    const mat = &mats[mesh.material_index];
+                    if (mat.alpha_mode == scene.CardinalAlphaMode.MASK) {
+                        is_alpha_tested = true;
+                    }
                 }
             }
 
             if (is_alpha_tested) {
                 // Skip alpha tested meshes in this pass
-                indexOffset +%= mesh.index_count;
+                const next_offset: u64 = @as(u64, indexOffset) + @as(u64, mesh.index_count);
+                if (next_offset > @as(u64, pipe.totalIndexCount)) break;
+                indexOffset = @intCast(next_offset);
                 continue;
             }
 
             if (mesh.vertex_count == 0 or !mesh.visible) {
-                indexOffset +%= mesh.index_count;
+                const next_offset: u64 = @as(u64, indexOffset) + @as(u64, mesh.index_count);
+                if (next_offset > @as(u64, pipe.totalIndexCount)) break;
+                indexOffset = @intCast(next_offset);
                 continue;
             }
 
             drawn_count += 1;
 
             // Push Constants
-            // Layout (total 236 bytes aligned to maxPushConstantSize):
-            // 0..64: Model Matrix (mat4)
-            // 64..132: Material Data (PBR material data - not fully used here but space reserved)
-            // 132..136: packedInfo (flags including hasSkeleton)
-            // 136..152: Padding/Reserved
-            // 152..156: Cascade Index
-
-            // We need to construct this carefully to match PBR pipeline layout
-            // Shadow push constant range in shader: 0..156 (covering model, flags, cascade)
-            // But pipeline layout might be bigger (236)
-
             var pushData = std.mem.zeroes([156]u8);
 
             // Copy Model Matrix (first 64 bytes)
@@ -397,19 +410,34 @@ pub fn vk_shadow_render(s: *types.VulkanState, cmd: c.VkCommandBuffer) void {
             // Has Skeleton
             var packedInfo: u32 = 0;
             if (scn.animation_system != null and scn.skin_count > 0) {
-                const skins = @as([*]animation.CardinalSkin, @ptrCast(@alignCast(scn.skins.?)));
-                var skin_idx: u32 = 0;
-                while (skin_idx < scn.skin_count) : (skin_idx += 1) {
-                    const skin = &skins[skin_idx];
-                    var mesh_idx: u32 = 0;
-                    while (mesh_idx < skin.mesh_count) : (mesh_idx += 1) {
-                        if (skin.mesh_indices.?[mesh_idx] == m_i) {
-                            // Set bit 2 (value 4) in upper 16 bits
-                            packedInfo |= (4 << 16);
-                            break;
+                shadows_log.debug("Checking skins for mesh {d}. Skin count: {d}", .{ m_i, scn.skin_count });
+                // Validation: skin count reasonable?
+                if (scn.skin_count < 100) {
+                    if (scn.skins) |skins_ptr| {
+                        const skins = @as([*]animation.CardinalSkin, @ptrCast(@alignCast(skins_ptr)));
+                        var skin_idx: u32 = 0;
+                        while (skin_idx < scn.skin_count) : (skin_idx += 1) {
+                            const skin = &skins[skin_idx];
+                            // Sanity check mesh_count
+                            if (skin.mesh_count > 1000) {
+                                shadows_log.warn("Skin {d} has suspicious mesh_count: {d}", .{ skin_idx, skin.mesh_count });
+                                break;
+                            }
+                            if (skin.mesh_indices) |indices| {
+                                var mesh_idx: u32 = 0;
+                                while (mesh_idx < skin.mesh_count) : (mesh_idx += 1) {
+                                    // shadows_log.warn("Checking skin {d} mesh_idx {d} val {d}", .{skin_idx, mesh_idx, indices[mesh_idx]});
+                                    if (indices[mesh_idx] == m_i) {
+                                        packedInfo |= (4 << 16);
+                                        break;
+                                    }
+                                }
+                            }
+                            if ((packedInfo & (4 << 16)) != 0) break;
                         }
                     }
-                    if ((packedInfo & (4 << 16)) != 0) break;
+                } else {
+                    shadows_log.err("Suspicious skin count: {d}", .{scn.skin_count});
                 }
             }
 
@@ -424,17 +452,20 @@ pub fn vk_shadow_render(s: *types.VulkanState, cmd: c.VkCommandBuffer) void {
             c.vkCmdPushConstants(cmd, pipe.shadowPipelineLayout, c.VK_SHADER_STAGE_VERTEX_BIT | c.VK_SHADER_STAGE_FRAGMENT_BIT, 0, 156, &pushData);
 
             // Validate index buffer bounds
-            if (@as(u64, indexOffset) + @as(u64, mesh.index_count) > pipe.totalIndexCount) {
+            if (@as(u64, indexOffset) + @as(u64, mesh.index_count) > @as(u64, pipe.totalIndexCount)) {
                 break;
             }
 
             c.vkCmdDrawIndexed(cmd, mesh.index_count, 1, indexOffset, 0, 0);
 
-            indexOffset +%= mesh.index_count;
+            const next_offset: u64 = @as(u64, indexOffset) + @as(u64, mesh.index_count);
+            if (next_offset > @as(u64, pipe.totalIndexCount)) break;
+            indexOffset = @intCast(next_offset);
         }
 
         // --- Pass 2: Alpha Tested Meshes ---
         if (pipe.shadowAlphaPipeline != null) {
+            // shadows_log.warn("Cascade {d}: Starting Pass 2 (Alpha)", .{j_layer});
             c.vkCmdBindPipeline(cmd, c.VK_PIPELINE_BIND_POINT_GRAPHICS, pipe.shadowAlphaPipeline);
 
             // Re-bind descriptors (just in case pipeline bind disturbed them, though likely they are compatible)
@@ -443,6 +474,8 @@ pub fn vk_shadow_render(s: *types.VulkanState, cmd: c.VkCommandBuffer) void {
             indexOffset = 0;
             m_i = 0;
             while (m_i < scn.mesh_count) : (m_i += 1) {
+                // shadows_log.warn("Pass 2: Mesh {d}", .{m_i});
+                if (scn.meshes == null) break;
                 const mesh = &scn.meshes.?[m_i];
 
                 if (mesh.index_count == 0 or mesh.indices == null) {
@@ -453,7 +486,7 @@ pub fn vk_shadow_render(s: *types.VulkanState, cmd: c.VkCommandBuffer) void {
                 var texture_idx: u32 = 0;
                 var alpha_cutoff: f32 = 0.5;
 
-                if (mesh.material_index < scn.material_count) {
+                if (mesh.material_index < scn.material_count and scn.materials != null) {
                     const mat = &scn.materials.?[mesh.material_index];
                     if (mat.alpha_mode == scene.CardinalAlphaMode.MASK) {
                         is_alpha_tested = true;
@@ -463,12 +496,16 @@ pub fn vk_shadow_render(s: *types.VulkanState, cmd: c.VkCommandBuffer) void {
                 }
 
                 if (!is_alpha_tested) {
-                    indexOffset +%= mesh.index_count;
+                    const next_offset: u64 = @as(u64, indexOffset) + @as(u64, mesh.index_count);
+                    if (next_offset > @as(u64, pipe.totalIndexCount)) break;
+                    indexOffset = @intCast(next_offset);
                     continue;
                 }
 
                 if (mesh.vertex_count == 0 or !mesh.visible) {
-                    indexOffset +%= mesh.index_count;
+                    const next_offset: u64 = @as(u64, indexOffset) + @as(u64, mesh.index_count);
+                    if (next_offset > @as(u64, pipe.totalIndexCount)) break;
+                    indexOffset = @intCast(next_offset);
                     continue;
                 }
 
@@ -497,11 +534,13 @@ pub fn vk_shadow_render(s: *types.VulkanState, cmd: c.VkCommandBuffer) void {
                     var skin_idx: u32 = 0;
                     while (skin_idx < scn.skin_count) : (skin_idx += 1) {
                         const skin = &skins[skin_idx];
-                        var mesh_idx: u32 = 0;
-                        while (mesh_idx < skin.mesh_count) : (mesh_idx += 1) {
-                            if (skin.mesh_indices.?[mesh_idx] == m_i) {
-                                packedInfo |= (4 << 16);
-                                break;
+                        if (skin.mesh_indices) |indices| {
+                            var mesh_idx: u32 = 0;
+                            while (mesh_idx < skin.mesh_count) : (mesh_idx += 1) {
+                                if (indices[mesh_idx] == m_i) {
+                                    packedInfo |= (4 << 16);
+                                    break;
+                                }
                             }
                         }
                         if ((packedInfo & (4 << 16)) != 0) break;
@@ -519,13 +558,15 @@ pub fn vk_shadow_render(s: *types.VulkanState, cmd: c.VkCommandBuffer) void {
                 c.vkCmdPushConstants(cmd, pipe.shadowPipelineLayout, c.VK_SHADER_STAGE_VERTEX_BIT | c.VK_SHADER_STAGE_FRAGMENT_BIT, 0, 156, &pushData);
 
                 // Validate index buffer bounds
-                if (@as(u64, indexOffset) + @as(u64, mesh.index_count) > pipe.totalIndexCount) {
+                if (@as(u64, indexOffset) + @as(u64, mesh.index_count) > @as(u64, pipe.totalIndexCount)) {
                     break;
                 }
 
                 c.vkCmdDrawIndexed(cmd, mesh.index_count, 1, indexOffset, 0, 0);
 
-                indexOffset +%= mesh.index_count;
+                const next_offset: u64 = @as(u64, indexOffset) + @as(u64, mesh.index_count);
+                if (next_offset > @as(u64, pipe.totalIndexCount)) break;
+                indexOffset = @intCast(next_offset);
             }
         }
 

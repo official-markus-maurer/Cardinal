@@ -5,6 +5,7 @@ const scene_serializer = engine.scene_serializer;
 const EditorState = @import("../editor_state.zig").EditorState;
 const math = engine.math;
 const components = engine.ecs_components;
+const async_loader = engine.async_loader;
 
 pub fn import_scene_graph(state: *EditorState) void {
     const scene = &state.combined_scene;
@@ -211,6 +212,8 @@ pub fn save_scene(state: *EditorState, allocator: std.mem.Allocator, path: []con
 }
 
 pub fn load_model_to_entity(state: *EditorState, path: []const u8, parent: engine.ecs_entity.Entity) void {
+    const allocator = engine.memory.cardinal_get_allocator_for_category(.ENGINE).as_allocator();
+
     // Check if file exists
     std.fs.cwd().access(path, .{}) catch {
         log.cardinal_log_error("Model file not found: {s}", .{path});
@@ -229,8 +232,8 @@ pub fn load_model_to_entity(state: *EditorState, path: []const u8, parent: engin
     const task = task_opt.?;
 
     // Add to loading tasks
-    const path_copy = state.arena_allocator.dupeZ(u8, path) catch return;
-    state.loading_tasks.append(state.arena_allocator, .{
+    const path_copy = allocator.dupeZ(u8, path) catch return;
+    state.loading_tasks.append(allocator, .{
         .task = task,
         .path = path_copy,
         .target_entity = parent,
@@ -392,6 +395,19 @@ pub fn load_scene(state: *EditorState, allocator: std.mem.Allocator, path: []con
     };
     defer file.close();
 
+    if (state.loading_tasks.items.len > 0) {
+        for (state.loading_tasks.items) |info| {
+            _ = async_loader.cardinal_async_cancel_task(info.task);
+            async_loader.cardinal_async_free_task(info.task);
+            allocator.free(info.path);
+        }
+        state.loading_tasks.clearRetainingCapacity();
+        state.is_loading = false;
+    }
+
+    state.scene_upload_pending = false;
+    state.pending_scene = std.mem.zeroes(@TypeOf(state.pending_scene));
+
     // Reset Registry
     state.registry.deinit();
     state.registry.* = engine.ecs_registry.Registry.init(allocator);
@@ -399,6 +415,8 @@ pub fn load_scene(state: *EditorState, allocator: std.mem.Allocator, path: []con
     // Reset Model Manager
     engine.model_manager.cardinal_model_manager_destroy(&state.model_manager);
     _ = engine.model_manager.cardinal_model_manager_init(&state.model_manager);
+    state.combined_scene = std.mem.zeroes(@TypeOf(state.combined_scene));
+    state.scene_loaded = false;
 
     var serializer = scene_serializer.SceneSerializer.init(allocator, state.registry, &state.model_manager);
     defer serializer.deinit();
@@ -423,7 +441,7 @@ pub fn load_scene(state: *EditorState, allocator: std.mem.Allocator, path: []con
     // Force rebuild of combined scene and update editor state
     if (engine.model_manager.cardinal_model_manager_get_combined_scene(&state.model_manager)) |combined| {
         state.combined_scene = combined.*;
-        state.scene_loaded = true;
+        state.scene_loaded = (state.combined_scene.mesh_count > 0);
     }
 
     // Check if we need to generate hierarchy
@@ -432,12 +450,15 @@ pub fn load_scene(state: *EditorState, allocator: std.mem.Allocator, path: []con
         import_scene_graph(state);
     }
 
-    // Schedule upload to renderer
-    state.pending_scene = state.combined_scene;
-    state.scene_upload_pending = true;
-
-    log.cardinal_log_info("[EDITOR] Scene loaded from {s}", .{path});
-    _ = std.fmt.bufPrintZ(&state.status_msg, "Scene loaded from {s}", .{path}) catch {};
+    if (state.combined_scene.mesh_count > 0) {
+        state.pending_scene = state.combined_scene;
+        state.scene_upload_pending = true;
+        log.cardinal_log_info("[EDITOR] Scene loaded from {s}", .{path});
+        _ = std.fmt.bufPrintZ(&state.status_msg, "Scene loaded from {s}", .{path}) catch {};
+    } else {
+        log.cardinal_log_error("[EDITOR] Scene loaded but no meshes: {s}", .{path});
+        _ = std.fmt.bufPrintZ(&state.status_msg, "Scene loaded but no meshes (missing assets?)", .{}) catch {};
+    }
 }
 
 pub fn refresh_available_scenes(state: *EditorState, allocator: std.mem.Allocator) void {
