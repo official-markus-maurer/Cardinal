@@ -46,7 +46,6 @@ pub const ModuleManager = struct {
 
     /// Topologically sorts modules and calls init callbacks in dependency order.
     pub fn startup(self: *ModuleManager) !void {
-        // Topological sort modules based on dependencies
         var sorted_modules = try std.ArrayList(Module).initCapacity(self.allocator, self.modules.items.len);
         defer sorted_modules.deinit(self.allocator);
 
@@ -70,7 +69,6 @@ pub const ModuleManager = struct {
             try adj.append(self.allocator, try std.ArrayList(usize).initCapacity(self.allocator, 0));
         }
 
-        // Build graph
         for (self.modules.items, 0..) |mod, i| {
             for (mod.dependencies) |dep_name| {
                 if (name_to_index.get(dep_name)) |dep_idx| {
@@ -83,7 +81,6 @@ pub const ModuleManager = struct {
             }
         }
 
-        // Kahn's algorithm
         var queue = try std.ArrayList(usize).initCapacity(self.allocator, self.modules.items.len);
         defer queue.deinit(self.allocator);
 
@@ -111,7 +108,6 @@ pub const ModuleManager = struct {
             return error.CircularDependency;
         }
 
-        // Replace modules with sorted list
         self.modules.clearRetainingCapacity();
         try self.modules.appendSlice(self.allocator, sorted_modules.items);
 
@@ -127,6 +123,7 @@ pub const ModuleManager = struct {
         self.initialized = true;
     }
 
+    /// Runs update callbacks for all registered modules.
     pub fn update(self: *ModuleManager, delta_time: f32) !void {
         for (self.modules.items) |mod| {
             if (mod.update_fn) |func| {
@@ -138,8 +135,8 @@ pub const ModuleManager = struct {
         }
     }
 
+    /// Calls shutdown callbacks in reverse dependency order.
     pub fn shutdown(self: *ModuleManager) void {
-        // Shutdown in reverse order
         var i = self.modules.items.len;
         while (i > 0) {
             i -= 1;

@@ -12,16 +12,16 @@ pub const Entity = entity_pkg.Entity;
 /// Stores entities and per-component sparse-set storages.
 pub const Registry = struct {
     entity_manager: entity_pkg.EntityManager,
-    // Map ComponentTypeID -> StorageInterface
+    /// Maps component type IDs to a type-erased storage interface.
     storages: std.AutoHashMapUnmanaged(u64, component_pkg.StorageInterface),
-    // We need to own the actual storage pointers to free them
-    // Map ComponentTypeID -> *anyopaque (to be casted to *SparseSet(T) for freeing)
+    /// Owns the concrete storage pointers so they can be deinitialized correctly.
     storage_ptrs: std.AutoHashMapUnmanaged(u64, *anyopaque),
-    // Map ComponentTypeID -> DeinitFunc
+    /// Maps component type IDs to the correct deinit function for the stored concrete type.
     deinit_fns: std.AutoHashMapUnmanaged(u64, *const fn (*anyopaque, std.mem.Allocator) void),
 
     allocator: std.mem.Allocator,
 
+    /// TODO: Store `{ interface, ptr, deinit_fn }` in a single map to reduce duplication.
     /// Creates an empty registry.
     pub fn init(allocator: std.mem.Allocator) Registry {
         return .{

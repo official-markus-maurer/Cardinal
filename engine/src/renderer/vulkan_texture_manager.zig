@@ -1,3 +1,9 @@
+//! Vulkan texture manager.
+//!
+//! Owns GPU texture lifetime, placeholder creation, and async upload/update tasks used by the
+//! renderer to stream textures into the bindless pool.
+//!
+//! TODO: Deduplicate upload/update task setup into shared helpers.
 const std = @import("std");
 const builtin = @import("builtin");
 const log = @import("../core/log.zig");
@@ -20,14 +26,13 @@ const resource_state = @import("../core/resource_state.zig");
 const texture_loader = @import("../assets/texture_loader.zig");
 const asset_manager = @import("../assets/asset_manager.zig");
 
+/// Per-task context for uploading decoded texture bytes into an existing managed texture.
 const TextureUploadContext = struct {
-    // Input
     allocator: *types.VulkanAllocator,
     device: c.VkDevice,
     texture: *const scene.CardinalTexture,
     managed_texture: *types.VulkanManagedTexture,
 
-    // Output
     staging_buffer: c.VkBuffer,
     staging_memory: c.VkDeviceMemory,
     staging_allocation: c.VmaAllocation,
@@ -36,17 +41,16 @@ const TextureUploadContext = struct {
     finished: std.atomic.Value(bool),
 };
 
+/// Per-task context for background updates that swap a managed texture's GPU image.
 const AsyncTextureUpdateContext = struct {
     allocator: *types.VulkanAllocator,
     device: c.VkDevice,
     managed_texture: *types.VulkanManagedTexture,
 
-    // Staging resources
     staging_buffer: c.VkBuffer,
     staging_memory: c.VkDeviceMemory,
     staging_allocation: c.VmaAllocation,
 
-    // New texture resources
     new_image: c.VkImage,
     new_memory: c.VkDeviceMemory,
     new_view: c.VkImageView,
@@ -55,7 +59,7 @@ const AsyncTextureUpdateContext = struct {
 
     secondary_context: types.CardinalSecondaryCommandContext,
 
-    // Texture data copy
+    /// Copy of decoded texture data owned by the task until it completes.
     texture_data: scene.CardinalTexture,
 
     finished: std.atomic.Value(bool),
@@ -63,12 +67,12 @@ const AsyncTextureUpdateContext = struct {
     next: ?*AsyncTextureUpdateContext,
 };
 
+/// Records staging + copy commands and prepares a new GPU image for a texture update.
 fn update_texture_task(data: ?*anyopaque) callconv(.c) void {
     if (data == null) return;
     const ctx: *AsyncTextureUpdateContext = @ptrCast(@alignCast(data));
     ctx.success = false;
 
-    // Get thread command pool
     const pool = vk_mt.cardinal_mt_get_thread_command_pool(&vk_mt.g_cardinal_mt_subsystem.command_manager);
     if (pool == null) {
         tex_mgr_log.err("Failed to get thread command pool for update task", .{});
@@ -76,19 +80,16 @@ fn update_texture_task(data: ?*anyopaque) callconv(.c) void {
         return;
     }
 
-    // Allocate secondary command buffer
     if (!vk_mt.cardinal_mt_allocate_secondary_command_buffer(pool.?, &ctx.secondary_context)) {
         tex_mgr_log.err("Failed to allocate secondary command buffer for update task", .{});
         ctx.finished.store(true, .release);
         return;
     }
 
-    // Create new image and memory
     var format: c.VkFormat = if (ctx.texture_data.format != 0) @intCast(ctx.texture_data.format) else c.VK_FORMAT_UNDEFINED;
     if (format == c.VK_FORMAT_UNDEFINED) {
         format = if (ctx.texture_data.is_hdr != 0) c.VK_FORMAT_R32G32B32A32_SFLOAT else c.VK_FORMAT_R8G8B8A8_SRGB;
     }
-    // Update format in context so manager knows what we picked
     ctx.texture_data.format = @intCast(format);
 
     if (!vk_texture_utils.create_image_and_memory(ctx.allocator, ctx.device, ctx.texture_data.width, ctx.texture_data.height, format, &ctx.new_image, &ctx.new_memory, &ctx.new_allocation)) {
@@ -97,7 +98,6 @@ fn update_texture_task(data: ?*anyopaque) callconv(.c) void {
         return;
     }
 
-    // Create staging buffer and copy data
     tex_mgr_log.debug("Update texture task: {d}x{d}, Size: {d}, Format: {d}", .{ ctx.texture_data.width, ctx.texture_data.height, ctx.texture_data.data_size, ctx.texture_data.format });
     if (!vk_texture_utils.create_staging_buffer_with_data(ctx.allocator, ctx.device, &ctx.texture_data, &ctx.staging_buffer, &ctx.staging_memory, &ctx.staging_allocation)) {
         tex_mgr_log.err("Failed to create staging buffer for update (Size: {d})", .{ctx.texture_data.data_size});
@@ -105,14 +105,12 @@ fn update_texture_task(data: ?*anyopaque) callconv(.c) void {
         return;
     }
 
-    // Create new view
     if (!vk_texture_utils.create_texture_image_view(ctx.device, ctx.new_image, &ctx.new_view, format)) {
         tex_mgr_log.err("Failed to create new view for update", .{});
         ctx.finished.store(true, .release);
         return;
     }
 
-    // Record copy commands
     var begin_info = std.mem.zeroes(c.VkCommandBufferBeginInfo);
     begin_info.sType = c.VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
     begin_info.flags = c.VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
@@ -139,12 +137,12 @@ fn update_texture_task(data: ?*anyopaque) callconv(.c) void {
     ctx.finished.store(true, .release);
 }
 
+/// Records staging + copy commands for uploading texture bytes into an existing image.
 fn upload_texture_task(data: ?*anyopaque) callconv(.c) void {
     if (data == null) return;
     const ctx: *TextureUploadContext = @ptrCast(@alignCast(data));
     ctx.success = false;
 
-    // Get thread command pool
     const pool = vk_mt.cardinal_mt_get_thread_command_pool(&vk_mt.g_cardinal_mt_subsystem.command_manager);
     if (pool == null) {
         tex_mgr_log.err("Failed to get thread command pool", .{});
@@ -152,26 +150,22 @@ fn upload_texture_task(data: ?*anyopaque) callconv(.c) void {
         return;
     }
 
-    // Allocate secondary command buffer
     if (!vk_mt.cardinal_mt_allocate_secondary_command_buffer(pool.?, &ctx.secondary_context)) {
         tex_mgr_log.err("Failed to allocate secondary command buffer", .{});
         ctx.finished.store(true, .release);
         return;
     }
 
-    // Create staging buffer and copy data
     if (!vk_texture_utils.create_staging_buffer_with_data(ctx.allocator, ctx.device, ctx.texture, &ctx.staging_buffer, &ctx.staging_memory, &ctx.staging_allocation)) {
         tex_mgr_log.err("Failed to create staging buffer", .{});
         ctx.finished.store(true, .release);
         return;
     }
 
-    // Record copy commands
     var begin_info = std.mem.zeroes(c.VkCommandBufferBeginInfo);
     begin_info.sType = c.VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
     begin_info.flags = c.VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
 
-    // Secondary command buffers MUST have inheritance info
     var inheritance = std.mem.zeroes(c.VkCommandBufferInheritanceInfo);
     inheritance.sType = c.VK_STRUCTURE_TYPE_COMMAND_BUFFER_INHERITANCE_INFO;
     begin_info.pInheritanceInfo = &inheritance;
@@ -194,9 +188,9 @@ fn upload_texture_task(data: ?*anyopaque) callconv(.c) void {
     ctx.finished.store(true, .release);
 }
 
+/// Initializes the manager and its bindless pool, if a Vulkan state is provided.
 pub fn vk_texture_manager_init(manager: *types.VulkanTextureManager, config: *const types.VulkanTextureManagerConfig) bool {
     manager.device = config.device;
-    // Get physical device from allocator or vulkan_state
     if (config.allocator.physical_device != null) {
         manager.physicalDevice = config.allocator.physical_device;
     } else if (config.vulkan_state != null) {
@@ -217,21 +211,18 @@ pub fn vk_texture_manager_init(manager: *types.VulkanTextureManager, config: *co
     manager.pending_updates = null;
     manager.bindless_pool = std.mem.zeroes(types.BindlessTexturePool);
 
-    // Initialize bindless pool if vulkan_state is available
     if (config.vulkan_state != null) {
         const vs = @as(*types.VulkanState, @ptrCast(@alignCast(config.vulkan_state.?)));
 
-        // Copy vkQueueSubmit2 function pointer
         manager.vkQueueSubmit2 = vs.context.vkQueueSubmit2;
 
-        // Use a large enough capacity for bindless textures (e.g. 4096)
+        // TODO: Make bindless pool capacity configurable.
         if (!vk_descriptor_indexing.vk_bindless_texture_pool_init(&manager.bindless_pool, vs, 4096)) {
             tex_mgr_log.err("Failed to initialize bindless texture pool", .{});
             return false;
         }
     }
 
-    // Initialize async upload buffers
     var i: u32 = 0;
     while (i < types.MAX_FRAMES_IN_FLIGHT) : (i += 1) {
         var allocInfo = std.mem.zeroes(c.VkCommandBufferAllocateInfo);
@@ -251,6 +242,7 @@ pub fn vk_texture_manager_init(manager: *types.VulkanTextureManager, config: *co
     return true;
 }
 
+/// Waits for all pending update tasks to finish.
 pub fn vk_texture_manager_wait_idle(manager: *types.VulkanTextureManager) void {
     var curr_ptr = @as(?*AsyncTextureUpdateContext, @ptrCast(@alignCast(manager.pending_updates)));
     while (curr_ptr) |ctx| {
@@ -265,13 +257,12 @@ pub fn vk_texture_manager_wait_idle(manager: *types.VulkanTextureManager) void {
     }
 }
 
+/// Destroys all textures and frees bindless pool state.
 pub fn vk_texture_manager_destroy(manager: *types.VulkanTextureManager) void {
-    // Wait for and cleanup pending updates
     vk_texture_manager_wait_idle(manager);
 
     var curr_ptr = @as(?*AsyncTextureUpdateContext, @ptrCast(@alignCast(manager.pending_updates)));
     while (curr_ptr) |ctx| {
-        // Cleanup resources
         if (ctx.new_view != null) c.vkDestroyImageView(manager.device, ctx.new_view, null);
         if (ctx.new_image != null) vk_allocator.free_image(manager.allocator, ctx.new_image, ctx.new_allocation);
         if (ctx.staging_buffer != null) vk_allocator.free_buffer(manager.allocator, ctx.staging_buffer, ctx.staging_allocation);
@@ -286,7 +277,6 @@ pub fn vk_texture_manager_destroy(manager: *types.VulkanTextureManager) void {
 
     vk_texture_manager_clear_textures(manager);
 
-    // Destroy placeholder if it exists (index 0)
     if (manager.hasPlaceholder and manager.textures != null) {
         const tex = &manager.textures.?[0];
         if (tex.is_allocated) {
@@ -306,7 +296,6 @@ pub fn vk_texture_manager_destroy(manager: *types.VulkanTextureManager) void {
 
     vk_descriptor_indexing.vk_bindless_texture_pool_destroy(&manager.bindless_pool);
 
-    // Free upload command buffers
     var i: u32 = 0;
     while (i < types.MAX_FRAMES_IN_FLIGHT) : (i += 1) {
         if (manager.upload_command_buffers[i] != null) {
@@ -318,20 +307,19 @@ pub fn vk_texture_manager_destroy(manager: *types.VulkanTextureManager) void {
     manager.textureCapacity = 0;
 }
 
+/// Ensures `manager.textures` can hold at least `required` entries.
 fn ensure_capacity(manager: *types.VulkanTextureManager, required: u32) bool {
     if (manager.textureCapacity >= required) return true;
 
     const new_capacity = if (manager.textureCapacity == 0) @max(16, required) else @max(manager.textureCapacity * 2, required);
     const allocator = memory.cardinal_get_allocator_for_category(.RENDERER);
 
-    // Reallocate
     const old_ptr = manager.textures;
     const new_size = new_capacity * @sizeOf(types.VulkanManagedTexture);
     const new_ptr = memory.cardinal_realloc(allocator, old_ptr, new_size);
 
     if (new_ptr) |ptr| {
         manager.textures = @as([*]types.VulkanManagedTexture, @ptrCast(@alignCast(ptr)));
-        // Zero out the newly allocated portion to prevent garbage data
         const old_size = manager.textureCapacity * @sizeOf(types.VulkanManagedTexture);
         if (new_size > old_size) {
             const diff = new_size - old_size;
@@ -345,6 +333,7 @@ fn ensure_capacity(manager: *types.VulkanTextureManager, required: u32) bool {
     return false;
 }
 
+/// Creates a placeholder texture at slot 0 if missing.
 pub fn vk_texture_manager_create_placeholder(manager: *types.VulkanTextureManager, out_index: *u32) bool {
     if (manager.hasPlaceholder and manager.textureCount > 0) {
         out_index.* = 0;
@@ -355,12 +344,10 @@ pub fn vk_texture_manager_create_placeholder(manager: *types.VulkanTextureManage
 
     var tex = &manager.textures.?[0];
 
-    // Create placeholder texture using utils
     if (!vk_texture_utils.vk_texture_create_placeholder(manager.allocator, manager.device, manager.commandPool, manager.graphicsQueue, &tex.image, &tex.memory, &tex.view, &tex.format, &tex.allocation)) {
         return false;
     }
 
-    // Create sampler
     if (!vk_texture_utils.vk_texture_create_sampler(manager.device, manager.physicalDevice, &tex.sampler)) {
         if (tex.view != null) c.vkDestroyImageView(manager.device, tex.view, null);
         if (tex.image != null) vk_allocator.free_image(manager.allocator, tex.image, tex.allocation);
@@ -375,10 +362,9 @@ pub fn vk_texture_manager_create_placeholder(manager: *types.VulkanTextureManage
     tex.is_allocated = true;
     tex.isPlaceholder = true;
     tex.path = null;
-    tex.bindless_index = 0; // Will be set by bindless system if used
+    tex.bindless_index = 0;
     tex.resource = null;
 
-    // Register placeholder in bindless pool
     if (manager.bindless_pool.textures != null) {
         var bindless_idx: u32 = 0;
         if (vk_descriptor_indexing.vk_bindless_texture_register_existing(&manager.bindless_pool, tex.image, tex.view, tex.sampler, &bindless_idx)) {
@@ -394,10 +380,10 @@ pub fn vk_texture_manager_create_placeholder(manager: *types.VulkanTextureManage
     return true;
 }
 
+/// Clears all textures except the placeholder at slot 0.
 pub fn vk_texture_manager_clear_textures(manager: *types.VulkanTextureManager) void {
     if (manager.textures == null) return;
 
-    // Destroy all textures except placeholder (index 0)
     var i: u32 = 1;
     while (i < manager.textureCount) : (i += 1) {
         const tex = &manager.textures.?[i];
@@ -406,13 +392,11 @@ pub fn vk_texture_manager_clear_textures(manager: *types.VulkanTextureManager) v
             if (tex.sampler != null) c.vkDestroySampler(manager.device, tex.sampler, null);
             if (tex.image != null) vk_allocator.free_image(manager.allocator, tex.image, tex.allocation);
         } else {
-            // Unallocated textures (fallbacks) might own view/sampler but not image
             if (tex.view != null) c.vkDestroyImageView(manager.device, tex.view, null);
             if (tex.sampler != null) c.vkDestroySampler(manager.device, tex.sampler, null);
         }
     }
 
-    // Reset count to 1 (keep placeholder)
     if (manager.hasPlaceholder) {
         manager.textureCount = 1;
     } else {
@@ -420,20 +404,18 @@ pub fn vk_texture_manager_clear_textures(manager: *types.VulkanTextureManager) v
     }
 }
 
+/// Initializes per-scene texture slots and queues async updates for ready resources.
 pub fn vk_texture_manager_load_scene_textures(manager: *types.VulkanTextureManager, scene_data: ?*const scene.CardinalScene) bool {
     if (scene_data == null) {
         tex_mgr_log.err("Invalid parameters for scene texture loading", .{});
         return false;
     }
 
-    // Clear existing textures (except placeholder)
+    // TODO: Split this function into smaller helpers.
     vk_texture_manager_clear_textures(manager);
 
-    // Reset bindless pool to free all indices
-    // This is safe because we just cleared all textures that were using these indices
     vk_descriptor_indexing.vk_bindless_texture_pool_reset(&manager.bindless_pool);
 
-    // Ensure we have a placeholder texture at index 0
     if (!manager.hasPlaceholder) {
         var placeholder_index: u32 = 0;
         if (!vk_texture_manager_create_placeholder(manager, &placeholder_index)) {
@@ -441,8 +423,6 @@ pub fn vk_texture_manager_load_scene_textures(manager: *types.VulkanTextureManag
             return false;
         }
     } else {
-        // Re-register existing placeholder (index 0) because we reset the pool
-        // manager.textures[0] is still valid from clear_textures logic
         if (manager.textureCount > 0 and manager.bindless_pool.textures != null) {
             const tex = &manager.textures.?[0];
             var bindless_idx: u32 = 0;
@@ -455,23 +435,19 @@ pub fn vk_texture_manager_load_scene_textures(manager: *types.VulkanTextureManag
         }
     }
 
-    // If no scene textures, we're done (placeholder is sufficient)
     if (scene_data.?.texture_count == 0 or scene_data.?.textures == null) {
         tex_mgr_log.info("No scene textures to load, using placeholder only", .{});
         return true;
     }
 
-    // Ensure capacity for all scene textures
-    const required_capacity = scene_data.?.texture_count + 1; // +1 for placeholder
+    const required_capacity = 1 + scene_data.?.texture_count;
     if (!ensure_capacity(manager, required_capacity)) {
         tex_mgr_log.err("Failed to ensure capacity for {d} textures", .{required_capacity});
         return false;
     }
 
-    // Wait for and cleanup all pending updates to prevent race conditions with pool reset
     var curr_ptr = @as(?*AsyncTextureUpdateContext, @ptrCast(@alignCast(manager.pending_updates)));
     while (curr_ptr) |ctx| {
-        // Wait for task completion
         while (!ctx.finished.load(.acquire)) {
             if (builtin.os.tag == .windows) {
                 c.Sleep(1);
@@ -480,8 +456,6 @@ pub fn vk_texture_manager_load_scene_textures(manager: *types.VulkanTextureManag
             }
         }
 
-        // Cleanup resources
-        // Note: Contexts are calloc'd so uninitialized fields are null/safe to free
         c.vkDestroyImageView(manager.device, ctx.new_view, null);
         vk_allocator.free_image(manager.allocator, ctx.new_image, ctx.new_allocation);
         vk_allocator.free_buffer(manager.allocator, ctx.staging_buffer, ctx.staging_allocation);
@@ -494,7 +468,7 @@ pub fn vk_texture_manager_load_scene_textures(manager: *types.VulkanTextureManag
     }
     manager.pending_updates = null;
 
-    // Reset command pools to ensure we have enough secondary command buffers
+    // TODO: Avoid vkDeviceWaitIdle here; synchronize per-task using fences or timeline waits.
     _ = c.vkDeviceWaitIdle(manager.device);
     vk_mt.cardinal_mt_reset_all_command_pools(&vk_mt.g_cardinal_mt_subsystem.command_manager);
 
@@ -503,36 +477,29 @@ pub fn vk_texture_manager_load_scene_textures(manager: *types.VulkanTextureManag
     const allocator = memory.cardinal_get_allocator_for_category(.RENDERER);
     const placeholder = &manager.textures.?[0];
 
-    // Initialize all textures as placeholders and queue uploads for those with data
     var tasks_submitted: u32 = 0;
     var i: u32 = 0;
     while (i < scene_data.?.texture_count) : (i += 1) {
         const texture = &scene_data.?.textures.?[i];
-        // Texture index maps to manager index i + 1 (0 is placeholder)
         const slot_index = 1 + i;
 
-        // Initialize managed texture
         var tex = &manager.textures.?[slot_index];
-        // Ensure struct is zeroed before use
         @memset(@as([*]u8, @ptrCast(tex))[0..@sizeOf(types.VulkanManagedTexture)], 0);
 
-        // Set to placeholder initially
         tex.width = placeholder.width;
         tex.height = placeholder.height;
         tex.channels = placeholder.channels;
         tex.format = placeholder.format;
         tex.isPlaceholder = true;
-        tex.is_allocated = false; // Do not own image memory yet
+        tex.is_allocated = false;
         tex.path = texture.path;
         tex.resource = null;
 
-        // Create view for placeholder image
         if (!vk_texture_utils.create_texture_image_view(manager.device, placeholder.image, &tex.view, placeholder.format)) {
             tex_mgr_log.err("Failed to create fallback view for texture {d}", .{i});
             tex.view = null;
         }
 
-        // Create default sampler
         var sampler_config = std.mem.zeroes(scene.CardinalSampler);
         sampler_config.wrap_s = c.VK_SAMPLER_ADDRESS_MODE_REPEAT;
         sampler_config.wrap_t = c.VK_SAMPLER_ADDRESS_MODE_REPEAT;
@@ -544,14 +511,11 @@ pub fn vk_texture_manager_load_scene_textures(manager: *types.VulkanTextureManag
             tex_mgr_log.err("Failed to create sampler for texture {d}", .{i});
         }
 
-        // Check ref resource
         var is_loading_resource = false;
         var ref_res = texture.ref_resource;
 
-        // Auto-load from path if missing resource (e.g. from NIF loader)
         if (ref_res == null and texture.path != null) {
             const path_span = std.mem.span(texture.path.?);
-            // Try to load via AssetManager
             if (asset_manager.get().loadTexture(path_span)) |handle| {
                 if (asset_manager.get().getTexture(handle)) |loaded_tex| {
                     ref_res = loaded_tex.ref_resource;
@@ -564,24 +528,18 @@ pub fn vk_texture_manager_load_scene_textures(manager: *types.VulkanTextureManag
 
         if (ref_res) |res| {
             tex.resource = @ptrCast(res);
-            // We always start as placeholder on GPU until we upload the real data
             if (res.identifier) |id| {
                 const state = resource_state.cardinal_resource_state_get(id);
                 if (state != .LOADED) is_loading_resource = true;
             }
         }
 
-        // Use placeholder bindless index
         if (manager.hasPlaceholder) {
-            // Assign a new bindless slot for this texture, pointing to the placeholder initially.
-            // This ensures each texture has a unique slot that materials can reference.
-            // When the real texture loads, we just update this slot.
             var bindless_idx: u32 = 0;
             if (tex.view != null and tex.sampler != null and manager.bindless_pool.textures != null and
                 vk_descriptor_indexing.vk_bindless_texture_register_existing(&manager.bindless_pool, placeholder.image, tex.view, tex.sampler, &bindless_idx))
             {
                 tex.bindless_index = bindless_idx;
-                // No need to flush here, we can flush once at the end or let the system handle it
             } else {
                 tex_mgr_log.err("Failed to allocate bindless slot for texture {d} (View: {any}, Sampler: {any})", .{ i, tex.view, tex.sampler });
                 tex.bindless_index = c.UINT32_MAX;
@@ -590,29 +548,18 @@ pub fn vk_texture_manager_load_scene_textures(manager: *types.VulkanTextureManag
             tex.bindless_index = c.UINT32_MAX;
         }
 
-        // Try to set desired format from scene texture if available
-        // If it's 0 (undefined), we keep placeholder format for now, but update will pick it up later from AssetManager
-        // Actually, we can't easily change tex.format here if it differs from placeholder image format
-        // because view/image must match. So we rely on update task to swap image and format.
-
-        // If texture has data, queue an async update immediately
-        // Skip if resource is still loading (data points to placeholder)
-        // Also allow if we have a loaded resource even if texture.data is null (e.g. NIF auto-load)
         const has_direct_data = (texture.data != null and texture.width > 0 and texture.height > 0);
         const has_loaded_res = (ref_res != null and !is_loading_resource);
 
         if ((has_direct_data or has_loaded_res) and !is_loading_resource) {
-            // Allocate context for async update
             const ctx_ptr = memory.cardinal_calloc(allocator, 1, @sizeOf(AsyncTextureUpdateContext));
             if (ctx_ptr) |ptr| {
                 const ctx = @as(*AsyncTextureUpdateContext, @ptrCast(@alignCast(ptr)));
                 ctx.allocator = manager.allocator.?;
                 ctx.device = manager.device;
                 ctx.managed_texture = tex;
-                ctx.texture_data = texture.*; // Copy structure (pointer to data is preserved)
+                ctx.texture_data = texture.*;
 
-                // If we have a loaded resource, ensure we use its fresh data dimensions/format
-                // (Scene texture data might be stale placeholder data if loaded async before scene setup)
                 if (ref_res != null) {
                     const res = @as(*ref_counting.CardinalRefCountedResource, @ptrCast(@alignCast(ref_res.?)));
                     const res_data = @as(*texture_loader.TextureData, @ptrCast(@alignCast(res.resource.?)));
@@ -622,8 +569,6 @@ pub fn vk_texture_manager_load_scene_textures(manager: *types.VulkanTextureManag
                     ctx.texture_data.height = res_data.height;
                     ctx.texture_data.channels = res_data.channels;
                     ctx.texture_data.is_hdr = res_data.is_hdr;
-                    // Prefer the scene texture format if it's set (allows overriding SRGB to UNORM for normal maps)
-                    // If scene format is 0 (undefined), fall back to resource format
                     ctx.texture_data.format = if (ctx.texture_data.format != 0) ctx.texture_data.format else res_data.format;
                     ctx.texture_data.data_size = res_data.data_size;
                 }
@@ -632,7 +577,6 @@ pub fn vk_texture_manager_load_scene_textures(manager: *types.VulkanTextureManag
                 ctx.finished = std.atomic.Value(bool).init(false);
                 ctx.success = false;
 
-                // Allocate task
                 const task_ptr = memory.cardinal_alloc(allocator, @sizeOf(types.CardinalMTTask));
                 if (task_ptr) |tptr| {
                     const task: *types.CardinalMTTask = @ptrCast(@alignCast(tptr));
@@ -646,7 +590,6 @@ pub fn vk_texture_manager_load_scene_textures(manager: *types.VulkanTextureManag
 
                     if (vk_mt.cardinal_mt_submit_task(task)) {
                         tex.is_updating = true;
-                        // Add to pending list (prepend)
                         ctx.next = @ptrCast(@alignCast(manager.pending_updates));
                         manager.pending_updates = ctx;
                         tasks_submitted += 1;
@@ -667,10 +610,8 @@ pub fn vk_texture_manager_load_scene_textures(manager: *types.VulkanTextureManag
         }
     }
 
-    // Update manager count immediately so renderer sees them (as placeholders)
     manager.textureCount = scene_data.?.texture_count + 1;
 
-    // Flush bindless updates if we allocated new slots
     if (manager.bindless_pool.textures != null) {
         _ = vk_descriptor_indexing.vk_bindless_texture_flush_updates(&manager.bindless_pool);
     }
@@ -679,13 +620,14 @@ pub fn vk_texture_manager_load_scene_textures(manager: *types.VulkanTextureManag
     return true;
 }
 
+/// Creates a Vulkan sampler matching a scene sampler description.
 fn create_sampler_from_config(device: c.VkDevice, config: *const scene.CardinalSampler) c.VkSampler {
     var samplerInfo = std.mem.zeroes(c.VkSamplerCreateInfo);
     samplerInfo.sType = c.VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO;
     samplerInfo.magFilter = @intCast(config.mag_filter);
     samplerInfo.minFilter = @intCast(config.min_filter);
     samplerInfo.addressModeU = @intCast(config.wrap_s);
-    samplerInfo.addressModeV = @intCast(config.wrap_t); // Casts
+    samplerInfo.addressModeV = @intCast(config.wrap_t);
     samplerInfo.addressModeW = c.VK_SAMPLER_ADDRESS_MODE_REPEAT;
     samplerInfo.anisotropyEnable = c.VK_TRUE;
     samplerInfo.maxAnisotropy = 16.0;
@@ -706,69 +648,67 @@ fn create_sampler_from_config(device: c.VkDevice, config: *const scene.CardinalS
     return sampler;
 }
 
+/// Attempts to replace placeholder textures with real GPU uploads once their backing resources load.
+///
+/// This is a best-effort pass intended to be called every frame. It can:
+/// - resolve a missing `tex.resource` from `tex.path` via the asset manager
+/// - check the resource-state tracker for completion
+/// - enqueue an async upload/update task into the MT subsystem
 fn check_pending_loads(manager: *types.VulkanTextureManager) void {
     if (manager.textures == null) return;
 
-    var i: u32 = 1; // Skip placeholder
+    var i: u32 = 1;
     while (i < manager.textureCount) : (i += 1) {
         var tex = &manager.textures.?[i];
 
-        // Check if texture is a placeholder, not updating, not failed, and has a source (resource or path)
         if (tex.isPlaceholder and !tex.is_updating and !tex.update_failed) {
             var loaded_resource: ?*ref_counting.CardinalRefCountedResource = null;
 
-            // 1. Resolve resource from path if missing
             if (tex.resource == null and tex.path != null) {
                 const path_span = std.mem.span(tex.path.?);
                 if (asset_manager.get().loadTexture(path_span)) |handle| {
                     if (asset_manager.get().getTexture(handle)) |loaded_tex| {
                         if (loaded_tex.ref_resource) |res| {
-                             tex.resource = @ptrCast(res);
+                            tex.resource = @ptrCast(res);
                         }
                     }
-                } else |_| {
-                    // Ignore load error for now, will retry next frame
-                }
+                } else |_| {}
             }
 
-            // 2. Check if resource is loaded
             if (tex.resource) |res_ptr| {
                 const res = @as(*ref_counting.CardinalRefCountedResource, @ptrCast(@alignCast(res_ptr)));
-                 if (res.identifier) |id| {
+                if (res.identifier) |id| {
                     if (resource_state.cardinal_resource_state_get(id) == .LOADED) {
                         loaded_resource = res;
                     }
                 }
             }
 
-            // 3. Trigger upload if loaded
             if (loaded_resource) |res| {
-                 const res_data = @as(*texture_loader.TextureData, @ptrCast(@alignCast(res.resource.?)));
-                 
-                 // Construct CardinalTexture for the context
-                 var scene_tex = std.mem.zeroes(scene.CardinalTexture);
-                 scene_tex.width = res_data.width;
-                 scene_tex.height = res_data.height;
-                 scene_tex.channels = res_data.channels;
-                 scene_tex.format = res_data.format;
-                 scene_tex.data_size = res_data.data_size;
-                 scene_tex.data = res_data.data;
-                 scene_tex.is_hdr = res_data.is_hdr;
-                 // path/ref_resource don't matter for upload task logic
-                 
-                 const allocator = memory.cardinal_get_allocator_for_category(.RENDERER);
-                 const ctx_ptr = memory.cardinal_calloc(allocator, 1, @sizeOf(AsyncTextureUpdateContext));
-                 if (ctx_ptr) |ptr| {
+                const res_data = @as(*texture_loader.TextureData, @ptrCast(@alignCast(res.resource.?)));
+
+                var scene_tex = std.mem.zeroes(scene.CardinalTexture);
+                scene_tex.width = res_data.width;
+                scene_tex.height = res_data.height;
+                scene_tex.channels = res_data.channels;
+                scene_tex.format = res_data.format;
+                scene_tex.data_size = res_data.data_size;
+                scene_tex.data = res_data.data;
+                scene_tex.is_hdr = res_data.is_hdr;
+
+                const allocator = memory.cardinal_get_allocator_for_category(.RENDERER);
+                const ctx_ptr = memory.cardinal_calloc(allocator, 1, @sizeOf(AsyncTextureUpdateContext));
+                if (ctx_ptr) |ptr| {
                     const ctx = @as(*AsyncTextureUpdateContext, @ptrCast(@alignCast(ptr)));
                     ctx.allocator = manager.allocator.?;
                     ctx.device = manager.device;
                     ctx.managed_texture = tex;
                     ctx.texture_data = scene_tex;
-                    
+
                     ctx.next = null;
                     ctx.finished = std.atomic.Value(bool).init(false);
                     ctx.success = false;
-                    
+
                     const task_ptr = memory.cardinal_alloc(allocator, @sizeOf(types.CardinalMTTask));
                     if (task_ptr) |tptr| {
                         const task: *types.CardinalMTTask = @ptrCast(@alignCast(tptr));
@@ -779,10 +719,9 @@ fn check_pending_loads(manager: *types.VulkanTextureManager) void {
                         task.is_completed = false;
                         task.success = false;
                         task.next = null;
-                        
+
                         if (vk_mt.cardinal_mt_submit_task(task)) {
                             tex.is_updating = true;
-                            // Add to pending updates (prepend)
                             ctx.next = @ptrCast(@alignCast(manager.pending_updates));
                             manager.pending_updates = ctx;
                             tex_mgr_log.info("Triggered async upload for auto-loaded texture {d}", .{i});
@@ -790,12 +729,13 @@ fn check_pending_loads(manager: *types.VulkanTextureManager) void {
                             tex_mgr_log.err("Failed to submit async task for texture {d}", .{i});
                         }
                     }
-                 }
+                }
             }
         }
     }
 }
 
+/// Advances async texture uploads/updates and returns the most recent timeline signal value.
 pub fn vk_texture_manager_update_textures(manager: *types.VulkanTextureManager) ?u64 {
     check_pending_loads(manager);
 
@@ -804,7 +744,6 @@ pub fn vk_texture_manager_update_textures(manager: *types.VulkanTextureManager) 
     const mem_alloc = memory.cardinal_get_allocator_for_category(.RENDERER);
     var last_signal_value: ?u64 = null;
 
-    // 1. Process pending updates
     var curr_ptr: ?*AsyncTextureUpdateContext = @ptrCast(@alignCast(manager.pending_updates));
 
     var head = curr_ptr;
@@ -817,14 +756,12 @@ pub fn vk_texture_manager_update_textures(manager: *types.VulkanTextureManager) 
         const next = ctx.next;
 
         if (ctx.finished.load(.acquire)) {
-            // Remove from pending list
             if (prev) |p| {
                 p.next = next;
             } else {
                 head = next;
             }
 
-            // Add to completed list
             ctx.next = completed_list;
             completed_list = ctx;
             completed_count += 1;
@@ -837,7 +774,6 @@ pub fn vk_texture_manager_update_textures(manager: *types.VulkanTextureManager) 
     }
     manager.pending_updates = @ptrCast(@alignCast(head));
 
-    // Batch process completed updates
     if (completed_count > 0) {
         tex_mgr_log.info("Processing {d} completed texture updates...", .{completed_count});
         var submit_success = false;
@@ -846,7 +782,6 @@ pub fn vk_texture_manager_update_textures(manager: *types.VulkanTextureManager) 
         var using_reusable = false;
         var reused_index: ?u32 = null;
 
-        // Collect secondary command buffers for successful tasks
         const cmd_bufs_ptr = memory.cardinal_alloc(mem_alloc, @sizeOf(c.VkCommandBuffer) * completed_count);
 
         if (cmd_bufs_ptr) |ptr| {
@@ -862,8 +797,6 @@ pub fn vk_texture_manager_update_textures(manager: *types.VulkanTextureManager) 
             }
 
             if (valid_count > 0) {
-                // Batch completed updates into one primary buffer.
-                // Try to find a reusable buffer
                 var reusable_cmd: c.VkCommandBuffer = null;
 
                 if (manager.syncManager) |sync| {
@@ -919,7 +852,6 @@ pub fn vk_texture_manager_update_textures(manager: *types.VulkanTextureManager) 
                     submit_info.commandBufferInfoCount = 1;
                     submit_info.pCommandBufferInfos = &cmd_info;
 
-                    // Use timeline semaphore to signal completion
                     var signal_info = std.mem.zeroes(c.VkSemaphoreSubmitInfo);
 
                     if (manager.syncManager) |sync| {
@@ -932,7 +864,6 @@ pub fn vk_texture_manager_update_textures(manager: *types.VulkanTextureManager) 
                         submit_info.pSignalSemaphoreInfos = &signal_info;
                     }
 
-                    // Use loaded function pointer for modern submit
                     if (vk_sync_mgr.vulkan_sync_manager_submit_queue2(manager.graphicsQueue, 1, @ptrCast(&submit_info), null, manager.vkQueueSubmit2) == c.VK_SUCCESS) {
                         submit_success = true;
                         last_signal_value = signal_val;
@@ -946,36 +877,29 @@ pub fn vk_texture_manager_update_textures(manager: *types.VulkanTextureManager) 
             memory.cardinal_free(mem_alloc, ptr);
         }
 
-        // If no sync manager, wait for the batch to complete before processing cleanups
         if (submit_success and manager.syncManager == null) {
-            _ = c.vkQueueWaitIdle(manager.graphicsQueue); // This should also be locked if concurrent
+            // TODO: Serialize queue wait/submit calls if multiple threads can touch graphicsQueue.
+            _ = c.vkQueueWaitIdle(manager.graphicsQueue);
         }
 
-        // Process results for all completed tasks
         var iter = completed_list;
         while (iter) |ctx| {
             const next = ctx.next;
 
-            // Log completion status for debugging
             if (!ctx.success) {
                 tex_mgr_log.err("Processing failed task for texture {d}x{d} (fmt: {d})", .{ ctx.texture_data.width, ctx.texture_data.height, ctx.texture_data.format });
             }
 
-            // If the batch submit succeeded AND this specific task was successful
             if (submit_success and ctx.success) {
-                // Register cleanup for staging buffer and OLD image
                 if (manager.syncManager != null) {
                     vk_texture_utils.add_staging_buffer_cleanup(manager.allocator, ctx.staging_buffer, ctx.staging_memory, ctx.staging_allocation, manager.device, signal_val);
                 } else {
-                    // We have already waited idle above, so we can free immediately.
                     vk_allocator.free_buffer(manager.allocator, ctx.staging_buffer, ctx.staging_allocation);
                 }
 
-                // Update managed texture
                 const tex = ctx.managed_texture;
                 tex_mgr_log.info("Updating texture ptr: {*}, BindlessIndex: {d}", .{ tex, tex.bindless_index });
 
-                // Cleanup old placeholder resources
                 if (tex.is_allocated) {
                     if (tex.view != null) c.vkDestroyImageView(manager.device, tex.view, null);
                     if (tex.image != null) {
@@ -986,7 +910,6 @@ pub fn vk_texture_manager_update_textures(manager: *types.VulkanTextureManager) 
                         }
                     }
                 } else {
-                    // Was a placeholder pointing to shared image, but we own the view
                     if (tex.view != null) c.vkDestroyImageView(manager.device, tex.view, null);
                 }
 
@@ -997,19 +920,16 @@ pub fn vk_texture_manager_update_textures(manager: *types.VulkanTextureManager) 
                 tex.width = ctx.texture_data.width;
                 tex.height = ctx.texture_data.height;
                 tex.channels = ctx.texture_data.channels;
-                // Update format from context (which was updated in task)
                 tex.format = ctx.texture_data.format;
                 tex.isPlaceholder = false;
                 tex.is_allocated = true;
                 tex.is_updating = false;
 
-                // Register bindless
                 if (manager.bindless_pool.textures != null) {
                     var bindless_idx: u32 = 0;
                     var success = false;
                     const old_idx = tex.bindless_index;
 
-                    // Try to update existing slot if valid
                     if (old_idx != c.UINT32_MAX) {
                         if (vk_descriptor_indexing.vk_bindless_texture_update_at_index(&manager.bindless_pool, old_idx, tex.image, tex.view, tex.sampler)) {
                             bindless_idx = old_idx;
@@ -1035,9 +955,7 @@ pub fn vk_texture_manager_update_textures(manager: *types.VulkanTextureManager) 
                     }
                 }
             } else {
-                // Task failed OR batch submit failed
                 if (ctx.success) {
-                    // Task was fine, but submit failed. Need to cleanup new resources.
                     tex_mgr_log.err("Failed to submit async texture upload batch (Error code from submit)", .{});
                 } else {
                     tex_mgr_log.err("Async texture task failed execution (check worker logs)", .{});
@@ -1046,20 +964,17 @@ pub fn vk_texture_manager_update_textures(manager: *types.VulkanTextureManager) 
                 c.vkDestroyImageView(manager.device, ctx.new_view, null);
                 vk_allocator.free_image(manager.allocator, ctx.new_image, ctx.new_allocation);
                 vk_allocator.free_buffer(manager.allocator, ctx.staging_buffer, ctx.staging_allocation);
-                // Secondary command buffer belongs to thread pool, do not free here.
 
                 ctx.managed_texture.is_updating = false;
-                ctx.managed_texture.update_failed = true; // Mark as failed to prevent loop
+                ctx.managed_texture.update_failed = true;
                 tex_mgr_log.err("Marked texture as failed to update", .{});
             }
 
-            // Free context
             memory.cardinal_free(mem_alloc, ctx);
 
             iter = next;
         }
 
-        // Cleanup the primary command buffer used for the batch
         if (primary_cmd != null) {
             if (submit_success) {
                 if (manager.syncManager != null) {
@@ -1071,7 +986,6 @@ pub fn vk_texture_manager_update_textures(manager: *types.VulkanTextureManager) 
                         vk_texture_utils.add_command_buffer_cleanup(primary_cmd, manager.commandPool, manager.device, signal_val);
                     }
                 } else {
-                    // We already waited idle if syncManager is null
                     if (!using_reusable) {
                         c.vkFreeCommandBuffers(manager.device, manager.commandPool, 1, &primary_cmd);
                     }
@@ -1084,21 +998,15 @@ pub fn vk_texture_manager_update_textures(manager: *types.VulkanTextureManager) 
         }
     }
 
-    // 2. Check for new updates
     var i: u32 = 1;
     while (i < manager.textureCount) : (i += 1) {
         var tex = &manager.textures.?[i];
 
-        // Only update if placeholder, has resource, and NOT already updating
-        // Also skip if previous update failed to prevent infinite loops
         if (tex.isPlaceholder and tex.resource != null) {
             if (tex.is_updating) {
-                // Already updating, skip
                 continue;
             }
             if (tex.update_failed) {
-                // Previous update failed, skip to avoid loop
-                // tex_mgr_log.warn("Skipping texture {d} because update previously failed", .{i});
                 continue;
             }
 
@@ -1110,7 +1018,6 @@ pub fn vk_texture_manager_update_textures(manager: *types.VulkanTextureManager) 
                 const data = @as(*texture_loader.TextureData, @ptrCast(@alignCast(res.resource.?)));
                 tex_mgr_log.debug("Reading texture data from {*}: Size={d}, Format={d}", .{ data, data.data_size, data.format });
 
-                // Allocate context
                 const ctx_ptr = memory.cardinal_calloc(mem_alloc, 1, @sizeOf(AsyncTextureUpdateContext));
                 if (ctx_ptr) |ptr| {
                     const ctx = @as(*AsyncTextureUpdateContext, @ptrCast(@alignCast(ptr)));
@@ -1118,22 +1025,19 @@ pub fn vk_texture_manager_update_textures(manager: *types.VulkanTextureManager) 
                     ctx.device = manager.device;
                     ctx.managed_texture = tex;
 
-                    // Copy texture data fields explicitly
-                    ctx.texture_data.data = data.data; // Pointer to data in resource
+                    ctx.texture_data.data = data.data;
                     ctx.texture_data.width = data.width;
                     ctx.texture_data.height = data.height;
                     ctx.texture_data.channels = data.channels;
-                    ctx.texture_data.sampler = std.mem.zeroes(scene.CardinalSampler); // Sampler is not in TextureData, zero it
-                    ctx.texture_data.path = null; // Path is not in TextureData
-                    ctx.texture_data.ref_resource = null; // Ref resource is not in TextureData
+                    ctx.texture_data.sampler = std.mem.zeroes(scene.CardinalSampler);
+                    ctx.texture_data.path = null;
+                    ctx.texture_data.ref_resource = null;
                     ctx.texture_data.is_hdr = data.is_hdr;
                     ctx.texture_data.format = data.format;
                     ctx.texture_data.data_size = data.data_size;
 
-                    // Try to look up desired format from AssetManager (to support UNORM override for normal maps)
                     if (tex.path) |path| {
                         if (asset_manager.get().findTexture(std.mem.span(path))) |scene_tex| {
-                            // If scene texture has a specific format (and it's not 0/undefined), use it
                             if (scene_tex.format != 0) {
                                 ctx.texture_data.format = scene_tex.format;
                                 tex_mgr_log.info("Overriding format for texture {s} to {d} (from scene)", .{ std.mem.span(path), scene_tex.format });
@@ -1145,7 +1049,6 @@ pub fn vk_texture_manager_update_textures(manager: *types.VulkanTextureManager) 
                     ctx.finished = std.atomic.Value(bool).init(false);
                     ctx.success = false;
 
-                    // Allocate task separately
                     const task_ptr = memory.cardinal_alloc(mem_alloc, @sizeOf(types.CardinalMTTask));
                     if (task_ptr) |tptr| {
                         const task: *types.CardinalMTTask = @ptrCast(@alignCast(tptr));
@@ -1159,23 +1062,22 @@ pub fn vk_texture_manager_update_textures(manager: *types.VulkanTextureManager) 
 
                         if (vk_mt.cardinal_mt_submit_task(task)) {
                             tex.is_updating = true;
-                            // Add to pending list (prepend)
                             ctx.next = @ptrCast(@alignCast(manager.pending_updates));
                             manager.pending_updates = ctx;
                         } else {
                             tex_mgr_log.err("Failed to submit async texture task", .{});
-                            tex.update_failed = true; // Mark as failed
+                            tex.update_failed = true;
                             memory.cardinal_free(mem_alloc, tptr);
                             memory.cardinal_free(mem_alloc, ptr);
                         }
                     } else {
                         tex_mgr_log.err("Failed to allocate task for texture update", .{});
-                        tex.update_failed = true; // Mark as failed
+                        tex.update_failed = true;
                         memory.cardinal_free(mem_alloc, ptr);
                     }
                 } else {
                     tex_mgr_log.err("Failed to allocate context for texture update", .{});
-                    tex.update_failed = true; // Mark as failed
+                    tex.update_failed = true;
                 }
             }
         }

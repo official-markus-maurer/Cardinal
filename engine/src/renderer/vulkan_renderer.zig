@@ -1,3 +1,8 @@
+//! Vulkan renderer entrypoints.
+//!
+//! Implements the renderer's C-facing API and orchestrates per-frame work across renderer modules.
+//!
+//! TODO: Move per-pass callbacks into dedicated modules to reduce coupling.
 const std = @import("std");
 const builtin = @import("builtin");
 const log = @import("../core/log.zig");
@@ -35,7 +40,7 @@ const vk_post_process = @import("vulkan_post_process.zig");
 const vk_texture_manager = @import("vulkan_texture_manager.zig");
 const vk_shadows = @import("vulkan_shadows.zig");
 
-// Helper to cast opaque pointer to VulkanState
+/// Casts an opaque renderer handle into the backing `VulkanState`.
 fn get_state(renderer: ?*types.CardinalRenderer) ?*types.VulkanState {
     if (renderer == null) return null;
     return @ptrCast(@alignCast(renderer.?._opaque));
@@ -77,10 +82,6 @@ fn pbr_pass_callback(cmd: c.VkCommandBuffer, state: *types.VulkanState) void {
     renderer_log.info("PBR pass frame {d}: use_depth={any}, depth_view={any}, color_view={any}, clear_depth={any}, mode={any}", .{ state.sync.current_frame, use_depth, depth_view, color_view, should_clear_depth, state.current_rendering_mode });
 
     if (vk_commands.vk_begin_rendering_impl(state, cmd, state.current_image_index, use_depth, depth_view, color_view, &clears, true, should_clear_depth, flags, true)) {
-        if (use_depth and depth_view != null) {
-            // Log the image view used for rendering
-        }
-
         if (use_secondary) {
             vk_commands.vk_record_scene_with_secondary_buffers(state, cmd, state.current_image_index, use_depth, &clears);
         } else {
@@ -106,8 +107,6 @@ fn post_process_pass_callback(cmd: c.VkCommandBuffer, state: *types.VulkanState)
     clears[0].color.float32[2] = 0.0;
     clears[0].color.float32[3] = 1.0;
 
-    // Render to Swapchain (Backbuffer)
-    // begin_dynamic_rendering_ext defaults to swapchain view if color_view is null
     renderer_log.info("Post-process pass frame {d}: hdr_view={any}", .{ state.sync.current_frame, input_view });
 
     if (vk_commands.vk_begin_rendering_impl(state, cmd, state.current_image_index, false, null, null, &clears, true, false, 0, true)) {
@@ -189,10 +188,9 @@ fn ui_pass_callback(cmd: c.VkCommandBuffer, state: *types.VulkanState) void {
 fn present_pass_callback(cmd: c.VkCommandBuffer, state: *types.VulkanState) void {
     _ = cmd;
     _ = state;
-    // No drawing; Render Graph will insert the transition to PRESENT_SRC_KHR via outputs/state.
 }
 
-// Window resize callback
+/// Records a pending swapchain resize request.
 fn vk_handle_window_resize(width: u32, height: u32, user_data: ?*anyopaque) callconv(.c) void {
     const s: *types.VulkanState = @ptrCast(@alignCast(user_data orelse return));
     s.swapchain.window_resize_pending = true;
@@ -226,8 +224,6 @@ pub export fn cardinal_renderer_set_post_process_params(renderer: ?*types.Cardin
     const s = get_state(renderer) orelse return;
     const pp = params orelse return;
 
-    // Update the current params. The actual buffer update happens in the render loop (vk_post_process_draw)
-    // for the current frame, ensuring we don't modify buffers currently in use by the GPU.
     if (s.pipelines.post_process_pipeline.initialized) {
         s.pipelines.post_process_pipeline.current_params = pp.*;
     }
@@ -239,12 +235,10 @@ pub export fn cardinal_renderer_set_frame_allocator(renderer: ?*types.CardinalRe
 }
 
 fn init_ref_counting() bool {
-    // Initialize reference counting system (if not already initialized)
     if (!ref_counting.cardinal_ref_counting_init(256)) {
         renderer_log.debug("Reference counting system already initialized or failed to initialize", .{});
     }
 
-    // Initialize unified asset manager
     asset_manager.init() catch {
         renderer_log.err("asset_manager.init() failed", .{});
         return false;
@@ -259,7 +253,6 @@ fn setup_function_pointers(s: *types.VulkanState) void {
         if (func) |f| {
             s.context.vkQueueSubmit2 = @ptrCast(f);
         } else {
-            // Try KHR extension
             const func_khr = c.vkGetDeviceProcAddr(s.context.device, "vkQueueSubmit2KHR");
             if (func_khr) |f| {
                 s.context.vkQueueSubmit2 = @ptrCast(f);
@@ -318,12 +311,10 @@ fn setup_function_pointers(s: *types.VulkanState) void {
         s.context.vkCmdEndRendering = c.vkCmdEndRendering;
 }
 
+/// Points `sync_manager` at the embedded `VulkanSyncManager` instance.
 fn init_sync_manager(s: *types.VulkanState) bool {
-    // Point sync_manager to the embedded sync instance
-    // This avoids dual-state issues where one manager resets the semaphore and the other holds a stale handle
     s.sync_manager = &s.sync;
 
-    // Check if initialized (it should be, by vk_create_commands which calls create_sync_objects)
     if (!s.sync.initialized) {
         renderer_log.warn("Sync manager not initialized by commands, initializing now", .{});
         if (!vk_sync_manager.vulkan_sync_manager_init(&s.sync, s.context.device, s.context.graphics_queue, s.sync.max_frames_in_flight, s.config.timeline_max_ahead)) {
@@ -488,14 +479,12 @@ fn init_pipelines(s: *types.VulkanState) bool {
     init_mesh_shader_pipeline_helper(s);
     init_compute_pipeline_helper(s);
     init_skybox_pipeline_helper(s);
-    // Initialize Post Process Pipeline first so its sampler is available to SSAO
     const post_ok = vk_post_process.vk_post_process_init(s);
     log_pipeline_init_result(post_ok, "renderer_create: Post Process pipeline", "vk_post_process_init failed");
 
     const ssao_ok = vk_ssao.vk_ssao_init(s);
     log_pipeline_init_result(ssao_ok, "renderer_create: SSAO pipeline", "vk_ssao_init failed");
 
-    // Initialize rendering mode
     s.current_rendering_mode = types.CardinalRenderingMode.NORMAL;
 
     init_simple_pipelines_helper(s);
@@ -503,6 +492,7 @@ fn init_pipelines(s: *types.VulkanState) bool {
     return true;
 }
 
+/// Initializes a renderer instance backed by a `VulkanState`.
 pub export fn cardinal_renderer_create(out_renderer: ?*types.CardinalRenderer, win: ?*window.CardinalWindow, config: ?*const types.RendererConfig) callconv(.c) bool {
     if (out_renderer == null or win == null)
         return false;
@@ -514,7 +504,6 @@ pub export fn cardinal_renderer_create(out_renderer: ?*types.CardinalRenderer, w
 
     out_renderer.?._opaque = s;
 
-    // Initialize Config
     if (config) |cfg| {
         s.config = cfg.*;
     } else {
@@ -526,14 +515,12 @@ pub export fn cardinal_renderer_create(out_renderer: ?*types.CardinalRenderer, w
         };
     }
 
-    // Initialize Render Graph
     const rg_ptr = memory.cardinal_alloc(mem_alloc, @sizeOf(render_graph.RenderGraph));
     if (rg_ptr != null) {
         const rg = @as(*render_graph.RenderGraph, @ptrCast(@alignCast(rg_ptr)));
         const renderer_alloc = memory.cardinal_get_allocator_for_category(.RENDERER).as_allocator();
         rg.* = render_graph.RenderGraph.init(renderer_alloc);
 
-        // Mesh Shader Prep (runs before rendering)
         const mesh_prep_pass = render_graph.RenderPass.init(renderer_alloc, "MeshShader Prep", (struct {
             fn cb(cmd: c.VkCommandBuffer, vs: *types.VulkanState) void {
                 _ = cmd;
@@ -542,7 +529,6 @@ pub export fn cardinal_renderer_create(out_renderer: ?*types.CardinalRenderer, w
         }).cb);
         rg.add_pass(mesh_prep_pass) catch {};
 
-        // Shadow Pass (renders cascaded shadow maps for directional lights)
         var shadow_pass = render_graph.RenderPass.init(renderer_alloc, "Shadow Pass", shadow_pass_callback);
         shadow_pass.use_graphics_queue(s);
         shadow_pass.can_be_culled = false;
@@ -557,7 +543,6 @@ pub export fn cardinal_renderer_create(out_renderer: ?*types.CardinalRenderer, w
         }) catch {};
         rg.add_pass(shadow_pass) catch {};
 
-        // Depth Pre-pass
         var depth_pass = render_graph.RenderPass.init(renderer_alloc, "Depth Pre-pass", depth_prepass_pass_callback);
         depth_pass.add_output(renderer_alloc, .{
             .id = types.RESOURCE_ID_DEPTHBUFFER,
@@ -569,7 +554,6 @@ pub export fn cardinal_renderer_create(out_renderer: ?*types.CardinalRenderer, w
         }) catch {};
         rg.add_pass(depth_pass) catch {};
 
-        // SSAO Pass (Compute)
         var ssao_pass = render_graph.RenderPass.init(renderer_alloc, "SSAO Pass", ssao_pass_callback);
         ssao_pass.add_input(renderer_alloc, .{
             .id = types.RESOURCE_ID_DEPTHBUFFER,
@@ -589,7 +573,6 @@ pub export fn cardinal_renderer_create(out_renderer: ?*types.CardinalRenderer, w
         }) catch {};
         rg.add_pass(ssao_pass) catch {};
 
-        // Add PBR Pass
         var pass = render_graph.RenderPass.init(renderer_alloc, "PBR Pass", pbr_pass_callback);
 
         pass.add_output(renderer_alloc, .{
@@ -638,7 +621,6 @@ pub export fn cardinal_renderer_create(out_renderer: ?*types.CardinalRenderer, w
             renderer_log.err("Failed to add PBR pass", .{});
         };
 
-        // Bloom Compute Pass
         var bloom_pass = render_graph.RenderPass.init(renderer_alloc, "Bloom Compute Pass", bloom_compute_pass_callback);
         bloom_pass.add_input(renderer_alloc, .{
             .id = types.RESOURCE_ID_HDR_COLOR,
@@ -658,7 +640,6 @@ pub export fn cardinal_renderer_create(out_renderer: ?*types.CardinalRenderer, w
         }) catch {};
         rg.add_pass(bloom_pass) catch {};
 
-        // Add Post Process Composite Pass
         var pp_pass = render_graph.RenderPass.init(renderer_alloc, "PostProcess Pass", post_process_pass_callback);
 
         pp_pass.add_input(renderer_alloc, .{
@@ -745,7 +726,6 @@ pub export fn cardinal_renderer_create(out_renderer: ?*types.CardinalRenderer, w
         return false;
     }
 
-    // Initialize device loss recovery state
     s.recovery.device_lost = false;
     s.recovery.recovery_in_progress = false;
     s.recovery.attempt_count = 0;
@@ -755,11 +735,9 @@ pub export fn cardinal_renderer_create(out_renderer: ?*types.CardinalRenderer, w
     s.recovery.recovery_complete_callback = null;
     s.recovery.callback_user_data = null;
 
-    // Register window resize callback
     win.?.resize_callback = vk_handle_window_resize;
     win.?.resize_user_data = s;
 
-    // Initialize Material System
     const mat_sys_ptr = memory.cardinal_alloc(mem_alloc, @sizeOf(@import("vulkan_material_system.zig").MaterialSystem));
     if (mat_sys_ptr) |ptr| {
         const mat_sys = @as(*@import("vulkan_material_system.zig").MaterialSystem, @ptrCast(@alignCast(ptr)));
@@ -775,14 +753,9 @@ pub export fn cardinal_renderer_create(out_renderer: ?*types.CardinalRenderer, w
     if (!init_vulkan_core(s, win))
         return false;
 
-    // Load vkGetBufferDeviceAddress for VMA
     const vkGetBufferDeviceAddress = @as(c.PFN_vkGetBufferDeviceAddress, @ptrCast(c.vkGetDeviceProcAddr(s.context.device, "vkGetBufferDeviceAddress")));
 
-    // Initialize VMA allocator
-    if (!vk_allocator.init(&s.allocator, s.context.instance, s.context.physical_device, s.context.device, null, // vkGetDeviceBufferMemoryRequirements
-        null, // vkGetDeviceImageMemoryRequirements
-        vkGetBufferDeviceAddress, null, null, false))
-    {
+    if (!vk_allocator.init(&s.allocator, s.context.instance, s.context.physical_device, s.context.device, null, null, vkGetBufferDeviceAddress, null, null, false)) {
         renderer_log.err("Failed to initialize VMA allocator", .{});
         return false;
     }
@@ -816,10 +789,8 @@ pub export fn cardinal_renderer_create(out_renderer: ?*types.CardinalRenderer, w
     if (!init_pipelines(s))
         return false;
 
-    // Initialize barrier validation system
     if (!vk_barrier_validation.cardinal_barrier_validation_init(1000, false)) {
         renderer_log.err("cardinal_barrier_validation_init failed", .{});
-        // Continue anyway, validation is optional
     } else {
         renderer_log.info("renderer_create: barrier validation", .{});
     }
@@ -848,14 +819,12 @@ pub export fn cardinal_renderer_create_headless(out_renderer: ?*types.CardinalRe
     s.recovery.attempt_count = 0;
     s.recovery.max_attempts = 0;
 
-    // Initialize Render Graph
     const rg_ptr = memory.cardinal_alloc(mem_alloc, @sizeOf(render_graph.RenderGraph));
     if (rg_ptr != null) {
         const rg = @as(*render_graph.RenderGraph, @ptrCast(@alignCast(rg_ptr)));
         const renderer_alloc = memory.cardinal_get_allocator_for_category(.RENDERER).as_allocator();
         rg.* = render_graph.RenderGraph.init(renderer_alloc);
 
-        // Add PBR Pass
         var pass = render_graph.RenderPass.init(renderer_alloc, "PBR Pass", pbr_pass_callback);
 
         pass.add_output(renderer_alloc, .{
@@ -960,14 +929,12 @@ pub export fn cardinal_renderer_wait_for_texture_uploads(renderer: ?*types.Cardi
 pub fn destroy_scene_buffers(vs: *types.VulkanState) void {
     renderer_log.info("destroy_scene_buffers: start", .{});
 
-    // Ensure GPU has finished using previous scene buffers before destroying them.
-    // We force a device wait idle here to be absolutely safe against race conditions and GPU usage.
+    // TODO: Replace vkDeviceWaitIdle with timeline-based waits for scene buffer lifetime.
     if (vs.context.device != null and !vs.recovery.device_lost) {
         renderer_log.info("destroy_scene_buffers: Calling vkDeviceWaitIdle to ensure safety", .{});
         const idle_res = c.vkDeviceWaitIdle(vs.context.device);
         if (idle_res != c.VK_SUCCESS) {
             renderer_log.err("destroy_scene_buffers: vkDeviceWaitIdle failed with {d}", .{idle_res});
-            // We proceed, but expect trouble if device is lost.
         }
     }
 
@@ -1003,55 +970,46 @@ pub fn destroy_scene_buffers(vs: *types.VulkanState) void {
     renderer_log.info("destroy_scene_buffers: completed", .{});
 }
 
+/// Destroys the renderer and releases all owned Vulkan resources.
 pub export fn cardinal_renderer_destroy(renderer: ?*types.CardinalRenderer) callconv(.c) void {
     if (renderer == null or renderer.?._opaque == null) return;
     const s = get_state(renderer) orelse return;
 
     renderer_log.info("Starting renderer destruction", .{});
 
-    // destroy in reverse order
     destroy_scene_buffers(s);
 
-    // Process deferred cleanups (buffers, images, command buffers) BEFORE destroying command pools
     vk_texture_utils.shutdown_staging_buffer_cleanups(&s.allocator);
 
-    // Cleanup VulkanSyncManager
     if (s.sync_manager != null) {
         renderer_log.debug("Cleaning up sync manager pointer", .{});
         s.sync_manager = null;
     }
 
-    // Cleanup compute shader support
     if (s.pipelines.compute_shader_initialized) {
         vk_compute.vk_compute_cleanup(@ptrCast(s));
         s.pipelines.compute_shader_initialized = false;
     }
 
-    // Shutdown barrier validation system
     vk_barrier_validation.cardinal_barrier_validation_shutdown();
 
-    // Destroy SSAO pipeline
     if (s.pipelines.use_ssao) {
         renderer_log.debug("Destroying SSAO pipeline", .{});
         vk_ssao.vk_ssao_destroy(s);
     }
 
-    // Destroy simple pipelines
     renderer_log.debug("Destroying simple pipelines", .{});
     vk_simple_pipelines.vk_destroy_simple_pipelines(s);
 
-    // Wait for all GPU operations to complete before destroying PBR pipeline
     if (s.context.device != null) {
         _ = c.vkDeviceWaitIdle(s.context.device);
     }
 
-    // Destroy PBR pipeline
     if (s.pipelines.use_pbr_pipeline) {
         renderer_log.debug("Destroying PBR pipeline", .{});
         vk_pbr.vk_pbr_pipeline_destroy(@ptrCast(&s.pipelines.pbr_pipeline), s.context.device, @ptrCast(&s.allocator));
         s.pipelines.use_pbr_pipeline = false;
 
-        // Destroy Depth Pipeline
         if (s.pipelines.depth_pipeline != null) {
             c.vkDestroyPipeline(s.context.device, s.pipelines.depth_pipeline, null);
             s.pipelines.depth_pipeline = null;
@@ -1062,20 +1020,16 @@ pub export fn cardinal_renderer_destroy(renderer: ?*types.CardinalRenderer) call
         }
     }
 
-    // Destroy Skybox pipeline
     if (s.pipelines.use_skybox_pipeline) {
         renderer_log.debug("Destroying Skybox pipeline", .{});
         vk_skybox.vk_skybox_pipeline_destroy(@ptrCast(&s.pipelines.skybox_pipeline), s.context.device, @ptrCast(&s.allocator));
         s.pipelines.use_skybox_pipeline = false;
     }
 
-    // Destroy mesh shader pipeline BEFORE destroying allocator
-    // Always cleanup mesh shader resources if they were initialized (checked inside cleanup)
     renderer_log.debug("Destroying mesh shader pipeline", .{});
     vk_mesh_shader.vk_mesh_shader_cleanup(@ptrCast(s));
     s.pipelines.use_mesh_shader_pipeline = false;
 
-    // Destroy Post Process pipeline
     renderer_log.debug("Destroying Post Process pipeline", .{});
     vk_post_process.vk_post_process_destroy(s);
     s.pipelines.use_post_process = false;
@@ -1084,7 +1038,6 @@ pub export fn cardinal_renderer_destroy(renderer: ?*types.CardinalRenderer) call
     vk_pipeline.vk_destroy_pipeline(@ptrCast(s));
     vk_swapchain.vk_destroy_swapchain(@ptrCast(s));
 
-    // Destroy Render Graph
     if (s.render_graph) |rg_ptr| {
         renderer_log.debug("Destroying Render Graph", .{});
         const rg = @as(*render_graph.RenderGraph, @ptrCast(@alignCast(rg_ptr)));
@@ -1096,7 +1049,6 @@ pub export fn cardinal_renderer_destroy(renderer: ?*types.CardinalRenderer) call
         s.render_graph = null;
     }
 
-    // Destroy Material System
     if (s.material_system) |ms_ptr| {
         renderer_log.debug("Destroying Material System", .{});
         const mat_sys = @as(*@import("vulkan_material_system.zig").MaterialSystem, @ptrCast(@alignCast(ms_ptr)));
@@ -1106,16 +1058,12 @@ pub export fn cardinal_renderer_destroy(renderer: ?*types.CardinalRenderer) call
         s.material_system = null;
     }
 
-    // Destroy shader cache
     vk_pso.vk_pso_cleanup_shader_cache(s.context.device);
 
-    // Shutdown pending texture/buffer cleanups
     vk_texture_utils.shutdown_staging_buffer_cleanups(&s.allocator);
 
-    // Shutdown VMA allocator before destroying device
     vk_allocator.shutdown(&s.allocator);
 
-    // Ensure all device objects are destroyed before instance
     vk_commands.vk_destroy_commands_sync(@ptrCast(s));
 
     vk_instance.vk_destroy_device_objects(@ptrCast(s));
@@ -1161,6 +1109,7 @@ fn create_view_matrix(eye: [*]const f32, center: [*]const f32, up: [*]const f32,
     @memcpy(matrix[0..16], &m.data);
 }
 
+/// Updates the PBR camera uniforms from a camera struct.
 pub export fn cardinal_renderer_set_camera(renderer: ?*types.CardinalRenderer, camera: ?*const types.CardinalCamera) callconv(.c) void {
     if (renderer == null or camera == null) return;
     const s = get_state(renderer) orelse return;
@@ -1169,42 +1118,29 @@ pub export fn cardinal_renderer_set_camera(renderer: ?*types.CardinalRenderer, c
     if (!s.pipelines.use_pbr_pipeline) return;
 
     var ubo = std.mem.zeroes(types.PBRUniformBufferObject);
-
-    // Create model matrix (identity for now)
-    // transform.cardinal_matrix_identity(&ubo.model);
-
-    // Create view matrix
     create_view_matrix(@ptrCast(&cam.position), @ptrCast(&cam.target), @ptrCast(&cam.up), &ubo.view);
-
-    // Create projection matrix
     create_perspective_matrix(cam.fov, cam.aspect, cam.near_plane, cam.far_plane, &ubo.proj);
-
-    // Set view position
     ubo.viewPos[0] = cam.position.x;
     ubo.viewPos[1] = cam.position.y;
     ubo.viewPos[2] = cam.position.z;
-
-    // Set debug flags from pipeline state
     ubo.debugFlags = s.pipelines.pbr_pipeline.debug_flags;
-
-    // Set ambient color from config
     ubo.ambientColor = s.config.pbr_ambient_color;
 
-    // Update the stored UBO state
     s.pipelines.pbr_pipeline.current_ubo = ubo;
 }
 
+/// Updates the debug flags used by the PBR pipeline.
 pub export fn cardinal_renderer_set_debug_flags(renderer: ?*types.CardinalRenderer, flags: f32) callconv(.c) void {
     if (renderer == null) return;
     const s = get_state(renderer) orelse return;
 
     if (!s.pipelines.use_pbr_pipeline) return;
 
-    // Update stored state
     s.pipelines.pbr_pipeline.debug_flags = flags;
     s.pipelines.pbr_pipeline.current_ubo.debugFlags = flags;
 }
 
+/// Replaces the current PBR light buffer with a list of lights.
 pub export fn cardinal_renderer_set_lights(renderer: ?*types.CardinalRenderer, lights: ?[*]const types.PBRLight, count: u32) callconv(.c) void {
     if (renderer == null) return;
     const s = get_state(renderer) orelse return;
@@ -1221,10 +1157,10 @@ pub export fn cardinal_renderer_set_lights(renderer: ?*types.CardinalRenderer, l
         }
     }
 
-    // Update stored lighting state
     s.pipelines.pbr_pipeline.current_lighting = lighting;
 }
 
+/// Updates the first light from the simpler `CardinalLight` struct.
 pub export fn cardinal_renderer_set_lighting(renderer: ?*types.CardinalRenderer, light: ?*const types.CardinalLight) callconv(.c) void {
     if (renderer == null or light == null) return;
     const s = get_state(renderer) orelse return;
@@ -1235,31 +1171,26 @@ pub export fn cardinal_renderer_set_lighting(renderer: ?*types.CardinalRenderer,
     var lighting = std.mem.zeroes(types.PBRLightingBuffer);
     lighting.count = 1;
 
-    // Set light direction
     lighting.lights[0].lightDirection[0] = l.direction.x;
     lighting.lights[0].lightDirection[1] = l.direction.y;
     lighting.lights[0].lightDirection[2] = l.direction.z;
     lighting.lights[0].lightDirection[3] = @floatFromInt(l.type);
 
-    // Set light position
     lighting.lights[0].lightPosition[0] = l.position.x;
     lighting.lights[0].lightPosition[1] = l.position.y;
     lighting.lights[0].lightPosition[2] = l.position.z;
     lighting.lights[0].lightPosition[3] = 0.0;
 
-    // Set light color and intensity
     lighting.lights[0].lightColor[0] = l.color.x;
     lighting.lights[0].lightColor[1] = l.color.y;
     lighting.lights[0].lightColor[2] = l.color.z;
     lighting.lights[0].lightColor[3] = l.intensity;
 
-    // Set light params
     lighting.lights[0].params[0] = l.range;
     lighting.lights[0].params[1] = @cos(l.inner_cone);
     lighting.lights[0].params[2] = @cos(l.outer_cone);
     lighting.lights[0].params[3] = 0.0;
 
-    // Update stored lighting state
     s.pipelines.pbr_pipeline.current_lighting = lighting;
 }
 
@@ -1303,7 +1234,6 @@ pub export fn cardinal_renderer_enable_pbr(renderer: ?*types.CardinalRenderer, e
 
     if (enable and !s.pipelines.use_pbr_pipeline) {
         if (s.pipelines.pbr_pipeline.initialized) {
-            // Wait for device idle before destroying pipeline resources
             _ = c.vkDeviceWaitIdle(s.context.device);
             vk_pbr.vk_pbr_pipeline_destroy(@ptrCast(&s.pipelines.pbr_pipeline), @ptrCast(s.context.device), @ptrCast(&s.allocator));
         }
@@ -1311,7 +1241,6 @@ pub export fn cardinal_renderer_enable_pbr(renderer: ?*types.CardinalRenderer, e
         if (vk_pbr.vk_pbr_pipeline_create(@ptrCast(&s.pipelines.pbr_pipeline), s.context.device, s.context.physical_device, c.VK_FORMAT_R16G16B16A16_SFLOAT, s.swapchain.depth_format, s.commands.pools.?[0], s.context.graphics_queue, @ptrCast(&s.allocator), @ptrCast(s), s.pipelines.pipeline_cache)) {
             s.pipelines.use_pbr_pipeline = true;
 
-            // Initialize Depth Pre-pass pipeline
             if (vk_pbr.vk_pbr_create_depth_prepass(s)) {
                 renderer_log.info("Depth Pre-pass pipeline enabled", .{});
             } else {
@@ -1329,12 +1258,10 @@ pub export fn cardinal_renderer_enable_pbr(renderer: ?*types.CardinalRenderer, e
             renderer_log.err("Failed to enable PBR pipeline", .{});
         }
     } else if (!enable and s.pipelines.use_pbr_pipeline) {
-        // Wait for device idle before destroying pipeline resources
         _ = c.vkDeviceWaitIdle(s.context.device);
         vk_pbr.vk_pbr_pipeline_destroy(@ptrCast(&s.pipelines.pbr_pipeline), @ptrCast(s.context.device), @ptrCast(&s.allocator));
         s.pipelines.use_pbr_pipeline = false;
 
-        // Destroy Depth Pipeline
         if (s.pipelines.depth_pipeline != null) {
             c.vkDestroyPipeline(s.context.device, s.pipelines.depth_pipeline, null);
             s.pipelines.depth_pipeline = null;
@@ -1387,7 +1314,6 @@ pub export fn cardinal_renderer_enable_mesh_shader(renderer: ?*types.CardinalRen
             renderer_log.err("Failed to enable mesh shader pipeline", .{});
         }
     } else if (!enable and s.pipelines.use_mesh_shader_pipeline) {
-        // Wait for device idle before destroying pipeline resources
         _ = c.vkDeviceWaitIdle(s.context.device);
         vk_mesh_shader.vk_mesh_shader_destroy_pipeline(@ptrCast(@alignCast(s)), @ptrCast(&s.pipelines.mesh_shader_pipeline));
         s.pipelines.use_mesh_shader_pipeline = false;
@@ -1444,7 +1370,7 @@ pub export fn cardinal_renderer_set_ui_callback(renderer: ?*types.CardinalRender
     s.ui_record_callback = callback;
 }
 
-// Submit and wait helper
+/// Submits a one-shot command buffer and waits for completion.
 fn submit_and_wait(s: *types.VulkanState, cmd: c.VkCommandBuffer) void {
     var cmd_info = c.VkCommandBufferSubmitInfo{
         .sType = c.VK_STRUCTURE_TYPE_COMMAND_BUFFER_SUBMIT_INFO,
@@ -1480,11 +1406,9 @@ fn submit_and_wait(s: *types.VulkanState, cmd: c.VkCommandBuffer) void {
         submit2.signalSemaphoreInfoCount = 1;
         submit2.pSignalSemaphoreInfos = &signal_semaphore_info;
 
-        // Use synchronized submit
         const submit_result = vk_sync_manager.vulkan_sync_manager_submit_queue2(s.context.graphics_queue, 1, @ptrCast(&submit2), null, s.context.vkQueueSubmit2);
 
         if (submit_result == c.VK_SUCCESS) {
-            // Wait for completion using timeline semaphore
             const wait_result = vk_sync_manager.vulkan_sync_manager_wait_timeline(sm, timeline_value, c.UINT64_MAX);
             if (wait_result == c.VK_SUCCESS) {
                 const free_pool: c.VkCommandPool = if (s.commands.transient_pools != null) s.commands.transient_pools.?[s.sync.current_frame] else s.commands.pools.?[s.sync.current_frame];
@@ -1496,7 +1420,6 @@ fn submit_and_wait(s: *types.VulkanState, cmd: c.VkCommandBuffer) void {
             renderer_log.err("Failed to submit immediate command buffer: {d}", .{submit_result});
         }
     } else {
-        // Fallback to old method if sync manager not available
         _ = vk_sync_manager.vulkan_sync_manager_submit_queue2(s.context.graphics_queue, 1, @ptrCast(&submit2), null, s.context.vkQueueSubmit2);
         const wait_result = c.vkQueueWaitIdle(s.context.graphics_queue);
 
@@ -1540,6 +1463,7 @@ pub export fn cardinal_renderer_immediate_submit(renderer: ?*types.CardinalRende
     submit_and_wait(s, cmd);
 }
 
+/// Attempts to record a one-shot secondary command buffer using the MT manager.
 fn try_submit_secondary(s: *types.VulkanState, record: ?*const fn (c.VkCommandBuffer) callconv(.c) void) bool {
     const mt_manager = vk_commands.vk_get_mt_command_manager() orelse return false;
     if (!mt_manager.thread_pools.?[0].is_active) {
@@ -1603,8 +1527,6 @@ fn try_submit_secondary(s: *types.VulkanState, record: ?*const fn (c.VkCommandBu
         return false;
     }
 
-    // Set VK_RENDERING_CONTENTS_SECONDARY_COMMAND_BUFFERS_BIT when beginning rendering
-    // This is required when executing secondary command buffers inside a dynamic rendering instance
     var rendering_info = std.mem.zeroes(c.VkRenderingInfo);
     rendering_info.sType = c.VK_STRUCTURE_TYPE_RENDERING_INFO;
     rendering_info.renderArea.extent = s.swapchain.extent;
@@ -1614,9 +1536,7 @@ fn try_submit_secondary(s: *types.VulkanState, record: ?*const fn (c.VkCommandBu
 
     var color_attachment = std.mem.zeroes(c.VkRenderingAttachmentInfo);
     color_attachment.sType = c.VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO;
-    // Use the current frame's image view. Note: This assumes the image is available and in a compatible layout.
-    // Since try_submit_secondary is often used for immediate operations, we might need to be careful about layout.
-    // However, if the secondary buffer expects to draw, it needs a valid attachment.
+    // TODO: Track swapchain image layout for immediate submits and insert barriers if needed.
     color_attachment.imageView = s.swapchain.image_views.?[s.sync.current_frame];
     color_attachment.imageLayout = c.VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
     color_attachment.loadOp = c.VK_ATTACHMENT_LOAD_OP_LOAD;
@@ -1677,7 +1597,6 @@ pub export fn cardinal_renderer_upload_scene(renderer: ?*types.CardinalRenderer,
         renderer_log.info("Scene cleared (no meshes)", .{});
         s.current_scene = null;
 
-        // Also ensure PBR pipeline is cleared if enabled
         if (s.pipelines.use_pbr_pipeline) {
             if (!vk_pbr.vk_pbr_load_scene(@ptrCast(&s.pipelines.pbr_pipeline), s.context.device, s.context.physical_device, s.commands.pools.?[0], s.context.graphics_queue, @ptrCast(scene), @ptrCast(&s.allocator), @ptrCast(s))) {
                 renderer_log.err("Failed to clear PBR scene", .{});
@@ -1687,23 +1606,18 @@ pub export fn cardinal_renderer_upload_scene(renderer: ?*types.CardinalRenderer,
         return;
     }
 
-    // We no longer use individual scene meshes (legacy path).
-    // PBR pipeline handles its own batched buffer creation in vk_pbr_load_scene.
-    // s.scene_mesh_count = scene.?.mesh_count;
     s.scene_meshes = null;
 
     if (s.pipelines.use_pbr_pipeline) {
         renderer_log.info("Loading scene into PBR pipeline", .{});
         if (!vk_pbr.vk_pbr_load_scene(@ptrCast(&s.pipelines.pbr_pipeline), s.context.device, s.context.physical_device, s.commands.pools.?[0], s.context.graphics_queue, @ptrCast(scene), @ptrCast(&s.allocator), @ptrCast(s))) {
             renderer_log.err("Failed to load scene into PBR pipeline", .{});
-            // If PBR load fails, we should not set current_scene as valid to prevent rendering with mismatched buffers
             s.current_scene = null;
             return;
         }
     }
 
     if (s.current_scene) |old_scene| {
-        // Free old scene if it was copied
         const mem_alloc = memory.cardinal_get_allocator_for_category(.RENDERER);
         memory.cardinal_free(mem_alloc, old_scene);
     }
@@ -1713,7 +1627,6 @@ pub export fn cardinal_renderer_upload_scene(renderer: ?*types.CardinalRenderer,
         return;
     }
 
-    // Deep copy the scene to ensure pointer stability
     const mem_alloc = memory.cardinal_get_allocator_for_category(.RENDERER);
     const new_scene_ptr = memory.cardinal_alloc(mem_alloc, @sizeOf(types.CardinalScene));
     if (new_scene_ptr) |ptr| {

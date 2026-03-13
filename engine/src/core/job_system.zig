@@ -230,14 +230,11 @@ fn worker_thread_func(worker: *WorkerThread) void {
         job.dependents_head = null;
         g_job_system.state_mutex.unlock();
 
-        // Push to completed queue
         if (job.push_to_completed_queue) {
             g_job_system.completed_queue.mutex.lock();
             defer g_job_system.completed_queue.mutex.unlock();
 
-            // Manual push to avoid deadlock (job_queue_push takes lock)
             const queue = &g_job_system.completed_queue;
-            // Ignore max_size for completed queue to prevent leaks
 
             job.next = null;
             if (queue.tail) |tail| {
@@ -252,8 +249,7 @@ fn worker_thread_func(worker: *WorkerThread) void {
     }
 }
 
-// --- Public API ---
-
+/// Initializes the global job system and starts worker threads.
 pub fn init(config: ?*const JobSystemConfig) bool {
     if (g_job_system.initialized) return true;
 
@@ -306,6 +302,7 @@ pub fn init(config: ?*const JobSystemConfig) bool {
     return true;
 }
 
+/// Signals worker threads to exit and frees job system state.
 pub fn shutdown() void {
     if (!g_job_system.initialized) return;
 
@@ -334,6 +331,7 @@ pub fn shutdown() void {
     g_job_system.initialized = false;
 }
 
+/// Allocates a job record and returns it for scheduling.
 pub fn create_job(func: JobFunc, data: ?*anyopaque, priority: JobPriority) ?*Job {
     if (!g_job_system.initialized) return null;
 
@@ -363,10 +361,10 @@ pub fn create_job_with_error_handler(func: JobFunc, data: ?*anyopaque, priority:
     return job;
 }
 
+/// Submits a job for execution, respecting any declared dependencies.
 pub fn submit_job(job: *Job) bool {
     if (!g_job_system.initialized) return false;
 
-    // If job has dependencies, put in waiting queue
     if (job.dependency_count > 0) {
         return job_queue_push(&g_job_system.waiting_queue, job);
     }
@@ -374,8 +372,8 @@ pub fn submit_job(job: *Job) bool {
     return job_queue_push(&g_job_system.pending_queue, job);
 }
 
+/// Frees a job and any remaining dependent-node bookkeeping.
 pub fn free_job(job: *Job) void {
-    // Clean up any remaining dependency nodes (though they should be gone if job ran)
     var node = job.dependents_head;
     while (node) |n| {
         const next = n.next;
@@ -407,6 +405,9 @@ pub fn add_dependency(dependent: *Job, dependency: *Job) bool {
     return true;
 }
 
+/// Drains up to `max_jobs` from the completed queue and returns the number drained.
+///
+/// Completion bookkeeping does not free jobs; callers must release jobs they own.
 pub fn process_completed_jobs(max_jobs: u32) u32 {
     if (!g_job_system.initialized) return 0;
 
@@ -414,15 +415,12 @@ pub fn process_completed_jobs(max_jobs: u32) u32 {
     while (max_jobs == 0 or processed < max_jobs) {
         const job = job_queue_pop(&g_job_system.completed_queue, false);
         if (job == null) break;
-        // The caller is responsible for freeing the job or handling completion callbacks
-        // Since Job doesn't have a callback field (generic), the 'func' or 'data' should handle it,
-        // or the system wrapping this (AsyncLoader) handles it.
         processed += 1;
     }
     return processed;
 }
 
-// Add helper to process completed queue from any thread safely
+/// Pops one job from the completed queue without waiting.
 pub fn get_completed_job() ?*Job {
     g_job_system.completed_queue.mutex.lock();
     defer g_job_system.completed_queue.mutex.unlock();

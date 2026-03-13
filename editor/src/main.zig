@@ -21,7 +21,8 @@ fn print_usage(program_name: []const u8) void {
 pub fn main() !u8 {
     const memory = engine.memory;
     // TODO: Move bootstrap memory sizing into config or build-time options.
-    memory.cardinal_memory_init(1024 * 1024 * 512); // Increased to 512MB
+    const memory_budget_bytes = 1024 * 1024 * 512;
+    memory.cardinal_memory_init(memory_budget_bytes);
 
     const allocator = memory.cardinal_get_allocator_for_category(.ENGINE).as_allocator();
 

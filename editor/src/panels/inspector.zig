@@ -1,3 +1,8 @@
+//! Inspector panel.
+//!
+//! Displays selected model details and exposes basic visibility/removal controls.
+//!
+//! TODO: Replace the simplified scale editor with full TRS editing.
 const std = @import("std");
 const engine = @import("cardinal_engine");
 const model_manager = engine.model_manager;
@@ -33,7 +38,7 @@ pub fn draw_inspector_panel(state: *EditorState) void {
                             const name = if (model.name) |n| std.mem.span(n) else "Unnamed Model";
 
                             const avail_w = c.imgui_bridge_get_content_region_avail_x();
-                            const controls_w: f32 = 120.0; // Checkbox + Remove button + Spacing
+                            const controls_w: f32 = 120.0;
                             const label_w = if (avail_w > controls_w) avail_w - controls_w else 10.0;
 
                             if (c.imgui_bridge_selectable_size(name.ptr, is_selected, 0, label_w, 0)) {
@@ -95,7 +100,6 @@ pub fn draw_inspector_panel(state: *EditorState) void {
                                     _ = model_manager.cardinal_model_manager_set_transform(&state.model_manager, model.id, &new_transform);
                                 }
 
-                                // Simplified scale
                                 const current_scale = std.math.sqrt(model.transform[0] * model.transform[0] + model.transform[1] * model.transform[1] + model.transform[2] * model.transform[2]);
                                 var scale = current_scale;
                                 if (c.imgui_bridge_drag_float("Scale", &scale, 0.01, 0.01, 10.0, "%.3f", 0)) {

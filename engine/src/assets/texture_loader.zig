@@ -343,8 +343,7 @@ fn texture_load_task_cleanup(task: ?*async_loader.CardinalAsyncTask, user_data: 
     async_loader.cardinal_async_free_task(task);
 }
 
-// C API exports
-
+/// Initializes the global texture LRU cache.
 pub export fn texture_cache_initialize(max_entries: u32) bool {
     if (g_texture_cache.initialized) return true;
 
@@ -363,6 +362,7 @@ pub export fn texture_cache_initialize(max_entries: u32) bool {
     return true;
 }
 
+/// Shuts down the texture cache and releases all cached resources.
 pub export fn texture_cache_shutdown_system() void {
     if (!g_texture_cache.initialized) return;
 
@@ -375,13 +375,10 @@ pub export fn texture_cache_shutdown_system() void {
     while (entry) |current| {
         const next = current.next;
 
-        // Free filepath (allocated via cardinal_alloc)
         memory.cardinal_free(allocator, @ptrCast(@constCast(current.filepath.ptr)));
 
-        // Release resource
         ref_counting.cardinal_ref_release(current.resource);
 
-        // Free entry
         memory.cardinal_free(allocator, current);
 
         entry = next;
@@ -396,6 +393,7 @@ pub export fn texture_cache_shutdown_system() void {
     texture_log.info("Thread-safe texture cache shutdown", .{});
 }
 
+/// Returns cache statistics for diagnostics/UI.
 pub export fn texture_cache_get_stats() TextureCacheStats {
     if (!g_texture_cache.initialized) return std.mem.zeroes(TextureCacheStats);
 
@@ -410,6 +408,7 @@ pub export fn texture_cache_get_stats() TextureCacheStats {
     };
 }
 
+/// Clears all cache entries but keeps the cache initialized.
 pub export fn texture_cache_clear() void {
     if (!g_texture_cache.initialized) return;
 
@@ -435,15 +434,15 @@ pub export fn texture_cache_clear() void {
     texture_log.info("Cache cleared", .{});
 }
 
-// Internal cache helpers
+/// Returns a wall-clock timestamp in milliseconds.
 fn get_current_time_ms() u64 {
     return @as(u64, @intCast(std.time.milliTimestamp()));
 }
 
+/// Moves an entry to the LRU head (most recently used).
 fn move_to_head(entry: *TextureCacheEntry) void {
     if (entry == g_texture_cache.head) return;
 
-    // Remove from current position
     if (entry.prev) |prev| {
         prev.next = entry.next;
     }
@@ -454,7 +453,6 @@ fn move_to_head(entry: *TextureCacheEntry) void {
         g_texture_cache.tail = entry.prev;
     }
 
-    // Move to head
     entry.prev = null;
     entry.next = g_texture_cache.head;
     if (g_texture_cache.head) |head| {
@@ -467,6 +465,7 @@ fn move_to_head(entry: *TextureCacheEntry) void {
     }
 }
 
+/// Detaches an entry from the linked-list without freeing it.
 fn remove_from_list(entry: *TextureCacheEntry) void {
     if (entry.prev) |prev| {
         prev.next = entry.next;
@@ -486,11 +485,10 @@ fn remove_from_list(entry: *TextureCacheEntry) void {
 
 const asset_manager = @import("asset_manager.zig");
 
+/// Returns a retained resource from the asset manager or LRU cache.
 fn texture_cache_get(filepath: []const u8) ?*ref_counting.CardinalRefCountedResource {
-    // Check AssetManager first
     if (asset_manager.get().findTexture(filepath)) |tex| {
         if (tex.ref_resource) |res| {
-            // Increment ref count
             _ = @atomicRmw(u32, &res.ref_count, .Add, 1, .seq_cst);
             texture_log.debug("Cache hit from AssetManager for {s}", .{filepath});
             return res;
@@ -508,7 +506,6 @@ fn texture_cache_get(filepath: []const u8) ?*ref_counting.CardinalRefCountedReso
             current.last_access_time = get_current_time_ms();
             move_to_head(current);
 
-            // Increment ref count
             _ = @atomicRmw(u32, &current.resource.ref_count, .Add, 1, .seq_cst);
             g_texture_cache.cache_hits += 1;
 

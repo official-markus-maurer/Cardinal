@@ -104,18 +104,15 @@ pub const Vec3 = extern struct {
     pub fn dot(self: Vec3, other: Vec3) f32 {
         const v1: @Vector(4, f32) = @bitCast(self);
         const v2: @Vector(4, f32) = @bitCast(other);
-        // Mask out the w component (padding) to ensure it doesn't affect dot product
         const mask = @Vector(4, f32){ 1, 1, 1, 0 };
         const mul_res = v1 * v2 * mask;
         return @reduce(.Add, mul_res);
     }
 
     pub fn cross(self: Vec3, other: Vec3) Vec3 {
-        // cross(a, b) = a.yzx * b.zxy - a.zxy * b.yzx
         const v1: @Vector(4, f32) = @bitCast(self);
         const v2: @Vector(4, f32) = @bitCast(other);
 
-        // yzx: mask 1, 2, 0, 3
         const v1_yzx = @shuffle(f32, v1, undefined, @Vector(4, i32){ 1, 2, 0, 3 });
         const v2_zxy = @shuffle(f32, v2, undefined, @Vector(4, i32){ 2, 0, 1, 3 });
 
@@ -208,14 +205,8 @@ pub const Quat = extern struct {
         return .{ .x = arr[0], .y = arr[1], .z = arr[2], .w = arr[3] };
     }
 
+    /// Multiplies two quaternions.
     pub fn mul(self: Quat, other: Quat) Quat {
-        // Optimized SIMD quaternion multiplication
-        // q1 * q2
-        // w = w1w2 - x1x2 - y1y2 - z1z2
-        // x = w1x2 + x1w2 + y1z2 - z1y2
-        // y = w1y2 - x1z2 + y1w2 + z1x2
-        // z = w1z2 + x1y2 - y1x2 + z1w2
-
         const q2 = @as(@Vector(4, f32), @bitCast(other));
 
         const x1 = @as(@Vector(4, f32), @splat(self.x));
@@ -223,23 +214,16 @@ pub const Quat = extern struct {
         const z1 = @as(@Vector(4, f32), @splat(self.z));
         const w1 = @as(@Vector(4, f32), @splat(self.w));
 
-        // Term 1: w1 * q2
         var res = w1 * q2;
 
-        // Term 2: x1 * (w2, -z2, y2, -x2)
-        // q2 is (x2, y2, z2, w2) -> swizzle 3, 2, 1, 0
         var t2 = @shuffle(f32, q2, undefined, @Vector(4, i32){ 3, 2, 1, 0 });
         t2 = t2 * @Vector(4, f32){ 1, -1, 1, -1 };
         res = res + x1 * t2;
 
-        // Term 3: y1 * (z2, w2, -x2, -y2)
-        // q2 -> swizzle 2, 3, 0, 1
         var t3 = @shuffle(f32, q2, undefined, @Vector(4, i32){ 2, 3, 0, 1 });
         t3 = t3 * @Vector(4, f32){ 1, 1, -1, -1 };
         res = res + y1 * t3;
 
-        // Term 4: z1 * (-y2, x2, w2, -z2)
-        // q2 -> swizzle 1, 0, 3, 2
         var t4 = @shuffle(f32, q2, undefined, @Vector(4, i32){ 1, 0, 3, 2 });
         t4 = t4 * @Vector(4, f32){ -1, 1, 1, -1 };
         res = res + z1 * t4;
@@ -251,7 +235,6 @@ pub const Quat = extern struct {
         return .{ self.x, self.y, self.z, self.w };
     }
 
-    // Add bitcast helper for Quat if needed
     pub fn toVec4(self: Quat) Vec4 {
         return @bitCast(self);
     }
@@ -292,7 +275,6 @@ pub const Quat = extern struct {
         var cos_theta = a.dot(b);
         var target = b;
 
-        // If dot product is negative, reverse one quaternion to take the shorter path
         if (cos_theta < 0.0) {
             target = .{ .x = -b.x, .y = -b.y, .z = -b.z, .w = -b.w };
             cos_theta = -cos_theta;
@@ -300,7 +282,6 @@ pub const Quat = extern struct {
 
         const DOT_THRESHOLD = 0.9995;
         if (cos_theta > DOT_THRESHOLD) {
-            // If inputs are very close, use linear interpolation (and normalize)
             const v_a: @Vector(4, f32) = @bitCast(a);
             const v_b: @Vector(4, f32) = @bitCast(target);
             const v_res = v_a + (v_b - v_a) * @as(@Vector(4, f32), @splat(t));
@@ -311,7 +292,6 @@ pub const Quat = extern struct {
         const angle = std.math.acos(cos_theta);
         const sin_angle = std.math.sin(angle);
 
-        // Avoid division by zero
         if (std.math.approxEqAbs(f32, sin_angle, 0.0, 1e-6)) {
             return a;
         }
@@ -340,12 +320,10 @@ pub const Mat4 = extern struct {
         };
     }
 
-    // Column-Major Matrix Multiplication
-    // result = self * other
+    /// Multiplies two column-major matrices.
     pub fn mul(self: Mat4, other: Mat4) Mat4 {
         var result = Mat4{ .data = undefined };
 
-        // Columns of self (A)
         const a0: @Vector(4, f32) = self.data[0..4].*;
         const a1: @Vector(4, f32) = self.data[4..8].*;
         const a2: @Vector(4, f32) = self.data[8..12].*;
@@ -353,10 +331,6 @@ pub const Mat4 = extern struct {
 
         comptime var i: usize = 0;
         inline while (i < 4) : (i += 1) {
-            // Computing Column i of Result
-            // Res_col_i = A * Col_i(B)
-            // Res_col_i = B_0i * A_col0 + B_1i * A_col1 + B_2i * A_col2 + B_3i * A_col3
-
             const b_col_offset = i * 4;
             const b_col = other.data[b_col_offset..];
 
@@ -374,7 +348,6 @@ pub const Mat4 = extern struct {
     }
 
     pub fn transformPoint(self: Mat4, p: Vec3) Vec3 {
-        // v' = M * v (Column-Major)
         const x_splat = @as(@Vector(4, f32), @splat(p.x));
         const y_splat = @as(@Vector(4, f32), @splat(p.y));
         const z_splat = @as(@Vector(4, f32), @splat(p.z));
@@ -391,7 +364,6 @@ pub const Mat4 = extern struct {
     }
 
     pub fn transformVector(self: Mat4, v: Vec3) Vec3 {
-        // v' = M * v with w=0 (Direction vector)
         const x_splat = @as(@Vector(4, f32), @splat(v.x));
         const y_splat = @as(@Vector(4, f32), @splat(v.y));
         const z_splat = @as(@Vector(4, f32), @splat(v.z));
@@ -428,7 +400,6 @@ pub const Mat4 = extern struct {
     pub fn fromTRS(t: Vec3, r: Quat, s: Vec3) Mat4 {
         var m = Mat4{ .data = undefined };
 
-        // Rotation elements
         const x = r.x;
         const y = r.y;
         const z = r.z;
@@ -456,26 +427,21 @@ pub const Mat4 = extern struct {
         const r21 = yz - wx;
         const r22 = 1.0 - (xx + yy);
 
-        // Apply Scale and Rotation (Column Major R * S)
-        // Col 0 = Scale.x * Rotation.Col0
         m.data[0] = s.x * r00;
         m.data[1] = s.x * r01;
         m.data[2] = s.x * r02;
         m.data[3] = 0.0;
 
-        // Col 1 = Scale.y * Rotation.Col1
         m.data[4] = s.y * r10;
         m.data[5] = s.y * r11;
         m.data[6] = s.y * r12;
         m.data[7] = 0.0;
 
-        // Col 2 = Scale.z * Rotation.Col2
         m.data[8] = s.z * r20;
         m.data[9] = s.z * r21;
         m.data[10] = s.z * r22;
         m.data[11] = 0.0;
 
-        // Col 3 = Translation
         m.data[12] = t.x;
         m.data[13] = t.y;
         m.data[14] = t.z;
@@ -489,12 +455,10 @@ pub const Mat4 = extern struct {
         var r: Quat = undefined;
         var s: Vec3 = undefined;
 
-        // Extract translation
         t.x = self.data[12];
         t.y = self.data[13];
         t.z = self.data[14];
 
-        // Extract scale using SIMD
         const row0 = @as(@Vector(4, f32), self.data[0..4].*);
         const row1 = @as(@Vector(4, f32), self.data[4..8].*);
         const row2 = @as(@Vector(4, f32), self.data[8..12].*);
@@ -504,13 +468,10 @@ pub const Mat4 = extern struct {
         const sy = std.math.sqrt(@reduce(.Add, (row1 * row1) * mask));
         const sz = std.math.sqrt(@reduce(.Add, (row2 * row2) * mask));
 
-        // Check for negative determinant (3x3)
-        // det = row0 . (row1 x row2)
         const row0_xyz = @Vector(3, f32){ row0[0], row0[1], row0[2] };
         const row1_xyz = @Vector(3, f32){ row1[0], row1[1], row1[2] };
         const row2_xyz = @Vector(3, f32){ row2[0], row2[1], row2[2] };
 
-        // Cross product row1 x row2
         const cross_x = row1_xyz[1] * row2_xyz[2] - row1_xyz[2] * row2_xyz[1];
         const cross_y = row1_xyz[2] * row2_xyz[0] - row1_xyz[0] * row2_xyz[2];
         const cross_z = row1_xyz[0] * row2_xyz[1] - row1_xyz[1] * row2_xyz[0];
@@ -525,7 +486,6 @@ pub const Mat4 = extern struct {
         s.y = sy;
         s.z = sz;
 
-        // Extract rotation
         var rot_matrix: [9]f32 = undefined;
         rot_matrix[0] = self.data[0] / sx;
         rot_matrix[1] = self.data[1] / sx;
@@ -587,11 +547,6 @@ pub const Mat4 = extern struct {
 
         m.data[0] = 2.0 / (right - left);
         m.data[5] = 2.0 / (bottom - top); // Flip Y for Vulkan (top is usually -Y in clip space if Y is down? No, standard Vulkan Y is down)
-        // vulkan_shadows uses 2/(top-bottom) then negates m.data[5] in comment, but actually uses 2/(top-bottom).
-        // Let's stick to standard Vulkan ortho:
-        // x: [left, right] -> [-1, 1]
-        // y: [top, bottom] -> [-1, 1] (Y down in Vulkan)
-        // z: [near, far] -> [0, 1]
 
         m.data[10] = 1.0 / (z_far - z_near);
         m.data[12] = -(right + left) / (right - left);
@@ -722,16 +677,12 @@ pub const Mat4 = extern struct {
         const tmp2_v = @shuffle(f32, row2, row3, mask0); // 8, 12, 9, 13
         const tmp3_v = @shuffle(f32, row2, row3, mask1); // 10, 14, 11, 15
 
-        // result row0: 0, 4, 8, 12 -> from tmp0_v (0, 4, 1, 5) and tmp2_v (8, 12, 9, 13).
         const res0 = @shuffle(f32, tmp0_v, tmp2_v, @Vector(4, i32){ 0, 1, ~@as(i32, 0), ~@as(i32, 1) });
 
-        // result row1: 1, 5, 9, 13 -> from tmp0_v (0, 4, 1, 5) and tmp2_v (8, 12, 9, 13).
         const res1 = @shuffle(f32, tmp0_v, tmp2_v, @Vector(4, i32){ 2, 3, ~@as(i32, 2), ~@as(i32, 3) });
 
-        // result row2: 2, 6, 10, 14 -> from tmp1_v (2, 6, 3, 7) and tmp3_v (10, 14, 11, 15).
         const res2 = @shuffle(f32, tmp1_v, tmp3_v, @Vector(4, i32){ 0, 1, ~@as(i32, 0), ~@as(i32, 1) });
 
-        // result row3: 3, 7, 11, 15 -> from tmp1_v (2, 6, 3, 7) and tmp3_v (10, 14, 11, 15).
         const res3 = @shuffle(f32, tmp1_v, tmp3_v, @Vector(4, i32){ 2, 3, ~@as(i32, 2), ~@as(i32, 3) });
 
         var result = Mat4{ .data = undefined };
@@ -770,7 +721,6 @@ pub const AABB = struct {
     }
 
     pub fn transform(self: AABB, matrix: Mat4) AABB {
-        // Transform AABB by matrix
         const corners = [_]Vec3{
             .{ .x = self.min.x, .y = self.min.y, .z = self.min.z },
             .{ .x = self.max.x, .y = self.min.y, .z = self.min.z },
@@ -786,7 +736,6 @@ pub const AABB = struct {
         var new_max = Vec3{ .x = -std.math.floatMax(f32), .y = -std.math.floatMax(f32), .z = -std.math.floatMax(f32) };
 
         for (corners) |corner| {
-            // Homogeneous multiply
             const x = corner.x;
             const y = corner.y;
             const z = corner.z;
@@ -794,9 +743,6 @@ pub const AABB = struct {
             const nx = matrix.data[0] * x + matrix.data[4] * y + matrix.data[8] * z + matrix.data[12];
             const ny = matrix.data[1] * x + matrix.data[5] * y + matrix.data[9] * z + matrix.data[13];
             const nz = matrix.data[2] * x + matrix.data[6] * y + matrix.data[10] * z + matrix.data[14];
-            // We assume w=1 for points and rigid transforms mostly, but technically:
-            // const nw = matrix.data[3]*x + matrix.data[7]*y + matrix.data[11]*z + matrix.data[15];
-            // if (nw != 1.0 and nw != 0.0) { nx /= nw; ny /= nw; nz /= nw; }
 
             new_min.x = @min(new_min.x, nx);
             new_min.y = @min(new_min.y, ny);
@@ -820,7 +766,6 @@ pub fn intersectRayAABB(ray: Ray, aabb: AABB, t_min: f32, t_max: f32) ?f32 {
     const box_min = aabb.min;
     const box_max = aabb.max;
 
-    // X axis
     {
         const inv_d = 1.0 / r_dir.x;
         var t_near = (box_min.x - r_origin.x) * inv_d;
@@ -838,7 +783,6 @@ pub fn intersectRayAABB(ray: Ray, aabb: AABB, t_min: f32, t_max: f32) ?f32 {
         if (t1 <= t0) return null;
     }
 
-    // Y axis
     {
         const inv_d = 1.0 / r_dir.y;
         var t_near = (box_min.y - r_origin.y) * inv_d;
@@ -856,7 +800,6 @@ pub fn intersectRayAABB(ray: Ray, aabb: AABB, t_min: f32, t_max: f32) ?f32 {
         if (t1 <= t0) return null;
     }
 
-    // Z axis
     {
         const inv_d = 1.0 / r_dir.z;
         var t_near = (box_min.z - r_origin.z) * inv_d;

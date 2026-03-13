@@ -72,7 +72,8 @@ const PooledBuffer = struct {
 pub const RenderGraphResource = struct {
     id: ResourceId,
     lifecycle: ResourceLifecycle,
-    desc: ?ResourceDesc, // Only for transient
+    /// Description for transient resources.
+    desc: ?ResourceDesc,
     handle: ?ResourceHandle = null,
 
     /// Internal allocation state for transient resources.
@@ -100,7 +101,8 @@ pub const ResourceAccess = struct {
     type: ResourceType,
     access_mask: c.VkAccessFlags2,
     stage_mask: c.VkPipelineStageFlags2,
-    layout: c.VkImageLayout = c.VK_IMAGE_LAYOUT_UNDEFINED, // Ignored for buffers
+    /// Image layout for image resources.
+    layout: c.VkImageLayout = c.VK_IMAGE_LAYOUT_UNDEFINED,
     queue_family: u32 = c.VK_QUEUE_FAMILY_IGNORED,
 
     aspect_mask: c.VkImageAspectFlags = c.VK_IMAGE_ASPECT_COLOR_BIT,
@@ -121,7 +123,8 @@ pub const RenderPass = struct {
     queue_family: u32 = c.VK_QUEUE_FAMILY_IGNORED,
 
     is_active: bool = true,
-    can_be_culled: bool = true, // Force active if false (e.g. swapchain present)
+    /// When false, `compile()` always marks the pass active.
+    can_be_culled: bool = true,
 
     pub fn init(allocator: std.mem.Allocator, name: []const u8, callback: RenderPassCallback) RenderPass {
         _ = allocator;
@@ -161,14 +164,14 @@ pub const RenderGraph = struct {
     passes: std.ArrayListUnmanaged(RenderPass),
     allocator: std.mem.Allocator,
 
-    // Track registered resources
+    /// Registered resources keyed by `ResourceId`.
     resources: std.AutoHashMapUnmanaged(ResourceId, RenderGraphResource),
-    // Track current state of resources during execution
+    /// Current per-resource state used for barrier generation during execution.
     resource_states: std.AutoHashMapUnmanaged(ResourceId, ResourceState),
-    // Lifetimes for aliasing: computed in compile()
+    /// Resource lifetimes (first/last pass) computed by `compile()` for aliasing.
     resource_lifetimes: std.AutoHashMapUnmanaged(ResourceId, ResourceLifetime),
 
-    // Resource Pools
+    /// Transient resource pools for per-frame reuse.
     image_pool: std.ArrayListUnmanaged(PooledImage),
     buffer_pool: std.ArrayListUnmanaged(PooledBuffer),
 
@@ -196,8 +199,8 @@ pub const RenderGraph = struct {
         self.buffer_pool.deinit(self.allocator);
     }
 
+    /// Registers an externally-owned image into the graph under `id`.
     pub fn register_image(self: *RenderGraph, id: ResourceId, image: c.VkImage) !void {
-        // Check if handle changed to reset state
         var handle_changed = true;
         if (self.resources.get(id)) |res| {
             if (res.handle) |h| {
@@ -209,7 +212,6 @@ pub const RenderGraph = struct {
 
         try self.resources.put(self.allocator, id, .{ .id = id, .lifecycle = .External, .desc = null, .handle = .{ .Image = image } });
 
-        // Initialize state if not present or handle changed
         if (handle_changed or !self.resource_states.contains(id)) {
             try self.resource_states.put(self.allocator, id, .{
                 .layout = c.VK_IMAGE_LAYOUT_UNDEFINED,
@@ -219,6 +221,7 @@ pub const RenderGraph = struct {
         }
     }
 
+    /// Registers an externally-owned buffer into the graph under `id`.
     pub fn register_buffer(self: *RenderGraph, id: ResourceId, buffer: c.VkBuffer) !void {
         try self.resources.put(self.allocator, id, .{ .id = id, .lifecycle = .External, .desc = null, .handle = .{ .Buffer = buffer } });
 
@@ -284,10 +287,10 @@ pub const RenderGraph = struct {
         }
     }
 
+    /// Replaces the transient image description, releasing any existing allocation.
     pub fn update_transient_image(self: *RenderGraph, id: ResourceId, desc: ImageDesc, state: *types.VulkanState) !void {
         const existing = self.resources.getPtr(id);
         if (existing) |res| {
-            // Check if description matches (format, size, usage, and aspect)
             var match = false;
             if (res.desc) |d| {
                 switch (d) {
@@ -304,7 +307,6 @@ pub const RenderGraph = struct {
 
             if (match) return;
 
-            // Release old resource to pool if allocated
             if (res.handle != null and res.lifecycle == .Transient) {
                 switch (res.handle.?) {
                     .Image => |image| {
@@ -320,7 +322,6 @@ pub const RenderGraph = struct {
                                             .desc = old_desc,
                                         };
                                         self.release_image_to_pool(pooled) catch {
-                                            // Fallback to destroy if pool fails
                                             if (res.image_view) |view| {
                                                 c.vkDestroyImageView(state.context.device, view, null);
                                             }
@@ -339,7 +340,6 @@ pub const RenderGraph = struct {
                 res.memory = null;
                 res.image_view = null;
 
-                // Reset state to UNDEFINED since we destroyed the underlying resource
                 if (self.resource_states.getPtr(id)) |res_state| {
                     res_state.layout = c.VK_IMAGE_LAYOUT_UNDEFINED;
                     res_state.access_mask = c.VK_ACCESS_2_NONE;
@@ -349,11 +349,10 @@ pub const RenderGraph = struct {
             }
         }
 
-        // Update or add (overwrites desc, resets handle if we didn't already)
-        // If we didn't find it, this adds it. If we found it, we freed handle so it's safe to overwrite.
         try self.add_transient_image(id, desc);
     }
 
+    /// Destroys transient resources and clears transient pools.
     pub fn destroy_transient_resources(self: *RenderGraph, state: *types.VulkanState) void {
         var it = self.resources.iterator();
         while (it.next()) |entry| {
@@ -379,7 +378,6 @@ pub const RenderGraph = struct {
                 res.allocation = null;
                 res.memory = null;
 
-                // Reset state to UNDEFINED
                 if (self.resource_states.getPtr(res.id)) |res_state| {
                     res_state.layout = c.VK_IMAGE_LAYOUT_UNDEFINED;
                     res_state.access_mask = c.VK_ACCESS_2_NONE;
@@ -388,7 +386,6 @@ pub const RenderGraph = struct {
             }
         }
 
-        // Clean up Image Pool
         rg_log.debug("Cleaning up image pool ({d} items)", .{self.image_pool.items.len});
         for (self.image_pool.items) |pooled| {
             if (pooled.image_view) |view| {
@@ -400,7 +397,6 @@ pub const RenderGraph = struct {
         }
         self.image_pool.clearRetainingCapacity();
 
-        // Clean up Buffer Pool
         rg_log.debug("Cleaning up buffer pool ({d} items)", .{self.buffer_pool.items.len});
         for (self.buffer_pool.items) |pooled| {
             if (pooled.allocation) |alloc| {
@@ -425,15 +421,15 @@ pub const RenderGraph = struct {
         self.passes.clearRetainingCapacity();
     }
 
-    // Culling and Planning
+    /// Marks active passes and computes transient resource lifetimes for aliasing.
+    ///
+    /// A pass starts active when `can_be_culled` is false or when it writes to
+    /// `types.RESOURCE_ID_BACKBUFFER`.
     pub fn compile(self: *RenderGraph) !void {
-        // 1. Reset active state
         for (self.passes.items) |*pass| {
-            pass.is_active = !pass.can_be_culled; // If can't be culled, it's active by default (e.g. Present)
+            pass.is_active = !pass.can_be_culled;
         }
 
-        // 2. Identify producers for resources
-        // We need a map: ResourceID -> Producer Pass Index
         var producers = std.AutoHashMap(ResourceId, usize).init(self.allocator);
         defer producers.deinit();
 
@@ -443,16 +439,10 @@ pub const RenderGraph = struct {
             }
         }
 
-        // 3. Mark passes reachable from active passes (or external outputs like Backbuffer)
-        // For now, we assume Backbuffer (ID 1) is the main output.
-        // A better way is to explicitly mark the "Present" pass or passes writing to swapchain.
-
-        // Let's implement a simple backward traversal
-        // Queue of passes to process
+        // TODO: Track explicit present outputs instead of special-casing RESOURCE_ID_BACKBUFFER.
         var queue = std.ArrayListUnmanaged(usize){};
         defer queue.deinit(self.allocator);
 
-        // Start with passes that are already active (uncullable) or write to Backbuffer
         for (self.passes.items, 0..) |*pass, i| {
             var writes_backbuffer = false;
             for (pass.outputs.items) |output| {
@@ -468,7 +458,6 @@ pub const RenderGraph = struct {
             }
         }
 
-        // BFS Traversal
         var processed_idx: usize = 0;
         while (processed_idx < queue.items.len) {
             const pass_idx = queue.items[processed_idx];
@@ -476,7 +465,6 @@ pub const RenderGraph = struct {
 
             const pass = &self.passes.items[pass_idx];
 
-            // For each input of this active pass, activate the producer
             for (pass.inputs.items) |input| {
                 if (producers.get(input.id)) |producer_idx| {
                     if (!self.passes.items[producer_idx].is_active) {
@@ -487,7 +475,6 @@ pub const RenderGraph = struct {
             }
         }
 
-        // 4. Compute resource lifetimes across active passes for aliasing
         self.resource_lifetimes.clearRetainingCapacity();
         for (self.passes.items, 0..) |pass, i| {
             if (!pass.is_active) continue;
@@ -512,12 +499,10 @@ pub const RenderGraph = struct {
         rg_log.debug("RG compile: {d} active passes, {d} tracked resources", .{ self.passes.items.len, self.resource_lifetimes.count() });
     }
 
-    // Helper to insert barriers
+    /// Inserts a barrier transitioning `handle` from `old_state` to `new_access`.
     fn insert_barrier(cmd: c.VkCommandBuffer, handle: ResourceHandle, old_state: ResourceState, new_access: ResourceAccess, state: *types.VulkanState) void {
         switch (handle) {
             .Image => |image| {
-                // Skip if state matches exactly and layout is same (and not undefined transition)
-                // BUT if queue families differ, we MUST insert barrier for ownership transfer
                 const queue_changed = (old_state.queue_family != c.VK_QUEUE_FAMILY_IGNORED and
                     new_access.queue_family != c.VK_QUEUE_FAMILY_IGNORED and
                     old_state.queue_family != new_access.queue_family);
@@ -540,7 +525,6 @@ pub const RenderGraph = struct {
                 barrier.oldLayout = old_state.layout;
                 barrier.newLayout = new_access.layout;
 
-                // Queue Ownership Transfer
                 if (queue_changed) {
                     barrier.srcQueueFamilyIndex = old_state.queue_family;
                     barrier.dstQueueFamilyIndex = new_access.queue_family;
@@ -558,7 +542,7 @@ pub const RenderGraph = struct {
 
                 var dependency = std.mem.zeroes(c.VkDependencyInfo);
                 dependency.sType = c.VK_STRUCTURE_TYPE_DEPENDENCY_INFO;
-                dependency.dependencyFlags = 0; // Global dependency
+                dependency.dependencyFlags = 0;
                 dependency.imageMemoryBarrierCount = 1;
                 dependency.pImageMemoryBarriers = &barrier;
 
@@ -615,6 +599,7 @@ pub const RenderGraph = struct {
         }
     }
 
+    /// Allocates a transient resource the first time it is referenced.
     fn ensure_transient_allocated(self: *RenderGraph, res: *RenderGraphResource, state: *types.VulkanState) void {
         if (res.lifecycle != .Transient or res.handle != null) return;
         switch (res.desc.?) {
@@ -703,7 +688,7 @@ pub const RenderGraph = struct {
             },
         }
     }
-
+    /// Returns transient resources to pools after their last active pass.
     fn release_resources_after_pass(self: *RenderGraph, pass_index: usize, state: *types.VulkanState) void {
         var it = self.resources.iterator();
         while (it.next()) |entry| {
@@ -773,11 +758,11 @@ pub const RenderGraph = struct {
         }
     }
 
+    /// Executes all active passes and emits barriers before callbacks.
     pub fn execute(self: *RenderGraph, graphics_cmd: c.VkCommandBuffer, compute_cmd: c.VkCommandBuffer, state: *types.VulkanState) void {
         for (self.passes.items, 0..) |pass, pass_index| {
             if (!pass.is_active) continue;
 
-            // Ensure transient allocations exist on-demand for referenced resources
             for (pass.inputs.items) |input| {
                 if (self.resources.getPtr(input.id)) |res_in| {
                     ensure_transient_allocated(self, res_in, state);
@@ -798,7 +783,6 @@ pub const RenderGraph = struct {
             const cmd = if (use_compute) compute_cmd else graphics_cmd;
             const cmd_queue_family: u32 = if (use_compute) state.context.compute_queue_family else state.context.graphics_queue_family;
 
-            // Process inputs (Transition to read state)
             for (pass.inputs.items) |input| {
                 if (self.resources.get(input.id)) |res| {
                     if (res.handle) |handle| {
@@ -809,7 +793,6 @@ pub const RenderGraph = struct {
                             }
                             insert_barrier(cmd, handle, current_state, eff_input, state);
 
-                            // Update state
                             var new_state = current_state;
                             new_state.access_mask = eff_input.access_mask;
                             new_state.stage_mask = eff_input.stage_mask;
@@ -823,7 +806,6 @@ pub const RenderGraph = struct {
                 }
             }
 
-            // Process outputs (Transition to write state)
             for (pass.outputs.items) |output| {
                 if (self.resources.get(output.id)) |res| {
                     if (res.handle) |handle| {
@@ -833,13 +815,10 @@ pub const RenderGraph = struct {
                                 eff_output.queue_family = cmd_queue_family;
                             }
 
-                            // Optimization: Check if state actually changes
-                            // If layout, access, and queue are identical, we might skip barrier unless it's a specific read-after-write that needs it.
-                            // For now, let's just insert it to be safe, but we can filter redundant ones.
+                            // TODO: Skip redundant barriers when state matches.
 
                             insert_barrier(cmd, handle, current_state, eff_output, state);
 
-                            // Update state
                             var new_state = current_state;
                             new_state.access_mask = eff_output.access_mask;
                             new_state.stage_mask = eff_output.stage_mask;
@@ -853,14 +832,8 @@ pub const RenderGraph = struct {
                 }
             }
 
-            // Execute pass
-            // IMPORTANT: If this pass uses dynamic rendering (vkCmdBeginRendering), barriers MUST be outside.
-            // insert_barrier writes to the command buffer immediately.
-            // So barriers for inputs/outputs are correctly placed BEFORE the pass execution.
-
             pass.execute_fn(cmd, state);
 
-            // Release resources whose lifetime ends here (aliasing)
             release_resources_after_pass(self, pass_index, state);
         }
     }

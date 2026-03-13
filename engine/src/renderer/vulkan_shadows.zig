@@ -1,3 +1,9 @@
+//! Cascaded shadow mapping for the PBR pipeline.
+//!
+//! Computes cascade splits from the active camera, builds light-space matrices for a chosen
+//! directional light, and records the shadow render pass.
+//!
+//! TODO: Move cascade math into a standalone helper module for easier testing.
 const std = @import("std");
 const c = @import("vulkan_c.zig").c;
 const types = @import("vulkan_types.zig");
@@ -25,9 +31,9 @@ fn mat4_lookAt(eye: math.Vec3, center: math.Vec3, up: math.Vec3) math.Mat4 {
     return math.Mat4.lookAt(eye, center, up);
 }
 
+/// Records the shadow pass for the current frame when the PBR pipeline is active.
 pub fn vk_shadow_render(s: *types.VulkanState, cmd: c.VkCommandBuffer) void {
     if (!s.pipelines.use_pbr_pipeline or !s.pipelines.pbr_pipeline.initialized) {
-        // shadows_log.warn("PBR pipeline not ready", .{});
         return;
     }
     const pipe = &s.pipelines.pbr_pipeline;
@@ -50,14 +56,13 @@ pub fn vk_shadow_render(s: *types.VulkanState, cmd: c.VkCommandBuffer) void {
         return;
     }
 
-    // Find best directional light (highest intensity)
+    // TODO: Use an explicit light-type enum instead of float tolerance checks.
     var lightDir: math.Vec3 = math.Vec3.zero();
     var bestIntensity: f32 = -1.0;
     var found = false;
     var i: u32 = 0;
     while (i < lighting.count) : (i += 1) {
         const l_type = lighting.lights[i].lightDirection[3];
-        // Tolerance check for float equality
         if (l_type > -0.1 and l_type < 0.1) { // Directional (approx 0.0)
             const intensity = lighting.lights[i].lightColor[3];
             if (intensity > bestIntensity) {
@@ -79,8 +84,6 @@ pub fn vk_shadow_render(s: *types.VulkanState, cmd: c.VkCommandBuffer) void {
 
     lightDir = lightDir.normalize();
 
-    // Extract camera properties from UBO
-    // We need camera position and orientation (View Matrix) to calculate frustum splits
     const view = math.Mat4.fromArray(ubo.view);
     const proj = math.Mat4.fromArray(ubo.proj);
 
@@ -89,7 +92,6 @@ pub fn vk_shadow_render(s: *types.VulkanState, cmd: c.VkCommandBuffer) void {
 
     const nearClip: f32 = s.config.shadow_near_clip;
 
-    // Extract far plane from projection matrix: far = proj[14] / (1.0 + proj[10])
     var farClip: f32 = s.config.shadow_far_clip;
     const p10 = proj.data[10];
     const p14 = proj.data[14];
@@ -116,10 +118,7 @@ pub fn vk_shadow_render(s: *types.VulkanState, cmd: c.VkCommandBuffer) void {
         const d = lambda * logC + (1.0 - lambda) * uniC;
         cascadeSplits[j] = d; // Store actual depth for comparison
 
-        // Calculate frustum slice corners in World Space directly
-
         const camPos = math.Vec3.fromArray(ubo.viewPos);
-        // Extract Camera Basis from View Matrix (Column-Major)
         const camRight = math.Vec3{ .x = view.data[0], .y = view.data[4], .z = view.data[8] };
         const camUp = math.Vec3{ .x = view.data[1], .y = view.data[5], .z = view.data[9] };
         const camForward = math.Vec3{ .x = -view.data[2], .y = -view.data[6], .z = -view.data[10] };
@@ -127,7 +126,6 @@ pub fn vk_shadow_render(s: *types.VulkanState, cmd: c.VkCommandBuffer) void {
         const tanHalfFov = 1.0 / proj.data[5]; // Can be negative if Y is flipped
         const aspect = proj.data[5] / proj.data[0];
 
-        // Helper to get corners at a specific distance
         const getCornersAtDist = struct {
             fn call(dist: f32, cPos: math.Vec3, cFwd: math.Vec3, cRight: math.Vec3, cUp: math.Vec3, thf: f32, asp: f32) [4]math.Vec3 {
                 const height = dist * thf * 2.0;
@@ -151,15 +149,12 @@ pub fn vk_shadow_render(s: *types.VulkanState, cmd: c.VkCommandBuffer) void {
 
         const worldCorners = [8]math.Vec3{ cornersNear[0], cornersNear[1], cornersNear[2], cornersNear[3], cornersFar[0], cornersFar[1], cornersFar[2], cornersFar[3] };
 
-        // Calculate Centroid (in World Space) for positioning
         var center = math.Vec3.zero();
         for (worldCorners) |wc| {
             center = center.add(wc);
         }
         center = center.mul(1.0 / 8.0);
 
-        // Calculate Radius in View Space (Stable)
-        // We use identity camera frame to calculate the frustum slice in View Space
         const zeroPos = math.Vec3.zero();
         const identFwd = math.Vec3{ .x = 0, .y = 0, .z = -1 };
         const identRight = math.Vec3{ .x = 1, .y = 0, .z = 0 };
@@ -183,27 +178,20 @@ pub fn vk_shadow_render(s: *types.VulkanState, cmd: c.VkCommandBuffer) void {
         }
         radius = std.math.sqrt(radius);
 
-        // Apply padding (1.4x) to radius to include shadow casters outside the frustum slice
         radius *= 1.4;
 
-        // Enforce minimum radius to prevent clipping of nearby large objects
         const min_radius: f32 = 25.0;
         radius = @max(radius, min_radius);
 
-        // Round radius to stabilize scale
         radius = std.math.ceil(radius * 16.0) / 16.0;
-
-        // Construct Light View Matrix and stabilize by snapping to texels
 
         var up = math.Vec3{ .x = 0, .y = 1, .z = 0 };
         if (std.math.approxEqAbs(f32, @abs(lightDir.dot(up)), 1.0, 0.001)) {
             up = math.Vec3{ .x = 0, .y = 0, .z = 1 };
         }
 
-        // Create base LightView looking at origin from light direction
         const baseLightView = mat4_lookAt(lightDir.mul(-1.0), math.Vec3.zero(), up);
 
-        // Helper to multiply Mat4 * Vec3 (assuming Col-Major matrix)
         const mulMat4Vec3 = struct {
             fn call(m: math.Mat4, v: math.Vec3) math.Vec3 {
                 const x = m.data[0] * v.x + m.data[4] * v.y + m.data[8] * v.z + m.data[12];
@@ -213,24 +201,13 @@ pub fn vk_shadow_render(s: *types.VulkanState, cmd: c.VkCommandBuffer) void {
             }
         }.call;
 
-        // Project center to Light Space
         var centerLS = mulMat4Vec3(baseLightView, center);
 
-        // Calculate Shadow Map Resolution
         const shadowMapWidth = @as(f32, @floatFromInt(s.config.shadow_map_size));
 
-        // World units per texel
-        // The projection width is 2 * radius
         const worldUnitsPerTexel = (2.0 * radius) / shadowMapWidth;
 
-        // Snap centerLS to texel grid
-        // To stabilize, we must ensure that the 'minX' and 'minY' of the projection align with the texel grid.
-        // lightProjFinal = ortho(minX, maxX, ...)
-        // minX = centerLS.x - radius
-        // We want (centerLS.x - radius) to be a multiple of worldUnitsPerTexel.
-        // centerLS.x = floor( (centerLS.x - radius) / worldUnitsPerTexel ) * worldUnitsPerTexel + radius;
-        // This ensures the left edge of the box is snapped.
-
+        // TODO: Extract stable cascade snapping into a helper and make it unit-testable.
         const snappedX = @floor((centerLS.x - radius) / worldUnitsPerTexel) * worldUnitsPerTexel + radius;
         const snappedY = @floor((centerLS.y - radius) / worldUnitsPerTexel) * worldUnitsPerTexel + radius;
 
@@ -244,20 +221,18 @@ pub fn vk_shadow_render(s: *types.VulkanState, cmd: c.VkCommandBuffer) void {
         const minY = centerLS.y - radius;
         const maxY = centerLS.y + radius;
 
-        // Z-Bounds: Need to cover all potential blockers.
-        const zRange = 4000.0; // Large enough margin
+        // TODO: Make z range configurable per scene/cascade.
+        const zRange = 4000.0;
         const minZ_ortho = centerLS.z - zRange;
         const maxZ_ortho = centerLS.z + zRange;
 
         const lightProjFinal = mat4_ortho(minX, maxX, minY, maxY, maxZ_ortho, minZ_ortho);
 
-        // Standard Column-Major: P * V (Apply View then Proj)
         lightSpaceMatrices[j] = lightProjFinal.mul(lightView);
 
         lastSplitDist = d;
     }
 
-    // Upload matrices
     const frame = if (s.sync.current_frame >= types.MAX_FRAMES_IN_FLIGHT) 0 else s.sync.current_frame;
     if (pipe.shadowUBOsMapped[frame]) |ptr| {
         const matricesPtr = @as([*]math.Mat4, @ptrCast(@alignCast(ptr)));
@@ -267,27 +242,21 @@ pub fn vk_shadow_render(s: *types.VulkanState, cmd: c.VkCommandBuffer) void {
         @memcpy(splitsPtr[0..4], cascadeSplits[0..4]);
     }
 
-    // Render
     const scn = s.current_scene orelse return;
 
-    // Check descriptors upfront
     if (pipe.shadowDescriptorSets[frame_check] == null and pipe.shadowDescriptorManager == null) {
         shadows_log.err("Shadow descriptor set is null (and no manager)", .{});
         return;
     }
 
-    // Check vertex/index buffers upfront
     if (pipe.vertexBuffer == null) {
-        // shadows_log.warn("Shadow pass skipped: vertex buffer null", .{});
         return;
     }
 
     var j_layer: u32 = 0;
     while (j_layer < cascade_count_u32) : (j_layer += 1) {
-        // Reset index offset for each cascade pass since we re-iterate the same meshes
         var indexOffset: u32 = 0;
 
-        // Begin Rendering
         var renderingInfo = std.mem.zeroes(c.VkRenderingInfo);
         renderingInfo.sType = c.VK_STRUCTURE_TYPE_RENDERING_INFO;
         renderingInfo.renderArea.extent.width = s.config.shadow_map_size;
@@ -301,7 +270,7 @@ pub fn vk_shadow_render(s: *types.VulkanState, cmd: c.VkCommandBuffer) void {
         depthAttachment.imageLayout = c.VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
         depthAttachment.loadOp = c.VK_ATTACHMENT_LOAD_OP_CLEAR;
         depthAttachment.storeOp = c.VK_ATTACHMENT_STORE_OP_STORE;
-        depthAttachment.clearValue.depthStencil = .{ .depth = 1.0, .stencil = 0 }; // Clear to 1.0 (Far)
+        depthAttachment.clearValue.depthStencil = .{ .depth = 1.0, .stencil = 0 };
 
         renderingInfo.pDepthAttachment = &depthAttachment;
 
@@ -309,7 +278,6 @@ pub fn vk_shadow_render(s: *types.VulkanState, cmd: c.VkCommandBuffer) void {
             func(cmd, &renderingInfo);
         }
 
-        // Set Viewport/Scissor
         var vp = std.mem.zeroes(c.VkViewport);
         vp.width = @floatFromInt(s.config.shadow_map_size);
         vp.height = @floatFromInt(s.config.shadow_map_size);
@@ -321,14 +289,11 @@ pub fn vk_shadow_render(s: *types.VulkanState, cmd: c.VkCommandBuffer) void {
         sc.extent.height = s.config.shadow_map_size;
         c.vkCmdSetScissor(cmd, 0, 1, &sc);
 
-        // Reduce bias to avoid pushing shadows out of depth range
-        // c.vkCmdSetDepthBias(cmd, 1.25, 0.0, 1.75);
+        // TODO: Tune depth bias per scene to reduce acne/peter-panning.
         c.vkCmdSetDepthBias(cmd, 0.0, 0.0, 0.0);
 
-        // Bind Pipeline (Opaque)
         c.vkCmdBindPipeline(cmd, c.VK_PIPELINE_BIND_POINT_GRAPHICS, pipe.shadowPipeline);
 
-        // Bind Descriptor Set
         if (pipe.shadowDescriptorManager) |mgr| {
             var sets: ?[*]const c.VkDescriptorSet = null;
             var descriptorSets = [_]c.VkDescriptorSet{pipe.shadowDescriptorSets[frame_check]};
@@ -345,8 +310,6 @@ pub fn vk_shadow_render(s: *types.VulkanState, cmd: c.VkCommandBuffer) void {
             }
         }
 
-        // Bind Vertex/Index Buffers
-        // Vertex buffer already checked upfront
         const vertexBuffers = [_]c.VkBuffer{pipe.vertexBuffer};
         const offsets = [_]c.VkDeviceSize{0};
         c.vkCmdBindVertexBuffers(cmd, 0, 1, &vertexBuffers, &offsets);
@@ -355,7 +318,6 @@ pub fn vk_shadow_render(s: *types.VulkanState, cmd: c.VkCommandBuffer) void {
             c.vkCmdBindIndexBuffer(cmd, pipe.indexBuffer, 0, c.VK_INDEX_TYPE_UINT32);
         }
 
-        // --- Pass 1: Opaque Meshes ---
         shadows_log.debug("Cascade {d}: Starting Pass 1 (Opaque)", .{j_layer});
         var m_i: u32 = 0;
         var drawn_count: u32 = 0;
@@ -367,7 +329,6 @@ pub fn vk_shadow_render(s: *types.VulkanState, cmd: c.VkCommandBuffer) void {
             }
             const mesh = &scn.meshes.?[m_i];
 
-            // Verify mesh has valid indices in the buffer
             if (mesh.index_count == 0 or mesh.indices == null) {
                 continue;
             }
@@ -384,7 +345,6 @@ pub fn vk_shadow_render(s: *types.VulkanState, cmd: c.VkCommandBuffer) void {
             }
 
             if (is_alpha_tested) {
-                // Skip alpha tested meshes in this pass
                 const next_offset: u64 = @as(u64, indexOffset) + @as(u64, mesh.index_count);
                 if (next_offset > @as(u64, pipe.totalIndexCount)) break;
                 indexOffset = @intCast(next_offset);
@@ -400,25 +360,20 @@ pub fn vk_shadow_render(s: *types.VulkanState, cmd: c.VkCommandBuffer) void {
 
             drawn_count += 1;
 
-            // Push Constants
             var pushData = std.mem.zeroes([156]u8);
 
-            // Copy Model Matrix (first 64 bytes)
             const modelPtr = @as([*]const u8, @ptrCast(&mesh.transform));
             @memcpy(pushData[0..64], modelPtr[0..64]);
 
-            // Has Skeleton
             var packedInfo: u32 = 0;
             if (scn.animation_system != null and scn.skin_count > 0) {
                 shadows_log.debug("Checking skins for mesh {d}. Skin count: {d}", .{ m_i, scn.skin_count });
-                // Validation: skin count reasonable?
                 if (scn.skin_count < 100) {
                     if (scn.skins) |skins_ptr| {
                         const skins = @as([*]animation.CardinalSkin, @ptrCast(@alignCast(skins_ptr)));
                         var skin_idx: u32 = 0;
                         while (skin_idx < scn.skin_count) : (skin_idx += 1) {
                             const skin = &skins[skin_idx];
-                            // Sanity check mesh_count
                             if (skin.mesh_count > 1000) {
                                 shadows_log.warn("Skin {d} has suspicious mesh_count: {d}", .{ skin_idx, skin.mesh_count });
                                 break;
@@ -426,7 +381,6 @@ pub fn vk_shadow_render(s: *types.VulkanState, cmd: c.VkCommandBuffer) void {
                             if (skin.mesh_indices) |indices| {
                                 var mesh_idx: u32 = 0;
                                 while (mesh_idx < skin.mesh_count) : (mesh_idx += 1) {
-                                    // shadows_log.warn("Checking skin {d} mesh_idx {d} val {d}", .{skin_idx, mesh_idx, indices[mesh_idx]});
                                     if (indices[mesh_idx] == m_i) {
                                         packedInfo |= (4 << 16);
                                         break;
@@ -444,14 +398,12 @@ pub fn vk_shadow_render(s: *types.VulkanState, cmd: c.VkCommandBuffer) void {
             const infoPtr = @as([*]const u8, @ptrCast(&packedInfo));
             @memcpy(pushData[132..136], infoPtr[0..4]);
 
-            // Cascade Index
             const cascadeIdx = @as(u32, @intCast(j_layer));
             const casPtr = @as([*]const u8, @ptrCast(&cascadeIdx));
             @memcpy(pushData[152..156], casPtr[0..4]);
 
             c.vkCmdPushConstants(cmd, pipe.shadowPipelineLayout, c.VK_SHADER_STAGE_VERTEX_BIT | c.VK_SHADER_STAGE_FRAGMENT_BIT, 0, 156, &pushData);
 
-            // Validate index buffer bounds
             if (@as(u64, indexOffset) + @as(u64, mesh.index_count) > @as(u64, pipe.totalIndexCount)) {
                 break;
             }
@@ -463,18 +415,12 @@ pub fn vk_shadow_render(s: *types.VulkanState, cmd: c.VkCommandBuffer) void {
             indexOffset = @intCast(next_offset);
         }
 
-        // --- Pass 2: Alpha Tested Meshes ---
         if (pipe.shadowAlphaPipeline != null) {
-            // shadows_log.warn("Cascade {d}: Starting Pass 2 (Alpha)", .{j_layer});
             c.vkCmdBindPipeline(cmd, c.VK_PIPELINE_BIND_POINT_GRAPHICS, pipe.shadowAlphaPipeline);
-
-            // Re-bind descriptors (just in case pipeline bind disturbed them, though likely they are compatible)
-            // But we already bound them to the layout which is shared.
 
             indexOffset = 0;
             m_i = 0;
             while (m_i < scn.mesh_count) : (m_i += 1) {
-                // shadows_log.warn("Pass 2: Mesh {d}", .{m_i});
                 if (scn.meshes == null) break;
                 const mesh = &scn.meshes.?[m_i];
 
@@ -511,23 +457,18 @@ pub fn vk_shadow_render(s: *types.VulkanState, cmd: c.VkCommandBuffer) void {
 
                 drawn_count += 1;
 
-                // Push Constants
+                // TODO: Replace the manual byte packing with a typed push-constants struct.
                 var pushData = std.mem.zeroes([156]u8);
 
-                // Copy Model Matrix (first 64 bytes)
                 const modelPtr = @as([*]const u8, @ptrCast(&mesh.transform));
                 @memcpy(pushData[0..64], modelPtr[0..64]);
 
-                // Material Data (Offset 64)
-                // Texture Index (u32) at 64
                 const texPtr = @as([*]const u8, @ptrCast(&texture_idx));
                 @memcpy(pushData[64..68], texPtr[0..4]);
 
-                // Alpha Cutoff (f32) at 68
                 const cutPtr = @as([*]const u8, @ptrCast(&alpha_cutoff));
                 @memcpy(pushData[68..72], cutPtr[0..4]);
 
-                // Has Skeleton
                 var packedInfo: u32 = 0;
                 if (scn.animation_system != null and scn.skin_count > 0) {
                     const skins = @as([*]animation.CardinalSkin, @ptrCast(@alignCast(scn.skins.?)));
@@ -550,14 +491,12 @@ pub fn vk_shadow_render(s: *types.VulkanState, cmd: c.VkCommandBuffer) void {
                 const infoPtr = @as([*]const u8, @ptrCast(&packedInfo));
                 @memcpy(pushData[132..136], infoPtr[0..4]);
 
-                // Cascade Index
                 const cascadeIdx = @as(u32, @intCast(j_layer));
                 const casPtr = @as([*]const u8, @ptrCast(&cascadeIdx));
                 @memcpy(pushData[152..156], casPtr[0..4]);
 
                 c.vkCmdPushConstants(cmd, pipe.shadowPipelineLayout, c.VK_SHADER_STAGE_VERTEX_BIT | c.VK_SHADER_STAGE_FRAGMENT_BIT, 0, 156, &pushData);
 
-                // Validate index buffer bounds
                 if (@as(u64, indexOffset) + @as(u64, mesh.index_count) > @as(u64, pipe.totalIndexCount)) {
                     break;
                 }
@@ -574,7 +513,6 @@ pub fn vk_shadow_render(s: *types.VulkanState, cmd: c.VkCommandBuffer) void {
             shadows_log.warn("No meshes drawn for cascade 0! Total meshes: {d}", .{scn.mesh_count});
         }
 
-        // End Rendering
         if (s.context.vkCmdEndRendering) |func| {
             func(cmd);
         }

@@ -1,3 +1,9 @@
+//! Editor shared state.
+//!
+//! Owns the editor's UI toggles, selected entities/models, camera settings, and a view of loaded
+//! scene data. This is passed across editor panels and systems each frame.
+//!
+//! TODO: Split renderer-facing state from UI state to reduce coupling.
 const std = @import("std");
 const engine = @import("cardinal_engine");
 const log = engine.log;
@@ -40,7 +46,6 @@ pub const AssetState = struct {
         is_directory: bool,
 
         pub fn deinit(self: AssetEntry, alloc: std.mem.Allocator) void {
-            // Free the full allocated size (len + 1 for sentinel)
             alloc.free(self.display[0 .. self.display.len + 1]);
             alloc.free(self.full_path[0 .. self.full_path.len + 1]);
             alloc.free(self.relative_path[0 .. self.relative_path.len + 1]);
@@ -60,44 +65,45 @@ pub const EditorState = struct {
     registry: *engine.ecs_registry.Registry = undefined,
     descriptor_pool: c.VkDescriptorPool = null,
 
-    // Temporary Arena
+    /// Temporary arena used for per-frame allocations in editor code.
     arena: std.heap.ArenaAllocator = undefined,
     arena_allocator: std.mem.Allocator = undefined,
 
-    // Config
+    /// Persistent config manager for editor settings and recent projects.
     config_manager: engine.config.ConfigManager = undefined,
 
-    // Scene & Models
+    /// Runtime model manager used by the editor.
     model_manager: model_manager.CardinalModelManager = undefined,
+    /// Aggregated scene used for editor UI display and import/export.
     combined_scene: scene.CardinalScene = undefined,
     scene_loaded: bool = false,
     loading_tasks: std.ArrayListUnmanaged(LoadingTaskInfo) = .{},
     is_loading: bool = false,
 
-    // Scene Upload
+    /// When set, the renderer should upload `pending_scene` next frame.
     scene_upload_pending: bool = false,
     pending_scene: scene.CardinalScene = undefined,
 
-    // Skybox Loading
+    /// Skybox path used by the renderer (HDR/EXR only).
     skybox_path: ?[:0]u8 = null,
 
-    // UI State
+    /// Status text shown in the editor UI.
     status_msg: [256]u8 = [_]u8{0} ** 256,
     scene_path: [512]u8 = [_]u8{0} ** 512,
-    save_scene_name: [256]u8 = [_]u8{0} ** 256, // New: for saving with name
-    available_scenes: std.ArrayListUnmanaged([]const u8) = .{}, // New: for listing scenes
+    save_scene_name: [256]u8 = [_]u8{0} ** 256,
+    available_scenes: std.ArrayListUnmanaged([]const u8) = .{},
     scene_context_menu_name: [256]u8 = [_]u8{0} ** 256,
     rename_scene_buffer: [256]u8 = [_]u8{0} ** 256,
     open_rename_popup: bool = false,
     open_delete_popup: bool = false,
     selected_model_id: u32 = 0,
     selected_entity: engine.ecs_entity.Entity = .{ .id = std.math.maxInt(u64) },
-    
-    // Entity Renaming
+
+    /// Entity currently being renamed, if any.
     renaming_entity: engine.ecs_entity.Entity = .{ .id = std.math.maxInt(u64) },
     rename_buffer: [256]u8 = [_]u8{0} ** 256,
 
-    // Panel Visibility
+    /// Panel visibility toggles.
     show_scene_graph: bool = true,
     show_scene_view: bool = true,
     show_assets: bool = true,
@@ -107,18 +113,18 @@ pub const EditorState = struct {
     show_animation: bool = true,
     show_project_manager: bool = true,
 
-    // Assets
+    /// Asset browser state (current directory, filter, and entry lists).
     assets: AssetState = .{},
 
-    // Camera & Light
+    /// Camera state passed to the renderer.
     camera: types.CardinalCamera = undefined,
+    /// Primary light passed to the renderer.
     light: types.CardinalLight = undefined,
     pbr_enabled: bool = true,
     enable_directional_light: bool = true,
 
-    // Camera Control
+    /// Whether the editor has captured the mouse (FPS camera mode).
     mouse_captured: bool = false,
-    // last_mouse_x/y and first_mouse handled by engine input
     yaw: f32 = 90.0,
     pitch: f32 = 0.0,
     camera_speed: f32 = 5.0,

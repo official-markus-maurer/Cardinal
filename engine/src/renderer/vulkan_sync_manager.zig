@@ -24,10 +24,12 @@ fn atomic(ptr: anytype) *std.atomic.Value(@TypeOf(ptr.*)) {
     return @ptrCast(ptr);
 }
 
+/// Acquires a shared lock guarding timeline semaphore operations.
 pub fn vulkan_sync_manager_lock_shared() void {
     g_sync_lock.lockShared();
 }
 
+/// Releases the shared lock acquired by `vulkan_sync_manager_lock_shared`.
 pub fn vulkan_sync_manager_unlock_shared() void {
     g_sync_lock.unlockShared();
 }
@@ -57,7 +59,6 @@ pub fn vulkan_sync_manager_init(sync_manager: ?*types.VulkanSyncManager, device:
     }
     const mgr = sync_manager.?;
 
-    // Clear struct
     @memset(@as([*]u8, @ptrCast(mgr))[0..@sizeOf(types.VulkanSyncManager)], 0);
 
     mgr.device = device;
@@ -66,7 +67,6 @@ pub fn vulkan_sync_manager_init(sync_manager: ?*types.VulkanSyncManager, device:
     mgr.current_frame = 0;
     mgr.max_ahead_value = max_ahead;
 
-    // Allocate arrays
     const sem_size = @sizeOf(c.VkSemaphore);
     const fence_size = @sizeOf(c.VkFence);
 
@@ -95,7 +95,6 @@ pub fn vulkan_sync_manager_init(sync_manager: ?*types.VulkanSyncManager, device:
     }
     mgr.in_flight_fences = @ptrCast(@alignCast(ptr3));
 
-    // Create semaphores and fences
     var i: u32 = 0;
     while (i < max_frames_in_flight) : (i += 1) {
         var semaphore_info = std.mem.zeroes(c.VkSemaphoreCreateInfo);
@@ -124,7 +123,6 @@ pub fn vulkan_sync_manager_init(sync_manager: ?*types.VulkanSyncManager, device:
         }
     }
 
-    // Timeline semaphore
     var timeline_type_info = std.mem.zeroes(c.VkSemaphoreTypeCreateInfo);
     timeline_type_info.sType = c.VK_STRUCTURE_TYPE_SEMAPHORE_TYPE_CREATE_INFO;
     timeline_type_info.semaphoreType = c.VK_SEMAPHORE_TYPE_TIMELINE;
@@ -140,7 +138,6 @@ pub fn vulkan_sync_manager_init(sync_manager: ?*types.VulkanSyncManager, device:
         return false;
     }
 
-    // Initialize atomics
     atomic(&mgr.current_frame_value).store(0, .seq_cst);
     atomic(&mgr.image_available_value).store(0, .seq_cst);
     atomic(&mgr.render_complete_value).store(0, .seq_cst);
@@ -156,25 +153,23 @@ pub fn vulkan_sync_manager_init(sync_manager: ?*types.VulkanSyncManager, device:
     return true;
 }
 
+/// Destroys all owned fences/semaphores and frees internal arrays.
 pub fn vulkan_sync_manager_destroy(sync_manager: ?*types.VulkanSyncManager) void {
     if (sync_manager == null) return;
     const mgr = sync_manager.?;
 
     if (mgr.device == null) return;
 
-    // Wait for device to be idle
     const res = c.vkDeviceWaitIdle(mgr.device);
     if (res != c.VK_SUCCESS) {
         sync_log.err("vkDeviceWaitIdle failed during destruction: {d}", .{res});
     }
 
-    // Destroy timeline semaphore
     if (mgr.timeline_semaphore != null) {
         c.vkDestroySemaphore(mgr.device, mgr.timeline_semaphore, null);
         mgr.timeline_semaphore = null;
     }
 
-    // Destroy per-frame semaphores and fences
     const mem_alloc = memory.cardinal_get_allocator_for_category(.RENDERER);
     if (mgr.image_acquired_semaphores != null) {
         var i: u32 = 0;
@@ -213,6 +208,7 @@ pub fn vulkan_sync_manager_destroy(sync_manager: ?*types.VulkanSyncManager) void
     sync_log.info("Destroyed", .{});
 }
 
+/// Waits for the current frame fence to become signaled.
 pub fn vulkan_sync_manager_wait_for_frame(sync_manager: ?*types.VulkanSyncManager, timeout_ns: u64) c.VkResult {
     if (sync_manager == null) return c.VK_ERROR_INITIALIZATION_FAILED;
     const mgr = sync_manager.?;
@@ -220,7 +216,6 @@ pub fn vulkan_sync_manager_wait_for_frame(sync_manager: ?*types.VulkanSyncManage
 
     const current_fence = mgr.in_flight_fences.?[mgr.current_frame];
 
-    // Check status first
     const status = c.vkGetFenceStatus(mgr.device, current_fence);
     if (status == c.VK_SUCCESS) {
         return c.VK_SUCCESS;
@@ -231,6 +226,7 @@ pub fn vulkan_sync_manager_wait_for_frame(sync_manager: ?*types.VulkanSyncManage
     return c.vkWaitForFences(mgr.device, 1, &current_fence, c.VK_TRUE, timeout_ns);
 }
 
+/// Resets the current frame fence to the unsignaled state.
 pub fn vulkan_sync_manager_reset_frame_fence(sync_manager: ?*types.VulkanSyncManager) c.VkResult {
     if (sync_manager == null) return c.VK_ERROR_INITIALIZATION_FAILED;
     const mgr = sync_manager.?;
@@ -240,6 +236,7 @@ pub fn vulkan_sync_manager_reset_frame_fence(sync_manager: ?*types.VulkanSyncMan
     return c.vkResetFences(mgr.device, 1, &current_fence);
 }
 
+/// Advances the frame index and updates derived timeline counter values.
 pub fn vulkan_sync_manager_advance_frame(sync_manager: ?*types.VulkanSyncManager) void {
     if (sync_manager == null) return;
     const mgr = sync_manager.?;
@@ -254,6 +251,7 @@ pub fn vulkan_sync_manager_advance_frame(sync_manager: ?*types.VulkanSyncManager
     atomic(&mgr.render_complete_value).store(base_value + 2, .seq_cst);
 }
 
+/// Writes the per-frame semaphores/fence and associated timeline values into `sync_info`.
 pub fn vulkan_sync_manager_get_frame_sync_info(sync_manager: ?*types.VulkanSyncManager, sync_info: ?*types.VulkanFrameSyncInfo) void {
     if (sync_manager == null or sync_info == null) return;
     const mgr = sync_manager.?;
@@ -269,6 +267,7 @@ pub fn vulkan_sync_manager_get_frame_sync_info(sync_manager: ?*types.VulkanSyncM
     info.wait_stage = c.VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT;
 }
 
+/// Creates a binary semaphore on the manager device.
 pub fn vulkan_sync_manager_create_semaphore(sync_manager: ?*types.VulkanSyncManager, semaphore: ?*c.VkSemaphore) bool {
     if (sync_manager == null or semaphore == null) return false;
     const mgr = sync_manager.?;
@@ -280,6 +279,7 @@ pub fn vulkan_sync_manager_create_semaphore(sync_manager: ?*types.VulkanSyncMana
     return c.vkCreateSemaphore(mgr.device, &semaphore_info, null, semaphore) == c.VK_SUCCESS;
 }
 
+/// Creates a fence on the manager device.
 pub fn vulkan_sync_manager_create_fence(sync_manager: ?*types.VulkanSyncManager, signaled: bool, fence: ?*c.VkFence) bool {
     if (sync_manager == null or fence == null) return false;
     const mgr = sync_manager.?;
@@ -292,6 +292,7 @@ pub fn vulkan_sync_manager_create_fence(sync_manager: ?*types.VulkanSyncManager,
     return c.vkCreateFence(mgr.device, &fence_info, null, fence) == c.VK_SUCCESS;
 }
 
+/// Destroys a binary semaphore created by this manager.
 pub fn vulkan_sync_manager_destroy_semaphore(sync_manager: ?*types.VulkanSyncManager, semaphore: c.VkSemaphore) void {
     if (sync_manager == null or semaphore == null) return;
     const mgr = sync_manager.?;
@@ -300,6 +301,7 @@ pub fn vulkan_sync_manager_destroy_semaphore(sync_manager: ?*types.VulkanSyncMan
     c.vkDestroySemaphore(mgr.device, semaphore, null);
 }
 
+/// Destroys a fence created by this manager.
 pub fn vulkan_sync_manager_destroy_fence(sync_manager: ?*types.VulkanSyncManager, fence: c.VkFence) void {
     if (sync_manager == null or fence == null) return;
     const mgr = sync_manager.?;
@@ -308,17 +310,16 @@ pub fn vulkan_sync_manager_destroy_fence(sync_manager: ?*types.VulkanSyncManager
     c.vkDestroyFence(mgr.device, fence, null);
 }
 
+/// Waits on the shared timeline semaphore, tolerating stale values after resets.
 pub fn vulkan_sync_manager_wait_timeline(sync_manager: ?*types.VulkanSyncManager, value: u64, timeout_ns: u64) c.VkResult {
     if (sync_manager == null) return c.VK_ERROR_INITIALIZATION_FAILED;
     const mgr = sync_manager.?;
     if (!mgr.initialized) return c.VK_ERROR_INITIALIZATION_FAILED;
 
-    // Check for stale values (e.g. if timeline was reset)
-    // We use a loose check without lock to avoid overhead, as exact synchronization is handled by the semaphore
     const current_atomic = atomic(&mgr.global_timeline_counter).load(.seq_cst);
     if (value > current_atomic + mgr.max_ahead_value) {
         sync_log.warn("wait_timeline: value {d} is too far ahead of current {d}, ignoring wait", .{ value, current_atomic });
-        return c.VK_SUCCESS; // Treat as if already signaled to avoid hang
+        return c.VK_SUCCESS;
     }
 
     var wait_val = value;
@@ -336,6 +337,7 @@ pub fn vulkan_sync_manager_wait_timeline(sync_manager: ?*types.VulkanSyncManager
     return result;
 }
 
+/// Signals the shared timeline semaphore with a queue submit.
 pub fn vulkan_sync_manager_signal_timeline(sync_manager: ?*types.VulkanSyncManager, value: u64) c.VkResult {
     if (sync_manager == null) return c.VK_ERROR_INITIALIZATION_FAILED;
     const mgr = sync_manager.?;
@@ -362,6 +364,7 @@ pub fn vulkan_sync_manager_signal_timeline(sync_manager: ?*types.VulkanSyncManag
     return result;
 }
 
+/// Reads the shared timeline semaphore counter from the device.
 pub fn vulkan_sync_manager_get_timeline_value(sync_manager: ?*types.VulkanSyncManager, value: ?*u64) c.VkResult {
     if (sync_manager == null or value == null) return c.VK_ERROR_INITIALIZATION_FAILED;
     const mgr = sync_manager.?;
@@ -372,12 +375,12 @@ pub fn vulkan_sync_manager_get_timeline_value(sync_manager: ?*types.VulkanSyncMa
     return c.vkGetSemaphoreCounterValue(mgr.device, mgr.timeline_semaphore, value);
 }
 
+/// Returns a monotonically increasing timeline value safe to wait/signal.
 pub fn vulkan_sync_manager_get_next_timeline_value(sync_manager: ?*types.VulkanSyncManager) u64 {
     if (sync_manager == null) return 0;
     const mgr = sync_manager.?;
     if (!mgr.initialized) return 0;
 
-    // Acquire shared lock to protect against concurrent resets/recreation
     g_sync_lock.lockShared();
     defer g_sync_lock.unlockShared();
 
@@ -386,7 +389,6 @@ pub fn vulkan_sync_manager_get_next_timeline_value(sync_manager: ?*types.VulkanS
         return 0;
     }
 
-    // Get current value from device to ensure we are ahead
     var current_device_value: u64 = 0;
     var result = c.vkGetSemaphoreCounterValue(mgr.device, mgr.timeline_semaphore, &current_device_value);
 
@@ -400,7 +402,6 @@ pub fn vulkan_sync_manager_get_next_timeline_value(sync_manager: ?*types.VulkanS
     while (true) {
         const old_val = atom_ptr.load(.seq_cst);
 
-        // Determine the next value: strictly greater than both current counter and device value
         var base_val = old_val;
         if (result == c.VK_SUCCESS and current_device_value > base_val) {
             base_val = current_device_value;
@@ -411,44 +412,33 @@ pub fn vulkan_sync_manager_get_next_timeline_value(sync_manager: ?*types.VulkanS
             return 0;
         }
 
-        // Check for overflow risk (leaving some headroom)
         if (base_val >= std.math.maxInt(u64) - 1000) {
             sync_log.warn("Timeline value approaching overflow (val={d}), triggering reset", .{base_val});
 
-            // Upgrade to write lock for reset
-            // We need to release shared lock first to avoid deadlock
             g_sync_lock.unlockShared();
             const reset_result = vulkan_sync_manager_reset_timeline_values(mgr);
-            g_sync_lock.lockShared(); // Re-acquire shared lock
+            g_sync_lock.lockShared();
 
             if (reset_result) {
-                // Reset successful, global counter is now 0.
-                // We MUST re-read the device value because the semaphore has been recreated!
-                // Otherwise we will loop forever using the old stale current_device_value (which was huge).
                 result = c.vkGetSemaphoreCounterValue(mgr.device, mgr.timeline_semaphore, &current_device_value);
                 if (result != c.VK_SUCCESS) {
                     sync_log.err("Failed to get timeline value after reset: {d}", .{result});
                     return 0;
                 }
 
-                // The loop will retry and load the new 0 value from atomic, and use the new 0 value from device.
                 continue;
             } else {
                 sync_log.err("Failed to reset timeline values during overflow check", .{});
-                // We can't safely increment, return 0 to indicate error
                 return 0;
             }
         }
 
         const target_val = base_val + 1;
 
-        // Attempt to atomically update the counter
         const cas_res = atom_ptr.cmpxchgWeak(old_val, target_val, .seq_cst, .seq_cst);
         if (cas_res) |_| {
-            // CAS failed (value changed by another thread), retry loop
             continue;
         } else {
-            // CAS succeeded, we successfully claimed target_val
             return target_val;
         }
     }
@@ -479,12 +469,13 @@ pub fn vulkan_sync_manager_get_max_frames(sync_manager: ?*types.VulkanSyncManage
     return mgr.max_frames_in_flight;
 }
 
+/// Waits for multiple timeline values in one call.
 pub fn vulkan_sync_manager_wait_timeline_batch(sync_manager: ?*types.VulkanSyncManager, values: ?[*]const u64, count: u32, timeout_ns: u64) c.VkResult {
     if (sync_manager == null or values == null or count == 0) return c.VK_ERROR_INITIALIZATION_FAILED;
     const mgr = sync_manager.?;
     if (!mgr.initialized) return c.VK_ERROR_INITIALIZATION_FAILED;
 
-    // Create array of semaphores
+    // TODO: Avoid malloc; use a scratch allocator or fixed-size stack buffer for semaphores.
     const ptr = c.malloc(count * @sizeOf(c.VkSemaphore));
     if (ptr == null) return c.VK_ERROR_OUT_OF_HOST_MEMORY;
     const semaphores = @as([*]c.VkSemaphore, @ptrCast(@alignCast(ptr)));
@@ -509,6 +500,7 @@ pub fn vulkan_sync_manager_wait_timeline_batch(sync_manager: ?*types.VulkanSyncM
     return result;
 }
 
+/// Signals multiple timeline values using vkSignalSemaphore calls.
 pub fn vulkan_sync_manager_signal_timeline_batch(sync_manager: ?*types.VulkanSyncManager, values: ?[*]const u64, count: u32) c.VkResult {
     if (sync_manager == null or values == null or count == 0) return c.VK_ERROR_INITIALIZATION_FAILED;
     const mgr = sync_manager.?;
@@ -570,7 +562,6 @@ pub fn vulkan_sync_manager_wait_timeline_safe(sync_manager: ?*types.VulkanSyncMa
     const mgr = sync_manager.?;
     if (mgr.timeline_semaphore == null) {
         if (error_info) |info| {
-            // ... same error logic
             info.error_type = types.VulkanTimelineError.SEMAPHORE_INVALID;
             info.vulkan_result = c.VK_ERROR_UNKNOWN;
             info.timeline_value = value;
@@ -804,6 +795,7 @@ pub fn vulkan_sync_manager_get_optimized_next_value(sync_manager: ?*types.Vulkan
     return next_value;
 }
 
+/// Checks whether the timeline counter is near the overflow threshold.
 pub fn vulkan_sync_manager_check_overflow_risk(sync_manager: ?*types.VulkanSyncManager, remaining_values: ?*u64) bool {
     if (sync_manager == null) return false;
     const mgr = sync_manager.?;
@@ -823,20 +815,18 @@ pub fn vulkan_sync_manager_check_overflow_risk(sync_manager: ?*types.VulkanSyncM
     return at_risk;
 }
 
+/// Destroys and recreates the shared timeline semaphore and resets counters to 0.
 pub fn vulkan_sync_manager_reset_timeline_values(sync_manager: ?*types.VulkanSyncManager) bool {
     if (sync_manager == null) return false;
     const mgr = sync_manager.?;
 
-    // Acquire write lock to ensure exclusive access during reset
     g_sync_lock.lock();
     defer g_sync_lock.unlock();
 
     if (mgr.timeline_semaphore == null) return false;
 
-    // Check if reset is still needed (another thread might have just done it)
     const current_atomic = atomic(&mgr.global_timeline_counter).load(.seq_cst);
 
-    // Also check device value if possible to ensure we don't skip reset if device is in bad state
     var current_dev_val: u64 = 0;
     const dev_res = c.vkGetSemaphoreCounterValue(mgr.device, mgr.timeline_semaphore, &current_dev_val);
 
@@ -846,14 +836,11 @@ pub fn vulkan_sync_manager_reset_timeline_values(sync_manager: ?*types.VulkanSyn
     }
 
     if (current_atomic < mgr.max_ahead_value and (dev_res == c.VK_SUCCESS and current_dev_val < mgr.max_ahead_value)) {
-        // Already reset, return success
         return true;
     }
 
     sync_log.info("Resetting timeline values to prevent overflow (atomic={d}, device={d})", .{ current_atomic, current_dev_val });
 
-    // Wait for device idle to ensure no commands are using the semaphore
-    // This is crucial because we are about to destroy it
     const wait_result = c.vkDeviceWaitIdle(mgr.device);
     if (wait_result != c.VK_SUCCESS) {
         sync_log.err("vkDeviceWaitIdle failed during reset: {d}", .{wait_result});
@@ -880,7 +867,6 @@ pub fn vulkan_sync_manager_reset_timeline_values(sync_manager: ?*types.VulkanSyn
         return false;
     }
 
-    // Force atomic stores to 0 to align with new semaphore
     atomic(&mgr.global_timeline_counter).store(0, .seq_cst);
     atomic(&mgr.current_frame_value).store(0, .seq_cst);
     atomic(&mgr.image_available_value).store(0, .seq_cst);
@@ -892,6 +878,7 @@ pub fn vulkan_sync_manager_reset_timeline_values(sync_manager: ?*types.VulkanSyn
     return true;
 }
 
+/// Adjusts the timeline value allocation strategy based on remaining headroom.
 pub fn vulkan_sync_manager_optimize_value_allocation(sync_manager: ?*types.VulkanSyncManager) void {
     if (sync_manager == null) return;
     const mgr = sync_manager.?;
@@ -921,6 +908,7 @@ pub fn vulkan_sync_manager_optimize_value_allocation(sync_manager: ?*types.Vulka
     }
 }
 
+/// Checks whether `value` has been reached by the timeline semaphore.
 pub fn vulkan_sync_manager_is_timeline_value_reached(sync_manager: ?*types.VulkanSyncManager, value: u64, reached: ?*bool) c.VkResult {
     if (sync_manager == null or reached == null) return c.VK_ERROR_INITIALIZATION_FAILED;
     const mgr = sync_manager.?;
@@ -937,6 +925,7 @@ pub fn vulkan_sync_manager_is_timeline_value_reached(sync_manager: ?*types.Vulka
     return c.VK_SUCCESS;
 }
 
+/// Returns timeline wait/signal counters and optionally the current device counter.
 pub fn vulkan_sync_manager_get_timeline_stats(sync_manager: ?*types.VulkanSyncManager, wait_count: ?*u64, signal_count: ?*u64, current_value: ?*u64) c.VkResult {
     if (sync_manager == null) return c.VK_ERROR_INITIALIZATION_FAILED;
     const mgr = sync_manager.?;

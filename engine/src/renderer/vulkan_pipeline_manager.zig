@@ -1,3 +1,9 @@
+//! Vulkan pipeline manager.
+//!
+//! Tracks graphics/compute pipelines, caches shader modules, and owns a persistent pipeline cache
+//! blob to speed up subsequent startups.
+//!
+//! TODO: Split shader module caching from pipeline lifetime management.
 const std = @import("std");
 const builtin = @import("builtin");
 const log = @import("../core/log.zig");
@@ -57,27 +63,27 @@ pub const VulkanComputePipelineCreateInfo = extern struct {
 pub const VulkanPipelineManager = extern struct {
     vulkan_state: ?*types.VulkanState,
 
-    // Pipeline tracking
+    /// Dynamically tracked pipelines and their layouts.
     pipelines: ?[*]VulkanPipelineInfo,
     pipeline_count: u32,
     pipeline_capacity: u32,
 
-    // Specialized pipeline states
+    /// Feature toggles for specialized pipelines.
     pbr_pipeline_enabled: bool,
     mesh_shader_pipeline_enabled: bool,
     simple_pipelines_enabled: bool,
 
-    // Pipeline cache for faster recreation
+    /// Vulkan pipeline cache used to accelerate pipeline creation.
     pipeline_cache: c.VkPipelineCache,
 
-    // Shader module cache
+    /// Cached shader modules keyed by file path (used for hot reload and recreation).
     shader_modules: ?[*]c.VkShaderModule,
     shader_paths: ?[*][*c]u8, // char**
     shader_module_count: u32,
     shader_module_capacity: u32,
 };
 
-// Helper to cast VulkanState
+/// Returns the non-null `VulkanState` backing this manager.
 fn get_state(manager: *VulkanPipelineManager) *types.VulkanState {
     return manager.vulkan_state.?;
 }
@@ -90,26 +96,24 @@ const CacheHeader = extern struct {
     size: u64,
 };
 
-// Internal helper functions
+/// Creates (and optionally warms) the pipeline cache from `pipeline_cache.bin`.
 fn create_pipeline_cache(manager: *VulkanPipelineManager) bool {
     var cache_info = std.mem.zeroes(c.VkPipelineCacheCreateInfo);
     cache_info.sType = c.VK_STRUCTURE_TYPE_PIPELINE_CACHE_CREATE_INFO;
 
     const s = get_state(manager);
 
-    // Try to load cache
     var file_buffer: []u8 = &[_]u8{};
+    // TODO: Route pipeline cache IO through the engine virtual filesystem.
     const file = std.fs.cwd().openFile("pipeline_cache.bin", .{}) catch null;
     if (file) |f| {
         defer f.close();
         if (f.stat()) |stat| {
             if (stat.size > @sizeOf(CacheHeader)) {
-                // Read header first
                 var header: CacheHeader = undefined;
                 const header_read = f.readAll(std.mem.asBytes(&header)) catch 0;
 
                 if (header_read == @sizeOf(CacheHeader)) {
-                    // 1. Validate Header
                     var valid = true;
                     const data_size = stat.size - @sizeOf(CacheHeader);
 
@@ -126,14 +130,12 @@ fn create_pipeline_cache(manager: *VulkanPipelineManager) bool {
                         if (alloc.alloc(u8, data_size)) |buf| {
                             if (f.readAll(buf)) |read_bytes| {
                                 if (read_bytes == data_size) {
-                                    // 2. Validate Checksum
                                     const checksum = std.hash.Wyhash.hash(0, buf);
                                     if (checksum != header.checksum) {
                                         pipe_log.warn("Cache checksum mismatch", .{});
                                         valid = false;
                                     }
 
-                                    // 3. Validate Vulkan Device UUID
                                     if (valid and buf.len >= 16 + c.VK_UUID_SIZE) {
                                         var props: c.VkPhysicalDeviceProperties = undefined;
                                         c.vkGetPhysicalDeviceProperties(s.context.physical_device, &props);
@@ -185,7 +187,6 @@ fn destroy_pipeline_cache(manager: *VulkanPipelineManager) void {
     if (manager.pipeline_cache != null) {
         const s = get_state(manager);
 
-        // Save cache
         var size: usize = 0;
         if (c.vkGetPipelineCacheData(s.context.device, manager.pipeline_cache, &size, null) == c.VK_SUCCESS) {
             if (size > 0) {
@@ -196,7 +197,6 @@ fn destroy_pipeline_cache(manager: *VulkanPipelineManager) void {
                         if (std.fs.cwd().createFile("pipeline_cache.bin", .{})) |file| {
                             defer file.close();
 
-                            // Calculate checksum
                             const checksum = std.hash.Wyhash.hash(0, buf);
                             const header = CacheHeader{
                                 .magic = CACHE_HEADER_MAGIC,
@@ -285,8 +285,9 @@ fn find_shader_index(manager: *VulkanPipelineManager, shader_path: [*c]const u8)
     return -1;
 }
 
-// Core pipeline manager functions
-
+/// Initializes a pipeline manager and loads the persistent pipeline cache.
+///
+/// The cache is stored in `pipeline_cache.bin` in the process working directory.
 export fn vulkan_pipeline_manager_init(manager: ?*VulkanPipelineManager, vulkan_state: ?*types.VulkanState) callconv(.c) bool {
     if (manager == null or vulkan_state == null) {
         pipe_log.err("Invalid parameters for initialization", .{});
@@ -329,6 +330,7 @@ export fn vulkan_pipeline_manager_init(manager: ?*VulkanPipelineManager, vulkan_
     return true;
 }
 
+/// Destroys all pipelines and shader modules owned by the manager.
 export fn vulkan_pipeline_manager_destroy(manager: ?*VulkanPipelineManager) callconv(.c) void {
     if (manager == null or manager.?.vulkan_state == null) {
         return;

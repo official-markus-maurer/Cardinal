@@ -17,11 +17,10 @@ pub const Scheduler = struct {
     registry: *registry_pkg.Registry,
     systems: std.ArrayListUnmanaged(system_pkg.System),
 
-    // Contexts for running jobs
-    // We need these to persist during the frame
+    /// Per-system job contexts stored in a stable list for the duration of a frame.
     contexts: std.ArrayListUnmanaged(SystemContext),
 
-    // Command buffers for systems (one per context)
+    /// Per-system command buffers (one per scheduled system).
     command_buffers: std.ArrayListUnmanaged(command_buffer_pkg.CommandBuffer),
 
     /// Context passed to job execution for one system.
@@ -68,7 +67,6 @@ pub const Scheduler = struct {
 
     /// Executes all scheduled systems for a frame.
     pub fn run(self: *Scheduler, delta_time: f32) !void {
-        // Clear previous contexts
         self.contexts.clearRetainingCapacity();
 
         var last_writer = std.AutoHashMapUnmanaged(u64, *job_system.Job){};
@@ -85,10 +83,8 @@ pub const Scheduler = struct {
         var frame_jobs = std.ArrayListUnmanaged(*job_system.Job){};
         defer frame_jobs.deinit(self.allocator);
 
-        // Ensure stable pointers for contexts
         try self.contexts.ensureTotalCapacity(self.allocator, self.systems.items.len);
 
-        // Ensure command buffers
         if (self.command_buffers.items.len < self.systems.items.len) {
             const needed = self.systems.items.len - self.command_buffers.items.len;
             try self.command_buffers.ensureUnusedCapacity(self.allocator, needed);
@@ -99,8 +95,6 @@ pub const Scheduler = struct {
         }
 
         for (self.systems.items, 0..) |sys, i| {
-            // Allocate context in our stable list
-            // We use addOneAssumeCapacity because we reserved enough space
             const ctx = self.contexts.addOneAssumeCapacity();
             ctx.* = .{
                 .system = sys,
@@ -113,16 +107,12 @@ pub const Scheduler = struct {
             job.push_to_completed_queue = false;
             try frame_jobs.append(self.allocator, job);
 
-            // Calculate dependencies
-
-            // 1. Reads
+            // Reads
             for (sys.reads) |type_id| {
-                // Must wait for last writer
                 if (last_writer.get(type_id)) |writer| {
                     _ = job_system.add_dependency(job, writer);
                 }
 
-                // Add self to readers
                 const result = try last_readers.getOrPut(self.allocator, type_id);
                 if (!result.found_existing) {
                     result.value_ptr.* = .{};
@@ -130,14 +120,12 @@ pub const Scheduler = struct {
                 try result.value_ptr.append(self.allocator, job);
             }
 
-            // 2. Writes
+            // Writes
             for (sys.writes) |type_id| {
-                // Must wait for last writer
                 if (last_writer.get(type_id)) |writer| {
                     _ = job_system.add_dependency(job, writer);
                 }
 
-                // Must wait for ALL previous readers
                 if (last_readers.get(type_id)) |readers| {
                     for (readers.items) |reader| {
                         if (reader != job) {
@@ -146,26 +134,20 @@ pub const Scheduler = struct {
                     }
                 }
 
-                // Update last writer to self
                 try last_writer.put(self.allocator, type_id, job);
 
-                // Clear readers for this type, as they are now superseded by this writer
                 if (last_readers.getPtr(type_id)) |readers| {
                     readers.clearRetainingCapacity();
                 }
             }
         }
 
-        // Submit all jobs
         for (frame_jobs.items) |job| {
             while (!job_system.submit_job(job)) {
-                // Queue full, wait a bit
                 std.Thread.yield() catch {};
             }
         }
 
-        // Wait for all jobs to complete
-        // This is a simple implementation. In a real engine, we might do other work here.
         // TODO: Avoid busy-waiting; integrate a completion fence or block on a condition.
         var all_done = false;
         while (!all_done) {
@@ -181,14 +163,12 @@ pub const Scheduler = struct {
             }
         }
 
-        // Flush command buffers
         for (self.command_buffers.items) |*ecb| {
             ecb.flush(self.registry) catch |err| {
                 sched_log.err("Failed to flush command buffer: {}", .{err});
             };
         }
 
-        // Cleanup jobs
         for (frame_jobs.items) |job| {
             job_system.free_job(job);
         }

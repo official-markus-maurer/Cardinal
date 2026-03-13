@@ -10,24 +10,31 @@ const c = @import("../renderer/vulkan_c.zig").c;
 
 /// Default runtime configuration for the engine and renderer.
 pub const CardinalEngineConfig = struct {
-    // Engine/Window settings
+    /// Window title shown by the platform window manager.
     window_title: []const u8 = "Cardinal Engine",
+    /// Initial window width in pixels.
     window_width: u32 = 1920,
+    /// Initial window height in pixels.
     window_height: u32 = 1080,
+    /// Whether the window can be resized by the user.
     window_resizable: bool = true,
 
-    // Memory/System settings
+    /// Total memory budget passed to the engine memory system.
     memory_size: usize = 4 * 1024 * 1024,
+    /// Number of hash buckets for the ref-counting registry.
     ref_counting_buckets: u32 = 1009,
+    /// Worker thread count used by the async loader.
     async_worker_threads: u32 = 2,
+    /// Max number of queued async tasks.
     async_queue_size: u32 = 100,
+    /// Max entries for internal caches (textures/meshes).
     cache_size: u32 = 1000,
 
-    // Paths
+    /// Default assets directory path.
     assets_path: []const u8 = "assets",
     recent_projects: []const []const u8 = &[_][]const u8{},
 
-    // Renderer settings
+    /// Renderer configuration (paths and feature toggles).
     renderer: vk_types.RendererConfig = .{
         .shader_dir = "assets/shaders".* ++ .{0} ** (64 - "assets/shaders".len),
         .pipeline_dir = "assets/pipelines".* ++ .{0} ** (64 - "assets/pipelines".len),
@@ -35,8 +42,6 @@ pub const CardinalEngineConfig = struct {
         .model_dir = "assets/models".* ++ .{0} ** (64 - "assets/models".len),
         .present_mode = c.VK_PRESENT_MODE_FIFO_KHR,
     },
-
-    // Helper to ensure title is null-terminated if needed, though usually handled by duplication
 };
 
 /// Loads and saves a config file, owning any heap-duplicated string fields.
@@ -61,6 +66,8 @@ pub const ConfigManager = struct {
     }
 
     /// Loads config from disk, keeping defaults for missing/unknown fields.
+    ///
+    /// This does not automatically write merged results back to disk to avoid rewriting JSON.
     pub fn load(self: *ConfigManager) !void {
         const file = std.fs.cwd().openFile(self.config_path, .{}) catch |err| {
             if (err == error.FileNotFound) {
@@ -175,13 +182,9 @@ pub const ConfigManager = struct {
         }
 
         log.cardinal_log_info("Config loaded from {s}", .{self.config_path});
-
-        // Do NOT automatically save back, as this destroys comments in the JSON file.
-        // Only save if explicitly requested or if file was missing.
-        // try self.save_merged(content);
     }
 
-    // Helper for serialization to handle [N]u8 as slices
+    /// Helper for serialization to handle `[N]u8` config fields as slices.
     const SerializableRendererConfig = struct {
         pbr_clear_color: [4]f32,
         pbr_ambient_color: [4]f32,
@@ -262,8 +265,8 @@ pub const ConfigManager = struct {
         }
     };
 
+    /// Saves the current config to `config_path`, preserving existing JSON structure when possible.
     pub fn save(self: *ConfigManager) !void {
-        // Try to preserve existing content (structure/comments)
         const file = std.fs.cwd().openFile(self.config_path, .{}) catch |err| {
             if (err == error.FileNotFound) {
                 return self.save_new();
@@ -280,6 +283,7 @@ pub const ConfigManager = struct {
         return self.save_merged(content);
     }
 
+    /// Writes a fresh config file from defaults/current settings.
     fn save_new(self: *ConfigManager) !void {
         const file = try std.fs.cwd().createFile(self.config_path, .{});
         defer file.close();
@@ -287,7 +291,6 @@ pub const ConfigManager = struct {
         var list = std.ArrayListUnmanaged(u8){};
         defer list.deinit(self.allocator);
 
-        // Use SerializableConfig wrapper
         const serializable = SerializableConfig.from(self.config);
 
         try list.writer(self.allocator).print("{f}", .{std.json.fmt(serializable, .{ .whitespace = .indent_4 })});
@@ -296,26 +299,19 @@ pub const ConfigManager = struct {
         log.cardinal_log_info("Config saved (new) to {s}", .{self.config_path});
     }
 
+    /// Merges missing config fields into the existing JSON and writes it back to disk.
     fn save_merged(self: *ConfigManager, original_content: []const u8) !void {
-        // Parse original content into a ValueTree to preserve structure/comments
         var tree = try std.json.parseFromSlice(std.json.Value, self.allocator, original_content, .{});
         defer tree.deinit();
 
         if (tree.value != .object) {
-            // If not an object, just overwrite
             try self.save_new();
             return;
         }
 
-        // Merge current config into the tree
-        // Note: For merging, we still rely on reflection over the struct.
-        // We need to be careful with [N]u8 arrays here too.
-        // However, converting the whole struct to a serializable one and then merging THAT
-        // is cleaner.
         const serializable = SerializableConfig.from(self.config);
         try merge_struct_into_value(self.allocator, &tree.value, serializable);
 
-        // Save the merged tree
         const file = try std.fs.cwd().createFile(self.config_path, .{});
         defer file.close();
 
@@ -328,6 +324,7 @@ pub const ConfigManager = struct {
         cfg_log.info("Config saved (merged) to {s}", .{self.config_path});
     }
 
+    /// Recursively adds missing fields from `struct_val` into `value` (object-only).
     fn merge_struct_into_value(allocator: std.mem.Allocator, value: *std.json.Value, struct_val: anytype) !void {
         const T = @TypeOf(struct_val);
         const type_info = @typeInfo(T);
@@ -340,11 +337,8 @@ pub const ConfigManager = struct {
             const field_val = @field(struct_val, field.name);
             const FieldType = field.type;
 
-            // Check if field exists
             if (value.object.get(field_name)) |_| {
-                // Recursively merge if both are objects/structs
                 if (@typeInfo(FieldType) == .@"struct") {
-                    // We need a pointer to the existing value to modify it
                     if (value.object.getPtr(field_name)) |ptr| {
                         try merge_struct_into_value(allocator, ptr, field_val);
                     }
@@ -355,6 +349,7 @@ pub const ConfigManager = struct {
         }
     }
 
+    /// Adds `name` to `object` when missing, converting `val` into a JSON value.
     fn add_missing_field(allocator: std.mem.Allocator, object: *std.json.Value, name: []const u8, val: anytype) !void {
         const T = @TypeOf(val);
         var json_val: std.json.Value = undefined;
@@ -365,21 +360,18 @@ pub const ConfigManager = struct {
             .float, .comptime_float => json_val = .{ .float = @floatCast(val) },
             .pointer => |ptr| {
                 if (ptr.size == .slice and ptr.child == u8) {
-                    // String
                     const dup = try allocator.dupe(u8, val);
                     json_val = .{ .string = dup };
                 } else if (ptr.size == .one and @typeInfo(ptr.child) == .array) {
-                    // Pointer to array (string literal often comes as *const [N:0]u8)
                     const slice = val[0..];
                     if (@typeInfo(ptr.child).array.child == u8) {
                         const dup = try allocator.dupe(u8, slice);
                         json_val = .{ .string = dup };
                     } else {
-                        // Other array pointer
-                        return; // Skip complex types for now to avoid crashes
+                        return;
                     }
                 } else {
-                    return; // Skip other pointers
+                    return;
                 }
             },
             .array => |arr| {
@@ -387,7 +379,6 @@ pub const ConfigManager = struct {
                     const dup = try allocator.dupe(u8, &val);
                     json_val = .{ .string = dup };
                 } else {
-                    // Handle numeric arrays (e.g. colors)
                     var list = std.array_list.Managed(std.json.Value).init(allocator);
                     errdefer list.deinit();
                     for (val) |item| {
@@ -397,7 +388,6 @@ pub const ConfigManager = struct {
                 }
             },
             .@"struct" => {
-                // Create empty object and recurse
                 var map = std.json.ObjectMap.init(allocator);
                 errdefer map.deinit();
                 var obj_val = std.json.Value{ .object = map };
@@ -410,15 +400,16 @@ pub const ConfigManager = struct {
                 }
                 return;
             },
-            else => return, // Skip unsupported
+            else => return,
         }
 
         const key_dup = try allocator.dupe(u8, name);
         try object.object.put(key_dup, json_val);
     }
 
+    /// Creates a JSON value from a primitive element (used for numeric arrays).
     fn create_simple_value(allocator: std.mem.Allocator, val: anytype) !std.json.Value {
-        _ = allocator; // Unused for simple values
+        _ = allocator;
         const T = @TypeOf(val);
         switch (@typeInfo(T)) {
             .bool => return .{ .bool = val },

@@ -122,7 +122,8 @@ const CardinalBlendState = extern struct {
     weight_t: f32,
     weight_r: f32,
     weight_s: f32,
-    flags: u32, // 1 = touched
+    /// Bitfield; bit 0 indicates the node was touched this frame.
+    flags: u32,
 };
 
 /// Computes the keyframe interval and interpolation factor for `time`.
@@ -233,7 +234,7 @@ fn find_keyframe_indices_with_hint(input: [*]const f32, input_count: u32, time: 
     return true;
 }
 
-// Linear interpolation for vectors
+/// Linearly interpolates `component_count` floats from `a` to `b`.
 fn lerp_vector(a: [*]const f32, b: [*]const f32, t: f32, component_count: u32, result: [*]f32) void {
     var i: u32 = 0;
     while (i < component_count) : (i += 1) {
@@ -241,11 +242,10 @@ fn lerp_vector(a: [*]const f32, b: [*]const f32, t: f32, component_count: u32, r
     }
 }
 
-// Spherical linear interpolation for quaternions
+/// Spherically interpolates between quaternions, flipping sign for the short arc.
 fn slerp_quaternion(a: [*]const f32, b: [*]const f32, t: f32, result: [*]f32) void {
     var dot = a[0] * b[0] + a[1] * b[1] + a[2] * b[2] + a[3] * b[3];
 
-    // If the dot product is negative, slerp won't take the shorter path
     var b_sign: [4]f32 = undefined;
     if (dot < 0.0) {
         dot = -dot;
@@ -260,10 +260,8 @@ fn slerp_quaternion(a: [*]const f32, b: [*]const f32, t: f32, result: [*]f32) vo
         b_sign[3] = b[3];
     }
 
-    // If the quaternions are very close, use linear interpolation
     if (dot > 0.9995) {
         lerp_vector(a, &b_sign, t, 4, result);
-        // Normalize the result
         const length = std.math.sqrt(result[0] * result[0] + result[1] * result[1] + result[2] * result[2] + result[3] * result[3]);
         if (length > 0.0) {
             result[0] /= length;
@@ -274,7 +272,6 @@ fn slerp_quaternion(a: [*]const f32, b: [*]const f32, t: f32, result: [*]f32) vo
         return;
     }
 
-    // Calculate the angle between the quaternions
     const theta = std.math.acos(dot);
     const sin_theta = std.math.sin(theta);
 
@@ -287,22 +284,21 @@ fn slerp_quaternion(a: [*]const f32, b: [*]const f32, t: f32, result: [*]f32) vo
         result[2] = factor_a * a[2] + factor_b * b_sign[2];
         result[3] = factor_a * a[3] + factor_b * b_sign[3];
     } else {
-        // Fallback to linear interpolation
         lerp_vector(a, &b_sign, t, 4, result);
     }
 }
 
-// Cubic spline interpolation
+/// Cubic-spline interpolation helper.
 fn cubic_spline_interpolate(values: [*]const f32, prev_index: u32, next_index: u32, factor: f32, component_count: u32, result: [*]f32) void {
-    // For cubic spline, we need tangent vectors
-    // This is a simplified implementation - full cubic spline would require proper tangent
-    // calculation For now, fall back to linear interpolation
+    // TODO: Implement cubic-spline tangents; current implementation falls back to linear.
     const prev_value = values + prev_index * component_count;
     const next_value = values + next_index * component_count;
     lerp_vector(prev_value, next_value, factor, component_count, result);
 }
 
 /// Samples an animation curve at `time` given keyframe `input` times and `output` values.
+///
+/// When `component_count` is 4, interpolation uses quaternion slerp.
 pub export fn cardinal_animation_interpolate(interpolation: CardinalAnimationInterpolation, time: f32, input: ?[*]const f32, output: ?[*]const f32, input_count: u32, component_count: u32, result: ?[*]f32) callconv(.c) bool {
     if (input == null or output == null or result == null or input_count == 0 or component_count == 0) {
         return false;
@@ -329,7 +325,6 @@ pub export fn cardinal_animation_interpolate(interpolation: CardinalAnimationInt
         },
         .LINEAR => {
             if (component_count == 4) {
-                // Assume quaternion for 4-component values
                 slerp_quaternion(prev_ptr, next_ptr, factor, result.?);
             } else {
                 lerp_vector(prev_ptr, next_ptr, factor, component_count, result.?);
@@ -736,12 +731,12 @@ pub export fn cardinal_animation_system_update(system: ?*CardinalAnimationSystem
     if (system == null) return;
     const sys = system.?;
 
-    // Resize blend buffer if needed
     if (sys.blend_state_capacity < all_node_count) {
         const allocator = memory.cardinal_get_allocator_for_category(.ENGINE);
         if (sys.blend_states) |ptr| memory.cardinal_free(allocator, ptr);
 
-        sys.blend_state_capacity = all_node_count + 100; // Buffer
+        // TODO: Use geometric growth for blend_state_capacity to reduce churn.
+        sys.blend_state_capacity = all_node_count + 100;
         const ptr = memory.cardinal_calloc(allocator, sys.blend_state_capacity, @sizeOf(CardinalBlendState));
         if (ptr) |p| {
             sys.blend_states = @ptrCast(@alignCast(p));
@@ -751,9 +746,8 @@ pub export fn cardinal_animation_system_update(system: ?*CardinalAnimationSystem
         }
     }
 
-    // Reset blend states
     if (sys.blend_states) |states| {
-        // We only need to clear flags, but memset is fast enough
+        // TODO: Avoid full memset by clearing only the necessary fields.
         _ = c.memset(states, 0, sys.blend_state_capacity * @sizeOf(CardinalBlendState));
     }
 
@@ -789,7 +783,6 @@ pub export fn cardinal_animation_system_update(system: ?*CardinalAnimationSystem
             const sampler = &animation.samplers.?[channel.sampler_index];
 
             if (all_nodes == null or channel.target.node_index >= all_node_count) continue;
-            // Only skip if node is null, but we need to accumulate anyway
             if (all_nodes.?[channel.target.node_index] == null) continue;
 
             const node_idx = channel.target.node_index;
@@ -802,11 +795,10 @@ pub export fn cardinal_animation_system_update(system: ?*CardinalAnimationSystem
             }
 
             if (sampler_interpolate_cached(sampler, state.current_time, component_count, &result)) {
-                // Accumulate
                 const weight = state.blend_weight;
                 if (weight <= 0.001) continue;
 
-                blend_state.flags = 1; // Mark as touched
+                blend_state.flags = 1;
 
                 switch (channel.target.path) {
                     .TRANSLATION => {
@@ -816,7 +808,6 @@ pub export fn cardinal_animation_system_update(system: ?*CardinalAnimationSystem
                         blend_state.translation[2] += result[2] * weight;
                     },
                     .ROTATION => {
-                        // For quaternions, check dot product to avoid taking long path
                         if (blend_state.weight_r > 0) {
                             const dot = blend_state.rotation[0] * result[0] +
                                 blend_state.rotation[1] * result[1] +
@@ -853,7 +844,6 @@ pub export fn cardinal_animation_system_update(system: ?*CardinalAnimationSystem
         }
     }
 
-    // Apply accumulated results
     if (sys.blend_states) |states| {
         var n_idx: u32 = 0;
         while (n_idx < all_node_count) : (n_idx += 1) {
@@ -864,12 +854,10 @@ pub export fn cardinal_animation_system_update(system: ?*CardinalAnimationSystem
             if (node == null) continue;
             const scene_node = node.?;
 
-            // Base values
             var current_t: [3]f32 = .{ 0, 0, 0 };
             var current_r: [4]f32 = .{ 0, 0, 0, 1 };
             var current_s: [3]f32 = .{ 1, 1, 1 };
 
-            // Use current transform as base if no animation data for that channel
             const local_matrix = &scene_node.local_transform;
             _ = transform.cardinal_matrix_decompose(local_matrix, &current_t, &current_r, &current_s);
 
@@ -902,10 +890,8 @@ pub export fn cardinal_animation_system_update(system: ?*CardinalAnimationSystem
             } else {
                 r = current_r;
             }
-            // Always normalize the result rotation to prevent scaling artifacts
             transform.cardinal_quaternion_normalize(&r);
 
-            // Apply to node
             var new_transform: [16]f32 = undefined;
             transform.cardinal_matrix_from_trs(&t, &r, &s, &new_transform);
             scene.cardinal_scene_node_set_local_transform(node, &new_transform);
@@ -928,7 +914,6 @@ pub export fn cardinal_skin_update_bone_matrices(skin: ?*const CardinalSkin, sce
 
         const world_transform = scene.cardinal_scene_node_get_world_transform(@constCast(node));
         const bone_matrix = &bone_matrices.?[i * 16];
-        // Cast to [16]f32 pointers for the Zig function
         const wt_ptr: *const [16]f32 = @ptrCast(world_transform);
         const ibm_ptr: *const [16]f32 = &bone.inverse_bind_matrix;
         const bm_ptr: *[16]f32 = @ptrCast(bone_matrix);
@@ -1031,7 +1016,6 @@ pub export fn cardinal_animation_optimize(animation: ?*CardinalAnimation, tolera
     while (i < anim.sampler_count) : (i += 1) {
         const sampler = &anim.samplers.?[i];
 
-        // Only optimize LINEAR interpolation
         if (sampler.interpolation != .LINEAR) continue;
         if (sampler.input_count <= 2) continue;
 
@@ -1042,21 +1026,18 @@ pub export fn cardinal_animation_optimize(animation: ?*CardinalAnimation, tolera
         defer kept_indices.deinit(allocator.as_allocator());
         kept_indices.ensureTotalCapacity(allocator.as_allocator(), sampler.input_count) catch continue;
 
-        // Initialize: keep first and last, others false
         kept_indices.appendNTimes(allocator.as_allocator(), false, sampler.input_count) catch continue;
         kept_indices.items[0] = true;
         kept_indices.items[sampler.input_count - 1] = true;
 
         rdp_simplify(sampler.input.?, sampler.output.?, component_count, 0, sampler.input_count - 1, tolerance * tolerance, kept_indices.items) catch continue;
 
-        // Count new size
         var new_count: u32 = 0;
         for (kept_indices.items) |keep| {
             if (keep) new_count += 1;
         }
 
         if (new_count < sampler.input_count) {
-            // Allocate new buffers
             const new_input = memory.cardinal_alloc(allocator, new_count * @sizeOf(f32));
             const new_output = memory.cardinal_alloc(allocator, new_count * component_count * @sizeOf(f32));
 
@@ -1079,7 +1060,6 @@ pub export fn cardinal_animation_optimize(animation: ?*CardinalAnimation, tolera
                     }
                 }
 
-                // Free old buffers
                 if (sampler.input) |ptr| memory.cardinal_free(allocator, ptr);
                 if (sampler.output) |ptr| memory.cardinal_free(allocator, ptr);
 

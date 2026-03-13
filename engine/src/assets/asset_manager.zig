@@ -108,9 +108,9 @@ fn AssetStorage(comptime T: type, comptime Handle: type) type {
         pub fn release(self: *Self, handle: Handle) ReleaseResult {
             if (!self.handle_manager.is_valid(handle.index, handle.generation)) return .{ .destroyed = false, .path = null, .data = null };
             if (handle.index >= self.entries.items.len) return .{ .destroyed = false, .path = null, .data = null };
-            
+
             var entry = &self.entries.items[handle.index];
-            
+
             if (entry.ref_count > 0) {
                 entry.ref_count -= 1;
             }
@@ -142,7 +142,7 @@ pub const AssetManager = struct {
     meshes: AssetStorage(scene.CardinalMesh, handles.MeshHandle),
     materials: AssetStorage(scene.CardinalMaterial, handles.MaterialHandle),
 
-    // Map path to handle
+    /// Maps texture paths to already-loaded handles.
     texture_path_map: std.StringHashMapUnmanaged(handles.TextureHandle),
 
     pub fn init(allocator: std.mem.Allocator) AssetManager {

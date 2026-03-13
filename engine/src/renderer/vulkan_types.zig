@@ -1,3 +1,9 @@
+//! Vulkan renderer shared types.
+//!
+//! Defines C-ABI-friendly enums/structs shared across renderer modules and C entrypoints.
+//! Some declarations mirror shader layouts and must remain layout-stable.
+//!
+//! TODO: Split this file into smaller domain modules (materials, sync, render graph, etc.).
 const std = @import("std");
 const builtin = @import("builtin");
 const scene = @import("../assets/scene.zig");
@@ -5,14 +11,15 @@ const c = @import("vulkan_c.zig").c;
 const window = @import("../core/window.zig");
 const math = @import("../core/math.zig");
 
-// Constants
+/// Global renderer limits.
 pub const CARDINAL_MAX_SECONDARY_COMMAND_BUFFERS = 512;
 pub const CARDINAL_MAX_MT_THREADS = 16;
 pub const MAX_SHADOW_CASCADES = 8;
 pub const MAX_FRAMES_IN_FLIGHT = 3;
 
-// Forward declarations for external types
+/// Engine-facing opaque/extern types used by the renderer.
 pub const CardinalWindow = window.CardinalWindow;
+/// Opaque renderer handle used by the C API.
 pub const CardinalRenderer = extern struct {
     _opaque: ?*anyopaque,
 };
@@ -22,11 +29,13 @@ pub const CardinalVertex = scene.CardinalVertex;
 pub const CardinalMaterial = scene.CardinalMaterial;
 pub const CardinalSceneNode = scene.CardinalSceneNode;
 
+/// C-ABI synchronization handle aliases.
 pub const cardinal_mutex_t = ?*anyopaque;
 pub const cardinal_cond_t = ?*anyopaque;
 pub const cardinal_thread_id_t = std.Thread.Id;
 pub const cardinal_thread_handle_t = std.Thread;
 
+/// High-level renderer debug/feature modes.
 pub const CardinalRenderingMode = enum(c_int) {
     NORMAL = 0,
     MESH_SHADER = 1,
@@ -35,6 +44,7 @@ pub const CardinalRenderingMode = enum(c_int) {
     WIREFRAME = 4,
 };
 
+/// Resource categories used by renderer diagnostics and validation tooling.
 pub const CardinalResourceType = enum(c_int) {
     TEXTURE = 0,
     MESH = 1,
@@ -47,6 +57,7 @@ pub const CardinalResourceType = enum(c_int) {
     CARDINAL_RESOURCE_IMAGE = 8,
 };
 
+/// Declares how a resource is accessed for synchronization/validation.
 pub const CardinalResourceAccessType = enum(c_int) {
     CARDINAL_ACCESS_NONE = 0,
     CARDINAL_ACCESS_READ = 1,
@@ -54,6 +65,7 @@ pub const CardinalResourceAccessType = enum(c_int) {
     CARDINAL_ACCESS_READ_WRITE = 3,
 };
 
+/// Minimal camera parameters used by the C renderer interface.
 pub const CardinalCamera = extern struct {
     position: math.Vec3,
     target: math.Vec3,
@@ -64,6 +76,7 @@ pub const CardinalCamera = extern struct {
     far_plane: f32,
 };
 
+/// Light parameters passed through the C renderer interface.
 pub const CardinalLight = extern struct {
     direction: math.Vec3,
     position: math.Vec3,
@@ -73,15 +86,18 @@ pub const CardinalLight = extern struct {
     range: f32,
     inner_cone: f32,
     outer_cone: f32,
-    type: i32, // 0=Directional, 1=Point, 2=Spot
+    /// 0 = Directional, 1 = Point, 2 = Spot.
+    type: i32,
 };
 
+/// Background task kind used by the multi-threaded renderer subsystem.
 pub const CardinalMTTaskType = enum(c_int) {
     CARDINAL_MT_TASK_COMMAND_RECORD = 0,
     CARDINAL_MT_TASK_TEXTURE_LOAD = 1,
     CARDINAL_MT_TASK_MESH_LOAD = 2,
 };
 
+/// C-ABI task node used by the renderer MT subsystem.
 pub const CardinalMTTask = extern struct {
     type: CardinalMTTaskType,
     data: ?*anyopaque,
@@ -92,6 +108,7 @@ pub const CardinalMTTask = extern struct {
     next: ?*CardinalMTTask,
 };
 
+/// Intrusive queue of `CardinalMTTask` nodes.
 pub const CardinalMTTaskQueue = extern struct {
     head: ?*CardinalMTTask,
     tail: ?*CardinalMTTask,
@@ -100,6 +117,7 @@ pub const CardinalMTTaskQueue = extern struct {
     queue_condition: cardinal_cond_t,
 };
 
+/// Thread pool wrapper used by the renderer MT subsystem.
 pub const CardinalMTThreadPool = extern struct {
     threads: ?[*]cardinal_thread_handle_t,
     thread_count: u32,
@@ -107,6 +125,7 @@ pub const CardinalMTThreadPool = extern struct {
     queue: ?*CardinalMTTaskQueue,
 };
 
+/// Tracks per-thread Vulkan command pool state for MT recording.
 pub const CardinalMTCommandManager = extern struct {
     vulkan_state: ?*VulkanState,
     thread_pools: ?[*]CardinalThreadCommandPool,
@@ -115,6 +134,7 @@ pub const CardinalMTCommandManager = extern struct {
     active_thread_count: u32,
 };
 
+/// Global MT subsystem state (queues + command manager + worker threads).
 pub const CardinalMTSubsystem = struct {
     pending_queue: CardinalMTTaskQueue,
     completed_queue: CardinalMTTaskQueue,
@@ -125,6 +145,7 @@ pub const CardinalMTSubsystem = struct {
     subsystem_mutex: cardinal_mutex_t,
 };
 
+/// One validation record describing a single resource access.
 pub const CardinalResourceAccess = extern struct {
     resource_id: u64,
     resource_type: CardinalResourceType,
@@ -136,6 +157,7 @@ pub const CardinalResourceAccess = extern struct {
     command_buffer: c.VkCommandBuffer,
 };
 
+/// Aggregates validation records used by barrier validation.
 pub const CardinalBarrierValidationContext = extern struct {
     resource_accesses: [*c]CardinalResourceAccess,
     access_count: u32,
@@ -144,6 +166,7 @@ pub const CardinalBarrierValidationContext = extern struct {
     strict_mode: bool,
 };
 
+/// Vulkan validation layer message/counter snapshot.
 pub const ValidationStats = extern struct {
     total_accesses: u32,
     validation_errors: u32,
@@ -158,13 +181,14 @@ pub const ValidationStats = extern struct {
     filtered_count: u32,
 };
 
-// PBR Types
+/// Packed transform parameters for PBR texture coordinate transforms.
 pub const PBRTextureTransform = extern struct {
     offset: math.Vec2,
     scale: math.Vec2,
     rotation: f32,
 };
 
+/// Per-frame PBR uniforms used by the fragment/vertex shader path.
 pub const PBRUniformBufferObject = extern struct {
     view: [16]f32,
     proj: [16]f32,
@@ -173,26 +197,35 @@ pub const PBRUniformBufferObject = extern struct {
     ambientColor: [4]f32,
 };
 
+/// GPU light record used by PBR shading.
 pub const PBRLight = extern struct {
-    lightDirection: [4]f32, // w = type (0=Directional, 1=Point, 2=Spot)
-    lightColor: [4]f32, // w = intensity
-    params: [4]f32, // x = range, y = innerConeCos, z = outerConeCos, w = unused
-    lightPosition: [4]f32, // xyz = position, w = unused
+    /// xyz = direction, w = type (0 = Directional, 1 = Point, 2 = Spot).
+    lightDirection: [4]f32,
+    /// xyz = color, w = intensity.
+    lightColor: [4]f32,
+    /// x = range, y = innerConeCos, z = outerConeCos, w = unused.
+    params: [4]f32,
+    /// xyz = position, w = unused.
+    lightPosition: [4]f32,
 };
 
 pub const MAX_LIGHTS = 128;
 
+/// Fixed-capacity light array buffer.
 pub const PBRLightingBuffer = extern struct {
     count: u32,
     _padding: [3]u32,
     lights: [MAX_LIGHTS]PBRLight,
 };
 
+/// Material properties for PBR shading.
 pub const PBRMaterialProperties = extern struct {
-    albedoFactor: [4]f32, // vec4 in shader
+    /// Base color multiplier (RGBA).
+    albedoFactor: [4]f32,
     metallicFactor: f32,
     roughnessFactor: f32,
-    emissiveFactor: [4]f32, // vec4 in shader (xyz + padding/roughness) - shader uses separate float for roughness but zig struct might pack it
+    /// Emissive multiplier (RGB), alpha unused.
+    emissiveFactor: [4]f32,
 
     normalScale: f32,
     aoStrength: f32,
@@ -204,18 +237,19 @@ pub const PBRMaterialProperties = extern struct {
     supportsDescriptorIndexing: u32,
 };
 
+/// Push-constants used by the classic vertex/fragment PBR pipeline.
 pub const PBRPushConstants = extern struct {
     modelMatrix: math.Mat4,
 
-    // Material data (offset 64)
-    albedoFactor: [4]f32, // RGBA
+    /// Base color multiplier (RGBA).
+    albedoFactor: [4]f32,
 
-    // vec4 emissiveAndRoughness;
+    /// Emissive multiplier (RGB).
     emissiveFactor: [3]f32,
     roughnessFactor: f32,
 
-    // vec4 metallicNormalAO;
-    metallicNormalAO: [4]f32, // x=metallic, y=normalScale, z=aoStrength, w=alphaCutoff
+    /// x = metallic, y = normalScale, z = aoStrength, w = alphaCutoff.
+    metallicNormalAO: [4]f32,
 
     albedoTextureIndex: u32,
     normalTextureIndex: u32,
@@ -223,35 +257,35 @@ pub const PBRPushConstants = extern struct {
     aoTextureIndex: u32,
     emissiveTextureIndex: u32,
 
-    packedInfo: u32, // Bits 0-15: uvSetIndices, Bits 16-31: flags
+    /// Bits 0-15: uvSetIndices, Bits 16-31: flags.
+    packedInfo: u32,
 
-    // Padding to align textureTransforms to 16 bytes (std430 alignment for vec4 array)
-    // packedInfo ends at offset 136. textureTransforms needs to start at 144.
+    /// Aligns `textureTransforms` to 16 bytes for std430-style packing.
     _padding: [2]u32,
 
-    // Packed texture transforms: xy = offset, zw = scale
+    /// Packed texture transforms: xy = offset, zw = scale.
     textureTransforms: [5][4]f32,
-    // Texture rotations
+    /// Texture rotations in radians.
     textureRotations: [5]f32,
 
-    // Emissive strength
+    /// Scalar emissive strength multiplier.
     emissiveStrength: f32,
 
-    // Padding to match shader size (252 bytes reported by validation)
-    // Current size: 248 bytes. Add 8 bytes to reach 256 (safe max).
+    /// Padding for shader-reported push-constant size alignment.
     _padding_end: [2]u32,
 };
 
+/// Push-constants used by the mesh shader PBR pipeline.
 pub const MeshShaderPushConstants = extern struct {
-    // Material data (offset 0)
-    albedoFactor: [4]f32, // RGBA
+    /// Base color multiplier (RGBA).
+    albedoFactor: [4]f32,
 
-    // vec4 emissiveAndRoughness;
+    /// Emissive multiplier (RGB).
     emissiveFactor: [3]f32,
     roughnessFactor: f32,
 
-    // vec4 metallicNormalAO;
-    metallicNormalAO: [4]f32, // x=metallic, y=normalScale, z=aoStrength, w=alphaCutoff
+    /// x = metallic, y = normalScale, z = aoStrength, w = alphaCutoff.
+    metallicNormalAO: [4]f32,
 
     albedoTextureIndex: u32,
     normalTextureIndex: u32,
@@ -259,20 +293,21 @@ pub const MeshShaderPushConstants = extern struct {
     aoTextureIndex: u32,
     emissiveTextureIndex: u32,
 
-    packedInfo: u32, // Bits 0-15: uvSetIndices, Bits 16-31: flags
+    /// Bits 0-15: uvSetIndices, Bits 16-31: flags.
+    packedInfo: u32,
 
-    // Padding to align textureTransforms to 16 bytes (std430 alignment for vec4 array)
+    /// Aligns `textureTransforms` to 16 bytes for std430-style packing.
     _padding: [2]u32,
 
-    // Packed texture transforms: xy = offset, zw = scale
+    /// Packed texture transforms: xy = offset, zw = scale.
     textureTransforms: [5][4]f32,
-    // Texture rotations
+    /// Texture rotations in radians.
     textureRotations: [5]f32,
 
-    // Emissive strength
+    /// Scalar emissive strength multiplier.
     emissiveStrength: f32,
 
-    // Padding to match shader size (alignment)
+    /// Padding for shader alignment.
     _padding_end: [2]u32,
 };
 
@@ -283,8 +318,10 @@ pub const MeshShaderUniformBuffer = extern struct {
     mvp: [16]f32,
     materialIndex: u32,
     _padding: [3]u32,
-    viewPos: [4]f32, // xyz = pos, w = unused
-    ambientColor: [4]f32, // xyz = color, w = range/unused
+    /// xyz = position, w = unused.
+    viewPos: [4]f32,
+    /// xyz = color, w = range/unused.
+    ambientColor: [4]f32,
 };
 
 pub const VkQueueFamilyOwnershipTransferInfo = extern struct {
@@ -333,7 +370,7 @@ pub const VulkanBufferAlloc = extern struct {
 
 pub const RenderGraph = @import("render_graph.zig").RenderGraph;
 
-// Resource IDs for RenderGraph
+/// Reserved render-graph resource IDs used by the built-in renderer.
 pub const RESOURCE_ID_BACKBUFFER: u64 = 1;
 pub const RESOURCE_ID_DEPTHBUFFER: u64 = 2;
 pub const RESOURCE_ID_HDR_COLOR: u64 = 3;
@@ -354,7 +391,7 @@ pub const VulkanDescriptorManager = extern struct {
     descriptorBuffer: VulkanBuffer,
     allocator: ?*VulkanAllocator,
 
-    // Additional fields found in usage
+    /// Fields populated by descriptor allocation/binding code paths.
     descriptorSets: ?[*]c.VkDescriptorSet,
     descriptorSetCount: u32,
     bindingOffsets: ?[*]c.VkDeviceSize,
@@ -538,15 +575,14 @@ pub const VulkanCommands = extern struct {
     transient_pools: ?[*]c.VkCommandPool,
     compute_transient_pools: ?[*]c.VkCommandPool,
     buffers: ?[*]c.VkCommandBuffer,
-    // Note: These are allocated as VK_COMMAND_BUFFER_LEVEL_PRIMARY and used as alternate primary buffers.
-    // Do not confuse with actual secondary command buffers (VK_COMMAND_BUFFER_LEVEL_SECONDARY).
+    /// Primary command buffers allocated as alternates for submission/recording.
     alternate_primary_buffers: ?[*]c.VkCommandBuffer,
     compute_primary_buffers: ?[*]c.VkCommandBuffer,
     current_buffer_index: u32,
     scene_secondary_buffers: ?[*]c.VkCommandBuffer,
 };
 
-// Texture Manager Types
+/// Texture manager types.
 pub const VulkanManagedTexture = extern struct {
     image: c.VkImage,
     view: c.VkImageView,
@@ -608,7 +644,7 @@ pub const VulkanTextureManager = extern struct {
     upload_buffer_index: u32,
 };
 
-// Compute Pipeline Types
+/// Compute pipeline types.
 pub const ComputePipelineConfig = extern struct {
     compute_shader_path: ?[*:0]const u8,
     local_size_x: u32,
@@ -651,7 +687,7 @@ pub const ComputeMemoryBarrier = extern struct {
     dst_stage_mask: c.VkPipelineStageFlags2,
 };
 
-// Bindless Texture Types
+/// Bindless texture types.
 pub const BindlessTexture = extern struct {
     image: c.VkImage,
     image_view: c.VkImageView,
@@ -689,7 +725,7 @@ pub const BindlessTexturePool = extern struct {
 
     descriptor_layout: c.VkDescriptorSetLayout,
 
-    // Descriptor Buffer Support
+    /// Descriptor buffer backing for bindless descriptors.
     use_descriptor_buffer: bool,
     descriptor_buffer: VulkanBuffer,
     descriptor_set_size: c.VkDeviceSize,
@@ -702,17 +738,18 @@ pub const BindlessTexturePool = extern struct {
 
     default_sampler: c.VkSampler,
 
-    // Pending updates for flush
+    /// Pending descriptor indices that must be uploaded before use.
     pending_updates: ?[*]u32,
     pending_update_count: u32,
     needs_descriptor_update: bool,
 };
 
-// Mesh Shader Types
+/// Mesh-shader pipeline types.
 pub const MeshShaderPipelineConfig = extern struct {
     mesh_shader_path: ?[*:0]const u8,
     task_shader_path: ?[*:0]const u8,
-    fragment_shader_path: ?[*:0]const u8, // Using 'fragment_' to match likely usage or just 'frag_'? Checked code: cfg.fragment_shader_path in vulkan_mesh_shader.zig:107
+    /// Fragment shader SPIR-V path.
+    fragment_shader_path: ?[*:0]const u8,
     max_vertices_per_meshlet: u32,
     max_primitives_per_meshlet: u32,
 
@@ -913,7 +950,7 @@ pub const VulkanPBRPipeline = extern struct {
     descriptorManager: ?*VulkanDescriptorManager,
     textureManager: ?*VulkanTextureManager,
 
-    // Buffers
+    /// Per-frame uniform buffers for camera/material parameters.
     uniformBuffers: [MAX_FRAMES_IN_FLIGHT]c.VkBuffer,
     uniformBuffersMemory: [MAX_FRAMES_IN_FLIGHT]c.VkDeviceMemory,
     uniformBuffersAllocation: [MAX_FRAMES_IN_FLIGHT]c.VmaAllocation,
@@ -924,7 +961,7 @@ pub const VulkanPBRPipeline = extern struct {
     lightingBuffersAllocation: [MAX_FRAMES_IN_FLIGHT]c.VmaAllocation,
     lightingBuffersMapped: [MAX_FRAMES_IN_FLIGHT]?*anyopaque,
 
-    // Shadow Mapping
+    /// Shadow mapping pipeline resources and per-frame UBOs.
     shadowPipeline: c.VkPipeline,
     shadowAlphaPipeline: c.VkPipeline,
     shadowPipelineLayout: c.VkPipelineLayout,
@@ -934,7 +971,8 @@ pub const VulkanPBRPipeline = extern struct {
     shadowMapMemory: c.VkDeviceMemory,
     shadowMapAllocation: c.VmaAllocation,
     shadowMapView: c.VkImageView,
-    shadowCascadeViews: [4]c.VkImageView, // SHADOW_CASCADE_COUNT
+    /// Shadow cascade image views.
+    shadowCascadeViews: [4]c.VkImageView,
     shadowMapSampler: c.VkSampler,
 
     shadowUBOs: [MAX_FRAMES_IN_FLIGHT]c.VkBuffer,
@@ -942,14 +980,14 @@ pub const VulkanPBRPipeline = extern struct {
     shadowUBOsAllocation: [MAX_FRAMES_IN_FLIGHT]c.VmaAllocation,
     shadowUBOsMapped: [MAX_FRAMES_IN_FLIGHT]?*anyopaque,
 
-    // Bone Matrices
+    /// Per-frame bone matrix buffers used for skinned meshes.
     boneMatricesBuffers: [MAX_FRAMES_IN_FLIGHT]c.VkBuffer,
     boneMatricesBuffersMemory: [MAX_FRAMES_IN_FLIGHT]c.VkDeviceMemory,
     boneMatricesBuffersAllocation: [MAX_FRAMES_IN_FLIGHT]c.VmaAllocation,
     boneMatricesBuffersMapped: [MAX_FRAMES_IN_FLIGHT]?*anyopaque,
     maxBones: u32,
 
-    // Common
+    /// Shared vertex/index buffers used by the legacy draw path.
     vertexBuffer: c.VkBuffer,
     indexBuffer: c.VkBuffer,
     vertexBufferMemory: c.VkDeviceMemory,
@@ -964,23 +1002,26 @@ pub const VulkanPBRPipeline = extern struct {
 
     debug_flags: f32,
 
-    // Staging state for multi-buffered updates
+    /// Staging state for multi-buffered updates.
     current_ubo: PBRUniformBufferObject,
     current_lighting: PBRLightingBuffer,
 
-    // Cached Descriptor Buffer Info
+    /// Cached descriptor-buffer binding info for set 0.
     set0_binding_info: c.VkDescriptorBufferBindingInfoEXT,
     set0_binding_info_valid: bool,
 };
 
 pub const RendererConfig = extern struct {
-    // PBR Settings
+    /// PBR settings.
     pbr_clear_color: [4]f32 = .{ 0.05, 0.05, 0.08, 1.0 },
-    pbr_ambient_color: [4]f32 = .{ 0.1, 0.1, 0.1, 100.0 }, // xyz=color, w=range
-    pbr_default_light_direction: [4]f32 = .{ -0.5, -1.0, -0.3, 0.0 }, // xyz=dir, w=type
-    pbr_default_light_color: [4]f32 = .{ 1.0, 1.0, 1.0, 1.0 }, // xyz=color, w=intensity
+    /// Ambient light color (xyz) and range (w).
+    pbr_ambient_color: [4]f32 = .{ 0.1, 0.1, 0.1, 100.0 },
+    /// Default light direction (xyz) and type (w).
+    pbr_default_light_direction: [4]f32 = .{ -0.5, -1.0, -0.3, 0.0 },
+    /// Default light color (xyz) and intensity (w).
+    pbr_default_light_color: [4]f32 = .{ 1.0, 1.0, 1.0, 1.0 },
 
-    // Shadow Settings
+    /// Shadow settings.
     shadow_map_format: c.VkFormat = c.VK_FORMAT_D32_SFLOAT,
     shadow_cascade_count: u32 = 4,
     shadow_map_size: u32 = 4096,
@@ -992,20 +1033,20 @@ pub const RendererConfig = extern struct {
 
     present_mode: c.VkPresentModeKHR = c.VK_PRESENT_MODE_FIFO_KHR,
 
-    // Asset Paths
+    /// Asset directory paths (null-terminated buffers).
     shader_dir: [64]u8,
     pipeline_dir: [64]u8,
     texture_dir: [64]u8,
     model_dir: [64]u8,
 
-    // System Settings
+    /// System settings.
     max_lights: u32 = 128,
     max_frames_in_flight: u32 = 3,
     timeline_max_ahead: u64 = 1000000,
     enable_async_compute: bool = true,
 };
 
-// Main State
+/// Global renderer state backing the C `CardinalRenderer` handle.
 pub const VulkanState = extern struct {
     config: RendererConfig,
     context: VulkanContext,
@@ -1033,16 +1074,16 @@ pub const VulkanState = extern struct {
     render_graph: ?*anyopaque,
     current_image_index: u32,
 
-    // Material System
-    material_system: ?*anyopaque, // Pointer to MaterialSystem (opaque to avoid circular deps)
+    /// Opaque pointer to the material system (kept out of this module to avoid circular deps).
+    material_system: ?*anyopaque,
 
-    // Frame Allocator
-    frame_allocator: ?*anyopaque, // Pointer to StackAllocator
+    /// Opaque pointer to the per-frame stack allocator.
+    frame_allocator: ?*anyopaque,
 
     debug_grid_enabled: bool,
 };
 
-// Secondary Command Context (from texture manager usage)
+/// Secondary command context used by multi-threaded command recording helpers.
 pub const CardinalSecondaryCommandContext = extern struct {
     command_buffer: c.VkCommandBuffer,
     is_recording: bool,

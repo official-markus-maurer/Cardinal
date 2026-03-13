@@ -46,17 +46,13 @@ fn begin_single_time_commands(device: c.VkDevice, commandPool: c.VkCommandPool) 
 
 /// Ends and submits a one-shot command buffer, signaling the shared timeline semaphore.
 fn end_single_time_commands(device: c.VkDevice, commandPool: c.VkCommandPool, queue: c.VkQueue, commandBuffer: c.VkCommandBuffer, vulkan_state: *types.VulkanState) void {
-    buf_log.info("CMD_END_START: Ending command buffer {any}", .{commandBuffer});
     const result = c.vkEndCommandBuffer(commandBuffer);
     if (result != c.VK_SUCCESS) {
         buf_log.err("CMD_END_FAILED: Failed to end command buffer {any}: {d}", .{ commandBuffer, result });
         c.vkFreeCommandBuffers(device, commandPool, 1, &commandBuffer);
         return;
     }
-    buf_log.info("CMD_END_SUCCESS: Command buffer {any} ended successfully", .{commandBuffer});
 
-    // Get next timeline value using the centralized manager
-    // This handles overflow protection and ensures uniqueness
     const timeline_value = vk_sync_manager.vulkan_sync_manager_get_next_timeline_value(&vulkan_state.sync);
 
     if (timeline_value == 0) {
@@ -66,7 +62,6 @@ fn end_single_time_commands(device: c.VkDevice, commandPool: c.VkCommandPool, qu
     }
 
     {
-        // Lock for submission to ensure semaphore validity
         vk_sync_manager.vulkan_sync_manager_lock_shared();
         defer vk_sync_manager.vulkan_sync_manager_unlock_shared();
 
@@ -76,9 +71,6 @@ fn end_single_time_commands(device: c.VkDevice, commandPool: c.VkCommandPool, qu
             return;
         }
 
-        buf_log.debug("[BUFFER_MANAGER] Using timeline value: {d}", .{timeline_value});
-
-        // Submit command buffer with timeline semaphore signaling
         var cmd_buffer_info = std.mem.zeroes(c.VkCommandBufferSubmitInfo);
         cmd_buffer_info.sType = c.VK_STRUCTURE_TYPE_COMMAND_BUFFER_SUBMIT_INFO;
         cmd_buffer_info.commandBuffer = commandBuffer;
@@ -98,19 +90,14 @@ fn end_single_time_commands(device: c.VkDevice, commandPool: c.VkCommandPool, qu
         submit_info.signalSemaphoreInfoCount = 1;
         submit_info.pSignalSemaphoreInfos = &signal_semaphore_info;
 
-        buf_log.info("CMD_SUBMIT: Submitting command buffer {any} with timeline value {d}", .{ commandBuffer, timeline_value });
-
         const submit_result = vulkan_state.context.vkQueueSubmit2.?(queue, 1, &submit_info, null);
         if (submit_result != c.VK_SUCCESS) {
             buf_log.err("CMD_SUBMIT_FAILED: Failed to submit command buffer {any}: {d}", .{ commandBuffer, submit_result });
             buf_log.warn("CMD_LEAK_WARNING: Command buffer {any} may leak due to submit failure - cannot free while potentially in pending state", .{commandBuffer});
             return;
         }
-        buf_log.info("CMD_SUBMIT_SUCCESS: Command buffer {any} submitted with timeline value {d}", .{ commandBuffer, timeline_value });
     }
 
-    // Wait for completion using timeline semaphore with reasonable timeout
-    // Using wait_timeline_safe to leverage centralized error handling
     var error_info = std.mem.zeroes(types.VulkanTimelineErrorInfo);
     const wait_error = vk_sync_manager.vulkan_sync_manager_wait_timeline_safe(&vulkan_state.sync, timeline_value, 10000000000, &error_info); // 10 second timeout
 
@@ -120,23 +107,15 @@ fn end_single_time_commands(device: c.VkDevice, commandPool: c.VkCommandPool, qu
         return;
     }
 
-    buf_log.info("CMD_WAIT_SUCCESS: Command buffer {any} completed (timeline value {d})", .{ commandBuffer, timeline_value });
-
-    // Update VulkanState timeline tracking to maintain coordination
     if (timeline_value > vulkan_state.sync.current_frame_value) {
         vulkan_state.sync.current_frame_value = timeline_value;
-        buf_log.info("TIMELINE_UPDATE: Updated current_frame_value to {d} for cmd {any}", .{ timeline_value, commandBuffer });
     }
 
-    // Free the command buffer after completion
-    buf_log.info("CMD_FREE: Freeing command buffer {any}", .{commandBuffer});
     c.vkFreeCommandBuffers(device, commandPool, 1, &commandBuffer);
-    buf_log.info("CMD_FREE_SUCCESS: Command buffer {any} freed", .{commandBuffer});
-    buf_log.info("CMD_COMPLETE: Buffer operation completed successfully with timeline value {d}", .{timeline_value});
 }
 
+/// Creates a buffer and allocates memory using the VMA allocator.
 pub export fn vk_buffer_create(buffer_ptr: ?*VulkanBuffer, device: c.VkDevice, allocator_ptr: ?*types.VulkanAllocator, createInfo_ptr: ?*const VulkanBufferCreateInfo) callconv(.c) bool {
-    // Basic validation
     if (device == null or allocator_ptr == null or createInfo_ptr == null or buffer_ptr == null) {
         buf_log.err("Invalid parameters for buffer creation", .{});
         return false;
@@ -151,23 +130,18 @@ pub export fn vk_buffer_create(buffer_ptr: ?*VulkanBuffer, device: c.VkDevice, a
         return false;
     }
 
-    // Clear buffer struct
     @memset(@as([*]u8, @ptrCast(buffer))[0..@sizeOf(VulkanBuffer)], 0);
 
-    // Create buffer info
     var bufferInfo = std.mem.zeroes(c.VkBufferCreateInfo);
     bufferInfo.sType = c.VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO;
     bufferInfo.size = createInfo.size;
     bufferInfo.usage = createInfo.usage;
-    // Add SHADER_DEVICE_ADDRESS_BIT if the buffer type might be used in a descriptor buffer or needs address
-    // This fixes "buffer must have been created with the VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT usage flag set" validation error
+    // TODO: Only add SHADER_DEVICE_ADDRESS_BIT for buffers that need addresses.
     if ((bufferInfo.usage & (c.VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT | c.VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | c.VK_BUFFER_USAGE_VERTEX_BUFFER_BIT | c.VK_BUFFER_USAGE_INDEX_BUFFER_BIT)) != 0) {
         bufferInfo.usage |= c.VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT;
     }
     bufferInfo.sharingMode = c.VK_SHARING_MODE_EXCLUSIVE;
 
-    // Allocate buffer and memory using allocator
-    // Pass persistentlyMapped as map_immediately to avoid double mapping and use VMA's internal mapping
     if (!vk_allocator.allocate_buffer(allocator, &bufferInfo, &buffer.handle, &buffer.memory, &buffer.allocation, createInfo.properties, createInfo.persistentlyMapped, &buffer.mapped)) {
         buf_log.err("Failed to create and allocate buffer", .{});
         return false;
@@ -176,11 +150,9 @@ pub export fn vk_buffer_create(buffer_ptr: ?*VulkanBuffer, device: c.VkDevice, a
     buffer.size = createInfo.size;
     buffer.usage = bufferInfo.usage; // Update usage to reflect added flags
     buffer.properties = createInfo.properties;
-    // buffer.mapped is already set if map_immediately was true and successful
 
     if (createInfo.persistentlyMapped and buffer.mapped == null) {
         buf_log.err("Failed to persistently map buffer memory", .{});
-        // If it was supposed to be mapped but isn't, this is an error condition
         return false;
     }
 
@@ -188,26 +160,21 @@ pub export fn vk_buffer_create(buffer_ptr: ?*VulkanBuffer, device: c.VkDevice, a
     return true;
 }
 
+/// Waits for buffer-related GPU work to complete before destroying resources.
 fn wait_for_buffer_idle(buffer: *VulkanBuffer, device: c.VkDevice, vulkan_state: ?*types.VulkanState) void {
     if (vulkan_state) |state| {
-        // Check initialization state first to avoid spurious warnings during shutdown
         if (!state.sync.initialized) {
             buf_log.info("SYNC_SKIP: Sync manager not initialized, using device wait idle for buffer={any}", .{buffer.handle});
             _ = c.vkDeviceWaitIdle(device);
             return;
         }
 
-        // Use thread-safe timeline value retrieval
         var current_value: u64 = 0;
-        buf_log.info("SYNC_CHECK: Getting timeline semaphore value for buffer={any}", .{buffer.handle});
-
         const result = vk_sync_manager.vulkan_sync_manager_get_timeline_value(&state.sync, &current_value);
 
         buf_log.info("SYNC_VALUE: buffer={any} semaphore_value={d} result={d}", .{ buffer.handle, current_value, result });
 
         if (result == c.VK_SUCCESS and current_value > 0) {
-            // Wait for all submitted operations to complete
-            // We use the sync manager's wait functionality which handles locks internally
             const wait_result = vk_sync_manager.vulkan_sync_manager_wait_timeline(&state.sync, current_value, 5000000000); // 5s
 
             if (wait_result != c.VK_SUCCESS) {
@@ -218,13 +185,11 @@ fn wait_for_buffer_idle(buffer: *VulkanBuffer, device: c.VkDevice, vulkan_state:
                 buf_log.info("SYNC_SUCCESS: Timeline semaphore wait completed for buffer={any}", .{buffer.handle});
             }
         } else {
-            // Fallback to device wait idle if timeline semaphore query fails
             buf_log.warn("SYNC_FALLBACK: Failed to get timeline semaphore value (result={d}, value={d}), using device wait idle for buffer={any}", .{ result, current_value, buffer.handle });
             const idle_result = c.vkDeviceWaitIdle(device);
             buf_log.info("DEVICE_WAIT_IDLE: result={d} for buffer={any}", .{ idle_result, buffer.handle });
         }
     } else {
-        // Fallback to device wait idle if no vulkan_state
         buf_log.warn("NO_VULKAN_STATE: Using device wait idle for buffer={any}", .{buffer.handle});
         const idle_result = c.vkDeviceWaitIdle(device);
         buf_log.info("DEVICE_WAIT_IDLE: result={d} for buffer={any}", .{ idle_result, buffer.handle });
@@ -233,16 +198,12 @@ fn wait_for_buffer_idle(buffer: *VulkanBuffer, device: c.VkDevice, vulkan_state:
 
 fn cleanup_buffer_resources(buffer: *VulkanBuffer, device: c.VkDevice, allocator: ?*types.VulkanAllocator) void {
     _ = device;
-    // Unmap if mapped
     if (buffer.mapped != null) {
         buf_log.info("UNMAP: Unmapping buffer={any}", .{buffer.handle});
-        // VMA handles unmapping automatically when freeing the buffer/allocation
-        // We just need to clear the pointer to avoid dangling references
         buffer.mapped = null;
         buf_log.info("UNMAPPED: buffer={any}", .{buffer.handle});
     }
 
-    // Free buffer and memory
     if (allocator) |alloc| {
         buf_log.info("FREE_START: About to free buffer={any} allocation={any}", .{ buffer.handle, buffer.allocation });
         vk_allocator.free_buffer(alloc, buffer.handle, buffer.allocation);
@@ -251,7 +212,6 @@ fn cleanup_buffer_resources(buffer: *VulkanBuffer, device: c.VkDevice, allocator
         buf_log.warn("Allocator is null, cannot free buffer memory", .{});
     }
 
-    // Clear structure
     @memset(@as([*]u8, @ptrCast(buffer))[0..@sizeOf(VulkanBuffer)], 0);
 }
 

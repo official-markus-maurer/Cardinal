@@ -133,7 +133,7 @@ fn execute_task_job(data: ?*anyopaque) callconv(.c) i32 {
         if (execute_task(task)) {
             return 0;
         } else {
-            return -1; // Generic error code
+            return -1;
         }
     }
     return -1;
@@ -281,6 +281,8 @@ fn execute_material_load_task(task: *CardinalAsyncTask) bool {
     return true;
 }
 
+/// Loads a mesh from `custom_data` by deep-copying buffers into ASSETS memory and registering
+/// a ref-counted resource that owns the allocation.
 fn execute_mesh_load_task(task: *CardinalAsyncTask) bool {
     if (task.custom_data == null) return false;
 
@@ -288,7 +290,6 @@ fn execute_mesh_load_task(task: *CardinalAsyncTask) bool {
 
     const source_mesh = @as(*const scene.CardinalMesh, @ptrCast(@alignCast(task.custom_data)));
 
-    // Allocate memory for mesh copy
     const allocator = memory.cardinal_get_allocator_for_category(.ASSETS);
     const mesh_ptr = memory.cardinal_alloc(allocator, @sizeOf(scene.CardinalMesh));
     if (mesh_ptr == null) return false;
@@ -296,7 +297,6 @@ fn execute_mesh_load_task(task: *CardinalAsyncTask) bool {
     const mesh = @as(*scene.CardinalMesh, @ptrCast(@alignCast(mesh_ptr)));
     mesh.* = source_mesh.*;
 
-    // Deep copy vertex data
     if (source_mesh.vertex_count > 0 and source_mesh.vertices != null) {
         const vertex_size = source_mesh.vertex_count * @sizeOf(scene.CardinalVertex);
         const vertices_ptr = memory.cardinal_alloc(allocator, vertex_size);
@@ -310,7 +310,6 @@ fn execute_mesh_load_task(task: *CardinalAsyncTask) bool {
         mesh.vertices = null;
     }
 
-    // Deep copy index data
     if (source_mesh.index_count > 0 and source_mesh.indices != null) {
         const index_size = source_mesh.index_count * @sizeOf(u32);
         const indices_ptr = memory.cardinal_alloc(allocator, index_size);
@@ -325,7 +324,7 @@ fn execute_mesh_load_task(task: *CardinalAsyncTask) bool {
         mesh.indices = null;
     }
 
-    // Generate ID
+    // TODO: Generate a stable mesh id (content hash) instead of pointer-derived ids.
     var mesh_id: [128]u8 = undefined;
     _ = std.fmt.bufPrintZ(&mesh_id, "mesh_{d}_{d}_{x}", .{ mesh.vertex_count, mesh.index_count, @intFromPtr(mesh) }) catch {
         if (mesh.vertices) |v| memory.cardinal_free(allocator, v);
@@ -406,7 +405,7 @@ fn execute_task(task: *CardinalAsyncTask) bool {
     return success;
 }
 
-// Public API
+/// Initializes the async loader and backing job system.
 pub export fn cardinal_async_loader_init(config: ?*const CardinalAsyncLoaderConfig) callconv(.c) bool {
     if (g_async_loader.initialized) {
         std.log.warn("Async loader already initialized", .{});
@@ -426,7 +425,6 @@ pub export fn cardinal_async_loader_init(config: ?*const CardinalAsyncLoaderConf
         };
     }
 
-    // Initialize Job System
     const job_config = job_system.JobSystemConfig{
         .worker_thread_count = g_async_loader.config.worker_thread_count,
         .max_queue_size = g_async_loader.config.max_queue_size,
@@ -437,7 +435,6 @@ pub export fn cardinal_async_loader_init(config: ?*const CardinalAsyncLoaderConf
         return false;
     }
 
-    // Update config with actual thread count used by job system (defaulted inside)
     g_async_loader.config.worker_thread_count = job_system.g_job_system.config.worker_thread_count;
 
     g_async_loader.state_mutex = .{};

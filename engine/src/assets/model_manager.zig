@@ -61,6 +61,9 @@ const FinalizedModelData = struct {
 };
 
 /// Async task finalize callback that computes bounds and packages the loaded scene.
+///
+/// Ownership: `ctx.scene_task.result_data` is owned by the async loader and is freed by
+/// `cardinal_async_free_task`, so this callback must not free it.
 fn finalize_model_task(task: ?*async_loader.CardinalAsyncTask, user_data: ?*anyopaque) callconv(.c) bool {
     if (user_data == null) return false;
     const ctx = @as(*FinalizeContext, @ptrCast(@alignCast(user_data)));
@@ -100,9 +103,6 @@ fn finalize_model_task(task: ?*async_loader.CardinalAsyncTask, user_data: ?*anyo
     result.scene = loaded_scene_ptr.*;
 
     calculate_scene_bounds(&result.scene, &result.bbox_min, &result.bbox_max);
-
-    // NOTE: We do NOT free loaded_scene_ptr here because async_loader.cardinal_async_free_task(ctx.scene_task)
-    // will free the result_data (which is loaded_scene_ptr). Doing it here would cause a double free.
 
     if (task) |t| {
         t.result_data = result;
@@ -148,38 +148,30 @@ fn generate_model_name(file_path: ?[*:0]const u8) ?[*:0]u8 {
     return @as([*:0]u8, @ptrCast(name_ptr));
 }
 
+/// Applies optional keyframe reduction passes to animations, if present.
+///
+/// This is a best-effort optimization step. It skips processing when the animation system pointer
+/// is misaligned to avoid traps in safe builds.
 fn optimize_scene_animations(scn: *scene.CardinalScene) void {
     if (scn.animation_system) |sys_opaque| {
-        // Check alignment before casting
         if (@intFromPtr(sys_opaque) % @alignOf(animation.CardinalAnimationSystem) != 0) {
             model_log.err("Animation system pointer unaligned: {p}. Skipping optimization.", .{sys_opaque});
             return;
         }
 
-        // Cast the opaque pointer to the actual animation system type
-        // Ensure alignment and pointer validity
         const sys = @as(*animation.CardinalAnimationSystem, @ptrCast(@alignCast(sys_opaque)));
-        
-        // Safety check: if animation_count is 0, we shouldn't access animations array
-        // Also check if the pointer itself is valid (though strict null check handled above)
+
         if (sys.animation_count == 0) return;
 
-        // We can check if animations array exists
         if (sys.animations) |anims| {
             var i: u32 = 0;
-            // Check animation_count against reasonable limits to avoid OOB
             if (sys.animation_count > 1000) {
-                 model_log.warn("Scene has unusually high animation count: {d}. Optimization may be slow or unsafe.", .{sys.animation_count});
+                model_log.warn("Scene has unusually high animation count: {d}. Optimization may be slow or unsafe.", .{sys.animation_count});
             }
 
             while (i < sys.animation_count) : (i += 1) {
-                // Apply RDP optimization with a small tolerance
-                // 0.0001 seems reasonable for visual fidelity while reducing redundant keys
-                // Verify anim pointer is valid
                 const anim_ptr = &anims[i];
-                
-                // Add extra safety check for samplers
-                // CardinalAnimation struct might be partially initialized if from NIF
+
                 if (anim_ptr.sampler_count > 0 and anim_ptr.samplers != null) {
                     animation.cardinal_animation_optimize(anim_ptr, 0.0001);
                 }
@@ -1062,7 +1054,7 @@ pub export fn cardinal_model_manager_add_scene(manager: ?*CardinalModelManager, 
 
     // Move scene data
     model.scene = in_scene.?.*;
-    
+
     // We must NOT zero out the input scene here if it was allocated on the heap by the loader,
     // because that would leave us with a dangling pointer or double-free issues if the loader tries to clean up.
     // However, the loader (cardinal_async_load_scene) likely allocated the scene struct itself.
@@ -1075,7 +1067,7 @@ pub export fn cardinal_model_manager_add_scene(manager: ?*CardinalModelManager, 
     // We should only do this if we are sure the animation system is valid and initialized.
     // The KFM loader might produce an empty animation system or one with 0 animations but non-null pointer?
     optimize_scene_animations(&model.scene);
-    
+
     calculate_scene_bounds(&model.scene, &model.bbox_min, &model.bbox_max);
 
     mgr.model_count += 1;

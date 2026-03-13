@@ -370,7 +370,7 @@ fn create_swapchain_image_views(s: *types.VulkanState) bool {
     return true;
 }
 
-// Backup state for recreation
+/// Swapchain state snapshot used to roll back after a failed recreation attempt.
 const SwapchainBackupState = struct {
     handle: c.VkSwapchainKHR,
     images: ?[*]c.VkImage,
@@ -382,6 +382,7 @@ const SwapchainBackupState = struct {
     present_semaphores: ?[*]c.VkSemaphore,
 };
 
+/// Moves swapchain-owned handles into `backup` and clears the live swapchain fields.
 fn backup_swapchain_state(s: *types.VulkanState, backup: *SwapchainBackupState) void {
     backup.handle = s.swapchain.handle;
     backup.images = s.swapchain.images;
@@ -400,6 +401,7 @@ fn backup_swapchain_state(s: *types.VulkanState, backup: *SwapchainBackupState) 
     s.swapchain.image_present_semaphores = null;
 }
 
+/// Restores basic swapchain fields after a failed recreation.
 fn restore_swapchain_state(s: *types.VulkanState, backup: *const SwapchainBackupState) void {
     s.swapchain.handle = backup.handle;
     s.swapchain.images = backup.images;
@@ -414,7 +416,6 @@ fn handle_recreation_failure(s: *types.VulkanState, old_state: *const SwapchainB
     swap_log.err("Recreation failed", .{});
     s.swapchain.consecutive_recreation_failures += 1;
 
-    // Cleanup new swapchain if it exists
     if (s.swapchain.handle != null) {
         vk_destroy_swapchain(s);
     }
@@ -424,11 +425,9 @@ fn handle_recreation_failure(s: *types.VulkanState, old_state: *const SwapchainB
         s.swapchain.image_layout_initialized = null;
     }
 
-    // Restore basic state
     s.swapchain.extent = old_state.extent;
     s.swapchain.format = old_state.format;
 
-    // Notify application of recreation failure
     if (s.recovery.device_loss_callback) |cb| {
         cb(s.recovery.callback_user_data);
     }
@@ -538,8 +537,6 @@ fn recreate_mesh_shader_pipeline_logic(s: *types.VulkanState) bool {
     swap_log.info("Mesh shader pipeline recreated successfully", .{});
     return true;
 }
-
-// Exported functions
 
 pub export fn vk_create_swapchain(s: ?*types.VulkanState) callconv(.c) bool {
     if (s == null or s.?.context.device == null or s.?.context.physical_device == null or s.?.context.surface == null) {
@@ -724,11 +721,10 @@ pub export fn vk_recreate_swapchain(s: ?*types.VulkanState) callconv(.c) bool {
         }
     }
 
-    // Recreate SSAO resources if enabled
+    // TODO: Decouple SSAO resource lifetime from swapchain recreation.
     if (vs.pipelines.use_ssao) {
         if (!vk_ssao.vk_ssao_resize(vs, vs.swapchain.extent.width, vs.swapchain.extent.height)) {
             swap_log.err("Failed to resize SSAO resources", .{});
-            // We don't fail the whole swapchain recreation for this, just disable SSAO
             vs.pipelines.use_ssao = false;
         }
     }

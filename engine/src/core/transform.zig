@@ -16,11 +16,10 @@ const c = @cImport({
     @cInclude("float.h");
 });
 
-// Constants
+/// Pi constant used by the C-facing transform helpers.
 const M_PI = 3.14159265358979323846;
+/// Epsilon threshold used by matrix decomposition and inversion helpers.
 const FLT_EPSILON = 1.19209290e-07;
-
-// === Matrix Operations ===
 
 /// Writes an identity matrix.
 pub export fn cardinal_matrix_identity(matrix: *[16]f32) callconv(.c) void {
@@ -47,21 +46,13 @@ pub export fn cardinal_matrix_from_trs(translation: ?*const [3]f32, rotation: ?*
 }
 
 /// Builds a matrix from a 3x3 rotation (row-major), translation, and uniform scale.
+///
+/// Converts the 3x3 rotation from row-major to the engine's column-major `Mat4` layout.
 pub export fn cardinal_matrix_from_rt_s(rotation: *const [9]f32, translation: *const [3]f32, scale: f32, result: *[16]f32) callconv(.c) void {
     const r = rotation.*;
     const t = translation.*;
     const s = scale;
 
-    // NIF is Row-Major. Vulkan is Column-Major.
-    // Input r: R00, R01, R02, R10, R11, R12, R20, R21, R22
-    // Output result (Col-Major):
-    // Col 0: M00, M01, M02, M03
-    // Col 1: M10, M11, M12, M13
-    
-    // M00 = R00 * s
-    // M10 = R01 * s
-    // ...
-    
     // Col 0
     result[0] = r[0] * s;
     result[1] = r[3] * s;
@@ -123,8 +114,6 @@ pub export fn cardinal_matrix_transpose(matrix: *const [16]f32, result: *[16]f32
     const t = m.transpose();
     result.* = t.data;
 }
-
-// === Vector Operations ===
 
 /// Transforms a point by a matrix (assumes w=1).
 pub export fn cardinal_transform_point(matrix: *const [16]f32, point: *const [3]f32, result: *[3]f32) callconv(.c) void {

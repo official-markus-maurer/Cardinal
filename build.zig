@@ -313,6 +313,86 @@ pub fn build(b: *std.Build) void {
         engine.linkSystemLibrary("comdlg32");
     }
 
+    const engine_tests = b.addTest(.{
+        .name = "cardinal_engine_tests",
+        .root_module = b.createModule(.{
+            .target = target,
+            .optimize = optimize,
+            .root_source_file = b.path("engine/src/tests.zig"),
+        }),
+    });
+
+    engine_tests.linkLibC();
+    engine_tests.linkLibCpp();
+
+    engine_tests.addIncludePath(b.path("engine/src"));
+    engine_tests.addIncludePath(b.path("engine/src/renderer"));
+    engine_tests.addIncludePath(b.path("libs/cgltf"));
+    engine_tests.addIncludePath(b.path("libs/stb"));
+    engine_tests.addIncludePath(b.path("libs/tinyexr"));
+    engine_tests.addIncludePath(b.path("libs/tinyexr/deps/miniz"));
+    engine_tests.addIncludePath(b.path("libs/glfw/include"));
+    engine_tests.addIncludePath(b.path("libs/tracy/public"));
+
+    if (vulkan_sdk) |sdk| {
+        engine_tests.addIncludePath(.{ .cwd_relative = b.fmt("{s}/Include", .{sdk}) });
+        engine_tests.addLibraryPath(.{ .cwd_relative = b.fmt("{s}/Lib", .{sdk}) });
+    }
+
+    engine_tests.root_module.addCMacro("GLFW_INCLUDE_VULKAN", "");
+    engine_tests.root_module.addCMacro("CARDINAL_ENGINE_INTERNAL", "");
+    engine_tests.root_module.addOptions("build_options", options);
+
+    if (enable_tracy) {
+        engine_tests.root_module.addCMacro("TRACY_ENABLE", "");
+    }
+
+    if (target.result.os.tag == .windows) {
+        engine_tests.root_module.addCMacro("VK_USE_PLATFORM_WIN32_KHR", "");
+        engine_tests.root_module.addCMacro("_CRT_SECURE_NO_WARNINGS", "");
+        engine_tests.linkSystemLibrary("vulkan-1");
+        engine_tests.linkSystemLibrary("comdlg32");
+    } else if (target.result.os.tag == .linux) {
+        engine_tests.root_module.addCMacro("VK_USE_PLATFORM_XLIB_KHR", "");
+        engine_tests.linkSystemLibrary("pthread");
+        engine_tests.linkSystemLibrary("dl");
+        engine_tests.linkSystemLibrary("vulkan");
+    } else if (target.result.os.tag == .macos) {
+        engine_tests.root_module.addCMacro("VK_USE_PLATFORM_METAL_EXT", "");
+        engine_tests.linkFramework("Cocoa");
+        engine_tests.linkFramework("IOKit");
+        engine_tests.linkFramework("CoreFoundation");
+        engine_tests.linkFramework("CoreVideo");
+        engine_tests.linkSystemLibrary("vulkan");
+    }
+
+    engine_tests.addCSourceFile(.{
+        .file = stb_impl_c,
+        .flags = &.{"-std=c17"},
+    });
+    engine_tests.addCSourceFile(.{
+        .file = cgltf_impl_c,
+        .flags = &.{"-std=c17"},
+    });
+    engine_tests.addCSourceFile(.{
+        .file = tinyexr_impl_cpp,
+        .flags = &.{ "-std=c++14", "-fno-sanitize=undefined" },
+    });
+    engine_tests.addCSourceFile(.{
+        .file = b.path("libs/tinyexr/deps/miniz/miniz.c"),
+        .flags = &.{"-std=c11"},
+    });
+    engine_tests.addCSourceFile(.{
+        .file = b.path("engine/src/renderer/vma_implementation.cpp"),
+        .flags = &.{"-std=c++20"},
+    });
+
+    engine_tests.linkLibrary(glfw);
+
+    const test_step = b.step("test", "Run engine tests");
+    const run_engine_tests = b.addRunArtifact(engine_tests);
+    test_step.dependOn(&run_engine_tests.step);
+
     // =========================================================================
     // Client (Executable)
     // =========================================================================

@@ -12,6 +12,7 @@ pub const HandleManager = struct {
     free_indices: std.ArrayListUnmanaged(u32),
     allocator: std.mem.Allocator,
 
+    /// Creates an empty handle manager using `allocator` for internal storage.
     pub fn init(allocator: std.mem.Allocator) HandleManager {
         return .{
             .generations = .{},
@@ -20,6 +21,7 @@ pub const HandleManager = struct {
         };
     }
 
+    /// Releases internal storage.
     pub fn deinit(self: *HandleManager) void {
         self.generations.deinit(self.allocator);
         self.free_indices.deinit(self.allocator);
@@ -30,6 +32,7 @@ pub const HandleManager = struct {
         generation: u32,
     };
 
+    /// Allocates a new handle allocation.
     pub fn allocate(self: *HandleManager) !Allocation {
         var index: u32 = 0;
         var generation: u32 = 1;
@@ -45,11 +48,11 @@ pub const HandleManager = struct {
         return Allocation{ .index = index, .generation = generation };
     }
 
+    /// Frees an allocation if `generation` matches, incrementing the generation on success.
     pub fn free(self: *HandleManager, index: u32, generation: u32) bool {
         if (index >= self.generations.items.len) return false;
         if (self.generations.items[index] != generation) return false;
 
-        // Increment generation to invalidate current handle
         self.generations.items[index] += 1;
         if (self.generations.items[index] == 0) self.generations.items[index] = 1;
 
@@ -57,11 +60,13 @@ pub const HandleManager = struct {
         return true;
     }
 
+    /// Returns true if `index` is in-range and `generation` matches the current value.
     pub fn is_valid(self: *const HandleManager, index: u32, generation: u32) bool {
         if (index >= self.generations.items.len) return false;
         return self.generations.items[index] == generation;
     }
 
+    /// Returns the current generation for `index`, or 0 if out-of-range.
     pub fn get_generation(self: *const HandleManager, index: u32) u32 {
         if (index >= self.generations.items.len) return 0;
         return self.generations.items[index];
@@ -73,7 +78,6 @@ test "HandleManager basic usage" {
     var manager = HandleManager.init(allocator);
     defer manager.deinit();
 
-    // Test allocation
     const h1 = try manager.allocate();
     try std.testing.expectEqual(@as(u32, 0), h1.index);
     try std.testing.expectEqual(@as(u32, 1), h1.generation);
@@ -83,11 +87,9 @@ test "HandleManager basic usage" {
     try std.testing.expectEqual(@as(u32, 1), h2.index);
     try std.testing.expectEqual(@as(u32, 1), h2.generation);
 
-    // Test free
     try std.testing.expect(manager.free(h1.index, h1.generation));
     try std.testing.expect(!manager.is_valid(h1.index, h1.generation));
 
-    // Test reuse
     const h3 = try manager.allocate();
     try std.testing.expectEqual(@as(u32, 0), h3.index);
     try std.testing.expectEqual(@as(u32, 2), h3.generation);

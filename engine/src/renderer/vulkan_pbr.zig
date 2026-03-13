@@ -1,3 +1,9 @@
+//! PBR renderer pipeline.
+//!
+//! Owns the classic vertex/fragment PBR pipeline, its descriptors, and helpers to upload scene
+//! data into GPU buffers/textures.
+//!
+//! TODO: Split descriptor, texture, and pipeline creation into separate modules.
 const std = @import("std");
 const builtin = @import("builtin");
 const log = @import("../core/log.zig");
@@ -23,8 +29,7 @@ const c = @import("vulkan_c.zig").c;
 
 const pbr_log = log.ScopedLogger("PBR");
 
-// Helper functions
-
+/// Creates and allocates the descriptor manager used by the PBR pipeline.
 fn create_pbr_descriptor_manager(pipeline: *types.VulkanPBRPipeline, device: c.VkDevice, allocator: *types.VulkanAllocator, vulkan_state: ?*types.VulkanState, bindings_map: *std.AutoHashMap(u32, c.VkDescriptorSetLayoutBinding)) bool {
     const mem_alloc = memory.cardinal_get_allocator_for_category(.RENDERER);
     const ptr = memory.cardinal_alloc(mem_alloc, @sizeOf(types.VulkanDescriptorManager));
@@ -79,6 +84,7 @@ fn create_pbr_descriptor_manager(pipeline: *types.VulkanPBRPipeline, device: c.V
     return true;
 }
 
+/// Initializes the texture manager used by the PBR pipeline (including bindless pool).
 fn create_pbr_texture_manager(pipeline: *types.VulkanPBRPipeline, device: c.VkDevice, allocator: *types.VulkanAllocator, commandPool: c.VkCommandPool, graphicsQueue: c.VkQueue, vulkan_state: ?*types.VulkanState) bool {
     const mem_alloc = memory.cardinal_get_allocator_for_category(.RENDERER);
     const ptr = memory.cardinal_alloc(mem_alloc, @sizeOf(types.VulkanTextureManager));
@@ -113,6 +119,7 @@ fn create_pbr_texture_manager(pipeline: *types.VulkanPBRPipeline, device: c.VkDe
     return true;
 }
 
+/// Creates the pipeline layout, optionally including the bindless texture set layout.
 fn create_pbr_pipeline_layout(pipeline: *types.VulkanPBRPipeline, device: c.VkDevice, pushConstantRange: *const c.VkPushConstantRange) bool {
     var descriptorLayouts: [2]c.VkDescriptorSetLayout = undefined;
     descriptorLayouts[0] = descriptor_mgr.vk_descriptor_manager_get_layout(@ptrCast(pipeline.descriptorManager));
@@ -556,8 +563,7 @@ fn update_pbr_descriptor_sets(pipeline: *types.VulkanPBRPipeline, vulkan_state: 
     return true;
 }
 
-// Exported functions
-
+/// Loads per-scene GPU resources (mesh buffers, textures, and descriptors) for the PBR pipeline.
 pub export fn vk_pbr_load_scene(pipeline: ?*types.VulkanPBRPipeline, device: c.VkDevice, physicalDevice: c.VkPhysicalDevice, commandPool: c.VkCommandPool, graphicsQueue: c.VkQueue, scene_data: ?*const scene.CardinalScene, allocator: ?*types.VulkanAllocator, vulkan_state: ?*types.VulkanState) callconv(.c) bool {
     _ = physicalDevice;
 
@@ -597,15 +603,12 @@ pub export fn vk_pbr_load_scene(pipeline: ?*types.VulkanPBRPipeline, device: c.V
         return true;
     }
 
-    // Create vertex and index buffers
     if (!create_pbr_mesh_buffers(pipe, device, alloc, commandPool, graphicsQueue, scn)) {
         return false;
     }
 
-    // Texture manager handles its own synchronization during cleanup
     pipe.textureManager.?.syncManager = vulkan_state.?.sync_manager;
 
-    // Load scene textures using texture manager
     if (!vk_texture_mgr.vk_texture_manager_load_scene_textures(pipe.textureManager.?, scn)) {
         pbr_log.err("Failed to load scene textures using texture manager", .{});
         return false;
@@ -615,12 +618,10 @@ pub export fn vk_pbr_load_scene(pipeline: ?*types.VulkanPBRPipeline, device: c.V
         pbr_log.info("Loaded {d} textures using texture manager", .{pipe.textureManager.?.textureCount});
     }
 
-    // Reset descriptor pool to reclaim sets from previous scene loads
     if (pipe.descriptorManager != null) {
         descriptor_mgr.vk_descriptor_manager_reset(@as(*types.VulkanDescriptorManager, @ptrCast(pipe.descriptorManager)));
     }
 
-    // Allocate descriptor set using descriptor manager
     const dm = @as(*types.VulkanDescriptorManager, @ptrCast(pipe.descriptorManager));
 
     if (!descriptor_mgr.vk_descriptor_manager_allocate(dm)) {

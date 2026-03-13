@@ -1,3 +1,9 @@
+//! Vulkan pipeline and depth resource setup.
+//!
+//! Creates swapchain-associated depth resources and the core graphics pipeline objects, and
+//! manages the on-disk pipeline cache blob used to accelerate startup.
+//!
+//! TODO: Deduplicate pipeline cache handling with vulkan_pipeline_manager.zig.
 const std = @import("std");
 const log = @import("../core/log.zig");
 const types = @import("vulkan_types.zig");
@@ -7,8 +13,8 @@ const memory = @import("../core/memory.zig");
 
 const pipe_log = log.ScopedLogger("PIPELINE");
 
+/// Creates the swapchain depth image and view, selecting a supported depth format.
 fn create_depth_resources(s: *types.VulkanState) bool {
-    // Find a suitable depth format
     const candidates = [_]c.VkFormat{ c.VK_FORMAT_D32_SFLOAT, c.VK_FORMAT_D32_SFLOAT_S8_UINT, c.VK_FORMAT_D24_UNORM_S8_UINT };
     s.swapchain.depth_format = c.VK_FORMAT_UNDEFINED;
 
@@ -26,7 +32,6 @@ fn create_depth_resources(s: *types.VulkanState) bool {
         return false;
     }
 
-    // Create depth image
     var imageInfo = std.mem.zeroes(c.VkImageCreateInfo);
     imageInfo.sType = c.VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO;
     imageInfo.imageType = c.VK_IMAGE_TYPE_2D;
@@ -42,13 +47,11 @@ fn create_depth_resources(s: *types.VulkanState) bool {
     imageInfo.samples = c.VK_SAMPLE_COUNT_1_BIT;
     imageInfo.sharingMode = c.VK_SHARING_MODE_EXCLUSIVE;
 
-    // Use VulkanAllocator to allocate and bind image + memory
     if (!vk_allocator.allocate_image(&s.allocator, &imageInfo, &s.swapchain.depth_image, &s.swapchain.depth_image_memory, &s.swapchain.depth_image_allocation, c.VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT)) {
         pipe_log.err("allocator failed to create depth image", .{});
         return false;
     }
 
-    // Create depth image view
     var viewInfo = std.mem.zeroes(c.VkImageViewCreateInfo);
     viewInfo.sType = c.VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO;
     viewInfo.image = s.swapchain.depth_image;
@@ -62,32 +65,28 @@ fn create_depth_resources(s: *types.VulkanState) bool {
 
     if (c.vkCreateImageView(s.context.device, &viewInfo, null, &s.swapchain.depth_image_view) != c.VK_SUCCESS) {
         pipe_log.err("failed to create depth image view", .{});
-        // Free image + memory via allocator on failure
         vk_allocator.free_image(&s.allocator, s.swapchain.depth_image, s.swapchain.depth_image_allocation);
         s.swapchain.depth_image = null;
         s.swapchain.depth_image_memory = null;
         return false;
     }
 
-    // Initialize layout tracking
     s.swapchain.depth_layout_initialized = false;
 
     pipe_log.info("depth resources created", .{});
     return true;
 }
 
+/// Destroys the swapchain depth image and view if present.
 fn destroy_depth_resources(s: *types.VulkanState) void {
     if (s.context.device == null) return;
 
-    // Validate and destroy depth image view
     if (s.swapchain.depth_image_view != null) {
         c.vkDestroyImageView(s.context.device, s.swapchain.depth_image_view, null);
         s.swapchain.depth_image_view = null;
     }
 
-    // Validate and free image + memory using allocator
     if (s.swapchain.depth_image != null or s.swapchain.depth_image_memory != null) {
-        // Ensure allocator is valid before freeing
         if (s.allocator.device != null) {
             vk_allocator.free_image(&s.allocator, s.swapchain.depth_image, s.swapchain.depth_image_allocation);
         }
@@ -95,15 +94,14 @@ fn destroy_depth_resources(s: *types.VulkanState) void {
         s.swapchain.depth_image_memory = null;
     }
 
-    // Reset layout tracking when depth resources are destroyed
     s.swapchain.depth_layout_initialized = false;
 }
 
+/// Creates a pipeline cache, optionally seeding it from disk.
 fn create_pipeline_cache(s: *types.VulkanState) bool {
     var cache_info = std.mem.zeroes(c.VkPipelineCacheCreateInfo);
     cache_info.sType = c.VK_STRUCTURE_TYPE_PIPELINE_CACHE_CREATE_INFO;
 
-    // Try to load cache
     var file_buffer: []u8 = &[_]u8{};
     const file = std.fs.cwd().openFile("pipeline_cache.bin", .{}) catch null;
     if (file) |f| {

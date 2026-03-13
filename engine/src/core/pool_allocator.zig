@@ -11,7 +11,7 @@ const memory = @import("memory.zig");
 pub fn PoolAllocator(comptime T: type) type {
     return struct {
         const Self = @This();
-        
+
         /// Node structure used for the free-list (stored in reclaimed object memory).
         const Node = struct {
             next: ?*Node,
@@ -49,7 +49,7 @@ pub fn PoolAllocator(comptime T: type) type {
 
             const size = @max(@sizeOf(T), @sizeOf(Node));
             const alignment = comptime std.mem.Alignment.fromByteUnits(@max(@alignOf(T), @alignOf(Node)));
-            
+
             const slice = try self.arena.allocator().alignedAlloc(u8, alignment, size);
             return @ptrCast(slice.ptr);
         }
@@ -67,7 +67,7 @@ pub fn PoolAllocator(comptime T: type) type {
         pub fn reset(self: *Self) void {
             self.mutex.lock();
             defer self.mutex.unlock();
-            
+
             _ = self.arena.reset(.retain_capacity);
             self.free_list = null;
         }

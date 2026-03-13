@@ -43,10 +43,10 @@ pub const CardinalEngine = struct {
     frame_allocator: stack_allocator.StackAllocator = undefined,
     frame_memory: []u8 = undefined,
 
-    // Time tracking
+    /// Timestamp of the previous frame in nanoseconds.
     last_frame_time: u64 = 0,
 
-    // Track initialization state
+    /// Subsystem initialization flags used to order shutdown.
     memory_initialized: bool = false,
     ref_counting_initialized: bool = false,
     resource_state_initialized: bool = false,
@@ -73,12 +73,9 @@ pub const CardinalEngine = struct {
             .renderer = .{ ._opaque = null },
             .last_frame_time = platform.get_time_ns(),
             .registry = ecs_registry.Registry.init(allocator),
-            .scheduler = ecs_scheduler.Scheduler.init(allocator, undefined), // Registry pointer set below
+            .scheduler = ecs_scheduler.Scheduler.init(allocator, undefined),
         };
-        // TODO: Refactor Scheduler init so it doesn't require an undefined registry pointer.
-        // Fixup registry pointer in scheduler (since self.registry is value, but we need pointer to it)
-        // Actually self.registry is inside self, so we need self pointer.
-        // But self is created on heap.
+        // TODO: Refactor Scheduler init to avoid passing an undefined registry pointer.
         self.scheduler.registry = &self.registry;
 
         errdefer {
@@ -89,7 +86,6 @@ pub const CardinalEngine = struct {
         try self.initSystems();
         try self.initWindowAndRenderer();
 
-        // Start modules
         try self.module_manager.startup();
 
         return self;
@@ -99,20 +95,17 @@ pub const CardinalEngine = struct {
     pub fn deinit(self: *CardinalEngine) void {
         self.scheduler.deinit();
 
-        // Shutdown async loader first to stop worker threads and release pending tasks
         if (self.async_loader_initialized) {
             async_loader.cardinal_async_loader_shutdown();
             self.async_loader_initialized = false;
         }
 
-        // Shutdown caches to release held references before renderer/ref-counting shutdown
         if (self.caches_initialized) {
             mesh_loader.mesh_cache_shutdown_system();
             texture_loader.texture_cache_shutdown_system();
             self.caches_initialized = false;
         }
 
-        // Shutdown modules
         self.module_manager.shutdown();
         self.module_manager.deinit();
 
@@ -149,15 +142,12 @@ pub const CardinalEngine = struct {
         const zone = tracy.zoneS(@src(), "Engine Update");
         defer zone.end();
 
-        // Calculate delta time
         const current_time = platform.get_time_ns();
         const dt_ns = current_time - self.last_frame_time;
         self.last_frame_time = current_time;
 
-        // Convert to seconds (f32)
         const delta_time = @as(f32, @floatFromInt(dt_ns)) / 1_000_000_000.0;
 
-        // Reset frame allocator at the beginning of the frame
         self.frame_allocator.reset();
 
         if (self.window) |win| {
@@ -165,10 +155,6 @@ pub const CardinalEngine = struct {
             input.update(win);
         }
 
-        // ECS System Updates
-        // ecs_systems.ScriptSystem.update(&self.registry, delta_time);
-        // ecs_systems.PhysicsSystem.update(&self.registry, delta_time);
-        // ecs_systems.RenderSystem.update(&self.registry, delta_time);
         try self.scheduler.run(delta_time);
 
         try self.module_manager.update(delta_time);
@@ -181,7 +167,6 @@ pub const CardinalEngine = struct {
 
     /// Initializes core subsystems (memory, ECS systems, modules, async loaders, caches).
     fn initSystems(self: *CardinalEngine) !void {
-        // Register default ECS Systems
         try self.scheduler.add(ecs_systems.ScriptSystemDesc);
         try self.scheduler.add(ecs_systems.PhysicsSystemDesc);
         try self.scheduler.add(ecs_systems.TransformSystemDesc);
@@ -192,14 +177,12 @@ pub const CardinalEngine = struct {
         self.memory_initialized = true;
         eng_log.info("Memory management system initialized", .{});
 
-        // Initialize Frame Allocator (16MB)
         // TODO: Make frame allocator size configurable via CardinalEngineConfig.
         const frame_mem_size = 16 * 1024 * 1024;
         self.frame_memory = try self.allocator.alloc(u8, frame_mem_size);
         self.frame_allocator = stack_allocator.StackAllocator.init(self.frame_memory);
         eng_log.info("Frame allocator initialized with {d}MB", .{frame_mem_size / 1024 / 1024});
 
-        // Register Core Modules
         try self.module_manager.register(.{
             .name = "Events",
             .init_fn = initEvents,
@@ -231,8 +214,6 @@ pub const CardinalEngine = struct {
         eng_log.info("Resource state tracking system initialized", .{});
 
         eng_log.info("Initializing async loader system...", .{});
-
-        // memory.cardinal_get_allocator_for_category returns a pointer, so it is assumed to be valid if init was called.
         eng_log.info("Memory allocator check passed", .{});
 
         const async_config = async_loader.CardinalAsyncLoaderConfig{
@@ -247,7 +228,6 @@ pub const CardinalEngine = struct {
             return error.AsyncLoaderInitFailed;
         }
 
-        // Register loaders
         const texture_load_fn: *const fn (?[*]const u8, ?*anyopaque) callconv(.c) ?*ref_counting.CardinalRefCountedResource = @ptrCast(&texture_loader.texture_load_with_ref_counting);
         async_loader.cardinal_async_register_texture_loader(texture_load_fn);
         async_loader.cardinal_async_register_scene_loader(loader_mod.cardinal_scene_load);
@@ -280,7 +260,6 @@ pub const CardinalEngine = struct {
         self.window_initialized = true;
 
         if (!vulkan_renderer.cardinal_renderer_create(&self.renderer, self.window, &self.config.renderer)) {
-            // Cleanup window if renderer creation fails
             window.cardinal_window_destroy(self.window);
             self.window = null;
             self.window_initialized = false;
@@ -288,12 +267,11 @@ pub const CardinalEngine = struct {
         }
         self.renderer_initialized = true;
 
-        // Set frame allocator
         vulkan_renderer.cardinal_renderer_set_frame_allocator(&self.renderer, &self.frame_allocator);
     }
 };
 
-// Module wrappers
+/// Module init/shutdown callbacks used by the module manager.
 fn initEvents(ctx: ?*anyopaque) !void {
     const self = @as(*CardinalEngine, @ptrCast(@alignCast(ctx)));
     events.init(self.allocator);

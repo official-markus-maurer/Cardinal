@@ -1,3 +1,8 @@
+//! Editor selection and gizmo interaction.
+//!
+//! Implements raycast selection against loaded models and basic translate/scale/rotate gizmos.
+//!
+//! TODO: Split selection (raycast) and gizmo manipulation into separate modules.
 const std = @import("std");
 const engine = @import("cardinal_engine");
 const math = engine.math;
@@ -14,11 +19,13 @@ pub const GizmoMode = enum {
 pub const SelectionState = struct {
     gizmo_mode: GizmoMode = .Translate,
     is_dragging: bool = false,
-    drag_axis: ?u32 = null, // 0: X, 1: Y, 2: Z
+    /// 0 = X, 1 = Y, 2 = Z.
+    drag_axis: ?u32 = null,
     drag_start_mouse: math.Vec2 = math.Vec2.zero(),
     drag_start_val: math.Vec3 = math.Vec3.zero(),
     drag_start_rot: math.Quat = math.Quat.identity(),
-    drag_start_pos: math.Vec3 = math.Vec3.zero(), // Initial position when drag started
+    /// Initial position when drag started.
+    drag_start_pos: math.Vec3 = math.Vec3.zero(),
     hover_axis: ?u32 = null,
     hover_is_rotation: bool = false,
     drag_is_rotation: bool = false,
@@ -28,12 +35,12 @@ pub const SelectionState = struct {
 
 var selection_state = SelectionState{};
 
+/// Computes a world-space ray from the current mouse position.
 fn get_ray_from_mouse(state: *EditorState) ?math.Ray {
     var mouse_pos_im: c.ImVec2 = undefined;
     c.imgui_bridge_get_mouse_pos(&mouse_pos_im);
     const mouse_pos = math.Vec2{ .x = mouse_pos_im.x, .y = mouse_pos_im.y };
 
-    // Check if mouse is valid
     if (mouse_pos.x < 0 or mouse_pos.y < 0) return null;
 
     const win_width = state.window.width;
@@ -41,15 +48,12 @@ fn get_ray_from_mouse(state: *EditorState) ?math.Ray {
 
     if (win_width == 0 or win_height == 0) return null;
 
-    // Normalized Device Coordinates (-1 to 1)
-    // Vulkan: y is -1 (top) to 1 (bottom)
     const x = (2.0 * mouse_pos.x) / @as(f32, @floatFromInt(win_width)) - 1.0;
     const y = (2.0 * mouse_pos.y) / @as(f32, @floatFromInt(win_height)) - 1.0;
 
     const ray_nds = math.Vec3{ .x = x, .y = y, .z = 1.0 };
     const ray_clip = math.Vec4{ .x = ray_nds.x, .y = ray_nds.y, .z = -1.0, .w = 1.0 };
 
-    // Inverse Projection
     const proj = math.Mat4.perspective(math.toRadians(state.camera.fov), state.camera.aspect, state.camera.near_plane, state.camera.far_plane);
     const inv_proj = proj.invert() orelse return null;
 
@@ -59,7 +63,6 @@ fn get_ray_from_mouse(state: *EditorState) ?math.Ray {
 
     const ray_eye = math.Vec3{ .x = ray_eye_v4.x, .y = ray_eye_v4.y, .z = ray_eye_v4.z };
 
-    // Inverse View
     const view = math.Mat4.lookAt(state.camera.position, state.camera.target, state.camera.up);
     const inv_view = view.invert() orelse return null;
 
@@ -77,10 +80,8 @@ fn check_node_intersection(
     closest_t: *f32,
     hit_model_id: *u32,
 ) void {
-    // Check meshes attached to this node
     if (node.mesh_count > 0 and node.mesh_indices != null) {
         const scn = &model.scene;
-        // Node transform is relative to scene root. Compose with model instance transform.
         const model_mat = math.Mat4.fromArray(model.transform);
         const node_local_mat = math.Mat4.fromArray(node.world_transform);
         const node_transform = model_mat.mul(node_local_mat);
@@ -111,7 +112,6 @@ fn check_node_intersection(
         }
     }
 
-    // Recurse children
     if (node.child_count > 0 and node.children != null) {
         var i: u32 = 0;
         while (i < node.child_count) : (i += 1) {
@@ -122,8 +122,8 @@ fn check_node_intersection(
     }
 }
 
+/// Updates selection and active gizmo state based on input.
 pub fn update(state: *EditorState) void {
-    // Mode Switching
     if (c.imgui_bridge_is_shift_down()) {
         if (!selection_state.is_dragging) {
             selection_state.gizmo_mode = .Scale;
@@ -142,15 +142,12 @@ pub fn update(state: *EditorState) void {
         selection_state.hover_is_rotation = false;
     }
 
-    // Raycast Selection
-    // Only if not interacting with gizmo and not over UI
     const want_capture = c.imgui_bridge_want_capture_mouse();
     if (!state.mouse_captured and c.imgui_bridge_is_mouse_clicked(0) and !want_capture and !selection_state.is_dragging and selection_state.hover_axis == null) {
         if (get_ray_from_mouse(state)) |ray| {
             var closest_t: f32 = std.math.floatMax(f32);
             var hit_model_id: u32 = 0;
 
-            // Iterate all models
             if (state.model_manager.models) |models| {
                 var i: u32 = 0;
                 while (i < state.model_manager.model_count) : (i += 1) {
@@ -159,7 +156,6 @@ pub fn update(state: *EditorState) void {
 
                     const scn = &model.scene;
 
-                    // Iterate root nodes to check intersection against world-transformed meshes
                     if (scn.root_nodes) |roots| {
                         var r: u32 = 0;
                         while (r < scn.root_node_count) : (r += 1) {
@@ -171,8 +167,6 @@ pub fn update(state: *EditorState) void {
                 }
             }
 
-            // Only clear selection if we clicked in the void (and not on a gizmo, which is handled above)
-            // But if we clicked and didn't hit anything, we deselect
             if (hit_model_id != 0) {
                 state.selected_model_id = hit_model_id;
             } else {
@@ -181,14 +175,13 @@ pub fn update(state: *EditorState) void {
         }
     }
 
-    // Gizmos
     if (state.selected_model_id != 0) {
         draw_gizmo(state);
     }
 }
 
+/// Draws and applies manipulation gizmos for the currently selected model.
 fn draw_gizmo(state: *EditorState) void {
-    // Find selected model
     var selected_model: ?*engine.model_manager.CardinalModelInstance = null;
     if (state.model_manager.models) |models| {
         var i: u32 = 0;
@@ -202,21 +195,18 @@ fn draw_gizmo(state: *EditorState) void {
 
     const model = selected_model orelse return;
 
-    // Decompose transform
     const transform_mat = math.Mat4.fromArray(model.transform);
     const transform_parts = transform_mat.decompose();
     const pos = transform_parts.t;
     const rot = transform_parts.r;
     const scale_vec = transform_parts.s;
 
-    // Gizmo Logic
     const view = math.Mat4.lookAt(state.camera.position, state.camera.target, state.camera.up);
     const proj = math.Mat4.perspective(math.toRadians(state.camera.fov), state.camera.aspect, state.camera.near_plane, state.camera.far_plane);
     const view_proj = proj.mul(view);
 
-    // Screen position of the model center
     const screen_pos_v4 = view_proj.mulVec4(math.Vec4{ .x = pos.x, .y = pos.y, .z = pos.z, .w = 1.0 });
-    if (screen_pos_v4.w <= 0) return; // Behind camera
+    if (screen_pos_v4.w <= 0) return;
 
     const ndc = math.Vec3{ .x = screen_pos_v4.x / screen_pos_v4.w, .y = screen_pos_v4.y / screen_pos_v4.w, .z = screen_pos_v4.z / screen_pos_v4.w };
 
@@ -440,7 +430,7 @@ fn draw_gizmo(state: *EditorState) void {
                     valid_start = true;
                 }
             }
-            
+
             if (!valid_start) {
                 // Abort drag if we can't determine start point
                 selection_state.is_dragging = false;

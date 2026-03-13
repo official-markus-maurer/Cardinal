@@ -276,7 +276,7 @@ fn configure_validation(ci: *c.VkInstanceCreateInfo, layers: [*]const [*c]const 
     settings.valueCount = 1;
     settings.pValues = &c.VK_TRUE;
 
-    // Temporarily disable layer settings to avoid validation error VK_STRUCTURE_TYPE_MICROMAP_BUILD_INFO_EXT collision
+    // TODO: Re-enable layer settings once validation collisions are resolved.
     ci.pNext = debug_ci;
 
     _ = layer_settings_ci;
@@ -284,6 +284,7 @@ fn configure_validation(ci: *c.VkInstanceCreateInfo, layers: [*]const [*c]const 
     vk_log.info("[INSTANCE] Debug messenger configured (layer settings skipped)", .{});
 }
 
+/// Creates a Vulkan instance and debug messenger when validation is enabled.
 pub export fn vk_create_instance(s: ?*types.VulkanState) callconv(.c) bool {
     vk_log.info("[INSTANCE] Starting Vulkan instance creation", .{});
     if (s == null) return false;
@@ -343,6 +344,7 @@ pub export fn vk_create_instance(s: ?*types.VulkanState) callconv(.c) bool {
     return true;
 }
 
+/// Picks a physical device using a simple scoring heuristic.
 pub export fn vk_pick_physical_device(s: ?*types.VulkanState) callconv(.c) bool {
     vk_log.info("[DEVICE] Starting physical device selection", .{});
     if (s == null) return false;
@@ -366,7 +368,6 @@ pub export fn vk_pick_physical_device(s: ?*types.VulkanState) callconv(.c) bool 
     result = c.vkEnumeratePhysicalDevices(vs.context.instance, &count, devices_ptr);
     vk_log.info("[DEVICE] Enumerate devices result: {d}", .{result});
 
-    // Score devices to find the best one
     var best_score: i32 = -1;
     var best_device: ?c.VkPhysicalDevice = null;
 
@@ -380,15 +381,12 @@ pub export fn vk_pick_physical_device(s: ?*types.VulkanState) callconv(.c) bool 
 
         var score: i32 = 0;
 
-        // Discrete GPUs have a significant performance advantage
         if (props.deviceType == c.VK_PHYSICAL_DEVICE_TYPE_DISCRETE_GPU) {
             score += 1000;
         }
 
-        // Maximum possible texture size affects graphics quality
         score += @intCast(props.limits.maxImageDimension2D);
 
-        // Application can't function without geometry shaders
         if (feats.geometryShader == 0) {
             score = 0;
         }
@@ -407,7 +405,6 @@ pub export fn vk_pick_physical_device(s: ?*types.VulkanState) callconv(.c) bool 
         c.vkGetPhysicalDeviceProperties(device, &props);
         vk_log.info("[DEVICE] Selected best device: {s}", .{std.mem.sliceTo(&props.deviceName, 0)});
     } else {
-        // Fallback to first device if no suitable device found (unlikely if count > 0)
         vs.context.physical_device = devices_ptr[0];
         vk_log.warn("[DEVICE] No suitable device found by score, falling back to first device", .{});
     }
@@ -415,6 +412,7 @@ pub export fn vk_pick_physical_device(s: ?*types.VulkanState) callconv(.c) bool 
     return vs.context.physical_device != null;
 }
 
+/// Creates the logical device, resolves queues, and initializes the renderer allocator.
 pub export fn vk_create_device(s: ?*types.VulkanState) callconv(.c) bool {
     vk_log.info("[DEVICE] Starting logical device creation", .{});
     if (s == null) return false;
@@ -443,7 +441,6 @@ pub export fn vk_create_device(s: ?*types.VulkanState) callconv(.c) bool {
     vk_log.info("[DEVICE] Selected graphics family: {d}", .{vs.context.graphics_queue_family});
 
     var prio: f32 = 1.0;
-    // Find compute queue family (prefer one different from graphics)
     vs.context.compute_queue_family = vs.context.graphics_queue_family;
     i = 0;
     while (i < qf_count) : (i += 1) {
@@ -455,7 +452,6 @@ pub export fn vk_create_device(s: ?*types.VulkanState) callconv(.c) bool {
     }
     vk_log.info("[DEVICE] Selected compute family: {d}", .{vs.context.compute_queue_family});
 
-    // Prepare queue create infos (graphics + optional compute)
     var qci_graphics = std.mem.zeroes(c.VkDeviceQueueCreateInfo);
     qci_graphics.sType = c.VK_STRUCTURE_TYPE_DEVICE_QUEUE_CREATE_INFO;
     qci_graphics.queueFamilyIndex = vs.context.graphics_queue_family;
@@ -779,7 +775,6 @@ pub export fn vk_create_device(s: ?*types.VulkanState) callconv(.c) bool {
     vs.context.supports_shader_maximal_reconvergence = shader_maximal_reconvergence_available;
     vs.context.supports_buffer_device_address = true;
 
-    // Load function pointers
     vs.context.vkCmdBeginRendering = @ptrCast(c.vkGetDeviceProcAddr(vs.context.device, "vkCmdBeginRendering"));
     vs.context.vkCmdEndRendering = @ptrCast(c.vkGetDeviceProcAddr(vs.context.device, "vkCmdEndRendering"));
     vs.context.vkCmdPipelineBarrier2 = @ptrCast(c.vkGetDeviceProcAddr(vs.context.device, "vkCmdPipelineBarrier2"));
@@ -859,8 +854,7 @@ pub export fn vk_create_surface(s: ?*types.VulkanState, win: ?*window.CardinalWi
     const native_handle = window.cardinal_window_get_native_handle(win);
     if (native_handle == null) return false;
 
-    // Hack: HWND might be an odd value (not aligned), but Zig's pointer types expect alignment.
-    // We write the handle value directly into the struct memory to bypass alignment checks.
+    // TODO: Replace the HWND write with a properly aligned window handle wrapper.
     const hwnd_ptr = @as(*usize, @ptrCast(&sci.hwnd));
     hwnd_ptr.* = @intFromPtr(native_handle);
 

@@ -1,3 +1,9 @@
+//! Vulkan frame submission and device-loss recovery.
+//!
+//! Owns the per-frame draw entrypoint used by the C API and implements device-loss recovery by
+//! tearing down and recreating device-dependent resources.
+//!
+//! TODO: Split device-loss recovery into a dedicated module.
 const std = @import("std");
 const log = @import("../core/log.zig");
 const tracy = @import("../core/tracy.zig");
@@ -23,23 +29,23 @@ const vk_texture_utils = @import("util/vulkan_texture_utils.zig");
 const vk_allocator = @import("vulkan_allocator.zig");
 const window = @import("../core/window.zig");
 
-// Helper to get time in ms
+/// Returns a wall-clock-ish timestamp in milliseconds using GLFW.
 fn cardinal_now_ms() u64 {
     return @intFromFloat(c.glfwGetTime() * 1000.0);
 }
 
-// Helper to cast opaque pointer to VulkanState
+/// Casts an opaque renderer handle into the backing `VulkanState`.
 fn get_state(renderer: ?*types.CardinalRenderer) ?*types.VulkanState {
     if (renderer == null) return null;
     return @ptrCast(@alignCast(renderer.?._opaque));
 }
 
+/// Attempts to recover the renderer after a device-lost error by recreating device resources.
 fn vk_recover_from_device_loss(s: *types.VulkanState) bool {
     if (s.recovery.recovery_in_progress) {
         return false;
     }
 
-    // Check if we've exceeded maximum recovery attempts
     if (s.recovery.attempt_count >= s.recovery.max_attempts) {
         frame_log.err("[RECOVERY] Maximum device loss recovery attempts ({d}) exceeded", .{s.recovery.max_attempts});
         s.recovery.recovery_in_progress = false;
@@ -54,12 +60,10 @@ fn vk_recover_from_device_loss(s: *types.VulkanState) bool {
 
     frame_log.warn("[RECOVERY] Attempting device loss recovery (attempt {d}/{d})", .{ s.recovery.attempt_count, s.recovery.max_attempts });
 
-    // Notify application of device loss
     if (s.recovery.device_loss_callback) |callback| {
         callback(s.recovery.callback_user_data);
     }
 
-    // Validate device state before attempting recovery
     var device_status: c.VkResult = c.VK_SUCCESS;
     if (s.context.device != null) {
         device_status = c.vkDeviceWaitIdle(s.context.device);
@@ -72,20 +76,15 @@ fn vk_recover_from_device_loss(s: *types.VulkanState) bool {
         }
     }
 
-    // Store original state for potential rollback
     const stored_scene = s.current_scene;
 
-    // Step 1: Destroy all device-dependent resources in reverse order
-    // Destroy scene buffers first (they might rely on sync objects)
     vk_renderer.destroy_scene_buffers(s);
 
-    // Destroy pipelines
     if (s.pipelines.use_pbr_pipeline) {
         vk_pbr.vk_pbr_pipeline_destroy(&s.pipelines.pbr_pipeline, s.context.device, &s.allocator);
         s.pipelines.use_pbr_pipeline = false;
     }
     if (s.pipelines.use_mesh_shader_pipeline) {
-        // Wait for all GPU operations to complete before destroying mesh shader pipeline
         if (s.context.device != null) {
             _ = c.vkDeviceWaitIdle(s.context.device);
         }
@@ -96,53 +95,43 @@ fn vk_recover_from_device_loss(s: *types.VulkanState) bool {
     vk_post_process.vk_post_process_destroy(s);
     vk_pipeline.vk_destroy_pipeline(s);
 
-    // Destroy command buffers and synchronization objects
     vk_commands.vk_destroy_commands_sync(@ptrCast(s));
 
-    // Destroy swapchain
     vk_swapchain.vk_destroy_swapchain(s);
 
-    // Step 2: Recreate all resources with validation at each step
     var success = true;
     var failure_point: ?[]const u8 = null;
 
-    // Recreate device (this also recreates the logical device)
     if (!vk_instance.vk_create_device(@ptrCast(s))) {
         failure_point = "device";
         success = false;
     }
 
-    // Recreate swapchain
     if (success and !vk_swapchain.vk_create_swapchain(s)) {
         failure_point = "swapchain";
         success = false;
     }
 
-    // Recreate pipeline
     if (success and !vk_pipeline.vk_create_pipeline(s)) {
         failure_point = "pipeline";
         success = false;
     }
 
-    // Recreate commands and sync objects
     if (success and !vk_commands.vk_create_commands_sync(@ptrCast(s))) {
         failure_point = "commands sync";
         success = false;
     }
 
-    // Recreate simple pipelines
     if (success and !vk_simple_pipelines.vk_create_simple_pipelines(s, null)) {
         failure_point = "simple pipelines";
         success = false;
     }
 
-    // Recreate post process pipeline
     if (success and !vk_post_process.vk_post_process_init(s)) {
         failure_point = "post process pipeline";
         success = false;
     }
 
-    // Recreate PBR pipeline if it was enabled
     if (success and stored_scene != null) {
         if (!vk_pbr.vk_pbr_pipeline_create(&s.pipelines.pbr_pipeline, s.context.device, s.context.physical_device, s.swapchain.format, s.swapchain.depth_format, s.commands.pools.?[0], s.context.graphics_queue, &s.allocator, s, s.pipelines.pipeline_cache)) {
             failure_point = "PBR pipeline";
@@ -150,7 +139,6 @@ fn vk_recover_from_device_loss(s: *types.VulkanState) bool {
         } else {
             s.pipelines.use_pbr_pipeline = true;
 
-            // Reload scene into PBR pipeline
             if (!vk_pbr.vk_pbr_load_scene(&s.pipelines.pbr_pipeline, s.context.device, s.context.physical_device, s.commands.pools.?[0], s.context.graphics_queue, stored_scene, &s.allocator, s)) {
                 failure_point = "PBR scene reload";
                 success = false;
@@ -158,7 +146,6 @@ fn vk_recover_from_device_loss(s: *types.VulkanState) bool {
         }
     }
 
-    // Recreate mesh shader pipeline if it was enabled and supported
     if (success and s.context.supports_mesh_shader) {
         var config = std.mem.zeroes(types.MeshShaderPipelineConfig);
         var shaders_dir: []const u8 = std.mem.span(@as([*:0]const u8, @ptrCast(&s.config.shader_dir)));
@@ -206,13 +193,11 @@ fn vk_recover_from_device_loss(s: *types.VulkanState) bool {
         }
     }
 
-    // Recreate command buffers and synchronization
     if (success and !vk_commands.vk_create_commands_sync(s)) {
         failure_point = "commands and synchronization";
         success = false;
     }
 
-    // Recreate scene buffers if scene exists
     if (success and stored_scene != null) {
         s.current_scene = stored_scene;
     }
@@ -227,7 +212,6 @@ fn vk_recover_from_device_loss(s: *types.VulkanState) bool {
 
     s.recovery.recovery_in_progress = false;
 
-    // Notify application of recovery completion
     if (s.recovery.recovery_complete_callback) |callback| {
         callback(s.recovery.callback_user_data, success);
     }
@@ -255,7 +239,6 @@ fn check_render_feasibility(s: *types.VulkanState) bool {
 }
 
 fn handle_pending_recreation(renderer: ?*types.CardinalRenderer, s: *types.VulkanState) bool {
-    // Check device loss first
     if (s.recovery.device_lost) {
         if (s.recovery.attempt_count < s.recovery.max_attempts) {
             _ = vk_recover_from_device_loss(s);
@@ -318,7 +301,6 @@ fn wait_for_fence(s: *types.VulkanState) bool {
             return false;
         }
 
-        // Update max frames in case it was 0
         s.sync.max_frames_in_flight = max_frames;
     }
 
@@ -406,10 +388,8 @@ fn render_frame_headless(s: *types.VulkanState, signal_value: u64) void {
 
     var fence = s.sync.in_flight_fences.?[s.sync.current_frame];
 
-    // Check if vkQueueSubmit2 is available via function pointer
     var res: c.VkResult = c.VK_SUCCESS;
 
-    // Use synchronized submit
     res = vk_sync_manager.vulkan_sync_manager_submit_queue2(s.context.graphics_queue, 1, @ptrCast(&si), fence, s.context.vkQueueSubmit2);
 
     if (res == c.VK_SUCCESS) {
@@ -463,7 +443,7 @@ fn submit_command_buffer(s: *types.VulkanState, cmd: c.VkCommandBuffer, acquire_
         .pNext = null,
         .semaphore = s.sync.timeline_semaphore,
         .value = if (wait_timeline_value) |v| v else 0,
-        .stageMask = c.VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT, // Wait for all commands (transfers)
+        .stageMask = c.VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT,
         .deviceIndex = 0,
     };
 
@@ -503,10 +483,8 @@ fn submit_command_buffer(s: *types.VulkanState, cmd: c.VkCommandBuffer, acquire_
         .pSignalSemaphoreInfos = &signal_infos[0],
     };
 
-    // Check if vkQueueSubmit2 is available via function pointer
     var res: c.VkResult = c.VK_SUCCESS;
 
-    // Use synchronized submit
     res = vk_sync_manager.vulkan_sync_manager_submit_queue2(s.context.graphics_queue, 1, @ptrCast(&submit_info), s.sync.in_flight_fences.?[s.sync.current_frame], s.context.vkQueueSubmit2);
 
     if (res == c.VK_ERROR_DEVICE_LOST) {
@@ -647,29 +625,19 @@ pub export fn cardinal_renderer_draw_frame(renderer: ?*types.CardinalRenderer) c
         return;
     }
 
-    // Clean up resources from the previous execution of this frame slot
     vk_mesh_shader.vk_mesh_shader_process_pending_cleanup(s);
     vk_texture_utils.process_staging_buffer_cleanups(@ptrCast(s.sync_manager), @ptrCast(&s.allocator));
 
-    // Update textures (async load completion)
-    if (s.pipelines.use_pbr_pipeline and s.pipelines.pbr_pipeline.textureManager != null) {
-        // Redundant update for testing performance impact was removed
-    }
-
-    // Update skybox (async load completion)
     if (s.pipelines.use_skybox_pipeline) {
         const vk_skybox = @import("vulkan_skybox.zig");
         vk_skybox.vk_skybox_update(&s.pipelines.skybox_pipeline, s.context.device, &s.allocator, s.commands.pools.?[0], s.context.graphics_queue, s.sync_manager);
     }
 
-    // Prepare mesh shader rendering
     if (s.current_rendering_mode == .MESH_SHADER) {
         vk_commands.vk_prepare_mesh_shader_rendering(@ptrCast(s));
     }
 
-    // Update PBR Uniforms (UBO + Lights)
     if (s.pipelines.use_pbr_pipeline) {
-        // Ensure lighting is uploaded every frame
         vk_pbr.vk_pbr_update_uniforms(@ptrCast(&s.pipelines.pbr_pipeline), @ptrCast(&s.pipelines.pbr_pipeline.current_ubo), @ptrCast(&s.pipelines.pbr_pipeline.current_lighting), s.sync.current_frame);
     }
 
@@ -689,9 +657,7 @@ pub export fn cardinal_renderer_draw_frame(renderer: ?*types.CardinalRenderer) c
     if (!acquire_next_image(s, &image_index))
         return;
 
-    // Update textures (process async uploads)
-    // This MUST happen before we reserve the timeline value for the frame signal,
-    // because update_textures might submit its own command buffer and advance the timeline.
+    // TODO: Make per-frame timeline reservation explicit to avoid ordering constraints.
     var texture_upload_signal: ?u64 = null;
     if (s.pipelines.use_pbr_pipeline and s.pipelines.pbr_pipeline.textureManager != null) {
         texture_upload_signal = vk_texture_manager.vk_texture_manager_update_textures(s.pipelines.pbr_pipeline.textureManager.?);

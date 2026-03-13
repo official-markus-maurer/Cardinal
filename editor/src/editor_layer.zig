@@ -1,3 +1,8 @@
+//! Editor layer.
+//!
+//! Owns editor state, panels, and per-frame UI orchestration on top of the engine runtime.
+//!
+//! TODO: Split this file into smaller panel/system coordinators to reduce rebuild time.
 const std = @import("std");
 const engine = @import("cardinal_engine");
 const math = engine.math;
@@ -31,7 +36,7 @@ const project_manager = @import("panels/project_manager.zig");
 
 const c = @import("c.zig").c;
 
-// Global allocator for editor state
+/// Global allocator for editor-owned state.
 const allocator = engine.memory.cardinal_get_allocator_for_category(.ENGINE).as_allocator();
 
 var state: EditorState = undefined;

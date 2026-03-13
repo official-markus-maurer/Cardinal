@@ -1,3 +1,9 @@
+//! Content browser panel (asset scanning and file actions).
+//!
+//! Provides directory scanning, filtering, and simple actions like loading scenes and setting
+//! a skybox texture.
+//!
+//! TODO: Cache directory scan results and update incrementally.
 const std = @import("std");
 const engine = @import("cardinal_engine");
 const log = engine.log;
@@ -10,6 +16,7 @@ const EditorState = editor_state_module.EditorState;
 const LoadingTaskInfo = editor_state_module.LoadingTaskInfo;
 const AssetState = editor_state_module.AssetState;
 
+/// Returns the inferred asset type based on file extension.
 fn get_asset_type(path: []const u8) AssetState.AssetType {
     const ext = std.fs.path.extension(path);
     if (std.mem.eql(u8, ext, ".gltf")) return .GLTF;
@@ -24,23 +31,20 @@ fn get_asset_type(path: []const u8) AssetState.AssetType {
     return .OTHER;
 }
 
+/// Loads an HDR/EXR texture and sets it as the renderer skybox.
 fn load_skybox(state: *EditorState, allocator: std.mem.Allocator, path: []const u8) void {
-    // Check extension to ensure it's a skybox candidate
     const ext = std.fs.path.extension(path);
     if (!std.mem.eql(u8, ext, ".hdr") and !std.mem.eql(u8, ext, ".exr")) return;
 
     _ = std.fmt.bufPrintZ(&state.status_msg, "Loading skybox: {s}...", .{path}) catch {};
 
-    // Clean up previous path if any
     if (state.skybox_path) |p| {
         allocator.free(p);
         state.skybox_path = null;
     }
 
-    // Store path
     state.skybox_path = allocator.dupeZ(u8, path) catch return;
 
-    // Set skybox directly (async internally)
     const ptr_path: ?[*:0]const u8 = if (state.skybox_path) |p| p.ptr else null;
     if (vulkan_renderer.cardinal_renderer_set_skybox(state.renderer, ptr_path)) {
         _ = std.fmt.bufPrintZ(&state.status_msg, "Skybox set to: {s}", .{path}) catch {};
@@ -49,10 +53,10 @@ fn load_skybox(state: *EditorState, allocator: std.mem.Allocator, path: []const 
     }
 }
 
+/// Scans the current assets directory, populating both raw and filtered entry lists.
 pub fn scan_assets_dir(state: *EditorState, allocator: std.mem.Allocator) void {
     log.cardinal_log_info("Scanning assets dir: {s}", .{state.assets.current_dir});
 
-    // Clear old entries
     for (state.assets.entries.items) |entry| {
         entry.deinit(allocator);
     }
@@ -65,7 +69,6 @@ pub fn scan_assets_dir(state: *EditorState, allocator: std.mem.Allocator) void {
     };
     defer dir.close();
 
-    // Add parent directory if not root
     const parent_path = std.fs.path.dirname(state.assets.current_dir);
     if (parent_path) |parent| {
         if (!std.mem.eql(u8, state.assets.current_dir, state.assets.assets_dir)) {
@@ -121,7 +124,6 @@ pub fn scan_assets_dir(state: *EditorState, allocator: std.mem.Allocator) void {
         }) catch continue;
     }
 
-    // Sort
     std.sort.block(AssetState.AssetEntry, state.assets.entries.items, {}, struct {
         fn less(_: void, lhs: AssetState.AssetEntry, rhs: AssetState.AssetEntry) bool {
             if (std.mem.eql(u8, lhs.display, "..")) return true;
@@ -131,7 +133,6 @@ pub fn scan_assets_dir(state: *EditorState, allocator: std.mem.Allocator) void {
         }
     }.less);
 
-    // Filter
     const filter_text = std.mem.span(@as([*:0]const u8, @ptrCast(state.assets.search_filter.ptr)));
 
     for (state.assets.entries.items) |entry| {
@@ -147,6 +148,7 @@ pub fn scan_assets_dir(state: *EditorState, allocator: std.mem.Allocator) void {
     }
 }
 
+/// Starts loading a scene file and tracks it in the editor loading list.
 pub fn load_scene(state: *EditorState, allocator: std.mem.Allocator, path: []const u8) void {
     state.is_loading = true;
     _ = std.fmt.bufPrintZ(&state.status_msg, "Loading scene: {s}...", .{path}) catch {};
@@ -190,8 +192,6 @@ pub fn draw_asset_browser_panel(state: *EditorState, allocator: std.mem.Allocato
             if (c.imgui_bridge_begin_popup("ConfigAssets", 0)) {
                 c.imgui_bridge_text("Configure Assets Path");
 
-                // We need a temporary buffer for input text
-                // For now we'll assume the path isn't longer than 512 chars
                 var path_buf: [512]u8 = [_]u8{0} ** 512;
                 const current_path = state.config_manager.config.assets_path;
                 @memcpy(path_buf[0..current_path.len], current_path);
@@ -213,7 +213,6 @@ pub fn draw_asset_browser_panel(state: *EditorState, allocator: std.mem.Allocato
                         log.cardinal_log_error("Failed to save config: {}", .{err});
                     };
 
-                    // Update asset dir
                     allocator.free(state.assets.assets_dir);
                     allocator.free(state.assets.current_dir);
 

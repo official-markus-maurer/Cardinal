@@ -3,8 +3,6 @@
 //! Provides a small set of allocators (dynamic/linear/arena) and per-category tracked allocators
 //! used throughout the engine. The exported C-ABI functions are the stable interface; Zig code
 //! typically uses `CardinalAllocator.as_allocator()` to get a `std.mem.Allocator`.
-//!
-//! TODO: Make category counts/types self-consistent (avoid hard-coded `12` category slots).
 const std = @import("std");
 const builtin = @import("builtin");
 const platform = @import("platform.zig");
@@ -17,6 +15,9 @@ const c = @cImport({
 
 /// Memory allocation categories (C-ABI compatible).
 pub const CardinalMemoryCategory = enum(c_int) { UNKNOWN = 0, ENGINE, RENDERER, VULKAN_BUFFERS, VULKAN_DEVICE, TEXTURES, MESHES, ASSETS, SHADERS, WINDOW, LOGGING, TEMPORARY, MAX };
+
+/// Number of category slots tracked by `CardinalGlobalMemoryStats` and category allocators.
+pub const CATEGORY_SLOT_COUNT: usize = @as(usize, @intCast(@intFromEnum(CardinalMemoryCategory.MAX)));
 
 /// Allocator kinds supported by the C-facing memory system.
 pub const CardinalAllocatorType = enum(c_int) { DYNAMIC = 0, LINEAR = 1, TRACKED = 2, ARENA = 3 };
@@ -45,7 +46,7 @@ pub const CardinalMemoryStats = extern struct {
 
 pub const CardinalGlobalMemoryStats = extern struct {
     /// Per-category memory statistics.
-    categories: [12]CardinalMemoryStats,
+    categories: [CATEGORY_SLOT_COUNT]CardinalMemoryStats,
     total: CardinalMemoryStats,
 };
 
@@ -88,24 +89,17 @@ pub const CardinalAllocator = extern struct {
 
         switch (self.type) {
             .DYNAMIC => {
-                // Try platform expand for unaligned allocations (malloc based)
                 const max_align = @alignOf(c_longdouble);
                 if (alignment <= max_align) {
-                    // Check if it was aligned-allocated (which we can't _expand)
-                    // We can check our tracking info
                     if (find_alloc(buf.ptr)) |info| {
-                        if (info.is_aligned) return false; // aligned_alloc used
+                        if (info.is_aligned) return false;
 
-                        // Try expand
                         if (platform.expand(buf.ptr, new_len)) |_| {
-                            // Success! Update tracking
-                            // We need to update size in map.
-                            // We can't easily modify map value in place without lock, so use untrack/track
+                            // TODO: Update allocation size in-place instead of untrack/track.
                             var old_size: usize = 0;
                             var is_aligned: bool = false;
                             if (untrack_alloc(buf.ptr, &old_size, &is_aligned)) {
                                 track_alloc(buf.ptr, new_len, is_aligned);
-                                // Update stats
                                 stats_on_free(self.category, old_size);
                                 stats_on_alloc(self.category, new_len);
                             }
@@ -121,15 +115,12 @@ pub const CardinalAllocator = extern struct {
                 const top = @intFromPtr(state.buffer) + state.offset;
 
                 if (buf_end == top) {
-                    // This is the last allocation, we can resize in place
                     const new_top = @intFromPtr(buf.ptr) + new_len;
-                    // Check capacity
                     if (new_top <= @intFromPtr(state.buffer) + state.capacity) {
                         state.offset = new_top - @intFromPtr(state.buffer);
                         return true;
                     }
                 } else if (new_len <= buf.len) {
-                    // Shrinking internal allocation: allowed but wastes memory
                     return true;
                 }
                 return false;
@@ -194,12 +185,12 @@ var g_initialized: bool = false;
 var g_dynamic_state: DynamicState = .{ .placeholder = 0 };
 var g_linear_state: LinearState = undefined;
 var g_arena_state: ArenaState = undefined;
-var g_tracked_state: [12]TrackedState = undefined;
+var g_tracked_state: [CATEGORY_SLOT_COUNT]TrackedState = undefined;
 
 var g_dynamic: CardinalAllocator = undefined;
 var g_linear: CardinalAllocator = undefined;
 var g_arena: CardinalAllocator = undefined;
-var g_tracked: [12]CardinalAllocator = undefined;
+var g_tracked: [CATEGORY_SLOT_COUNT]CardinalAllocator = undefined;
 
 /// Updates stats on allocation.
 fn stats_on_alloc(cat: CardinalMemoryCategory, size: usize) void {
@@ -258,7 +249,7 @@ pub export fn cardinal_memory_reset_stats() void {
     g_stats = std.mem.zeroes(CardinalGlobalMemoryStats);
 }
 
-// Allocation Tracking
+/// Internal allocation tracking map initialization.
 fn ensure_alloc_map() void {
     if (!g_alloc_map_init) {
         g_alloc_map = std.AutoHashMap(usize, AllocInfo).init(std.heap.c_allocator);
@@ -266,6 +257,9 @@ fn ensure_alloc_map() void {
     }
 }
 
+/// Tracks a live allocation for debugging and per-category statistics.
+///
+/// Stack trace capture is intentionally disabled by default for performance.
 fn track_alloc(ptr: ?*anyopaque, size: usize, is_aligned: bool) void {
     if (ptr == null) return;
 
@@ -285,16 +279,9 @@ fn track_alloc(ptr: ?*anyopaque, size: usize, is_aligned: bool) void {
     };
     @memset(&info.stack_addresses, 0);
 
-    // Capture stack trace if debug build
-    // Note: Disabled by default to prevent performance issues/freezes during high allocation traffic.
-    // Enable this only when debugging specific memory leaks.
     const enable_stack_trace = false;
     if (builtin.mode == .Debug and enable_stack_trace) {
-        // Use platform specific stack walking
         var stack: [16]?*anyopaque = undefined;
-        // Skip 0 frames (capture current), capture up to 16
-        // Note: platform implementation might not support skipping or might have different semantics
-        // but we just want *some* trace.
         const count = platform.capture_stack_back_trace(0, 16, &stack, null);
 
         if (count > 0) {
@@ -304,7 +291,6 @@ fn track_alloc(ptr: ?*anyopaque, size: usize, is_aligned: bool) void {
             }
             info.stack_depth = count;
         } else {
-            // Fallback: If stack capture failed to find anything, at least grab the immediate caller
             info.stack_addresses[0] = @returnAddress();
             info.stack_depth = 1;
         }
@@ -316,16 +302,11 @@ fn track_alloc(ptr: ?*anyopaque, size: usize, is_aligned: bool) void {
     g_active_allocs = g_alloc_map.count();
 }
 
-// Helper to resolve and print address
-// Since we don't have easy symbol resolution in Zig's std lib for bare metal/C-interop without debug info attached to the binary in a specific way,
-// we just print the address. Users can use `addr2line -e CardinalEditor.exe <addr>` to find the line.
-// However, we can try to be helpful if we are on Windows and have PDBs? No, too complex.
-// Just printing raw addresses is standard for simple leak detectors.
+/// Prints captured stack addresses in a stable format for external symbolization.
 fn print_stack_trace(addresses: []const usize, depth: usize) void {
     var i: usize = 0;
     while (i < depth) : (i += 1) {
         const addr = addresses[i];
-        // We can try to use std.debug.print to get some formatting, but we are using C printf for consistency with the rest of the file.
         _ = c.printf("      0x%zx\n", addr);
     }
 }
@@ -360,12 +341,11 @@ fn untrack_alloc(ptr: ?*anyopaque, out_size: ?*usize, out_is_aligned: ?*bool) bo
     return false;
 }
 
-// Dynamic Allocator
+/// Dynamic allocator implementation.
 fn dyn_alloc(_: *CardinalAllocator, size: usize, alignment: usize) callconv(.c) ?*anyopaque {
     var ptr: ?*anyopaque = null;
     var is_aligned = false;
 
-    // max_align_t is usually 16 bytes on 64-bit systems
     const max_align = @alignOf(c_longdouble);
 
     if (alignment > 0 and alignment > max_align) {
@@ -408,7 +388,6 @@ fn dyn_realloc(self: *CardinalAllocator, ptr: ?*anyopaque, old_size: usize, new_
                 c.free(ptr);
             }
         } else {
-            // Alloc failed, restore tracking for original pointer
             if (was_tracked) {
                 track_alloc(ptr, actual_old_size, is_aligned);
             }
@@ -418,7 +397,6 @@ fn dyn_realloc(self: *CardinalAllocator, ptr: ?*anyopaque, old_size: usize, new_
         if (new_ptr != null) {
             track_alloc(new_ptr, new_size, false);
         } else {
-            // Realloc failed, restore tracking for original pointer
             if (was_tracked) {
                 track_alloc(ptr, actual_old_size, is_aligned);
             }
@@ -442,7 +420,7 @@ fn dyn_free(_: *CardinalAllocator, ptr: ?*anyopaque) callconv(.c) void {
     }
 }
 
-// Linear Allocator
+/// Linear bump allocator implementation.
 fn lin_alloc(self: *CardinalAllocator, size: usize, alignment: usize) callconv(.c) ?*anyopaque {
     const st: *LinearState = @ptrCast(@alignCast(self.state));
     const current = st.offset;
@@ -470,18 +448,15 @@ fn lin_realloc(self: *CardinalAllocator, ptr: ?*anyopaque, old_size: usize, new_
     return n;
 }
 
-fn lin_free(_: *CardinalAllocator, _: ?*anyopaque) callconv(.c) void {
-    // no-op
-}
+fn lin_free(_: *CardinalAllocator, _: ?*anyopaque) callconv(.c) void {}
 
 fn lin_reset(self: *CardinalAllocator) callconv(.c) void {
     const st: *LinearState = @ptrCast(@alignCast(self.state));
     st.offset = 0;
 }
 
-// Arena Allocator Implementation
+/// Arena allocator implementation.
 fn arena_create_block(backing: *CardinalAllocator, capacity: usize) ?*ArenaBlock {
-    // Layout: [ArenaBlock header] [data ... capacity]
     const total_size = @sizeOf(ArenaBlock) + capacity;
     const ptr = backing.alloc(backing, total_size, @alignOf(ArenaBlock));
     if (ptr == null) return null;
@@ -491,13 +466,13 @@ fn arena_create_block(backing: *CardinalAllocator, capacity: usize) ?*ArenaBlock
     block.capacity = capacity;
     block.offset = 0;
 
-    // Data starts after the struct
     const ptr_int = @intFromPtr(ptr);
     block.data = @ptrFromInt(ptr_int + @sizeOf(ArenaBlock));
 
     return block;
 }
 
+/// Allocates from the current arena block, creating a new block when needed.
 fn arena_alloc(self: *CardinalAllocator, size: usize, alignment: usize) callconv(.c) ?*anyopaque {
     const st: *ArenaState = @ptrCast(@alignCast(self.state));
     const align_val = if (alignment > 0) alignment else @sizeOf(?*anyopaque);
@@ -513,21 +488,14 @@ fn arena_alloc(self: *CardinalAllocator, size: usize, alignment: usize) callconv
         }
     }
 
-    // New block needed
     const block_size = if (size > st.default_block_size) size else st.default_block_size;
     const new_block = arena_create_block(st.backing, block_size);
     if (new_block == null) return null;
 
-    // Link
     new_block.?.next = st.current_block;
     st.current_block = new_block;
 
-    // Allocate from new block (guaranteed to fit and be aligned at start)
-    // Note: arena_create_block returns aligned pointer for ArenaBlock,
-    // but data might need alignment relative to start if header is weirdly sized.
-    // However, @sizeOf(ArenaBlock) should be aligned enough.
-    // Let's re-calculate just to be safe.
-
+    // TODO: Simplify arena block alignment logic.
     const block = new_block.?;
     const ptr_int = @intFromPtr(block.data);
     const mis = ptr_int % align_val;
@@ -537,8 +505,8 @@ fn arena_alloc(self: *CardinalAllocator, size: usize, alignment: usize) callconv
     return @ptrFromInt(ptr_int + pad);
 }
 
+/// Attempts an in-place arena realloc when `ptr` is the most recent allocation.
 fn arena_realloc(self: *CardinalAllocator, ptr: ?*anyopaque, old_size: usize, new_size: usize, alignment: usize) callconv(.c) ?*anyopaque {
-    // Arenas don't support true realloc easily (in-place expansion), so we alloc-copy
     if (ptr == null) return arena_alloc(self, new_size, alignment);
 
     const st: *ArenaState = @ptrCast(@alignCast(self.state));
@@ -547,22 +515,18 @@ fn arena_realloc(self: *CardinalAllocator, ptr: ?*anyopaque, old_size: usize, ne
         const ptr_addr = @intFromPtr(ptr);
         const align_val = if (alignment > 0) alignment else @sizeOf(?*anyopaque);
 
-        // Cannot expand in place if the existing pointer doesn't satisfy the new alignment
         if (ptr_addr % align_val == 0) {
             const block_data_addr = @intFromPtr(block.data);
             const current_end = block_data_addr + block.offset;
 
-            // Check if this is the last allocation
             if (ptr_addr + old_size == current_end) {
                 if (new_size > old_size) {
-                    // Expand
                     const diff = new_size - old_size;
                     if (block.offset + diff <= block.capacity) {
                         block.offset += diff;
                         return ptr;
                     }
                 } else if (new_size < old_size) {
-                    // Shrink
                     const diff = old_size - new_size;
                     block.offset -= diff;
                     return ptr;
@@ -573,7 +537,6 @@ fn arena_realloc(self: *CardinalAllocator, ptr: ?*anyopaque, old_size: usize, ne
         }
     }
 
-    // Fallback to alloc-copy
     const new_ptr = arena_alloc(self, new_size, alignment);
     if (new_ptr != null and old_size > 0) {
         const copy_len = if (old_size < new_size) old_size else new_size;
@@ -582,10 +545,10 @@ fn arena_realloc(self: *CardinalAllocator, ptr: ?*anyopaque, old_size: usize, ne
     return new_ptr;
 }
 
-fn arena_free(_: *CardinalAllocator, _: ?*anyopaque) callconv(.c) void {
-    // No-op for individual frees
-}
+/// Individual frees are ignored; call `arena_reset` to release arena memory.
+fn arena_free(_: *CardinalAllocator, _: ?*anyopaque) callconv(.c) void {}
 
+/// Frees all arena blocks.
 fn arena_reset(self: *CardinalAllocator) callconv(.c) void {
     const st: *ArenaState = @ptrCast(@alignCast(self.state));
 
@@ -598,7 +561,7 @@ fn arena_reset(self: *CardinalAllocator) callconv(.c) void {
     st.current_block = null;
 }
 
-// Tracked Allocator
+/// Tracked allocator wrapper that updates per-category statistics.
 fn tracked_alloc(self: *CardinalAllocator, size: usize, alignment: usize) callconv(.c) ?*anyopaque {
     const ts: *TrackedState = @ptrCast(@alignCast(self.state));
     const backing = ts.backing;
@@ -659,12 +622,10 @@ fn tracked_reset(self: *CardinalAllocator) callconv(.c) void {
     }
 }
 
-// Initialization and Shutdown
 /// Initializes global allocators and per-category tracked allocators.
 pub export fn cardinal_memory_init(default_linear_capacity: usize) void {
     cardinal_memory_reset_stats();
 
-    // Dynamic
     g_dynamic = .{
         .type = .DYNAMIC,
         .name = "dynamic",
@@ -676,7 +637,6 @@ pub export fn cardinal_memory_init(default_linear_capacity: usize) void {
         .reset = null,
     };
 
-    // Linear
     const cap = if (default_linear_capacity == 0) 4 * 1024 * 1024 else default_linear_capacity;
     const lin_ptr = c.malloc(cap);
     if (lin_ptr) |p| {
@@ -699,7 +659,6 @@ pub export fn cardinal_memory_init(default_linear_capacity: usize) void {
         .reset = lin_reset,
     };
 
-    // Arena
     g_arena_state = .{
         .backing = &g_dynamic,
         .current_block = null,
@@ -716,9 +675,8 @@ pub export fn cardinal_memory_init(default_linear_capacity: usize) void {
         .reset = arena_reset,
     };
 
-    // Tracked
     var i: usize = 0;
-    while (i < 12) : (i += 1) { // 12 = CARDINAL_MEMORY_CATEGORY_MAX
+    while (i < CATEGORY_SLOT_COUNT) : (i += 1) {
         g_tracked_state[i] = .{
             .backing = &g_dynamic,
             .category = @enumFromInt(@as(c_int, @intCast(i))),
@@ -741,7 +699,6 @@ pub export fn cardinal_memory_shutdown() void {
     if (!g_initialized) return;
     g_initialized = false;
 
-    // Shutdown allocators
     arena_reset(&g_arena);
 
     if (g_linear_state.capacity > 0) {
@@ -794,7 +751,7 @@ export fn cardinal_get_arena_allocator() *CardinalAllocator {
 /// Returns the tracked allocator for a memory category (falls back to UNKNOWN).
 pub export fn cardinal_get_allocator_for_category(category: CardinalMemoryCategory) *CardinalAllocator {
     const idx = @as(usize, @intCast(@intFromEnum(category)));
-    if (idx < 0 or idx >= 12) {
+    if (idx >= CATEGORY_SLOT_COUNT) {
         return &g_tracked[@as(usize, @intCast(@intFromEnum(CardinalMemoryCategory.UNKNOWN)))];
     }
     return &g_tracked[@intCast(idx)];
@@ -825,6 +782,7 @@ pub export fn cardinal_calloc(allocator: *CardinalAllocator, count: usize, size:
     return ptr;
 }
 
+/// Creates a heap-backed linear allocator instance.
 export fn cardinal_linear_allocator_create(capacity: usize) ?*CardinalAllocator {
     if (capacity == 0) return null;
 
@@ -867,6 +825,7 @@ export fn cardinal_linear_allocator_create(capacity: usize) ?*CardinalAllocator 
     return a;
 }
 
+/// Destroys an allocator created by `cardinal_linear_allocator_create`.
 pub export fn cardinal_linear_allocator_destroy(allocator: ?*CardinalAllocator) void {
     if (allocator) |a| {
         if (a.type != .LINEAR) return;
@@ -880,12 +839,12 @@ pub export fn cardinal_linear_allocator_destroy(allocator: ?*CardinalAllocator) 
     }
 }
 
+/// Creates an arena allocator backed by `backing_allocator`.
 pub export fn cardinal_arena_create(backing_allocator: ?*CardinalAllocator, default_block_size: usize) ?*CardinalAllocator {
     if (backing_allocator == null) return null;
 
     const backing = backing_allocator.?;
 
-    // Allocate state container from backing allocator
     const state_ptr = backing.alloc(backing, @sizeOf(ArenaState), @alignOf(ArenaState));
     if (state_ptr == null) return null;
 
@@ -894,7 +853,6 @@ pub export fn cardinal_arena_create(backing_allocator: ?*CardinalAllocator, defa
     state.current_block = null;
     state.default_block_size = if (default_block_size > 0) default_block_size else 4096;
 
-    // Allocate Allocator struct
     const alloc_ptr = backing.alloc(backing, @sizeOf(CardinalAllocator), @alignOf(CardinalAllocator));
     if (alloc_ptr == null) {
         backing.free(backing, state_ptr);
@@ -905,7 +863,7 @@ pub export fn cardinal_arena_create(backing_allocator: ?*CardinalAllocator, defa
     allocator.* = .{
         .type = .ARENA,
         .name = "arena",
-        .category = .TEMPORARY, // Default category, user can change
+        .category = .TEMPORARY,
         .state = state,
         .alloc = arena_alloc,
         .realloc = arena_realloc,
@@ -916,6 +874,7 @@ pub export fn cardinal_arena_create(backing_allocator: ?*CardinalAllocator, defa
     return allocator;
 }
 
+/// Destroys an allocator created by `cardinal_arena_create`.
 pub export fn cardinal_arena_destroy(allocator: ?*CardinalAllocator) void {
     if (allocator) |a| {
         if (a.type != .ARENA) return;
@@ -923,7 +882,6 @@ pub export fn cardinal_arena_destroy(allocator: ?*CardinalAllocator) void {
         const st: *ArenaState = @ptrCast(@alignCast(a.state));
         const backing = st.backing;
 
-        // Free all blocks
         var curr = st.current_block;
         while (curr) |block| {
             const next = block.next;
@@ -931,7 +889,6 @@ pub export fn cardinal_arena_destroy(allocator: ?*CardinalAllocator) void {
             curr = next;
         }
 
-        // Free state and allocator struct
         backing.free(backing, st);
         backing.free(backing, a);
     }

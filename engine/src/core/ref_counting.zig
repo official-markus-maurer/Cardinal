@@ -137,13 +137,14 @@ fn remove_resource(identifier: ?[*:0]const u8) bool {
     return false;
 }
 
+/// Initializes the global registry.
 pub export fn cardinal_ref_counting_init(bucket_count: usize) callconv(.c) bool {
     if (g_registry_initialized) {
         ref_log.warn("Reference counting system already initialized", .{});
         return true;
     }
 
-    const count = if (bucket_count == 0) 1009 else bucket_count; // Default prime number
+    const count = if (bucket_count == 0) 1009 else bucket_count;
 
     const allocator = memory.cardinal_get_allocator_for_category(.ENGINE);
     const buckets = memory.cardinal_calloc(allocator, count, @sizeOf(?*CardinalRefCountedResource));
@@ -164,6 +165,7 @@ pub export fn cardinal_ref_counting_init(bucket_count: usize) callconv(.c) bool 
     return true;
 }
 
+/// Shuts down the registry and releases any remaining resources.
 pub export fn cardinal_ref_counting_shutdown() callconv(.c) void {
     if (!g_registry_initialized) {
         ref_log.info("Ref counting shutdown called but not initialized", .{});
@@ -177,7 +179,6 @@ pub export fn cardinal_ref_counting_shutdown() callconv(.c) void {
     const allocator = memory.cardinal_get_allocator_for_category(.ENGINE);
     var count: u32 = 0;
 
-    // Clean up all remaining resources
     var i: usize = 0;
     while (i < g_registry.bucket_count) : (i += 1) {
         var current = g_registry.buckets.?[i];
@@ -188,7 +189,6 @@ pub export fn cardinal_ref_counting_shutdown() callconv(.c) void {
             const id_str = if (curr.identifier) |id| id else "null";
             ref_log.warn("Resource '{s}' still has {d} references during shutdown", .{ id_str, @atomicLoad(u32, &curr.ref_count, .seq_cst) });
 
-            // Force cleanup
             if (curr.destructor) |destructor| {
                 if (curr.resource) |res| {
                     destructor(res);
@@ -213,6 +213,7 @@ pub export fn cardinal_ref_counting_shutdown() callconv(.c) void {
     ref_log.info("Reference counting system shutdown complete", .{});
 }
 
+/// Creates a new resource record or acquires an existing one by identifier.
 pub export fn cardinal_ref_create(identifier: ?[*:0]const u8, resource: ?*anyopaque, resource_size: usize, destructor: ?*const fn (?*anyopaque) callconv(.c) void) callconv(.c) ?*CardinalRefCountedResource {
     if (!g_registry_initialized) {
         ref_log.err("Reference counting system not initialized", .{});
@@ -227,7 +228,6 @@ pub export fn cardinal_ref_create(identifier: ?[*:0]const u8, resource: ?*anyopa
     g_registry_mutex.lock();
     defer g_registry_mutex.unlock();
 
-    // Check if resource already exists
     if (find_resource_locked(identifier)) |existing| {
         _ = @atomicRmw(u32, &existing.ref_count, .Add, 1, .seq_cst);
         ref_log.debug("Acquired existing resource '{s}', ref_count={d}", .{ identifier.?, existing.ref_count });
@@ -236,7 +236,6 @@ pub export fn cardinal_ref_create(identifier: ?[*:0]const u8, resource: ?*anyopa
 
     const allocator = memory.cardinal_get_allocator_for_category(.ENGINE);
 
-    // Create new resource
     const ref_resource_ptr = memory.cardinal_alloc(allocator, @sizeOf(CardinalRefCountedResource));
     if (ref_resource_ptr == null) {
         ref_log.err("Failed to allocate memory for reference counted resource", .{});
@@ -246,12 +245,11 @@ pub export fn cardinal_ref_create(identifier: ?[*:0]const u8, resource: ?*anyopa
 
     ref_resource.resource = resource;
     ref_resource.ref_count = 1;
-    ref_resource.weak_count = 1; // Strong ref counts as 1 weak ref
+    ref_resource.weak_count = 1;
     ref_resource.destructor = destructor;
     ref_resource.resource_size = resource_size;
     ref_resource.next = null;
 
-    // Copy identifier
     const id_len = std.mem.len(identifier.?) + 1;
     const id_ptr = memory.cardinal_alloc(allocator, id_len);
     if (id_ptr == null) {
@@ -262,11 +260,9 @@ pub export fn cardinal_ref_create(identifier: ?[*:0]const u8, resource: ?*anyopa
     ref_resource.identifier = @ptrCast(id_ptr);
     @memcpy(ref_resource.identifier.?[0..id_len], identifier.?[0..id_len]);
 
-    // Add to registry
     const hash = hash_string(identifier.?);
     const bucket_index = hash % g_registry.bucket_count;
 
-    // Insert at the beginning of the chain
     ref_resource.next = g_registry.buckets.?[bucket_index];
     g_registry.buckets.?[bucket_index] = ref_resource;
 
@@ -277,6 +273,7 @@ pub export fn cardinal_ref_create(identifier: ?[*:0]const u8, resource: ?*anyopa
     return ref_resource;
 }
 
+/// Acquires an existing resource record by identifier.
 pub export fn cardinal_ref_acquire(identifier: ?[*:0]const u8) callconv(.c) ?*CardinalRefCountedResource {
     if (!g_registry_initialized or identifier == null) {
         return null;
@@ -294,6 +291,7 @@ pub export fn cardinal_ref_acquire(identifier: ?[*:0]const u8) callconv(.c) ?*Ca
     return null;
 }
 
+/// Releases a strong reference and destroys the resource when it reaches zero.
 pub export fn cardinal_ref_release(ref_resource: ?*CardinalRefCountedResource) callconv(.c) void {
     if (ref_resource == null) {
         return;
@@ -308,13 +306,11 @@ pub export fn cardinal_ref_release(ref_resource: ?*CardinalRefCountedResource) c
     if (new_count == 0) {
         ref_log.debug("Resource '{s}' ref_count reached 0, cleaning up", .{res.identifier.?});
         if (!remove_resource(res.identifier)) {
-            // Check if it was resurrected (ref_count > 0)
             if (@atomicLoad(u32, &res.ref_count, .seq_cst) > 0) {
                 ref_log.debug("Resource '{s}' resurrected during release, skipping cleanup", .{res.identifier.?});
                 return;
             }
 
-            // If not found in registry (orphan), we must free it manually to prevent leaks
             ref_log.warn("Cleaning up orphan resource '{s}' (not in registry)", .{res.identifier.?});
 
             if (res.destructor) |destructor| {
@@ -324,7 +320,6 @@ pub export fn cardinal_ref_release(ref_resource: ?*CardinalRefCountedResource) c
             }
             res.resource = null;
 
-            // Decrement weak count
             const old_weak = @atomicRmw(u32, &res.weak_count, .Sub, 1, .seq_cst);
             if (old_weak == 1) {
                 const allocator = memory.cardinal_get_allocator_for_category(.ENGINE);
@@ -335,6 +330,7 @@ pub export fn cardinal_ref_release(ref_resource: ?*CardinalRefCountedResource) c
     }
 }
 
+/// Returns the current strong reference count for a resource record.
 pub export fn cardinal_ref_get_count(ref_resource: ?*const CardinalRefCountedResource) callconv(.c) u32 {
     if (ref_resource == null) {
         return 0;
@@ -342,6 +338,7 @@ pub export fn cardinal_ref_get_count(ref_resource: ?*const CardinalRefCountedRes
     return @atomicLoad(u32, &ref_resource.?.ref_count, .seq_cst);
 }
 
+/// Returns the total number of registered resources.
 pub export fn cardinal_ref_get_total_resources() callconv(.c) u32 {
     if (!g_registry_initialized) {
         return 0;
@@ -349,12 +346,14 @@ pub export fn cardinal_ref_get_total_resources() callconv(.c) u32 {
     return @atomicLoad(u32, &g_registry.total_resources, .seq_cst);
 }
 
+/// Returns whether a resource exists for `identifier`.
 pub export fn cardinal_ref_exists(identifier: ?[*:0]const u8) callconv(.c) bool {
     g_registry_mutex.lock();
     defer g_registry_mutex.unlock();
     return find_resource_locked(identifier) != null;
 }
 
+/// Logs the current registry contents for debugging.
 pub export fn cardinal_ref_debug_print_resources() callconv(.c) void {
     if (!g_registry_initialized) {
         std.log.info("Reference counting system not initialized", .{});
@@ -382,23 +381,25 @@ pub export fn cardinal_ref_debug_print_resources() callconv(.c) void {
     ref_log.info("=== End Debug Info ===", .{});
 }
 
+/// Adds one weak reference to a resource record.
 pub export fn cardinal_weak_ref_acquire(ref_resource: ?*CardinalRefCountedResource) callconv(.c) void {
     if (ref_resource == null) return;
     _ = @atomicRmw(u32, &ref_resource.?.weak_count, .Add, 1, .seq_cst);
 }
 
+/// Releases one weak reference and frees the record when both counts reach zero.
 pub export fn cardinal_weak_ref_release(ref_resource: ?*CardinalRefCountedResource) callconv(.c) void {
     if (ref_resource == null) return;
     const res = ref_resource.?;
     const old_weak = @atomicRmw(u32, &res.weak_count, .Sub, 1, .seq_cst);
     if (old_weak == 1) {
-        // We were the last one holding the block (and strong refs are gone)
         const allocator = memory.cardinal_get_allocator_for_category(.ENGINE);
         memory.cardinal_free(allocator, res.identifier);
         memory.cardinal_free(allocator, res);
     }
 }
 
+/// Promotes a weak reference to a strong one when the resource is still alive.
 pub export fn cardinal_weak_ref_lock(ref_resource: ?*CardinalRefCountedResource) callconv(.c) ?*CardinalRefCountedResource {
     if (ref_resource == null) return null;
     const res = ref_resource.?;
@@ -407,9 +408,8 @@ pub export fn cardinal_weak_ref_lock(ref_resource: ?*CardinalRefCountedResource)
     while (count > 0) {
         const old = @cmpxchgWeak(u32, &res.ref_count, count, count + 1, .seq_cst, .seq_cst);
         if (old) |val| {
-            count = val; // Retry with new value
+            count = val;
         } else {
-            // Success
             return res;
         }
     }

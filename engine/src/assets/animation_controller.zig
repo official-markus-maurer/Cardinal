@@ -44,14 +44,18 @@ pub const AnimNodeType = enum(c_int) {
 /// Animation graph node (clip or blend).
 pub const AnimNode = extern struct {
     type: AnimNodeType,
-    // Clip
+    /// Hashed animation name for `Clip` nodes.
     animation_name_hash: u32,
+    /// Whether the clip loops.
     loop: bool,
+    /// Playback speed multiplier applied to controller time.
     speed: f32,
-    // Blend
+    /// Hashed parameter name for `Blend1D` nodes.
     param_hash: u32,
+    /// Number of children in `children`/`thresholds`.
     child_count: u32,
     children: ?[*]AnimNode,
+    /// Threshold values for `Blend1D` blending.
     thresholds: ?[*]f32,
 };
 
@@ -76,21 +80,22 @@ const MAX_PARAMS = 32;
 pub const AnimController = extern struct {
     definition: ?*const AnimStateMachineDef,
     system: ?*animation.CardinalAnimationSystem,
-    
+
+    /// Current state index into `definition.states`.
     current_state_index: u32,
-    
-    // Transition logic
+
+    /// True when blending between `current_state_index` and `next_state_index`.
     is_transitioning: bool,
     next_state_index: u32,
     transition_time: f32,
     transition_duration: f32,
-    
-    // Parameters
+
+    /// Parameter storage (hashed names + float values).
     param_hashes: [MAX_PARAMS]u32,
     param_values: [MAX_PARAMS]f32,
     param_count: u32,
-    
-    // State time
+
+    /// State-local time used for sampling.
     current_state_time: f32,
     next_state_time: f32,
 };
@@ -124,16 +129,15 @@ fn find_animation_index(system: *animation.CardinalAnimationSystem, name_hash: u
 /// Allocates a controller for `def` and binds it to an animation system.
 pub export fn cardinal_anim_controller_create(def: ?*const AnimStateMachineDef, system: ?*animation.CardinalAnimationSystem) callconv(.c) ?*AnimController {
     if (def == null or system == null) return null;
-    
+
     const allocator = memory.cardinal_get_allocator_for_category(.ENGINE);
     const ptr = memory.cardinal_calloc(allocator, 1, @sizeOf(AnimController));
     if (ptr == null) return null;
-    
+
     const controller: *AnimController = @ptrCast(@alignCast(ptr));
     controller.definition = def;
     controller.system = system;
-    
-    // Find start state
+
     var i: u32 = 0;
     while (i < def.?.state_count) : (i += 1) {
         if (def.?.states.?[i].name_hash == def.?.start_state_hash) {
@@ -141,7 +145,7 @@ pub export fn cardinal_anim_controller_create(def: ?*const AnimStateMachineDef, 
             break;
         }
     }
-    
+
     return controller;
 }
 
@@ -158,7 +162,7 @@ pub export fn cardinal_anim_controller_set_param(controller: ?*AnimController, n
     const ctrl = controller.?;
     const len = c.strlen(name);
     const hash = hash_string(name.?[0..len]);
-    
+
     var i: u32 = 0;
     while (i < ctrl.param_count) : (i += 1) {
         if (ctrl.param_hashes[i] == hash) {
@@ -166,7 +170,7 @@ pub export fn cardinal_anim_controller_set_param(controller: ?*AnimController, n
             return;
         }
     }
-    
+
     if (ctrl.param_count < MAX_PARAMS) {
         ctrl.param_hashes[ctrl.param_count] = hash;
         ctrl.param_values[ctrl.param_count] = value;
@@ -186,7 +190,7 @@ fn get_param_value(ctrl: *AnimController, hash: u32) f32 {
 
 fn evaluate_node(ctrl: *AnimController, node: *const AnimNode, time: f32, weight: f32) void {
     if (weight <= 0.001) return;
-    
+
     switch (node.type) {
         .Clip => {
             const anim_idx = find_animation_index(ctrl.system.?, node.animation_name_hash);
@@ -213,7 +217,6 @@ fn evaluate_node(ctrl: *AnimController, node: *const AnimNode, time: f32, weight
                 }
 
                 if (found_state) |state| {
-                    // Force time (sync) and disable auto-advance
                     const anim = &ctrl.system.?.animations.?[idx];
                     if (anim.duration > 0) {
                         var t = time * node.speed;
@@ -224,68 +227,63 @@ fn evaluate_node(ctrl: *AnimController, node: *const AnimNode, time: f32, weight
                         }
                         state.current_time = t;
                     }
-                    
+
                     state.blend_weight = weight;
                     state.is_playing = true;
-                    state.playback_speed = 0.0; // Controller drives the time
+                    state.playback_speed = 0.0;
                 }
             }
         },
         .Blend1D => {
             if (node.child_count == 0) return;
             const param_val = get_param_value(ctrl, node.param_hash);
-            
-            // Find children to blend
-            // Simple linear blend between two closest thresholds
+
+            // TODO: Validate/sort `thresholds` at load time for Blend1D nodes.
             var idx_a: u32 = 0;
             var idx_b: u32 = 0;
             var t: f32 = 0.0;
-            
+
             if (node.child_count == 1) {
                 evaluate_node(ctrl, &node.children.?[0], time, weight);
                 return;
             }
-            
-            // Find interval
-            // Assume sorted thresholds?
-            // If not, we should sort or search. Assume sorted for now.
-            
+
             if (param_val <= node.thresholds.?[0]) {
                 evaluate_node(ctrl, &node.children.?[0], time, weight);
                 return;
             }
-            
+
             if (param_val >= node.thresholds.?[node.child_count - 1]) {
                 evaluate_node(ctrl, &node.children.?[node.child_count - 1], time, weight);
                 return;
             }
-            
+
             var i: u32 = 0;
             while (i < node.child_count - 1) : (i += 1) {
                 const t1 = node.thresholds.?[i];
-                const t2 = node.thresholds.?[i+1];
+                const t2 = node.thresholds.?[i + 1];
                 if (param_val >= t1 and param_val <= t2) {
                     idx_a = i;
-                    idx_b = i+1;
+                    idx_b = i + 1;
                     if (t2 - t1 > 0.0001) {
                         t = (param_val - t1) / (t2 - t1);
                     }
                     break;
                 }
             }
-            
+
             evaluate_node(ctrl, &node.children.?[idx_a], time, weight * (1.0 - t));
             evaluate_node(ctrl, &node.children.?[idx_b], time, weight * t);
-        }
+        },
     }
 }
 
+/// Advances controller time, resolves transitions, and updates animation blend weights.
 pub export fn cardinal_anim_controller_update(controller: ?*AnimController, delta_time: f32) callconv(.c) void {
     if (controller == null) return;
     const ctrl = controller.?;
     const def = ctrl.definition.?;
-    
-    // Reset all states weight to 0
+
     if (ctrl.system) |sys| {
         var i: u32 = 0;
         while (i < sys.state_count) : (i += 1) {
@@ -293,35 +291,32 @@ pub export fn cardinal_anim_controller_update(controller: ?*AnimController, delt
         }
     }
 
-    // Check transitions
     if (!ctrl.is_transitioning) {
         const current_state = &def.states.?[ctrl.current_state_index];
         var i: u32 = 0;
         while (i < current_state.transition_count) : (i += 1) {
             const trans = &current_state.transitions.?[i];
-            
-            // Check conditions
+
             var all_met = true;
             var c_idx: u32 = 0;
             while (c_idx < trans.condition_count) : (c_idx += 1) {
                 const cond = &trans.conditions.?[c_idx];
                 const val = get_param_value(ctrl, cond.param_hash);
-                
+
                 const met = switch (cond.operator) {
                     .Greater => val > cond.threshold,
                     .Less => val < cond.threshold,
                     .Equal => @abs(val - cond.threshold) < 0.001,
                     .NotEqual => @abs(val - cond.threshold) >= 0.001,
                 };
-                
+
                 if (!met) {
                     all_met = false;
                     break;
                 }
             }
-            
+
             if (all_met) {
-                // Find next state index
                 var next_idx: u32 = 0;
                 while (next_idx < def.state_count) : (next_idx += 1) {
                     if (def.states.?[next_idx].name_hash == trans.target_state_hash) {
@@ -337,33 +332,29 @@ pub export fn cardinal_anim_controller_update(controller: ?*AnimController, delt
             }
         }
     }
-    
-    // Update State Logic
+
     ctrl.current_state_time += delta_time;
     if (ctrl.is_transitioning) {
         ctrl.next_state_time += delta_time;
         ctrl.transition_time += delta_time;
-        
+
         var t: f32 = 1.0;
         if (ctrl.transition_duration > 0) {
             t = ctrl.transition_time / ctrl.transition_duration;
         }
-        
+
         if (t >= 1.0) {
-            // Finish transition
             ctrl.current_state_index = ctrl.next_state_index;
             ctrl.current_state_time = ctrl.next_state_time;
             ctrl.is_transitioning = false;
-            
-            // Evaluate new current only
+
             if (def.states.?[ctrl.current_state_index].root_node) |node| {
                 evaluate_node(ctrl, node, ctrl.current_state_time, 1.0);
             }
         } else {
-            // Blend
             const w_next = t;
             const w_curr = 1.0 - t;
-            
+
             if (def.states.?[ctrl.current_state_index].root_node) |node| {
                 evaluate_node(ctrl, node, ctrl.current_state_time, w_curr);
             }
@@ -372,7 +363,6 @@ pub export fn cardinal_anim_controller_update(controller: ?*AnimController, delt
             }
         }
     } else {
-        // Just current state
         if (def.states.?[ctrl.current_state_index].root_node) |node| {
             evaluate_node(ctrl, node, ctrl.current_state_time, 1.0);
         }

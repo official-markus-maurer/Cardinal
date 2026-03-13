@@ -1,3 +1,9 @@
+//! Scene import/export helpers for the editor.
+//!
+//! Bridges engine scene graphs (loaded from files) into the editor ECS and provides basic save/load
+//! entrypoints for the editor UI.
+//!
+//! TODO: Split import/export and async-model-loading into separate modules.
 const std = @import("std");
 const engine = @import("cardinal_engine");
 const log = engine.log;
@@ -7,34 +13,31 @@ const math = engine.math;
 const components = engine.ecs_components;
 const async_loader = engine.async_loader;
 
+/// Imports the currently loaded `state.combined_scene` into the ECS registry.
 pub fn import_scene_graph(state: *EditorState) void {
     const scene = &state.combined_scene;
     if (scene.all_nodes == null or scene.all_node_count == 0) return;
 
     log.cardinal_log_info("[SCENE_IO] Importing {d} nodes to ECS...", .{scene.all_node_count});
 
-    // Map from scene node index to Entity ID
     var node_to_entity = state.arena_allocator.alloc(u64, scene.all_node_count) catch return;
     @memset(node_to_entity, std.math.maxInt(u64));
 
     var i: u32 = 0;
     while (i < scene.all_node_count) : (i += 1) {
         if (scene.all_nodes.?[i]) |node| {
-            // Create Entity
             const entity = state.registry.create() catch |err| {
                 log.cardinal_log_error("Failed to create entity: {}", .{err});
                 continue;
             };
             node_to_entity[i] = entity.id;
 
-            // Name
             if (node.name) |name| {
                 const name_comp = components.Name.init(std.mem.span(name));
                 state.registry.add(entity, name_comp) catch {};
             }
             state.registry.add(entity, components.Node{ .type = .Node3D }) catch {};
 
-            // Transform
             var transform = components.Transform{};
             const m = math.Mat4.fromArray(node.world_transform);
             const decomposed = m.decompose();
@@ -44,7 +47,6 @@ pub fn import_scene_graph(state: *EditorState) void {
 
             state.registry.add(entity, transform) catch {};
 
-            // MeshRenderer
             if (node.mesh_count > 0 and node.mesh_indices != null) {
                 var m_idx: u32 = 0;
                 while (m_idx < node.mesh_count) : (m_idx += 1) {
@@ -75,7 +77,6 @@ pub fn import_scene_graph(state: *EditorState) void {
                 }
             }
 
-            // Light
             if (node.light_index >= 0) {
                 if (scene.lights) |lights| {
                     if (@as(u32, @intCast(node.light_index)) < scene.light_count) {
@@ -102,7 +103,7 @@ pub fn import_scene_graph(state: *EditorState) void {
         }
     }
 
-    // Second pass: Build Hierarchy
+    // TODO: Avoid O(N^2) fallback search by building a pointer->index map.
     i = 0;
     while (i < scene.all_node_count) : (i += 1) {
         if (scene.all_nodes.?[i]) |node| {
@@ -113,7 +114,6 @@ pub fn import_scene_graph(state: *EditorState) void {
             if (node.parent_index >= 0) {
                 parent_idx = @intCast(node.parent_index);
             } else if (node.parent) |parent| {
-                // Fallback search (slow, O(N))
                 var k: u32 = 0;
                 while (k < scene.all_node_count) : (k += 1) {
                     if (scene.all_nodes.?[k] == parent) {
@@ -127,29 +127,23 @@ pub fn import_scene_graph(state: *EditorState) void {
                 const parent_id = node_to_entity[parent_idx];
                 if (parent_id != std.math.maxInt(u64)) {
                     const parent_entity = engine.ecs_entity.Entity{ .id = parent_id };
-                    // Add Hierarchy component
                     var hierarchy = if (state.registry.get(components.Hierarchy, entity)) |h| h.* else components.Hierarchy{};
                     hierarchy.parent = parent_entity;
                     state.registry.add(entity, hierarchy) catch {};
 
-                    // Update parent's hierarchy
                     var parent_hierarchy = if (state.registry.get(components.Hierarchy, parent_entity)) |h| h.* else components.Hierarchy{};
 
-                    // Link as child
                     if (parent_hierarchy.first_child) |first_child_entity| {
-                        // Find last child
                         var curr_entity = first_child_entity;
                         while (true) {
                             if (state.registry.get(components.Hierarchy, curr_entity)) |h| {
                                 if (h.next_sibling) |next| {
                                     curr_entity = next;
                                 } else {
-                                    // Link new entity as next sibling of last child
                                     var last_h = h.*;
                                     last_h.next_sibling = entity;
                                     state.registry.add(curr_entity, last_h) catch {};
 
-                                    // Set prev sibling of new entity
                                     hierarchy.prev_sibling = curr_entity;
                                     state.registry.add(entity, hierarchy) catch {};
                                     break;
@@ -159,7 +153,6 @@ pub fn import_scene_graph(state: *EditorState) void {
                             }
                         }
                     } else {
-                        // First child
                         parent_hierarchy.first_child = entity;
                     }
 
@@ -173,8 +166,8 @@ pub fn import_scene_graph(state: *EditorState) void {
     log.cardinal_log_info("[SCENE_IO] Imported {d} nodes to ECS.", .{scene.all_node_count});
 }
 
+/// Serializes the current ECS registry and model manager to a scene file.
 pub fn save_scene(state: *EditorState, allocator: std.mem.Allocator, path: []const u8) void {
-    // Ensure directory exists if path contains directory separators
     if (std.fs.path.dirname(path)) |dir| {
         std.fs.cwd().makePath(dir) catch {};
     }
@@ -211,16 +204,15 @@ pub fn save_scene(state: *EditorState, allocator: std.mem.Allocator, path: []con
     _ = std.fmt.bufPrintZ(&state.status_msg, "Scene saved to {s}", .{path}) catch {};
 }
 
+/// Starts an async load of `path` and schedules attaching it under `parent`.
 pub fn load_model_to_entity(state: *EditorState, path: []const u8, parent: engine.ecs_entity.Entity) void {
     const allocator = engine.memory.cardinal_get_allocator_for_category(.ENGINE).as_allocator();
 
-    // Check if file exists
     std.fs.cwd().access(path, .{}) catch {
         log.cardinal_log_error("Model file not found: {s}", .{path});
         return;
     };
 
-    // Use loader - need to null terminate if not already
     var path_z_buf: [512]u8 = undefined;
     const path_z = std.fmt.bufPrintZ(&path_z_buf, "{s}", .{path}) catch return;
 
@@ -231,7 +223,6 @@ pub fn load_model_to_entity(state: *EditorState, path: []const u8, parent: engin
     }
     const task = task_opt.?;
 
-    // Add to loading tasks
     const path_copy = allocator.dupeZ(u8, path) catch return;
     state.loading_tasks.append(allocator, .{
         .task = task,

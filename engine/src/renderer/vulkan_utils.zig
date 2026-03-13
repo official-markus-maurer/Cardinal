@@ -165,11 +165,11 @@ pub export fn vk_utils_allocate(size: usize, operation_name: ?[*:0]const u8) cal
         return null;
     }
 
-    // Initialize to zero for safety
     @memset(@as([*]u8, @ptrCast(ptr))[0..size], 0);
     return ptr;
 }
 
+/// Reallocates a libc allocation (freeing `ptr` when `size` is 0).
 pub export fn vk_utils_reallocate(ptr: ?*anyopaque, size: usize, operation_name: ?[*:0]const u8) callconv(.c) ?*anyopaque {
     if (size == 0) {
         vk_utils_log.warn("Attempted to reallocate to 0 bytes for operation: {s}", .{if (operation_name) |op| std.mem.span(op) else "unknown"});
@@ -186,10 +186,7 @@ pub export fn vk_utils_reallocate(ptr: ?*anyopaque, size: usize, operation_name:
     return new_ptr;
 }
 
-// =============================================================================
-// Validation and Debugging
-// =============================================================================
-
+/// Returns `false` and logs an error if `ptr` is null.
 pub export fn vk_utils_validate_pointer(ptr: ?*const anyopaque, name: ?[*:0]const u8) callconv(.c) bool {
     if (ptr == null) {
         vk_utils_log.err("Null pointer validation failed: {s}", .{if (name) |n| std.mem.span(n) else "unknown"});
@@ -198,6 +195,7 @@ pub export fn vk_utils_validate_pointer(ptr: ?*const anyopaque, name: ?[*:0]cons
     return true;
 }
 
+/// Returns `false` and logs an error if `handle` is null.
 pub export fn vk_utils_validate_handle(handle: ?*const anyopaque, name: ?[*:0]const u8) callconv(.c) bool {
     if (handle == null) {
         vk_utils_log.err("Null handle validation failed: {s}", .{if (name) |n| std.mem.span(n) else "unknown"});

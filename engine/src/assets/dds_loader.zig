@@ -81,6 +81,8 @@ fn makeFourCC(ch0: u8, ch1: u8, ch2: u8, ch3: u8) u32 {
 }
 
 /// Loads DDS pixel data from a memory buffer into `out_data`.
+///
+/// When the source is 24-bit RGB/BGR, this allocates a new RGBA8 buffer (alpha=255).
 pub fn load_dds_from_memory(buffer: []const u8, out_data: *texture_loader.TextureData) bool {
     if (buffer.len < 4 + @sizeOf(DDS_HEADER)) {
         dds_log.err("Buffer too small for DDS header", .{});
@@ -131,11 +133,9 @@ pub fn load_dds_from_memory(buffer: []const u8, out_data: *texture_loader.Textur
         if (bitCount == 32) {
             if (rMask == 0x00FF0000 and gMask == 0x0000FF00 and bMask == 0x000000FF and aMask == 0xFF000000) {
                 format = VK_FORMAT_B8G8R8A8_UNORM;
-            }
-            else if (rMask == 0x000000FF and gMask == 0x0000FF00 and bMask == 0x00FF0000 and aMask == 0xFF000000) {
+            } else if (rMask == 0x000000FF and gMask == 0x0000FF00 and bMask == 0x00FF0000 and aMask == 0xFF000000) {
                 format = VK_FORMAT_R8G8B8A8_UNORM;
-            }
-            else if (rMask == 0x00FF0000 and gMask == 0x0000FF00 and bMask == 0x000000FF and aMask == 0x00000000) {
+            } else if (rMask == 0x00FF0000 and gMask == 0x0000FF00 and bMask == 0x000000FF and aMask == 0x00000000) {
                 format = VK_FORMAT_B8G8R8A8_UNORM;
             } else {
                 dds_log.err("Unsupported 32-bit RGB mask: R={x} G={x} B={x} A={x}", .{ rMask, gMask, bMask, aMask });
@@ -163,15 +163,10 @@ pub fn load_dds_from_memory(buffer: []const u8, out_data: *texture_loader.Textur
             const src = buffer[data_offset..];
             const dst = @as([*]u8, @ptrCast(ptr))[0..new_data_size];
 
-            // Check masks for BGR vs RGB
             const is_bgr = (rMask == 0xFF0000 and gMask == 0xFF00 and bMask == 0xFF);
             const is_rgb = (rMask == 0xFF and gMask == 0xFF00 and bMask == 0xFF0000);
 
             if (is_bgr) {
-                // Source: B G R -> Dest: R G B A (using VK_FORMAT_R8G8B8A8_UNORM)
-                // Wait, if we use VK_FORMAT_R8G8B8A8_UNORM, memory is R G B A
-                // Source BGR: Byte0=B, Byte1=G, Byte2=R
-                // So we write: R(2), G(1), B(0), A(255)
                 var i: usize = 0;
                 while (i < pixel_count) : (i += 1) {
                     dst[i * 4 + 0] = src[i * 3 + 2]; // R
@@ -181,7 +176,6 @@ pub fn load_dds_from_memory(buffer: []const u8, out_data: *texture_loader.Textur
                 }
                 format = VK_FORMAT_R8G8B8A8_UNORM;
             } else if (is_rgb) {
-                // Source: R G B -> Dest: R G B A
                 var i: usize = 0;
                 while (i < pixel_count) : (i += 1) {
                     dst[i * 4 + 0] = src[i * 3 + 0]; // R
@@ -213,7 +207,6 @@ pub fn load_dds_from_memory(buffer: []const u8, out_data: *texture_loader.Textur
         return false;
     }
 
-    // Calculate data offset and size (Standard path for non-converted formats)
     const data_offset = 4 + header.dwSize;
     const data_size = buffer.len - data_offset;
 

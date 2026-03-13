@@ -1,3 +1,8 @@
+//! Editor camera controller.
+//!
+//! Implements an FPS-style free camera controlled by the engine input action system.
+//!
+//! TODO: Support orbit/pan modes for scene editing.
 const std = @import("std");
 const engine = @import("cardinal_engine");
 const log = engine.log;
@@ -6,6 +11,7 @@ const math = engine.math;
 const Vec3 = math.Vec3;
 const EditorState = @import("../editor_state.zig").EditorState;
 
+/// Advances the editor camera from input state and updates the renderer camera when enabled.
 pub fn update(state: *EditorState, dt: f32) void {
     const win = state.window;
     if (win.handle == null) return;
@@ -22,7 +28,6 @@ pub fn update(state: *EditorState, dt: f32) void {
         if (state.pitch > 89.0) state.pitch = 89.0;
         if (state.pitch < -89.0) state.pitch = -89.0;
 
-        // Update target
         const radYaw = state.yaw * std.math.pi / 180.0;
         const radPitch = state.pitch * std.math.pi / 180.0;
 
@@ -33,7 +38,6 @@ pub fn update(state: *EditorState, dt: f32) void {
         };
         front = front.normalize();
 
-        // Keyboard
         var speed = state.camera_speed * dt;
         if (engine.input.isActionPressed(win, "Sprint")) {
             speed *= 4.0;
@@ -62,7 +66,6 @@ pub fn update(state: *EditorState, dt: f32) void {
             state.camera.position.y -= speed;
         }
 
-        // Update target based on new position
         state.camera.target = state.camera.position.add(front);
 
         if (state.pbr_enabled) {

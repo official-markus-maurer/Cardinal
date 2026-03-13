@@ -152,6 +152,8 @@ fn generate_mesh_id(mesh: scene.CardinalMesh) ?[:0]const u8 {
     hash ^= mesh.index_count << 16;
     hash ^= mesh.material_index;
 
+    // TODO: Use a stronger/stable hash over the full vertex/index buffers when feasible.
+
     if (mesh.vertices) |vertices| {
         if (mesh.vertex_count > 0) {
             var i: u32 = 0;
@@ -177,17 +179,13 @@ fn generate_mesh_id(mesh: scene.CardinalMesh) ?[:0]const u8 {
     }
 
     const allocator = memory.cardinal_get_allocator_for_category(.ASSETS);
-    // 32 chars is enough for "mesh_" + 8 hex digits + null
     const buf = memory.cardinal_alloc(allocator, 32);
     if (buf) |b| {
         const slice = @as([*]u8, @ptrCast(b))[0..32];
-        // We use bufPrint with \x00 to ensure it writes a null byte
         const formatted = std.fmt.bufPrint(slice, "mesh_{x:0>8}\x00", .{hash}) catch {
             memory.cardinal_free(allocator, b);
             return null;
         };
-        // formatted includes the \x00 at the end.
-        // Return slice excluding the \x00 but with sentinel
         return @as([*:0]const u8, @ptrCast(b))[0 .. formatted.len - 1 :0];
     }
     return null;

@@ -1,9 +1,16 @@
+//! Animation panel.
+//!
+//! Displays animations present in the currently loaded combined scene and provides basic playback
+//! controls and time scrubbing.
+//!
+//! TODO: Add per-channel inspection and bone debug visualization.
 const std = @import("std");
 const engine = @import("cardinal_engine");
 const animation = engine.animation;
 const editor_state = @import("../editor_state.zig");
 const c = @import("../c.zig").c;
 
+/// Draws the animation panel.
 pub fn draw_animation_panel(state: *editor_state.EditorState) void {
     if (state.show_animation) {
         const open = c.imgui_bridge_begin("Animation", &state.show_animation, 0);
@@ -14,11 +21,9 @@ pub fn draw_animation_panel(state: *editor_state.EditorState) void {
                 const anim_sys_opaque = state.combined_scene.animation_system.?;
                 const anim_sys = @as(*animation.CardinalAnimationSystem, @ptrCast(@alignCast(anim_sys_opaque)));
 
-                // Animation selection
                 c.imgui_bridge_text("Animations (%d)", anim_sys.animation_count);
                 c.imgui_bridge_separator();
 
-                // Auto-select first animation if none selected
                 if (state.selected_animation == -1 and anim_sys.animation_count > 0) {
                     state.selected_animation = 0;
                     state.animation_time = 0.0;
@@ -44,7 +49,6 @@ pub fn draw_animation_panel(state: *editor_state.EditorState) void {
 
                 c.imgui_bridge_separator();
 
-                // Playback controls
                 if (state.selected_animation >= 0 and state.selected_animation < anim_sys.animation_count) {
                     const current_anim = &anim_sys.animations.?[@intCast(state.selected_animation)];
 
@@ -59,7 +63,6 @@ pub fn draw_animation_panel(state: *editor_state.EditorState) void {
                         if (c.imgui_bridge_button("Play")) {
                             state.animation_playing = true;
                             _ = animation.cardinal_animation_play(anim_sys, @intCast(state.selected_animation), state.animation_looping, 1.0);
-                            // Restore speed from UI (as play() resets it to 1.0)
                             _ = animation.cardinal_animation_set_speed(anim_sys, @intCast(state.selected_animation), state.animation_speed);
                         }
                     }
@@ -80,13 +83,11 @@ pub fn draw_animation_panel(state: *editor_state.EditorState) void {
                         _ = animation.cardinal_animation_set_speed(anim_sys, @intCast(state.selected_animation), state.animation_speed);
                     }
 
-                    // Timeline
                     c.imgui_bridge_separator();
                     c.imgui_bridge_text("Timeline");
 
                     c.imgui_bridge_text("Time: %.2f / %.2f seconds", state.animation_time, current_anim.duration);
 
-                    // Timeline scrubber
                     if (c.imgui_bridge_slider_float("##timeline", &state.animation_time, 0.0, current_anim.duration, "%.2fs")) {
                         if (state.animation_time < 0.0) state.animation_time = 0.0;
                         if (state.animation_time > current_anim.duration) {
@@ -101,7 +102,6 @@ pub fn draw_animation_panel(state: *editor_state.EditorState) void {
                                 state.animation_playing = false;
                             }
                         }
-                        // Update engine time immediately
                         _ = animation.cardinal_animation_set_time(anim_sys, @intCast(state.selected_animation), state.animation_time);
                     }
 

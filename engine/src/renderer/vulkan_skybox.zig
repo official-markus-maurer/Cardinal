@@ -31,7 +31,7 @@ pub const SkyboxPushConstants = extern struct {
 /// Initializes the skybox pipeline (descriptor set + graphics pipeline).
 pub fn vk_skybox_pipeline_init(pipeline: *types.SkyboxPipeline, device: c.VkDevice, format: c.VkFormat, depthFormat: c.VkFormat, allocator: *types.VulkanAllocator, vulkan_state: ?*types.VulkanState) bool {
     pipeline.initialized = false;
-    
+
     const mem_alloc = memory.cardinal_get_allocator_for_category(.RENDERER);
     const ptr = memory.cardinal_alloc(mem_alloc, @sizeOf(types.VulkanDescriptorManager));
     if (ptr == null) {
@@ -75,7 +75,7 @@ pub fn vk_skybox_pipeline_init(pipeline: *types.SkyboxPipeline, device: c.VkDevi
 
     const renderer_allocator = mem_alloc.as_allocator();
     var builder = vk_pso.PipelineBuilder.init(renderer_allocator, device, null);
-    
+
     const pipeline_dir = if (vulkan_state) |vs| std.mem.span(@as([*:0]const u8, @ptrCast(&vs.config.pipeline_dir))) else "assets/pipelines";
     const skybox_path = std.fmt.allocPrint(renderer_allocator, "{s}/skybox.json", .{pipeline_dir}) catch return false;
     defer renderer_allocator.free(skybox_path);
@@ -87,7 +87,7 @@ pub fn vk_skybox_pipeline_init(pipeline: *types.SkyboxPipeline, device: c.VkDevi
     defer parsed.deinit();
 
     var descriptor = parsed.value;
-    
+
     descriptor.rendering.color_formats = &.{format};
     descriptor.rendering.depth_format = depthFormat;
 
@@ -147,7 +147,7 @@ pub fn vk_skybox_load_from_data(pipeline: *types.SkyboxPipeline, device: c.VkDev
     cardTex.channels = textureData.channels;
     cardTex.data = textureData.data;
     cardTex.is_hdr = textureData.is_hdr;
-    
+
     if (!vk_texture_utils.vk_texture_create_from_data(allocator, device, commandPool, graphicsQueue, sync_manager, &cardTex, &pipeline.texture.image, &pipeline.texture.memory, &pipeline.texture.view, null, &pipeline.texture.allocation)) {
         skybox_log.err("Failed to create skybox texture resources", .{});
         return false;
@@ -190,7 +190,7 @@ pub fn vk_skybox_load_from_data(pipeline: *types.SkyboxPipeline, device: c.VkDev
 /// Loads a skybox texture from `path` and uploads the current data (placeholder or final).
 pub fn vk_skybox_load(pipeline: *types.SkyboxPipeline, device: c.VkDevice, allocator: *types.VulkanAllocator, commandPool: c.VkCommandPool, graphicsQueue: c.VkQueue, sync_manager: ?*types.VulkanSyncManager, path: [:0]const u8) bool {
     var textureData = std.mem.zeroes(texture_loader.TextureData);
-    
+
     const res = texture_loader.texture_load_with_ref_counting(path.ptr, &textureData);
     if (res == null) {
         skybox_log.err("Failed to load skybox texture: {s}", .{path});
@@ -199,11 +199,11 @@ pub fn vk_skybox_load(pipeline: *types.SkyboxPipeline, device: c.VkDevice, alloc
 
     if (vk_skybox_load_from_data(pipeline, device, allocator, commandPool, graphicsQueue, sync_manager, textureData)) {
         pipeline.texture.resource = res;
-        
+
         const state = resource_state.cardinal_resource_state_get(res.?.identifier.?);
         pipeline.texture.isPlaceholder = (state == .LOADING);
-        
-        skybox_log.info("Skybox set to: {s} (Placeholder={any})", .{path, pipeline.texture.isPlaceholder});
+
+        skybox_log.info("Skybox set to: {s} (Placeholder={any})", .{ path, pipeline.texture.isPlaceholder });
         return true;
     }
     return false;
@@ -212,19 +212,19 @@ pub fn vk_skybox_load(pipeline: *types.SkyboxPipeline, device: c.VkDevice, alloc
 /// Updates the skybox if the texture was initially a placeholder and is now loaded.
 pub fn vk_skybox_update(pipeline: *types.SkyboxPipeline, device: c.VkDevice, allocator: *types.VulkanAllocator, commandPool: c.VkCommandPool, graphicsQueue: c.VkQueue, sync_manager: ?*types.VulkanSyncManager) void {
     if (!pipeline.initialized or !pipeline.texture.is_allocated) return;
-    
+
     if (pipeline.texture.isPlaceholder and pipeline.texture.resource != null) {
         const res = @as(*ref_counting.CardinalRefCountedResource, @ptrCast(@alignCast(pipeline.texture.resource.?)));
-        
+
         if (res.identifier != null and resource_state.cardinal_resource_state_get(res.identifier) == .LOADED) {
-             const data = @as(*texture_loader.TextureData, @ptrCast(@alignCast(res.resource.?)));
-             
-             skybox_log.info("Updating skybox from placeholder to loaded texture", .{});
-             
-             if (vk_skybox_load_from_data(pipeline, device, allocator, commandPool, graphicsQueue, sync_manager, data.*)) {
-                 pipeline.texture.isPlaceholder = false;
-                 pipeline.texture.resource = res;
-             }
+            const data = @as(*texture_loader.TextureData, @ptrCast(@alignCast(res.resource.?)));
+
+            skybox_log.info("Updating skybox from placeholder to loaded texture", .{});
+
+            if (vk_skybox_load_from_data(pipeline, device, allocator, commandPool, graphicsQueue, sync_manager, data.*)) {
+                pipeline.texture.isPlaceholder = false;
+                pipeline.texture.resource = res;
+            }
         }
     }
 }

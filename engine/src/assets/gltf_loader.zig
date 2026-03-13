@@ -1,3 +1,9 @@
+//! glTF scene loader.
+//!
+//! Parses glTF/glb files with cgltf and populates a `scene.CardinalScene` with meshes/materials,
+//! textures, nodes, and optional animation data.
+//!
+//! TODO: Add cache eviction for the texture path cache to avoid unbounded growth.
 const std = @import("std");
 const scene = @import("scene.zig");
 const texture_loader = @import("texture_loader.zig");
@@ -22,7 +28,7 @@ const c = @cImport({
     @cInclude("vulkan/vulkan.h");
 });
 
-// Texture path cache
+/// Caches resolved texture file paths keyed by `(gltf_base_path, uri)`.
 var g_texture_path_cache: std.StringHashMap([]const u8) = undefined;
 var g_init_once = std.once(init_texture_cache_impl);
 var g_cache_mutex: std.Thread.Mutex = .{};
@@ -35,7 +41,6 @@ fn init_texture_cache_impl() void {
 
 fn compute_cache_key(buf: []u8, base: []const u8, uri: []const u8) ![]const u8 {
     if (uri.len > 0 and (uri[0] == '/' or (uri.len > 1 and uri[1] == ':'))) {
-        // Absolute path
         if (uri.len > buf.len) return error.BufferTooSmall;
         @memcpy(buf[0..uri.len], uri);
         return buf[0..uri.len];
@@ -141,7 +146,6 @@ fn try_optimized_fallback_paths(original_uri: []const u8, base_path: []const u8,
         if (dir_end == null or idx > dir_end.?) dir_end = idx;
     }
 
-    // 1. Relative to glTF file
     if (dir_end) |end| {
         const dir = base_path[0 .. end + 1];
         const path = std.fmt.bufPrintZ(texture_path_buf, "{s}{s}", .{ dir, original_uri }) catch return null;
@@ -1103,7 +1107,6 @@ pub export fn cardinal_gltf_load_scene(path: [*:0]const u8, out_scene: *scene.Ca
     gltf_log.debug("Calling cgltf_load_buffers with path '{s}' (ptr: {*})", .{ local_path, local_path });
     const load_result = c.cgltf_load_buffers(&options, data, local_path);
     if (load_result != c.cgltf_result_success) {
-        std.debug.print("[GLTF] cgltf_load_buffers failed: {d}\n", .{load_result});
         gltf_log.err("cgltf_load_buffers failed: {d} for {s}", .{ load_result, local_path });
         c.cgltf_free(data);
         return false;

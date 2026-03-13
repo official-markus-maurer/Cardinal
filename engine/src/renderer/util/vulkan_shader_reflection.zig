@@ -1,10 +1,16 @@
+//! SPIR-V shader reflection utilities.
+//!
+//! Implements a small SPIR-V parser that extracts descriptor set/binding usage, push constant
+//! ranges, and specialization constants without relying on external reflection libraries.
+//!
+//! TODO: Replace ad-hoc parsing with a dedicated SPIR-V parser or SPIRV-Tools when available.
 const std = @import("std");
 const c = @import("../vulkan_c.zig").c;
 const log = @import("../../core/log.zig");
 
 const reflect_log = log.ScopedLogger("SHADER_REFLECT");
 
-// SPIR-V Opcodes
+/// SPIR-V opcodes used by the parser.
 const SpvOpName = 5;
 const SpvOpMemberName = 6;
 const SpvOpEntryPoint = 15;
@@ -26,7 +32,7 @@ const SpvOpVariable = 59;
 const SpvOpDecorate = 71;
 const SpvOpMemberDecorate = 72;
 
-// SPIR-V Decorations
+/// SPIR-V decoration enums used by the parser.
 const SpvDecorationSpecId = 1;
 const SpvDecorationBlock = 2;
 const SpvDecorationBufferBlock = 3;
@@ -43,7 +49,7 @@ const SpvDecorationBinding = 33;
 const SpvDecorationDescriptorSet = 34;
 const SpvDecorationOffset = 35;
 
-// SPIR-V Storage Classes
+/// SPIR-V storage class enums used by the parser.
 const SpvStorageClassUniformConstant = 0;
 const SpvStorageClassInput = 1;
 const SpvStorageClassUniform = 2;
@@ -58,6 +64,7 @@ const SpvStorageClassAtomicCounter = 10;
 const SpvStorageClassImage = 11;
 const SpvStorageClassStorageBuffer = 12;
 
+/// One descriptor-backed shader resource (descriptor sets/bindings).
 pub const ShaderResource = struct {
     set: u32,
     binding: u32,
@@ -68,6 +75,7 @@ pub const ShaderResource = struct {
     is_runtime_array: bool,
 };
 
+/// Reflection results extracted from SPIR-V bytecode.
 pub const ShaderReflection = struct {
     resources: std.ArrayListUnmanaged(ShaderResource),
     push_constant_size: u32,
@@ -99,11 +107,11 @@ const IdDecoration = struct {
     is_buffer_block: bool = false,
 };
 
+/// Reflects descriptor usage and push constants from SPIR-V `code`.
 pub fn reflect_shader(allocator: std.mem.Allocator, code: []const u32, stage: c.VkShaderStageFlags) !ShaderReflection {
     var reflection = ShaderReflection.init(allocator);
     errdefer reflection.deinit();
 
-    // Basic validation
     if (code.len < 5 or code[0] != 0x07230203) {
         reflect_log.err("Invalid SPIR-V magic number", .{});
         return error.InvalidSpirv;
@@ -129,7 +137,7 @@ pub fn reflect_shader(allocator: std.mem.Allocator, code: []const u32, stage: c.
     var array_length_ids = std.AutoHashMap(u32, u32).init(allocator);
     defer array_length_ids.deinit();
 
-    // First pass: Find types and decorations
+    // TODO: Resolve OpTypeArray lengths even when OpConstant appears later in the stream.
     var i: usize = 5;
     while (i < code.len) {
         const word = code[i];
@@ -138,7 +146,6 @@ pub fn reflect_shader(allocator: std.mem.Allocator, code: []const u32, stage: c.
 
         if (opcode == SpvOpTypePointer) {
             const id = code[i + 1];
-            // const storage_class = code[i + 2];
             const type_id = code[i + 3];
             try pointer_type_id.put(id, type_id);
             try type_opcodes.put(id, opcode);
@@ -152,11 +159,9 @@ pub fn reflect_shader(allocator: std.mem.Allocator, code: []const u32, stage: c.
             try type_opcodes.put(id, opcode);
             try array_element_type.put(id, element_type);
 
-            // Try to resolve length
             if (reflection.constants.get(length_id)) |len| {
                 try array_lengths.put(id, len);
             } else {
-                // Fail if array length constant is not found (no fallback)
                 return error.InvalidShader;
             }
         } else if (opcode == SpvOpTypeRuntimeArray) {
@@ -179,13 +184,9 @@ pub fn reflect_shader(allocator: std.mem.Allocator, code: []const u32, stage: c.
                     decorations[target].is_buffer_block = true;
                 }
             }
-        } else if (opcode == SpvOpMemberDecorate) {
-            // Handle member decorations if needed
-        } else if (opcode == SpvOpConstant) {
+        } else if (opcode == SpvOpMemberDecorate) {} else if (opcode == SpvOpConstant) {
             const result_type = code[i + 1];
             const result_id = code[i + 2];
-            // Assuming 32-bit int constant
-            // Value is at i + 3
             if (type_opcodes.get(result_type)) |op| {
                 if (op == SpvOpTypeInt) {
                     try reflection.constants.put(reflection.allocator, result_id, code[i + 3]);
@@ -195,20 +196,6 @@ pub fn reflect_shader(allocator: std.mem.Allocator, code: []const u32, stage: c.
         i += count;
     }
 
-    // Resolve array lengths that were defined after usage
-    {
-        var it = array_lengths.iterator();
-        while (it.next()) |entry| {
-            _ = entry.key_ptr.*;
-            // We need to re-check if we used a fallback but the constant is now available
-            // But we didn't store the length_id in the map.
-            // Ideally we should do this in a cleaner way, but for now relying on constants being defined before arrays (usually true)
-            // or just accepting fallback.
-            // Correct way: store length_id in a separate map and resolve here.
-        }
-    }
-
-    // Second pass: Find variables
     i = 5;
     while (i < code.len) {
         const word = code[i];
@@ -223,23 +210,15 @@ pub fn reflect_shader(allocator: std.mem.Allocator, code: []const u32, stage: c.
             if (id < bound and type_id < bound) {
                 const dec = decorations[id];
                 if (dec.set != null and dec.binding != null) {
-                    // It's a resource
                     var res = std.mem.zeroes(ShaderResource);
                     res.set = dec.set.?;
                     res.binding = dec.binding.?;
                     res.stage_flags = stage;
-                    res.count = 1; // Default to 1
-
-                    // Determine descriptor type
-                    // const storage_class = pointer_storage_class[type_id]; // This was from pointer type, but variable has storage class too
-                    // Actually SpvOpVariable has storage class operand.
-                    // pointer_storage_class map was built from SpvOpTypePointer.
-                    // type_id of Variable is a Pointer Type.
+                    res.count = 1;
 
                     const pointed_type = pointer_type_id.get(type_id) orelse 0;
                     const pointed_opcode = type_opcodes.get(pointed_type) orelse 0;
 
-                    // Check for block decoration on struct
                     const is_buffer_block = if (pointed_type < bound) decorations[pointed_type].is_buffer_block else false;
 
                     switch (storage_class) {
@@ -261,43 +240,38 @@ pub fn reflect_shader(allocator: std.mem.Allocator, code: []const u32, stage: c.
                             } else if (pointed_opcode == SpvOpTypeSampler) {
                                 res.type = c.VK_DESCRIPTOR_TYPE_SAMPLER;
                             } else if (pointed_opcode == SpvOpTypeArray or pointed_opcode == SpvOpTypeRuntimeArray) {
-                                // Check what is inside the array
                                 const element_type = array_element_type.get(pointed_type) orelse 0;
                                 const element_opcode = type_opcodes.get(element_type) orelse 0;
 
                                 if (element_opcode == SpvOpTypeSampledImage) {
                                     res.type = c.VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
                                 } else if (element_opcode == SpvOpTypeImage) {
-                                    res.type = c.VK_DESCRIPTOR_TYPE_STORAGE_IMAGE; // Or SampledImage if Sampled=1
+                                    res.type = c.VK_DESCRIPTOR_TYPE_STORAGE_IMAGE;
                                 } else if (element_opcode == SpvOpTypeSampler) {
                                     res.type = c.VK_DESCRIPTOR_TYPE_SAMPLER;
                                 } else {
-                                    res.type = c.VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER; // Fallback
+                                    res.type = c.VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
                                 }
                             }
                         },
                         else => {
-                            // Default fallback
                             res.type = c.VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
                         },
                     }
 
-                    // Check for array
                     if (pointed_opcode == SpvOpTypeArray) {
                         res.count = array_lengths.get(pointed_type) orelse 1;
                     } else if (pointed_opcode == SpvOpTypeRuntimeArray) {
-                        // Bindless/Runtime array
-                        res.count = 4096; // Default large size for bindless
+                        // TODO: Make runtime array count configurable per pipeline.
+                        res.count = 4096;
                         res.is_runtime_array = true;
                     }
 
                     try reflection.resources.append(reflection.allocator, res);
                 } else if (storage_class == SpvStorageClassPushConstant) {
                     reflection.push_constant_stages |= stage;
-                    // Ideally calculate size, but for now we just mark stage
-                    // and use a default size if we can't calculate it easily.
-                    // Or we can update the size if we find a larger one.
-                    if (reflection.push_constant_size == 0) reflection.push_constant_size = 256; // Default safe size
+                    // TODO: Derive push constant size from the declared type layout.
+                    if (reflection.push_constant_size == 0) reflection.push_constant_size = 256;
                 }
             }
         }

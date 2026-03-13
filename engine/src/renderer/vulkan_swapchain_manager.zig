@@ -1,3 +1,9 @@
+//! Standalone swapchain manager (C-ABI oriented).
+//!
+//! Provides a small, self-contained swapchain creation/recreation helper used by older code paths.
+//! The main renderer also has its own swapchain code; this manager is primarily kept for C interop.
+//!
+//! TODO: Consolidate swapchain ownership into a single implementation.
 const std = @import("std");
 const builtin = @import("builtin");
 const log = @import("../core/log.zig");
@@ -60,12 +66,12 @@ pub const VulkanSurfaceSupport = extern struct {
     presentModeCount: u32,
 };
 
-// Internal helper for time
+/// Returns a wall-clock timestamp in milliseconds.
 fn get_current_time_ms() u64 {
     return @intCast(std.time.milliTimestamp());
 }
 
-// Helper functions (internal)
+/// Creates swapchain image views for all swapchain images.
 fn create_image_views(manager: *VulkanSwapchainManager) bool {
     const ptr = c.malloc(manager.imageCount * @sizeOf(c.VkImageView));
     if (ptr == null) {
@@ -74,13 +80,11 @@ fn create_image_views(manager: *VulkanSwapchainManager) bool {
     }
     manager.imageViews = @as([*]c.VkImageView, @ptrCast(@alignCast(ptr.?)));
 
-    // Initialize all image views to null
     var i: u32 = 0;
     while (i < manager.imageCount) : (i += 1) {
         manager.imageViews.?[i] = null;
     }
 
-    // Create image views
     i = 0;
     while (i < manager.imageCount) : (i += 1) {
         var createInfo = std.mem.zeroes(c.VkImageViewCreateInfo);
@@ -101,7 +105,6 @@ fn create_image_views(manager: *VulkanSwapchainManager) bool {
         if (c.vkCreateImageView(manager.device, &createInfo, null, &manager.imageViews.?[i]) != c.VK_SUCCESS) {
             swapchain_log.err("Failed to create image view {d}", .{i});
 
-            // Clean up previously created image views
             var j: u32 = 0;
             while (j < i) : (j += 1) {
                 if (manager.imageViews.?[j] != null) {
@@ -132,7 +135,6 @@ fn destroy_image_views(manager: *VulkanSwapchainManager) void {
 }
 
 fn create_swapchain_internal(manager: *VulkanSwapchainManager, createInfo: *const VulkanSwapchainCreateInfo) bool {
-    // Query surface support
     var support = std.mem.zeroes(VulkanSurfaceSupport);
     if (!vk_swapchain_query_surface_support(manager.physicalDevice, manager.surface, &support)) {
         swapchain_log.err("Failed to query surface support", .{});
@@ -140,22 +142,17 @@ fn create_swapchain_internal(manager: *VulkanSwapchainManager, createInfo: *cons
     }
     defer vk_swapchain_free_surface_support(&support);
 
-    // Choose surface format
     const surfaceFormat = vk_swapchain_choose_surface_format(support.formats, support.formatCount, createInfo.preferredFormat, createInfo.preferredColorSpace);
 
-    // Choose present mode
     const presentMode = vk_swapchain_choose_present_mode(support.presentModes, support.presentModeCount, createInfo.preferredPresentMode);
 
-    // Choose extent
     const extent = vk_swapchain_choose_extent(&support.capabilities, createInfo.windowExtent);
 
-    // Validate extent
     if (extent.width == 0 or extent.height == 0) {
         swapchain_log.err("Invalid swapchain extent: {d}x{d}", .{ extent.width, extent.height });
         return false;
     }
 
-    // Choose image count
     var imageCount = createInfo.preferredImageCount;
     if (imageCount == 0) {
         imageCount = support.capabilities.minImageCount + 1;

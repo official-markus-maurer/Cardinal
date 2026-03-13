@@ -1,3 +1,10 @@
+//! Vulkan texture upload helpers and deferred cleanup.
+//!
+//! Tracks staging buffers, images, and transient command buffers that must stay alive until a
+//! timeline semaphore value is reached. Intended to be called once per frame to free completed
+//! uploads without stalling the GPU.
+//!
+//! TODO: Deduplicate repeated memory imports by storing allocator utilities in a shared module.
 const std = @import("std");
 const builtin = @import("builtin");
 const log = @import("../../core/log.zig");
@@ -13,6 +20,7 @@ const scene = @import("../../assets/scene.zig");
 
 const c = @import("../vulkan_c.zig").c;
 
+/// Deferred free record for a staging buffer used during texture upload.
 const StagingBufferCleanup = struct {
     buffer: c.VkBuffer,
     memory: c.VkDeviceMemory,
@@ -22,6 +30,7 @@ const StagingBufferCleanup = struct {
     next: ?*StagingBufferCleanup,
 };
 
+/// Deferred free record for a transient image allocation.
 const ImageCleanup = struct {
     image: c.VkImage,
     allocation: c.VmaAllocation,
@@ -29,6 +38,7 @@ const ImageCleanup = struct {
     next: ?*ImageCleanup,
 };
 
+/// Deferred free record for a one-off command buffer.
 const CommandBufferCleanup = struct {
     commandBuffer: c.VkCommandBuffer,
     commandPool: c.VkCommandPool,
@@ -43,6 +53,7 @@ var g_pending_cmd_cleanups: ?*CommandBufferCleanup = null;
 var g_cleanup_system_initialized: bool = false;
 var g_is_shutting_down: bool = false;
 
+/// Adds a staging buffer to the deferred cleanup list.
 pub fn add_staging_buffer_cleanup(allocator: ?*types.VulkanAllocator, buffer: c.VkBuffer, memory: c.VkDeviceMemory, allocation: c.VmaAllocation, device: c.VkDevice, timeline_value: u64) void {
     if (g_is_shutting_down) {
         tex_utils_log.debug("Immediate cleanup of staging buffer {any} due to shutdown", .{buffer});
@@ -71,6 +82,7 @@ pub fn add_staging_buffer_cleanup(allocator: ?*types.VulkanAllocator, buffer: c.
     tex_utils_log.debug("Added staging buffer {any} to deferred cleanup (timeline: {d})", .{ buffer, timeline_value });
 }
 
+/// Adds an image allocation to the deferred cleanup list.
 pub fn add_image_cleanup(allocator: ?*types.VulkanAllocator, image: c.VkImage, allocation: c.VmaAllocation, timeline_value: u64) void {
     if (g_is_shutting_down) {
         tex_utils_log.debug("Immediate cleanup of image {any} due to shutdown", .{image});
@@ -97,10 +109,10 @@ pub fn add_image_cleanup(allocator: ?*types.VulkanAllocator, image: c.VkImage, a
     tex_utils_log.debug("Added image {any} to deferred cleanup (timeline: {d})", .{ image, timeline_value });
 }
 
+/// Frees any deferred uploads whose timeline values have been reached.
 pub fn process_staging_buffer_cleanups(sync_manager: ?*types.VulkanSyncManager, allocator: ?*types.VulkanAllocator) void {
     if (!g_cleanup_system_initialized or sync_manager == null or allocator == null) return;
 
-    // Process staging buffers
     var current = &g_pending_cleanups;
     while (current.*) |cleanup| {
         var reached: bool = false;
@@ -119,7 +131,6 @@ pub fn process_staging_buffer_cleanups(sync_manager: ?*types.VulkanSyncManager, 
         }
     }
 
-    // Process images
     var current_img = &g_pending_image_cleanups;
     while (current_img.*) |cleanup| {
         var reached: bool = false;
@@ -138,7 +149,6 @@ pub fn process_staging_buffer_cleanups(sync_manager: ?*types.VulkanSyncManager, 
         }
     }
 
-    // Process command buffers
     var current_cmd = &g_pending_cmd_cleanups;
     while (current_cmd.*) |cleanup| {
         var reached: bool = false;
@@ -159,6 +169,7 @@ pub fn process_staging_buffer_cleanups(sync_manager: ?*types.VulkanSyncManager, 
     }
 }
 
+/// Adds a command buffer to the deferred cleanup list.
 pub fn add_command_buffer_cleanup(commandBuffer: c.VkCommandBuffer, commandPool: c.VkCommandPool, device: c.VkDevice, timeline_value: u64) void {
     if (g_is_shutting_down) {
         tex_utils_log.debug("Immediate cleanup of command buffer {any} due to shutdown", .{commandBuffer});
@@ -187,6 +198,7 @@ pub fn add_command_buffer_cleanup(commandBuffer: c.VkCommandBuffer, commandPool:
     tex_utils_log.debug("Added command buffer {any} to deferred cleanup (timeline: {d})", .{ commandBuffer, timeline_value });
 }
 
+/// Forces cleanup of any remaining deferred objects and prevents enqueuing new ones.
 pub fn shutdown_staging_buffer_cleanups(allocator: *types.VulkanAllocator) void {
     g_is_shutting_down = true;
     if (!g_cleanup_system_initialized) return;
@@ -237,6 +249,7 @@ pub fn shutdown_staging_buffer_cleanups(allocator: *types.VulkanAllocator) void 
     g_cleanup_system_initialized = false;
 }
 
+/// Creates a staging buffer and copies texture bytes into it.
 pub fn create_staging_buffer_with_data(allocator: ?*types.VulkanAllocator, device: c.VkDevice, texture: *const scene.CardinalTexture, outBuffer: *c.VkBuffer, outMemory: *c.VkDeviceMemory, outAllocation: *c.VmaAllocation) bool {
     _ = device; // unused if using VMA
 
@@ -248,14 +261,9 @@ pub fn create_staging_buffer_with_data(allocator: ?*types.VulkanAllocator, devic
         imageSize = @as(c.VkDeviceSize, texture.width) * texture.height * pixel_size;
     }
 
-    // Ensure imageSize is at least 4 bytes to avoid validation errors for tiny/empty textures
     if (imageSize < 4) imageSize = 4;
 
-    // Validation: Check if imageSize is sufficient for the texture dimensions
-    // Note: Compressed textures (BC1-BC5) are much smaller than uncompressed (R8G8B8A8).
-    // If data_size was provided explicitly (e.g. from DDS loader), we trust it.
-    // We only enforce the W*H*4 size check if we calculated the size ourselves (data_size == 0) OR if the format implies uncompressed data.
-
+    // TODO: Revisit staging size heuristics for compressed formats and placeholder textures.
     if (texture.data_size == 0) {
         const pixel_size_check: u64 = if (texture.is_hdr != 0) 16 else 4;
         const required_size = @as(c.VkDeviceSize, texture.width) * texture.height * pixel_size_check;
@@ -264,12 +272,8 @@ pub fn create_staging_buffer_with_data(allocator: ?*types.VulkanAllocator, devic
             imageSize = required_size;
         }
     } else {
-        // Data size provided explicitly.
-        // If it's absurdly small (e.g. 4 bytes for 512x512), we should probably warn, but respecting the loader's decision is usually safer for compressed formats.
-        // However, if we get the "size 4" issue, we need to know why.
         if (texture.width > 4 and imageSize <= 4) {
             tex_utils_log.warn("Staging buffer size is extremely small ({d}) for {d}x{d} texture. Format: {d}. This might be a placeholder or corrupted data.", .{ imageSize, texture.width, texture.height, texture.format });
-            // Force adjust if it looks like a placeholder mismatch
             const safe_min = @as(c.VkDeviceSize, texture.width) * texture.height / 2; // Rough lower bound for high compression
             if (imageSize < safe_min) {
                 tex_utils_log.warn("Adjusting buffer size to {d} to prevent crash.", .{safe_min});
@@ -284,7 +288,6 @@ pub fn create_staging_buffer_with_data(allocator: ?*types.VulkanAllocator, devic
     bufferInfo.usage = c.VK_BUFFER_USAGE_TRANSFER_SRC_BIT;
     bufferInfo.sharingMode = c.VK_SHARING_MODE_EXCLUSIVE;
 
-    // Use VMA to allocate buffer
     if (!vk_allocator.allocate_buffer(allocator, &bufferInfo, outBuffer, outMemory, outAllocation, c.VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | c.VK_MEMORY_PROPERTY_HOST_COHERENT_BIT, false, null)) {
         tex_utils_log.err("Failed to create staging buffer with VMA", .{});
         return false;
@@ -304,6 +307,7 @@ pub fn create_staging_buffer_with_data(allocator: ?*types.VulkanAllocator, devic
     return true;
 }
 
+/// Allocates a 2D sampled image and its backing memory via VMA.
 pub fn create_image_and_memory(allocator: ?*types.VulkanAllocator, device: c.VkDevice, width: u32, height: u32, format: c.VkFormat, outImage: *c.VkImage, outMemory: *c.VkDeviceMemory, outAllocation: *c.VmaAllocation) bool {
     _ = device;
     var imageInfo = std.mem.zeroes(c.VkImageCreateInfo);
@@ -316,10 +320,7 @@ pub fn create_image_and_memory(allocator: ?*types.VulkanAllocator, device: c.VkD
     imageInfo.arrayLayers = 1;
     imageInfo.format = format;
     if (imageInfo.format == c.VK_FORMAT_UNDEFINED) {
-        // Fallback or guess
-        // We can't access texture.is_hdr here easily unless we pass it or check format family
-        // But the caller usually passes a valid format.
-        // If caller passed UNDEFINED, we might have a problem.
+        // TODO: Require callers to pass an explicit image format.
         tex_utils_log.warn("create_image_and_memory received VK_FORMAT_UNDEFINED", .{});
         imageInfo.format = c.VK_FORMAT_R8G8B8A8_SRGB;
     }
@@ -329,7 +330,6 @@ pub fn create_image_and_memory(allocator: ?*types.VulkanAllocator, device: c.VkD
     imageInfo.samples = c.VK_SAMPLE_COUNT_1_BIT;
     imageInfo.sharingMode = c.VK_SHARING_MODE_EXCLUSIVE;
 
-    // const vk_allocator = @import("../vulkan_allocator.zig");
     if (!vk_allocator.allocate_image(allocator, &imageInfo, outImage, outMemory, outAllocation, c.VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT)) {
         tex_utils_log.err("Failed to allocate texture image with VMA", .{});
         return false;
@@ -338,9 +338,8 @@ pub fn create_image_and_memory(allocator: ?*types.VulkanAllocator, device: c.VkD
     return true;
 }
 
+/// Records barriers and a buffer-to-image copy for a texture upload.
 pub fn record_texture_copy_commands(commandBuffer: c.VkCommandBuffer, stagingBuffer: c.VkBuffer, textureImage: c.VkImage, width: u32, height: u32) void {
-    // The command buffer must be in recording state before calling this function.
-
     var barrier = std.mem.zeroes(c.VkImageMemoryBarrier2);
     barrier.sType = c.VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2;
     barrier.srcStageMask = c.VK_PIPELINE_STAGE_2_TOP_OF_PIPE_BIT;
@@ -365,8 +364,6 @@ pub fn record_texture_copy_commands(commandBuffer: c.VkCommandBuffer, stagingBuf
 
     const thread_id = platform.get_current_thread_id();
     const vk_barrier_validation = @import("../vulkan_barrier_validation.zig");
-
-    // ...
 
     if (!vk_barrier_validation.cardinal_barrier_validation_validate_pipeline_barrier(&dependencyInfo, commandBuffer, thread_id)) {
         tex_utils_log.warn("Pipeline barrier validation failed during texture upload", .{});
@@ -399,7 +396,6 @@ pub fn record_texture_copy_commands(commandBuffer: c.VkCommandBuffer, stagingBuf
     }
 
     c.vkCmdPipelineBarrier2(commandBuffer, &dependencyInfo);
-    // _ = c.vkEndCommandBuffer(commandBuffer); // Removed
 }
 
 fn submit_texture_upload(device: c.VkDevice, graphicsQueue: c.VkQueue, commandBuffer: c.VkCommandBuffer, sync_manager: ?*types.VulkanSyncManager, outTimelineValue: ?*u64) bool {
@@ -432,7 +428,6 @@ fn submit_texture_upload(device: c.VkDevice, graphicsQueue: c.VkQueue, commandBu
             return false;
         }
 
-        // Use synchronized submit
         if (vk_sync_manager.vulkan_sync_manager_submit_queue2(graphicsQueue, 1, @ptrCast(&submitInfo), uploadFence, null) != c.VK_SUCCESS) {
             c.vkDestroyFence(device, uploadFence, null);
             return false;
@@ -450,7 +445,6 @@ fn submit_texture_upload(device: c.VkDevice, graphicsQueue: c.VkQueue, commandBu
         waitInfo.pValues = &timeline_value;
         _ = c.vkWaitSemaphores(device, &waitInfo, c.UINT64_MAX);
     } else {
-        // Use synchronized submit
         if (vk_sync_manager.vulkan_sync_manager_submit_queue2(graphicsQueue, 1, @ptrCast(&submitInfo), null, null) != c.VK_SUCCESS) {
             return false;
         }
@@ -496,12 +490,7 @@ pub export fn vk_texture_create_from_data(allocator: ?*types.VulkanAllocator, de
 
     var format: c.VkFormat = if (texture.?.format != 0) @intCast(texture.?.format) else c.VK_FORMAT_UNDEFINED;
     if (format == c.VK_FORMAT_UNDEFINED) {
-        if (texture == null) {
-            // Fallback for null texture pointer
-            format = c.VK_FORMAT_R8G8B8A8_SRGB;
-        } else {
-            format = if (texture.?.is_hdr != 0) c.VK_FORMAT_R32G32B32A32_SFLOAT else c.VK_FORMAT_R8G8B8A8_SRGB;
-        }
+        format = if (texture.?.is_hdr != 0) c.VK_FORMAT_R32G32B32A32_SFLOAT else c.VK_FORMAT_R8G8B8A8_SRGB;
     }
 
     if (!create_image_and_memory(allocator, device, texture.?.width, texture.?.height, format, textureImage.?, textureImageMemory.?, textureAllocation.?)) {
@@ -545,7 +534,6 @@ pub export fn vk_texture_create_from_data(allocator: ?*types.VulkanAllocator, de
     }
 
     if (!create_texture_image_view(device, textureImage.?.*, textureImageView.?, format)) {
-        // const vk_allocator = @import("../vulkan_allocator.zig");
         vk_allocator.free_image(allocator, textureImage.?.*, textureAllocation.?.*);
         return false;
     }
@@ -637,11 +625,11 @@ pub fn transition_image_layout(device: c.VkDevice, graphicsQueue: c.VkQueue, com
     c.vkFreeCommandBuffers(device, commandPool, 1, &commandBuffer);
 }
 
+/// Creates a 1x1 magenta placeholder texture.
 pub export fn vk_texture_create_placeholder(allocator: ?*types.VulkanAllocator, device: c.VkDevice, commandPool: c.VkCommandPool, graphicsQueue: c.VkQueue, textureImage: ?*c.VkImage, textureImageMemory: ?*c.VkDeviceMemory, textureImageView: ?*c.VkImageView, format: ?*c.VkFormat, textureAllocation: ?*c.VmaAllocation) callconv(.c) bool {
     if (format) |fmt| {
         fmt.* = c.VK_FORMAT_R8G8B8A8_SRGB;
     }
-    // Magenta placeholder (R=255, G=0, B=255, A=255)
     var magentaPixel = [_]u8{ 255, 0, 255, 255 };
     var placeholderTexture = std.mem.zeroes(scene.CardinalTexture);
     placeholderTexture.data = &magentaPixel;

@@ -29,8 +29,6 @@ pub export fn init(alloc: ?*types.VulkanAllocator, instance: c.VkInstance, phys:
     allocator.physical_device = phys;
     allocator.device = dev;
 
-    // Use global storage to ensure persistence if VMA keeps the pointer (though it usually copies)
-    // and to avoid stack overflow for large structs
     g_vulkan_functions = std.mem.zeroes(c.VmaVulkanFunctions);
 
     g_vulkan_functions.vkGetPhysicalDeviceProperties = @ptrCast(c.vkGetInstanceProcAddr(instance, "vkGetPhysicalDeviceProperties"));
@@ -56,9 +54,7 @@ pub export fn init(alloc: ?*types.VulkanAllocator, instance: c.VkInstance, phys:
 
     g_vulkan_functions.vkBindBufferMemory = @ptrCast(c.vkGetDeviceProcAddr(dev, "vkBindBufferMemory"));
 
-    // IMPORTANT: VMA requires vkBindBufferMemory2KHR if VK_KHR_bind_memory2 is enabled,
-    // or if the Vulkan version is >= 1.1.
-    // If it's NULL, VMA might crash when trying to call it via internal logic if it detects 1.1+.
+    // TODO: Ensure Memory2 bind entrypoints are always loaded when required by VMA.
     g_vulkan_functions.vkBindBufferMemory2KHR = @ptrCast(c.vkGetDeviceProcAddr(dev, "vkBindBufferMemory2"));
     if (g_vulkan_functions.vkBindBufferMemory2KHR == null) g_vulkan_functions.vkBindBufferMemory2KHR = @ptrCast(c.vkGetDeviceProcAddr(dev, "vkBindBufferMemory2KHR"));
 
@@ -82,8 +78,6 @@ pub export fn init(alloc: ?*types.VulkanAllocator, instance: c.VkInstance, phys:
     if (g_vulkan_functions.vkGetImageMemoryRequirements2KHR == null) g_vulkan_functions.vkGetImageMemoryRequirements2KHR = @ptrCast(c.vkGetDeviceProcAddr(dev, "vkGetImageMemoryRequirements2KHR"));
     if (g_vulkan_functions.vkGetImageMemoryRequirements2KHR == null) vma_log.err("Failed to load vkGetImageMemoryRequirements2", .{});
 
-    // We already loaded bind functions above
-
     if (bufReq == null) {
         g_vulkan_functions.vkGetDeviceBufferMemoryRequirements = @ptrCast(c.vkGetDeviceProcAddr(dev, "vkGetDeviceBufferMemoryRequirements"));
         if (g_vulkan_functions.vkGetDeviceBufferMemoryRequirements == null) {
@@ -102,7 +96,6 @@ pub export fn init(alloc: ?*types.VulkanAllocator, instance: c.VkInstance, phys:
         g_vulkan_functions.vkGetDeviceImageMemoryRequirements = imgReq;
     }
 
-    // Additional functions if available
     if (bufDevAddr != null) {
         if (@hasField(c.VmaVulkanFunctions, "vkGetBufferDeviceAddress")) {
             @field(g_vulkan_functions, "vkGetBufferDeviceAddress") = bufDevAddr;
@@ -164,8 +157,6 @@ fn get_vma_flags(props: c.VkMemoryPropertyFlags) c.VmaAllocationCreateFlags {
     var flags: c.VmaAllocationCreateFlags = 0;
     if ((props & c.VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT) != 0) {
         if ((props & c.VK_MEMORY_PROPERTY_HOST_COHERENT_BIT) != 0) {
-            // VMA ensures coherence for mapped memory usually, or we flush manually
-            // VMA_ALLOCATION_CREATE_HOST_ACCESS_RANDOM_BIT might be better for coherent
             flags |= c.VMA_ALLOCATION_CREATE_HOST_ACCESS_RANDOM_BIT;
         } else {
             flags |= c.VMA_ALLOCATION_CREATE_HOST_ACCESS_SEQUENTIAL_WRITE_BIT;
@@ -244,7 +235,7 @@ pub export fn free_buffer(alloc: ?*types.VulkanAllocator, buffer: c.VkBuffer, al
     }
 }
 
-// Helpers for mapped memory
+/// Mapped memory helpers.
 pub export fn map_memory(alloc: ?*types.VulkanAllocator, allocation: c.VmaAllocation, ppData: ?*?*anyopaque) callconv(.c) c.VkResult {
     if (alloc == null) return c.VK_ERROR_INITIALIZATION_FAILED;
     return c.vmaMapMemory(alloc.?.handle, allocation, ppData);

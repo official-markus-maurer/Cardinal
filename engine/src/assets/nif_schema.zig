@@ -2747,10 +2747,10 @@ pub const MatchGroup = struct {
         val.Num_Vertices = try reader.readInt(u16, .little);
         // Safety check: Limit vertex indices count to avoid OOM on garbage data
         if (val.Num_Vertices > 10000) {
-             std.debug.print("MatchGroup: Num_Vertices {d} too large, clamping to 0 to avoid crash.\n", .{val.Num_Vertices});
-             val.Num_Vertices = 0;
+            std.debug.print("MatchGroup: Num_Vertices {d} too large, clamping to 0 to avoid crash.\n", .{val.Num_Vertices});
+            val.Num_Vertices = 0;
         }
-        
+
         val.Vertex_Indices = try alloc.alloc(u16, @intCast(val.Num_Vertices));
         if (val.Num_Vertices > 0) {
             const bytes_ptr = std.mem.sliceAsBytes(val.Vertex_Indices);
@@ -9704,7 +9704,7 @@ pub const NiGeometryData = struct {
                 use(i);
                 item.* = try Vector3.read(reader, alloc, header);
                 if (i < 3) {
-                     // std.debug.print("v[{d}]: ({d}, {d}, {d})\n", .{i, item.x, item.y, item.z});
+                    // std.debug.print("v[{d}]: ({d}, {d}, {d})\n", .{i, item.x, item.y, item.z});
                 }
             }
         }
@@ -9776,7 +9776,7 @@ pub const NiGeometryData = struct {
             std.debug.print("NiGeometryData: Suspicious UV_Sets_Count={d}. Forcing to 1.\n", .{val.UV_Sets.len});
             val.UV_Sets = try alloc.alloc([]TexCoord, 1);
         } else {
-             std.debug.print("NiGeometryData: UV_Sets_Count={d}\n", .{val.UV_Sets.len});
+            std.debug.print("NiGeometryData: UV_Sets_Count={d}\n", .{val.UV_Sets.len});
         }
         for (val.UV_Sets, 0..) |*row, r_idx| {
             use(r_idx);
@@ -14043,20 +14043,20 @@ pub const NiTriShapeData = struct {
                 //    use(i);
                 //    item.* = try Triangle.read(reader, alloc, header);
                 // }
-                
+
                 // Optimized read: Read full buffer at once
                 // const tri_size = @sizeOf(Triangle); // 3 * u16 = 6 bytes
                 // const total_size = @as(usize, @intCast(val.base.Num_Triangles)) * tri_size;
-                
+
                 // Safety check: total_size vs Num_Triangle_Points
                 // In NIF < 10.1.0.0, Num_Triangle_Points is Num_Triangles * 3
                 // In >= 10.1.0.0, we rely on Num_Triangles from base class.
                 // 5064 bytes = 844 * 6. This seems correct for 844 triangles.
                 // If it fails with EndOfBuffer, it means we are already near end.
-                
+
                 val.Triangles_1 = try alloc.alloc(Triangle, @intCast(val.base.Num_Triangles));
                 // std.debug.print("NiTriShapeData: Reading {d} triangles (Triangles_1) [Bulk Read: {d} bytes]\n", .{val.base.Num_Triangles, total_size});
-                
+
                 const bytes_ptr = std.mem.sliceAsBytes(val.Triangles_1.?);
                 try reader.readNoEof(bytes_ptr);
             } else {
@@ -14085,13 +14085,13 @@ pub const NiTriShapeData = struct {
         // So if we just stop reading here, we might be fine, as long as we don't need to read anything AFTER NiTriShapeData *within the same block*.
         // The NifReader restores position to end of block anyway!
         // So failing to read the tail of the block is FINE if we don't error out.
-        
+
         // Strategy: Catch error and ignore it, or just stop reading.
         if (header.version >= 0x03010000 and ((val.Num_Match_Groups orelse 0) > 0)) {
-             // Skip reading match groups to avoid EOF error
-             // std.debug.print("NiTriShapeData: Skipping Match Groups read to avoid EOF/Crash.\n", .{});
-             val.Num_Match_Groups = 0;
-             val.Match_Groups = null;
+            // Skip reading match groups to avoid EOF error
+            // std.debug.print("NiTriShapeData: Skipping Match Groups read to avoid EOF/Crash.\n", .{});
+            val.Num_Match_Groups = 0;
+            val.Match_Groups = null;
         }
         return val;
     }

@@ -1,3 +1,8 @@
+//! Scene manager panel.
+//!
+//! Provides save/load UI for ECS scene JSON files under the assets scene directory.
+//!
+//! TODO: Make the scenes directory configurable per project.
 const std = @import("std");
 const engine = @import("cardinal_engine");
 const c = @import("../c.zig").c;
@@ -5,15 +10,15 @@ const EditorState = @import("../editor_state.zig").EditorState;
 const scene_io = @import("../systems/scene_io.zig");
 const platform = engine.platform;
 
+/// Draws the scene manager panel.
 pub fn draw_scene_manager_panel(state: *EditorState, allocator: std.mem.Allocator) void {
     if (state.show_scene_manager) {
         const open = c.imgui_bridge_begin("Scene Manager", &state.show_scene_manager, 0);
         defer c.imgui_bridge_end();
 
         if (open) {
-            // Save Scene
             c.imgui_bridge_text("Save/Load:");
-            
+
             if (c.imgui_bridge_button("Save Scene As...")) {
                 if (platform.save_file_dialog(allocator, "Scene Files\x00*.json\x00All Files\x00*.*\x00", null)) |path| {
                     defer allocator.free(path);
@@ -33,7 +38,6 @@ pub fn draw_scene_manager_panel(state: *EditorState, allocator: std.mem.Allocato
 
             c.imgui_bridge_separator();
 
-            // Load Scene List
             c.imgui_bridge_text("Available Scenes:");
             c.imgui_bridge_same_line(0, -1);
             if (c.imgui_bridge_button("Refresh")) {
@@ -45,7 +49,6 @@ pub fn draw_scene_manager_panel(state: *EditorState, allocator: std.mem.Allocato
                     c.imgui_bridge_text_disabled("No scenes found.");
                 } else {
                     for (state.available_scenes.items) |scene_name| {
-                        // Cast slice pointer to C pointer (it's null terminated from dupeZ)
                         const name_ptr: [*:0]const u8 = @ptrCast(scene_name.ptr);
                         if (c.imgui_bridge_button(name_ptr)) {
                             var path_buf: [512]u8 = undefined;
@@ -53,14 +56,11 @@ pub fn draw_scene_manager_panel(state: *EditorState, allocator: std.mem.Allocato
                             scene_io.load_scene(state, allocator, full_path);
                         }
 
-                        // Right-click context menu
                         if (c.imgui_bridge_is_item_clicked(1)) {
-                            // Copy name to scene_context_menu_name
                             const len = @min(scene_name.len, state.scene_context_menu_name.len - 1);
                             @memcpy(state.scene_context_menu_name[0..len], scene_name[0..len]);
                             state.scene_context_menu_name[len] = 0;
 
-                            // Initialize rename buffer
                             @memset(&state.rename_scene_buffer, 0);
                             @memcpy(state.rename_scene_buffer[0..len], scene_name[0..len]);
 
@@ -69,7 +69,6 @@ pub fn draw_scene_manager_panel(state: *EditorState, allocator: std.mem.Allocato
                     }
                 }
 
-                // Context Menu
                 if (c.imgui_bridge_begin_popup("SceneContextMenu", 0)) {
                     c.imgui_bridge_text("Actions for:");
                     c.imgui_bridge_text(@ptrCast(&state.scene_context_menu_name));
@@ -100,8 +99,7 @@ pub fn draw_scene_manager_panel(state: *EditorState, allocator: std.mem.Allocato
                 state.open_delete_popup = false;
             }
 
-            // Rename Popup
-            if (c.imgui_bridge_begin_popup_modal("Rename Scene", null, 1 << 6)) { // ImGuiWindowFlags_AlwaysAutoResize
+            if (c.imgui_bridge_begin_popup_modal("Rename Scene", null, 1 << 6)) {
                 c.imgui_bridge_text("New Name:");
                 if (c.imgui_bridge_is_window_appearing()) {
                     c.imgui_bridge_set_keyboard_focus_here(0);
@@ -125,8 +123,7 @@ pub fn draw_scene_manager_panel(state: *EditorState, allocator: std.mem.Allocato
                 c.imgui_bridge_end_popup();
             }
 
-            // Delete Popup
-            if (c.imgui_bridge_begin_popup_modal("Delete Scene", null, 1 << 6)) { // ImGuiWindowFlags_AlwaysAutoResize
+            if (c.imgui_bridge_begin_popup_modal("Delete Scene", null, 1 << 6)) {
                 c.imgui_bridge_text("Are you sure you want to delete?");
                 c.imgui_bridge_text(@ptrCast(&state.scene_context_menu_name));
                 c.imgui_bridge_separator();
@@ -146,6 +143,7 @@ pub fn draw_scene_manager_panel(state: *EditorState, allocator: std.mem.Allocato
     }
 }
 
+/// Renames the scene file referenced by `state.scene_context_menu_name`.
 fn rename_scene(state: *EditorState, allocator: std.mem.Allocator) void {
     _ = allocator;
     const old_name_len = std.mem.indexOf(u8, &state.scene_context_menu_name, &[_]u8{0}) orelse state.scene_context_menu_name.len;
@@ -159,13 +157,6 @@ fn rename_scene(state: *EditorState, allocator: std.mem.Allocator) void {
     var old_path_buf: [512]u8 = undefined;
     const old_path = std.fmt.bufPrint(&old_path_buf, "assets/scenes/{s}", .{old_name}) catch return;
 
-    // Check if new path has .json extension, if not append it
-    // Actually, user might have removed it, or added it.
-    // If user provided extension, use it. If not, append .json if old one had it?
-    // Let's assume we want to keep it simple: just rename as user typed.
-    // But if user typed "myscene" and old was "oldscene.json", we probably want "myscene.json".
-
-    // Better logic: ensure .json extension if it's missing.
     var final_new_path_buf: [512]u8 = undefined;
     var final_new_path: []const u8 = undefined;
 
@@ -180,6 +171,7 @@ fn rename_scene(state: *EditorState, allocator: std.mem.Allocator) void {
     };
 }
 
+/// Deletes the scene file referenced by `state.scene_context_menu_name`.
 fn delete_scene(state: *EditorState, allocator: std.mem.Allocator) void {
     _ = allocator;
     const name_len = std.mem.indexOf(u8, &state.scene_context_menu_name, &[_]u8{0}) orelse state.scene_context_menu_name.len;

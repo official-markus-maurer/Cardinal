@@ -165,7 +165,7 @@ pub const SceneSerializer = struct {
 
     pub fn loadSceneData(allocator: std.mem.Allocator, json_content: []u8, root_path: ?[]const u8) !ParsedScene {
         const parsed = try std.json.parseFromSlice(std.json.Value, allocator, json_content, .{});
-        
+
         var root_path_copy: ?[]const u8 = null;
         if (root_path) |p| {
             root_path_copy = try allocator.dupe(u8, p);
@@ -180,19 +180,15 @@ pub const SceneSerializer = struct {
     }
 
     pub fn instantiateScene(self: *SceneSerializer, data: *ParsedScene) !void {
-        serializer_log.info("instantiateScene start", .{});
         const root = data.parsed.value;
-        serializer_log.info("Root tag: {any}", .{root});
         const root_path = data.root_path;
 
         if (root != .object) {
-            serializer_log.err("Root is not object", .{});
             return error.InvalidSceneFormat;
         }
 
         const version = if (root.object.get("version")) |ver| ver.integer else 0;
         if (version < 2) {
-            serializer_log.err("Scene version {d} is legacy and no longer supported. Minimum version is 2.", .{version});
             return error.UnsupportedVersion;
         }
         if (version > 2) return error.UnsupportedVersion;
@@ -202,7 +198,6 @@ pub const SceneSerializer = struct {
         if (self.model_manager) |mgr| {
             if (root.object.get("models")) |models_val| {
                 if (models_val == .array) {
-                    serializer_log.info("Found {d} models to load", .{models_val.array.items.len});
                     for (models_val.array.items) |model_val| {
                         if (model_val != .object) continue;
 
@@ -229,9 +224,7 @@ pub const SceneSerializer = struct {
                                 const path_z = try self.allocator.dupeZ(u8, full_path);
                                 defer self.allocator.free(path_z);
 
-                                serializer_log.info("Loading model: {s}", .{path_slice});
                                 const model_id = model_manager_pkg.cardinal_model_manager_load_model(mgr, path_z.ptr, null);
-                                serializer_log.info("Model loaded. ID: {d}", .{model_id});
 
                                 if (model_id != 0) {
                                     const model_idx = model_manager_pkg.find_model_index(mgr, model_id);
@@ -255,17 +248,14 @@ pub const SceneSerializer = struct {
             }
         }
 
-        serializer_log.info("Calculating total mesh count...", .{});
         if (self.model_manager) |mgr| {
-             if (mgr.models) |models| {
-                 var i: u32 = 0;
-                 while (i < mgr.model_count) : (i += 1) {
-                     serializer_log.info("Model {d} mesh count: {d}", .{i, models[i].scene.mesh_count});
-                     total_mesh_count += models[i].scene.mesh_count;
-                 }
-             }
+            if (mgr.models) |models| {
+                var i: u32 = 0;
+                while (i < mgr.model_count) : (i += 1) {
+                    total_mesh_count += models[i].scene.mesh_count;
+                }
+            }
         }
-        serializer_log.info("Total mesh count: {d}", .{total_mesh_count});
 
         if (root.object.get("entities")) |entities| {
             if (entities != .array) {
@@ -307,25 +297,25 @@ pub const SceneSerializer = struct {
 
                     if (comps.object.get("Name")) |val| {
                         if (deserializeName(val)) |comp| {
-                            self.registry.add(entity, comp) catch |e| serializer_log.err("Failed to add Name component to entity {d}: {}", .{entity.index(), e});
+                            self.registry.add(entity, comp) catch |e| serializer_log.err("Failed to add Name component to entity {d}: {}", .{ entity.index(), e });
                         } else |err| {
-                            serializer_log.err("Failed to deserialize Name for entity {d}: {}", .{entity.index(), err});
+                            serializer_log.err("Failed to deserialize Name for entity {d}: {}", .{ entity.index(), err });
                         }
                     }
 
                     if (comps.object.get("Transform")) |val| {
                         if (deserializeTransform(val)) |comp| {
-                            self.registry.add(entity, comp) catch |e| serializer_log.err("Failed to add Transform component to entity {d}: {}", .{entity.index(), e});
+                            self.registry.add(entity, comp) catch |e| serializer_log.err("Failed to add Transform component to entity {d}: {}", .{ entity.index(), e });
                         } else |err| {
-                            serializer_log.err("Failed to deserialize Transform for entity {d}: {}", .{entity.index(), err});
+                            serializer_log.err("Failed to deserialize Transform for entity {d}: {}", .{ entity.index(), err });
                         }
                     }
 
                     if (comps.object.get("Hierarchy")) |val| {
                         if (deserializeHierarchy(val, &id_map)) |comp| {
-                            self.registry.add(entity, comp) catch |e| serializer_log.err("Failed to add Hierarchy component to entity {d}: {}", .{entity.index(), e});
+                            self.registry.add(entity, comp) catch |e| serializer_log.err("Failed to add Hierarchy component to entity {d}: {}", .{ entity.index(), e });
                         } else |err| {
-                            serializer_log.err("Failed to deserialize Hierarchy for entity {d}: {}", .{entity.index(), err});
+                            serializer_log.err("Failed to deserialize Hierarchy for entity {d}: {}", .{ entity.index(), err });
                         }
                     }
 
@@ -333,36 +323,36 @@ pub const SceneSerializer = struct {
                         if (deserializeMeshRenderer(val)) |comp| {
                             // Validate mesh index
                             if (comp.mesh.index < total_mesh_count) {
-                                self.registry.add(entity, comp) catch |e| serializer_log.err("Failed to add MeshRenderer component to entity {d}: {}", .{entity.index(), e});
+                                self.registry.add(entity, comp) catch |e| serializer_log.err("Failed to add MeshRenderer component to entity {d}: {}", .{ entity.index(), e });
                             } else {
-                                serializer_log.warn("Skipping MeshRenderer for entity {d}: mesh_id {d} out of bounds (total meshes: {d})", .{entity.index(), comp.mesh.index, total_mesh_count});
+                                serializer_log.warn("Skipping MeshRenderer for entity {d}: mesh_id {d} out of bounds (total meshes: {d})", .{ entity.index(), comp.mesh.index, total_mesh_count });
                             }
                         } else |err| {
-                            serializer_log.err("Failed to deserialize MeshRenderer for entity {d}: {}", .{entity.index(), err});
+                            serializer_log.err("Failed to deserialize MeshRenderer for entity {d}: {}", .{ entity.index(), err });
                         }
                     }
 
                     if (comps.object.get("Light")) |val| {
                         if (deserializeLight(val)) |comp| {
-                            self.registry.add(entity, comp) catch |e| serializer_log.err("Failed to add Light component to entity {d}: {}", .{entity.index(), e});
+                            self.registry.add(entity, comp) catch |e| serializer_log.err("Failed to add Light component to entity {d}: {}", .{ entity.index(), e });
                         } else |err| {
-                            serializer_log.err("Failed to deserialize Light for entity {d}: {}", .{entity.index(), err});
+                            serializer_log.err("Failed to deserialize Light for entity {d}: {}", .{ entity.index(), err });
                         }
                     }
 
                     if (comps.object.get("Camera")) |val| {
                         if (deserializeCamera(val)) |comp| {
-                            self.registry.add(entity, comp) catch |e| serializer_log.err("Failed to add Camera component to entity {d}: {}", .{entity.index(), e});
+                            self.registry.add(entity, comp) catch |e| serializer_log.err("Failed to add Camera component to entity {d}: {}", .{ entity.index(), e });
                         } else |err| {
-                            serializer_log.err("Failed to deserialize Camera for entity {d}: {}", .{entity.index(), err});
+                            serializer_log.err("Failed to deserialize Camera for entity {d}: {}", .{ entity.index(), err });
                         }
                     }
 
                     if (comps.object.get("Script")) |val| {
                         if (deserializeScript(val)) |comp| {
-                            self.registry.add(entity, comp) catch |e| serializer_log.err("Failed to add Script component to entity {d}: {}", .{entity.index(), e});
+                            self.registry.add(entity, comp) catch |e| serializer_log.err("Failed to add Script component to entity {d}: {}", .{ entity.index(), e });
                         } else |err| {
-                            serializer_log.err("Failed to deserialize Script for entity {d}: {}", .{entity.index(), err});
+                            serializer_log.err("Failed to deserialize Script for entity {d}: {}", .{ entity.index(), err });
                         }
                     }
                 }
@@ -371,9 +361,7 @@ pub const SceneSerializer = struct {
     }
 
     pub fn deserialize(self: *SceneSerializer, reader: anytype, root_path: ?[]const u8) !void {
-        serializer_log.info("deserialize start", .{});
         const json_content = try reader.readAllAlloc(self.allocator, std.math.maxInt(usize));
-        serializer_log.info("json read. len={d}", .{json_content.len});
         // We do NOT defer free json_content here; it's passed to loadSceneData which stores it in ParsedScene.
         // ParsedScene.deinit will free it.
         errdefer self.allocator.free(json_content);
@@ -381,7 +369,6 @@ pub const SceneSerializer = struct {
         var data = try loadSceneData(self.allocator, json_content, root_path);
         defer data.deinit();
 
-        serializer_log.info("loadSceneData done.", .{});
         try self.instantiateScene(&data);
     }
 
@@ -473,7 +460,7 @@ pub const SceneSerializer = struct {
             .mesh = .{ .index = 0, .generation = 0 }, // Invalid defaults
             .material = .{ .index = 0, .generation = 0 },
         };
-        
+
         if (val.object.get("mesh_id")) |id| mr.mesh.index = @intCast(id.integer);
         if (val.object.get("material_id")) |id| mr.material.index = @intCast(id.integer);
         if (val.object.get("visible")) |v| mr.visible = v.bool;
@@ -762,4 +749,49 @@ fn JsonWriter(comptime WriterType: type) type {
             try self.writer.writeAll(raw);
         }
     };
+}
+
+test "SceneSerializer instantiateScene rejects non-object root" {
+    const allocator = std.testing.allocator;
+
+    var registry = registry_pkg.Registry.init(allocator);
+    defer registry.deinit();
+
+    var serializer = SceneSerializer.init(allocator, &registry, null);
+
+    const json_content = try allocator.dupe(u8, "\"hi\"");
+    var data = try SceneSerializer.loadSceneData(allocator, json_content, null);
+    defer data.deinit();
+
+    try std.testing.expectError(error.InvalidSceneFormat, serializer.instantiateScene(&data));
+}
+
+test "SceneSerializer instantiateScene rejects unsupported version" {
+    const allocator = std.testing.allocator;
+
+    var registry = registry_pkg.Registry.init(allocator);
+    defer registry.deinit();
+
+    var serializer = SceneSerializer.init(allocator, &registry, null);
+
+    const json_content = try allocator.dupe(u8, "{\"version\":1,\"entities\":[]}");
+    var data = try SceneSerializer.loadSceneData(allocator, json_content, null);
+    defer data.deinit();
+
+    try std.testing.expectError(error.UnsupportedVersion, serializer.instantiateScene(&data));
+}
+
+test "SceneSerializer instantiateScene accepts empty scene" {
+    const allocator = std.testing.allocator;
+
+    var registry = registry_pkg.Registry.init(allocator);
+    defer registry.deinit();
+
+    var serializer = SceneSerializer.init(allocator, &registry, null);
+
+    const json_content = try allocator.dupe(u8, "{\"version\":2,\"entities\":[]}");
+    var data = try SceneSerializer.loadSceneData(allocator, json_content, null);
+    defer data.deinit();
+
+    try serializer.instantiateScene(&data);
 }

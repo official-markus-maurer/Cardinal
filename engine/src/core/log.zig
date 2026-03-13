@@ -127,7 +127,6 @@ fn console_sink_log(_: ?*anyopaque, level: CardinalLogLevel, category: [*:0]cons
         }
         std.debug.print("\n", .{});
     } else {
-        // Use std.debug.print for all output to avoid issues with std.io.getStdOut in some Zig versions/targets
         std.debug.print("{s}({d}): [{s}][{s}] {s}", .{ file_span, line, level_str, cat_span, msg_span });
         if (json_fields) |json| {
             std.debug.print(" {s}", .{std.mem.span(json)});
@@ -137,8 +136,7 @@ fn console_sink_log(_: ?*anyopaque, level: CardinalLogLevel, category: [*:0]cons
 }
 
 /// Console sink flush (no-op).
-fn console_sink_flush(_: ?*anyopaque) callconv(.c) void {
-}
+fn console_sink_flush(_: ?*anyopaque) callconv(.c) void {}
 
 var g_console_sink: CardinalLogSink = .{
     .log_func = console_sink_log,

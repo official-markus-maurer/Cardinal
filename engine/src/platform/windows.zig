@@ -1,3 +1,7 @@
+//! Windows platform implementation.
+//!
+//! Provides OS-specific services for crash dumps, aligned allocations, stack traces, and native
+//! file dialogs.
 const std = @import("std");
 
 pub const c = @cImport({
@@ -13,10 +17,12 @@ pub const c = @cImport({
     @cInclude("DbgHelp.h");
 });
 
+/// Returns an OS thread identifier for the current thread.
 pub fn get_current_thread_id() u32 {
     return c.GetCurrentThreadId();
 }
 
+/// Writes a minidump file into the local `dumps/` directory.
 pub fn write_minidump(exception_pointers: ?*anyopaque) bool {
     const now_ms = @as(u64, @intCast(std.time.milliTimestamp()));
     const seconds: u64 = now_ms / 1000;
@@ -65,48 +71,53 @@ pub fn write_minidump(exception_pointers: ?*anyopaque) bool {
     return ok != c.FALSE;
 }
 
+/// Allocates `size` bytes aligned to `alignment`.
 pub fn aligned_alloc(size: usize, alignment: usize) ?*anyopaque {
     return c._aligned_malloc(size, alignment);
 }
 
+/// Frees a pointer returned by `aligned_alloc`.
 pub fn aligned_free(ptr: ?*anyopaque) void {
     c._aligned_free(ptr);
 }
 
+/// Attempts to expand a malloc allocation in-place.
 pub fn expand(memblock: ?*anyopaque, size: usize) ?*anyopaque {
     return c._expand(memblock, size);
 }
 
+/// Captures up to `frames_to_capture` call frames into `back_trace`.
 pub fn capture_stack_back_trace(frames_to_skip: u32, frames_to_capture: u32, back_trace: [*]?*anyopaque, back_trace_hash: ?*u32) u16 {
     return c.RtlCaptureStackBackTrace(frames_to_skip, frames_to_capture, back_trace, back_trace_hash);
 }
 
+/// Opens a native file picker and returns a heap-duplicated path, or null.
+///
+/// `filter` uses the Win32 `OPENFILENAMEA` format: `"Label\\0Pattern\\0...\\0\\0"`.
 pub fn open_file_dialog(allocator: std.mem.Allocator, filter: ?[:0]const u8, default_path: ?[:0]const u8) ?[]const u8 {
     var ofn: c.OPENFILENAMEA = std.mem.zeroes(c.OPENFILENAMEA);
     var buffer: [260]u8 = std.mem.zeroes([260]u8);
 
     ofn.lStructSize = @sizeOf(c.OPENFILENAMEA);
-    // Use active window as owner if possible, but null is fine for now
     ofn.hwndOwner = null;
     ofn.hInstance = null;
     ofn.lpstrFile = &buffer;
     ofn.nMaxFile = buffer.len;
-    
-    // Filter format: "Text Files\0*.txt\0All Files\0*.*\0"
+
     if (filter) |f| {
         ofn.lpstrFilter = f.ptr;
     } else {
         ofn.lpstrFilter = "All Files\x00*.*\x00";
     }
-    
+
     ofn.nFilterIndex = 1;
     ofn.lpstrFileTitle = null;
     ofn.nMaxFileTitle = 0;
-    
+
     if (default_path) |p| {
         ofn.lpstrInitialDir = p.ptr;
     }
-    
+
     ofn.Flags = c.OFN_PATHMUSTEXIST | c.OFN_FILEMUSTEXIST | c.OFN_NOCHANGEDIR;
 
     if (c.GetOpenFileNameA(&ofn) != 0) {
@@ -117,6 +128,9 @@ pub fn open_file_dialog(allocator: std.mem.Allocator, filter: ?[:0]const u8, def
     return null;
 }
 
+/// Opens a native save-file picker and returns a heap-duplicated path, or null.
+///
+/// `filter` uses the Win32 `OPENFILENAMEA` format: `"Label\\0Pattern\\0...\\0\\0"`.
 pub fn save_file_dialog(allocator: std.mem.Allocator, filter: ?[:0]const u8, default_path: ?[:0]const u8) ?[]const u8 {
     var ofn: c.OPENFILENAMEA = std.mem.zeroes(c.OPENFILENAMEA);
     var buffer: [260]u8 = std.mem.zeroes([260]u8);
@@ -126,21 +140,21 @@ pub fn save_file_dialog(allocator: std.mem.Allocator, filter: ?[:0]const u8, def
     ofn.hInstance = null;
     ofn.lpstrFile = &buffer;
     ofn.nMaxFile = buffer.len;
-    
+
     if (filter) |f| {
         ofn.lpstrFilter = f.ptr;
     } else {
         ofn.lpstrFilter = "All Files\x00*.*\x00";
     }
-    
+
     ofn.nFilterIndex = 1;
     ofn.lpstrFileTitle = null;
     ofn.nMaxFileTitle = 0;
-    
+
     if (default_path) |p| {
         ofn.lpstrInitialDir = p.ptr;
     }
-    
+
     ofn.Flags = c.OFN_PATHMUSTEXIST | c.OFN_OVERWRITEPROMPT | c.OFN_NOCHANGEDIR;
 
     if (c.GetSaveFileNameA(&ofn) != 0) {
@@ -151,10 +165,9 @@ pub fn save_file_dialog(allocator: std.mem.Allocator, filter: ?[:0]const u8, def
     return null;
 }
 
+/// Folder dialog support is currently unimplemented on Windows.
 pub fn open_folder_dialog(allocator: std.mem.Allocator, default_path: ?[:0]const u8) ?[]const u8 {
-    // IFileOpenDialog is complex to implement via C API bindings (COM).
-    // Fallback to simple implementation or skip for now.
-    // For now, let's just return null or implement a hacky solution if needed.
+    // TODO: Implement folder selection via IFileOpenDialog (COM).
     _ = allocator;
     _ = default_path;
     return null;

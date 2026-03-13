@@ -1,3 +1,8 @@
+//! Scene hierarchy panel.
+//!
+//! Renders the entity hierarchy tree view and supports selection, rename, and basic creation.
+//!
+//! TODO: Centralize hierarchy mutations in one system to avoid duplication.
 const std = @import("std");
 const engine = @import("cardinal_engine");
 const math = engine.math;
@@ -10,8 +15,9 @@ const c = @import("../c.zig").c;
 const EditorState = @import("../editor_state.zig").EditorState;
 const scene_io = @import("../systems/scene_io.zig");
 
+/// Draws one ECS entity node and recurses through its children.
 fn draw_entity_node(state: *EditorState, entity: entity_module.Entity, depth: u32) void {
-    if (depth > 100) return; // Prevent infinite recursion
+    if (depth > 100) return;
 
     const hierarchy = state.registry.get(components.Hierarchy, entity);
     if (hierarchy == null) return;
@@ -22,7 +28,6 @@ fn draw_entity_node(state: *EditorState, entity: entity_module.Entity, depth: u3
         name = n.slice();
     }
 
-    // Determine Prefix
     var prefix: []const u8 = "";
     if (state.registry.get(components.Node, entity)) |node_comp| {
         switch (node_comp.type) {
@@ -37,7 +42,6 @@ fn draw_entity_node(state: *EditorState, entity: entity_module.Entity, depth: u3
         flags |= c.ImGuiTreeNodeFlags_Selected;
     }
 
-    // If no children, make it a leaf
     if (hierarchy.?.first_child == null) {
         flags |= c.ImGuiTreeNodeFlags_Leaf;
     }
@@ -45,14 +49,12 @@ fn draw_entity_node(state: *EditorState, entity: entity_module.Entity, depth: u3
     var open: bool = false;
 
     if (state.renaming_entity.id == entity.id) {
-        // Renaming mode: Use ID as label for tree node to maintain structure, but render input text
         const id_label = std.fmt.bufPrintZ(&name_buf, "##{d}", .{entity.id}) catch "##";
         open = c.imgui_bridge_tree_node_ex(id_label.ptr, flags | c.ImGuiTreeNodeFlags_AllowItemOverlap);
 
         c.imgui_bridge_same_line(0, 0);
         c.imgui_bridge_push_item_width(-1);
 
-        // Auto-focus logic handled by ImGui usually, but we can enforce it
         if (state.renaming_entity.id == entity.id and c.imgui_bridge_is_window_focused(0) and !c.imgui_bridge_is_any_item_active()) {
             c.imgui_bridge_set_keyboard_focus_here(0);
         }
@@ -67,7 +69,6 @@ fn draw_entity_node(state: *EditorState, entity: entity_module.Entity, depth: u3
         }
         c.imgui_bridge_pop_item_width();
 
-        // Check if we clicked outside or pressed escape
         if (!c.imgui_bridge_is_item_active() and (c.imgui_bridge_is_mouse_clicked(0) or c.imgui_bridge_is_key_pressed(c.ImGuiKey_Escape))) {
             state.renaming_entity.id = std.math.maxInt(u64);
         }
@@ -80,7 +81,6 @@ fn draw_entity_node(state: *EditorState, entity: entity_module.Entity, depth: u3
         }
     }
 
-    // Context Menu
     if (c.imgui_bridge_begin_popup_context_item()) {
         if (c.imgui_bridge_begin_menu("Create Node", true)) {
             if (c.imgui_bridge_menu_item("Node3D", null, false, true)) {
@@ -100,10 +100,7 @@ fn draw_entity_node(state: *EditorState, entity: entity_module.Entity, depth: u3
         }
 
         if (c.imgui_bridge_menu_item("Delete", null, false, true)) {
-            // Basic unlink logic (incomplete, but better than nothing for now)
-            // TODO: Implement proper recursive deletion and unlink
-
-            // Just destroy for now
+            // TODO: Implement proper recursive deletion and unlink.
             state.registry.destroy(entity);
             if (state.selected_entity.id == entity.id) {
                 state.selected_entity = .{ .id = std.math.maxInt(u64) };
@@ -112,7 +109,6 @@ fn draw_entity_node(state: *EditorState, entity: entity_module.Entity, depth: u3
         c.imgui_bridge_end_popup();
     }
 
-    // Drag & Drop Target
     if (c.imgui_bridge_begin_drag_drop_target()) {
         if (c.imgui_bridge_accept_drag_drop_payload("ASSET_MODEL", 0)) |payload| {
             const data_ptr = c.imgui_bridge_payload_get_data(payload);
@@ -121,8 +117,6 @@ fn draw_entity_node(state: *EditorState, entity: entity_module.Entity, depth: u3
             const len = @as(usize, @intCast(data_size));
             const path = data[0..len];
 
-            // Trigger load and attach to this entity
-            // We need a function in scene_io for this
             scene_io.load_model_to_entity(state, path, entity);
         }
         c.imgui_bridge_end_drag_drop_target();
@@ -132,7 +126,7 @@ fn draw_entity_node(state: *EditorState, entity: entity_module.Entity, depth: u3
         var child = hierarchy.?.first_child;
         var loop_guard: u32 = 0;
         while (child) |c_ent| {
-            if (loop_guard > 1000) break; // Prevent infinite loop in siblings
+            if (loop_guard > 1000) break;
             loop_guard += 1;
 
             draw_entity_node(state, c_ent, depth + 1);
@@ -146,10 +140,10 @@ fn draw_entity_node(state: *EditorState, entity: entity_module.Entity, depth: u3
     }
 }
 
+/// Creates a new entity under `parent` and attaches default components.
 fn create_entity(state: *EditorState, parent: ?entity_module.Entity, node_type: components.NodeType) void {
     const entity = state.registry.create() catch return;
 
-    // Default components
     const name_str = switch (node_type) {
         .Node3D => "Node3D",
         .Node2D => "Node2D",
@@ -163,18 +157,15 @@ fn create_entity(state: *EditorState, parent: ?entity_module.Entity, node_type: 
     if (parent) |p| {
         h.parent = p;
 
-        // Link to parent
         if (state.registry.get(components.Hierarchy, p)) |parent_h| {
             var ph = parent_h.*;
             if (ph.first_child) |first| {
-                // Find last child
                 var last = first;
                 while (true) {
                     if (state.registry.get(components.Hierarchy, last)) |lh| {
                         if (lh.next_sibling) |next| {
                             last = next;
                         } else {
-                            // Link
                             var last_h = lh.*;
                             last_h.next_sibling = entity;
                             state.registry.add(last, last_h) catch {};
@@ -191,7 +182,6 @@ fn create_entity(state: *EditorState, parent: ?entity_module.Entity, node_type: 
             ph.child_count += 1;
             state.registry.add(p, ph) catch {};
         } else {
-            // Parent has no hierarchy? Add it
             var ph = components.Hierarchy{};
             ph.first_child = entity;
             ph.child_count = 1;

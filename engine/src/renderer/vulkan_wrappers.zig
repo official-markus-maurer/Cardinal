@@ -115,7 +115,7 @@ pub const Device = struct {
 
     /// Allocates descriptor sets into `sets` (length must match `layouts`).
     pub fn allocateDescriptorSets(self: Device, descriptorPool: c.VkDescriptorPool, layouts: []const c.VkDescriptorSetLayout, sets: []c.VkDescriptorSet) VulkanError!void {
-        if (layouts.len != sets.len) return error.InitializationFailed; // Or some other error
+        if (layouts.len != sets.len) return error.InitializationFailed;
 
         var allocInfo = std.mem.zeroes(c.VkDescriptorSetAllocateInfo);
         allocInfo.sType = c.VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO;
@@ -140,46 +140,49 @@ pub const Device = struct {
         return layout;
     }
 
+    /// Destroys a pipeline layout.
     pub fn destroyPipelineLayout(self: Device, layout: c.VkPipelineLayout) void {
         if (layout != null) {
             c.vkDestroyPipelineLayout(self.handle, layout, null);
         }
     }
 
+    /// Updates descriptor sets using `writes` and `copies`.
     pub fn updateDescriptorSets(self: Device, writes: []const c.VkWriteDescriptorSet, copies: []const c.VkCopyDescriptorSet) void {
-        c.vkUpdateDescriptorSets(
-            self.handle,
-            @intCast(writes.len),
-            if (writes.len > 0) writes.ptr else null,
-            @intCast(copies.len),
-            if (copies.len > 0) copies.ptr else null
-        );
+        c.vkUpdateDescriptorSets(self.handle, @intCast(writes.len), if (writes.len > 0) writes.ptr else null, @intCast(copies.len), if (copies.len > 0) copies.ptr else null);
     }
 };
 
+/// Wrapper around a `VkQueue` handle.
 pub const Queue = struct {
     handle: c.VkQueue,
 
+    /// Wraps an existing queue handle.
     pub fn init(handle: c.VkQueue) Queue {
         return .{ .handle = handle };
     }
 
+    /// Waits for the queue to become idle.
     pub fn waitIdle(self: Queue) VulkanError!void {
         try checkResult(c.vkQueueWaitIdle(self.handle));
     }
 
+    /// Submits `submits` to the queue.
     pub fn submit(self: Queue, submits: []const c.VkSubmitInfo, fence: c.VkFence) VulkanError!void {
         try checkResult(c.vkQueueSubmit(self.handle, @intCast(submits.len), submits.ptr, fence));
     }
 };
 
+/// Wrapper around a `VkCommandBuffer` handle.
 pub const CommandBuffer = struct {
     handle: c.VkCommandBuffer,
 
+    /// Wraps an existing command buffer handle.
     pub fn init(handle: c.VkCommandBuffer) CommandBuffer {
         return .{ .handle = handle };
     }
 
+    /// Begins recording using `usage` flags.
     pub fn beginRecording(self: CommandBuffer, usage: c.VkCommandBufferUsageFlags) VulkanError!void {
         var beginInfo = std.mem.zeroes(c.VkCommandBufferBeginInfo);
         beginInfo.sType = c.VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
@@ -187,55 +190,57 @@ pub const CommandBuffer = struct {
         try checkResult(c.vkBeginCommandBuffer(self.handle, &beginInfo));
     }
 
+    /// Ends recording.
     pub fn endRecording(self: CommandBuffer) VulkanError!void {
         try checkResult(c.vkEndCommandBuffer(self.handle));
     }
 
+    /// Resets the command buffer.
     pub fn reset(self: CommandBuffer, flags: c.VkCommandBufferResetFlags) VulkanError!void {
         try checkResult(c.vkResetCommandBuffer(self.handle, flags));
     }
 
+    /// Binds a pipeline.
     pub fn bindPipeline(self: CommandBuffer, bindPoint: c.VkPipelineBindPoint, pipeline: c.VkPipeline) void {
         c.vkCmdBindPipeline(self.handle, bindPoint, pipeline);
     }
 
+    /// Binds descriptor sets.
     pub fn bindDescriptorSets(self: CommandBuffer, bindPoint: c.VkPipelineBindPoint, layout: c.VkPipelineLayout, firstSet: u32, sets: []const c.VkDescriptorSet, dynamicOffsets: []const u32) void {
-        c.vkCmdBindDescriptorSets(
-            self.handle,
-            bindPoint,
-            layout,
-            firstSet,
-            @intCast(sets.len),
-            sets.ptr,
-            @intCast(dynamicOffsets.len),
-            if (dynamicOffsets.len > 0) dynamicOffsets.ptr else null
-        );
+        c.vkCmdBindDescriptorSets(self.handle, bindPoint, layout, firstSet, @intCast(sets.len), sets.ptr, @intCast(dynamicOffsets.len), if (dynamicOffsets.len > 0) dynamicOffsets.ptr else null);
     }
 
+    /// Binds vertex buffers.
     pub fn bindVertexBuffers(self: CommandBuffer, firstBinding: u32, buffers: []const c.VkBuffer, offsets: []const c.VkDeviceSize) void {
         c.vkCmdBindVertexBuffers(self.handle, firstBinding, @intCast(buffers.len), buffers.ptr, offsets.ptr);
     }
 
+    /// Binds an index buffer.
     pub fn bindIndexBuffer(self: CommandBuffer, buffer: c.VkBuffer, offset: c.VkDeviceSize, indexType: c.VkIndexType) void {
         c.vkCmdBindIndexBuffer(self.handle, buffer, offset, indexType);
     }
 
+    /// Records a non-indexed draw call.
     pub fn draw(self: CommandBuffer, vertexCount: u32, instanceCount: u32, firstVertex: u32, firstInstance: u32) void {
         c.vkCmdDraw(self.handle, vertexCount, instanceCount, firstVertex, firstInstance);
     }
 
+    /// Records an indexed draw call.
     pub fn drawIndexed(self: CommandBuffer, indexCount: u32, instanceCount: u32, firstIndex: u32, vertexOffset: i32, firstInstance: u32) void {
         c.vkCmdDrawIndexed(self.handle, indexCount, instanceCount, firstIndex, vertexOffset, firstInstance);
     }
 
+    /// Pushes constants.
     pub fn pushConstants(self: CommandBuffer, layout: c.VkPipelineLayout, stageFlags: c.VkShaderStageFlags, offset: u32, size: u32, pValues: *const anyopaque) void {
         c.vkCmdPushConstants(self.handle, layout, stageFlags, offset, size, pValues);
     }
 
+    /// Sets viewports.
     pub fn setViewport(self: CommandBuffer, firstViewport: u32, viewports: []const c.VkViewport) void {
         c.vkCmdSetViewport(self.handle, firstViewport, @intCast(viewports.len), viewports.ptr);
     }
 
+    /// Sets scissors.
     pub fn setScissor(self: CommandBuffer, firstScissor: u32, scissors: []const c.VkRect2D) void {
         c.vkCmdSetScissor(self.handle, firstScissor, @intCast(scissors.len), scissors.ptr);
     }

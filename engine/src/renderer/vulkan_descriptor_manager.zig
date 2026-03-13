@@ -1,3 +1,9 @@
+//! Descriptor set/descriptor buffer management.
+//!
+//! Builds descriptor set layouts from simple binding arrays and supports both classic descriptor
+//! sets and descriptor buffers when available.
+//!
+//! TODO: Move the builder API into a separate file to keep runtime code minimal.
 const std = @import("std");
 const builtin = @import("builtin");
 const log = @import("../core/log.zig");
@@ -17,7 +23,7 @@ pub const VulkanDescriptorManagerCreateInfo = extern struct {
     poolFlags: c.VkDescriptorPoolCreateFlags,
 };
 
-// Zig Builder API
+/// Fluent Zig-side builder for `VulkanDescriptorManager` creation.
 pub const DescriptorBuilder = struct {
     bindings: std.ArrayListUnmanaged(types.VulkanDescriptorBinding),
     allocator: std.mem.Allocator,
@@ -59,7 +65,7 @@ pub const DescriptorBuilder = struct {
     }
 };
 
-// Helper functions
+/// Returns the descriptor type for a binding or `VK_DESCRIPTOR_TYPE_MAX_ENUM` if missing.
 fn get_binding_descriptor_type(manager: *const types.VulkanDescriptorManager, binding: u32) c.VkDescriptorType {
     if (manager.bindings == null or manager.bindingCount == 0) {
         return c.VK_DESCRIPTOR_TYPE_MAX_ENUM;
@@ -85,6 +91,7 @@ fn get_descriptor_size_for_type(state: *const types.VulkanState, dtype: c.VkDesc
     };
 }
 
+/// Creates the descriptor set layout for the manager bindings.
 fn create_descriptor_set_layout(manager: *types.VulkanDescriptorManager) bool {
     const mem_alloc = memory.cardinal_get_allocator_for_category(.RENDERER);
     const ptr = memory.cardinal_alloc(mem_alloc, manager.bindingCount * @sizeOf(c.VkDescriptorSetLayoutBinding));
@@ -141,7 +148,6 @@ fn create_descriptor_set_layout(manager: *types.VulkanDescriptorManager) bool {
             return false;
         }
     } else {
-        // Fallback if allocation failed, though unlikely
         layoutInfo.flags |= c.VK_DESCRIPTOR_SET_LAYOUT_CREATE_DESCRIPTOR_BUFFER_BIT_EXT;
         const result = c.vkCreateDescriptorSetLayout(manager.device, &layoutInfo, null, &manager.descriptorSetLayout);
         if (result != c.VK_SUCCESS) {
@@ -154,6 +160,7 @@ fn create_descriptor_set_layout(manager: *types.VulkanDescriptorManager) bool {
     return true;
 }
 
+/// Allocates and maps a descriptor buffer and computes per-binding offsets.
 fn setup_descriptor_buffer(manager: *types.VulkanDescriptorManager, maxSets: u32, vulkan_state: *types.VulkanState) bool {
     if (vulkan_state.context.vkGetDescriptorSetLayoutSizeEXT == null) {
         desc_log.err("Descriptor buffer extension not available", .{});
@@ -229,7 +236,7 @@ fn setup_descriptor_buffer(manager: *types.VulkanDescriptorManager, maxSets: u32
     return true;
 }
 
-// Exported functions
+/// Creates a descriptor manager that allocates slots from a descriptor buffer.
 pub export fn vk_descriptor_manager_create(manager: ?*types.VulkanDescriptorManager, device: c.VkDevice, allocator: ?*types.VulkanAllocator, createInfo: ?*const VulkanDescriptorManagerCreateInfo, vulkan_state: ?*types.VulkanState) callconv(.c) bool {
     if (manager == null or device == null or allocator == null or createInfo == null or createInfo.?.bindings == null or createInfo.?.bindingCount == 0) {
         desc_log.err("Invalid parameters for descriptor manager creation", .{});
@@ -270,7 +277,6 @@ pub export fn vk_descriptor_manager_create(manager: ?*types.VulkanDescriptorMana
             return false;
         }
 
-        // Initialize free list for descriptor buffers
         const indices_ptr = memory.cardinal_alloc(mem_alloc, info.maxSets * @sizeOf(u32));
         if (indices_ptr != null) {
             mgr.freeIndices = @as([*]u32, @ptrCast(@alignCast(indices_ptr)));
@@ -278,7 +284,6 @@ pub export fn vk_descriptor_manager_create(manager: ?*types.VulkanDescriptorMana
             mgr.freeCapacity = info.maxSets;
         } else {
             desc_log.err("Failed to allocate free list for descriptor manager", .{});
-            // Continue but without free list capability (append-only)
             mgr.freeIndices = null;
             mgr.freeCount = 0;
             mgr.freeCapacity = 0;
@@ -294,6 +299,7 @@ pub export fn vk_descriptor_manager_create(manager: ?*types.VulkanDescriptorMana
     return true;
 }
 
+/// Destroys a descriptor manager and releases its descriptor buffer and layout.
 pub export fn vk_descriptor_manager_destroy(manager: ?*types.VulkanDescriptorManager) callconv(.c) void {
     if (manager == null) return;
     const mgr = manager.?;
@@ -331,6 +337,7 @@ pub export fn vk_descriptor_manager_destroy(manager: ?*types.VulkanDescriptorMan
     desc_log.debug("Descriptor manager destroyed", .{});
 }
 
+/// Allocates `setCount` pseudo descriptor-set handles backed by descriptor-buffer slots.
 pub export fn vk_descriptor_manager_allocate_sets(manager: ?*types.VulkanDescriptorManager, setCount: u32, pDescriptorSets: ?[*]c.VkDescriptorSet) callconv(.c) bool {
     if (manager == null or pDescriptorSets == null) return false;
     if (setCount == 0) return true;
@@ -348,12 +355,10 @@ pub export fn vk_descriptor_manager_allocate_sets(manager: ?*types.VulkanDescrip
     var i: u32 = 0;
     while (i < setCount) : (i += 1) {
         var setIndex: u32 = 0;
-        // Check free list first
         if (mgr.freeCount > 0 and mgr.freeIndices != null) {
             mgr.freeCount -= 1;
             setIndex = mgr.freeIndices.?[mgr.freeCount];
         } else {
-            // Allocate new
             if (mgr.descriptorSetCount >= mgr.maxSets) {
                 desc_log.err("Descriptor buffer out of memory", .{});
                 return false;
@@ -361,12 +366,8 @@ pub export fn vk_descriptor_manager_allocate_sets(manager: ?*types.VulkanDescrip
             setIndex = mgr.descriptorSetCount;
             mgr.descriptorSetCount += 1;
         }
-        // Cast index to pseudo-handle
-        // VkDescriptorSet is a pointer, so we cast the index to a pointer
-        // We offset by 1 to ensure we never return NULL (0) which is considered an invalid handle
         pDescriptorSets.?[i] = @ptrFromInt(setIndex + 1);
 
-        // Track in descriptorSets array for legacy compatibility (e.g. PBR manager)
         if (mgr.descriptorSets == null) {
             const mem_alloc = memory.cardinal_get_allocator_for_category(.RENDERER);
             const descriptor_sets_ptr = memory.cardinal_alloc(mem_alloc, mgr.maxSets * @sizeOf(c.VkDescriptorSet));
@@ -384,12 +385,14 @@ pub export fn vk_descriptor_manager_allocate_sets(manager: ?*types.VulkanDescrip
     return true;
 }
 
+/// Allocates a single pseudo descriptor-set handle.
 pub export fn vk_descriptor_manager_allocate(manager: ?*types.VulkanDescriptorManager) callconv(.c) bool {
     if (manager == null) return false;
     var set: c.VkDescriptorSet = null;
     return vk_descriptor_manager_allocate_sets(manager, 1, @ptrCast(&set));
 }
 
+/// Writes a buffer descriptor into a descriptor-buffer slot.
 pub export fn vk_descriptor_manager_update_buffer(manager: ?*types.VulkanDescriptorManager, set: c.VkDescriptorSet, binding: u32, buffer: c.VkBuffer, offset: c.VkDeviceSize, range: c.VkDeviceSize) callconv(.c) bool {
     if (manager == null) return false;
     const mgr = manager.?;
@@ -405,7 +408,6 @@ pub export fn vk_descriptor_manager_update_buffer(manager: ?*types.VulkanDescrip
         return false;
     }
 
-    // Adjust for 1-based index
     const setHandle = @as(u32, @intCast(@intFromPtr(set)));
     if (setHandle == 0) return false;
     const setIndex = setHandle - 1;
@@ -458,6 +460,7 @@ pub export fn vk_descriptor_manager_update_buffer(manager: ?*types.VulkanDescrip
     return true;
 }
 
+/// Writes an image descriptor into a descriptor-buffer slot.
 pub export fn vk_descriptor_manager_update_image(manager: ?*types.VulkanDescriptorManager, set: c.VkDescriptorSet, binding: u32, imageView: c.VkImageView, sampler: c.VkSampler, imageLayout: c.VkImageLayout) callconv(.c) bool {
     if (manager == null) return false;
     const mgr = manager.?;
@@ -473,7 +476,6 @@ pub export fn vk_descriptor_manager_update_image(manager: ?*types.VulkanDescript
     }
 
     if (mgr.useDescriptorBuffers) {
-        // Adjust for 1-based index
         const setHandle = @as(u32, @intCast(@intFromPtr(set)));
         if (setHandle == 0) return false;
         const setIndex = setHandle - 1;
@@ -518,10 +520,9 @@ pub export fn vk_descriptor_manager_update_image(manager: ?*types.VulkanDescript
     return false;
 }
 
-// Internal helper for textures update
+/// Writes a texture array descriptor into a descriptor-buffer slot.
 fn update_textures_internal(manager: *types.VulkanDescriptorManager, set: c.VkDescriptorSet, binding: u32, imageViews: [*]c.VkImageView, samplers: ?[*]c.VkSampler, singleSampler: c.VkSampler, imageLayout: c.VkImageLayout, count: u32, dtype: c.VkDescriptorType) bool {
     if (manager.useDescriptorBuffers) {
-        // Adjust for 1-based index
         const setHandle = @as(u32, @intCast(@intFromPtr(set)));
         if (setHandle == 0) return false;
         const setIndex = setHandle - 1;
@@ -560,7 +561,6 @@ fn update_textures_internal(manager: *types.VulkanDescriptorManager, set: c.VkDe
             } else if (dtype == c.VK_DESCRIPTOR_TYPE_STORAGE_IMAGE) {
                 getInfo.data.pStorageImage = &imageInfo;
             } else {
-                // Fallback / Default
                 getInfo.data.pCombinedImageSampler = &imageInfo;
             }
 
@@ -574,7 +574,7 @@ fn update_textures_internal(manager: *types.VulkanDescriptorManager, set: c.VkDe
     return false;
 }
 
-// Re-implement exports using helper
+/// Writes a texture array descriptor using a single sampler.
 pub export fn vk_descriptor_manager_update_textures(manager: ?*types.VulkanDescriptorManager, set: c.VkDescriptorSet, binding: u32, imageViews: ?[*]c.VkImageView, sampler: c.VkSampler, imageLayout: c.VkImageLayout, count: u32) callconv(.c) bool {
     if (manager == null or imageViews == null or count == 0) return false;
     const mgr = manager.?;
@@ -584,6 +584,7 @@ pub export fn vk_descriptor_manager_update_textures(manager: ?*types.VulkanDescr
     return update_textures_internal(mgr, set, binding, imageViews.?, null, sampler, imageLayout, count, dtype);
 }
 
+/// Writes a texture array descriptor using per-element samplers.
 pub export fn vk_descriptor_manager_update_textures_with_samplers(manager: ?*types.VulkanDescriptorManager, set: c.VkDescriptorSet, binding: u32, imageViews: ?[*]c.VkImageView, samplers: ?[*]c.VkSampler, imageLayout: c.VkImageLayout, count: u32) callconv(.c) bool {
     if (manager == null or imageViews == null or count == 0) return false;
     const mgr = manager.?;
@@ -593,18 +594,18 @@ pub export fn vk_descriptor_manager_update_textures_with_samplers(manager: ?*typ
     return update_textures_internal(mgr, set, binding, imageViews.?, samplers, null, imageLayout, count, dtype);
 }
 
+/// Binds descriptor sets (descriptor-buffer implementation).
 pub export fn vk_descriptor_manager_bind_sets(manager: ?*types.VulkanDescriptorManager, commandBuffer: c.VkCommandBuffer, pipelineBindPoint: c.VkPipelineBindPoint, pipelineLayout: c.VkPipelineLayout, firstSet: u32, setCount: u32, pDescriptorSets: ?[*]const c.VkDescriptorSet, dynamicOffsetCount: u32, pDynamicOffsets: ?[*]const u32) callconv(.c) void {
     vk_descriptor_manager_bind_sets_with_buffer_index(manager, commandBuffer, pipelineBindPoint, pipelineLayout, firstSet, setCount, pDescriptorSets, dynamicOffsetCount, pDynamicOffsets, 0);
 }
 
+/// Binds descriptor sets using `bufferIndex` for multi-buffer bindings.
 pub export fn vk_descriptor_manager_bind_sets_with_buffer_index(manager: ?*types.VulkanDescriptorManager, commandBuffer: c.VkCommandBuffer, pipelineBindPoint: c.VkPipelineBindPoint, pipelineLayout: c.VkPipelineLayout, firstSet: u32, setCount: u32, pDescriptorSets: ?[*]const c.VkDescriptorSet, dynamicOffsetCount: u32, pDynamicOffsets: ?[*]const u32, bufferIndex: u32) callconv(.c) void {
     if (manager == null) return;
     const mgr = manager.?;
     if (!mgr.initialized or setCount == 0) return;
 
     if (mgr.useDescriptorBuffers) {
-        // Descriptor buffers don't use dynamic offsets in the same way (they use buffer offsets)
-        // so we ignore dynamicOffsetCount and pDynamicOffsets
         _ = dynamicOffsetCount;
         _ = pDynamicOffsets;
 
@@ -630,6 +631,7 @@ pub export fn vk_descriptor_manager_bind_sets_with_buffer_index(manager: ?*types
     }
 }
 
+/// Returns the descriptor buffer VkBuffer handle.
 pub export fn vk_descriptor_manager_get_buffer_handle(manager: ?*types.VulkanDescriptorManager) callconv(.c) c.VkBuffer {
     if (manager) |mgr| {
         if (mgr.useDescriptorBuffers) return mgr.descriptorBuffer.handle;
@@ -637,6 +639,7 @@ pub export fn vk_descriptor_manager_get_buffer_handle(manager: ?*types.VulkanDes
     return null;
 }
 
+/// Fills `outInfo` with the descriptor buffer binding info.
 pub export fn vk_descriptor_manager_get_binding_info(manager: ?*types.VulkanDescriptorManager, outInfo: *c.VkDescriptorBufferBindingInfoEXT) callconv(.c) bool {
     if (manager == null) return false;
     const mgr = manager.?;
@@ -658,6 +661,7 @@ pub export fn vk_descriptor_manager_get_binding_info(manager: ?*types.VulkanDesc
     return true;
 }
 
+/// Sets per-set offsets for the currently bound descriptor buffer.
 pub export fn vk_descriptor_manager_set_offsets(manager: ?*types.VulkanDescriptorManager, commandBuffer: c.VkCommandBuffer, pipelineBindPoint: c.VkPipelineBindPoint, pipelineLayout: c.VkPipelineLayout, firstSet: u32, setCount: u32, pDescriptorSets: ?[*]const c.VkDescriptorSet, bufferIndex: u32) callconv(.c) void {
     if (manager == null) return;
     const mgr = manager.?;
@@ -665,17 +669,16 @@ pub export fn vk_descriptor_manager_set_offsets(manager: ?*types.VulkanDescripto
 
     const vs = @as(*types.VulkanState, @ptrCast(@alignCast(mgr.vulkan_state)));
 
-    // Use stack buffer for small counts to avoid malloc
     var stack_indices: [8]u32 = undefined;
     var stack_offsets: [8]c.VkDeviceSize = undefined;
 
     var bufferIndices: [*]u32 = &stack_indices;
     var offsets: [*]c.VkDeviceSize = &stack_offsets;
 
-    // Heap allocation fallback for large counts
     var ptr1: ?*anyopaque = null;
     var ptr2: ?*anyopaque = null;
 
+    // TODO: Replace malloc/free with renderer allocator or a reusable scratch buffer.
     if (setCount > 8) {
         ptr1 = c.malloc(setCount * @sizeOf(u32));
         ptr2 = c.malloc(setCount * @sizeOf(c.VkDeviceSize));
@@ -695,7 +698,6 @@ pub export fn vk_descriptor_manager_set_offsets(manager: ?*types.VulkanDescripto
     var i: u32 = 0;
     while (i < setCount) : (i += 1) {
         bufferIndices[i] = bufferIndex;
-        // Extract index from pseudo-handle if provided
         if (pDescriptorSets) |sets| {
             const setHandle = @intFromPtr(sets[i]);
             if (setHandle > 0) {
@@ -712,18 +714,22 @@ pub export fn vk_descriptor_manager_set_offsets(manager: ?*types.VulkanDescripto
     vs.context.vkCmdSetDescriptorBufferOffsetsEXT.?(commandBuffer, pipelineBindPoint, pipelineLayout, firstSet, setCount, bufferIndices, offsets);
 }
 
+/// Returns the manager descriptor set layout.
 pub export fn vk_descriptor_manager_get_layout(manager: ?*const types.VulkanDescriptorManager) callconv(.c) c.VkDescriptorSetLayout {
     return if (manager) |mgr| mgr.descriptorSetLayout else null;
 }
 
+/// Returns whether the manager is using descriptor buffers.
 pub export fn vk_descriptor_manager_uses_buffers(manager: ?*const types.VulkanDescriptorManager) callconv(.c) bool {
     return if (manager) |mgr| mgr.useDescriptorBuffers else false;
 }
 
+/// Returns the descriptor set stride in bytes within the descriptor buffer.
 pub export fn vk_descriptor_manager_get_set_size(manager: ?*const types.VulkanDescriptorManager) callconv(.c) c.VkDeviceSize {
     return if (manager) |mgr| mgr.descriptorSetSize else 0;
 }
 
+/// Returns a pointer to the descriptor data for `setIndex`.
 pub export fn vk_descriptor_manager_get_set_data(manager: ?*types.VulkanDescriptorManager, setIndex: u32) callconv(.c) ?*anyopaque {
     if (manager == null) return null;
     const mgr = manager.?;
@@ -733,6 +739,7 @@ pub export fn vk_descriptor_manager_get_set_data(manager: ?*types.VulkanDescript
     return @ptrCast(@as([*]u8, @ptrCast(mgr.descriptorBuffer.mapped)) + offset);
 }
 
+/// Returns a descriptor-buffer slot to the free list when available.
 pub export fn vk_descriptor_manager_free_set(manager: ?*types.VulkanDescriptorManager, descriptorSet: c.VkDescriptorSet) callconv(.c) void {
     if (manager == null) return;
     const mgr = manager.?;
@@ -750,6 +757,7 @@ pub export fn vk_descriptor_manager_free_set(manager: ?*types.VulkanDescriptorMa
     }
 }
 
+/// Resets allocation state to reuse descriptor-buffer slots.
 pub export fn vk_descriptor_manager_reset(manager: ?*types.VulkanDescriptorManager) callconv(.c) void {
     if (manager == null) return;
     const mgr = manager.?;

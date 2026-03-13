@@ -1,28 +1,32 @@
+//! Archetype-based ECS storage.
+//!
+//! Provides an experimental archetype/chunk storage model as an alternative to sparse sets.
+//! This is not currently integrated with `Registry` and is primarily a prototype.
+//!
+//! TODO: Either integrate this with `Registry` or move it into a separate experimental package.
 const std = @import("std");
 const entity_pkg = @import("entity.zig");
 
 const Entity = entity_pkg.Entity;
 
-// A unique identifier for a set of components (Archetype)
-// For simplicity, we can use a hash of sorted component type IDs.
+/// Unique identifier for an archetype (hash of sorted component type IDs).
 pub const ArchetypeId = u64;
 
+/// Component type identifier used by the archetype storage.
 pub const ComponentTypeId = u64;
 
+/// Chunk of entities for a specific archetype, storing components in SoA form.
 pub const Chunk = struct {
-    // Capacity could be dynamic or fixed. 
-    // For cache locality, fixed size (e.g. 16KB) is common, 
-    // but simplified implementation might use ArrayLists.
-    // Let's use SoA (Structure of Arrays) via type-erased ArrayLists.
-    
-    // Map ComponentTypeID -> []u8 (raw bytes)
-    // We need to know the size of each component to index correctly.
+    /// Raw component storage keyed by component type ID.
     components: std.AutoHashMapUnmanaged(ComponentTypeId, []u8),
+    /// Number of live rows in the chunk.
     count: usize,
+    /// Maximum rows the chunk can store before growing/allocating another chunk.
     capacity: usize,
-    
+
     allocator: std.mem.Allocator,
 
+    /// TODO: Consider a fixed byte-size chunk (e.g. 16KiB) for better locality.
     pub fn init(allocator: std.mem.Allocator, capacity: usize) Chunk {
         return .{
             .components = .{},
@@ -44,23 +48,25 @@ pub const Chunk = struct {
         for (types, sizes) |id, size| {
             const entry = try self.components.getOrPut(self.allocator, id);
             if (!entry.found_existing) {
-                // Allocate initial capacity
                 entry.value_ptr.* = try self.allocator.alloc(u8, size * self.capacity);
             }
         }
     }
 };
 
+/// Archetype definition and its chunk list.
 pub const Archetype = struct {
     id: ArchetypeId,
-    types: []const ComponentTypeId, // Sorted
-    type_sizes: []const usize,      // Parallel array
-    type_alignments: []const u16,   // Parallel array
-    
+    /// Sorted component type IDs defining the archetype signature.
+    types: []const ComponentTypeId,
+    /// Parallel array of component sizes (in bytes).
+    type_sizes: []const usize,
+    /// Parallel array of component alignments (in bytes).
+    type_alignments: []const u16,
+
     chunks: std.ArrayListUnmanaged(Chunk),
-    
-    // Edges for graph traversal (add/remove component)
-    // ComponentID -> ArchetypeID
+
+    /// Transition edges for adding/removing a component: `ComponentTypeId -> ArchetypeId`.
     edges: std.AutoHashMapUnmanaged(ComponentTypeId, ArchetypeId),
 
     allocator: std.mem.Allocator,
@@ -85,27 +91,26 @@ pub const Archetype = struct {
         self.allocator.free(self.types);
         self.allocator.free(self.type_sizes);
         self.allocator.free(self.type_alignments);
-        
+
         for (self.chunks.items) |*chunk| {
             chunk.deinit();
         }
         self.chunks.deinit(self.allocator);
         self.edges.deinit(self.allocator);
     }
-    
+
     pub fn get_chunk_for_new_entity(self: *Archetype) !struct { chunk: *Chunk, chunk_index: usize, row_index: usize } {
-        // Find a chunk with space
         for (self.chunks.items, 0..) |*chunk, i| {
             if (chunk.count < chunk.capacity) {
                 return .{ .chunk = chunk, .chunk_index = i, .row_index = chunk.count };
             }
         }
-        
-        // Create new chunk
-        var new_chunk = Chunk.init(self.allocator, 1024); // Default capacity
+
+        const default_chunk_capacity = 1024;
+        var new_chunk = Chunk.init(self.allocator, default_chunk_capacity);
         try new_chunk.ensure_capacity(self.types, self.type_sizes);
         try self.chunks.append(self.allocator, new_chunk);
-        
+
         const chunk_index = self.chunks.items.len - 1;
         const chunk = &self.chunks.items[chunk_index];
         return .{ .chunk = chunk, .chunk_index = chunk_index, .row_index = 0 };
@@ -115,7 +120,7 @@ pub const Archetype = struct {
 pub const ArchetypeStorage = struct {
     archetypes: std.AutoHashMapUnmanaged(ArchetypeId, *Archetype),
     entity_index: std.AutoHashMapUnmanaged(Entity, EntityRecord),
-    
+
     allocator: std.mem.Allocator,
 
     const EntityRecord = struct {
@@ -142,7 +147,7 @@ pub const ArchetypeStorage = struct {
         self.entity_index.deinit(self.allocator);
     }
 
-    // Helper to calculate Archetype ID from sorted types
+    /// Computes an `ArchetypeId` from an already-sorted list of component type IDs.
     pub fn calculate_id(types: []const ComponentTypeId) ArchetypeId {
         var hasher = std.hash.Wyhash.init(0);
         for (types) |t| {

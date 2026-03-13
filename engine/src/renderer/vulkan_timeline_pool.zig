@@ -80,6 +80,7 @@ fn pool_mutex_unlock(mutex: ?*anyopaque) void {
 
 /// Returns a monotonic timestamp in nanoseconds.
 fn get_current_time_ns() u64 {
+    // TODO: Use `platform.get_time_ns()` for all platforms and remove this helper.
     if (builtin.os.tag == .windows) {
         var frequency: c.LARGE_INTEGER = undefined;
         var counter: c.LARGE_INTEGER = undefined;
@@ -147,7 +148,7 @@ pub export fn vulkan_timeline_pool_init(pool: *types.VulkanTimelinePool, device:
     @atomicStore(u64, &pool.cache_hits, 0, .seq_cst);
     @atomicStore(u64, &pool.cache_misses, 0, .seq_cst);
 
-    pool.max_idle_time_ns = 5000000000; // 5 seconds
+    pool.max_idle_time_ns = 5_000_000_000;
     pool.auto_cleanup_enabled = true;
 
     const current_time = get_current_time_ns();
@@ -178,7 +179,6 @@ pub export fn vulkan_timeline_pool_destroy(pool: *types.VulkanTimelinePool) call
 
     pool_mutex_lock(pool.mutex);
 
-    // Destroy all semaphores
     var i: u32 = 0;
     while (i < pool.pool_size) : (i += 1) {
         if (pool.entries[i].semaphore != null) {
@@ -206,7 +206,6 @@ pub export fn vulkan_timeline_pool_allocate(pool: *types.VulkanTimelinePool, all
 
     pool_mutex_lock(pool.mutex);
 
-    // Try to find an unused semaphore
     var i: u32 = 0;
     while (i < pool.pool_size) : (i += 1) {
         if (!pool.entries[i].in_use and pool.entries[i].semaphore != null) {
@@ -224,7 +223,6 @@ pub export fn vulkan_timeline_pool_allocate(pool: *types.VulkanTimelinePool, all
         }
     }
 
-    // No free semaphore found, create new one if possible
     if (pool.pool_size < pool.max_pool_size) {
         const new_index = pool.pool_size;
         if (create_timeline_semaphore(pool.device, &pool.entries[new_index].semaphore)) {

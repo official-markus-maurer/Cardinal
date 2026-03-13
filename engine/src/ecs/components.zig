@@ -12,7 +12,7 @@ pub const Transform = struct {
     rotation: math.Quat = math.Quat.identity(),
     scale: math.Vec3 = math.Vec3.one(),
 
-    // Cached world matrix
+    /// Cached world matrix derived from TRS.
     world_matrix: math.Mat4 = math.Mat4.identity(),
     dirty: bool = true,
 
@@ -62,25 +62,27 @@ pub const CameraType = enum {
 /// Camera component with cached view/projection matrices.
 pub const Camera = struct {
     type: CameraType,
-    fov: f32 = 45.0, // Degrees
+    /// Vertical field-of-view in degrees.
+    fov: f32 = 45.0,
     aspect_ratio: f32 = 1.777,
     near_plane: f32 = 0.1,
     far_plane: f32 = 1000.0,
     ortho_size: f32 = 10.0,
 
-    // View and Projection matrices are calculated by the system
+    /// Cached view matrix computed by the camera system.
     view_matrix: math.Mat4 = math.Mat4.identity(),
+    /// Cached projection matrix computed by the camera system.
     projection_matrix: math.Mat4 = math.Mat4.identity(),
 };
 
 /// Script hook component for user-defined update behavior.
 pub const Script = struct {
-    // This would likely point to a script resource or state
-    // For now, using a simple ID or pointer
+    /// Script identifier interpreted by the script runtime.
     script_id: u64 = 0,
+    /// Opaque pointer passed to callbacks.
     data: ?*anyopaque = null,
 
-    // Function pointers for callbacks could go here
+    /// Optional per-frame callback invoked by the script system.
     on_update: ?*const fn (data: ?*anyopaque, delta_time: f32) void = null,
 };
 

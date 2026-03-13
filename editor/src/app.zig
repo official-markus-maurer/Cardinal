@@ -26,10 +26,8 @@ pub const EditorApp = struct {
         app.allocator = allocator;
         app.editor_layer_initialized = false;
 
-        // Create engine
         app.engine = try CardinalEngine.create(allocator, config);
 
-        // Configure window for Project Manager (Launcher Mode)
         if (app.engine.window) |win| {
             engine.window.cardinal_window_set_size(win, 600, 400);
             engine.window.cardinal_window_set_title(win, "Cardinal Project Manager");
@@ -40,10 +38,8 @@ pub const EditorApp = struct {
             allocator.destroy(app);
         }
 
-        // Register input actions
         app.registerInputActions();
 
-        // Initialize editor layer
         if (!editor_layer.init(app.engine.window.?, &app.engine.renderer, &app.engine.registry)) {
             app.engine.deinit();
             allocator.destroy(app.engine);
@@ -53,7 +49,6 @@ pub const EditorApp = struct {
         app.editor_layer_initialized = true;
 
         app_log.info("Setting device loss callbacks...", .{});
-        // Set device loss callbacks
         vulkan_renderer.cardinal_renderer_set_device_loss_callbacks(&app.engine.renderer, editor_layer.on_device_loss, editor_layer.on_device_restored, null);
         app_log.info("Device loss callbacks set.", .{});
 
@@ -63,11 +58,9 @@ pub const EditorApp = struct {
     /// Registers global editor input bindings.
     fn registerInputActions(self: *EditorApp) void {
         _ = self;
-        // Base layer actions (always active unless blocked by something very high priority)
         engine.input.registerActionWithLayer("ToggleCursor", &[_]c_int{engine.input.KEY_TAB}, "Base");
         engine.input.registerActionWithLayer("CreateMinidump", &[_]c_int{engine.input.KEY_KP_0}, "Base");
 
-        // Game layer actions
         engine.input.registerActionWithLayer("MoveForward", &[_]c_int{engine.input.KEY_W}, "Game");
         engine.input.registerActionWithLayer("MoveBackward", &[_]c_int{engine.input.KEY_S}, "Game");
         engine.input.registerActionWithLayer("StrafeLeft", &[_]c_int{engine.input.KEY_A}, "Game");
@@ -75,10 +68,6 @@ pub const EditorApp = struct {
         engine.input.registerActionWithLayer("Jump", &[_]c_int{engine.input.KEY_SPACE}, "Game");
         engine.input.registerActionWithLayer("Descend", &[_]c_int{engine.input.KEY_LEFT_SHIFT}, "Game");
         engine.input.registerActionWithLayer("Sprint", &[_]c_int{engine.input.KEY_LEFT_CONTROL}, "Game");
-
-        // Initialize layers
-        // Base layer is pushed in engine init, but we can ensure it here if we want.
-        // engine.input.pushLayer("Base", false);
     }
 
     /// Runs the editor main loop until window close or unrecoverable device loss.

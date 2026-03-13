@@ -1,3 +1,9 @@
+//! Vulkan shader module helpers.
+//!
+//! Loads SPIR-V shader bytecode from disk, creates `VkShaderModule` objects, and provides a small
+//! reflection-facing helper to read SPIR-V code as `[]u32`.
+//!
+//! TODO: Move file I/O to an asset loader and support hot-reload notifications.
 const std = @import("std");
 const log = @import("../../core/log.zig");
 pub const reflection = @import("vulkan_shader_reflection.zig");
@@ -6,6 +12,7 @@ const shader_utils_log = log.ScopedLogger("SHADER_UTILS");
 
 const c = @import("../vulkan_c.zig").c;
 
+/// Loads a SPIR-V blob from `filename` and creates a shader module.
 pub export fn vk_shader_create_module(device: c.VkDevice, filename: ?[*:0]const u8, shader_module: ?*c.VkShaderModule) callconv(.c) bool {
     if (filename == null or shader_module == null) {
         shader_utils_log.err("Invalid parameters for shader module creation", .{});
@@ -30,9 +37,6 @@ pub export fn vk_shader_create_module(device: c.VkDevice, filename: ?[*:0]const 
         return false;
     }
 
-    // We use the C allocator to match the original C implementation's behavior if needed,
-    // but here we just need a temporary buffer. Zig allocator is fine.
-    // However, we need to ensure alignment for uint32.
     const memory = @import("../../core/memory.zig");
     const allocator = memory.cardinal_get_allocator_for_category(.RENDERER).as_allocator();
 
@@ -52,13 +56,10 @@ pub export fn vk_shader_create_module(device: c.VkDevice, filename: ?[*:0]const 
         return false;
     }
 
-    // Ensure 4-byte alignment for SPIR-V
-    // allocator.alloc(u8) usually returns aligned memory, but strict alignment is better checked or enforced.
-    // Actually, c_allocator uses malloc which returns suitably aligned memory for any standard type.
-
     return vk_shader_create_module_from_code(device, @ptrCast(@alignCast(code.ptr)), @intCast(stat.size), shader_module);
 }
 
+/// Creates a shader module from an in-memory SPIR-V blob.
 pub export fn vk_shader_create_module_from_code(device: c.VkDevice, code: ?[*]const u32, code_size: usize, shader_module: ?*c.VkShaderModule) callconv(.c) bool {
     if (device == null or code == null or code_size == 0 or shader_module == null) {
         shader_utils_log.err("Invalid parameters for shader module creation from code", .{});
@@ -79,6 +80,7 @@ pub export fn vk_shader_create_module_from_code(device: c.VkDevice, code: ?[*]co
     return true;
 }
 
+/// Reads a SPIR-V file into an owned `[]u32` slice.
 pub fn vk_shader_read_file(allocator: std.mem.Allocator, filename: []const u8) ![]u32 {
     const file = try std.fs.cwd().openFile(filename, .{});
     defer file.close();
@@ -86,7 +88,6 @@ pub fn vk_shader_read_file(allocator: std.mem.Allocator, filename: []const u8) !
     const stat = try file.stat();
     if (stat.size == 0) return error.EmptyFile;
 
-    // Ensure size is multiple of 4
     if (stat.size % 4 != 0) return error.InvalidSpirvSize;
 
     const buffer = try allocator.alloc(u32, stat.size / 4);
@@ -99,6 +100,7 @@ pub fn vk_shader_read_file(allocator: std.mem.Allocator, filename: []const u8) !
     return buffer;
 }
 
+/// Destroys a shader module if non-null.
 pub export fn vk_shader_destroy_module(device: c.VkDevice, shader_module: c.VkShaderModule) callconv(.c) void {
     if (device != null and shader_module != null) {
         c.vkDestroyShaderModule(device, shader_module, null);
