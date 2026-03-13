@@ -638,6 +638,26 @@ pub fn update() void {
 
     check_loading_status();
 
+    if (state.model_manager.scene_dirty) {
+        renderer.cardinal_renderer_clear_scene(state.renderer);
+        if (model_manager.cardinal_model_manager_get_combined_scene(&state.model_manager)) |comb_ptr| {
+            state.combined_scene = comb_ptr.*;
+            state.pending_scene = state.combined_scene;
+            state.scene_upload_pending = true;
+            state.scene_loaded = (state.combined_scene.mesh_count > 0);
+        } else {
+            state.scene_loaded = false;
+        }
+
+        state.selected_animation = -1;
+        state.animation_time = 0.0;
+        state.animation_playing = false;
+    } else if (state.model_manager.transform_dirty) {
+        if (model_manager.cardinal_model_manager_get_combined_scene(&state.model_manager)) |comb_ptr| {
+            state.combined_scene = comb_ptr.*;
+        }
+    }
+
     c.imgui_bridge_impl_vulkan_new_frame();
     c.imgui_bridge_impl_glfw_new_frame();
     c.imgui_bridge_new_frame();
@@ -906,23 +926,6 @@ pub fn update() void {
                     var center = origin;
                     c.imgui_bridge_draw_circle_filled(&center, 3.0, 0xFFFFFFFF);
                 }
-            }
-        }
-
-        // Check for dirty model manager and update combined scene
-        if (state.model_manager.scene_dirty) {
-            const combined = model_manager.cardinal_model_manager_get_combined_scene(&state.model_manager);
-            if (combined) |comb_ptr| {
-                state.combined_scene = comb_ptr.*;
-                state.pending_scene = state.combined_scene;
-                state.scene_upload_pending = true;
-                log.cardinal_log_info("[EDITOR] Model manager dirty, updating combined scene", .{});
-            }
-        } else if (state.model_manager.transform_dirty) {
-            const combined = model_manager.cardinal_model_manager_get_combined_scene(&state.model_manager);
-            if (combined) |comb_ptr| {
-                state.combined_scene = comb_ptr.*;
-                // No upload pending, renderer sees updated pointers in state.combined_scene
             }
         }
 

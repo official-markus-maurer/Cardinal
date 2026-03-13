@@ -1,3 +1,10 @@
+//! Engine memory and allocation utilities.
+//!
+//! Provides a small set of allocators (dynamic/linear/arena) and per-category tracked allocators
+//! used throughout the engine. The exported C-ABI functions are the stable interface; Zig code
+//! typically uses `CardinalAllocator.as_allocator()` to get a `std.mem.Allocator`.
+//!
+//! TODO: Make category counts/types self-consistent (avoid hard-coded `12` category slots).
 const std = @import("std");
 const builtin = @import("builtin");
 const platform = @import("platform.zig");
@@ -8,9 +15,10 @@ const c = @cImport({
     @cInclude("stdio.h");
 });
 
-// Enums and Structs matching C header
+/// Memory allocation categories (C-ABI compatible).
 pub const CardinalMemoryCategory = enum(c_int) { UNKNOWN = 0, ENGINE, RENDERER, VULKAN_BUFFERS, VULKAN_DEVICE, TEXTURES, MESHES, ASSETS, SHADERS, WINDOW, LOGGING, TEMPORARY, MAX };
 
+/// Allocator kinds supported by the C-facing memory system.
 pub const CardinalAllocatorType = enum(c_int) { DYNAMIC = 0, LINEAR = 1, TRACKED = 2, ARENA = 3 };
 
 const ArenaState = extern struct {
@@ -23,7 +31,8 @@ const ArenaBlock = extern struct {
     next: ?*ArenaBlock,
     capacity: usize,
     offset: usize,
-    data: [*]u8, // Flexible array member in C, pointer here
+    /// Flexible array member data pointer.
+    data: [*]u8,
 };
 
 pub const CardinalMemoryStats = extern struct {
@@ -35,7 +44,8 @@ pub const CardinalMemoryStats = extern struct {
 };
 
 pub const CardinalGlobalMemoryStats = extern struct {
-    categories: [12]CardinalMemoryStats, // 12 = CARDINAL_MEMORY_CATEGORY_MAX
+    /// Per-category memory statistics.
+    categories: [12]CardinalMemoryStats,
     total: CardinalMemoryStats,
 };
 
@@ -145,22 +155,25 @@ pub const CardinalAllocator = extern struct {
     }
 };
 
-// Internal State Structures
+/// Allocator state for the dynamic (malloc-backed) allocator.
 const DynamicState = extern struct {
     placeholder: c_int,
 };
 
+/// Allocator state for the linear/bump allocator.
 const LinearState = extern struct {
     buffer: ?[*]u8,
     capacity: usize,
     offset: usize,
 };
 
+/// Allocator state for a tracked allocator wrapper.
 const TrackedState = extern struct {
     backing: *CardinalAllocator,
     category: CardinalMemoryCategory,
 };
 
+/// Per-allocation tracking record (debugging/statistics).
 const AllocInfo = struct {
     ptr: ?*anyopaque,
     size: usize,
@@ -170,7 +183,7 @@ const AllocInfo = struct {
     stack_depth: usize,
 };
 
-// Global State
+/// Global memory statistics and allocator state.
 var g_stats: CardinalGlobalMemoryStats = std.mem.zeroes(CardinalGlobalMemoryStats);
 var g_alloc_map: std.AutoHashMap(usize, AllocInfo) = undefined;
 var g_alloc_map_lock: std.Thread.RwLock = .{};
@@ -188,7 +201,7 @@ var g_linear: CardinalAllocator = undefined;
 var g_arena: CardinalAllocator = undefined;
 var g_tracked: [12]CardinalAllocator = undefined;
 
-// Stats Helpers
+/// Updates stats on allocation.
 fn stats_on_alloc(cat: CardinalMemoryCategory, size: usize) void {
     var category = cat;
     if (@intFromEnum(category) >= @intFromEnum(CardinalMemoryCategory.MAX)) {
@@ -233,12 +246,14 @@ fn stats_on_free(cat: CardinalMemoryCategory, size: usize) void {
     g_stats.total.free_count += 1;
 }
 
+/// Copies current memory statistics into `out_stats` (no-op if null).
 pub export fn cardinal_memory_get_stats(out_stats: ?*CardinalGlobalMemoryStats) void {
     if (out_stats) |s| {
         s.* = g_stats;
     }
 }
 
+/// Resets global memory statistics counters.
 pub export fn cardinal_memory_reset_stats() void {
     g_stats = std.mem.zeroes(CardinalGlobalMemoryStats);
 }
@@ -645,6 +660,7 @@ fn tracked_reset(self: *CardinalAllocator) callconv(.c) void {
 }
 
 // Initialization and Shutdown
+/// Initializes global allocators and per-category tracked allocators.
 pub export fn cardinal_memory_init(default_linear_capacity: usize) void {
     cardinal_memory_reset_stats();
 
@@ -720,6 +736,7 @@ pub export fn cardinal_memory_init(default_linear_capacity: usize) void {
     }
 }
 
+/// Shuts down the memory subsystem and releases allocator backing storage.
 pub export fn cardinal_memory_shutdown() void {
     if (!g_initialized) return;
     g_initialized = false;
@@ -774,6 +791,7 @@ export fn cardinal_get_arena_allocator() *CardinalAllocator {
     return &g_arena;
 }
 
+/// Returns the tracked allocator for a memory category (falls back to UNKNOWN).
 pub export fn cardinal_get_allocator_for_category(category: CardinalMemoryCategory) *CardinalAllocator {
     const idx = @as(usize, @intCast(@intFromEnum(category)));
     if (idx < 0 or idx >= 12) {
@@ -782,18 +800,22 @@ pub export fn cardinal_get_allocator_for_category(category: CardinalMemoryCatego
     return &g_tracked[@intCast(idx)];
 }
 
+/// Allocates `size` bytes from `allocator`.
 pub export fn cardinal_alloc(allocator: *CardinalAllocator, size: usize) callconv(.c) ?*anyopaque {
     return allocator.alloc(allocator, size, 0);
 }
 
+/// Frees a pointer previously allocated by the same allocator.
 pub export fn cardinal_free(allocator: *CardinalAllocator, ptr: ?*anyopaque) callconv(.c) void {
     allocator.free(allocator, ptr);
 }
 
+/// Reallocates `ptr` to `size` bytes (allocator-specific semantics).
 pub export fn cardinal_realloc(allocator: *CardinalAllocator, ptr: ?*anyopaque, size: usize) callconv(.c) ?*anyopaque {
     return allocator.realloc(allocator, ptr, 0, size, 0);
 }
 
+/// Allocates `count * size` bytes and zero-initializes the result.
 pub export fn cardinal_calloc(allocator: *CardinalAllocator, count: usize, size: usize) callconv(.c) ?*anyopaque {
     const total = count * size;
     const ptr = allocator.alloc(allocator, total, 0);

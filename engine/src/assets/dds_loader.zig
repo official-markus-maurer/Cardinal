@@ -1,11 +1,17 @@
+//! DDS texture decoding.
+//!
+//! Parses DDS headers and maps a subset of formats to Vulkan format constants. Some paths convert
+//! to RGBA8 when the source is 24-bit.
+//!
+//! TODO: Move Vulkan format constants to a shared renderer/types module to avoid duplication.
 const std = @import("std");
 const log = @import("../core/log.zig");
 const texture_loader = @import("texture_loader.zig");
 
 const dds_log = log.ScopedLogger("DDS");
 
-// DDS Header Constants
-const DDS_MAGIC: u32 = 0x20534444; // "DDS "
+/// DDS file magic ("DDS ").
+const DDS_MAGIC: u32 = 0x20534444;
 
 const DDSD_CAPS: u32 = 0x00000001;
 const DDSD_HEIGHT: u32 = 0x00000002;
@@ -23,7 +29,7 @@ const DDPF_RGB: u32 = 0x00000040;
 const DDPF_YUV: u32 = 0x00000200;
 const DDPF_LUMINANCE: u32 = 0x00020000;
 
-// Vulkan Formats (from vulkan_core.h)
+/// Vulkan format constants used by the DDS parser.
 const VK_FORMAT_UNDEFINED = 0;
 const VK_FORMAT_R8G8B8A8_UNORM = 37;
 const VK_FORMAT_R8G8B8A8_SRGB = 43;
@@ -74,6 +80,7 @@ fn makeFourCC(ch0: u8, ch1: u8, ch2: u8, ch3: u8) u32 {
     return @as(u32, ch0) | (@as(u32, ch1) << 8) | (@as(u32, ch2) << 16) | (@as(u32, ch3) << 24);
 }
 
+/// Loads DDS pixel data from a memory buffer into `out_data`.
 pub fn load_dds_from_memory(buffer: []const u8, out_data: *texture_loader.TextureData) bool {
     if (buffer.len < 4 + @sizeOf(DDS_HEADER)) {
         dds_log.err("Buffer too small for DDS header", .{});
@@ -115,7 +122,6 @@ pub fn load_dds_from_memory(buffer: []const u8, out_data: *texture_loader.Textur
             return false;
         }
     } else if ((header.ddspf.dwFlags & DDPF_RGB) != 0) {
-        // Uncompressed RGB/RGBA
         const rMask = header.ddspf.dwRBitMask;
         const gMask = header.ddspf.dwGBitMask;
         const bMask = header.ddspf.dwBBitMask;
@@ -123,26 +129,19 @@ pub fn load_dds_from_memory(buffer: []const u8, out_data: *texture_loader.Textur
         const bitCount = header.ddspf.dwRGBBitCount;
 
         if (bitCount == 32) {
-            // Check for BGRA (most common)
             if (rMask == 0x00FF0000 and gMask == 0x0000FF00 and bMask == 0x000000FF and aMask == 0xFF000000) {
                 format = VK_FORMAT_B8G8R8A8_UNORM;
             }
-            // Check for RGBA
             else if (rMask == 0x000000FF and gMask == 0x0000FF00 and bMask == 0x00FF0000 and aMask == 0xFF000000) {
                 format = VK_FORMAT_R8G8B8A8_UNORM;
             }
-            // Check for BGRX (ignore alpha)
             else if (rMask == 0x00FF0000 and gMask == 0x0000FF00 and bMask == 0x000000FF and aMask == 0x00000000) {
-                // Treat as B8G8R8A8 but we might need to set alpha to 1 manually if renderer doesn't ignore it
-                // For now map to B8G8R8A8
                 format = VK_FORMAT_B8G8R8A8_UNORM;
             } else {
                 dds_log.err("Unsupported 32-bit RGB mask: R={x} G={x} B={x} A={x}", .{ rMask, gMask, bMask, aMask });
                 return false;
             }
         } else if (bitCount == 24) {
-            // 24-bit RGB/BGR -> Convert to 32-bit RGBA
-            // Calculate offsets
             const data_offset = 4 + header.dwSize;
             const width = header.dwWidth;
             const height = header.dwHeight;

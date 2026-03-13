@@ -2,7 +2,7 @@
 
 layout(local_size_x = 16, local_size_y = 16) in;
 
-layout(binding = 0, r8) writeonly uniform image2D outSSAO;
+layout(binding = 0, r16f) writeonly uniform image2D outSSAO;
 layout(binding = 1) uniform sampler2D depthMap;
 layout(binding = 2) uniform sampler2D noiseMap;
 
@@ -30,6 +30,11 @@ void main() {
     if (pixelPos.x >= size.x || pixelPos.y >= size.y) return;
 
     vec2 uv = (vec2(pixelPos) + 0.5) / vec2(size);
+    float depth = texture(depthMap, uv).r;
+    if (depth >= 0.999999) {
+        imageStore(outSSAO, pixelPos, vec4(1.0));
+        return;
+    }
     vec3 fragPos = getViewPos(uv);
     
     // Normal reconstruction

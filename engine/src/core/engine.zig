@@ -1,3 +1,7 @@
+//! Engine orchestration: subsystem initialization, per-frame update, and shutdown.
+//!
+//! `CardinalEngine` owns the core runtime systems (memory, window, renderer, ECS, modules) and
+//! provides a single update loop entrypoint for applications.
 const std = @import("std");
 const config_pkg = @import("config.zig");
 const log = @import("log.zig");
@@ -22,8 +26,10 @@ const ecs_registry = @import("../ecs/registry.zig");
 const ecs_systems = @import("../ecs/systems.zig");
 const ecs_scheduler = @import("../ecs/scheduler.zig");
 
+/// Runtime configuration for the engine instance.
 pub const CardinalEngineConfig = config_pkg.CardinalEngineConfig;
 
+/// Owns core subsystems and drives initialization, updates, and shutdown.
 pub const CardinalEngine = struct {
     allocator: std.mem.Allocator,
     module_manager: module.ModuleManager,
@@ -49,6 +55,7 @@ pub const CardinalEngine = struct {
     window_initialized: bool = false,
     renderer_initialized: bool = false,
 
+    /// Allocates and initializes a new engine instance.
     pub fn create(allocator: std.mem.Allocator, config: CardinalEngineConfig) !*CardinalEngine {
         const self = try allocator.create(CardinalEngine);
 
@@ -68,6 +75,7 @@ pub const CardinalEngine = struct {
             .registry = ecs_registry.Registry.init(allocator),
             .scheduler = ecs_scheduler.Scheduler.init(allocator, undefined), // Registry pointer set below
         };
+        // TODO: Refactor Scheduler init so it doesn't require an undefined registry pointer.
         // Fixup registry pointer in scheduler (since self.registry is value, but we need pointer to it)
         // Actually self.registry is inside self, so we need self pointer.
         // But self is created on heap.
@@ -87,6 +95,7 @@ pub const CardinalEngine = struct {
         return self;
     }
 
+    /// Shuts down subsystems in a dependency-safe order.
     pub fn deinit(self: *CardinalEngine) void {
         self.scheduler.deinit();
 
@@ -135,6 +144,7 @@ pub const CardinalEngine = struct {
         self.config_manager.deinit();
     }
 
+    /// Runs a single frame: polling, ECS, modules, and per-frame allocator reset.
     pub fn update(self: *CardinalEngine) !void {
         const zone = tracy.zoneS(@src(), "Engine Update");
         defer zone.end();
@@ -164,10 +174,12 @@ pub const CardinalEngine = struct {
         try self.module_manager.update(delta_time);
     }
 
+    /// Returns true when the window requests close.
     pub fn shouldClose(self: *CardinalEngine) bool {
         return window.cardinal_window_should_close(self.window);
     }
 
+    /// Initializes core subsystems (memory, ECS systems, modules, async loaders, caches).
     fn initSystems(self: *CardinalEngine) !void {
         // Register default ECS Systems
         try self.scheduler.add(ecs_systems.ScriptSystemDesc);
@@ -181,6 +193,7 @@ pub const CardinalEngine = struct {
         eng_log.info("Memory management system initialized", .{});
 
         // Initialize Frame Allocator (16MB)
+        // TODO: Make frame allocator size configurable via CardinalEngineConfig.
         const frame_mem_size = 16 * 1024 * 1024;
         self.frame_memory = try self.allocator.alloc(u8, frame_mem_size);
         self.frame_allocator = stack_allocator.StackAllocator.init(self.frame_memory);
@@ -249,6 +262,7 @@ pub const CardinalEngine = struct {
         eng_log.info("Multi-threaded asset caches initialized successfully", .{});
     }
 
+    /// Creates the window and initializes the renderer.
     fn initWindowAndRenderer(self: *CardinalEngine) !void {
         const title_z = try self.allocator.dupeZ(u8, self.config.window_title);
         defer self.allocator.free(title_z);

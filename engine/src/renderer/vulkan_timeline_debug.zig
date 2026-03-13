@@ -1,3 +1,9 @@
+//! Timeline semaphore debug recorder.
+//!
+//! Provides a small ring buffer of events and aggregate performance counters to help diagnose
+//! synchronization stalls and timeline semaphore misuse.
+//!
+//! TODO: Unify mutex helpers between timeline debug and timeline pool modules.
 const std = @import("std");
 const builtin = @import("builtin");
 const log = @import("../core/log.zig");
@@ -8,7 +14,7 @@ const types = @import("vulkan_timeline_types.zig");
 
 const c = types.c;
 
-// Platform-specific mutex helpers
+/// Initializes a platform mutex used by the debug recorder.
 fn debug_mutex_init(mutex: *?*anyopaque) bool {
     const allocator = memory.cardinal_get_allocator_for_category(.RENDERER);
     if (builtin.os.tag == .windows) {
@@ -33,6 +39,7 @@ fn debug_mutex_init(mutex: *?*anyopaque) bool {
     }
 }
 
+/// Destroys a platform mutex created by `debug_mutex_init`.
 fn debug_mutex_destroy(mutex: *?*anyopaque) void {
     const allocator = memory.cardinal_get_allocator_for_category(.RENDERER);
     if (mutex.*) |m| {
@@ -49,6 +56,7 @@ fn debug_mutex_destroy(mutex: *?*anyopaque) void {
     }
 }
 
+/// Locks a platform mutex.
 fn debug_mutex_lock(mutex: ?*anyopaque) void {
     if (mutex) |m| {
         if (builtin.os.tag == .windows) {
@@ -59,6 +67,7 @@ fn debug_mutex_lock(mutex: ?*anyopaque) void {
     }
 }
 
+/// Unlocks a platform mutex.
 fn debug_mutex_unlock(mutex: ?*anyopaque) void {
     if (mutex) |m| {
         if (builtin.os.tag == .windows) {
@@ -69,14 +78,17 @@ fn debug_mutex_unlock(mutex: ?*anyopaque) void {
     }
 }
 
+/// Returns a monotonic timestamp in nanoseconds.
 pub export fn vulkan_timeline_debug_get_timestamp_ns() callconv(.c) u64 {
     return platform.get_time_ns();
 }
 
+/// Returns the current OS thread id.
 pub export fn vulkan_timeline_debug_get_thread_id() callconv(.c) u32 {
     return platform.get_current_thread_id();
 }
 
+/// Returns the string name of an event type.
 pub export fn vulkan_timeline_debug_event_type_to_string(type_enum: types.VulkanTimelineEventType) callconv(.c) [*c]const u8 {
     return switch (type_enum) {
         types.VULKAN_TIMELINE_EVENT_WAIT_START => "WAIT_START",
@@ -91,20 +103,12 @@ pub export fn vulkan_timeline_debug_event_type_to_string(type_enum: types.Vulkan
     };
 }
 
+/// Initializes a debug context with default settings.
 pub export fn vulkan_timeline_debug_init(debug_ctx: *types.VulkanTimelineDebugContext) callconv(.c) bool {
     @memset(@as([*]u8, @ptrCast(debug_ctx))[0..@sizeOf(types.VulkanTimelineDebugContext)], 0);
 
     if (!debug_mutex_init(&debug_ctx.mutex)) {
         tl_dbg_log.err("Failed to allocate mutex", .{});
-        return false;
-    }
-
-    // Allocate pool
-    const allocator = memory.cardinal_get_allocator_for_category(.RENDERER);
-    const ptr = memory.cardinal_alloc(allocator, @sizeOf(types.VulkanTimelineDebugEvent) * 1024); // Start with 1024 events
-    if (ptr == null) {
-        tl_dbg_log.err("Failed to allocate event pool", .{});
-        debug_mutex_destroy(&debug_ctx.mutex);
         return false;
     }
 
@@ -132,6 +136,7 @@ pub export fn vulkan_timeline_debug_init(debug_ctx: *types.VulkanTimelineDebugCo
     return true;
 }
 
+/// Destroys a debug context.
 pub export fn vulkan_timeline_debug_destroy(debug_ctx: *types.VulkanTimelineDebugContext) callconv(.c) void {
     if (debug_ctx.mutex == null) return;
 
@@ -141,6 +146,7 @@ pub export fn vulkan_timeline_debug_destroy(debug_ctx: *types.VulkanTimelineDebu
     tl_dbg_log.info("Debug context destroyed", .{});
 }
 
+/// Clears the event ring buffer and resets counters.
 pub export fn vulkan_timeline_debug_reset(debug_ctx: *types.VulkanTimelineDebugContext) callconv(.c) void {
     if (!debug_ctx.enabled) return;
 
@@ -167,27 +173,33 @@ pub export fn vulkan_timeline_debug_reset(debug_ctx: *types.VulkanTimelineDebugC
     tl_dbg_log.info("Debug context reset", .{});
 }
 
+/// Enables or disables debug collection.
 pub export fn vulkan_timeline_debug_set_enabled(debug_ctx: *types.VulkanTimelineDebugContext, enabled: bool) callconv(.c) void {
     debug_ctx.enabled = enabled;
     tl_dbg_log.info("Debug {s}", .{if (enabled) "enabled" else "disabled"});
 }
 
+/// Toggles event collection.
 pub export fn vulkan_timeline_debug_set_event_collection(debug_ctx: *types.VulkanTimelineDebugContext, enabled: bool) callconv(.c) void {
     debug_ctx.collect_events = enabled;
 }
 
+/// Toggles performance counter collection.
 pub export fn vulkan_timeline_debug_set_performance_collection(debug_ctx: *types.VulkanTimelineDebugContext, enabled: bool) callconv(.c) void {
     debug_ctx.collect_performance = enabled;
 }
 
+/// Enables or disables verbose logging for every recorded event.
 pub export fn vulkan_timeline_debug_set_verbose_logging(debug_ctx: *types.VulkanTimelineDebugContext, enabled: bool) callconv(.c) void {
     debug_ctx.verbose_logging = enabled;
 }
 
+/// Sets the snapshot interval used by periodic sampling (if enabled by callers).
 pub export fn vulkan_timeline_debug_set_snapshot_interval(debug_ctx: *types.VulkanTimelineDebugContext, interval_ns: u64) callconv(.c) void {
     debug_ctx.snapshot_interval_ns = interval_ns;
 }
 
+/// Records a debug event into the ring buffer.
 pub export fn vulkan_timeline_debug_log_event(debug_ctx: *types.VulkanTimelineDebugContext, type_enum: types.VulkanTimelineEventType, timeline_value: u64, result: c.VkResult, name: [*c]const u8, details: [*c]const u8) callconv(.c) void {
     if (!debug_ctx.enabled or !debug_ctx.collect_events) return;
 

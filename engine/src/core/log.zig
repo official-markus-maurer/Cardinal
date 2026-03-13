@@ -1,3 +1,7 @@
+//! Logging subsystem with pluggable sinks and optional async dispatch.
+//!
+//! The C-facing API is exposed via `pub export fn` entrypoints. Zig code typically uses
+//! `ScopedLogger` or the `cardinal_log_*` convenience functions.
 const std = @import("std");
 const memory = @import("memory.zig");
 
@@ -6,7 +10,7 @@ const c = @cImport({
     @cInclude("string.h");
 });
 
-// Manual enum definition matching C
+/// Log severity level shared with the C-facing API.
 pub const CardinalLogLevel = enum(c_int) {
     TRACE = 0,
     DEBUG = 1,
@@ -16,15 +20,16 @@ pub const CardinalLogLevel = enum(c_int) {
     FATAL = 5,
 };
 
-// Extern vsnprintf (standard C, but we removed stdio.h)
+/// libc `vsnprintf` used to format messages for the C API.
 extern fn vsnprintf(s: [*]u8, n: usize, format: [*:0]const u8, arg: c.va_list) c_int;
 
-// Global state
+/// Minimum level emitted to sinks.
 var min_log_level: CardinalLogLevel = .WARN;
 
-// Sink Interface
+/// Sink interface consumed by the logger.
+///
+/// Sinks are responsible for thread-safety if they are shared outside this module.
 pub const CardinalLogSink = extern struct {
-    // Updated signature: added category and json_fields
     log_func: *const fn (user_data: ?*anyopaque, level: CardinalLogLevel, category: [*:0]const u8, json_fields: ?[*:0]const u8, file: [*:0]const u8, line: c_int, msg: [*:0]const u8) callconv(.c) void,
     flush_func: ?*const fn (user_data: ?*anyopaque) callconv(.c) void,
     destroy_func: ?*const fn (user_data: ?*anyopaque) callconv(.c) void,
@@ -36,7 +41,7 @@ var g_sinks: [MAX_SINKS]?*CardinalLogSink = .{null} ** MAX_SINKS;
 var g_sinks_mutex: std.Thread.Mutex = .{};
 var g_initialized: bool = false;
 
-// Async Logging State
+/// Buffered log entry used by the async dispatcher.
 const LogEntry = struct {
     level: CardinalLogLevel,
     line: c_int,
@@ -53,6 +58,7 @@ var g_queue_cond: std.Thread.Condition = .{};
 var g_log_thread: ?std.Thread = null;
 var g_shutdown_requested: bool = false;
 
+/// Async log worker: drains the queue and forwards entries to sinks.
 fn log_worker_thread() void {
     const allocator = memory.cardinal_get_allocator_for_category(.LOGGING).as_allocator();
     var local_queue = std.ArrayListUnmanaged(LogEntry){};
@@ -71,13 +77,11 @@ fn log_worker_thread() void {
                 break;
             }
 
-            // Swap queues
             const temp = g_log_queue;
             g_log_queue = local_queue;
             local_queue = temp;
         }
 
-        // Process logs
         g_sinks_mutex.lock();
         for (local_queue.items) |entry| {
             for (g_sinks) |s| {
@@ -95,6 +99,7 @@ fn log_worker_thread() void {
     }
 }
 
+/// Returns the string name for a log level.
 fn getLevelStr(level: CardinalLogLevel) [:0]const u8 {
     return switch (level) {
         .TRACE => "TRACE",
@@ -106,7 +111,7 @@ fn getLevelStr(level: CardinalLogLevel) [:0]const u8 {
     };
 }
 
-// Console Sink
+/// Default console sink implementation.
 fn console_sink_log(_: ?*anyopaque, level: CardinalLogLevel, category: [*:0]const u8, json_fields: ?[*:0]const u8, file: [*:0]const u8, line: c_int, msg: [*:0]const u8) callconv(.c) void {
     const level_str = getLevelStr(level);
     const use_stderr = @intFromEnum(level) >= @intFromEnum(CardinalLogLevel.ERROR);
@@ -115,7 +120,6 @@ fn console_sink_log(_: ?*anyopaque, level: CardinalLogLevel, category: [*:0]cons
     const cat_span = std.mem.span(category);
     const msg_span = std.mem.span(msg);
 
-    // Format: file(line): [LEVEL][CATEGORY] msg {json}
     if (use_stderr) {
         std.debug.print("{s}({d}): [{s}][{s}] {s}", .{ file_span, line, level_str, cat_span, msg_span });
         if (json_fields) |json| {
@@ -132,10 +136,8 @@ fn console_sink_log(_: ?*anyopaque, level: CardinalLogLevel, category: [*:0]cons
     }
 }
 
+/// Console sink flush (no-op).
 fn console_sink_flush(_: ?*anyopaque) callconv(.c) void {
-    // std.io writers don't necessarily support explicit flush for stdout/stderr in the same way C does,
-    // but they are usually unbuffered or line-buffered.
-    // We can try to use OS primitives if needed, but for now we rely on default behavior.
 }
 
 var g_console_sink: CardinalLogSink = .{
@@ -145,7 +147,7 @@ var g_console_sink: CardinalLogSink = .{
     .user_data = null,
 };
 
-// File Sink
+/// File sink user data storing the underlying file handle.
 const FileSinkData = extern struct {
     file_handle: std.fs.File.Handle,
 };
@@ -216,11 +218,12 @@ pub export fn cardinal_log_create_file_sink(filename: ?[*:0]const u8) ?*Cardinal
     return sink_ptr;
 }
 
-// Initialization
+/// Initializes logging using the currently configured minimum level.
 pub export fn cardinal_log_init() void {
     cardinal_log_init_with_level(min_log_level);
 }
 
+/// Enables async logging after initialization.
 pub export fn cardinal_log_init_async(enable: bool) void {
     if (g_initialized and enable and !g_async_enabled) {
         g_log_queue = .{};
@@ -234,6 +237,7 @@ pub export fn cardinal_log_init_async(enable: bool) void {
     }
 }
 
+/// Initializes logging and sets the minimum log level.
 pub export fn cardinal_log_init_with_level(level: CardinalLogLevel) void {
     min_log_level = level;
 
@@ -269,6 +273,7 @@ pub export fn cardinal_log_init_with_level(level: CardinalLogLevel) void {
     }
 }
 
+/// Flushes and destroys sinks, then shuts down async dispatch if enabled.
 pub export fn cardinal_log_shutdown() void {
     if (g_async_enabled) {
         {
@@ -315,14 +320,17 @@ pub export fn cardinal_log_shutdown() void {
     g_initialized = false;
 }
 
+/// Sets the minimum severity that will be emitted.
 pub export fn cardinal_log_set_level(level: CardinalLogLevel) void {
     min_log_level = level;
 }
 
+/// Returns the current minimum severity.
 pub export fn cardinal_log_get_level() CardinalLogLevel {
     return min_log_level;
 }
 
+/// Parses a log level string. Unknown inputs default to `INFO`.
 pub export fn cardinal_log_parse_level(level_str_input: ?[*:0]const u8) CardinalLogLevel {
     if (level_str_input == null) return .INFO;
     const s = std.mem.span(level_str_input.?);
@@ -338,6 +346,7 @@ pub export fn cardinal_log_parse_level(level_str_input: ?[*:0]const u8) Cardinal
 }
 
 // Sink Management
+/// Adds a sink if there is an available slot.
 pub export fn cardinal_log_add_sink(sink_ptr: ?*CardinalLogSink) void {
     if (sink_ptr == null) return;
 
@@ -358,6 +367,7 @@ pub export fn cardinal_log_add_sink(sink_ptr: ?*CardinalLogSink) void {
     }
 }
 
+/// Detaches a sink without destroying it.
 pub export fn cardinal_log_remove_sink(sink_ptr: ?*CardinalLogSink) void {
     if (sink_ptr == null) return;
 
@@ -372,6 +382,7 @@ pub export fn cardinal_log_remove_sink(sink_ptr: ?*CardinalLogSink) void {
     }
 }
 
+/// Detaches and destroys a sink.
 pub export fn cardinal_log_destroy_sink(sink_ptr: ?*CardinalLogSink) void {
     if (sink_ptr == null) return;
 
@@ -386,6 +397,7 @@ pub export fn cardinal_log_destroy_sink(sink_ptr: ?*CardinalLogSink) void {
 }
 
 // Log Output
+/// Formats a message and emits it to all sinks, optionally with JSON fields.
 pub export fn cardinal_log_output_full(level: CardinalLogLevel, category: [*:0]const u8, json_fields: ?[*:0]const u8, file: [*:0]const u8, line: c_int, fmt: [*:0]const u8, args: c.va_list) void {
     if (@intFromEnum(level) < @intFromEnum(min_log_level)) return;
 
@@ -461,6 +473,7 @@ pub export fn cardinal_log_output_full(level: CardinalLogLevel, category: [*:0]c
     }
 }
 
+/// Convenience wrapper around `cardinal_log_output_full` for the default category.
 pub export fn cardinal_log_output_v(level: CardinalLogLevel, file: [*:0]const u8, line: c_int, fmt: [*:0]const u8, args: c.va_list) void {
     cardinal_log_output_full(level, "GENERAL", null, file, line, fmt, args);
 }
@@ -561,6 +574,7 @@ fn log_internal(comptime level: CardinalLogLevel, category: []const u8, fields: 
     }
 }
 
+/// Produces a logger type bound to a compile-time category.
 pub fn ScopedLogger(comptime category: []const u8) type {
     return struct {
         pub fn trace(comptime fmt: []const u8, args: anytype) void {
@@ -604,21 +618,27 @@ pub fn ScopedLogger(comptime category: []const u8) type {
     };
 }
 
+/// Logs a TRACE message in the default category.
 pub fn cardinal_log_trace(comptime fmt: []const u8, args: anytype) void {
     log_internal(.TRACE, "GENERAL", null, fmt, args, @src());
 }
+/// Logs a DEBUG message in the default category.
 pub fn cardinal_log_debug(comptime fmt: []const u8, args: anytype) void {
     log_internal(.DEBUG, "GENERAL", null, fmt, args, @src());
 }
+/// Logs an INFO message in the default category.
 pub fn cardinal_log_info(comptime fmt: []const u8, args: anytype) void {
     log_internal(.INFO, "GENERAL", null, fmt, args, @src());
 }
+/// Logs a WARN message in the default category.
 pub fn cardinal_log_warn(comptime fmt: []const u8, args: anytype) void {
     log_internal(.WARN, "GENERAL", null, fmt, args, @src());
 }
+/// Logs an ERROR message in the default category.
 pub fn cardinal_log_error(comptime fmt: []const u8, args: anytype) void {
     log_internal(.ERROR, "GENERAL", null, fmt, args, @src());
 }
+/// Logs a FATAL message in the default category.
 pub fn cardinal_log_fatal(comptime fmt: []const u8, args: anytype) void {
     log_internal(.FATAL, "GENERAL", null, fmt, args, @src());
 }

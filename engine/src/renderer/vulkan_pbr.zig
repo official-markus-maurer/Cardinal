@@ -1682,7 +1682,7 @@ pub export fn vk_pbr_render(pipeline: ?*types.VulkanPBRPipeline, commandBuffer: 
             });
         }
 
-        if (scn.animation_system != null and scn.skin_count > 0) {
+        if (scn.animation_system != null and scn.skin_count > 0 and scn.skins != null) {
             const skins = @as([*]animation.CardinalSkin, @ptrCast(@alignCast(scn.skins.?)));
 
             var skin_idx: u32 = 0;
@@ -1690,13 +1690,11 @@ pub export fn vk_pbr_render(pipeline: ?*types.VulkanPBRPipeline, commandBuffer: 
                 const skin = &skins[skin_idx];
                 var mesh_idx: u32 = 0;
                 while (mesh_idx < skin.mesh_count) : (mesh_idx += 1) {
-                    if (skin.mesh_indices.?[mesh_idx] == i) {
-                        // Set bit 2 of flags in packedInfo
-                        // flags is in upper 16 bits of packedInfo
-                        // Bit 2 corresponds to (1 << 2) = 4
-                        // Shifted by 16: (4 << 16)
-                        pushConstants.packedInfo |= (4 << 16);
-                        break;
+                    if (skin.mesh_indices) |indices| {
+                        if (indices[mesh_idx] == i) {
+                            pushConstants.packedInfo |= (4 << 16);
+                            break;
+                        }
                     }
                 }
                 if ((pushConstants.packedInfo & (4 << 16)) != 0) break;
@@ -1851,7 +1849,7 @@ pub export fn vk_pbr_render(pipeline: ?*types.VulkanPBRPipeline, commandBuffer: 
         const tm_opaque: ?*const anyopaque = if (pipe.textureManager) |tm| @ptrCast(tm) else null;
         material_utils.vk_material_setup_push_constants(@ptrCast(&pushConstants), @ptrCast(mesh), @ptrCast(scn), @ptrCast(@alignCast(tm_opaque)));
 
-        if (scn.animation_system != null and scn.skin_count > 0) {
+        if (scn.animation_system != null and scn.skin_count > 0 and scn.skins != null) {
             const skins = @as([*]animation.CardinalSkin, @ptrCast(@alignCast(scn.skins.?)));
 
             var skin_idx: u32 = 0;
@@ -1859,9 +1857,11 @@ pub export fn vk_pbr_render(pipeline: ?*types.VulkanPBRPipeline, commandBuffer: 
                 const skin = &skins[skin_idx];
                 var mesh_idx: u32 = 0;
                 while (mesh_idx < skin.mesh_count) : (mesh_idx += 1) {
-                    if (skin.mesh_indices.?[mesh_idx] == item.index) {
-                        pushConstants.packedInfo |= (4 << 16);
-                        break;
+                    if (skin.mesh_indices) |indices| {
+                        if (indices[mesh_idx] == item.index) {
+                            pushConstants.packedInfo |= (4 << 16);
+                            break;
+                        }
                     }
                 }
                 if ((pushConstants.packedInfo & (4 << 16)) != 0) break;

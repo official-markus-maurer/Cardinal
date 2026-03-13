@@ -1,3 +1,7 @@
+//! ECS system scheduler with job-based parallel execution.
+//!
+//! Systems declare read/write component sets; the scheduler builds dependencies to ensure
+//! correct ordering and flushes each system's command buffer after execution.
 const std = @import("std");
 const registry_pkg = @import("registry.zig");
 const system_pkg = @import("system.zig");
@@ -7,6 +11,7 @@ const log = @import("../core/log.zig");
 
 const sched_log = log.ScopedLogger("ECS_SCHEDULER");
 
+/// Schedules systems, builds component access dependencies, and executes via the job system.
 pub const Scheduler = struct {
     allocator: std.mem.Allocator,
     registry: *registry_pkg.Registry,
@@ -19,6 +24,7 @@ pub const Scheduler = struct {
     // Command buffers for systems (one per context)
     command_buffers: std.ArrayListUnmanaged(command_buffer_pkg.CommandBuffer),
 
+    /// Context passed to job execution for one system.
     pub const SystemContext = struct {
         system: system_pkg.System,
         registry: *registry_pkg.Registry,
@@ -26,6 +32,7 @@ pub const Scheduler = struct {
         delta_time: f32,
     };
 
+    /// Creates an empty scheduler bound to a registry.
     pub fn init(allocator: std.mem.Allocator, registry: *registry_pkg.Registry) Scheduler {
         return .{
             .allocator = allocator,
@@ -36,6 +43,7 @@ pub const Scheduler = struct {
         };
     }
 
+    /// Releases system lists and command buffers.
     pub fn deinit(self: *Scheduler) void {
         self.systems.deinit(self.allocator);
         self.contexts.deinit(self.allocator);
@@ -46,7 +54,9 @@ pub const Scheduler = struct {
         self.command_buffers.deinit(self.allocator);
     }
 
+    /// Adds a system descriptor to the schedule.
     pub fn add(self: *Scheduler, system: system_pkg.System) !void {
+        // TODO: Sort systems by `priority` and/or provide explicit ordering groups.
         try self.systems.append(self.allocator, system);
     }
 
@@ -56,6 +66,7 @@ pub const Scheduler = struct {
         return 0;
     }
 
+    /// Executes all scheduled systems for a frame.
     pub fn run(self: *Scheduler, delta_time: f32) !void {
         // Clear previous contexts
         self.contexts.clearRetainingCapacity();
@@ -155,6 +166,7 @@ pub const Scheduler = struct {
 
         // Wait for all jobs to complete
         // This is a simple implementation. In a real engine, we might do other work here.
+        // TODO: Avoid busy-waiting; integrate a completion fence or block on a condition.
         var all_done = false;
         while (!all_done) {
             all_done = true;

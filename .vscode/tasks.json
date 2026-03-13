@@ -70,6 +70,30 @@
             "problemMatcher": ["$gcc"]
         },
         {
+            "label": "Build Docs",
+            "type": "shell",
+            "command": "zig",
+            "args": [
+                "build",
+                "docs",
+                "--prefix",
+                "."
+            ],
+            "group": "build",
+            "presentation": {
+                "echo": true,
+                "reveal": "always",
+                "focus": false,
+                "panel": "shared",
+                "showReuseMessage": true,
+                "clear": false
+            },
+            "options": {
+                "cwd": "${workspaceFolder}"
+            },
+            "problemMatcher": []
+        },
+        {
             "label": "Run Client (Debug)",
             "type": "shell",
             "command": "zig",

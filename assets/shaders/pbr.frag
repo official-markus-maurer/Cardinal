@@ -419,7 +419,8 @@ void main() {
     // Apply SSAO
     vec2 screenUV = gl_FragCoord.xy / vec2(textureSize(ssaoMap, 0));
     float ssao = texture(ssaoMap, screenUV).r;
-    ao *= ssao;
+    ssao = clamp(ssao, 0.0, 1.0);
+    ao *= mix(1.0, ssao, 0.75);
     
     vec3 emissive = vec3(material.emissiveAndRoughness.xyz);
     if (!isNoTex(material.emissiveTextureIndex)) {

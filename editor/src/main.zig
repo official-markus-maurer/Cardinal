@@ -1,3 +1,6 @@
+//! Cardinal editor entrypoint.
+//!
+//! The editor boots the engine, initializes editor UI layers, and runs the main loop.
 const std = @import("std");
 const engine = @import("cardinal_engine");
 const log = engine.log;
@@ -6,6 +9,7 @@ const EditorConfig = @import("app.zig").EditorConfig;
 
 const editor_log = log.ScopedLogger("EDITOR");
 
+/// Prints CLI usage text.
 fn print_usage(program_name: []const u8) void {
     std.debug.print("Usage: {s} [options]\n", .{program_name});
     std.debug.print("Options:\n", .{});
@@ -13,8 +17,10 @@ fn print_usage(program_name: []const u8) void {
     std.debug.print("  --help               Show this help message\n", .{});
 }
 
+/// Bootstraps logging/memory and runs the editor application.
 pub fn main() !u8 {
     const memory = engine.memory;
+    // TODO: Move bootstrap memory sizing into config or build-time options.
     memory.cardinal_memory_init(1024 * 1024 * 512); // Increased to 512MB
 
     const allocator = memory.cardinal_get_allocator_for_category(.ENGINE).as_allocator();
@@ -62,6 +68,7 @@ pub fn main() !u8 {
     defer app.destroy();
 
     std.debug.print("[MAIN] App created. Calling run()...\n", .{});
+    // TODO: Route this message through the logging system (or remove).
     app.run() catch |err| {
         editor_log.err("Runtime error: {}", .{err});
         _ = engine.platform.write_minidump();

@@ -1,3 +1,9 @@
+//! KFM (Gamebryo) scene loader.
+//!
+//! KFM files primarily reference a NIF plus optional KF animation entries. This loader resolves
+//! the referenced NIF path relative to the KFM and then merges any listed KF files.
+//!
+//! TODO: Replace heuristic parsing with a schema-driven reader once the KFM format is finalized.
 const std = @import("std");
 const scene = @import("scene.zig");
 const log = @import("../core/log.zig");
@@ -6,6 +12,7 @@ const nif_loader = @import("nif_loader.zig");
 
 const kfm_log = log.ScopedLogger("KFM");
 
+/// Loads a KFM scene by loading its referenced NIF and merging any referenced KF animations.
 pub export fn cardinal_kfm_load_scene(path: [*:0]const u8, out_scene: *scene.CardinalScene) callconv(.c) bool {
     kfm_log.warn("Loading KFM scene: {s}", .{path});
 
@@ -27,27 +34,22 @@ pub export fn cardinal_kfm_load_scene(path: [*:0]const u8, out_scene: *scene.Car
     var reader = nif_loader.NifReader.init(allocator, buffer);
     defer reader.deinit();
 
-    // Check Header
     const header_str = reader.read_string_lf() catch return false;
     defer allocator.free(header_str);
 
     kfm_log.warn("KFM Header: {s}", .{header_str});
 
-    // Skip unknown byte (possibly type or count, typically 1)
     if (reader.pos < reader.buffer.len) {
         _ = reader.read(u8) catch return false;
     }
 
-    // Next is NIF path
     const nif_path_rel = reader.read_sized_string() catch return false;
     defer allocator.free(nif_path_rel);
 
     kfm_log.warn("KFM references NIF: {s}", .{nif_path_rel});
 
-    // Resolve NIF path relative to KFM
     const kfm_dir = std.fs.path.dirname(std.mem.span(path)) orelse ".";
 
-    // Handle Windows style paths in NIF (backslashes)
     var clean_nif_path = nif_path_rel;
     if (std.mem.startsWith(u8, clean_nif_path, ".\\")) {
         clean_nif_path = clean_nif_path[2..];
@@ -62,18 +64,14 @@ pub export fn cardinal_kfm_load_scene(path: [*:0]const u8, out_scene: *scene.Car
         return false;
     }
 
-    // Parse KFM Animation Entries (Heuristic)
-    // Try to read Master Path
     const master_path = reader.read_sized_string() catch null;
     if (master_path) |mp| {
         kfm_log.warn("KFM Master Path: {s}", .{mp});
         allocator.free(mp);
     }
 
-    // Unknown u32
     _ = reader.read(u32) catch 0;
 
-    // Num Animations
     const num_anims = reader.read(u32) catch 0;
     kfm_log.warn("KFM Num Animations: {d}", .{num_anims});
 
@@ -95,7 +93,6 @@ pub export fn cardinal_kfm_load_scene(path: [*:0]const u8, out_scene: *scene.Car
                     clean_anim_path = clean_anim_path[2..];
                 }
 
-                // Check if it's .kf
                 if (std.ascii.endsWithIgnoreCase(clean_anim_path, ".kf")) {
                     const full_kf_path = std.fs.path.joinZ(allocator, &.{ kfm_dir, clean_anim_path }) catch continue;
                     defer allocator.free(full_kf_path);
@@ -109,4 +106,23 @@ pub export fn cardinal_kfm_load_scene(path: [*:0]const u8, out_scene: *scene.Car
     }
 
     return true;
+}
+
+test "kfm load then destroy" {
+    memory.cardinal_memory_init(1024 * 1024 * 128);
+    defer memory.cardinal_memory_shutdown();
+
+    log.cardinal_log_init_with_level(.WARN);
+    defer log.cardinal_log_shutdown();
+
+    const ref_counting = @import("../core/ref_counting.zig");
+    _ = ref_counting.cardinal_ref_counting_init(1009);
+    defer ref_counting.cardinal_ref_counting_shutdown();
+
+    var scn: scene.CardinalScene = std.mem.zeroes(scene.CardinalScene);
+    const path_z = try std.fmt.allocPrintZ(std.testing.allocator, "{s}", .{"assets/models/decorate/f001.kfm"});
+    defer std.testing.allocator.free(path_z);
+
+    try std.testing.expect(cardinal_kfm_load_scene(path_z.ptr, &scn));
+    scene.cardinal_scene_destroy(&scn);
 }

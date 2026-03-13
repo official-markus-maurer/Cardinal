@@ -1,3 +1,8 @@
+//! C-ABI transform helpers for matrices/quaternions/vectors.
+//!
+//! Wraps math types to expose stable exported functions for engine consumers (C/C++ and tooling).
+//!
+//! TODO: Consolidate row-major/column-major conversion helpers in one place for loaders/render code.
 const std = @import("std");
 const math = @import("math.zig");
 const Vec3 = math.Vec3;
@@ -17,11 +22,13 @@ const FLT_EPSILON = 1.19209290e-07;
 
 // === Matrix Operations ===
 
+/// Writes an identity matrix.
 pub export fn cardinal_matrix_identity(matrix: *[16]f32) callconv(.c) void {
     const m = Mat4.identity();
     matrix.* = m.data;
 }
 
+/// Multiplies two 4x4 matrices (`result = a * b`).
 pub export fn cardinal_matrix_multiply(a: *const [16]f32, b: *const [16]f32, result: *[16]f32) callconv(.c) void {
     const ma = Mat4.fromArray(a.*);
     const mb = Mat4.fromArray(b.*);
@@ -29,6 +36,7 @@ pub export fn cardinal_matrix_multiply(a: *const [16]f32, b: *const [16]f32, res
     result.* = res.data;
 }
 
+/// Builds a matrix from optional translation/rotation/scale components.
 pub export fn cardinal_matrix_from_trs(translation: ?*const [3]f32, rotation: ?*const [4]f32, scale: ?*const [3]f32, matrix: *[16]f32) callconv(.c) void {
     const t = if (translation) |tr| Vec3.fromArray(tr.*) else Vec3.zero();
     const r = if (rotation) |rot| Quat.fromArray(rot.*) else Quat.identity();
@@ -38,6 +46,7 @@ pub export fn cardinal_matrix_from_trs(translation: ?*const [3]f32, rotation: ?*
     matrix.* = m.data;
 }
 
+/// Builds a matrix from a 3x3 rotation (row-major), translation, and uniform scale.
 pub export fn cardinal_matrix_from_rt_s(rotation: *const [9]f32, translation: *const [3]f32, scale: f32, result: *[16]f32) callconv(.c) void {
     const r = rotation.*;
     const t = translation.*;
@@ -78,6 +87,7 @@ pub export fn cardinal_matrix_from_rt_s(rotation: *const [9]f32, translation: *c
     result[15] = 1.0;
 }
 
+/// Decomposes a matrix into TRS components.
 pub export fn cardinal_matrix_decompose(matrix: *const [16]f32, translation: ?*[3]f32, rotation: ?*[4]f32, scale: ?*[3]f32) callconv(.c) bool {
     const m = Mat4.fromArray(matrix.*);
     const result = m.decompose();
@@ -97,6 +107,7 @@ pub export fn cardinal_matrix_decompose(matrix: *const [16]f32, translation: ?*[
     return true;
 }
 
+/// Inverts a matrix. Returns false if inversion fails.
 pub export fn cardinal_matrix_invert(matrix: *const [16]f32, result: *[16]f32) callconv(.c) bool {
     const m = Mat4.fromArray(matrix.*);
     if (m.invert()) |inv| {
@@ -106,6 +117,7 @@ pub export fn cardinal_matrix_invert(matrix: *const [16]f32, result: *[16]f32) c
     return false;
 }
 
+/// Transposes a matrix.
 pub export fn cardinal_matrix_transpose(matrix: *const [16]f32, result: *[16]f32) callconv(.c) void {
     const m = Mat4.fromArray(matrix.*);
     const t = m.transpose();
@@ -114,6 +126,7 @@ pub export fn cardinal_matrix_transpose(matrix: *const [16]f32, result: *[16]f32
 
 // === Vector Operations ===
 
+/// Transforms a point by a matrix (assumes w=1).
 pub export fn cardinal_transform_point(matrix: *const [16]f32, point: *const [3]f32, result: *[3]f32) callconv(.c) void {
     const m = Mat4.fromArray(matrix.*);
     const p = Vec3.fromArray(point.*);

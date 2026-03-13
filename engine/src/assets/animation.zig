@@ -1,3 +1,9 @@
+//! Animation runtime types and helpers.
+//!
+//! Provides a minimal animation system supporting playback, blending, and skinning matrix updates.
+//! The API is C-ABI-friendly (`pub export fn`) and designed to be populated by asset loaders.
+//!
+//! TODO: Consider separating sampling/interpolation from system state to reduce rebuild time.
 const std = @import("std");
 const builtin = @import("builtin");
 const transform = @import("../core/transform.zig");
@@ -14,17 +20,19 @@ const c = @cImport({
     @cInclude("float.h");
 });
 
-// Constants
+/// Pi constant used by interpolation helpers.
 const M_PI = 3.14159265358979323846;
+/// Float epsilon used by stability checks.
 const FLT_EPSILON = 1.19209290e-07;
 
-// Enums
+/// Keyframe interpolation mode.
 pub const CardinalAnimationInterpolation = enum(c_int) {
     LINEAR = 0,
     STEP = 1,
     CUBICSPLINE = 2,
 };
 
+/// Target property driven by an animation channel.
 pub const CardinalAnimationTargetPath = enum(c_int) {
     TRANSLATION = 0,
     ROTATION = 1,
@@ -32,7 +40,7 @@ pub const CardinalAnimationTargetPath = enum(c_int) {
     WEIGHTS = 3,
 };
 
-// Structs
+/// Sampler with keyframe times and output values.
 pub const CardinalAnimationSampler = extern struct {
     input: ?[*]f32,
     output: ?[*]f32,
@@ -42,16 +50,19 @@ pub const CardinalAnimationSampler = extern struct {
     last_index: u32,
 };
 
+/// Animation target (node + property path).
 pub const CardinalAnimationTarget = extern struct {
     node_index: u32,
     path: CardinalAnimationTargetPath,
 };
 
+/// Animation channel binding a sampler to a target.
 pub const CardinalAnimationChannel = extern struct {
     sampler_index: u32,
     target: CardinalAnimationTarget,
 };
 
+/// Animation clip data.
 pub const CardinalAnimation = extern struct {
     name: ?[*:0]u8,
     samplers: ?[*]CardinalAnimationSampler,
@@ -61,6 +72,7 @@ pub const CardinalAnimation = extern struct {
     duration: f32,
 };
 
+/// Bone definition for a skin.
 pub const CardinalBone = extern struct {
     name: ?[*:0]u8,
     node_index: u32,
@@ -69,6 +81,7 @@ pub const CardinalBone = extern struct {
     parent_index: u32,
 };
 
+/// Skin definition referencing bones and meshes.
 pub const CardinalSkin = extern struct {
     name: ?[*:0]u8,
     bones: ?[*]CardinalBone,
@@ -78,6 +91,7 @@ pub const CardinalSkin = extern struct {
     root_bone_index: u32,
 };
 
+/// Runtime playback state for an animation clip.
 pub const CardinalAnimationState = extern struct {
     animation_index: u32,
     current_time: f32,
@@ -87,6 +101,7 @@ pub const CardinalAnimationState = extern struct {
     blend_weight: f32,
 };
 
+/// Top-level animation system state (clips + skins + runtime states).
 pub const CardinalAnimationSystem = extern struct {
     animations: ?[*]CardinalAnimation,
     animation_count: u32,
@@ -110,11 +125,10 @@ const CardinalBlendState = extern struct {
     flags: u32, // 1 = touched
 };
 
-// Helper function to find keyframe indices for interpolation
+/// Computes the keyframe interval and interpolation factor for `time`.
 fn find_keyframe_indices(input: [*]const f32, input_count: u32, time: f32, prev_index: *u32, next_index: *u32, factor: *f32) bool {
     if (input_count == 0) return false;
 
-    // Handle edge cases
     if (time <= input[0]) {
         prev_index.* = 0;
         next_index.* = 0;
@@ -129,7 +143,6 @@ fn find_keyframe_indices(input: [*]const f32, input_count: u32, time: f32, prev_
         return true;
     }
 
-    // Binary search for the correct interval
     var left: u32 = 0;
     var right: u32 = input_count - 1;
 
@@ -145,7 +158,6 @@ fn find_keyframe_indices(input: [*]const f32, input_count: u32, time: f32, prev_
     prev_index.* = left;
     next_index.* = right;
 
-    // Calculate interpolation factor
     const time_diff = input[right] - input[left];
     if (time_diff > 0.0) {
         factor.* = (time - input[left]) / time_diff;
@@ -290,6 +302,7 @@ fn cubic_spline_interpolate(values: [*]const f32, prev_index: u32, next_index: u
     lerp_vector(prev_value, next_value, factor, component_count, result);
 }
 
+/// Samples an animation curve at `time` given keyframe `input` times and `output` values.
 pub export fn cardinal_animation_interpolate(interpolation: CardinalAnimationInterpolation, time: f32, input: ?[*]const f32, output: ?[*]const f32, input_count: u32, component_count: u32, result: ?[*]f32) callconv(.c) bool {
     if (input == null or output == null or result == null or input_count == 0 or component_count == 0) {
         return false;
@@ -372,6 +385,7 @@ fn sampler_interpolate_cached(sampler: *CardinalAnimationSampler, time: f32, com
     return true;
 }
 
+/// Allocates a new animation system with preallocated animation/skin capacity.
 pub export fn cardinal_animation_system_create(max_animations: u32, max_skins: u32) callconv(.c) ?*CardinalAnimationSystem {
     const allocator = memory.cardinal_get_allocator_for_category(.ENGINE);
     const system_ptr = memory.cardinal_calloc(allocator, 1, @sizeOf(CardinalAnimationSystem));
@@ -431,6 +445,7 @@ pub export fn cardinal_animation_system_create(max_animations: u32, max_skins: u
     return system;
 }
 
+/// Destroys an animation system and all owned allocations.
 pub export fn cardinal_animation_system_destroy(system: ?*CardinalAnimationSystem) callconv(.c) void {
     if (system == null) return;
     const allocator = memory.cardinal_get_allocator_for_category(.ENGINE);
@@ -481,6 +496,7 @@ pub export fn cardinal_animation_system_destroy(system: ?*CardinalAnimationSyste
     anim_log.debug("Animation system destroyed", .{});
 }
 
+/// Adds an animation to the system (deep-copies name/samplers/channels).
 pub export fn cardinal_animation_system_add_animation(system: ?*CardinalAnimationSystem, animation: ?*const CardinalAnimation) callconv(.c) u32 {
     if (system == null or animation == null) return std.math.maxInt(u32);
 
@@ -548,6 +564,7 @@ pub export fn cardinal_animation_system_add_animation(system: ?*CardinalAnimatio
     return index;
 }
 
+/// Adds a skin to the system (deep-copies name/bones/mesh indices).
 pub export fn cardinal_animation_system_add_skin(system: ?*CardinalAnimationSystem, skin: ?*const CardinalSkin) callconv(.c) u32 {
     if (system == null or skin == null) return std.math.maxInt(u32);
 
@@ -615,6 +632,7 @@ pub export fn cardinal_animation_system_add_skin(system: ?*CardinalAnimationSyst
     return index;
 }
 
+/// Starts playback of an animation, creating a state slot if needed.
 pub export fn cardinal_animation_play(system: ?*CardinalAnimationSystem, animation_index: u32, loop: bool, blend_weight: f32) callconv(.c) bool {
     if (system == null or animation_index >= system.?.animation_count) return false;
 
@@ -649,6 +667,7 @@ pub export fn cardinal_animation_play(system: ?*CardinalAnimationSystem, animati
     return true;
 }
 
+/// Pauses playback of an animation state (if present).
 pub export fn cardinal_animation_pause(system: ?*CardinalAnimationSystem, animation_index: u32) callconv(.c) bool {
     if (system == null) return false;
 
@@ -664,6 +683,7 @@ pub export fn cardinal_animation_pause(system: ?*CardinalAnimationSystem, animat
     return false;
 }
 
+/// Stops playback of an animation state (if present).
 pub export fn cardinal_animation_stop(system: ?*CardinalAnimationSystem, animation_index: u32) callconv(.c) bool {
     if (system == null) return false;
 
@@ -680,6 +700,7 @@ pub export fn cardinal_animation_stop(system: ?*CardinalAnimationSystem, animati
     return false;
 }
 
+/// Sets playback speed for an animation state (if present).
 pub export fn cardinal_animation_set_speed(system: ?*CardinalAnimationSystem, animation_index: u32, speed: f32) callconv(.c) bool {
     if (system == null) return false;
 
@@ -695,6 +716,7 @@ pub export fn cardinal_animation_set_speed(system: ?*CardinalAnimationSystem, an
     return false;
 }
 
+/// Sets current playback time for an animation state (if present).
 pub export fn cardinal_animation_set_time(system: ?*CardinalAnimationSystem, animation_index: u32, time: f32) callconv(.c) bool {
     if (system == null) return false;
 
@@ -709,6 +731,7 @@ pub export fn cardinal_animation_set_time(system: ?*CardinalAnimationSystem, ani
     return false;
 }
 
+/// Advances all active animation states and applies results to scene node transforms.
 pub export fn cardinal_animation_system_update(system: ?*CardinalAnimationSystem, all_nodes: ?[*]?*scene.CardinalSceneNode, all_node_count: u32, delta_time: f32) callconv(.c) void {
     if (system == null) return;
     const sys = system.?;
@@ -890,6 +913,7 @@ pub export fn cardinal_animation_system_update(system: ?*CardinalAnimationSystem
     }
 }
 
+/// Writes skin bone matrices using `scene_nodes` for lookup (assumes indices are valid).
 pub export fn cardinal_skin_update_bone_matrices(skin: ?*const CardinalSkin, scene_nodes: ?[*]?*const scene.CardinalSceneNode, bone_matrices: ?[*]f32) callconv(.c) bool {
     if (skin == null or scene_nodes == null or bone_matrices == null or skin.?.bones == null) return false;
 
@@ -914,6 +938,7 @@ pub export fn cardinal_skin_update_bone_matrices(skin: ?*const CardinalSkin, sce
     return true;
 }
 
+/// Writes skin bone matrices with bounds checking against `all_node_count`.
 pub export fn cardinal_skin_update_bone_matrices_bounded(skin: ?*const CardinalSkin, scene_nodes: ?[*]?*const scene.CardinalSceneNode, all_node_count: u32, bone_matrices: ?[*]f32) callconv(.c) bool {
     if (skin == null or scene_nodes == null or bone_matrices == null or skin.?.bones == null) return false;
 
@@ -937,6 +962,7 @@ pub export fn cardinal_skin_update_bone_matrices_bounded(skin: ?*const CardinalS
     return true;
 }
 
+/// Releases per-skin allocations (name/bones/mesh indices).
 pub export fn cardinal_skin_destroy(skin: ?*CardinalSkin) callconv(.c) void {
     if (skin == null) return;
     const allocator = memory.cardinal_get_allocator_for_category(.ENGINE);
@@ -995,6 +1021,7 @@ fn rdp_simplify(times: [*]f32, values: [*]f32, component_count: u32, first: usiz
     }
 }
 
+/// Performs a best-effort in-place optimization pass on a single animation.
 pub export fn cardinal_animation_optimize(animation: ?*CardinalAnimation, tolerance: f32) callconv(.c) void {
     if (animation == null) return;
     const anim = animation.?;

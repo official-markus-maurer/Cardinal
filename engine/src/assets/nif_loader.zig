@@ -1,3 +1,10 @@
+//! NIF/KF loader for Gamebryo assets.
+//!
+//! This module parses NIF scenes into `scene.CardinalScene` and can merge KF animation data into
+//! an existing scene's animation system.
+//!
+//! TODO: Split this file into smaller parsing/extraction stages to reduce coupling and rebuild time.
+//! TODO: Unify allocation strategy (ASSETS vs c_allocator) and add a single cleanup path on failure.
 const std = @import("std");
 const scene = @import("scene.zig");
 const log = @import("../core/log.zig");
@@ -127,8 +134,7 @@ fn nif_transform_to_mat(nt: nif_schema.NiTransform) [16]f32 {
     return out;
 }
 
-// --- NIF Data Structures ---
-
+/// Parsed NIF file header and string tables.
 const NifHeader = struct {
     version_str: []u8,
     version: u32,
@@ -145,15 +151,18 @@ const NifHeader = struct {
     groups: []u32,
 };
 
+/// Block metadata and optional parsed schema payload.
 const NifBlock = struct {
-    type_index: u16, // Index into header.block_types
-    data_offset: usize, // Offset in file
+    /// Index into `header.block_types`.
+    type_index: u16,
+    /// Offset in the file buffer where this block's data begins.
+    data_offset: usize,
     size: u32,
 
-    // Parsed Data (Generic)
     parsed: ?nif_schema.NifBlockData,
 };
 
+/// Streaming reader over an in-memory NIF/KF buffer.
 pub const NifReader = struct {
     buffer: []const u8,
     pos: usize,
@@ -192,8 +201,7 @@ pub const NifReader = struct {
         if (self.header.groups.len > 0) self.allocator.free(self.header.groups);
     }
 
-    // --- Basic Readers ---
-
+    /// Reads a trivially-copiable value from the buffer.
     pub fn read(self: *NifReader, comptime T: type) !T {
         if (self.pos + @sizeOf(T) > self.buffer.len) return error.EndOfBuffer;
         var val: T = undefined;
@@ -202,6 +210,7 @@ pub const NifReader = struct {
         return val;
     }
 
+    /// Returns a borrowed slice of `count` bytes from the buffer.
     pub fn read_bytes(self: *NifReader, count: usize) ![]const u8 {
         if (self.pos + count > self.buffer.len) return error.EndOfBuffer;
         const slice = self.buffer[self.pos .. self.pos + count];
@@ -209,8 +218,8 @@ pub const NifReader = struct {
         return slice;
     }
 
+    /// Reads a newline-terminated string (excluding the newline).
     pub fn read_string_lf(self: *NifReader) ![]u8 {
-        // Read until \n
         var end = self.pos;
         while (end < self.buffer.len and self.buffer[end] != 0x0A) : (end += 1) {}
         const slice = try self.allocator.dupe(u8, self.buffer[self.pos..end]);
@@ -565,6 +574,7 @@ fn getSkinMaxVertexIndex(reader: *NifReader, skin_inst_idx: usize) u32 {
     return 0;
 }
 
+/// Parses a KF file and merges any controller sequences into `out_scene.animation_system`.
 pub export fn cardinal_nif_merge_kf(path: [*:0]const u8, out_scene: *scene.CardinalScene) callconv(.c) bool {
     const file_path = std.mem.span(path);
     nif_log.info("Merging KF: {s}", .{file_path});
@@ -694,10 +704,12 @@ pub export fn cardinal_nif_merge_kf(path: [*:0]const u8, out_scene: *scene.Cardi
     return true;
 }
 
+/// Parses a NIF file and populates `out_scene` with meshes/materials/textures/nodes and skins.
 pub export fn cardinal_nif_load_scene(path: [*:0]const u8, out_scene: *scene.CardinalScene) callconv(.c) bool {
     @setEvalBranchQuota(100000);
     const file_path = std.mem.span(path);
     nif_log.info("Loading NIF: {s}", .{file_path});
+    const assets_allocator = memory.cardinal_get_allocator_for_category(.ASSETS);
 
     var file = std.fs.cwd().openFile(file_path, .{}) catch |err| {
         nif_log.err("Failed to open file: {s} ({})", .{ file_path, err });
@@ -975,7 +987,6 @@ pub export fn cardinal_nif_load_scene(path: [*:0]const u8, out_scene: *scene.Car
 
                                             if (raw_path) |p| {
                                                 // Create Texture
-                                                const assets_allocator = memory.cardinal_get_allocator_for_category(.ASSETS);
                                                 const norm_path = resolve_texture_path(assets_allocator.as_allocator(), file_path, p);
                                                 if (norm_path) |np| {
                                                     // Add texture to scene list
@@ -1051,7 +1062,8 @@ pub export fn cardinal_nif_load_scene(path: [*:0]const u8, out_scene: *scene.Car
                                             nif_log.debug("NiTriShapeData: Has {d} vertices", .{verts.len});
                                             mesh.vertex_count = @intCast(verts.len);
                                             // Allocate CardinalVertex array
-                                            const c_verts = std.heap.c_allocator.alloc(scene.CardinalVertex, mesh.vertex_count) catch return false;
+                                            const c_verts_ptr = memory.cardinal_alloc(assets_allocator, mesh.vertex_count * @sizeOf(scene.CardinalVertex)) orelse return false;
+                                            const c_verts = @as([*]scene.CardinalVertex, @ptrCast(@alignCast(c_verts_ptr)))[0..mesh.vertex_count];
 
                                             var min_pt = @import("../core/math.zig").Vec3{ .x = std.math.floatMax(f32), .y = std.math.floatMax(f32), .z = std.math.floatMax(f32) };
                                             var max_pt = @import("../core/math.zig").Vec3{ .x = -std.math.floatMax(f32), .y = -std.math.floatMax(f32), .z = -std.math.floatMax(f32) };
@@ -1111,6 +1123,22 @@ pub export fn cardinal_nif_load_scene(path: [*:0]const u8, out_scene: *scene.Car
                                                 nif_log.info("Mesh {d} UV0: count={d} nonZero={d} u={any}..{any} v={any}..{any}", .{ i, uvs.len, non_zero, min_u, max_u, min_v, max_v });
                                             } else {
                                                 nif_log.warn("Mesh {d} has no UV sets", .{i});
+                                                if (mat_index >= 0) {
+                                                    const mi: usize = @intCast(mat_index);
+                                                    if (mi < materials.items.len) {
+                                                        const src = materials.items[mi];
+                                                        if (src.albedo_texture.is_valid() or src.normal_texture.is_valid() or src.metallic_roughness_texture.is_valid() or src.ao_texture.is_valid() or src.emissive_texture.is_valid()) {
+                                                            var m2 = src;
+                                                            m2.albedo_texture = handles.TextureHandle.INVALID;
+                                                            m2.normal_texture = handles.TextureHandle.INVALID;
+                                                            m2.metallic_roughness_texture = handles.TextureHandle.INVALID;
+                                                            m2.ao_texture = handles.TextureHandle.INVALID;
+                                                            m2.emissive_texture = handles.TextureHandle.INVALID;
+                                                            materials.append(std.heap.c_allocator, m2) catch return false;
+                                                            mesh.material_index = @intCast(materials.items.len - 1);
+                                                        }
+                                                    }
+                                                }
                                             }
 
                                             if (uv_sets.len > 1) {
@@ -1159,7 +1187,8 @@ pub export fn cardinal_nif_load_scene(path: [*:0]const u8, out_scene: *scene.Car
                                         var indices: ?[]u32 = null;
                                         var idx_offset_tris: usize = 0;
                                         if (data.Triangles) |tris| {
-                                            indices = std.heap.c_allocator.alloc(u32, tris.len * 3) catch return false;
+                                            const inds_ptr = memory.cardinal_alloc(assets_allocator, tris.len * 3 * @sizeOf(u32)) orelse return false;
+                                            indices = @as([*]u32, @ptrCast(@alignCast(inds_ptr)))[0 .. tris.len * 3];
                                             for (tris) |tri| {
                                                 const v1: u32 = tri.v1;
                                                 const v2: u32 = tri.v2;
@@ -1172,7 +1201,8 @@ pub export fn cardinal_nif_load_scene(path: [*:0]const u8, out_scene: *scene.Car
                                             }
                                         } else if (data.Has_Triangles.? and data.Triangles_1 != null) {
                                             const tris = data.Triangles_1.?;
-                                            indices = std.heap.c_allocator.alloc(u32, tris.len * 3) catch return false;
+                                            const inds_ptr = memory.cardinal_alloc(assets_allocator, tris.len * 3 * @sizeOf(u32)) orelse return false;
+                                            indices = @as([*]u32, @ptrCast(@alignCast(inds_ptr)))[0 .. tris.len * 3];
                                             for (tris) |tri| {
                                                 const v1: u32 = tri.v1;
                                                 const v2: u32 = tri.v2;
@@ -1187,7 +1217,7 @@ pub export fn cardinal_nif_load_scene(path: [*:0]const u8, out_scene: *scene.Car
 
                                         if (indices) |inds| {
                                             if (idx_offset_tris == 0) {
-                                                std.heap.c_allocator.free(inds);
+                                                memory.cardinal_free(assets_allocator, @ptrCast(inds.ptr));
                                             } else {
                                                 mesh.index_count = @intCast(idx_offset_tris);
                                                 mesh.indices = inds.ptr;
@@ -1286,7 +1316,8 @@ pub export fn cardinal_nif_load_scene(path: [*:0]const u8, out_scene: *scene.Car
                                                                         }
 
                                                                         if (total_indices > 0) {
-                                                                            const skin_indices = std.heap.c_allocator.alloc(u32, total_indices) catch return false;
+                                                                            const skin_inds_ptr = memory.cardinal_alloc(assets_allocator, total_indices * @sizeOf(u32)) orelse return false;
+                                                                            const skin_indices = @as([*]u32, @ptrCast(@alignCast(skin_inds_ptr)))[0..total_indices];
                                                                             var idx_offset: usize = 0;
                                                                             for (partition.Partitions) |p| {
                                                                                 if (mesh.vertices) |verts| {
@@ -1451,7 +1482,8 @@ pub export fn cardinal_nif_load_scene(path: [*:0]const u8, out_scene: *scene.Car
                                         // Assign mesh to node
                                         // Allocate mesh_indices array for node
                                         const mesh_idx = @as(u32, @intCast(meshes.items.len - 1));
-                                        const node_mesh_indices = std.heap.c_allocator.alloc(u32, 1) catch return false;
+                                        const node_mesh_indices_ptr = memory.cardinal_alloc(assets_allocator, @sizeOf(u32)) orelse return false;
+                                        const node_mesh_indices = @as([*]u32, @ptrCast(@alignCast(node_mesh_indices_ptr)))[0..1];
                                         node_mesh_indices[0] = mesh_idx;
                                         sn.mesh_indices = node_mesh_indices.ptr;
                                         sn.mesh_count = 1;
@@ -1512,7 +1544,8 @@ pub export fn cardinal_nif_load_scene(path: [*:0]const u8, out_scene: *scene.Car
         }
 
         const count: usize = if (root_count > 0) root_count else 1;
-        const roots = std.heap.c_allocator.alloc(?*scene.CardinalSceneNode, count) catch return false;
+        const roots_ptr = memory.cardinal_alloc(assets_allocator, count * @sizeOf(?*scene.CardinalSceneNode)) orelse return false;
+        const roots = @as([*]?*scene.CardinalSceneNode, @ptrCast(@alignCast(roots_ptr)))[0..count];
 
         if (root_count > 0) {
             var wi: usize = 0;
@@ -1546,7 +1579,8 @@ pub export fn cardinal_nif_load_scene(path: [*:0]const u8, out_scene: *scene.Car
     if (meshes.items.len > 0) {
         nif_log.warn("Collecting {d} meshes for scene", .{meshes.items.len});
         out_scene.mesh_count = @intCast(meshes.items.len);
-        const scene_meshes = std.heap.c_allocator.alloc(scene.CardinalMesh, out_scene.mesh_count) catch return false;
+        const scene_meshes_ptr = memory.cardinal_alloc(assets_allocator, out_scene.mesh_count * @sizeOf(scene.CardinalMesh)) orelse return false;
+        const scene_meshes = @as([*]scene.CardinalMesh, @ptrCast(@alignCast(scene_meshes_ptr)))[0..out_scene.mesh_count];
         @memcpy(scene_meshes, meshes.items);
         out_scene.meshes = scene_meshes.ptr;
 
@@ -1562,14 +1596,14 @@ pub export fn cardinal_nif_load_scene(path: [*:0]const u8, out_scene: *scene.Car
 
     if (materials.items.len > 0) {
         out_scene.material_count = @intCast(materials.items.len);
-        const scene_mats = std.heap.c_allocator.alloc(scene.CardinalMaterial, out_scene.material_count) catch return false;
+        const scene_mats_ptr = memory.cardinal_alloc(assets_allocator, out_scene.material_count * @sizeOf(scene.CardinalMaterial)) orelse return false;
+        const scene_mats = @as([*]scene.CardinalMaterial, @ptrCast(@alignCast(scene_mats_ptr)))[0..out_scene.material_count];
         @memcpy(scene_mats, materials.items);
         out_scene.materials = scene_mats.ptr;
     }
 
     if (textures.items.len > 0) {
         out_scene.texture_count = @intCast(textures.items.len);
-        const assets_allocator = memory.cardinal_get_allocator_for_category(.ASSETS);
         const texs_ptr = memory.cardinal_calloc(assets_allocator, out_scene.texture_count, @sizeOf(scene.CardinalTexture));
         if (texs_ptr == null) return false;
         const scene_texs: [*]scene.CardinalTexture = @ptrCast(@alignCast(texs_ptr));
@@ -1579,7 +1613,8 @@ pub export fn cardinal_nif_load_scene(path: [*:0]const u8, out_scene: *scene.Car
 
     // Populate all_nodes for the scene (Required for animation system)
     if (nodes.items.len > 0) {
-        const all_nodes = std.heap.c_allocator.alloc(?*scene.CardinalSceneNode, nodes.items.len) catch return false;
+        const all_nodes_ptr = memory.cardinal_alloc(assets_allocator, nodes.items.len * @sizeOf(?*scene.CardinalSceneNode)) orelse return false;
+        const all_nodes = @as([*]?*scene.CardinalSceneNode, @ptrCast(@alignCast(all_nodes_ptr)))[0..nodes.items.len];
         @memcpy(all_nodes, nodes.items);
         out_scene.all_nodes = all_nodes.ptr;
         out_scene.all_node_count = @intCast(nodes.items.len);
@@ -1601,8 +1636,11 @@ pub export fn cardinal_nif_load_scene(path: [*:0]const u8, out_scene: *scene.Car
                 // Name
                 var name_buf: [64]u8 = undefined;
                 const name_slice = std.fmt.bufPrint(&name_buf, "Skin_{d}", .{b_idx}) catch "Skin";
-                const skin_name = std.heap.c_allocator.dupeZ(u8, name_slice) catch return false;
-                new_skin.name = skin_name;
+                const skin_name_ptr = memory.cardinal_alloc(assets_allocator, name_slice.len + 1) orelse return false;
+                const skin_name = @as([*]u8, @ptrCast(@alignCast(skin_name_ptr)))[0 .. name_slice.len + 1];
+                @memcpy(skin_name[0..name_slice.len], name_slice);
+                skin_name[name_slice.len] = 0;
+                new_skin.name = @ptrCast(skin_name.ptr);
 
                 // Find meshes that use this skin
                 var skin_mesh_indices = std.ArrayListUnmanaged(u32){};
@@ -1619,7 +1657,8 @@ pub export fn cardinal_nif_load_scene(path: [*:0]const u8, out_scene: *scene.Car
 
                 if (skin_mesh_indices.items.len > 0) {
                     new_skin.mesh_count = @intCast(skin_mesh_indices.items.len);
-                    const mesh_indices_arr = std.heap.c_allocator.alloc(u32, new_skin.mesh_count) catch return false;
+                    const mesh_indices_ptr = memory.cardinal_alloc(assets_allocator, new_skin.mesh_count * @sizeOf(u32)) orelse return false;
+                    const mesh_indices_arr = @as([*]u32, @ptrCast(@alignCast(mesh_indices_ptr)))[0..new_skin.mesh_count];
                     @memcpy(mesh_indices_arr, skin_mesh_indices.items);
                     new_skin.mesh_indices = mesh_indices_arr.ptr;
                 }
@@ -1634,7 +1673,8 @@ pub export fn cardinal_nif_load_scene(path: [*:0]const u8, out_scene: *scene.Car
 
                             new_skin.bone_count = @intCast(bone_count);
                             if (bone_count > 0) {
-                                const bones_arr = std.heap.c_allocator.alloc(animation.CardinalBone, bone_count) catch return false;
+                                const bones_ptr = memory.cardinal_alloc(assets_allocator, bone_count * @sizeOf(animation.CardinalBone)) orelse return false;
+                                const bones_arr = @as([*]animation.CardinalBone, @ptrCast(@alignCast(bones_ptr)))[0..bone_count];
                                 var k: usize = 0;
                                 while (k < bone_count) : (k += 1) {
                                     var bone = std.mem.zeroes(animation.CardinalBone);
@@ -1676,7 +1716,8 @@ pub export fn cardinal_nif_load_scene(path: [*:0]const u8, out_scene: *scene.Car
 
     if (skins.items.len > 0) {
         out_scene.skin_count = @intCast(skins.items.len);
-        const scene_skins = std.heap.c_allocator.alloc(animation.CardinalSkin, out_scene.skin_count) catch return false;
+        const scene_skins_ptr = memory.cardinal_alloc(assets_allocator, out_scene.skin_count * @sizeOf(animation.CardinalSkin)) orelse return false;
+        const scene_skins = @as([*]animation.CardinalSkin, @ptrCast(@alignCast(scene_skins_ptr)))[0..out_scene.skin_count];
         @memcpy(scene_skins, skins.items);
         out_scene.skins = @ptrCast(scene_skins.ptr);
         nif_log.info("Added {d} skins to scene", .{out_scene.skin_count});

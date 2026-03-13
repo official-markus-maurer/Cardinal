@@ -1,14 +1,23 @@
+//! Lightweight event bus.
+//!
+//! Provides a simple publish/subscribe mechanism keyed by hashed event names. Uses a global map
+//! protected by a mutex and copies listeners before dispatch to allow callbacks to mutate state.
+//!
+//! TODO: Add optional per-event lock-free queues for hot event streams.
 const std = @import("std");
 const log = @import("log.zig");
 const evt_log = log.ScopedLogger("EVENTS");
 
+/// Opaque event identifier (typically `makeEventId` of a string).
 pub const EventId = u64;
 
+/// Published event data passed to handlers.
 pub const Event = struct {
     id: EventId,
     data: ?*const anyopaque,
 };
 
+/// Event handler function signature.
 pub const EventHandler = *const fn (event: Event, user_data: ?*anyopaque) void;
 
 const Listener = struct {
@@ -25,6 +34,7 @@ pub fn init(allocator: std.mem.Allocator) void {
     g_listeners = .{};
 }
 
+/// Releases all registered listeners and backing storage.
 pub fn shutdown() void {
     g_mutex.lock();
     defer g_mutex.unlock();
@@ -36,10 +46,12 @@ pub fn shutdown() void {
     g_listeners.deinit(g_allocator);
 }
 
+/// Computes a stable event id from a human-readable name.
 pub fn makeEventId(name: []const u8) EventId {
     return std.hash.Wyhash.hash(0, name);
 }
 
+/// Registers a handler for `event_id`.
 pub fn subscribe(event_id: EventId, callback: EventHandler, user_data: ?*anyopaque) void {
     g_mutex.lock();
     defer g_mutex.unlock();
@@ -51,6 +63,7 @@ pub fn subscribe(event_id: EventId, callback: EventHandler, user_data: ?*anyopaq
     list.value_ptr.append(g_allocator, .{ .callback = callback, .user_data = user_data }) catch return;
 }
 
+/// Removes all handlers for `event_id` matching `callback`.
 pub fn unsubscribe(event_id: EventId, callback: EventHandler) void {
     g_mutex.lock();
     defer g_mutex.unlock();
@@ -67,8 +80,8 @@ pub fn unsubscribe(event_id: EventId, callback: EventHandler) void {
     }
 }
 
+/// Publishes an event to all current subscribers.
 pub fn publish(event_id: EventId, data: ?*const anyopaque) void {
-    // Use a stack buffer for small listener counts to avoid allocation
     const MAX_STACK_LISTENERS = 64;
     var stack_buffer: [MAX_STACK_LISTENERS]Listener = undefined;
 
@@ -92,7 +105,6 @@ pub fn publish(event_id: EventId, data: ?*const anyopaque) void {
             listener.callback(event, listener.user_data);
         }
     } else {
-        // Fallback to heap allocation for large listener counts
         const listeners_copy = list.clone(g_allocator) catch {
             g_mutex.unlock();
             evt_log.err("Failed to allocate listener copy for event {}", .{event_id});

@@ -1,3 +1,10 @@
+//! Texture decoding, ref-counted loading, and LRU caching.
+//!
+//! Provides synchronous and async-capable texture loading for common formats via stb_image, DDS,
+//! and TinyEXR. Textures are typically backed by a `ref_counting.CardinalRefCountedResource` so
+//! they can be shared across scenes/materials.
+//!
+//! TODO: Split decode backends (stb/dds/exr) into separate modules to reduce compile cost.
 const std = @import("std");
 const memory = @import("../core/memory.zig");
 const log = @import("../core/log.zig");
@@ -6,14 +13,14 @@ const async_loader = @import("../core/async_loader.zig");
 const resource_state = @import("../core/resource_state.zig");
 const dds_loader = @import("dds_loader.zig");
 
-// Vulkan Formats
+/// Vulkan format constants used by the decoders.
 const VK_FORMAT_UNDEFINED = 0;
 const VK_FORMAT_R8G8B8A8_SRGB = 43;
 const VK_FORMAT_R32G32B32A32_SFLOAT = 109;
 
 const texture_log = log.ScopedLogger("TEXTURE");
 
-// Import STB functions
+/// stb_image entrypoints.
 extern fn stbi_load(filename: [*]const u8, x: *c_int, y: *c_int, channels_in_file: *c_int, desired_channels: c_int) ?[*]u8;
 extern fn stbi_image_free(retval_from_stbi_load: ?*anyopaque) void;
 extern fn stbi_failure_reason() ?[*]const u8;
@@ -24,22 +31,20 @@ extern fn stbi_load_from_memory(buffer: [*]const u8, len: c_int, x: *c_int, y: *
 extern fn stbi_is_hdr_from_memory(buffer: [*]const u8, len: c_int) c_int;
 extern fn stbi_loadf_from_memory(buffer: [*]const u8, len: c_int, x: *c_int, y: *c_int, channels_in_file: *c_int, desired_channels: c_int) ?[*]f32;
 
-// TinyEXR functions
+/// TinyEXR entrypoints.
 extern fn LoadEXR(out_rgba: *?[*]f32, width: *c_int, height: *c_int, filename: [*]const u8, err: *?[*]const u8) c_int;
 extern fn IsEXR(filename: [*]const u8) c_int;
 extern fn LoadEXRFromMemory(out_rgba: *?[*]f32, width: *c_int, height: *c_int, memory: [*]const u8, size: usize, err: *?[*]const u8) c_int;
 extern fn IsEXRFromMemory(memory: [*]const u8, size: usize) c_int;
 extern fn FreeEXRErrorMessage(msg: [*]const u8) void;
 
-// System calls for thread ID
 const builtin = @import("builtin");
+/// Returns the current OS thread id.
 fn getCurrentThreadId() u32 {
     if (builtin.os.tag == .windows) {
         return std.os.windows.kernel32.GetCurrentThreadId();
     } else {
-        // Linux/Posix
-        // Using libc syscall
-        const SYS_gettid = 186; // x86_64
+        const SYS_gettid = 186;
         return @as(u32, @intCast(std.os.linux.syscall0(SYS_gettid)));
     }
 }
@@ -49,9 +54,12 @@ pub const TextureData = extern struct {
     width: u32,
     height: u32,
     channels: u32,
-    is_hdr: u32, // Changed from bool to u32 for explicit alignment/size
-    format: u32, // VkFormat (0 = undefined/auto)
-    data_size: u64, // Size of data in bytes (0 if calculated from w*h*c)
+    /// Explicit u32 for ABI stability.
+    is_hdr: u32,
+    /// Vulkan format (0 = undefined/auto).
+    format: u32,
+    /// Size in bytes (0 means infer from dimensions).
+    data_size: u64,
 };
 
 pub const TextureCacheStats = extern struct {
@@ -86,7 +94,7 @@ const TextureCache = struct {
 
 var g_texture_cache: TextureCache = .{};
 
-// Placeholder texture (1x1 magenta)
+/// Placeholder texture (1x1 magenta) returned when async loads are pending.
 var g_placeholder_data = [_]u8{ 255, 0, 255, 255 };
 var g_placeholder_texture = TextureData{
     .data = @ptrCast(&g_placeholder_data),
@@ -98,23 +106,27 @@ var g_placeholder_texture = TextureData{
     .data_size = 4,
 };
 
+/// Looks up `path` in the cache and returns a retained resource if present.
 pub export fn cardinal_texture_check_cache(path: [*:0]const u8) ?*ref_counting.CardinalRefCountedResource {
     if (!g_texture_cache.initialized) return null;
     const filepath_slice = std.mem.span(path);
     return texture_cache_get(filepath_slice);
 }
 
+/// Writes the placeholder texture into `out_texture`.
 pub export fn cardinal_texture_get_placeholder(out_texture: *TextureData) void {
     out_texture.* = g_placeholder_texture;
 }
 
+/// Loads a texture from disk into `out_texture`.
+///
+/// Uses filesystem APIs that handle Unicode paths on Windows, then delegates to
+/// `texture_load_from_memory` for format detection and decode.
 pub export fn texture_load_from_disk(path: [*:0]const u8, out_texture: *TextureData) bool {
     const filename_slice = std.mem.span(path);
 
-    // Use std.fs to read file into memory (handles Unicode paths on Windows)
     const allocator = memory.cardinal_get_allocator_for_category(.ASSETS).as_allocator();
 
-    // Handle absolute vs relative paths
     var file_buffer: []u8 = undefined;
 
     if (std.fs.path.isAbsolute(filename_slice)) {
@@ -139,13 +151,14 @@ pub export fn texture_load_from_disk(path: [*:0]const u8, out_texture: *TextureD
     return texture_load_from_memory(file_buffer.ptr, file_buffer.len, out_texture);
 }
 
+/// Loads a texture from a memory buffer into `out_texture`.
+///
+/// Format detection is based on magic bytes for DDS and EXR before falling back to stb_image.
 pub export fn texture_load_from_memory(data: [*]const u8, size: usize, out_texture: *TextureData) bool {
     var w: c_int = 0;
     var h: c_int = 0;
     var c: c_int = 0;
 
-    // Check for DDS
-    // Magic bytes: "DDS " (0x44, 0x44, 0x53, 0x20)
     var is_dds = false;
     if (size >= 4) {
         if (data[0] == 0x44 and data[1] == 0x44 and data[2] == 0x53 and data[3] == 0x20) {
@@ -154,7 +167,6 @@ pub export fn texture_load_from_memory(data: [*]const u8, size: usize, out_textu
     }
 
     if (is_dds) {
-        // Create a temporary slice for the buffer
         const buffer = data[0..size];
         if (dds_loader.load_dds_from_memory(buffer, out_texture)) {
             texture_log.warn("DDS loaded: {d}x{d}, Size: {d}, Format: {d}", .{ out_texture.width, out_texture.height, out_texture.data_size, out_texture.format });
@@ -165,9 +177,6 @@ pub export fn texture_load_from_memory(data: [*]const u8, size: usize, out_textu
         }
     }
 
-    // Check for EXR
-    // Note: IsEXRFromMemory seems to return true for PNGs/others in some cases, so we enforce the magic byte check.
-    // Magic bytes: 0x76, 0x2f, 0x31, 0x01
     var is_exr = false;
     if (size >= 4) {
         if (data[0] == 0x76 and data[1] == 0x2f and data[2] == 0x31 and data[3] == 0x01) {

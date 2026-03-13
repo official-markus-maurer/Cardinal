@@ -1,11 +1,15 @@
+//! Threaded job system used by the engine async loader and renderer subsystems.
+//!
+//! Jobs are allocated from pools and scheduled on worker threads. The API is C-ABI-friendly
+//! and exposes optional dependency tracking.
+//!
+//! TODO: Replace linear queues with a true priority queue when `enable_priority_queue` is enabled.
 const std = @import("std");
 const log = @import("log.zig");
 const memory = @import("memory.zig");
 const pool_allocator = @import("pool_allocator.zig");
 
 const job_log = log.ScopedLogger("JOB_SYSTEM");
-
-// --- Types ---
 
 pub const JobPriority = enum(c_int) {
     LOW = 0,
@@ -30,6 +34,7 @@ pub const DependencyNode = struct {
     next: ?*DependencyNode,
 };
 
+/// A unit of work executed by a worker thread.
 pub const Job = extern struct {
     id: u32,
     priority: JobPriority,
@@ -38,27 +43,21 @@ pub const Job = extern struct {
 
     func: JobFunc,
     data: ?*anyopaque,
-
-    // Error Handling
     error_func: JobErrorFunc,
     error_code: i32,
-
-    // Internal List
     next: ?*Job,
-
-    // Dependency Graph
     dependency_count: u32,
     dependents_head: ?*DependencyNode,
 };
 
+/// Configuration for `job_system_init`.
 pub const JobSystemConfig = extern struct {
     worker_thread_count: u32,
     max_queue_size: u32,
     enable_priority_queue: bool,
 };
 
-// --- Internal State ---
-
+/// Internal queue type used by the scheduler.
 const JobQueue = struct {
     head: ?*Job,
     tail: ?*Job,
@@ -68,12 +67,14 @@ const JobQueue = struct {
     condition: std.Thread.Condition,
 };
 
+/// Worker thread bookkeeping.
 const WorkerThread = struct {
     thread_id: u32,
     should_exit: bool,
     thread: ?std.Thread,
 };
 
+/// Global job system state (owned by this module).
 const JobSystemState = struct {
     initialized: bool,
     shutting_down: bool,
@@ -91,8 +92,6 @@ const JobSystemState = struct {
 };
 
 pub var g_job_system: JobSystemState = undefined;
-
-// --- Helper Functions ---
 
 fn job_queue_init(queue: *JobQueue, max_size: u32) void {
     queue.head = null;
@@ -178,9 +177,10 @@ fn job_queue_remove(queue: *JobQueue, job: *Job) bool {
     return false;
 }
 
+/// Worker thread entrypoint: executes jobs and releases dependent jobs.
+///
+/// TODO: Document lock ordering between `state_mutex` and queue locks in one place.
 fn worker_thread_func(worker: *WorkerThread) void {
-    // job_log.debug("Job worker thread {d} started", .{worker.thread_id});
-
     while (!worker.should_exit and !g_job_system.shutting_down) {
         const job_opt = job_queue_pop(&g_job_system.pending_queue, true);
 
@@ -207,56 +207,48 @@ fn worker_thread_func(worker: *WorkerThread) void {
             }
         }
 
-        // Process dependencies
-    // CRITICAL: We must hold state_mutex while processing dependents to prevent race conditions
-    // where a dependent is added JUST as we are finishing.
-    g_job_system.state_mutex.lock();
-    
-    // First, verify status update is atomic with dependency processing
-    if (new_status == .FAILED) job.error_code = error_code;
-    job.status = new_status;
+        g_job_system.state_mutex.lock();
 
-    var node = job.dependents_head;
-    while (node) |n| {
-        const dependent = n.job;
-        if (dependent.dependency_count > 0) {
-            dependent.dependency_count -= 1;
-            if (dependent.dependency_count == 0) {
-                // Move from waiting to pending
-                // Note: We need to be careful about lock ordering if job_queue_remove/push takes locks.
-                // job_queue_remove/push take their own queue locks.
-                // state_mutex -> queue_mutex is a valid ordering if consistently applied.
-                if (job_queue_remove(&g_job_system.waiting_queue, dependent)) {
-                    _ = job_queue_push(&g_job_system.pending_queue, dependent);
+        if (new_status == .FAILED) job.error_code = error_code;
+        job.status = new_status;
+
+        var node = job.dependents_head;
+        while (node) |n| {
+            const dependent = n.job;
+            if (dependent.dependency_count > 0) {
+                dependent.dependency_count -= 1;
+                if (dependent.dependency_count == 0) {
+                    if (job_queue_remove(&g_job_system.waiting_queue, dependent)) {
+                        _ = job_queue_push(&g_job_system.pending_queue, dependent);
+                    }
                 }
             }
+            const next = n.next;
+            g_job_system.dependency_pool.destroy(n);
+            node = next;
         }
-        const next = n.next;
-        g_job_system.dependency_pool.destroy(n);
-        node = next;
-    }
-    job.dependents_head = null;
-    g_job_system.state_mutex.unlock();
+        job.dependents_head = null;
+        g_job_system.state_mutex.unlock();
 
-    // Push to completed queue
-    if (job.push_to_completed_queue) {
-        g_job_system.completed_queue.mutex.lock();
-        defer g_job_system.completed_queue.mutex.unlock();
+        // Push to completed queue
+        if (job.push_to_completed_queue) {
+            g_job_system.completed_queue.mutex.lock();
+            defer g_job_system.completed_queue.mutex.unlock();
 
-        // Manual push to avoid deadlock (job_queue_push takes lock)
-        const queue = &g_job_system.completed_queue;
-        // Ignore max_size for completed queue to prevent leaks
+            // Manual push to avoid deadlock (job_queue_push takes lock)
+            const queue = &g_job_system.completed_queue;
+            // Ignore max_size for completed queue to prevent leaks
 
-        job.next = null;
-        if (queue.tail) |tail| {
-            tail.next = job;
-        } else {
-            queue.head = job;
+            job.next = null;
+            if (queue.tail) |tail| {
+                tail.next = job;
+            } else {
+                queue.head = job;
+            }
+            queue.tail = job;
+            queue.count += 1;
+            queue.condition.signal();
         }
-        queue.tail = job;
-        queue.count += 1;
-        queue.condition.signal();
-    }
     }
 }
 

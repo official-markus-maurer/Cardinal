@@ -283,7 +283,7 @@ fn create_resources(s: *types.VulkanState) bool {
     image_info.extent.depth = 1;
     image_info.mipLevels = 1;
     image_info.arrayLayers = 1;
-    image_info.format = c.VK_FORMAT_R8_UNORM;
+    image_info.format = c.VK_FORMAT_R16_SFLOAT;
     image_info.tiling = c.VK_IMAGE_TILING_OPTIMAL;
     image_info.initialLayout = c.VK_IMAGE_LAYOUT_UNDEFINED;
     image_info.usage = c.VK_IMAGE_USAGE_STORAGE_BIT | c.VK_IMAGE_USAGE_SAMPLED_BIT;
@@ -292,20 +292,20 @@ fn create_resources(s: *types.VulkanState) bool {
 
     var i: u32 = 0;
     while (i < types.MAX_FRAMES_IN_FLIGHT) : (i += 1) {
-        // SSAO Raw Image (R8 UNORM)
+        // SSAO Raw Image
         if (!vk_allocator.allocate_image(&s.allocator, &image_info, &s.pipelines.ssao_pipeline.ssao_image[i], &s.pipelines.ssao_pipeline.ssao_memory[i], &s.pipelines.ssao_pipeline.ssao_allocation[i], c.VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT)) return false;
 
-        if (!vk_texture_utils.create_texture_image_view(s.context.device, s.pipelines.ssao_pipeline.ssao_image[i], &s.pipelines.ssao_pipeline.ssao_view[i], c.VK_FORMAT_R8_UNORM)) return false;
+        if (!vk_texture_utils.create_texture_image_view(s.context.device, s.pipelines.ssao_pipeline.ssao_image[i], &s.pipelines.ssao_pipeline.ssao_view[i], c.VK_FORMAT_R16_SFLOAT)) return false;
 
-        // SSAO Blur Image (R8 UNORM)
+        // SSAO Blur Image
         if (!vk_allocator.allocate_image(&s.allocator, &image_info, &s.pipelines.ssao_pipeline.ssao_blur_image[i], &s.pipelines.ssao_pipeline.ssao_blur_memory[i], &s.pipelines.ssao_pipeline.ssao_blur_allocation[i], c.VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT)) return false;
 
-        if (!vk_texture_utils.create_texture_image_view(s.context.device, s.pipelines.ssao_pipeline.ssao_blur_image[i], &s.pipelines.ssao_pipeline.ssao_blur_view[i], c.VK_FORMAT_R8_UNORM)) return false;
+        if (!vk_texture_utils.create_texture_image_view(s.context.device, s.pipelines.ssao_pipeline.ssao_blur_image[i], &s.pipelines.ssao_pipeline.ssao_blur_view[i], c.VK_FORMAT_R16_SFLOAT)) return false;
 
         // Transition layouts to General for Storage usage
-        vk_texture_utils.transition_image_layout(s.context.device, s.context.graphics_queue, s.commands.pools.?[0], s.pipelines.ssao_pipeline.ssao_image[i], c.VK_FORMAT_R8_UNORM, c.VK_IMAGE_LAYOUT_UNDEFINED, c.VK_IMAGE_LAYOUT_GENERAL);
+        vk_texture_utils.transition_image_layout(s.context.device, s.context.graphics_queue, s.commands.pools.?[0], s.pipelines.ssao_pipeline.ssao_image[i], c.VK_FORMAT_R16_SFLOAT, c.VK_IMAGE_LAYOUT_UNDEFINED, c.VK_IMAGE_LAYOUT_GENERAL);
 
-        vk_texture_utils.transition_image_layout(s.context.device, s.context.graphics_queue, s.commands.pools.?[0], s.pipelines.ssao_pipeline.ssao_blur_image[i], c.VK_FORMAT_R8_UNORM, c.VK_IMAGE_LAYOUT_UNDEFINED, c.VK_IMAGE_LAYOUT_GENERAL);
+        vk_texture_utils.transition_image_layout(s.context.device, s.context.graphics_queue, s.commands.pools.?[0], s.pipelines.ssao_pipeline.ssao_blur_image[i], c.VK_FORMAT_R16_SFLOAT, c.VK_IMAGE_LAYOUT_UNDEFINED, c.VK_IMAGE_LAYOUT_GENERAL);
     }
 
     return true;

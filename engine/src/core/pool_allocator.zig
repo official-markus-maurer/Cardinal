@@ -1,14 +1,18 @@
+//! Pool allocator for fixed-size objects.
+//!
+//! Uses an `ArenaAllocator` as backing storage and a free-list to allow `destroy` without
+//! returning memory to the OS. Intended for high-churn small objects like jobs and dependency nodes.
+//!
+//! TODO: Add an optional non-thread-safe mode to avoid mutex overhead in single-threaded use.
 const std = @import("std");
 const memory = @import("memory.zig");
 
-/// A thread-safe pool allocator for fixed-size objects.
-/// Implemented using an ArenaAllocator and a free list to support efficient reset.
+/// Thread-safe pool allocator for fixed-size objects.
 pub fn PoolAllocator(comptime T: type) type {
     return struct {
         const Self = @This();
         
-        // We need a node structure for the free list.
-        // It must fit within the allocated memory for T.
+        /// Node structure used for the free-list (stored in reclaimed object memory).
         const Node = struct {
             next: ?*Node,
         };
@@ -43,8 +47,6 @@ pub fn PoolAllocator(comptime T: type) type {
                 return @ptrCast(node);
             }
 
-            // Allocate new item from arena
-            // Ensure size and alignment cover both T and Node (for reuse)
             const size = @max(@sizeOf(T), @sizeOf(Node));
             const alignment = comptime std.mem.Alignment.fromByteUnits(@max(@alignOf(T), @alignOf(Node)));
             
@@ -56,7 +58,6 @@ pub fn PoolAllocator(comptime T: type) type {
             self.mutex.lock();
             defer self.mutex.unlock();
 
-            // Add to free list
             const node: *Node = @ptrCast(ptr);
             node.next = self.free_list;
             self.free_list = node;
@@ -67,9 +68,7 @@ pub fn PoolAllocator(comptime T: type) type {
             self.mutex.lock();
             defer self.mutex.unlock();
             
-            // Reset arena (retain capacity for efficiency)
             _ = self.arena.reset(.retain_capacity);
-            // Clear free list (all nodes are effectively freed/invalidated)
             self.free_list = null;
         }
     };

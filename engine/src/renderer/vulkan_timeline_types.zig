@@ -1,3 +1,9 @@
+//! Timeline semaphore debug and pooling types.
+//!
+//! Defines C-ABI-friendly structs shared by the timeline semaphore pool and debug recorder.
+//! This file keeps the public layout stable even when the implementation changes.
+//!
+//! TODO: Move C import compatibility defines into a shared `vulkan_c.zig` helper.
 const std = @import("std");
 const builtin = @import("builtin");
 
@@ -38,6 +44,7 @@ pub const c = @cImport({
 pub const VULKAN_TIMELINE_DEBUG_MAX_EVENTS = 1024;
 pub const VULKAN_TIMELINE_DEBUG_MAX_NAME_LENGTH = 64;
 
+/// Type of recorded timeline event.
 pub const VulkanTimelineEventType = enum(c_int) {
     WAIT_START = 0,
     WAIT_END = 1,
@@ -50,7 +57,7 @@ pub const VulkanTimelineEventType = enum(c_int) {
     POOL_DEALLOC = 8,
 };
 
-// Export constants to C namespace style for compatibility
+/// C-style exported aliases for `VulkanTimelineEventType`.
 pub const VULKAN_TIMELINE_EVENT_WAIT_START = VulkanTimelineEventType.WAIT_START;
 pub const VULKAN_TIMELINE_EVENT_WAIT_END = VulkanTimelineEventType.WAIT_END;
 pub const VULKAN_TIMELINE_EVENT_SIGNAL_START = VulkanTimelineEventType.SIGNAL_START;
@@ -61,6 +68,7 @@ pub const VULKAN_TIMELINE_EVENT_RECOVERY = VulkanTimelineEventType.RECOVERY;
 pub const VULKAN_TIMELINE_EVENT_POOL_ALLOC = VulkanTimelineEventType.POOL_ALLOC;
 pub const VULKAN_TIMELINE_EVENT_POOL_DEALLOC = VulkanTimelineEventType.POOL_DEALLOC;
 
+/// Aggregated performance counters collected by the debug recorder.
 pub const VulkanTimelinePerformanceMetrics = extern struct {
     total_waits: u64,
     total_signals: u64,
@@ -73,6 +81,7 @@ pub const VulkanTimelinePerformanceMetrics = extern struct {
     recovery_count: u64,
 };
 
+/// Snapshot of the timeline state captured at a point in time.
 pub const VulkanTimelineStateSnapshot = extern struct {
     current_value: u64,
     last_signaled_value: u64,
@@ -83,6 +92,7 @@ pub const VulkanTimelineStateSnapshot = extern struct {
     last_error: c.VkResult,
 };
 
+/// One recorded timeline event entry.
 pub const VulkanTimelineDebugEvent = extern struct {
     type: VulkanTimelineEventType,
     timestamp_ns: u64,
@@ -94,6 +104,7 @@ pub const VulkanTimelineDebugEvent = extern struct {
     details: [128]u8,
 };
 
+/// Debug recorder state and ring-buffer storage.
 pub const VulkanTimelineDebugContext = extern struct {
     mutex: ?*anyopaque,
     event_write_index: u32,
@@ -109,6 +120,7 @@ pub const VulkanTimelineDebugContext = extern struct {
     last_snapshot: VulkanTimelineStateSnapshot,
 };
 
+/// Pool entry for a timeline semaphore.
 pub const VulkanTimelinePoolEntry = extern struct {
     semaphore: c.VkSemaphore,
     last_signaled_value: u64,
@@ -116,12 +128,14 @@ pub const VulkanTimelinePoolEntry = extern struct {
     creation_time: u64,
 };
 
+/// Result of a pool allocation request.
 pub const VulkanTimelinePoolAllocation = extern struct {
     semaphore: c.VkSemaphore,
     pool_index: u32,
     from_cache: bool,
 };
 
+/// Pool state for timeline semaphores.
 pub const VulkanTimelinePool = extern struct {
     device: c.VkDevice,
     pool_size: u32,

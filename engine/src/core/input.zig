@@ -1,3 +1,9 @@
+//! Input state and action mapping.
+//!
+//! Provides a simple action system (hashed names -> key/mouse bindings) layered via a stack of
+//! input layers. Also tracks cursor capture and per-frame mouse delta.
+//!
+//! TODO: Add per-action query variants (pressed/released/repeat) instead of only "pressed".
 const std = @import("std");
 const window = @import("window.zig");
 const builtin = @import("builtin");
@@ -18,16 +24,19 @@ pub const InputState = struct {
 
 var g_input_state: InputState = .{};
 
-// Action Mapping
+/// Action identifier (typically a hash of an action name).
 pub const ActionId = u64;
+/// Layer identifier (typically a hash of a layer name).
 pub const LayerId = u64;
 
+/// Binds an action to a set of keys and/or mouse buttons within a layer.
 pub const ActionBinding = struct {
     keys: std.ArrayListUnmanaged(c_int) = .{},
     mouse_buttons: std.ArrayListUnmanaged(c_int) = .{},
     layer_id: LayerId = 0,
 };
 
+/// A layer in the input stack. When `blocking`, layers below are ignored.
 pub const InputLayer = struct {
     id: LayerId,
     blocking: bool,
@@ -37,16 +46,17 @@ var g_action_map: std.AutoHashMapUnmanaged(ActionId, ActionBinding) = .{};
 var g_layer_stack: std.ArrayListUnmanaged(InputLayer) = .{};
 var g_allocator: std.mem.Allocator = undefined;
 
+/// Initializes the input system and creates the default "Global" layer.
 pub fn init(allocator: std.mem.Allocator) void {
     g_input_state = .{};
     g_allocator = allocator;
     g_action_map = .{};
     g_layer_stack = .{};
-    
-    // Default "Global" layer
+
     pushLayer("Global", false);
 }
 
+/// Releases stored bindings and layers.
 pub fn shutdown() void {
     var it = g_action_map.iterator();
     while (it.next()) |entry| {
@@ -57,25 +67,25 @@ pub fn shutdown() void {
     g_layer_stack.deinit(g_allocator);
 }
 
+/// Pushes a layer on top of the stack.
 pub fn pushLayer(name: []const u8, blocking: bool) void {
     const id = std.hash.Wyhash.hash(0, name);
-    // Check if layer already exists in stack? 
-    // Usually we want to allow pushing same layer type multiple times (like nested menus),
-    // but typically we push a unique instance.
-    // For simplicity, we just push.
     g_layer_stack.append(g_allocator, .{ .id = id, .blocking = blocking }) catch return;
 }
 
+/// Pops the top-most layer if present.
 pub fn popLayer() void {
     if (g_layer_stack.items.len > 0) {
         _ = g_layer_stack.pop();
     }
 }
 
+/// Registers an action in the default "Global" layer.
 pub fn registerAction(name: []const u8, default_keys: []const c_int) void {
     registerActionWithLayer(name, default_keys, "Global");
 }
 
+/// Registers an action in a specific layer.
 pub fn registerActionWithLayer(name: []const u8, default_keys: []const c_int, layer_name: []const u8) void {
     const id = std.hash.Wyhash.hash(0, name);
     const layer_id = std.hash.Wyhash.hash(0, layer_name);
@@ -86,16 +96,18 @@ pub fn registerActionWithLayer(name: []const u8, default_keys: []const c_int, la
     } else {
         result.value_ptr.layer_id = layer_id;
     }
-    
+
     for (default_keys) |key| {
         result.value_ptr.keys.append(g_allocator, key) catch return;
     }
 }
 
+/// Adds a mouse button binding in the default "Global" layer.
 pub fn registerActionMouseButton(name: []const u8, button: c_int) void {
     registerActionMouseButtonWithLayer(name, button, "Global");
 }
 
+/// Adds a mouse button binding in a specific layer.
 pub fn registerActionMouseButtonWithLayer(name: []const u8, button: c_int, layer_name: []const u8) void {
     const id = std.hash.Wyhash.hash(0, name);
     const layer_id = std.hash.Wyhash.hash(0, layer_name);
@@ -109,6 +121,7 @@ pub fn registerActionMouseButtonWithLayer(name: []const u8, button: c_int, layer
     result.value_ptr.mouse_buttons.append(g_allocator, button) catch return;
 }
 
+/// Returns true if any binding for `name` is currently active (respecting layer stack).
 pub fn isActionPressed(win: *const window.CardinalWindow, name: []const u8) bool {
     const id = std.hash.Wyhash.hash(0, name);
     const binding = g_action_map.get(id) orelse return false;
@@ -126,7 +139,6 @@ pub fn isActionPressed(win: *const window.CardinalWindow, name: []const u8) bool
 }
 
 fn isLayerActive(target_layer_id: LayerId) bool {
-    // Iterate from top to bottom
     var i: usize = g_layer_stack.items.len;
     while (i > 0) {
         i -= 1;
@@ -134,14 +146,16 @@ fn isLayerActive(target_layer_id: LayerId) bool {
         if (layer.id == target_layer_id) return true;
         if (layer.blocking) return false;
     }
-    return false; // Layer not found in stack
+    return false;
 }
 
+/// Returns true if the GLFW key is pressed.
 pub fn isKeyPressed(win: *const window.CardinalWindow, key: c_int) bool {
     if (win.handle == null) return false;
     return c.glfwGetKey(@as(*c.GLFWwindow, @ptrCast(win.handle)), key) == c.GLFW_PRESS;
 }
 
+/// Sets the cursor capture mode (disabled cursor vs normal).
 pub fn setCursorMode(win: *const window.CardinalWindow, captured: bool) void {
     if (win.handle == null) return;
     const mode = if (captured) c.GLFW_CURSOR_DISABLED else c.GLFW_CURSOR_NORMAL;
@@ -152,6 +166,7 @@ pub fn setCursorMode(win: *const window.CardinalWindow, captured: bool) void {
     }
 }
 
+/// Returns the current cursor position.
 pub fn getCursorPos(win: *const window.CardinalWindow) struct { x: f64, y: f64 } {
     var x: f64 = 0;
     var y: f64 = 0;
@@ -161,6 +176,7 @@ pub fn getCursorPos(win: *const window.CardinalWindow) struct { x: f64, y: f64 }
     return .{ .x = x, .y = y };
 }
 
+/// Updates the internal mouse delta state for this frame.
 pub fn update(win: *const window.CardinalWindow) void {
     if (win.handle == null) return;
 
@@ -175,21 +191,23 @@ pub fn update(win: *const window.CardinalWindow) void {
     }
 
     g_input_state.mouse_delta_x = x - g_input_state.last_x;
-    g_input_state.mouse_delta_y = g_input_state.last_y - y; // Reversed for camera control
+    g_input_state.mouse_delta_y = g_input_state.last_y - y;
     g_input_state.last_x = x;
     g_input_state.last_y = y;
 }
 
+/// Returns the current frame mouse delta.
 pub fn getMouseDelta() struct { x: f64, y: f64 } {
     return .{ .x = g_input_state.mouse_delta_x, .y = g_input_state.mouse_delta_y };
 }
 
+/// Returns true if the GLFW mouse button is pressed.
 pub fn isMouseButtonPressed(win: *const window.CardinalWindow, button: c_int) bool {
     if (win.handle == null) return false;
     return c.glfwGetMouseButton(@as(*c.GLFWwindow, @ptrCast(win.handle)), button) == c.GLFW_PRESS;
 }
 
-// Re-export common keys for convenience
+/// Common GLFW key codes.
 pub const KEY_TAB = c.GLFW_KEY_TAB;
 pub const KEY_ESCAPE = c.GLFW_KEY_ESCAPE;
 pub const KEY_W = c.GLFW_KEY_W;

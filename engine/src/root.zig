@@ -1,9 +1,19 @@
+//! Cardinal engine root module.
+//!
+//! This file re-exports engine subsystems so dependents can import `cardinal_engine` and use
+//! `engine.<subsystem>` without reaching into internal paths.
+
 pub const tracy = @import("core/tracy.zig");
+/// Logging API and sink infrastructure.
 pub const log = @import("core/log.zig");
+/// Engine error set and helpers.
 pub const errors = @import("core/errors.zig");
 pub const events = @import("core/events.zig");
+/// Lightweight module system used to order subsystem startup/shutdown.
 pub const module = @import("core/module.zig");
+/// The main engine type and orchestration logic.
 pub const engine = @import("core/engine.zig");
+/// Runtime configuration types and config file handling.
 pub const config = @import("core/config.zig");
 pub const input = @import("core/input.zig");
 pub const memory = @import("core/memory.zig");
@@ -69,6 +79,7 @@ pub const ecs_archetype = @import("ecs/archetype.zig");
 pub const ecs_command_buffer = @import("ecs/command_buffer.zig");
 
 comptime {
+    // TODO: Deduplicate these keep-alive references between `comptime` and `test`.
     _ = log;
     _ = memory;
     _ = window;

@@ -1,5 +1,11 @@
+//! Stable handle types used across engine systems.
+//!
+//! Handles are plain-data (C-ABI-friendly) and typically refer to entries stored in a typed
+//! registry (e.g. texture manager or asset manager). Each handle contains an index plus a
+//! generation counter to invalidate stale references.
 const std = @import("std");
 
+/// Handle to a texture entry.
 pub const TextureHandle = extern struct {
     index: u32,
     generation: u32,
@@ -11,6 +17,7 @@ pub const TextureHandle = extern struct {
     }
 };
 
+/// Handle to a mesh entry.
 pub const MeshHandle = extern struct {
     index: u32,
     generation: u32,
@@ -22,6 +29,7 @@ pub const MeshHandle = extern struct {
     }
 };
 
+/// Handle to a material entry.
 pub const MaterialHandle = extern struct {
     index: u32,
     generation: u32,
@@ -33,6 +41,7 @@ pub const MaterialHandle = extern struct {
     }
 };
 
+/// Handle for tracking async operations in handle-based systems.
 pub const AsyncHandle = extern struct {
     index: u32,
     generation: u32,

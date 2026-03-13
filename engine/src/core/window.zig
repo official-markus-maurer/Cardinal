@@ -1,3 +1,9 @@
+//! Window creation and input callback routing.
+//!
+//! Wraps GLFW window handles behind a C-ABI `CardinalWindow` and allows clients to register
+//! callbacks for resize, key, mouse button, and cursor movement.
+//!
+//! TODO: Add multi-window support and avoid global `glfwTerminate` on destroy.
 const std = @import("std");
 const log = @import("log.zig");
 const builtin = @import("builtin");
@@ -7,6 +13,7 @@ const win_log = log.ScopedLogger("WINDOW");
 
 const c = platform.c;
 
+/// Configuration used by `cardinal_window_create`.
 pub const CardinalWindowConfig = extern struct {
     title: [*:0]const u8,
     width: u32,
@@ -14,12 +21,12 @@ pub const CardinalWindowConfig = extern struct {
     resizable: bool,
 };
 
+/// Opaque window wrapper around a GLFW window handle plus per-window callbacks/state.
 pub const CardinalWindow = struct {
     handle: ?*c.GLFWwindow,
     width: u32,
     height: u32,
     should_close: bool,
-    // Mutex
     mutex: std.Thread.Mutex,
 
     resize_pending: bool,
@@ -44,7 +51,7 @@ pub const CardinalWindow = struct {
     content_scale_y: f32,
 };
 
-// Callbacks
+/// Updates content scale state when the OS DPI scale changes.
 fn window_content_scale_callback(window: ?*c.GLFWwindow, xscale: f32, yscale: f32) callconv(.c) void {
     const win = @as(?*CardinalWindow, @ptrCast(@alignCast(c.glfwGetWindowUserPointer(window))));
     if (win) |w| {
@@ -53,6 +60,7 @@ fn window_content_scale_callback(window: ?*c.GLFWwindow, xscale: f32, yscale: f3
     }
 }
 
+/// Forwards GLFW key events to the registered callback.
 fn key_callback(window: ?*c.GLFWwindow, key: c_int, scancode: c_int, action: c_int, mods: c_int) callconv(.c) void {
     const win = @as(?*CardinalWindow, @ptrCast(@alignCast(c.glfwGetWindowUserPointer(window))));
     if (win) |w| {
@@ -62,6 +70,7 @@ fn key_callback(window: ?*c.GLFWwindow, key: c_int, scancode: c_int, action: c_i
     }
 }
 
+/// Forwards GLFW mouse button events to the registered callback.
 fn mouse_button_callback(window: ?*c.GLFWwindow, button: c_int, action: c_int, mods: c_int) callconv(.c) void {
     const win = @as(?*CardinalWindow, @ptrCast(@alignCast(c.glfwGetWindowUserPointer(window))));
     if (win) |w| {
@@ -71,6 +80,7 @@ fn mouse_button_callback(window: ?*c.GLFWwindow, button: c_int, action: c_int, m
     }
 }
 
+/// Forwards GLFW cursor position events to the registered callback.
 fn cursor_pos_callback(window: ?*c.GLFWwindow, xpos: f64, ypos: f64) callconv(.c) void {
     const win = @as(?*CardinalWindow, @ptrCast(@alignCast(c.glfwGetWindowUserPointer(window))));
     if (win) |w| {
@@ -80,10 +90,12 @@ fn cursor_pos_callback(window: ?*c.GLFWwindow, xpos: f64, ypos: f64) callconv(.c
     }
 }
 
+/// GLFW error callback.
 fn glfw_error_callback(error_code: c_int, description: [*c]const u8) callconv(.c) void {
     win_log.err("GLFW error {d}: {s}", .{ error_code, if (description != null) std.mem.span(description) else "(null)" });
 }
 
+/// Forwards framebuffer resize events and marks `resize_pending`.
 fn framebuffer_resize_callback(window: ?*c.GLFWwindow, width: c_int, height: c_int) callconv(.c) void {
     const win = @as(?*CardinalWindow, @ptrCast(@alignCast(c.glfwGetWindowUserPointer(window))));
     if (win) |w| {
@@ -100,6 +112,7 @@ fn framebuffer_resize_callback(window: ?*c.GLFWwindow, width: c_int, height: c_i
     }
 }
 
+/// Tracks minimize/restore and triggers a resize callback on restore.
 fn window_iconify_callback(window: ?*c.GLFWwindow, iconified: c_int) callconv(.c) void {
     const win = @as(?*CardinalWindow, @ptrCast(@alignCast(c.glfwGetWindowUserPointer(window))));
     if (win) |w| {
@@ -124,7 +137,7 @@ fn window_iconify_callback(window: ?*c.GLFWwindow, iconified: c_int) callconv(.c
     }
 }
 
-// Exported functions
+/// Creates a window and initializes GLFW for Vulkan usage.
 pub export fn cardinal_window_create(config: *const CardinalWindowConfig) callconv(.c) ?*CardinalWindow {
     win_log.info("cardinal_window_create: begin", .{});
 
@@ -152,7 +165,6 @@ pub export fn cardinal_window_create(config: *const CardinalWindowConfig) callco
         return null;
     }
     const win = @as(*CardinalWindow, @ptrCast(@alignCast(win_ptr)));
-    // Initialize struct to zero
     win.* = std.mem.zeroes(CardinalWindow);
 
     win.handle = handle;
@@ -160,7 +172,6 @@ pub export fn cardinal_window_create(config: *const CardinalWindowConfig) callco
     win.height = config.height;
     win.should_close = false;
 
-    // Initialize content scale
     var x_scale: f32 = 1.0;
     var y_scale: f32 = 1.0;
     c.glfwGetWindowContentScale(handle, &x_scale, &y_scale);
@@ -175,13 +186,13 @@ pub export fn cardinal_window_create(config: *const CardinalWindowConfig) callco
     _ = c.glfwSetMouseButtonCallback(handle, mouse_button_callback);
     _ = c.glfwSetCursorPosCallback(handle, cursor_pos_callback);
 
-    // Init mutex
     win.mutex = .{};
 
     win_log.info("cardinal_window_create: success", .{});
     return win;
 }
 
+/// Polls the window event loop and updates `should_close`.
 pub export fn cardinal_window_poll(window: ?*CardinalWindow) callconv(.c) void {
     if (window) |win| {
         win.mutex.lock();
@@ -192,6 +203,7 @@ pub export fn cardinal_window_poll(window: ?*CardinalWindow) callconv(.c) void {
     }
 }
 
+/// Returns true if the window has requested close.
 pub export fn cardinal_window_should_close(window: ?*const CardinalWindow) callconv(.c) bool {
     if (window) |win| {
         return win.should_close;
@@ -199,6 +211,7 @@ pub export fn cardinal_window_should_close(window: ?*const CardinalWindow) callc
     return true;
 }
 
+/// Destroys the window and terminates GLFW.
 pub export fn cardinal_window_destroy(window: ?*CardinalWindow) callconv(.c) void {
     if (window) |win| {
         win.mutex.lock();
@@ -210,12 +223,12 @@ pub export fn cardinal_window_destroy(window: ?*CardinalWindow) callconv(.c) voi
         c.glfwTerminate();
 
         win.mutex.unlock();
-        // No destroy needed for std.Thread.Mutex
 
         c.free(win);
     }
 }
 
+/// Returns the underlying platform native window handle (if available).
 pub export fn cardinal_window_get_native_handle(window: ?*const CardinalWindow) callconv(.c) ?*anyopaque {
     if (window) |win| {
         if (win.handle) |h| {

@@ -1,9 +1,15 @@
+//! ECS registry and component access helpers.
+//!
+//! `Registry` owns entity creation and type-erased component storages. It also provides
+//! lightweight view iterators over one or more component types.
 const std = @import("std");
 const entity_pkg = @import("entity.zig");
 const component_pkg = @import("component.zig");
 
+/// ECS entity handle type.
 pub const Entity = entity_pkg.Entity;
 
+/// Stores entities and per-component sparse-set storages.
 pub const Registry = struct {
     entity_manager: entity_pkg.EntityManager,
     // Map ComponentTypeID -> StorageInterface
@@ -16,6 +22,7 @@ pub const Registry = struct {
 
     allocator: std.mem.Allocator,
 
+    /// Creates an empty registry.
     pub fn init(allocator: std.mem.Allocator) Registry {
         return .{
             .entity_manager = entity_pkg.EntityManager.init(allocator),
@@ -26,6 +33,7 @@ pub const Registry = struct {
         };
     }
 
+    /// Frees all component storages and entity manager state.
     pub fn deinit(self: *Registry) void {
         var it = self.storage_ptrs.iterator();
         while (it.next()) |entry| {
@@ -41,10 +49,12 @@ pub const Registry = struct {
         self.entity_manager.deinit();
     }
 
+    /// Allocates a new entity.
     pub fn create(self: *Registry) !Entity {
         return self.entity_manager.create();
     }
 
+    /// Destroys an entity and removes its components from all storages.
     pub fn destroy(self: *Registry, entity: Entity) void {
         if (self.entity_manager.destroy(entity)) {
             // Remove components
@@ -55,6 +65,7 @@ pub const Registry = struct {
         }
     }
 
+    /// Returns a stable type identifier for `T`.
     pub fn get_type_id(comptime T: type) u64 {
         return std.hash.Wyhash.hash(0, @typeName(T));
     }
@@ -69,6 +80,7 @@ pub const Registry = struct {
         }.func;
     }
 
+    /// Returns the storage for `T`, creating it if needed.
     pub fn assure_storage(self: *Registry, comptime T: type) !*component_pkg.SparseSet(T) {
         const id = get_type_id(T);
         if (self.storage_ptrs.get(id)) |ptr| {
@@ -85,12 +97,14 @@ pub const Registry = struct {
         return storage;
     }
 
+    /// Adds `component` of its inferred type to `entity`.
     pub fn add(self: *Registry, entity: Entity, component: anytype) !void {
         const T = @TypeOf(component);
         const storage = try self.assure_storage(T);
         try storage.set(entity, component);
     }
 
+    /// Removes the `T` component from `entity` if present.
     pub fn remove(self: *Registry, comptime T: type, entity: Entity) void {
         const id = get_type_id(T);
         if (self.storages.get(id)) |storage| {
@@ -98,6 +112,7 @@ pub const Registry = struct {
         }
     }
 
+    /// Returns a mutable pointer to `T` for `entity` if present.
     pub fn get(self: *Registry, comptime T: type, entity: Entity) ?*T {
         const id = get_type_id(T);
         if (self.storage_ptrs.get(id)) |ptr| {
@@ -108,6 +123,7 @@ pub const Registry = struct {
     }
 
     // View iterator helper
+    /// Returns a single-component view over `T`.
     pub fn view(self: *Registry, comptime T: type) View(T) {
         const id = get_type_id(T);
         if (self.storage_ptrs.get(id)) |ptr| {
@@ -117,6 +133,7 @@ pub const Registry = struct {
         return View(T){ .storage = null };
     }
 
+    /// Returns a multi-component view over the types in `types_tuple` (e.g. `.{ A, B, C }`).
     pub fn multi_view(self: *Registry, comptime types_tuple: anytype) MultiView(types_tuple) {
         const Count = types_tuple.len;
         var storages: [Count]?*anyopaque = undefined;
@@ -133,14 +150,17 @@ pub const Registry = struct {
     }
 };
 
+/// A single-component view with a simple iterator.
 pub fn View(comptime T: type) type {
     return struct {
         storage: ?*component_pkg.SparseSet(T),
 
+        /// Iterator over `(entity, component)` pairs.
         pub const Iterator = struct {
             storage: ?*component_pkg.SparseSet(T),
             index: usize,
 
+            /// Returns the next entry, or null when finished.
             pub fn next(self: *Iterator) ?struct { entity: Entity, component: *T } {
                 if (self.storage) |s| {
                     if (self.index >= s.packed_entities.items.len) return null;
@@ -155,10 +175,12 @@ pub fn View(comptime T: type) type {
             }
         };
 
+        /// Returns an iterator starting at the beginning of the view.
         pub fn iterator(self: @This()) Iterator {
             return .{ .storage = self.storage, .index = 0 };
         }
 
+        /// Iterates all entries and calls `callback(context, entity, component)`.
         pub fn each(self: @This(), context: anytype, callback: fn (@TypeOf(context), Entity, *T) void) void {
             if (self.storage) |s| {
                 for (s.packed_entities.items, s.components.items) |e, *c| {
@@ -167,6 +189,7 @@ pub fn View(comptime T: type) type {
             }
         }
 
+        /// Returns the number of entities in the view.
         pub fn count(self: @This()) usize {
             if (self.storage) |s| {
                 return s.packed_entities.items.len;
@@ -176,6 +199,7 @@ pub fn View(comptime T: type) type {
     };
 }
 
+/// A multi-component view yielding only entities present in all requested storages.
 pub fn MultiView(comptime types_tuple: anytype) type {
     const Count = types_tuple.len;
 
@@ -190,11 +214,13 @@ pub fn MultiView(comptime types_tuple: anytype) type {
     return struct {
         storages: [Count]?*anyopaque,
 
+        /// Iterator over `(entity, tuple(*T0, *T1, ...))` entries.
         pub const Iterator = struct {
             storages: [Count]?*anyopaque,
             entities: []const Entity,
             index: usize,
 
+            /// Returns the next matching entity and its component pointers.
             pub fn next(self: *Iterator) ?struct { entity: Entity, components: ComponentsTuple } {
                 while (self.index < self.entities.len) {
                     const entity = self.entities[self.index];
@@ -229,6 +255,7 @@ pub fn MultiView(comptime types_tuple: anytype) type {
             }
         };
 
+        /// Chooses a base storage and returns an iterator over matching entities.
         pub fn iterator(self: @This()) Iterator {
             var min_count: usize = std.math.maxInt(usize);
             var best_index: usize = 0;

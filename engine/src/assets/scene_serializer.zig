@@ -1,3 +1,9 @@
+//! ECS scene serialization and parsing.
+//!
+//! Writes engine state (models + ECS entities/components) to a stable JSON representation and can
+//! parse it back. Intended for editor save/load workflows.
+//!
+//! TODO: Split component serializers into per-component modules to reduce file size and rebuild time.
 const std = @import("std");
 const registry_pkg = @import("../ecs/registry.zig");
 const entity_pkg = @import("../ecs/entity.zig");
@@ -8,6 +14,7 @@ const transform_math = @import("../core/transform.zig");
 
 const serializer_log = std.log.scoped(.scene_serializer);
 
+/// JSON serializer for the ECS registry (and optional model manager state).
 pub const SceneSerializer = struct {
     allocator: std.mem.Allocator,
     registry: *registry_pkg.Registry,
@@ -23,9 +30,9 @@ pub const SceneSerializer = struct {
 
     pub fn deinit(self: *SceneSerializer) void {
         _ = self;
-        // Nothing to deinit currently, but good practice to have
     }
 
+    /// Writes a JSON scene description to `writer`.
     pub fn serialize(self: *SceneSerializer, writer: anytype, root_path: ?[]const u8) !void {
         var json_writer = JsonWriter(@TypeOf(writer)).init(self.allocator, writer);
         defer json_writer.deinit();
@@ -34,7 +41,6 @@ pub const SceneSerializer = struct {
         try json_writer.objectField("version");
         try json_writer.write(2);
 
-        // Serialize Models
         if (self.model_manager) |mgr| {
             try json_writer.objectField("models");
             try json_writer.beginArray();
@@ -73,7 +79,6 @@ pub const SceneSerializer = struct {
         try json_writer.objectField("entities");
         try json_writer.beginArray();
 
-        // Iterate alive entities
         const handle_mgr = &self.registry.entity_manager.handles;
         const total_slots = handle_mgr.generations.items.len;
 
@@ -101,43 +106,36 @@ pub const SceneSerializer = struct {
                 try json_writer.objectField("components");
                 try json_writer.beginObject();
 
-                // Serialize Name
                 if (self.registry.get(components.Name, entity)) |name| {
                     try json_writer.objectField("Name");
                     try serializeName(&json_writer, name);
                 }
 
-                // Serialize Hierarchy
                 if (self.registry.get(components.Hierarchy, entity)) |hierarchy| {
                     try json_writer.objectField("Hierarchy");
                     try serializeHierarchy(&json_writer, hierarchy);
                 }
 
-                // Serialize Transform
                 if (self.registry.get(components.Transform, entity)) |transform| {
                     try json_writer.objectField("Transform");
                     try serializeTransform(&json_writer, transform);
                 }
 
-                // Serialize MeshRenderer
                 if (self.registry.get(components.MeshRenderer, entity)) |mesh_renderer| {
                     try json_writer.objectField("MeshRenderer");
                     try serializeMeshRenderer(&json_writer, mesh_renderer);
                 }
 
-                // Serialize Light
                 if (self.registry.get(components.Light, entity)) |light| {
                     try json_writer.objectField("Light");
                     try serializeLight(&json_writer, light);
                 }
 
-                // Serialize Camera
                 if (self.registry.get(components.Camera, entity)) |camera| {
                     try json_writer.objectField("Camera");
                     try serializeCamera(&json_writer, camera);
                 }
 
-                // Serialize Script
                 if (self.registry.get(components.Script, entity)) |script| {
                     try json_writer.objectField("Script");
                     try serializeScript(&json_writer, script);
@@ -192,7 +190,6 @@ pub const SceneSerializer = struct {
             return error.InvalidSceneFormat;
         }
 
-        // Check version
         const version = if (root.object.get("version")) |ver| ver.integer else 0;
         if (version < 2) {
             serializer_log.err("Scene version {d} is legacy and no longer supported. Minimum version is 2.", .{version});
@@ -202,7 +199,6 @@ pub const SceneSerializer = struct {
 
         var total_mesh_count: u32 = 0;
 
-        // Deserialize Models
         if (self.model_manager) |mgr| {
             if (root.object.get("models")) |models_val| {
                 if (models_val == .array) {
@@ -233,13 +229,11 @@ pub const SceneSerializer = struct {
                                 const path_z = try self.allocator.dupeZ(u8, full_path);
                                 defer self.allocator.free(path_z);
 
-                                // Load model (blocking)
                                 serializer_log.info("Loading model: {s}", .{path_slice});
                                 const model_id = model_manager_pkg.cardinal_model_manager_load_model(mgr, path_z.ptr, null);
                                 serializer_log.info("Model loaded. ID: {d}", .{model_id});
 
                                 if (model_id != 0) {
-                                    // Apply transform and visibility
                                     const model_idx = model_manager_pkg.find_model_index(mgr, model_id);
                                     if (model_idx >= 0 and mgr.models != null) {
                                         var model = &mgr.models.?[@intCast(model_idx)];
@@ -249,7 +243,6 @@ pub const SceneSerializer = struct {
                                             model.transform = try deserializeMat4(t);
                                         }
 
-                                        // Mark scene dirty to ensure rebuild
                                         mgr.scene_dirty = true;
                                     }
                                 } else {
@@ -262,7 +255,6 @@ pub const SceneSerializer = struct {
             }
         }
 
-        // Calculate total mesh count for validation
         serializer_log.info("Calculating total mesh count...", .{});
         if (self.model_manager) |mgr| {
              if (mgr.models) |models| {
@@ -281,11 +273,9 @@ pub const SceneSerializer = struct {
                 return error.InvalidSceneFormat;
             }
 
-            // First pass: Create entities and build ID map
             var id_map = std.AutoHashMap(u32, entity_pkg.Entity).init(self.allocator);
             defer id_map.deinit();
 
-            // Store created entities to add components in second pass
             const CreatedEntity = struct {
                 entity: entity_pkg.Entity,
                 val: std.json.Value,

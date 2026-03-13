@@ -1,3 +1,9 @@
+//! Animation state machine controller.
+//!
+//! Evaluates a simple animation graph (clips and 1D blends) with transitions driven by named
+//! float parameters hashed to u32.
+//!
+//! TODO: Deduplicate name hashing with other systems (events/input) using a shared helper.
 const std = @import("std");
 const memory = @import("../core/memory.zig");
 const animation = @import("animation.zig");
@@ -6,8 +12,7 @@ const c = @cImport({
     @cInclude("math.h");
 });
 
-// === Asset Definitions ===
-
+/// Condition operator for transitions.
 pub const AnimConditionOp = enum(c_int) {
     Greater = 0,
     Less = 1,
@@ -15,12 +20,14 @@ pub const AnimConditionOp = enum(c_int) {
     NotEqual = 3,
 };
 
+/// Transition condition on a controller parameter.
 pub const AnimCondition = extern struct {
     param_hash: u32,
     operator: AnimConditionOp,
     threshold: f32,
 };
 
+/// Transition edge between states.
 pub const AnimTransition = extern struct {
     target_state_hash: u32,
     duration: f32,
@@ -28,11 +35,13 @@ pub const AnimTransition = extern struct {
     condition_count: u32,
 };
 
+/// Graph node type.
 pub const AnimNodeType = enum(c_int) {
     Clip = 0,
     Blend1D = 1,
 };
 
+/// Animation graph node (clip or blend).
 pub const AnimNode = extern struct {
     type: AnimNodeType,
     // Clip
@@ -46,6 +55,7 @@ pub const AnimNode = extern struct {
     thresholds: ?[*]f32,
 };
 
+/// One named state in the state machine.
 pub const AnimState = extern struct {
     name_hash: u32,
     root_node: ?*AnimNode,
@@ -53,16 +63,16 @@ pub const AnimState = extern struct {
     transition_count: u32,
 };
 
+/// Static state machine definition.
 pub const AnimStateMachineDef = extern struct {
     states: ?[*]AnimState,
     state_count: u32,
     start_state_hash: u32,
 };
 
-// === Runtime ===
-
 const MAX_PARAMS = 32;
 
+/// Runtime controller state for an `AnimStateMachineDef`.
 pub const AnimController = extern struct {
     definition: ?*const AnimStateMachineDef,
     system: ?*animation.CardinalAnimationSystem,
@@ -85,7 +95,7 @@ pub const AnimController = extern struct {
     next_state_time: f32,
 };
 
-// Helper to hash string (fnv1a)
+/// Hashes a string to u32 for parameter and animation name lookup.
 fn hash_string(str: []const u8) u32 {
     var hash: u32 = 2166136261;
     for (str) |byte| {
@@ -95,7 +105,7 @@ fn hash_string(str: []const u8) u32 {
     return hash;
 }
 
-// Helper to find animation index by hash
+/// Finds an animation index by hashed name.
 fn find_animation_index(system: *animation.CardinalAnimationSystem, name_hash: u32) ?u32 {
     var i: u32 = 0;
     while (i < system.animation_count) : (i += 1) {
@@ -111,6 +121,7 @@ fn find_animation_index(system: *animation.CardinalAnimationSystem, name_hash: u
     return null;
 }
 
+/// Allocates a controller for `def` and binds it to an animation system.
 pub export fn cardinal_anim_controller_create(def: ?*const AnimStateMachineDef, system: ?*animation.CardinalAnimationSystem) callconv(.c) ?*AnimController {
     if (def == null or system == null) return null;
     
@@ -134,12 +145,14 @@ pub export fn cardinal_anim_controller_create(def: ?*const AnimStateMachineDef, 
     return controller;
 }
 
+/// Destroys a controller created by `cardinal_anim_controller_create`.
 pub export fn cardinal_anim_controller_destroy(controller: ?*AnimController) callconv(.c) void {
     if (controller == null) return;
     const allocator = memory.cardinal_get_allocator_for_category(.ENGINE);
     memory.cardinal_free(allocator, controller);
 }
 
+/// Sets a float parameter by name.
 pub export fn cardinal_anim_controller_set_param(controller: ?*AnimController, name: ?[*:0]const u8, value: f32) callconv(.c) void {
     if (controller == null or name == null) return;
     const ctrl = controller.?;
@@ -178,7 +191,6 @@ fn evaluate_node(ctrl: *AnimController, node: *const AnimNode, time: f32, weight
         .Clip => {
             const anim_idx = find_animation_index(ctrl.system.?, node.animation_name_hash);
             if (anim_idx) |idx| {
-                // Try to find existing state first
                 var found_state: ?*animation.CardinalAnimationState = null;
                 var i: u32 = 0;
                 while (i < ctrl.system.?.state_count) : (i += 1) {
@@ -189,9 +201,7 @@ fn evaluate_node(ctrl: *AnimController, node: *const AnimNode, time: f32, weight
                 }
 
                 if (found_state == null) {
-                    // Start it if not found
                     if (animation.cardinal_animation_play(ctrl.system, idx, node.loop, weight)) {
-                        // Find it again
                         var j: u32 = 0;
                         while (j < ctrl.system.?.state_count) : (j += 1) {
                             if (ctrl.system.?.states.?[j].animation_index == idx) {

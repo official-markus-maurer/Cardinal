@@ -1,3 +1,6 @@
+//! Editor application wrapper around the engine runtime.
+//!
+//! `EditorApp` owns a `CardinalEngine` instance and connects it to editor-specific layers.
 const std = @import("std");
 const engine = @import("cardinal_engine");
 const log = engine.log;
@@ -8,13 +11,16 @@ const editor_layer = @import("editor_layer.zig");
 const app_log = log.ScopedLogger("APP");
 
 const CardinalEngine = engine.engine.CardinalEngine;
+/// Editor configuration currently reuses the engine config type.
 pub const EditorConfig = engine.engine.CardinalEngineConfig;
 
+/// High-level editor application lifecycle.
 pub const EditorApp = struct {
     allocator: std.mem.Allocator,
     engine: *CardinalEngine,
     editor_layer_initialized: bool = false,
 
+    /// Allocates, initializes the engine, and sets up editor layers.
     pub fn create(allocator: std.mem.Allocator, config: EditorConfig) !*EditorApp {
         const app = try allocator.create(EditorApp);
         app.allocator = allocator;
@@ -54,6 +60,7 @@ pub const EditorApp = struct {
         return app;
     }
 
+    /// Registers global editor input bindings.
     fn registerInputActions(self: *EditorApp) void {
         _ = self;
         // Base layer actions (always active unless blocked by something very high priority)
@@ -74,6 +81,7 @@ pub const EditorApp = struct {
         // engine.input.pushLayer("Base", false);
     }
 
+    /// Runs the editor main loop until window close or unrecoverable device loss.
     pub fn run(self: *EditorApp) !void {
         while (!self.engine.shouldClose()) {
             if (editor_layer.has_device_recovery_failed()) {
@@ -96,6 +104,7 @@ pub const EditorApp = struct {
         vulkan_renderer.cardinal_renderer_wait_idle(&self.engine.renderer);
     }
 
+    /// Shuts down editor layers and destroys the engine and app.
     pub fn destroy(self: *EditorApp) void {
         if (self.editor_layer_initialized) {
             editor_layer.shutdown();

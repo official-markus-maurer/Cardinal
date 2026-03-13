@@ -1,3 +1,9 @@
+//! Vulkan swapchain creation and recreation.
+//!
+//! Selects surface formats and present modes, creates swapchain images/views, and handles
+//! recreation on resize/out-of-date events with basic backoff.
+//!
+//! TODO: Split format/present-mode selection into a separate policy module.
 const std = @import("std");
 const builtin = @import("builtin");
 const log = @import("../core/log.zig");
@@ -14,8 +20,7 @@ const swap_log = log.ScopedLogger("SWAPCHAIN");
 
 const c = @import("vulkan_c.zig").c;
 
-// Helper functions
-
+/// Returns true if swapchain recreation should be throttled due to repeated recent failures.
 fn should_throttle_recreation(s: *types.VulkanState) bool {
     if (!s.swapchain.frame_pacing_enabled) {
         return false;
@@ -24,14 +29,11 @@ fn should_throttle_recreation(s: *types.VulkanState) bool {
     const current_time = platform.get_time_ms();
     const time_since_last = current_time - s.swapchain.last_recreation_time;
 
-    // Throttle if less than 100ms since last recreation and we've had multiple failures
     if (time_since_last < 100 and s.swapchain.consecutive_recreation_failures > 0) {
         return true;
     }
 
-    // More aggressive throttling if we've had many consecutive failures
     if (s.swapchain.consecutive_recreation_failures >= 3 and time_since_last < 500) {
-        // Only log this warning once every 1000ms to reduce spam
         const static = struct {
             var last_throttle_log: u64 = 0;
         };
@@ -42,9 +44,7 @@ fn should_throttle_recreation(s: *types.VulkanState) bool {
         return true;
     }
 
-    // Extreme throttling for persistent failures
     if (s.swapchain.consecutive_recreation_failures >= 6) {
-        // Wait much longer between attempts when we have many failures
         if (time_since_last < 2000) {
             return true;
         }
@@ -53,12 +53,12 @@ fn should_throttle_recreation(s: *types.VulkanState) bool {
     return false;
 }
 
+/// Chooses a swapchain surface format from candidates.
 fn choose_surface_format(formats: [*]const c.VkSurfaceFormatKHR, count: u32, prefer_hdr_config: bool) c.VkSurfaceFormatKHR {
     if (count == 0) {
         return std.mem.zeroes(c.VkSurfaceFormatKHR);
     }
 
-    // Allow opting into HDR via environment variable CARDINAL_PREFER_HDR or config
     var prefer_hdr = prefer_hdr_config;
     const env_hdr = c.getenv("CARDINAL_PREFER_HDR");
     if (env_hdr != null) {
@@ -76,7 +76,6 @@ fn choose_surface_format(formats: [*]const c.VkSurfaceFormatKHR, count: u32, pre
         const f = &formats[i];
         var score: i32 = 0;
 
-        // Color space preference
         if (prefer_hdr) {
             if (f.colorSpace == c.VK_COLOR_SPACE_HDR10_ST2084_EXT or
                 f.colorSpace == c.VK_COLOR_SPACE_EXTENDED_SRGB_LINEAR_EXT or
@@ -85,12 +84,10 @@ fn choose_surface_format(formats: [*]const c.VkSurfaceFormatKHR, count: u32, pre
                 score += 50;
             }
         }
-        // Prefer standard sRGB nonlinear by default
         if (f.colorSpace == c.VK_COLOR_SPACE_SRGB_NONLINEAR_KHR) {
             score += 10;
         }
 
-        // Format preference ordering
         switch (f.format) {
             c.VK_FORMAT_R16G16B16A16_SFLOAT => {
                 if (prefer_hdr) score += 40;
@@ -116,6 +113,7 @@ fn choose_surface_format(formats: [*]const c.VkSurfaceFormatKHR, count: u32, pre
     return best;
 }
 
+/// Chooses a present mode, honoring `preferred` when available.
 fn choose_present_mode(modes: [*]const c.VkPresentModeKHR, count: u32, preferred: c.VkPresentModeKHR) c.VkPresentModeKHR {
     var has_mailbox = false;
     var has_fifo_relaxed = false;
@@ -163,6 +161,7 @@ fn choose_present_mode(modes: [*]const c.VkPresentModeKHR, count: u32, preferred
     return c.VK_PRESENT_MODE_FIFO_KHR;
 }
 
+/// Waits for the device to become idle before swapchain operations.
 fn wait_device_idle_for_swapchain(s: *types.VulkanState) bool {
     const t_idle0 = platform.get_time_ms();
     const res = c.vkDeviceWaitIdle(s.context.device);
@@ -183,6 +182,7 @@ fn wait_device_idle_for_swapchain(s: *types.VulkanState) bool {
     return true;
 }
 
+/// Queries surface capabilities and picks the surface format and present mode.
 fn get_surface_details(s: *types.VulkanState, caps: *c.VkSurfaceCapabilitiesKHR, out_fmt: *c.VkSurfaceFormatKHR, out_mode: *c.VkPresentModeKHR) bool {
     if (c.vkGetPhysicalDeviceSurfaceCapabilitiesKHR(s.context.physical_device, s.context.surface, caps) != c.VK_SUCCESS) {
         swap_log.err("Failed to get surface capabilities", .{});

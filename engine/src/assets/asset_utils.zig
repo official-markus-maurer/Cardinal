@@ -1,5 +1,9 @@
+//! Small path/string helpers for asset loading.
+//!
+//! This file intentionally stays tiny to avoid pulling heavy dependencies into loaders.
 const std = @import("std");
 
+/// Returns a pointer to the extension substring in `path` (without the dot), or null if none.
 pub fn find_extension(path: ?[*:0]const u8) ?[*:0]const u8 {
     if (path == null) return null;
     const p = std.mem.span(path.?);
@@ -16,6 +20,7 @@ pub fn find_extension(path: ?[*:0]const u8) ?[*:0]const u8 {
     return null;
 }
 
+/// Lowercases an ASCII null-terminated string in-place.
 pub fn to_lower_inplace(s: ?[*:0]u8) void {
     if (s == null) return;
     var ptr = s.?;

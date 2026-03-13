@@ -1,3 +1,9 @@
+//! Vulkan utility helpers.
+//!
+//! Provides common Vulkan result logging, pointer validation, and small creation helpers used by
+//! multiple renderer modules.
+//!
+//! TODO: Consolidate creation helpers into per-subsystem modules to reduce this file's surface area.
 const std = @import("std");
 const log = @import("../core/log.zig");
 
@@ -5,10 +11,7 @@ const vk_utils_log = log.ScopedLogger("VK_UTILS");
 
 const c = @import("vulkan_c.zig").c;
 
-// =============================================================================
-// Error Handling Implementation
-// =============================================================================
-
+/// Checks a Vulkan result and logs a formatted error message on failure.
 pub export fn vk_utils_check_result(result: c.VkResult, operation: ?[*:0]const u8, file: ?[*:0]const u8, line: c_int) callconv(.c) bool {
     if (result == c.VK_SUCCESS) {
         return true;
@@ -25,6 +28,7 @@ pub export fn vk_utils_check_result(result: c.VkResult, operation: ?[*:0]const u
     return false;
 }
 
+/// Returns a stable string name for a subset of `VkResult` values.
 pub export fn vk_utils_result_string(result: c.VkResult) callconv(.c) [*:0]const u8 {
     return switch (result) {
         c.VK_SUCCESS => "VK_SUCCESS",
@@ -61,10 +65,7 @@ pub export fn vk_utils_result_string(result: c.VkResult) callconv(.c) [*:0]const
     };
 }
 
-// =============================================================================
-// Resource Creation Helpers
-// =============================================================================
-
+/// Internal helper used by creation wrappers.
 fn check_result(result: c.VkResult, operation_name: ?[*:0]const u8) bool {
     if (result != c.VK_SUCCESS) {
         const op = if (operation_name) |name| std.mem.span(name) else "Unknown operation";
@@ -75,6 +76,7 @@ fn check_result(result: c.VkResult, operation_name: ?[*:0]const u8) bool {
     return true;
 }
 
+/// Creates a semaphore on `device`.
 pub export fn vk_utils_create_semaphore(device: c.VkDevice, semaphore: ?*c.VkSemaphore, operation_name: ?[*:0]const u8) callconv(.c) bool {
     if (!vk_utils_validate_pointer(device, "device") or !vk_utils_validate_pointer(@ptrCast(semaphore), "semaphore")) {
         return false;
@@ -89,6 +91,7 @@ pub export fn vk_utils_create_semaphore(device: c.VkDevice, semaphore: ?*c.VkSem
     return check_result(result, if (operation_name) |op| op else "create semaphore");
 }
 
+/// Creates a fence on `device`.
 pub export fn vk_utils_create_fence(device: c.VkDevice, fence: ?*c.VkFence, signaled: bool, operation_name: ?[*:0]const u8) callconv(.c) bool {
     if (!vk_utils_validate_pointer(device, "device") or !vk_utils_validate_pointer(@ptrCast(fence), "fence")) {
         return false;
@@ -103,6 +106,7 @@ pub export fn vk_utils_create_fence(device: c.VkDevice, fence: ?*c.VkFence, sign
     return check_result(result, if (operation_name) |op| op else "create fence");
 }
 
+/// Creates a command pool for the given queue family.
 pub export fn vk_utils_create_command_pool(device: c.VkDevice, queue_family_index: u32, flags: c.VkCommandPoolCreateFlags, command_pool: ?*c.VkCommandPool, operation_name: ?[*:0]const u8) callconv(.c) bool {
     if (!vk_utils_validate_pointer(device, "device") or !vk_utils_validate_pointer(@ptrCast(command_pool), "command_pool")) {
         return false;
@@ -118,6 +122,7 @@ pub export fn vk_utils_create_command_pool(device: c.VkDevice, queue_family_inde
     return check_result(result, if (operation_name) |op| op else "create command pool");
 }
 
+/// Creates a descriptor pool using a provided `VkDescriptorPoolCreateInfo`.
 pub export fn vk_utils_create_descriptor_pool(device: c.VkDevice, pool_info: ?*const c.VkDescriptorPoolCreateInfo, descriptor_pool: ?*c.VkDescriptorPool, operation_name: ?[*:0]const u8) callconv(.c) bool {
     if (!vk_utils_validate_pointer(device, "device") or !vk_utils_validate_pointer(pool_info, "pool_info") or !vk_utils_validate_pointer(@ptrCast(descriptor_pool), "descriptor_pool")) {
         return false;
@@ -127,6 +132,7 @@ pub export fn vk_utils_create_descriptor_pool(device: c.VkDevice, pool_info: ?*c
     return check_result(result, if (operation_name) |op| op else "create descriptor pool");
 }
 
+/// Creates a pipeline layout using a provided `VkPipelineLayoutCreateInfo`.
 pub export fn vk_utils_create_pipeline_layout(device: c.VkDevice, layout_info: ?*const c.VkPipelineLayoutCreateInfo, pipeline_layout: ?*c.VkPipelineLayout, operation_name: ?[*:0]const u8) callconv(.c) bool {
     if (!vk_utils_validate_pointer(device, "device") or !vk_utils_validate_pointer(layout_info, "layout_info") or !vk_utils_validate_pointer(@ptrCast(pipeline_layout), "pipeline_layout")) {
         return false;
@@ -136,6 +142,7 @@ pub export fn vk_utils_create_pipeline_layout(device: c.VkDevice, layout_info: ?
     return check_result(result, if (operation_name) |op| op else "create pipeline layout");
 }
 
+/// Creates a sampler using a provided `VkSamplerCreateInfo`.
 pub export fn vk_utils_create_sampler(device: c.VkDevice, sampler_info: ?*const c.VkSamplerCreateInfo, sampler: ?*c.VkSampler, operation_name: ?[*:0]const u8) callconv(.c) bool {
     if (!vk_utils_validate_pointer(device, "device") or !vk_utils_validate_pointer(sampler_info, "sampler_info") or !vk_utils_validate_pointer(@ptrCast(sampler), "sampler")) {
         return false;
@@ -145,10 +152,7 @@ pub export fn vk_utils_create_sampler(device: c.VkDevice, sampler_info: ?*const 
     return check_result(result, if (operation_name) |op| op else "create sampler");
 }
 
-// =============================================================================
-// Memory and Allocation Helpers
-// =============================================================================
-
+/// Allocates memory using libc `malloc` for Vulkan-side helper structures.
 pub export fn vk_utils_allocate(size: usize, operation_name: ?[*:0]const u8) callconv(.c) ?*anyopaque {
     if (size == 0) {
         vk_utils_log.warn("Attempted to allocate 0 bytes for operation: {s}", .{if (operation_name) |op| std.mem.span(op) else "unknown"});

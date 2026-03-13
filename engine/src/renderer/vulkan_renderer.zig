@@ -571,9 +571,6 @@ pub export fn cardinal_renderer_create(out_renderer: ?*types.CardinalRenderer, w
 
         // SSAO Pass (Compute)
         var ssao_pass = render_graph.RenderPass.init(renderer_alloc, "SSAO Pass", ssao_pass_callback);
-        if (s.config.enable_async_compute) {
-            ssao_pass.use_compute_queue(s);
-        }
         ssao_pass.add_input(renderer_alloc, .{
             .id = types.RESOURCE_ID_DEPTHBUFFER,
             .type = .Image,
@@ -643,9 +640,6 @@ pub export fn cardinal_renderer_create(out_renderer: ?*types.CardinalRenderer, w
 
         // Bloom Compute Pass
         var bloom_pass = render_graph.RenderPass.init(renderer_alloc, "Bloom Compute Pass", bloom_compute_pass_callback);
-        if (s.config.enable_async_compute) {
-            bloom_pass.use_compute_queue(s);
-        }
         bloom_pass.add_input(renderer_alloc, .{
             .id = types.RESOURCE_ID_HDR_COLOR,
             .type = .Image,

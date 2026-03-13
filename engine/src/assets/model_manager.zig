@@ -1,3 +1,8 @@
+//! High-level manager for loaded model scenes.
+//!
+//! The model manager owns per-model `CardinalScene` instances and can build a combined scene
+//! used for rendering/editor selection. The combined scene deep-copies materials/textures/skins
+//! but shares node pointers with per-model scenes.
 const std = @import("std");
 const scene = @import("scene.zig");
 const transform_math = @import("../core/transform.zig");
@@ -12,14 +17,13 @@ const model_log = log.ScopedLogger("MODEL");
 
 const builtin = @import("builtin");
 
-// --- Externs from loader.c ---
+/// Synchronous scene load entrypoint.
 extern fn cardinal_scene_load(file_path: [*:0]const u8, out_scene: *scene.CardinalScene) callconv(.c) bool;
 
-// --- Constants ---
+/// Default initial capacity for the model array.
 const INITIAL_MODEL_CAPACITY = 8;
 
-// --- Struct Definitions ---
-
+/// A loaded model instance and its per-model scene data.
 pub const CardinalModelInstance = extern struct {
     name: ?[*:0]u8,
     file_path: ?[*:0]u8,
@@ -34,6 +38,7 @@ pub const CardinalModelInstance = extern struct {
     load_task: ?*async_loader.CardinalAsyncTask,
 };
 
+/// Stateful container for loaded models and an optional combined scene snapshot.
 pub const CardinalModelManager = extern struct {
     models: ?[*]CardinalModelInstance,
     model_count: u32,
@@ -55,16 +60,15 @@ const FinalizedModelData = struct {
     bbox_max: [3]f32,
 };
 
+/// Async task finalize callback that computes bounds and packages the loaded scene.
 fn finalize_model_task(task: ?*async_loader.CardinalAsyncTask, user_data: ?*anyopaque) callconv(.c) bool {
     if (user_data == null) return false;
     const ctx = @as(*FinalizeContext, @ptrCast(@alignCast(user_data)));
     const allocator = memory.cardinal_get_allocator_for_category(.ASSETS);
     defer memory.cardinal_free(allocator, ctx);
 
-    // Free the scene task when we are done with it
     defer async_loader.cardinal_async_free_task(ctx.scene_task);
 
-    // Check if scene load was successful
     if (ctx.scene_task.status != .COMPLETED) {
         if (ctx.scene_task.status == .FAILED) {
             const err_msg = async_loader.cardinal_async_get_error_message(ctx.scene_task);
@@ -83,7 +87,6 @@ fn finalize_model_task(task: ?*async_loader.CardinalAsyncTask, user_data: ?*anyo
 
     const loaded_scene_ptr = @as(*scene.CardinalScene, @ptrCast(@alignCast(ctx.scene_task.result_data)));
 
-    // Allocate result data
     const result_ptr = memory.cardinal_alloc(allocator, @sizeOf(FinalizedModelData));
     if (result_ptr == null) {
         model_log.err("Failed to allocate finalize result data", .{});
@@ -94,10 +97,8 @@ fn finalize_model_task(task: ?*async_loader.CardinalAsyncTask, user_data: ?*anyo
     }
     const result = @as(*FinalizedModelData, @ptrCast(@alignCast(result_ptr)));
 
-    // Move scene data to result
     result.scene = loaded_scene_ptr.*;
 
-    // Calculate bounds
     calculate_scene_bounds(&result.scene, &result.bbox_min, &result.bbox_max);
 
     // NOTE: We do NOT free loaded_scene_ptr here because async_loader.cardinal_async_free_task(ctx.scene_task)
@@ -112,15 +113,13 @@ fn finalize_model_task(task: ?*async_loader.CardinalAsyncTask, user_data: ?*anyo
     return true;
 }
 
-// --- Helper Functions ---
-
+/// Generates a display name derived from the file name.
 fn generate_model_name(file_path: ?[*:0]const u8) ?[*:0]u8 {
     if (file_path == null) return null;
 
     const path_slice = std.mem.span(file_path.?);
     var filename_start: usize = 0;
 
-    // Find last slash/backslash
     var i: usize = 0;
     while (i < path_slice.len) : (i += 1) {
         if (path_slice[i] == '/' or path_slice[i] == '\\') {
@@ -130,7 +129,6 @@ fn generate_model_name(file_path: ?[*:0]const u8) ?[*:0]u8 {
 
     const filename = path_slice[filename_start..];
 
-    // Find last dot
     var ext_idx: usize = filename.len;
     i = 0;
     while (i < filename.len) : (i += 1) {
@@ -262,6 +260,21 @@ pub fn find_model_index(manager: *const CardinalModelManager, model_id: u32) i32
     return -1;
 }
 
+fn destroy_scene_skin_assets(allocator: *memory.CardinalAllocator, skin: *animation.CardinalSkin) void {
+    // TODO: Deduplicate this helper with the equivalent in scene.zig.
+    if (skin.name) |ptr| memory.cardinal_free(allocator, @ptrCast(ptr));
+
+    if (skin.bones) |bones| {
+        var i: u32 = 0;
+        while (i < skin.bone_count) : (i += 1) {
+            if (bones[i].name) |n| memory.cardinal_free(allocator, @ptrCast(n));
+        }
+        memory.cardinal_free(allocator, @ptrCast(bones));
+    }
+
+    if (skin.mesh_indices) |ptr| memory.cardinal_free(allocator, @ptrCast(ptr));
+}
+
 fn cleanup_combined_scene(manager: *CardinalModelManager) void {
     const s = &manager.combined_scene;
     const allocator = memory.cardinal_get_allocator_for_category(.ASSETS);
@@ -303,7 +316,7 @@ fn cleanup_combined_scene(manager: *CardinalModelManager) void {
         const skins: [*]animation.CardinalSkin = @ptrCast(@alignCast(skins_opaque));
         var i: u32 = 0;
         while (i < s.skin_count) : (i += 1) {
-            animation.cardinal_skin_destroy(&skins[i]);
+            destroy_scene_skin_assets(allocator, &skins[i]);
         }
         memory.cardinal_free(allocator, @ptrCast(skins));
     }
@@ -774,6 +787,7 @@ fn free_model_load_task(task: *async_loader.CardinalAsyncTask) void {
 }
 
 // Public API
+/// Initializes a model manager in-place.
 pub export fn cardinal_model_manager_init(manager: ?*CardinalModelManager) callconv(.c) bool {
     if (manager == null) return false;
     const mgr = manager.?;
@@ -786,6 +800,7 @@ pub export fn cardinal_model_manager_init(manager: ?*CardinalModelManager) callc
     return true;
 }
 
+/// Releases all loaded models and combined-scene resources.
 pub export fn cardinal_model_manager_destroy(manager: ?*CardinalModelManager) callconv(.c) void {
     if (manager == null) return;
     const mgr = manager.?;
@@ -815,6 +830,7 @@ pub export fn cardinal_model_manager_destroy(manager: ?*CardinalModelManager) ca
     model_log.debug("Model manager destroyed", .{});
 }
 
+/// Loads a model (blocking) via the async loader and returns its model id.
 pub export fn cardinal_model_manager_load_model(manager: ?*CardinalModelManager, file_path: ?[*:0]const u8, name: ?[*:0]const u8) callconv(.c) u32 {
     if (manager == null or file_path == null) return 0;
 
@@ -886,6 +902,7 @@ pub export fn cardinal_model_manager_load_model(manager: ?*CardinalModelManager,
     return id;
 }
 
+/// Starts an async model load and returns a model id immediately (0 on failure).
 pub export fn cardinal_model_manager_load_model_async(manager: ?*CardinalModelManager, file_path: ?[*:0]const u8, name: ?[*:0]const u8, priority: c_int) callconv(.c) u32 {
     if (manager == null or file_path == null) return 0;
     const mgr = manager.?;
@@ -993,6 +1010,7 @@ pub export fn cardinal_model_manager_load_model_async(manager: ?*CardinalModelMa
     return model.id;
 }
 
+/// Adds a loaded scene to the manager, taking ownership of its internal allocations.
 pub export fn cardinal_model_manager_add_scene(manager: ?*CardinalModelManager, in_scene: ?*scene.CardinalScene, file_path: ?[*:0]const u8, name: ?[*:0]const u8) callconv(.c) u32 {
     if (manager == null or in_scene == null) return 0;
     const mgr = manager.?;
@@ -1069,6 +1087,7 @@ pub export fn cardinal_model_manager_add_scene(manager: ?*CardinalModelManager, 
     return model.id;
 }
 
+/// Removes a model by id and destroys its scene/resources.
 pub export fn cardinal_model_manager_remove_model(manager: ?*CardinalModelManager, model_id: u32) callconv(.c) bool {
     if (manager == null) return false;
     const mgr = manager.?;
@@ -1107,6 +1126,7 @@ pub export fn cardinal_model_manager_remove_model(manager: ?*CardinalModelManage
     return true;
 }
 
+/// Returns the model instance for an id, or null if not found.
 pub export fn cardinal_model_manager_get_model(manager: ?*CardinalModelManager, model_id: u32) callconv(.c) ?*CardinalModelInstance {
     if (manager == null) return null;
     const mgr = manager.?;
@@ -1117,6 +1137,7 @@ pub export fn cardinal_model_manager_get_model(manager: ?*CardinalModelManager, 
     return null;
 }
 
+/// Returns the model instance at a stable array index, or null if out of range.
 pub export fn cardinal_model_manager_get_model_by_index(manager: ?*CardinalModelManager, index: u32) callconv(.c) ?*CardinalModelInstance {
     if (manager == null) return null;
     const mgr = manager.?;
@@ -1124,6 +1145,7 @@ pub export fn cardinal_model_manager_get_model_by_index(manager: ?*CardinalModel
     return &mgr.models.?[index];
 }
 
+/// Sets the model transform matrix and marks the combined scene dirty.
 pub export fn cardinal_model_manager_set_transform(manager: ?*CardinalModelManager, model_id: u32, transform: ?*const [16]f32) callconv(.c) bool {
     if (manager == null or transform == null) return false;
     const model = cardinal_model_manager_get_model(manager, model_id);
@@ -1134,12 +1156,14 @@ pub export fn cardinal_model_manager_set_transform(manager: ?*CardinalModelManag
     return true;
 }
 
+/// Gets the model transform matrix, or null if not found.
 pub export fn cardinal_model_manager_get_transform(manager: ?*CardinalModelManager, model_id: u32) callconv(.c) ?*const [16]f32 {
     const model = cardinal_model_manager_get_model(manager, model_id);
     if (model) |m| return &m.transform;
     return null;
 }
 
+/// Sets the model visibility and marks the combined scene dirty when changed.
 pub export fn cardinal_model_manager_set_visible(manager: ?*CardinalModelManager, model_id: u32, visible: bool) callconv(.c) bool {
     if (manager == null) return false;
     const model = cardinal_model_manager_get_model(manager, model_id);
@@ -1152,6 +1176,7 @@ pub export fn cardinal_model_manager_set_visible(manager: ?*CardinalModelManager
     return true;
 }
 
+/// Marks one model as selected (clears previous selection).
 pub export fn cardinal_model_manager_set_selected(manager: ?*CardinalModelManager, model_id: u32) callconv(.c) void {
     if (manager == null) return;
     const mgr = manager.?;
@@ -1168,6 +1193,7 @@ pub export fn cardinal_model_manager_set_selected(manager: ?*CardinalModelManage
     }
 }
 
+/// Returns the combined scene snapshot, rebuilding it on demand if dirty.
 pub export fn cardinal_model_manager_get_combined_scene(manager: ?*CardinalModelManager) callconv(.c) ?*const scene.CardinalScene {
     if (manager == null) return null;
     const mgr = manager.?;
@@ -1183,10 +1209,12 @@ pub export fn cardinal_model_manager_get_combined_scene(manager: ?*CardinalModel
     return &mgr.combined_scene;
 }
 
+/// Forces the combined scene to be rebuilt on the next query.
 pub export fn cardinal_model_manager_mark_dirty(manager: ?*CardinalModelManager) callconv(.c) void {
     if (manager) |mgr| mgr.scene_dirty = true;
 }
 
+/// Advances async load tasks and finalizes completed loads.
 pub export fn cardinal_model_manager_update(manager: ?*CardinalModelManager) callconv(.c) void {
     if (manager == null) return;
     const mgr = manager.?;
@@ -1260,6 +1288,7 @@ pub export fn cardinal_model_manager_update(manager: ?*CardinalModelManager) cal
     }
 }
 
+/// Returns the number of loaded models.
 pub export fn cardinal_model_manager_get_model_count(manager: ?*const CardinalModelManager) callconv(.c) u32 {
     if (manager == null) return 0;
     const mgr = manager.?;
@@ -1276,6 +1305,7 @@ pub export fn cardinal_model_manager_get_model_count(manager: ?*const CardinalMo
     return count;
 }
 
+/// Returns the total mesh count across all visible, loaded models.
 pub export fn cardinal_model_manager_get_total_mesh_count(manager: ?*const CardinalModelManager) callconv(.c) u32 {
     if (manager == null) return 0;
     const mgr = manager.?;
@@ -1292,6 +1322,7 @@ pub export fn cardinal_model_manager_get_total_mesh_count(manager: ?*const Cardi
     return total;
 }
 
+/// Clears all models and combined-scene data.
 pub export fn cardinal_model_manager_clear(manager: ?*CardinalModelManager) callconv(.c) void {
     if (manager == null) return;
     const mgr = manager.?;
@@ -1319,6 +1350,5 @@ pub export fn cardinal_model_manager_clear(manager: ?*CardinalModelManager) call
     mgr.selected_model_id = 0;
     mgr.scene_dirty = true;
 
-    scene.cardinal_scene_destroy(&mgr.combined_scene);
-    @memset(@as([*]u8, @ptrCast(&mgr.combined_scene))[0..@sizeOf(scene.CardinalScene)], 0);
+    cleanup_combined_scene(mgr);
 }

@@ -1,9 +1,16 @@
+//! Minimal module system with dependency-ordered startup/shutdown.
+//!
+//! Modules can provide init/update/shutdown callbacks and an optional dependency list. The
+//! manager performs a topological sort before startup and shuts down in reverse order.
 const std = @import("std");
 const errors = @import("errors.zig");
 
+/// Module lifecycle callback signature.
 pub const ModuleFn = *const fn (ctx: ?*anyopaque) anyerror!void;
+/// Module update callback signature.
 pub const ModuleUpdateFn = *const fn (ctx: ?*anyopaque, delta_time: f32) anyerror!void;
 
+/// Declares a module and its lifecycle callbacks.
 pub const Module = struct {
     name: []const u8,
     dependencies: []const []const u8 = &.{},
@@ -13,15 +20,18 @@ pub const Module = struct {
     ctx: ?*anyopaque = null,
 };
 
+/// Stores registered modules and runs them in dependency order.
 pub const ModuleManager = struct {
     modules: std.ArrayListUnmanaged(Module) = .{},
     allocator: std.mem.Allocator,
     initialized: bool = false,
 
+    /// Creates a manager using `allocator` for internal storage.
     pub fn init(allocator: std.mem.Allocator) ModuleManager {
         return .{ .allocator = allocator };
     }
 
+    /// Shuts down (if needed) and frees internal storage.
     pub fn deinit(self: *ModuleManager) void {
         if (self.initialized) {
             self.shutdown();
@@ -29,10 +39,12 @@ pub const ModuleManager = struct {
         self.modules.deinit(self.allocator);
     }
 
+    /// Registers a module. Call before `startup`.
     pub fn register(self: *ModuleManager, module: Module) !void {
         try self.modules.append(self.allocator, module);
     }
 
+    /// Topologically sorts modules and calls init callbacks in dependency order.
     pub fn startup(self: *ModuleManager) !void {
         // Topological sort modules based on dependencies
         var sorted_modules = try std.ArrayList(Module).initCapacity(self.allocator, self.modules.items.len);
@@ -82,6 +94,7 @@ pub const ModuleManager = struct {
         }
 
         while (queue.items.len > 0) {
+            // TODO: Avoid `orderedRemove(0)` O(n) shifts; use a head index or deque.
             const u = queue.orderedRemove(0);
             try sorted_modules.append(self.allocator, self.modules.items[u]);
 
@@ -98,7 +111,6 @@ pub const ModuleManager = struct {
             return error.CircularDependency;
         }
 
-
         // Replace modules with sorted list
         self.modules.clearRetainingCapacity();
         try self.modules.appendSlice(self.allocator, sorted_modules.items);
@@ -107,7 +119,7 @@ pub const ModuleManager = struct {
             if (mod.init_fn) |func| {
                 std.log.info("Initializing module: {s}", .{mod.name});
                 func(mod.ctx) catch |err| {
-                    std.log.err("Failed to initialize module {s}: {}", .{mod.name, err});
+                    std.log.err("Failed to initialize module {s}: {}", .{ mod.name, err });
                     return err;
                 };
             }
@@ -119,7 +131,7 @@ pub const ModuleManager = struct {
         for (self.modules.items) |mod| {
             if (mod.update_fn) |func| {
                 func(mod.ctx, delta_time) catch |err| {
-                    std.log.err("Error updating module {s}: {}", .{mod.name, err});
+                    std.log.err("Error updating module {s}: {}", .{ mod.name, err });
                     return err;
                 };
             }
@@ -135,7 +147,7 @@ pub const ModuleManager = struct {
             if (mod.shutdown_fn) |func| {
                 std.log.info("Shutting down module: {s}", .{mod.name});
                 func(mod.ctx) catch |err| {
-                    std.log.err("Error shutting down module {s}: {}", .{mod.name, err});
+                    std.log.err("Error shutting down module {s}: {}", .{ mod.name, err });
                 };
             }
         }

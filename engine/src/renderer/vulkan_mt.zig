@@ -1,3 +1,8 @@
+//! Cross-platform threading primitives for C-ABI consumers.
+//!
+//! Provides mutex/condition wrappers and a small worker/task system used by legacy async paths.
+//!
+//! TODO: Consider routing all async work through core/job_system.zig to reduce duplication.
 const std = @import("std");
 const builtin = @import("builtin");
 const memory = @import("../core/memory.zig");
@@ -11,21 +16,22 @@ const ref_counting = @import("../core/ref_counting.zig");
 
 const mt_log = log.ScopedLogger("MT");
 
-// Global subsystem instance
+/// Global subsystem instance.
 pub var g_cardinal_mt_subsystem: types.CardinalMTSubsystem = std.mem.zeroes(types.CardinalMTSubsystem);
 
-// Task context structures
+/// Task context for texture loads.
 const TextureLoadContext = struct {
     file_path: [:0]u8,
     result_resource: ?*ref_counting.CardinalRefCountedResource,
 };
 
+/// Task context for mesh/scene loads.
 const MeshLoadContext = struct {
     file_path: [:0]u8,
     result_scene: ?*scene.CardinalScene,
 };
 
-// Platform-specific threading utilities
+/// Initializes a mutex compatible with the public C API.
 pub fn cardinal_mt_mutex_init(mutex: *types.cardinal_mutex_t) bool {
     const mem_alloc = memory.cardinal_get_allocator_for_category(.RENDERER);
     const m = memory.cardinal_alloc(mem_alloc, @sizeOf(std.Thread.Mutex));
@@ -38,6 +44,7 @@ pub fn cardinal_mt_mutex_init(mutex: *types.cardinal_mutex_t) bool {
     return true;
 }
 
+/// Destroys a mutex allocated by `cardinal_mt_mutex_init`.
 pub fn cardinal_mt_mutex_destroy(mutex: *types.cardinal_mutex_t) void {
     if (mutex.*) |ptr| {
         const mem_alloc = memory.cardinal_get_allocator_for_category(.RENDERER);
@@ -46,6 +53,7 @@ pub fn cardinal_mt_mutex_destroy(mutex: *types.cardinal_mutex_t) void {
     }
 }
 
+/// Locks the mutex if it is initialized.
 pub fn cardinal_mt_mutex_lock(mutex: *types.cardinal_mutex_t) void {
     if (mutex.*) |ptr| {
         const mutex_ptr = @as(*std.Thread.Mutex, @ptrCast(@alignCast(ptr)));
@@ -53,6 +61,7 @@ pub fn cardinal_mt_mutex_lock(mutex: *types.cardinal_mutex_t) void {
     }
 }
 
+/// Unlocks the mutex if it is initialized.
 pub fn cardinal_mt_mutex_unlock(mutex: *types.cardinal_mutex_t) void {
     if (mutex.*) |ptr| {
         const mutex_ptr = @as(*std.Thread.Mutex, @ptrCast(@alignCast(ptr)));
@@ -60,6 +69,7 @@ pub fn cardinal_mt_mutex_unlock(mutex: *types.cardinal_mutex_t) void {
     }
 }
 
+/// Initializes a condition variable compatible with the public C API.
 pub fn cardinal_mt_cond_init(cond: *types.cardinal_cond_t) bool {
     const mem_alloc = memory.cardinal_get_allocator_for_category(.RENDERER);
     const c_ptr = memory.cardinal_alloc(mem_alloc, @sizeOf(std.Thread.Condition));
@@ -72,6 +82,7 @@ pub fn cardinal_mt_cond_init(cond: *types.cardinal_cond_t) bool {
     return true;
 }
 
+/// Destroys a condition variable allocated by `cardinal_mt_cond_init`.
 pub fn cardinal_mt_cond_destroy(cond: *types.cardinal_cond_t) void {
     if (cond.*) |ptr| {
         const mem_alloc = memory.cardinal_get_allocator_for_category(.RENDERER);
@@ -80,6 +91,7 @@ pub fn cardinal_mt_cond_destroy(cond: *types.cardinal_cond_t) void {
     }
 }
 
+/// Waits on a condition variable while holding a mutex.
 pub fn cardinal_mt_cond_wait(cond: *types.cardinal_cond_t, mutex: *types.cardinal_mutex_t) void {
     if (cond.*) |c_ptr| {
         if (mutex.*) |m_ptr| {
@@ -90,6 +102,7 @@ pub fn cardinal_mt_cond_wait(cond: *types.cardinal_cond_t, mutex: *types.cardina
     }
 }
 
+/// Signals a condition variable.
 pub fn cardinal_mt_cond_signal(cond: *types.cardinal_cond_t) void {
     if (cond.*) |ptr| {
         const cond_ptr = @as(*std.Thread.Condition, @ptrCast(@alignCast(ptr)));
@@ -97,6 +110,7 @@ pub fn cardinal_mt_cond_signal(cond: *types.cardinal_cond_t) void {
     }
 }
 
+/// Broadcasts a condition variable.
 pub fn cardinal_mt_cond_broadcast(cond: *types.cardinal_cond_t) void {
     if (cond.*) |ptr| {
         const cond_ptr = @as(*std.Thread.Condition, @ptrCast(@alignCast(ptr)));
@@ -104,6 +118,7 @@ pub fn cardinal_mt_cond_broadcast(cond: *types.cardinal_cond_t) void {
     }
 }
 
+/// Waits on a condition variable with timeout, returning false on timeout/error.
 pub fn cardinal_mt_cond_wait_timeout(cond: *types.cardinal_cond_t, mutex: *types.cardinal_mutex_t, timeout_ms: u32) bool {
     if (cond.*) |c_ptr| {
         if (mutex.*) |m_ptr| {
@@ -116,19 +131,22 @@ pub fn cardinal_mt_cond_wait_timeout(cond: *types.cardinal_cond_t, mutex: *types
     return false;
 }
 
+/// Returns a platform thread identifier (Zig thread id).
 pub fn cardinal_mt_get_current_thread_id() types.cardinal_thread_id_t {
     return std.Thread.getCurrentId();
 }
 
+/// Compares thread identifiers.
 pub fn cardinal_mt_thread_ids_equal(thread1: types.cardinal_thread_id_t, thread2: types.cardinal_thread_id_t) bool {
     return thread1 == thread2;
 }
 
+/// Returns the OS-reported CPU count (best-effort).
 pub fn cardinal_mt_get_optimal_thread_count() u32 {
     return @intCast(std.Thread.getCpuCount() catch 4);
 }
 
-// Worker thread function
+/// Worker thread entrypoint for the subsystem.
 fn cardinal_mt_worker_thread_func(arg: ?*anyopaque) void {
     _ = arg;
     const thread_id = cardinal_mt_get_current_thread_id();

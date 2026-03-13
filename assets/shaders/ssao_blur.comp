@@ -1,6 +1,6 @@
 #version 450
 layout(local_size_x = 16, local_size_y = 16) in;
-layout(binding = 0, r8) writeonly uniform image2D outBlur;
+layout(binding = 0, r16f) writeonly uniform image2D outBlur;
 layout(binding = 1) uniform sampler2D ssaoInput;
 
 void main() {

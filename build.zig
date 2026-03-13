@@ -1,5 +1,10 @@
+//! Build configuration for Cardinal (engine, editor, client) and bundled third-party libraries.
+//!
+//! This file defines artifacts and build steps. It intentionally keeps runtime configuration
+//! out of the build graph (see `cardinal_config.json` for runtime settings).
 const std = @import("std");
 
+/// Defines all build artifacts and custom steps for the repository.
 pub fn build(b: *std.Build) void {
     const target = b.standardTargetOptions(.{});
     const optimize = b.standardOptimizeOption(.{});
@@ -209,6 +214,7 @@ pub fn build(b: *std.Build) void {
     if (vulkan_sdk) |sdk| {
         engine.addIncludePath(.{ .cwd_relative = b.fmt("{s}/Include", .{sdk}) });
     }
+    // TODO: Deduplicate VULKAN_SDK include/lib path wiring across engine/client/editor.
 
     engine.root_module.addCMacro("GLFW_INCLUDE_VULKAN", "");
     engine.root_module.addCMacro("CARDINAL_ENGINE_INTERNAL", "");
@@ -392,6 +398,29 @@ pub fn build(b: *std.Build) void {
     // });
 
     b.installArtifact(editor);
+
+    const install_engine_docs = b.addInstallDirectory(.{
+        .source_dir = engine.getEmittedDocs(),
+        .install_dir = .prefix,
+        .install_subdir = "docs/engine",
+    });
+
+    const install_client_docs = b.addInstallDirectory(.{
+        .source_dir = client.getEmittedDocs(),
+        .install_dir = .prefix,
+        .install_subdir = "docs/client",
+    });
+
+    const install_editor_docs = b.addInstallDirectory(.{
+        .source_dir = editor.getEmittedDocs(),
+        .install_dir = .prefix,
+        .install_subdir = "docs/editor",
+    });
+
+    const docs_step = b.step("docs", "Install documentation into zig-out/docs");
+    docs_step.dependOn(&install_engine_docs.step);
+    docs_step.dependOn(&install_client_docs.step);
+    docs_step.dependOn(&install_editor_docs.step);
 
     // =========================================================================
     // Run Steps

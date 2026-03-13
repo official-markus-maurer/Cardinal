@@ -1,5 +1,10 @@
+//! Engine error types and conversions.
+//!
+//! This module defines an engine-specific error set and a stable C-facing error code enum, plus
+//! helpers to map between them.
 const std = @import("std");
 
+/// Engine-level error set used across subsystems.
 pub const CardinalError = error{
     InitializationFailed,
     InvalidParameter,
@@ -13,6 +18,7 @@ pub const CardinalError = error{
     Unknown,
 };
 
+/// Stable error codes for C interop.
 pub const CardinalErrorCode = enum(c_int) {
     Success = 0,
     InitializationFailed = -1,
@@ -27,6 +33,7 @@ pub const CardinalErrorCode = enum(c_int) {
     Unknown = -127,
 };
 
+/// Converts a Zig error into a `CardinalErrorCode`.
 pub fn errorToCode(err: anyerror) CardinalErrorCode {
     return switch (err) {
         error.InitializationFailed => .InitializationFailed,
@@ -42,6 +49,7 @@ pub fn errorToCode(err: anyerror) CardinalErrorCode {
     };
 }
 
+/// Converts an integer code into a `CardinalError`.
 pub fn codeToError(code: c_int) CardinalError {
     return switch (@as(CardinalErrorCode, @enumFromInt(code))) {
         .Success => unreachable, // Caller should check for success

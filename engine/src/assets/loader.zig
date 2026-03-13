@@ -1,3 +1,9 @@
+//! Scene loading entrypoints and format routing.
+//!
+//! Provides a synchronous `cardinal_scene_load` API and an async wrapper that delegates work to
+//! the async loader. Supported formats are routed by extension (glTF, NIF/KF, KFM).
+//!
+//! TODO: Deduplicate extension normalization between sync and async paths.
 const std = @import("std");
 const scene = @import("scene.zig");
 const async_loader = @import("../core/async_loader.zig");
@@ -10,15 +16,10 @@ const asset_utils = @import("asset_utils.zig");
 
 const loader_log = log.ScopedLogger("LOADER");
 
-// --- Externs from gltf_loader.c ---
+/// glTF scene loader implemented in the C translation unit.
 extern fn cardinal_gltf_load_scene(path: [*:0]const u8, scene: *scene.CardinalScene) callconv(.c) bool;
 
-// --- Helper Functions ---
-
-
-
-// --- Public API ---
-
+/// Loads a scene synchronously, routing to the loader implied by file extension.
 pub export fn cardinal_scene_load(path: ?[*:0]const u8, out_scene: ?*scene.CardinalScene) callconv(.c) bool {
     if (path == null or out_scene == null) {
         loader_log.err("Invalid parameters: path=null or out_scene=null", .{});
@@ -46,7 +47,6 @@ pub export fn cardinal_scene_load(path: ?[*:0]const u8, out_scene: ?*scene.Cardi
     ext_buf[ext_len] = 0;
     const ext_slice = ext_buf[0..ext_len :0];
 
-    // In-place lower case
     for (ext_slice) |*c| {
         c.* = std.ascii.toLower(c.*);
     }
@@ -77,6 +77,7 @@ pub export fn cardinal_scene_load(path: ?[*:0]const u8, out_scene: ?*scene.Cardi
     return false;
 }
 
+/// Schedules a scene load using the async loader and returns the created task.
 pub export fn cardinal_scene_load_async(path: ?[*:0]const u8, priority: async_loader.CardinalAsyncPriority, callback: async_loader.CardinalAsyncCallback, user_data: ?*anyopaque) callconv(.c) ?*async_loader.CardinalAsyncTask {
     if (path == null) {
         loader_log.err("Invalid path parameter", .{});
@@ -139,8 +140,6 @@ fn ecs_scene_loader_impl(file_path: ?[*:0]const u8) callconv(.c) ?*anyopaque {
         loader_log.err("Failed to read file: {}", .{err});
         return null;
     };
-    // Do NOT free content here; ownership passed to ParsedScene
-
     const parsed = scene_serializer.SceneSerializer.loadSceneData(allocator, content, path_slice) catch |err| {
         loader_log.err("Failed to parse scene: {}", .{err});
         allocator.free(content); // Free content if parsing fails

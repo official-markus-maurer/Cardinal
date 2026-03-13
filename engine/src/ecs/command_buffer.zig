@@ -1,15 +1,21 @@
+//! ECS command buffer for deferred registry mutations.
+//!
+//! Systems enqueue add/remove/destroy operations into a `CommandBuffer` which is later flushed
+//! against a `Registry` after scheduling completes.
 const std = @import("std");
 const entity_pkg = @import("entity.zig");
 const registry_pkg = @import("registry.zig");
 
 const Entity = entity_pkg.Entity;
 
+/// Command kinds supported by `CommandBuffer`.
 pub const CommandType = enum {
     Add,
     Remove,
     Destroy,
 };
 
+/// Records entity/component operations for later application to a registry.
 pub const CommandBuffer = struct {
     allocator: std.mem.Allocator,
 
@@ -27,6 +33,7 @@ pub const CommandBuffer = struct {
         apply_fn: ?*const fn (registry: *registry_pkg.Registry, entity: Entity, data: []const u8) anyerror!void = null,
     };
 
+    /// Creates an empty command buffer.
     pub fn init(allocator: std.mem.Allocator) CommandBuffer {
         return .{
             .allocator = allocator,
@@ -35,15 +42,18 @@ pub const CommandBuffer = struct {
         };
     }
 
+    /// Releases internal storage.
     pub fn deinit(self: *CommandBuffer) void {
         self.payload.deinit(self.allocator);
         self.commands.deinit(self.allocator);
     }
 
+    /// Records an add/overwrite of `component` for `entity`.
     pub fn add(self: *CommandBuffer, entity: Entity, component: anytype) !void {
         const T = @TypeOf(component);
         const type_id = registry_pkg.Registry.get_type_id(T);
         const size = @sizeOf(T);
+        // TODO: Ensure payload alignment for types with >1-byte alignment.
 
         const offset = self.payload.items.len;
         try self.payload.appendSlice(self.allocator, std.mem.asBytes(&component));
@@ -63,6 +73,7 @@ pub const CommandBuffer = struct {
         });
     }
 
+    /// Records removal of component type `T` for `entity`.
     pub fn remove(self: *CommandBuffer, comptime T: type, entity: Entity) !void {
         const type_id = registry_pkg.Registry.get_type_id(T);
 
@@ -79,6 +90,7 @@ pub const CommandBuffer = struct {
         });
     }
 
+    /// Records destruction of `entity`.
     pub fn destroy(self: *CommandBuffer, entity: Entity) !void {
         try self.commands.append(self.allocator, .{
             .cmd_type = .Destroy,
@@ -86,6 +98,7 @@ pub const CommandBuffer = struct {
         });
     }
 
+    /// Applies all queued commands to `registry` and clears the buffer.
     pub fn flush(self: *CommandBuffer, registry: *registry_pkg.Registry) !void {
         for (self.commands.items) |cmd| {
             switch (cmd.cmd_type) {
@@ -112,6 +125,7 @@ pub const CommandBuffer = struct {
         self.clear();
     }
 
+    /// Clears commands and payload, retaining capacity.
     pub fn clear(self: *CommandBuffer) void {
         self.payload.clearRetainingCapacity();
         self.commands.clearRetainingCapacity();

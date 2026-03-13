@@ -1,3 +1,10 @@
+//! Asset handle registry.
+//!
+//! Stores assets in typed arenas addressed by stable handles (index + generation). This module
+//! complements the ref-counting registry by providing lightweight handle-based lookup for engine
+//! systems that prefer POD handles over string keys.
+//!
+//! TODO: Unify ownership/ref-counting strategy between handle-based assets and ref_counting resources.
 const std = @import("std");
 const handles = @import("../core/handles.zig");
 const handle_manager = @import("../core/handle_manager.zig");
@@ -17,7 +24,7 @@ pub const AssetType = enum {
     Sound,
 };
 
-// Generic storage for assets
+/// Generic typed storage indexed by a handle manager.
 fn AssetStorage(comptime T: type, comptime Handle: type) type {
     return struct {
         const Self = @This();
@@ -39,8 +46,8 @@ fn AssetStorage(comptime T: type, comptime Handle: type) type {
             };
         }
 
+        /// Frees stored path strings and releases internal storage.
         pub fn deinit(self: *Self) void {
-            // Cleanup entries
             for (self.entries.items) |*entry| {
                 if (entry.path) |p| {
                     self.allocator.free(p);
@@ -67,14 +74,12 @@ fn AssetStorage(comptime T: type, comptime Handle: type) type {
             const generation = allocation.generation;
 
             if (index < self.entries.items.len) {
-                // Reuse existing slot
                 self.entries.items[index] = .{
                     .data = data,
                     .ref_count = 1,
                     .path = stored_path,
                 };
             } else {
-                // Append new slot
                 try self.entries.append(self.allocator, .{
                     .data = data,
                     .ref_count = 1,
@@ -111,12 +116,10 @@ fn AssetStorage(comptime T: type, comptime Handle: type) type {
             }
 
             if (entry.ref_count == 0) {
-                // Detach path (ownership transfer to caller)
                 const p = entry.path;
                 const d = entry.data;
                 entry.path = null;
 
-                // Add to free list
                 _ = self.handle_manager.free(handle.index, handle.generation);
                 return .{ .destroyed = true, .path = p, .data = d };
             }
@@ -168,7 +171,6 @@ pub const AssetManager = struct {
         var texture = std.mem.zeroes(scene.CardinalTexture);
         const path_z = try self.allocator.dupeZ(u8, path);
 
-        // Use the async ref-counted loading function
         var temp_data = std.mem.zeroes(texture_loader.TextureData);
         const res = texture_loader.texture_load_with_ref_counting(@ptrCast(path_z), &temp_data);
 
@@ -177,7 +179,6 @@ pub const AssetManager = struct {
             return error.FailedToLoadTexture;
         }
 
-        // Copy initial data (placeholder or loaded)
         texture.data = temp_data.data;
         texture.width = temp_data.width;
         texture.height = temp_data.height;
@@ -213,7 +214,6 @@ pub const AssetManager = struct {
         if (res.destroyed) {
             if (res.data) |tex| {
                 if (tex.path) |p| {
-                    // Free the path allocated by dupeZ
                     self.allocator.free(std.mem.span(p));
                 }
                 if (tex.ref_resource) |ref| {

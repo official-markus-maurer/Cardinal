@@ -1,3 +1,9 @@
+//! Vulkan buffer lifecycle helpers.
+//!
+//! Provides utilities for creating, uploading to, and destroying Vulkan buffers using VMA and
+//! timeline-semaphore synchronization via the centralized sync manager.
+//!
+//! TODO: Consider merging one-shot command buffer helpers with other upload paths to reduce duplication.
 const std = @import("std");
 const builtin = @import("builtin");
 const log = @import("../core/log.zig");
@@ -11,6 +17,7 @@ const c = @import("vulkan_c.zig").c;
 
 pub const VulkanBuffer = types.VulkanBuffer;
 
+/// Parameters used to create a `VulkanBuffer`.
 pub const VulkanBufferCreateInfo = extern struct {
     size: c.VkDeviceSize,
     usage: c.VkBufferUsageFlags,
@@ -18,7 +25,7 @@ pub const VulkanBufferCreateInfo = extern struct {
     persistentlyMapped: bool,
 };
 
-// Helper function to begin a single-time command buffer
+/// Begins a one-shot command buffer for short-lived transfer operations.
 fn begin_single_time_commands(device: c.VkDevice, commandPool: c.VkCommandPool) c.VkCommandBuffer {
     var allocInfo = std.mem.zeroes(c.VkCommandBufferAllocateInfo);
     allocInfo.sType = c.VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO;
@@ -37,7 +44,7 @@ fn begin_single_time_commands(device: c.VkDevice, commandPool: c.VkCommandPool) 
     return commandBuffer;
 }
 
-// Helper function to end and submit a single-time command buffer with proper timeline synchronization
+/// Ends and submits a one-shot command buffer, signaling the shared timeline semaphore.
 fn end_single_time_commands(device: c.VkDevice, commandPool: c.VkCommandPool, queue: c.VkQueue, commandBuffer: c.VkCommandBuffer, vulkan_state: *types.VulkanState) void {
     buf_log.info("CMD_END_START: Ending command buffer {any}", .{commandBuffer});
     const result = c.vkEndCommandBuffer(commandBuffer);

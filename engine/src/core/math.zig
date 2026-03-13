@@ -1,17 +1,25 @@
+//! Math primitives used across the engine.
+//!
+//! Provides small vector/matrix/quaternion types plus helper functions. Types are C-ABI-friendly
+//! where needed (extern structs) and are used by loaders, transforms, and animation code.
 const std = @import("std");
 
+/// Linear interpolation between `a` and `b`.
 pub fn lerp(a: f32, b: f32, t: f32) f32 {
     return a + (b - a) * t;
 }
 
+/// Converts degrees to radians.
 pub fn toRadians(degrees: f32) f32 {
     return degrees * (std.math.pi / 180.0);
 }
 
+/// Converts radians to degrees.
 pub fn toDegrees(radians: f32) f32 {
     return radians * (180.0 / std.math.pi);
 }
 
+/// 2D float vector.
 pub const Vec2 = extern struct {
     x: f32,
     y: f32,
@@ -57,6 +65,7 @@ pub const Vec2 = extern struct {
     }
 };
 
+/// 3D float vector (padded to 16 bytes for alignment).
 pub const Vec3 = extern struct {
     x: f32,
     y: f32,
@@ -301,10 +310,10 @@ pub const Quat = extern struct {
 
         const angle = std.math.acos(cos_theta);
         const sin_angle = std.math.sin(angle);
-        
+
         // Avoid division by zero
         if (std.math.approxEqAbs(f32, sin_angle, 0.0, 1e-6)) {
-             return a;
+            return a;
         }
 
         const w1 = std.math.sin((1.0 - t) * angle) / sin_angle;
@@ -312,7 +321,7 @@ pub const Quat = extern struct {
 
         const v_a: @Vector(4, f32) = @bitCast(a);
         const v_b: @Vector(4, f32) = @bitCast(target);
-        
+
         return @bitCast(v_a * @as(@Vector(4, f32), @splat(w1)) + v_b * @as(@Vector(4, f32), @splat(w2)));
     }
 };
@@ -408,7 +417,7 @@ pub const Mat4 = extern struct {
         const col3: @Vector(4, f32) = self.data[12..16].*;
 
         const res = x_splat * col0 + y_splat * col1 + z_splat * col2 + w_splat * col3;
-        
+
         return @bitCast(res);
     }
 
@@ -505,7 +514,7 @@ pub const Mat4 = extern struct {
         const cross_x = row1_xyz[1] * row2_xyz[2] - row1_xyz[2] * row2_xyz[1];
         const cross_y = row1_xyz[2] * row2_xyz[0] - row1_xyz[0] * row2_xyz[2];
         const cross_z = row1_xyz[0] * row2_xyz[1] - row1_xyz[1] * row2_xyz[0];
-        
+
         const det = row0_xyz[0] * cross_x + row0_xyz[1] * cross_y + row0_xyz[2] * cross_z;
 
         if (det < 0) {
@@ -751,11 +760,11 @@ pub const AABB = struct {
     pub fn isValid(self: AABB) bool {
         return self.max.x >= self.min.x and self.max.y >= self.min.y and self.max.z >= self.min.z;
     }
-    
+
     pub fn center(self: AABB) Vec3 {
         return self.min.add(self.max).mul(0.5);
     }
-    
+
     pub fn size(self: AABB) Vec3 {
         return self.max.sub(self.min);
     }
@@ -777,27 +786,27 @@ pub const AABB = struct {
         var new_max = Vec3{ .x = -std.math.floatMax(f32), .y = -std.math.floatMax(f32), .z = -std.math.floatMax(f32) };
 
         for (corners) |corner| {
-             // Homogeneous multiply
-             const x = corner.x;
-             const y = corner.y;
-             const z = corner.z;
-             
-             const nx = matrix.data[0]*x + matrix.data[4]*y + matrix.data[8]*z + matrix.data[12];
-             const ny = matrix.data[1]*x + matrix.data[5]*y + matrix.data[9]*z + matrix.data[13];
-             const nz = matrix.data[2]*x + matrix.data[6]*y + matrix.data[10]*z + matrix.data[14];
-             // We assume w=1 for points and rigid transforms mostly, but technically:
-             // const nw = matrix.data[3]*x + matrix.data[7]*y + matrix.data[11]*z + matrix.data[15];
-             // if (nw != 1.0 and nw != 0.0) { nx /= nw; ny /= nw; nz /= nw; }
+            // Homogeneous multiply
+            const x = corner.x;
+            const y = corner.y;
+            const z = corner.z;
 
-             new_min.x = @min(new_min.x, nx);
-             new_min.y = @min(new_min.y, ny);
-             new_min.z = @min(new_min.z, nz);
-             
-             new_max.x = @max(new_max.x, nx);
-             new_max.y = @max(new_max.y, ny);
-             new_max.z = @max(new_max.z, nz);
+            const nx = matrix.data[0] * x + matrix.data[4] * y + matrix.data[8] * z + matrix.data[12];
+            const ny = matrix.data[1] * x + matrix.data[5] * y + matrix.data[9] * z + matrix.data[13];
+            const nz = matrix.data[2] * x + matrix.data[6] * y + matrix.data[10] * z + matrix.data[14];
+            // We assume w=1 for points and rigid transforms mostly, but technically:
+            // const nw = matrix.data[3]*x + matrix.data[7]*y + matrix.data[11]*z + matrix.data[15];
+            // if (nw != 1.0 and nw != 0.0) { nx /= nw; ny /= nw; nz /= nw; }
+
+            new_min.x = @min(new_min.x, nx);
+            new_min.y = @min(new_min.y, ny);
+            new_min.z = @min(new_min.z, nz);
+
+            new_max.x = @max(new_max.x, nx);
+            new_max.y = @max(new_max.y, ny);
+            new_max.z = @max(new_max.z, nz);
         }
-        
+
         return .{ .min = new_min, .max = new_max };
     }
 };

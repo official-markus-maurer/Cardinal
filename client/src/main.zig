@@ -1,3 +1,7 @@
+//! Cardinal client entrypoint.
+//!
+//! This executable is primarily a thin wrapper around engine subsystems. It currently contains
+//! a small bootstrap loop intended for smoke-testing renderer init and frame submission.
 const std = @import("std");
 const engine = @import("cardinal_engine");
 const log = engine.log;
@@ -14,11 +18,12 @@ const ref_counting = engine.ref_counting;
 
 const client_log = log.ScopedLogger("CLIENT");
 
-// Define std_options to route std.log to our logging system
+/// Routes `std.log` into Cardinal's logging backend.
 pub const std_options: std.Options = .{
     .logFn = myLogFn,
 };
 
+/// `std.log` callback used by `std_options`.
 fn myLogFn(
     comptime message_level: std.log.Level,
     comptime scope: anytype,
@@ -36,6 +41,7 @@ fn myLogFn(
     }
 }
 
+/// Prints CLI usage text.
 fn print_usage(program_name: []const u8) void {
     std.debug.print("Usage: {s} [options]\n", .{program_name});
     std.debug.print("Options:\n", .{});
@@ -43,8 +49,10 @@ fn print_usage(program_name: []const u8) void {
     std.debug.print("  --help               Show this help message\n", .{});
 }
 
+/// Initializes subsystems, runs a short render loop, then shuts down.
 pub fn main() !u8 {
     // Initialize memory system first
+    // TODO: Move bootstrap values (memory size, threads, cache sizes) into config.
     memory.cardinal_memory_init(1024 * 1024 * 64); // 64MB
 
     // Get allocator for arguments
@@ -123,6 +131,7 @@ pub fn main() !u8 {
         vulkan_renderer_frame.cardinal_renderer_draw_frame(&renderer);
         engine.tracy.frameMark();
         frames += 1;
+        // TODO: Replace this early-exit with a real game loop or CLI-controlled frame count.
         if (frames > 10) break;
     }
 

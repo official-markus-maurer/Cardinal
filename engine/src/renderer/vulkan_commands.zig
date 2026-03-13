@@ -1,3 +1,9 @@
+//! Vulkan command pool and command buffer management.
+//!
+//! Allocates per-frame command pools and primary buffers, provides helpers to record common
+//! rendering work (render graph passes, skybox, mesh shader prep), and coordinates with sync.
+//!
+//! TODO: Deduplicate per-queue command pool creation into one helper.
 const std = @import("std");
 const builtin = @import("builtin");
 const log = @import("../core/log.zig");
@@ -23,8 +29,7 @@ const cmd_log = log.ScopedLogger("COMMANDS");
 
 const c = @import("vulkan_c.zig").c;
 
-// Internal helpers
-
+/// Creates per-frame graphics command pools.
 fn create_command_pools(s: *types.VulkanState) bool {
     const mem_alloc = memory.cardinal_get_allocator_for_category(.RENDERER);
     const pools_ptr = memory.cardinal_alloc(mem_alloc, s.sync.max_frames_in_flight * @sizeOf(c.VkCommandPool));
@@ -42,6 +47,7 @@ fn create_command_pools(s: *types.VulkanState) bool {
     return true;
 }
 
+/// Creates per-frame transient graphics command pools.
 fn create_transient_command_pools(s: *types.VulkanState) bool {
     const mem_alloc = memory.cardinal_get_allocator_for_category(.RENDERER);
     const pools_ptr = memory.cardinal_alloc(mem_alloc, s.sync.max_frames_in_flight * @sizeOf(c.VkCommandPool));
@@ -60,6 +66,7 @@ fn create_transient_command_pools(s: *types.VulkanState) bool {
     return true;
 }
 
+/// Creates per-frame transient compute command pools.
 fn create_compute_transient_command_pools(s: *types.VulkanState) bool {
     const mem_alloc = memory.cardinal_get_allocator_for_category(.RENDERER);
     const pools_ptr = memory.cardinal_alloc(mem_alloc, s.sync.max_frames_in_flight * @sizeOf(c.VkCommandPool));
@@ -78,6 +85,7 @@ fn create_compute_transient_command_pools(s: *types.VulkanState) bool {
     return true;
 }
 
+/// Allocates per-frame primary command buffers.
 fn allocate_command_buffers(s: *types.VulkanState) bool {
     // Primary buffers
     const mem_alloc = memory.cardinal_get_allocator_for_category(.RENDERER);
@@ -329,7 +337,7 @@ fn transition_images(s: *types.VulkanState, cmd: c.VkCommandBuffer, image_index:
         // If we are getting validation errors about UNDEFINED -> OPTIMAL inside a render pass,
         // it means this function is called inside a render pass, which is wrong for a barrier.
         // But wait, vk_record_cmd calls this at the start.
-        
+
         barrier.srcStageMask = c.VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT;
         barrier.srcAccessMask = 0;
         barrier.oldLayout = c.VK_IMAGE_LAYOUT_PRESENT_SRC_KHR; // Or UNDEFINED if we don't care
@@ -843,7 +851,7 @@ pub export fn vk_record_cmd(s: ?*types.VulkanState, image_index: u32) callconv(.
             .aspect_mask = c.VK_IMAGE_ASPECT_COLOR_BIT,
         };
         rg.update_transient_image(types.RESOURCE_ID_HDR_COLOR, hdr_desc, vs) catch {};
-        
+
         // Fix: Use Undefined layout for HDR color at start of frame
         const hdr_state = render_graph.ResourceState{
             .access_mask = 0,

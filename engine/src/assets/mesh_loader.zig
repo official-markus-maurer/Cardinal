@@ -1,3 +1,10 @@
+//! Mesh caching and load helpers.
+//!
+//! Provides a small thread-safe cache of meshes keyed by identifier, backed by the ref-counting
+//! registry. Mesh decoding is currently delegated to scene loaders (glTF/NIF) that populate
+//! `scene.CardinalMesh` data.
+//!
+//! TODO: Replace FIFO eviction with a real LRU and track memory usage per mesh.
 const std = @import("std");
 const scene = @import("scene.zig");
 const ref_counting = @import("../core/ref_counting.zig");
@@ -5,16 +12,17 @@ const async_loader = @import("../core/async_loader.zig");
 const log = @import("../core/log.zig");
 const memory = @import("../core/memory.zig");
 
-// Use scoped logger
+/// Module logger.
 const mesh_log = log.ScopedLogger("MESH");
 
-// Thread-safe mesh cache
+/// Single-linked cache entry.
 const MeshCacheEntry = struct {
     mesh_id: [:0]const u8,
     resource: *ref_counting.CardinalRefCountedResource,
     next: ?*MeshCacheEntry,
 };
 
+/// Mesh cache protected by a mutex.
 const MeshCache = struct {
     entries: ?*MeshCacheEntry,
     entry_count: u32,
@@ -35,7 +43,7 @@ var g_mesh_cache: MeshCache = .{
     .mutex = .{},
 };
 
-// Initialize the mesh cache
+/// Initializes the cache (idempotent).
 fn mesh_cache_init(max_entries: u32) bool {
     g_mesh_cache.mutex.lock();
     defer g_mesh_cache.mutex.unlock();
@@ -55,7 +63,7 @@ fn mesh_cache_init(max_entries: u32) bool {
     return true;
 }
 
-// Get mesh from cache
+/// Returns a retained mesh resource if present in cache.
 fn mesh_cache_get(mesh_id: []const u8) ?*ref_counting.CardinalRefCountedResource {
     g_mesh_cache.mutex.lock();
     defer g_mesh_cache.mutex.unlock();
@@ -67,7 +75,6 @@ fn mesh_cache_get(mesh_id: []const u8) ?*ref_counting.CardinalRefCountedResource
     var entry = g_mesh_cache.entries;
     while (entry) |e| {
         if (std.mem.eql(u8, e.mesh_id, mesh_id)) {
-            // Found in cache, acquire reference
             if (ref_counting.cardinal_ref_acquire(e.resource.identifier)) |res| {
                 g_mesh_cache.cache_hits += 1;
                 return res;
@@ -80,7 +87,7 @@ fn mesh_cache_get(mesh_id: []const u8) ?*ref_counting.CardinalRefCountedResource
     return null;
 }
 
-// Add mesh to cache
+/// Inserts a mesh resource into the cache and retains it.
 fn mesh_cache_put(mesh_id: [:0]const u8, resource: *ref_counting.CardinalRefCountedResource) void {
     g_mesh_cache.mutex.lock();
     defer g_mesh_cache.mutex.unlock();
@@ -91,13 +98,10 @@ fn mesh_cache_put(mesh_id: [:0]const u8, resource: *ref_counting.CardinalRefCoun
 
     const allocator = memory.cardinal_get_allocator_for_category(.ASSETS);
 
-    // Check if we're at capacity
     if (g_mesh_cache.entry_count >= g_mesh_cache.max_entries) {
-        // Remove tail (FIFO/LRU approximation)
         var prev: ?*MeshCacheEntry = null;
         var curr = g_mesh_cache.entries;
 
-        // Find tail
         while (curr) |c| {
             if (c.next == null) break;
             prev = c;
@@ -118,12 +122,10 @@ fn mesh_cache_put(mesh_id: [:0]const u8, resource: *ref_counting.CardinalRefCoun
         }
     }
 
-    // Create new entry
     const new_entry_ptr = memory.cardinal_alloc(allocator, @sizeOf(MeshCacheEntry));
     if (new_entry_ptr == null) return;
     const new_entry: *MeshCacheEntry = @ptrCast(@alignCast(new_entry_ptr));
 
-    // Copy mesh ID
     const id_len = mesh_id.len;
     const id_copy_ptr = memory.cardinal_alloc(allocator, id_len + 1);
     if (id_copy_ptr == null) {
@@ -135,31 +137,27 @@ fn mesh_cache_put(mesh_id: [:0]const u8, resource: *ref_counting.CardinalRefCoun
     @as([*]u8, @ptrCast(id_copy_ptr))[id_len] = 0;
     new_entry.mesh_id = @as([*:0]const u8, @ptrCast(id_copy_ptr))[0..id_len :0];
 
-    // Acquire reference to resource
     new_entry.resource = resource;
     _ = ref_counting.cardinal_ref_acquire(resource.identifier);
 
-    // Add to front of list
     new_entry.next = g_mesh_cache.entries;
     g_mesh_cache.entries = new_entry;
     g_mesh_cache.entry_count += 1;
 }
 
+/// Produces a stable identifier for a mesh based on a small content hash.
 fn generate_mesh_id(mesh: scene.CardinalMesh) ?[:0]const u8 {
     var hash: u32 = 0;
     hash ^= mesh.vertex_count;
     hash ^= mesh.index_count << 16;
     hash ^= mesh.material_index;
 
-    // Hash some vertex data if available
     if (mesh.vertices) |vertices| {
         if (mesh.vertex_count > 0) {
             var i: u32 = 0;
             while (i < mesh.vertex_count and i < 10) : (i += 1) {
-                // Hash the bytes of the vertex
                 const v = vertices[i];
                 const v_bytes = std.mem.asBytes(&v);
-                // Use a simple hash for bytes
                 var h: u32 = 5381;
                 for (v_bytes) |b| {
                     h = ((h << 5) + h) + b;
@@ -169,7 +167,6 @@ fn generate_mesh_id(mesh: scene.CardinalMesh) ?[:0]const u8 {
         }
     }
 
-    // Hash some index data if available
     if (mesh.indices) |indices| {
         if (mesh.index_count > 0) {
             var i: u32 = 0;

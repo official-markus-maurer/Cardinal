@@ -1,3 +1,9 @@
+//! Reference-counted resource registry.
+//!
+//! Tracks resources by identifier (string key) and exposes retain/release-style APIs for shared
+//! ownership across subsystems (textures, materials, etc).
+//!
+//! TODO: Replace the single global mutex with bucket-level locking for better contention behavior.
 const std = @import("std");
 const builtin = @import("builtin");
 const log = @import("log.zig");
@@ -8,13 +14,14 @@ const ref_log = log.ScopedLogger("REF_COUNT");
 const c = @cImport({
     @cInclude("stdlib.h");
     @cInclude("string.h");
-    // For mutex/atomic operations, we will use Zig's std.Thread
 });
 
-// Mutex for registry thread safety
+/// Mutex protecting the global registry.
 var g_registry_mutex: std.Thread.Mutex = .{};
 
-// Global resource registry
+/// Reference-counted resource record.
+///
+/// `ref_count` counts strong references, while `weak_count` tracks weak refs (if used).
 pub const CardinalRefCountedResource = extern struct {
     resource: ?*anyopaque,
     ref_count: u32,
@@ -34,14 +41,13 @@ const CardinalResourceRegistry = extern struct {
 var g_registry: CardinalResourceRegistry = std.mem.zeroes(CardinalResourceRegistry);
 var g_registry_initialized: bool = false;
 
-// Simple hash function for string identifiers
+/// Hashes a null-terminated identifier string for bucket selection.
 fn hash_string(str: [*:0]const u8) u32 {
     const slice = std.mem.span(str);
     return @truncate(std.hash.Wyhash.hash(0, slice));
 }
 
-// Find a resource in the registry by identifier
-// Assumes lock is held by caller!
+/// Finds a resource in the registry by identifier (caller holds `g_registry_mutex`).
 fn find_resource_locked(identifier: ?[*:0]const u8) ?*CardinalRefCountedResource {
     if (!g_registry_initialized or identifier == null) {
         return null;
@@ -61,7 +67,7 @@ fn find_resource_locked(identifier: ?[*:0]const u8) ?*CardinalRefCountedResource
     return null;
 }
 
-// Remove a resource from the registry
+/// Removes a resource from the registry and runs its destructor if not resurrected.
 fn remove_resource(identifier: ?[*:0]const u8) bool {
     if (!g_registry_initialized or identifier == null) {
         return false;
@@ -78,8 +84,6 @@ fn remove_resource(identifier: ?[*:0]const u8) bool {
 
     while (current) |curr| {
         if (std.mem.orderZ(u8, curr.identifier.?, identifier.?) == .eq) {
-            // Check if resource was resurrected by another thread acquiring it
-            // while we were waiting for the lock
             if (@atomicLoad(u32, &curr.ref_count, .seq_cst) > 0) {
                 ref_log.debug("Resource '{s}' resurrected (ref_count={d}), cancelling removal", .{ identifier.?, curr.ref_count });
                 return false;
@@ -91,7 +95,6 @@ fn remove_resource(identifier: ?[*:0]const u8) bool {
                 g_registry.buckets.?[bucket_index] = curr.next;
             }
 
-            // Free the resource using its destructor
             if (curr.destructor) |destructor| {
                 if (curr.resource) |res| {
                     destructor(res);
@@ -101,10 +104,8 @@ fn remove_resource(identifier: ?[*:0]const u8) bool {
 
             const allocator = memory.cardinal_get_allocator_for_category(.ENGINE);
 
-            // Decrement weak count (releasing the strong ref's hold on the block)
             const old_weak = @atomicRmw(u32, &curr.weak_count, .Sub, 1, .seq_cst);
             if (old_weak == 1) {
-                // We were the last ones holding the block
                 memory.cardinal_free(allocator, curr.identifier);
                 memory.cardinal_free(allocator, curr);
                 ref_log.debug("Successfully removed and freed resource '{s}'", .{identifier.?});
@@ -120,7 +121,6 @@ fn remove_resource(identifier: ?[*:0]const u8) bool {
     }
     ref_log.warn("Failed to find resource '{s}' in registry for removal!", .{identifier.?});
 
-    // Debug: print registry contents to help diagnose
     if (builtin.mode == .Debug) {
         ref_log.warn("Registry state at failure:", .{});
         var i: usize = 0;

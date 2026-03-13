@@ -1,5 +1,12 @@
+//! Handle allocation and generation tracking.
+//!
+//! Provides a small allocator for (index, generation) pairs used to build stable handles.
+//! Freeing an index increments its generation to invalidate existing handles.
+//!
+//! TODO: Consider a fixed-capacity option to avoid heap growth for hot paths.
 const std = @import("std");
 
+/// Allocates and validates handle indices with generation counters.
 pub const HandleManager = struct {
     generations: std.ArrayListUnmanaged(u32),
     free_indices: std.ArrayListUnmanaged(u32),

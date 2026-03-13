@@ -1,3 +1,6 @@
+//! Built-in ECS systems.
+//!
+//! This module provides system descriptors and simple reference implementations.
 const std = @import("std");
 const registry_pkg = @import("registry.zig");
 const components = @import("components.zig");
@@ -8,6 +11,7 @@ const math = @import("../core/math.zig");
 
 const sys_log = log.ScopedLogger("ECS_SYSTEMS");
 
+/// Descriptor for the render submission system.
 pub const RenderSystemDesc = system_pkg.System{
     .name = "RenderSystem",
     .update = RenderSystem.update,
@@ -19,6 +23,7 @@ pub const RenderSystemDesc = system_pkg.System{
     },
 };
 
+/// Descriptor for hierarchical transform propagation.
 pub const TransformSystemDesc = system_pkg.System{
     .name = "TransformSystem",
     .update = TransformSystem.update,
@@ -31,6 +36,7 @@ pub const TransformSystemDesc = system_pkg.System{
     },
 };
 
+/// Descriptor for physics integration.
 pub const PhysicsSystemDesc = system_pkg.System{
     .name = "PhysicsSystem",
     .update = PhysicsSystem.update,
@@ -42,6 +48,7 @@ pub const PhysicsSystemDesc = system_pkg.System{
     },
 };
 
+/// Descriptor for per-entity script callbacks.
 pub const ScriptSystemDesc = system_pkg.System{
     .name = "ScriptSystem",
     .update = ScriptSystem.update,
@@ -50,6 +57,7 @@ pub const ScriptSystemDesc = system_pkg.System{
     },
 };
 
+/// Walks renderable entities and submits draw work (placeholder).
 pub const RenderSystem = struct {
     pub fn update(registry: *registry_pkg.Registry, ecb: *command_buffer_pkg.CommandBuffer, delta_time: f32) void {
         _ = delta_time;
@@ -78,6 +86,7 @@ pub const RenderSystem = struct {
         var mesh_it = mesh_view.iterator();
 
         var draw_count: usize = 0;
+        // TODO: Batch/collect draw submissions to reduce per-entity overhead.
 
         while (mesh_it.next()) |entry| {
             const entity = entry.entity;
@@ -97,6 +106,7 @@ pub const RenderSystem = struct {
     }
 };
 
+/// Placeholder physics system.
 pub const PhysicsSystem = struct {
     pub fn update(registry: *registry_pkg.Registry, ecb: *command_buffer_pkg.CommandBuffer, delta_time: f32) void {
         // Placeholder for physics integration
@@ -107,6 +117,7 @@ pub const PhysicsSystem = struct {
     }
 };
 
+/// Invokes `Script.on_update` for all scripted entities.
 pub const ScriptSystem = struct {
     pub fn update(registry: *registry_pkg.Registry, ecb: *command_buffer_pkg.CommandBuffer, delta_time: f32) void {
         _ = ecb;
@@ -122,6 +133,7 @@ pub const ScriptSystem = struct {
     }
 };
 
+/// Propagates transforms through the hierarchy to compute world matrices.
 pub const TransformSystem = struct {
     fn update_node(registry: *registry_pkg.Registry, entity: registry_pkg.Entity, parent_world: ?math.Mat4, parent_dirty: bool) void {
         const transform_opt = registry.get(components.Transform, entity);

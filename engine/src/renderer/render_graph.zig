@@ -1,3 +1,9 @@
+//! Minimal Vulkan render graph.
+//!
+//! Tracks resource lifetimes and required barriers between passes, and supports transient
+//! resource allocation through VMA. Intended to keep per-frame rendering orchestration explicit.
+//!
+//! TODO: Add pass dependency visualization export for debugging (e.g. GraphViz).
 const std = @import("std");
 const c = @import("vulkan_c.zig").c;
 const types = @import("vulkan_types.zig");
@@ -6,20 +12,22 @@ const vk_allocator = @import("vulkan_allocator.zig");
 
 const rg_log = log.ScopedLogger("RENDER_GRAPH");
 
-// Use 64-bit ID for resources (could be a pointer or hash)
+/// Opaque resource identifier used as the key in the render graph.
 pub const ResourceId = u64;
 
+/// Distinguishes buffer and image resources in the graph.
 pub const ResourceType = enum {
     Buffer,
     Image,
 };
 
+/// Concrete Vulkan handle for a graph resource.
 pub const ResourceHandle = union(ResourceType) {
     Buffer: c.VkBuffer,
     Image: c.VkImage,
 };
 
-// Resource Definitions for Transient Resources
+/// Descriptor for transient image allocation.
 pub const ImageDesc = struct {
     format: c.VkFormat,
     width: u32,
@@ -28,16 +36,19 @@ pub const ImageDesc = struct {
     aspect_mask: c.VkImageAspectFlags = c.VK_IMAGE_ASPECT_COLOR_BIT,
 };
 
+/// Descriptor for transient buffer allocation.
 pub const BufferDesc = struct {
     size: u64,
     usage: c.VkBufferUsageFlags,
 };
 
+/// Allocation descriptor for a transient resource.
 pub const ResourceDesc = union(ResourceType) {
     Buffer: BufferDesc,
     Image: ImageDesc,
 };
 
+/// Specifies whether the resource is owned by the graph or provided externally.
 pub const ResourceLifecycle = enum {
     External,
     Transient,
@@ -64,13 +75,13 @@ pub const RenderGraphResource = struct {
     desc: ?ResourceDesc, // Only for transient
     handle: ?ResourceHandle = null,
 
-    // Internal state for allocation
+    /// Internal allocation state for transient resources.
     allocation: ?c.VmaAllocation = null,
     memory: ?c.VkDeviceMemory = null,
     image_view: ?c.VkImageView = null,
 };
 
-// Current state of a resource
+/// Tracked state for barrier generation.
 pub const ResourceState = struct {
     layout: c.VkImageLayout = c.VK_IMAGE_LAYOUT_UNDEFINED,
     access_mask: c.VkAccessFlags2 = c.VK_ACCESS_2_NONE,
@@ -83,7 +94,7 @@ const ResourceLifetime = struct {
     last_pass: usize,
 };
 
-// Desired access for a pass
+/// Declares how a pass reads or writes a resource.
 pub const ResourceAccess = struct {
     id: ResourceId,
     type: ResourceType,
@@ -92,8 +103,6 @@ pub const ResourceAccess = struct {
     layout: c.VkImageLayout = c.VK_IMAGE_LAYOUT_UNDEFINED, // Ignored for buffers
     queue_family: u32 = c.VK_QUEUE_FAMILY_IGNORED,
 
-    // For images, we might need subresource range.
-    // For now, assume full resource or specific aspect.
     aspect_mask: c.VkImageAspectFlags = c.VK_IMAGE_ASPECT_COLOR_BIT,
     base_mip_level: u32 = 0,
     level_count: u32 = 1,
@@ -109,10 +118,8 @@ pub const RenderPass = struct {
     inputs: std.ArrayListUnmanaged(ResourceAccess),
     outputs: std.ArrayListUnmanaged(ResourceAccess),
 
-    // Async Compute
     queue_family: u32 = c.VK_QUEUE_FAMILY_IGNORED,
 
-    // Culling
     is_active: bool = true,
     can_be_culled: bool = true, // Force active if false (e.g. swapchain present)
 

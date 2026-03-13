@@ -1,3 +1,9 @@
+//! Resource state tracking registry.
+//!
+//! Tracks a simple lifecycle state (loading/loaded/error/unloading) for resources identified by
+//! string keys. This is primarily used to coordinate async loading and to expose state to tools.
+//!
+//! TODO: Deduplicate string hashing/registry patterns with ref_counting.zig.
 const std = @import("std");
 const builtin = @import("builtin");
 const log = @import("log.zig");
@@ -21,7 +27,7 @@ const c = @cImport({
     }
 });
 
-// Enums and Structs
+/// Lifecycle state for a tracked resource.
 pub const CardinalResourceState = enum(c_int) {
     UNLOADED = 0,
     LOADING,
@@ -30,6 +36,7 @@ pub const CardinalResourceState = enum(c_int) {
     UNLOADING,
 };
 
+/// Mutable per-resource state record stored in the registry.
 pub const CardinalResourceStateTracker = struct {
     ref_resource: ?*ref_counting.CardinalRefCountedResource,
     state: CardinalResourceState,
@@ -41,6 +48,7 @@ pub const CardinalResourceStateTracker = struct {
     next: ?*CardinalResourceStateTracker,
 };
 
+/// Hash table storing state records by identifier.
 pub const CardinalResourceStateRegistry = struct {
     buckets: ?[*]?*CardinalResourceStateTracker,
     bucket_count: usize,
@@ -49,10 +57,10 @@ pub const CardinalResourceStateRegistry = struct {
     initialized: bool,
 };
 
-// Global state
+/// Global resource state registry.
 var g_state_registry: CardinalResourceStateRegistry = std.mem.zeroes(CardinalResourceStateRegistry);
 
-// Helpers
+/// Hashes a null-terminated identifier string for bucket selection.
 fn hash_string(str: [*:0]const u8) u32 {
     var hash: u32 = 5381;
     var ptr = str;
@@ -63,6 +71,7 @@ fn hash_string(str: [*:0]const u8) u32 {
     return hash;
 }
 
+/// Finds a state tracker without acquiring locks (caller holds `registry_mutex`).
 fn find_state_tracker_unsafe(identifier: ?[*:0]const u8) ?*CardinalResourceStateTracker {
     if (!g_state_registry.initialized or identifier == null) return null;
 
@@ -79,7 +88,7 @@ fn find_state_tracker_unsafe(identifier: ?[*:0]const u8) ?*CardinalResourceState
     return null;
 }
 
-// Exports
+/// Initializes the global registry with `bucket_count` buckets.
 pub export fn cardinal_resource_state_init(bucket_count: usize) callconv(.c) bool {
     if (g_state_registry.initialized) {
         rs_log.warn("Resource state tracking system already initialized", .{});
@@ -114,6 +123,7 @@ pub export fn cardinal_resource_state_init(bucket_count: usize) callconv(.c) boo
     return true;
 }
 
+/// Shuts down the registry and releases all state trackers.
 pub export fn cardinal_resource_state_shutdown() callconv(.c) void {
     if (!g_state_registry.initialized) return;
 
@@ -155,6 +165,7 @@ pub export fn cardinal_resource_state_shutdown() callconv(.c) void {
     rs_log.info("Resource state tracking system shutdown complete", .{});
 }
 
+/// Registers a resource and returns its state tracker (existing or newly created).
 pub export fn cardinal_resource_state_register(ref_resource: ?*ref_counting.CardinalRefCountedResource) callconv(.c) ?*CardinalResourceStateTracker {
     if (!g_state_registry.initialized) {
         rs_log.err("Resource state registry not initialized", .{});

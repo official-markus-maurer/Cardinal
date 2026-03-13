@@ -1,3 +1,8 @@
+//! Timeline semaphore pool.
+//!
+//! Manages a reusable pool of timeline semaphores to avoid frequent create/destroy churn.
+//!
+//! TODO: Unify mutex helpers between timeline pool and timeline debug modules.
 const std = @import("std");
 const builtin = @import("builtin");
 const log = @import("../core/log.zig");
@@ -9,7 +14,7 @@ const c = types.c;
 
 const memory = @import("../core/memory.zig");
 
-// Platform-specific mutex helpers
+/// Initializes a platform mutex used by the pool.
 fn pool_mutex_init(mutex: *?*anyopaque) bool {
     const allocator = memory.cardinal_get_allocator_for_category(.RENDERER);
     if (builtin.os.tag == .windows) {
@@ -34,6 +39,7 @@ fn pool_mutex_init(mutex: *?*anyopaque) bool {
     }
 }
 
+/// Destroys a platform mutex created by `pool_mutex_init`.
 fn pool_mutex_destroy(mutex: *?*anyopaque) void {
     const allocator = memory.cardinal_get_allocator_for_category(.RENDERER);
     if (mutex.*) |m| {
@@ -50,6 +56,7 @@ fn pool_mutex_destroy(mutex: *?*anyopaque) void {
     }
 }
 
+/// Locks a platform mutex.
 fn pool_mutex_lock(mutex: ?*anyopaque) void {
     if (mutex) |m| {
         if (builtin.os.tag == .windows) {
@@ -60,6 +67,7 @@ fn pool_mutex_lock(mutex: ?*anyopaque) void {
     }
 }
 
+/// Unlocks a platform mutex.
 fn pool_mutex_unlock(mutex: ?*anyopaque) void {
     if (mutex) |m| {
         if (builtin.os.tag == .windows) {
@@ -70,6 +78,7 @@ fn pool_mutex_unlock(mutex: ?*anyopaque) void {
     }
 }
 
+/// Returns a monotonic timestamp in nanoseconds.
 fn get_current_time_ns() u64 {
     if (builtin.os.tag == .windows) {
         var frequency: c.LARGE_INTEGER = undefined;
@@ -84,6 +93,7 @@ fn get_current_time_ns() u64 {
     }
 }
 
+/// Creates a timeline semaphore on `device`.
 fn create_timeline_semaphore(device: c.VkDevice, semaphore: *c.VkSemaphore) bool {
     var timeline_info = c.VkSemaphoreTypeCreateInfo{
         .sType = c.VK_STRUCTURE_TYPE_SEMAPHORE_TYPE_CREATE_INFO,
@@ -107,6 +117,7 @@ fn create_timeline_semaphore(device: c.VkDevice, semaphore: *c.VkSemaphore) bool
     return true;
 }
 
+/// Initializes a timeline semaphore pool.
 pub export fn vulkan_timeline_pool_init(pool: *types.VulkanTimelinePool, device: c.VkDevice, initial_size: u32, max_size: u32) callconv(.c) bool {
     if (initial_size == 0) {
         return false;
@@ -117,33 +128,28 @@ pub export fn vulkan_timeline_pool_init(pool: *types.VulkanTimelinePool, device:
     pool.max_pool_size = if (max_size > 0) max_size else std.math.maxInt(u32);
     @atomicStore(u32, &pool.active_count, 0, .seq_cst);
 
-    // Allocate entries array
-    const entries_size = @sizeOf(types.VulkanTimelinePoolEntry) * pool.max_pool_size;
-    const entries_ptr = std.heap.c_allocator.alloc(u8, entries_size) catch {
+    const allocator = memory.cardinal_get_allocator_for_category(.RENDERER).as_allocator();
+    const entries = allocator.alloc(types.VulkanTimelinePoolEntry, pool.max_pool_size) catch {
         tl_pool_log.err("Failed to allocate pool entries", .{});
         return false;
     };
-    @memset(entries_ptr, 0);
-    pool.entries = @ptrCast(@alignCast(entries_ptr.ptr));
+    @memset(entries, std.mem.zeroes(types.VulkanTimelinePoolEntry));
+    pool.entries = entries.ptr;
 
-    // Initialize mutex
     if (!pool_mutex_init(&pool.mutex)) {
         tl_pool_log.err("Failed to allocate mutex", .{});
-        std.heap.c_allocator.free(entries_ptr);
+        allocator.free(entries);
         return false;
     }
 
-    // Initialize statistics
     @atomicStore(u64, &pool.allocations, 0, .seq_cst);
     @atomicStore(u64, &pool.deallocations, 0, .seq_cst);
     @atomicStore(u64, &pool.cache_hits, 0, .seq_cst);
     @atomicStore(u64, &pool.cache_misses, 0, .seq_cst);
 
-    // Default configuration
     pool.max_idle_time_ns = 5000000000; // 5 seconds
     pool.auto_cleanup_enabled = true;
 
-    // Pre-allocate initial semaphores
     const current_time = get_current_time_ns();
     var i: u32 = 0;
     while (i < initial_size and i < pool.max_pool_size) : (i += 1) {
@@ -164,6 +170,7 @@ pub export fn vulkan_timeline_pool_init(pool: *types.VulkanTimelinePool, device:
     return true;
 }
 
+/// Destroys the pool and all owned semaphores.
 pub export fn vulkan_timeline_pool_destroy(pool: *types.VulkanTimelinePool) callconv(.c) void {
     if (!pool.initialized) {
         return;
@@ -181,20 +188,17 @@ pub export fn vulkan_timeline_pool_destroy(pool: *types.VulkanTimelinePool) call
 
     pool_mutex_unlock(pool.mutex);
 
-    // Cleanup resources
     pool_mutex_destroy(&pool.mutex);
 
-    // Free entries
-    const entries_slice = @as([*]u8, @ptrCast(pool.entries))[0..(@sizeOf(types.VulkanTimelinePoolEntry) * pool.max_pool_size)];
     const allocator = memory.cardinal_get_allocator_for_category(.RENDERER).as_allocator();
-    allocator.free(entries_slice);
+    allocator.free(pool.entries[0..pool.max_pool_size]);
 
-    // Zero out struct
     _ = c.memset(pool, 0, @sizeOf(types.VulkanTimelinePool));
 
     tl_pool_log.info("Destroyed", .{});
 }
 
+/// Allocates a timeline semaphore from the pool.
 pub export fn vulkan_timeline_pool_allocate(pool: *types.VulkanTimelinePool, allocation: *types.VulkanTimelinePoolAllocation) callconv(.c) bool {
     if (!pool.initialized) {
         return false;

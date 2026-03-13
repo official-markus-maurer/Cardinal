@@ -1,3 +1,9 @@
+//! Vulkan Memory Allocator (VMA) integration.
+//!
+//! Initializes a VMA allocator instance by wiring Vulkan function pointers and selecting
+//! feature flags based on device capabilities.
+//!
+//! TODO: Centralize Vulkan function loading to avoid repeating `vkGet*ProcAddr` patterns.
 const std = @import("std");
 const builtin = @import("builtin");
 const log = @import("../core/log.zig");
@@ -6,10 +12,10 @@ const c = @import("vulkan_c.zig").c;
 
 const vma_log = log.ScopedLogger("VMA");
 
-// Global storage for VMA functions to ensure they remain valid
-// (VMA copies them, but just to be safe and avoid stack issues)
+/// Global storage for VMA's Vulkan function table.
 var g_vulkan_functions: c.VmaVulkanFunctions = undefined;
 
+/// Initializes `alloc` with a VMA allocator instance for the given Vulkan device.
 pub export fn init(alloc: ?*types.VulkanAllocator, instance: c.VkInstance, phys: c.VkPhysicalDevice, dev: c.VkDevice, bufReq: c.PFN_vkGetDeviceBufferMemoryRequirements, imgReq: c.PFN_vkGetDeviceImageMemoryRequirements, bufDevAddr: c.PFN_vkGetBufferDeviceAddress, bufReqKHR: c.PFN_vkGetDeviceBufferMemoryRequirementsKHR, imgReqKHR: c.PFN_vkGetDeviceImageMemoryRequirementsKHR, supports_maintenance8: bool) callconv(.c) bool {
     if (alloc == null or phys == null or dev == null or instance == null) {
         vma_log.err("Invalid parameters for allocator init", .{});
@@ -27,7 +33,6 @@ pub export fn init(alloc: ?*types.VulkanAllocator, instance: c.VkInstance, phys:
     // and to avoid stack overflow for large structs
     g_vulkan_functions = std.mem.zeroes(c.VmaVulkanFunctions);
 
-    // Instance functions
     g_vulkan_functions.vkGetPhysicalDeviceProperties = @ptrCast(c.vkGetInstanceProcAddr(instance, "vkGetPhysicalDeviceProperties"));
     if (g_vulkan_functions.vkGetPhysicalDeviceProperties == null) vma_log.err("Failed to load vkGetPhysicalDeviceProperties", .{});
 
@@ -40,7 +45,6 @@ pub export fn init(alloc: ?*types.VulkanAllocator, instance: c.VkInstance, phys:
     }
     if (g_vulkan_functions.vkGetPhysicalDeviceMemoryProperties2KHR == null) vma_log.err("Failed to load vkGetPhysicalDeviceMemoryProperties2", .{});
 
-    // Device functions
     g_vulkan_functions.vkAllocateMemory = @ptrCast(c.vkGetDeviceProcAddr(dev, "vkAllocateMemory"));
 
     g_vulkan_functions.vkFreeMemory = @ptrCast(c.vkGetDeviceProcAddr(dev, "vkFreeMemory"));

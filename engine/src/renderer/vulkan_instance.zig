@@ -1,3 +1,9 @@
+//! Vulkan instance and validation messenger setup.
+//!
+//! Creates the Vulkan instance, wires validation (in debug builds), and exposes validation
+//! statistics for troubleshooting.
+//!
+//! TODO: Split validation utilities into a separate module to reduce rebuild time.
 const std = @import("std");
 const builtin = @import("builtin");
 const log = @import("../core/log.zig");
@@ -10,18 +16,16 @@ const vk_log = log.ScopedLogger("VULKAN");
 
 const c = @import("vulkan_c.zig").c;
 
-// Validation statistics
+/// Aggregated statistics from the Vulkan debug callback.
 var g_validation_stats = std.mem.zeroes(types.ValidationStats);
 
-// Helper to filter messages
+/// Returns true if a debug message should be filtered out to reduce noise.
 fn should_filter_message(message_id: i32, message_id_name: ?[*:0]const u8) bool {
     _ = message_id;
     if (message_id_name) |name| {
-        // Layer version warnings
         if (c.strstr(name, "Loader-Message") != null and c.strstr(name, "older than") != null) {
             return true;
         }
-        // Swapchain recreation messages
         if (c.strstr(name, "SWAPCHAIN") != null and c.strstr(name, "out of date") != null) {
             return true;
         }
@@ -140,7 +144,7 @@ pub export fn vk_log_validation_stats() callconv(.c) void {
     vk_log.info("[VALIDATION]   Filtered messages: {d}", .{g_validation_stats.filtered_count});
 }
 
-// Layer settings definitions if missing
+/// Layer settings type enum used by VK_EXT_layer_settings.
 const VkLayerSettingTypeEXT = enum(i32) {
     BOOL32_EXT = 0,
     INT32_EXT = 1,

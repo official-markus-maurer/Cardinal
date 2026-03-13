@@ -1,6 +1,7 @@
 const std = @import("std");
 const engine = @import("cardinal_engine");
 const model_manager = engine.model_manager;
+const renderer = engine.vulkan_renderer;
 const c = @import("../c.zig").c;
 const EditorState = @import("../editor_state.zig").EditorState;
 
@@ -8,7 +9,7 @@ pub fn draw_inspector_panel(state: *EditorState) void {
     if (state.show_model_manager) {
         const open = c.imgui_bridge_begin("Model Manager", &state.show_model_manager, 0);
         defer c.imgui_bridge_end();
-        
+
         if (open) {
             c.imgui_bridge_text("Loaded Models: %d", state.model_manager.model_count);
             c.imgui_bridge_separator();
@@ -20,7 +21,7 @@ pub fn draw_inspector_panel(state: *EditorState) void {
             } else {
                 const child_visible = c.imgui_bridge_begin_child("##model_list", 0, 300, true, 0);
                 defer c.imgui_bridge_end_child();
-                
+
                 if (child_visible) {
                     var i: u32 = 0;
                     while (i < state.model_manager.model_count) {
@@ -52,10 +53,22 @@ pub fn draw_inspector_panel(state: *EditorState) void {
 
                             c.imgui_bridge_same_line(0, -1);
                             if (c.imgui_bridge_button("Remove")) {
+                                renderer.cardinal_renderer_clear_scene(state.renderer);
                                 _ = model_manager.cardinal_model_manager_remove_model(&state.model_manager, model.id);
                                 if (state.selected_model_id == model.id) {
                                     state.selected_model_id = 0;
                                 }
+                                if (model_manager.cardinal_model_manager_get_combined_scene(&state.model_manager)) |combined| {
+                                    state.combined_scene = combined.*;
+                                    state.pending_scene = state.combined_scene;
+                                    state.scene_upload_pending = true;
+                                    state.scene_loaded = (state.combined_scene.mesh_count > 0);
+                                } else {
+                                    state.scene_loaded = false;
+                                }
+                                state.selected_animation = -1;
+                                state.animation_time = 0.0;
+                                state.animation_playing = false;
                                 c.imgui_bridge_pop_id();
                                 continue;
                             }

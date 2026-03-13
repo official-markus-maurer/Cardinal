@@ -1,3 +1,11 @@
+//! Scene data model used by asset loaders and renderer-facing systems.
+//!
+//! `CardinalScene` is a C-ABI-friendly container of meshes/materials/textures, plus optional
+//! animation and skinning data. Ownership is explicit:
+//! - Arrays inside the scene are heap-allocated and must be released by `cardinal_scene_destroy`.
+//! - `CardinalSceneNode` instances are allocated from a global pool and freed by
+//!   `cardinal_scene_node_destroy` (recursively destroys children).
+//! - `CardinalTexture.ref_resource` is reference-counted and released by `cardinal_scene_destroy`.
 const std = @import("std");
 const ref_counting = @import("../core/ref_counting.zig");
 const memory = @import("../core/memory.zig");
@@ -7,7 +15,7 @@ const pool_alloc = @import("../core/pool_allocator.zig");
 const handles = @import("../core/handles.zig");
 const animation = @import("animation.zig");
 
-// --- Global Pool for Scene Nodes ---
+/// Global pool for scene nodes.
 var g_node_pool: ?pool_alloc.PoolAllocator(CardinalSceneNode) = null;
 var g_pool_init_mutex: std.Thread.Mutex = .{};
 
@@ -23,8 +31,6 @@ fn get_node_pool() *pool_alloc.PoolAllocator(CardinalSceneNode) {
     }
     return &g_node_pool.?;
 }
-
-// --- Common Enums ---
 
 const g_identity = [16]f32{ 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1 };
 
@@ -51,8 +57,6 @@ pub const CardinalLightType = enum(c_int) {
     SPOT = 2,
 };
 
-// --- Struct Definitions ---
-
 pub const CardinalVertex = extern struct {
     px: f32,
     py: f32,
@@ -71,6 +75,7 @@ pub const CardinalVertex = extern struct {
     color: [4]f32,
 };
 
+/// Material UV transform matching glTF-style offset/scale/rotation.
 pub const CardinalTextureTransform = extern struct {
     offset: [2]f32,
     scale: [2]f32,
@@ -111,6 +116,7 @@ pub const CardinalMaterial = extern struct {
     emissive_transform: CardinalTextureTransform,
 };
 
+/// Light descriptor attached to a scene node (node owns the transform).
 pub const CardinalLight = extern struct {
     color: [3]f32,
     intensity: f32,
@@ -122,6 +128,9 @@ pub const CardinalLight = extern struct {
     _padding: u32,
 };
 
+/// Texture payload owned by the scene.
+///
+/// If `ref_resource` is set, `data` is owned by the referenced resource.
 pub const CardinalTexture = extern struct {
     data: ?[*]u8,
     width: u32,
@@ -155,6 +164,9 @@ pub const CardinalMesh = extern struct {
     bounding_box_max: [3]f32,
 };
 
+/// A transform node in the scene DAG.
+///
+/// The node owns its child pointer array, mesh index array, and name string.
 pub const CardinalSceneNode = extern struct {
     name: ?[*:0]u8,
     local_transform: [16]f32,
@@ -181,6 +193,7 @@ pub const CardinalSceneNode = extern struct {
 pub const CardinalAnimationSystem = opaque {};
 pub const CardinalSkin = opaque {};
 
+/// Top-level scene container for meshes/materials/textures/nodes and optional animation data.
 pub const CardinalScene = extern struct {
     meshes: ?[*]CardinalMesh,
     mesh_count: u32,
@@ -207,6 +220,7 @@ pub const CardinalScene = extern struct {
 
 // --- Functions ---
 
+/// Allocates a scene node from the global pool and copies the optional name.
 pub export fn cardinal_scene_node_create(name: ?[*:0]const u8) ?*CardinalSceneNode {
     const pool = get_node_pool();
     const node = pool.create() catch return null;
@@ -236,6 +250,7 @@ pub export fn cardinal_scene_node_create(name: ?[*:0]const u8) ?*CardinalSceneNo
     return node;
 }
 
+/// Recursively destroys a node and its children, then returns it to the pool.
 pub export fn cardinal_scene_node_destroy(node: ?*CardinalSceneNode) void {
     if (node == null) return;
     const n = node.?;
@@ -261,12 +276,41 @@ pub export fn cardinal_scene_node_destroy(node: ?*CardinalSceneNode) void {
     get_node_pool().destroy(n);
 }
 
+/// Attaches `child` under `parent`.
+///
+/// Returns false for null inputs, self-parenting, or cycles. If `child` already has a different
+/// parent, it is detached first.
 pub export fn cardinal_scene_node_add_child(parent: ?*CardinalSceneNode, child: ?*CardinalSceneNode) bool {
     if (parent == null or child == null) return false;
     const p = parent.?;
     const c = child.?;
 
     const allocator = memory.cardinal_get_allocator_for_category(.ASSETS);
+
+    if (p == c) return false;
+
+    {
+        var it: ?*CardinalSceneNode = p;
+        var guard: u32 = 0;
+        while (it != null and guard < 1024) : (guard += 1) {
+            if (it.? == c) return false;
+            it = it.?.parent;
+        }
+    }
+
+    if (c.parent != null and c.parent.? != p) {
+        _ = cardinal_scene_node_remove_from_parent(c);
+    }
+
+    if (p.children) |children| {
+        var i: u32 = 0;
+        while (i < p.child_count) : (i += 1) {
+            if (children[i] == c) {
+                c.parent = p;
+                return true;
+            }
+        }
+    }
 
     if (p.child_count >= p.child_capacity) {
         const new_cap = if (p.child_capacity == 0) 4 else p.child_capacity * 2;
@@ -297,6 +341,7 @@ pub export fn cardinal_scene_node_add_child(parent: ?*CardinalSceneNode, child: 
     return false;
 }
 
+/// Detaches `child` from its current parent, if any.
 pub export fn cardinal_scene_node_remove_from_parent(child: ?*CardinalSceneNode) bool {
     if (child == null) return false;
     const c = child.?;
@@ -328,6 +373,7 @@ pub export fn cardinal_scene_node_remove_from_parent(child: ?*CardinalSceneNode)
     return false;
 }
 
+/// Depth-first search for a node by name, starting at `root`.
 pub export fn cardinal_scene_node_find_by_name(root: ?*CardinalSceneNode, name: ?[*:0]const u8) ?*CardinalSceneNode {
     if (root == null or name == null) return null;
     const r = root.?;
@@ -373,6 +419,7 @@ pub export fn cardinal_scene_node_update_transforms(node: ?*CardinalSceneNode, p
     }
 }
 
+/// Sets local transform and marks the node dirty for world-transform recomputation.
 pub export fn cardinal_scene_node_set_local_transform(node: ?*CardinalSceneNode, transform: ?*const [16]f32) void {
     if (node == null or transform == null) return;
     const n = node.?;
@@ -380,6 +427,7 @@ pub export fn cardinal_scene_node_set_local_transform(node: ?*CardinalSceneNode,
     n.world_transform_dirty = true;
 }
 
+/// Returns the node world transform, or identity if `node` is null.
 pub export fn cardinal_scene_node_get_world_transform(node: ?*CardinalSceneNode) *const [16]f32 {
     if (node == null) {
         return &g_identity;
@@ -387,6 +435,22 @@ pub export fn cardinal_scene_node_get_world_transform(node: ?*CardinalSceneNode)
     return &node.?.world_transform;
 }
 
+fn destroy_scene_skin_assets(allocator: *memory.CardinalAllocator, skin: *animation.CardinalSkin) void {
+    // TODO: Deduplicate this helper with the equivalent in model_manager.zig.
+    if (skin.name) |ptr| memory.cardinal_free(allocator, @ptrCast(ptr));
+
+    if (skin.bones) |bones| {
+        var i: u32 = 0;
+        while (i < skin.bone_count) : (i += 1) {
+            if (bones[i].name) |n| memory.cardinal_free(allocator, @ptrCast(n));
+        }
+        memory.cardinal_free(allocator, @ptrCast(bones));
+    }
+
+    if (skin.mesh_indices) |ptr| memory.cardinal_free(allocator, @ptrCast(ptr));
+}
+
+/// Releases all scene-owned allocations and resets handles/counters.
 pub export fn cardinal_scene_destroy(scene: ?*CardinalScene) void {
     if (scene == null) return;
     const s = scene.?;
@@ -439,7 +503,7 @@ pub export fn cardinal_scene_destroy(scene: ?*CardinalScene) void {
         const skins: [*]animation.CardinalSkin = @ptrCast(@alignCast(skins_opaque));
         var i: u32 = 0;
         while (i < s.skin_count) : (i += 1) {
-            animation.cardinal_skin_destroy(&skins[i]);
+            destroy_scene_skin_assets(allocator, &skins[i]);
         }
         memory.cardinal_free(allocator, @ptrCast(skins));
     }

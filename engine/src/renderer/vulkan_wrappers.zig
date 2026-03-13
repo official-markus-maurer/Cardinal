@@ -1,7 +1,13 @@
+//! Small Vulkan C API wrappers with Zig error handling.
+//!
+//! Provides a lightweight `Device` wrapper that converts `VkResult` to a Zig error set.
+//!
+//! TODO: Expand coverage or delete this module if unused in favor of `vulkan_utils.zig`.
 const std = @import("std");
 const c = @import("vulkan_c.zig").c;
 
-pub const VulkanError = error {
+/// Vulkan error set mapped from `VkResult`.
+pub const VulkanError = error{
     InitializationFailed,
     OutOfMemory,
     DeviceLost,
@@ -16,6 +22,7 @@ pub const VulkanError = error {
     IncompatibleDriver,
 };
 
+/// Converts a `VkResult` into a Zig error.
 fn checkResult(result: c.VkResult) VulkanError!void {
     if (result == c.VK_SUCCESS) return;
     return switch (result) {
@@ -34,17 +41,21 @@ fn checkResult(result: c.VkResult) VulkanError!void {
     };
 }
 
+/// Wrapper around a `VkDevice` handle.
 pub const Device = struct {
     handle: c.VkDevice,
 
+    /// Wraps an existing device handle.
     pub fn init(handle: c.VkDevice) Device {
         return .{ .handle = handle };
     }
 
+    /// Waits for the device to become idle.
     pub fn waitIdle(self: Device) VulkanError!void {
         try checkResult(c.vkDeviceWaitIdle(self.handle));
     }
 
+    /// Creates a shader module from SPIR-V bytecode.
     pub fn createShaderModule(self: Device, code: []const u8) VulkanError!c.VkShaderModule {
         var createInfo = std.mem.zeroes(c.VkShaderModuleCreateInfo);
         createInfo.sType = c.VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO;
@@ -56,12 +67,14 @@ pub const Device = struct {
         return shaderModule;
     }
 
+    /// Destroys a shader module.
     pub fn destroyShaderModule(self: Device, module: c.VkShaderModule) void {
         if (module != null) {
             c.vkDestroyShaderModule(self.handle, module, null);
         }
     }
 
+    /// Creates a descriptor set layout from provided bindings.
     pub fn createDescriptorSetLayout(self: Device, bindings: []const c.VkDescriptorSetLayoutBinding) VulkanError!c.VkDescriptorSetLayout {
         var createInfo = std.mem.zeroes(c.VkDescriptorSetLayoutCreateInfo);
         createInfo.sType = c.VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO;
@@ -73,12 +86,14 @@ pub const Device = struct {
         return layout;
     }
 
+    /// Destroys a descriptor set layout.
     pub fn destroyDescriptorSetLayout(self: Device, layout: c.VkDescriptorSetLayout) void {
         if (layout != null) {
             c.vkDestroyDescriptorSetLayout(self.handle, layout, null);
         }
     }
 
+    /// Creates a descriptor pool.
     pub fn createDescriptorPool(self: Device, poolSizes: []const c.VkDescriptorPoolSize, maxSets: u32) VulkanError!c.VkDescriptorPool {
         var createInfo = std.mem.zeroes(c.VkDescriptorPoolCreateInfo);
         createInfo.sType = c.VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO;
@@ -91,12 +106,14 @@ pub const Device = struct {
         return pool;
     }
 
+    /// Destroys a descriptor pool.
     pub fn destroyDescriptorPool(self: Device, pool: c.VkDescriptorPool) void {
         if (pool != null) {
             c.vkDestroyDescriptorPool(self.handle, pool, null);
         }
     }
 
+    /// Allocates descriptor sets into `sets` (length must match `layouts`).
     pub fn allocateDescriptorSets(self: Device, descriptorPool: c.VkDescriptorPool, layouts: []const c.VkDescriptorSetLayout, sets: []c.VkDescriptorSet) VulkanError!void {
         if (layouts.len != sets.len) return error.InitializationFailed; // Or some other error
 
@@ -109,6 +126,7 @@ pub const Device = struct {
         try checkResult(c.vkAllocateDescriptorSets(self.handle, &allocInfo, sets.ptr));
     }
 
+    /// Creates a pipeline layout.
     pub fn createPipelineLayout(self: Device, setLayouts: []const c.VkDescriptorSetLayout, pushConstantRanges: []const c.VkPushConstantRange) VulkanError!c.VkPipelineLayout {
         var createInfo = std.mem.zeroes(c.VkPipelineLayoutCreateInfo);
         createInfo.sType = c.VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO;

@@ -1,3 +1,8 @@
+//! Vulkan C imports and platform defines.
+//!
+//! Centralizes C headers and compile-time defines used by Vulkan, VMA, and GLFW interop.
+//!
+//! TODO: Deduplicate C import compatibility defines with `vulkan_timeline_types.zig`.
 const std = @import("std");
 const builtin = @import("builtin");
 
@@ -8,6 +13,7 @@ pub const c = @cImport({
     @cInclude("stdio.h");
     @cDefine("VMA_STATIC_VULKAN_FUNCTIONS", "0");
     @cDefine("VMA_DYNAMIC_VULKAN_FUNCTIONS", "0");
+    @cDefine("VMA_EXTERNAL_MEMORY", "0");
     @cInclude("vulkan/vulkan.h");
     @cInclude("vma/vk_mem_alloc.h");
     @cInclude("GLFW/glfw3.h");
@@ -16,7 +22,6 @@ pub const c = @cImport({
         @cDefine("WIN32", "1");
         @cDefine("_WIN32", "1");
         @cDefine("VK_USE_PLATFORM_WIN32_KHR", "1");
-        @cDefine("VMA_EXTERNAL_MEMORY", "1");
         @cInclude("windows.h");
     } else {
         @cInclude("pthread.h");

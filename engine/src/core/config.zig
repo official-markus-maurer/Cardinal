@@ -1,9 +1,14 @@
+//! Runtime configuration types and JSON persistence.
+//!
+//! `CardinalEngineConfig` holds defaults used for first-run config generation. `ConfigManager`
+//! loads and saves `cardinal_config.json`, merging missing fields while keeping unknown fields.
 const std = @import("std");
 const log = @import("log.zig");
 const cfg_log = log.ScopedLogger("CONFIG");
 const vk_types = @import("../renderer/vulkan_types.zig");
 const c = @import("../renderer/vulkan_c.zig").c;
 
+/// Default runtime configuration for the engine and renderer.
 pub const CardinalEngineConfig = struct {
     // Engine/Window settings
     window_title: []const u8 = "Cardinal Engine",
@@ -34,13 +39,15 @@ pub const CardinalEngineConfig = struct {
     // Helper to ensure title is null-terminated if needed, though usually handled by duplication
 };
 
-// Simple JSON wrapper
+/// Loads and saves a config file, owning any heap-duplicated string fields.
 pub const ConfigManager = struct {
     allocator: std.mem.Allocator,
     config: CardinalEngineConfig,
     config_path: []const u8,
 
+    /// Creates a manager for `path`, seeding it with `initial_config`.
     pub fn init(allocator: std.mem.Allocator, path: []const u8, initial_config: CardinalEngineConfig) ConfigManager {
+        // TODO: Make `config_path` ownership explicit; current OOM fallback returns a literal but `deinit` frees unconditionally.
         return .{
             .allocator = allocator,
             .config = initial_config,
@@ -48,10 +55,12 @@ pub const ConfigManager = struct {
         };
     }
 
+    /// Releases owned resources for the manager (not the config strings).
     pub fn deinit(self: *ConfigManager) void {
         self.allocator.free(self.config_path);
     }
 
+    /// Loads config from disk, keeping defaults for missing/unknown fields.
     pub fn load(self: *ConfigManager) !void {
         const file = std.fs.cwd().openFile(self.config_path, .{}) catch |err| {
             if (err == error.FileNotFound) {
