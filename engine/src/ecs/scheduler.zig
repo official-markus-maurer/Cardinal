@@ -148,20 +148,7 @@ pub const Scheduler = struct {
             }
         }
 
-        // TODO: Avoid busy-waiting; integrate a completion fence or block on a condition.
-        var all_done = false;
-        while (!all_done) {
-            all_done = true;
-            for (frame_jobs.items) |job| {
-                if (job.status != .COMPLETED and job.status != .FAILED) {
-                    all_done = false;
-                    break;
-                }
-            }
-            if (!all_done) {
-                std.Thread.yield() catch {};
-            }
-        }
+        job_system.wait_for_jobs(frame_jobs.items);
 
         for (self.command_buffers.items) |*ecb| {
             ecb.flush(self.registry) catch |err| {

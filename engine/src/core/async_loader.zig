@@ -716,7 +716,7 @@ pub export fn cardinal_async_cancel_task(task: ?*CardinalAsyncTask) callconv(.c)
             const job = @as(*job_system.Job, @ptrCast(t.next));
             // We need to mark job as cancelled too, but JobSystem API for cancel is implicit via status?
             // JobSystem worker checks job.status == .CANCELLED
-            job.status = .CANCELLED;
+            job_system.set_status(job, .CANCELLED);
 
             t.status = .CANCELLED;
             return true;
@@ -743,7 +743,8 @@ pub export fn cardinal_async_wait_for_task(task: ?*CardinalAsyncTask, timeout_ms
                 // This shouldn't happen with correct synchronization but is a failsafe
                 if (t.next) |job_ptr| {
                     const job = @as(*job_system.Job, @ptrCast(job_ptr));
-                    if (job.status == .COMPLETED or job.status == .FAILED) {
+                    const status = job_system.get_status(job);
+                    if (status == .COMPLETED or status == .FAILED) {
                         // Sync status
                         // Note: This is racy without locks, but we are just reading
                         // t.status update happens in callback usually or job completion
@@ -781,7 +782,7 @@ pub export fn cardinal_async_free_task(task: ?*CardinalAsyncTask) callconv(.c) v
                 const job = @as(*job_system.Job, @ptrCast(job_ptr));
 
                 // If running, we cannot free safely without waiting/race
-                if (job.status == .RUNNING) {
+                if (job_system.get_status(job) == .RUNNING) {
                     // Log error and leak to prevent crash/freeze
                     // async_log.err("Attempted to free running task {d}. Leaking to prevent crash.", .{t.id});
                     g_async_loader.state_mutex.unlock();

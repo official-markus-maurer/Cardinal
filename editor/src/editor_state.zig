@@ -159,7 +159,6 @@ pub const EditorState = struct {
 
     // UI Toggles
     show_material_0_toggle: bool = true,
-    tab_key_pressed: bool = false,
     show_grid_axes: bool = true,
 
     // Optimization Settings

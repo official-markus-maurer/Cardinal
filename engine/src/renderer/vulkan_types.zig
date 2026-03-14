@@ -197,6 +197,26 @@ pub const PBRUniformBufferObject = extern struct {
     ambientColor: [4]f32,
 };
 
+pub const PBRLightType = enum(c_int) {
+    DIRECTIONAL = 0,
+    POINT = 1,
+    SPOT = 2,
+};
+
+pub const ShadowPushConstants = extern struct {
+    model: [16]f32,
+    texture_index: u32,
+    alpha_cutoff: f32,
+    _pad0: [60]u8,
+    packed_info: u32,
+    _pad1: [16]u8,
+    cascade_index: u32,
+};
+
+comptime {
+    if (@sizeOf(ShadowPushConstants) != 156) @compileError("ShadowPushConstants size mismatch");
+}
+
 /// GPU light record used by PBR shading.
 pub const PBRLight = extern struct {
     /// xyz = direction, w = type (0 = Directional, 1 = Point, 2 = Spot).
@@ -839,7 +859,7 @@ pub const SkyboxPipeline = extern struct {
     pipeline: c.VkPipeline,
     pipelineLayout: c.VkPipelineLayout,
     descriptorManager: ?*VulkanDescriptorManager,
-    descriptorSet: c.VkDescriptorSet,
+    descriptorSets: [MAX_FRAMES_IN_FLIGHT]c.VkDescriptorSet,
     texture: VulkanManagedTexture,
     initialized: bool,
 };
@@ -882,6 +902,9 @@ pub const PostProcessPipeline = extern struct {
 pub const SSAOPipeline = extern struct {
     pipeline: ComputePipeline,
     blur_pipeline: ComputePipeline,
+
+    width: u32,
+    height: u32,
 
     // Resources (Per Frame)
     ssao_image: [MAX_FRAMES_IN_FLIGHT]c.VkImage,

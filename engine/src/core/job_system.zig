@@ -57,6 +57,16 @@ pub const JobSystemConfig = extern struct {
     enable_priority_queue: bool,
 };
 
+/// Atomically reads `job.status`.
+pub inline fn get_status(job: *const Job) JobStatus {
+    return @atomicLoad(JobStatus, &job.status, .acquire);
+}
+
+/// Atomically writes `job.status`.
+pub inline fn set_status(job: *Job, status: JobStatus) void {
+    @atomicStore(JobStatus, &job.status, status, .release);
+}
+
 /// Internal queue type used by the scheduler.
 const JobQueue = struct {
     head: ?*Job,
@@ -85,6 +95,7 @@ const JobSystemState = struct {
     workers: ?[]WorkerThread,
     next_job_id: u32,
     state_mutex: std.Thread.Mutex,
+    completion_condition: std.Thread.Condition,
 
     allocator: std.mem.Allocator,
     job_pool: pool_allocator.PoolAllocator(Job),
@@ -187,12 +198,15 @@ fn worker_thread_func(worker: *WorkerThread) void {
         if (job_opt == null) continue;
         const job = job_opt.?;
 
-        if (job.status == .CANCELLED) {
+        if (get_status(job) == .CANCELLED) {
             _ = job_queue_push(&g_job_system.completed_queue, job);
+            g_job_system.state_mutex.lock();
+            g_job_system.completion_condition.broadcast();
+            g_job_system.state_mutex.unlock();
             continue;
         }
 
-        job.status = .RUNNING;
+        set_status(job, .RUNNING);
         var new_status: JobStatus = .COMPLETED;
         var error_code: i32 = 0;
 
@@ -210,7 +224,7 @@ fn worker_thread_func(worker: *WorkerThread) void {
         g_job_system.state_mutex.lock();
 
         if (new_status == .FAILED) job.error_code = error_code;
-        job.status = new_status;
+        set_status(job, new_status);
 
         var node = job.dependents_head;
         while (node) |n| {
@@ -228,6 +242,7 @@ fn worker_thread_func(worker: *WorkerThread) void {
             node = next;
         }
         job.dependents_head = null;
+        g_job_system.completion_condition.broadcast();
         g_job_system.state_mutex.unlock();
 
         if (job.push_to_completed_queue) {
@@ -257,6 +272,7 @@ pub fn init(config: ?*const JobSystemConfig) bool {
     g_job_system.initialized = false;
     g_job_system.shutting_down = false;
     g_job_system.workers = null;
+    g_job_system.completion_condition = .{};
 
     if (config) |c| {
         g_job_system.config = c.*;
@@ -308,6 +324,9 @@ pub fn shutdown() void {
 
     job_log.info("Shutting down Job System...", .{});
     g_job_system.shutting_down = true;
+    g_job_system.state_mutex.lock();
+    g_job_system.completion_condition.broadcast();
+    g_job_system.state_mutex.unlock();
 
     if (g_job_system.workers) |workers| {
         for (workers) |*worker| {
@@ -346,7 +365,7 @@ pub fn create_job(func: JobFunc, data: ?*anyopaque, priority: JobPriority) ?*Job
     job.func = func;
     job.data = data;
     job.priority = priority;
-    job.status = .PENDING;
+    set_status(job, .PENDING);
     job.error_code = 0;
     job.error_func = null;
 
@@ -391,7 +410,7 @@ pub fn add_dependency(dependent: *Job, dependency: *Job) bool {
     g_job_system.state_mutex.lock();
     defer g_job_system.state_mutex.unlock();
 
-    if (dependency.status == .COMPLETED) {
+    if (get_status(dependency) == .COMPLETED) {
         return true; // Already done, no wait needed
     }
 
@@ -403,6 +422,28 @@ pub fn add_dependency(dependent: *Job, dependency: *Job) bool {
     dependent.dependency_count += 1;
 
     return true;
+}
+
+/// Blocks the caller until every job in `jobs` reaches a terminal status.
+pub fn wait_for_jobs(jobs: []const *Job) void {
+    if (!g_job_system.initialized) return;
+
+    g_job_system.state_mutex.lock();
+    defer g_job_system.state_mutex.unlock();
+
+    while (!g_job_system.shutting_down) {
+        var all_done = true;
+        for (jobs) |job| {
+            const status = get_status(job);
+            if (status != .COMPLETED and status != .FAILED and status != .CANCELLED) {
+                all_done = false;
+                break;
+            }
+        }
+
+        if (all_done) return;
+        g_job_system.completion_condition.wait(&g_job_system.state_mutex);
+    }
 }
 
 /// Drains up to `max_jobs` from the completed queue and returns the number drained.

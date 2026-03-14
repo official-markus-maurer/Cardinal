@@ -104,6 +104,7 @@ pub const ResourceAccess = struct {
     /// Image layout for image resources.
     layout: c.VkImageLayout = c.VK_IMAGE_LAYOUT_UNDEFINED,
     queue_family: u32 = c.VK_QUEUE_FAMILY_IGNORED,
+    is_present: bool = false,
 
     aspect_mask: c.VkImageAspectFlags = c.VK_IMAGE_ASPECT_COLOR_BIT,
     base_mip_level: u32 = 0,
@@ -423,36 +424,25 @@ pub const RenderGraph = struct {
 
     /// Marks active passes and computes transient resource lifetimes for aliasing.
     ///
-    /// A pass starts active when `can_be_culled` is false or when it writes to
-    /// `types.RESOURCE_ID_BACKBUFFER`.
+    /// A pass starts active when `can_be_culled` is false or when it declares a present output.
     pub fn compile(self: *RenderGraph) !void {
         for (self.passes.items) |*pass| {
             pass.is_active = !pass.can_be_culled;
         }
 
-        var producers = std.AutoHashMap(ResourceId, usize).init(self.allocator);
-        defer producers.deinit();
-
-        for (self.passes.items, 0..) |pass, i| {
-            for (pass.outputs.items) |output| {
-                try producers.put(output.id, i);
-            }
-        }
-
-        // TODO: Track explicit present outputs instead of special-casing RESOURCE_ID_BACKBUFFER.
         var queue = std.ArrayListUnmanaged(usize){};
         defer queue.deinit(self.allocator);
 
         for (self.passes.items, 0..) |*pass, i| {
-            var writes_backbuffer = false;
+            var has_present_output = false;
             for (pass.outputs.items) |output| {
-                if (output.id == types.RESOURCE_ID_BACKBUFFER) {
-                    writes_backbuffer = true;
+                if (output.is_present) {
+                    has_present_output = true;
                     break;
                 }
             }
 
-            if (pass.is_active or writes_backbuffer) {
+            if (pass.is_active or has_present_output) {
                 pass.is_active = true;
                 try queue.append(self.allocator, i);
             }
@@ -466,10 +456,23 @@ pub const RenderGraph = struct {
             const pass = &self.passes.items[pass_idx];
 
             for (pass.inputs.items) |input| {
-                if (producers.get(input.id)) |producer_idx| {
-                    if (!self.passes.items[producer_idx].is_active) {
-                        self.passes.items[producer_idx].is_active = true;
-                        try queue.append(self.allocator, producer_idx);
+                var i: usize = pass_idx;
+                while (i > 0) {
+                    i -= 1;
+                    var produces = false;
+                    for (self.passes.items[i].outputs.items) |output| {
+                        if (output.is_present) continue;
+                        if (output.id == input.id) {
+                            produces = true;
+                            break;
+                        }
+                    }
+                    if (produces) {
+                        if (!self.passes.items[i].is_active) {
+                            self.passes.items[i].is_active = true;
+                            try queue.append(self.allocator, i);
+                        }
+                        break;
                     }
                 }
             }
@@ -496,7 +499,11 @@ pub const RenderGraph = struct {
             }
         }
 
-        rg_log.debug("RG compile: {d} active passes, {d} tracked resources", .{ self.passes.items.len, self.resource_lifetimes.count() });
+        var active_count: usize = 0;
+        for (self.passes.items) |pass| {
+            if (pass.is_active) active_count += 1;
+        }
+        rg_log.debug("RG compile: {d} active passes, {d} tracked resources", .{ active_count, self.resource_lifetimes.count() });
     }
 
     /// Inserts a barrier transitioning `handle` from `old_state` to `new_access`.
@@ -815,9 +822,24 @@ pub const RenderGraph = struct {
                                 eff_output.queue_family = cmd_queue_family;
                             }
 
-                            // TODO: Skip redundant barriers when state matches.
+                            const queue_changed = (current_state.queue_family != c.VK_QUEUE_FAMILY_IGNORED and
+                                eff_output.queue_family != c.VK_QUEUE_FAMILY_IGNORED and
+                                current_state.queue_family != eff_output.queue_family);
 
-                            insert_barrier(cmd, handle, current_state, eff_output, state);
+                            const redundant = switch (eff_output.type) {
+                                .Image => (!queue_changed and
+                                    current_state.layout == eff_output.layout and
+                                    current_state.access_mask == eff_output.access_mask and
+                                    current_state.stage_mask == eff_output.stage_mask and
+                                    current_state.layout != c.VK_IMAGE_LAYOUT_UNDEFINED),
+                                .Buffer => (!queue_changed and
+                                    current_state.access_mask == eff_output.access_mask and
+                                    current_state.stage_mask == eff_output.stage_mask),
+                            };
+
+                            if (!redundant) {
+                                insert_barrier(cmd, handle, current_state, eff_output, state);
+                            }
 
                             var new_state = current_state;
                             new_state.access_mask = eff_output.access_mask;
@@ -826,7 +848,19 @@ pub const RenderGraph = struct {
                             if (eff_output.type == .Image) {
                                 new_state.layout = eff_output.layout;
                             }
-                            self.resource_states.put(self.allocator, eff_output.id, new_state) catch {};
+
+                            const state_changed = switch (eff_output.type) {
+                                .Image => (new_state.queue_family != current_state.queue_family or
+                                    new_state.stage_mask != current_state.stage_mask or
+                                    new_state.access_mask != current_state.access_mask or
+                                    new_state.layout != current_state.layout),
+                                .Buffer => (new_state.queue_family != current_state.queue_family or
+                                    new_state.stage_mask != current_state.stage_mask or
+                                    new_state.access_mask != current_state.access_mask),
+                            };
+                            if (state_changed) {
+                                self.resource_states.put(self.allocator, eff_output.id, new_state) catch {};
+                            }
                         }
                     }
                 }

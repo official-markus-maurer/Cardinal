@@ -37,7 +37,7 @@ const SSAOKernel = extern struct {
 pub fn vk_ssao_init(s: *types.VulkanState) bool {
     s.pipelines.use_ssao = false;
 
-    if (!create_resources(s)) {
+    if (!create_resources(s, s.swapchain.extent.width, s.swapchain.extent.height)) {
         ssao_log.err("Failed to create SSAO resources", .{});
         vk_ssao_destroy(s);
         return false;
@@ -145,8 +145,6 @@ pub fn vk_ssao_destroy(s: *types.VulkanState) void {
 }
 
 pub fn vk_ssao_resize(s: *types.VulkanState, width: u32, height: u32) bool {
-    _ = width;
-    _ = height;
     if (!s.pipelines.ssao_pipeline.initialized) return false;
 
     const device = s.context.device;
@@ -161,7 +159,7 @@ pub fn vk_ssao_resize(s: *types.VulkanState, width: u32, height: u32) bool {
         if (s.pipelines.ssao_pipeline.ssao_blur_image[i] != null) vk_allocator.free_image(allocator, s.pipelines.ssao_pipeline.ssao_blur_image[i], s.pipelines.ssao_pipeline.ssao_blur_allocation[i]);
     }
 
-    if (!create_resources(s)) return false;
+    if (!create_resources(s, width, height)) return false;
 
     return update_descriptors(s);
 }
@@ -235,9 +233,9 @@ pub fn vk_ssao_compute(s: *types.VulkanState, cmd: c.VkCommandBuffer, frame_inde
 }
 
 /// Allocates per-frame SSAO output images and transitions them for compute use.
-fn create_resources(s: *types.VulkanState) bool {
-    const width = s.swapchain.extent.width;
-    const height = s.swapchain.extent.height;
+fn create_resources(s: *types.VulkanState, width: u32, height: u32) bool {
+    s.pipelines.ssao_pipeline.width = width;
+    s.pipelines.ssao_pipeline.height = height;
 
     var image_info = std.mem.zeroes(c.VkImageCreateInfo);
     image_info.sType = c.VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO;
@@ -295,7 +293,7 @@ fn create_noise_and_kernel(s: *types.VulkanState) bool {
     var kernelBufferObj = std.mem.zeroes(buffer_mgr.VulkanBuffer);
     var kernelInfo = std.mem.zeroes(buffer_mgr.VulkanBufferCreateInfo);
     kernelInfo.size = @sizeOf(SSAOKernel);
-    kernelInfo.usage = c.VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT;
+    kernelInfo.usage = c.VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT | c.VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT;
     kernelInfo.properties = c.VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | c.VK_MEMORY_PROPERTY_HOST_COHERENT_BIT;
 
     if (!buffer_mgr.vk_buffer_create(&kernelBufferObj, s.context.device, @ptrCast(&s.allocator), &kernelInfo)) return false;

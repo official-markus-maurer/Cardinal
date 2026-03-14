@@ -64,19 +64,22 @@ pub const CardinalEngine = struct {
             eng_log.warn("Failed to load config file: {}", .{err});
         };
 
-        self.* = CardinalEngine{
-            .allocator = allocator,
-            .module_manager = module.ModuleManager.init(allocator),
-            .config_manager = config_manager,
-            .config = config_manager.config,
-            .window = null,
-            .renderer = .{ ._opaque = null },
-            .last_frame_time = platform.get_time_ns(),
-            .registry = ecs_registry.Registry.init(allocator),
-            .scheduler = ecs_scheduler.Scheduler.init(allocator, undefined),
-        };
-        // TODO: Refactor Scheduler init to avoid passing an undefined registry pointer.
-        self.scheduler.registry = &self.registry;
+        self.allocator = allocator;
+        self.module_manager = module.ModuleManager.init(allocator);
+        self.window = null;
+        self.renderer = .{ ._opaque = null };
+        self.config_manager = config_manager;
+        self.config = config_manager.config;
+        self.registry = ecs_registry.Registry.init(allocator);
+        self.scheduler = ecs_scheduler.Scheduler.init(allocator, &self.registry);
+        self.last_frame_time = platform.get_time_ns();
+        self.memory_initialized = false;
+        self.ref_counting_initialized = false;
+        self.resource_state_initialized = false;
+        self.async_loader_initialized = false;
+        self.caches_initialized = false;
+        self.window_initialized = false;
+        self.renderer_initialized = false;
 
         errdefer {
             self.deinit();

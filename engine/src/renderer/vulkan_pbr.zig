@@ -217,7 +217,7 @@ fn create_pbr_uniform_buffers(pipeline: *types.VulkanPBRPipeline, device: c.VkDe
         // UBO
         var uboInfo = std.mem.zeroes(buffer_mgr.VulkanBufferCreateInfo);
         uboInfo.size = @sizeOf(types.PBRUniformBufferObject);
-        uboInfo.usage = c.VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT;
+        uboInfo.usage = c.VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT | c.VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT;
         uboInfo.properties = c.VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | c.VK_MEMORY_PROPERTY_HOST_COHERENT_BIT;
         uboInfo.persistentlyMapped = true;
 
@@ -231,7 +231,7 @@ fn create_pbr_uniform_buffers(pipeline: *types.VulkanPBRPipeline, device: c.VkDe
         // Lighting
         var lightInfo = std.mem.zeroes(buffer_mgr.VulkanBufferCreateInfo);
         lightInfo.size = @sizeOf(types.PBRLightingBuffer);
-        lightInfo.usage = c.VK_BUFFER_USAGE_STORAGE_BUFFER_BIT;
+        lightInfo.usage = c.VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | c.VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT;
         lightInfo.properties = c.VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | c.VK_MEMORY_PROPERTY_HOST_COHERENT_BIT;
         lightInfo.persistentlyMapped = true;
 
@@ -250,7 +250,7 @@ fn create_pbr_uniform_buffers(pipeline: *types.VulkanPBRPipeline, device: c.VkDe
         pipeline.maxBones = 256;
         var boneInfo = std.mem.zeroes(buffer_mgr.VulkanBufferCreateInfo);
         boneInfo.size = pipeline.maxBones * 16 * @sizeOf(f32);
-        boneInfo.usage = c.VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT;
+        boneInfo.usage = c.VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT | c.VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT;
         boneInfo.properties = c.VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | c.VK_MEMORY_PROPERTY_HOST_COHERENT_BIT;
         boneInfo.persistentlyMapped = true;
 
@@ -720,7 +720,7 @@ fn create_shadow_resources(pipeline: *types.VulkanPBRPipeline, device: c.VkDevic
     while (i < types.MAX_FRAMES_IN_FLIGHT) : (i += 1) {
         var bufferInfo = std.mem.zeroes(buffer_mgr.VulkanBufferCreateInfo);
         bufferInfo.size = @sizeOf(math.Mat4) * @as(u64, shadow_cascade_count) + @sizeOf(f32) * 4; // Matrices + Splits
-        bufferInfo.usage = c.VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT;
+        bufferInfo.usage = c.VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT | c.VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT;
         bufferInfo.properties = c.VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | c.VK_MEMORY_PROPERTY_HOST_COHERENT_BIT;
         bufferInfo.persistentlyMapped = true;
 
@@ -789,7 +789,7 @@ fn create_shadow_pipeline(pipeline: *types.VulkanPBRPipeline, device: c.VkDevice
     var pushConstantRange = std.mem.zeroes(c.VkPushConstantRange);
     pushConstantRange.stageFlags = c.VK_SHADER_STAGE_VERTEX_BIT | c.VK_SHADER_STAGE_FRAGMENT_BIT;
     pushConstantRange.offset = 0;
-    pushConstantRange.size = 156; // model(64) + padding + hasSkeleton(4) + cascadeIndex(4) -> 156
+    pushConstantRange.size = @intCast(@sizeOf(types.ShadowPushConstants));
 
     // Pipeline Layout
     var pipelineLayoutInfo = std.mem.zeroes(c.VkPipelineLayoutCreateInfo);

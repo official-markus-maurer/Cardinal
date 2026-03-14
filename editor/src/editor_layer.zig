@@ -8,6 +8,7 @@ const engine = @import("cardinal_engine");
 const math = engine.math;
 const Vec3 = math.Vec3;
 const log = engine.log;
+const platform = engine.platform;
 const window = engine.window;
 const renderer = engine.vulkan_renderer;
 const types = engine.vulkan_types;
@@ -130,13 +131,18 @@ fn check_loading_status() void {
 }
 
 fn save_scene() void {
-    // TODO: Use file dialog
-    scene_io.save_scene(&state, allocator, "assets/scenes/scene.json");
+    if (platform.save_file_dialog(allocator, "Scene Files\x00*.json\x00All Files\x00*.*\x00", null)) |path| {
+        defer allocator.free(path);
+        scene_io.save_scene(&state, allocator, path);
+        scene_io.refresh_available_scenes(&state, allocator);
+    }
 }
 
 fn load_scene() void {
-    // TODO: Use file dialog
-    scene_io.load_scene(&state, allocator, "assets/scenes/scene.json");
+    if (platform.open_file_dialog(allocator, "Scene Files\x00*.json\x00All Files\x00*.*\x00", null)) |path| {
+        defer allocator.free(path);
+        scene_io.load_scene(&state, allocator, path);
+    }
 }
 
 fn draw_pbr_settings_panel() void {
@@ -621,6 +627,8 @@ pub fn shutdown() void {
     allocator.free(state.assets.assets_dir[0 .. state.assets.assets_dir.len + 1]);
     allocator.free(state.assets.current_dir[0 .. state.assets.current_dir.len + 1]);
     allocator.free(state.assets.search_filter);
+
+    state.config_manager.deinit();
 
     initialized = false;
 }

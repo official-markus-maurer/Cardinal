@@ -435,8 +435,7 @@ pub export fn cardinal_scene_node_get_world_transform(node: ?*CardinalSceneNode)
     return &node.?.world_transform;
 }
 
-fn destroy_scene_skin_assets(allocator: *memory.CardinalAllocator, skin: *animation.CardinalSkin) void {
-    // TODO: Deduplicate this helper with the equivalent in model_manager.zig.
+pub fn destroy_scene_skin_assets(allocator: *memory.CardinalAllocator, skin: *animation.CardinalSkin) void {
     if (skin.name) |ptr| memory.cardinal_free(allocator, @ptrCast(ptr));
 
     if (skin.bones) |bones| {

@@ -53,7 +53,6 @@ pub const CommandBuffer = struct {
         const T = @TypeOf(component);
         const type_id = registry_pkg.Registry.get_type_id(T);
         const size = @sizeOf(T);
-        // TODO: Ensure payload alignment for types with >1-byte alignment.
 
         const offset = self.payload.items.len;
         try self.payload.appendSlice(self.allocator, std.mem.asBytes(&component));
@@ -66,7 +65,8 @@ pub const CommandBuffer = struct {
             .payload_size = size,
             .apply_fn = struct {
                 fn apply(reg: *registry_pkg.Registry, ent: Entity, data: []const u8) !void {
-                    const comp = std.mem.bytesAsValue(T, data).*;
+                    var comp: T = undefined;
+                    std.mem.copyForwards(u8, std.mem.asBytes(&comp), data[0..@sizeOf(T)]);
                     try reg.add(ent, comp);
                 }
             }.apply,

@@ -31,6 +31,7 @@ pub const SkyboxPushConstants = extern struct {
 /// Initializes the skybox pipeline (descriptor set + graphics pipeline).
 pub fn vk_skybox_pipeline_init(pipeline: *types.SkyboxPipeline, device: c.VkDevice, format: c.VkFormat, depthFormat: c.VkFormat, allocator: *types.VulkanAllocator, vulkan_state: ?*types.VulkanState) bool {
     pipeline.initialized = false;
+    pipeline.descriptorSets = std.mem.zeroes([types.MAX_FRAMES_IN_FLIGHT]c.VkDescriptorSet);
 
     const mem_alloc = memory.cardinal_get_allocator_for_category(.RENDERER);
     const ptr = memory.cardinal_alloc(mem_alloc, @sizeOf(types.VulkanDescriptorManager));
@@ -45,13 +46,13 @@ pub fn vk_skybox_pipeline_init(pipeline: *types.SkyboxPipeline, device: c.VkDevi
 
     desc_builder.add_binding(0, c.VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1, c.VK_SHADER_STAGE_FRAGMENT_BIT) catch return false;
 
-    if (!desc_builder.build(pipeline.descriptorManager.?, device, allocator, vulkan_state, 1, true)) {
+    if (!desc_builder.build(pipeline.descriptorManager.?, device, allocator, vulkan_state, types.MAX_FRAMES_IN_FLIGHT, true)) {
         skybox_log.err("Failed to build skybox descriptor manager", .{});
         return false;
     }
 
-    if (!descriptor_mgr.vk_descriptor_manager_allocate_sets(pipeline.descriptorManager, 1, @as([*]c.VkDescriptorSet, @ptrCast(&pipeline.descriptorSet)))) {
-        skybox_log.err("Failed to allocate descriptor set", .{});
+    if (!descriptor_mgr.vk_descriptor_manager_allocate_sets(pipeline.descriptorManager, types.MAX_FRAMES_IN_FLIGHT, @as([*]c.VkDescriptorSet, @ptrCast(&pipeline.descriptorSets)))) {
+        skybox_log.err("Failed to allocate descriptor sets", .{});
         return false;
     }
 
@@ -129,16 +130,24 @@ pub fn vk_skybox_pipeline_destroy(pipeline: *types.SkyboxPipeline, device: c.VkD
 }
 
 /// Uploads a skybox texture from already-decoded data and updates descriptors.
-///
-/// TODO: Replace `vkDeviceWaitIdle` with deferred destruction to avoid stalls on hot-swap.
+/// Keeps the previous skybox GPU resources alive until the shared timeline semaphore advances.
 pub fn vk_skybox_load_from_data(pipeline: *types.SkyboxPipeline, device: c.VkDevice, allocator: *types.VulkanAllocator, commandPool: c.VkCommandPool, graphicsQueue: c.VkQueue, sync_manager: ?*types.VulkanSyncManager, textureData: texture_loader.TextureData) bool {
-    if (pipeline.texture.is_allocated) {
-        _ = c.vkDeviceWaitIdle(device);
+    const frame_index: u32 = if (sync_manager != null and sync_manager.?.initialized) @intCast(sync_manager.?.current_frame % types.MAX_FRAMES_IN_FLIGHT) else 0;
 
-        c.vkDestroySampler(device, pipeline.texture.sampler, null);
-        c.vkDestroyImageView(device, pipeline.texture.view, null);
-        vk_allocator.free_image(allocator, pipeline.texture.image, pipeline.texture.allocation);
-        pipeline.texture.is_allocated = false;
+    var old_sampler: c.VkSampler = null;
+    var old_view: c.VkImageView = null;
+    var old_image: c.VkImage = null;
+    var old_allocation: c.VmaAllocation = null;
+    var old_allocated = false;
+    var cleanup_timeline_value: u64 = 0;
+
+    if (pipeline.texture.is_allocated) {
+        old_allocated = true;
+        old_sampler = pipeline.texture.sampler;
+        old_view = pipeline.texture.view;
+        old_image = pipeline.texture.image;
+        old_allocation = pipeline.texture.allocation;
+        cleanup_timeline_value = if (sync_manager != null and sync_manager.?.initialized) sync_manager.?.current_frame_value else 0;
     }
 
     var cardTex = std.mem.zeroes(scene.CardinalTexture);
@@ -148,7 +157,12 @@ pub fn vk_skybox_load_from_data(pipeline: *types.SkyboxPipeline, device: c.VkDev
     cardTex.data = textureData.data;
     cardTex.is_hdr = textureData.is_hdr;
 
-    if (!vk_texture_utils.vk_texture_create_from_data(allocator, device, commandPool, graphicsQueue, sync_manager, &cardTex, &pipeline.texture.image, &pipeline.texture.memory, &pipeline.texture.view, null, &pipeline.texture.allocation)) {
+    var new_image: c.VkImage = null;
+    var new_memory: c.VkDeviceMemory = null;
+    var new_view: c.VkImageView = null;
+    var new_allocation: c.VmaAllocation = null;
+
+    if (!vk_texture_utils.vk_texture_create_from_data(allocator, device, commandPool, graphicsQueue, sync_manager, &cardTex, &new_image, &new_memory, &new_view, null, &new_allocation)) {
         skybox_log.err("Failed to create skybox texture resources", .{});
         return false;
     }
@@ -168,19 +182,37 @@ pub fn vk_skybox_load_from_data(pipeline: *types.SkyboxPipeline, device: c.VkDev
     samplerInfo.compareOp = c.VK_COMPARE_OP_ALWAYS;
     samplerInfo.mipmapMode = c.VK_SAMPLER_MIPMAP_MODE_LINEAR;
 
-    if (c.vkCreateSampler(device, &samplerInfo, null, &pipeline.texture.sampler) != c.VK_SUCCESS) {
+    var new_sampler: c.VkSampler = null;
+    if (c.vkCreateSampler(device, &samplerInfo, null, &new_sampler) != c.VK_SUCCESS) {
         skybox_log.err("Failed to create skybox sampler", .{});
+        c.vkDestroyImageView(device, new_view, null);
+        vk_allocator.free_image(allocator, new_image, new_allocation);
         return false;
     }
 
+    const set = pipeline.descriptorSets[frame_index];
+    if (!descriptor_mgr.vk_descriptor_manager_update_textures(pipeline.descriptorManager, set, 0, @ptrCast(&new_view), new_sampler, c.VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, 1)) {
+        skybox_log.err("Failed to update skybox descriptor", .{});
+        c.vkDestroySampler(device, new_sampler, null);
+        c.vkDestroyImageView(device, new_view, null);
+        vk_allocator.free_image(allocator, new_image, new_allocation);
+        return false;
+    }
+
+    pipeline.texture.image = new_image;
+    pipeline.texture.memory = new_memory;
+    pipeline.texture.view = new_view;
+    pipeline.texture.sampler = new_sampler;
+    pipeline.texture.allocation = new_allocation;
     pipeline.texture.is_allocated = true;
     pipeline.texture.width = textureData.width;
     pipeline.texture.height = textureData.height;
     pipeline.texture.format = if (textureData.is_hdr != 0) c.VK_FORMAT_R32G32B32A32_SFLOAT else c.VK_FORMAT_R8G8B8A8_SRGB;
 
-    if (!descriptor_mgr.vk_descriptor_manager_update_textures(pipeline.descriptorManager, pipeline.descriptorSet, 0, @ptrCast(&pipeline.texture.view), pipeline.texture.sampler, c.VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, 1)) {
-        skybox_log.err("Failed to update skybox descriptor", .{});
-        return false;
+    if (old_allocated) {
+        if (old_view != null) vk_texture_utils.add_image_view_cleanup(device, old_view, cleanup_timeline_value);
+        if (old_sampler != null) vk_texture_utils.add_sampler_cleanup(device, old_sampler, cleanup_timeline_value);
+        if (old_image != null and old_allocation != null) vk_texture_utils.add_image_cleanup(allocator, old_image, old_allocation, cleanup_timeline_value);
     }
 
     skybox_log.info("Skybox uploaded successfully", .{});
@@ -213,6 +245,10 @@ pub fn vk_skybox_load(pipeline: *types.SkyboxPipeline, device: c.VkDevice, alloc
 pub fn vk_skybox_update(pipeline: *types.SkyboxPipeline, device: c.VkDevice, allocator: *types.VulkanAllocator, commandPool: c.VkCommandPool, graphicsQueue: c.VkQueue, sync_manager: ?*types.VulkanSyncManager) void {
     if (!pipeline.initialized or !pipeline.texture.is_allocated) return;
 
+    const frame_index: u32 = if (sync_manager != null and sync_manager.?.initialized) @intCast(sync_manager.?.current_frame % types.MAX_FRAMES_IN_FLIGHT) else 0;
+    const set = pipeline.descriptorSets[frame_index];
+    _ = descriptor_mgr.vk_descriptor_manager_update_textures(pipeline.descriptorManager, set, 0, @ptrCast(&pipeline.texture.view), pipeline.texture.sampler, c.VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, 1);
+
     if (pipeline.texture.isPlaceholder and pipeline.texture.resource != null) {
         const res = @as(*ref_counting.CardinalRefCountedResource, @ptrCast(@alignCast(pipeline.texture.resource.?)));
 
@@ -230,7 +266,7 @@ pub fn vk_skybox_update(pipeline: *types.SkyboxPipeline, device: c.VkDevice, all
 }
 
 /// Records draw commands for the skybox pass.
-pub fn render(pipeline: *types.SkyboxPipeline, cmd: c.VkCommandBuffer, view: math.Mat4, proj: math.Mat4) void {
+pub fn render(pipeline: *types.SkyboxPipeline, cmd: c.VkCommandBuffer, view: math.Mat4, proj: math.Mat4, frame_index: u32) void {
     if (!pipeline.initialized or !pipeline.texture.is_allocated) return;
 
     c.vkCmdBindPipeline(cmd, c.VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline.pipeline);
@@ -240,10 +276,11 @@ pub fn render(pipeline: *types.SkyboxPipeline, cmd: c.VkCommandBuffer, view: mat
         use_buffers = mgr.useDescriptorBuffers;
     }
 
-    if (!use_buffers and (pipeline.descriptorSet == null or @intFromPtr(pipeline.descriptorSet) == 0)) {
+    const set = pipeline.descriptorSets[frame_index % types.MAX_FRAMES_IN_FLIGHT];
+    if (!use_buffers and (set == null or @intFromPtr(set) == 0)) {
         return;
     }
-    const sets = [_]c.VkDescriptorSet{pipeline.descriptorSet};
+    const sets = [_]c.VkDescriptorSet{set};
     if (pipeline.descriptorManager) |mgr| {
         descriptor_mgr.vk_descriptor_manager_bind_sets(mgr, cmd, c.VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline.pipelineLayout, 0, 1, &sets, 0, null);
     } else {

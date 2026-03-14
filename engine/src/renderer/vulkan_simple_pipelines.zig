@@ -152,7 +152,7 @@ fn create_simple_uniform_buffer(s: *types.VulkanState) bool {
 
     var createInfo = std.mem.zeroes(buffer_mgr.VulkanBufferCreateInfo);
     createInfo.size = bufferSize;
-    createInfo.usage = c.VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT;
+    createInfo.usage = c.VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT | c.VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT;
     createInfo.properties = c.VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | c.VK_MEMORY_PROPERTY_HOST_COHERENT_BIT;
     createInfo.persistentlyMapped = true;
 

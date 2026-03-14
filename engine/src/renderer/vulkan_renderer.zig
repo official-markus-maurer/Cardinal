@@ -155,7 +155,7 @@ fn skybox_pass_callback(cmd: c.VkCommandBuffer, state: *types.VulkanState) void 
                 var proj: math.Mat4 = undefined;
                 view.data = ubo.view;
                 proj.data = ubo.proj;
-                vk_skybox.render(&state.pipelines.skybox_pipeline, cmd, view, proj);
+                vk_skybox.render(&state.pipelines.skybox_pipeline, cmd, view, proj, state.sync.current_frame);
                 vk_commands.vk_end_rendering(state, cmd);
             }
         }
@@ -680,6 +680,14 @@ pub export fn cardinal_renderer_create(out_renderer: ?*types.CardinalRenderer, w
         };
 
         var skybox_pass = render_graph.RenderPass.init(renderer_alloc, "Skybox Pass", skybox_pass_callback);
+        skybox_pass.add_input(renderer_alloc, .{
+            .id = types.RESOURCE_ID_BACKBUFFER,
+            .type = .Image,
+            .access_mask = c.VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT | c.VK_ACCESS_2_COLOR_ATTACHMENT_READ_BIT,
+            .stage_mask = c.VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT,
+            .layout = c.VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
+            .aspect_mask = c.VK_IMAGE_ASPECT_COLOR_BIT,
+        }) catch {};
         skybox_pass.add_output(renderer_alloc, .{
             .id = types.RESOURCE_ID_BACKBUFFER,
             .type = .Image,
@@ -692,6 +700,14 @@ pub export fn cardinal_renderer_create(out_renderer: ?*types.CardinalRenderer, w
         rg.add_pass(skybox_pass) catch {};
 
         var ui_pass = render_graph.RenderPass.init(renderer_alloc, "UI Pass", ui_pass_callback);
+        ui_pass.add_input(renderer_alloc, .{
+            .id = types.RESOURCE_ID_BACKBUFFER,
+            .type = .Image,
+            .access_mask = c.VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT | c.VK_ACCESS_2_COLOR_ATTACHMENT_READ_BIT,
+            .stage_mask = c.VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT,
+            .layout = c.VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
+            .aspect_mask = c.VK_IMAGE_ASPECT_COLOR_BIT,
+        }) catch {};
         ui_pass.add_output(renderer_alloc, .{
             .id = types.RESOURCE_ID_BACKBUFFER,
             .type = .Image,
@@ -704,6 +720,14 @@ pub export fn cardinal_renderer_create(out_renderer: ?*types.CardinalRenderer, w
         rg.add_pass(ui_pass) catch {};
 
         var present_pass = render_graph.RenderPass.init(renderer_alloc, "Present Pass", present_pass_callback);
+        present_pass.add_input(renderer_alloc, .{
+            .id = types.RESOURCE_ID_BACKBUFFER,
+            .type = .Image,
+            .access_mask = c.VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT | c.VK_ACCESS_2_COLOR_ATTACHMENT_READ_BIT,
+            .stage_mask = c.VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT,
+            .layout = c.VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
+            .aspect_mask = c.VK_IMAGE_ASPECT_COLOR_BIT,
+        }) catch {};
         present_pass.add_output(renderer_alloc, .{
             .id = types.RESOURCE_ID_BACKBUFFER,
             .type = .Image,
@@ -711,6 +735,7 @@ pub export fn cardinal_renderer_create(out_renderer: ?*types.CardinalRenderer, w
             .stage_mask = c.VK_PIPELINE_STAGE_2_BOTTOM_OF_PIPE_BIT,
             .layout = c.VK_IMAGE_LAYOUT_PRESENT_SRC_KHR,
             .aspect_mask = c.VK_IMAGE_ASPECT_COLOR_BIT,
+            .is_present = true,
         }) catch {};
         present_pass.use_graphics_queue(s);
         rg.add_pass(present_pass) catch {};
@@ -929,12 +954,25 @@ pub export fn cardinal_renderer_wait_for_texture_uploads(renderer: ?*types.Cardi
 pub fn destroy_scene_buffers(vs: *types.VulkanState) void {
     renderer_log.info("destroy_scene_buffers: start", .{});
 
-    // TODO: Replace vkDeviceWaitIdle with timeline-based waits for scene buffer lifetime.
     if (vs.context.device != null and !vs.recovery.device_lost) {
-        renderer_log.info("destroy_scene_buffers: Calling vkDeviceWaitIdle to ensure safety", .{});
-        const idle_res = c.vkDeviceWaitIdle(vs.context.device);
-        if (idle_res != c.VK_SUCCESS) {
-            renderer_log.err("destroy_scene_buffers: vkDeviceWaitIdle failed with {d}", .{idle_res});
+        const sm = vs.sync_manager;
+        if (sm != null and sm.?.initialized and vs.sync.current_frame_value != 0) {
+            const wait_val = vs.sync.current_frame_value;
+            renderer_log.info("destroy_scene_buffers: Waiting for timeline value {d}", .{wait_val});
+            const wait_res = vk_sync_manager.vulkan_sync_manager_wait_timeline(sm, wait_val, 5_000_000_000);
+            if (wait_res != c.VK_SUCCESS) {
+                renderer_log.warn("destroy_scene_buffers: Timeline wait failed ({d}); falling back to vkDeviceWaitIdle", .{wait_res});
+                const idle_res = c.vkDeviceWaitIdle(vs.context.device);
+                if (idle_res != c.VK_SUCCESS) {
+                    renderer_log.err("destroy_scene_buffers: vkDeviceWaitIdle failed with {d}", .{idle_res});
+                }
+            }
+        } else {
+            renderer_log.info("destroy_scene_buffers: Sync unavailable; using vkDeviceWaitIdle", .{});
+            const idle_res = c.vkDeviceWaitIdle(vs.context.device);
+            if (idle_res != c.VK_SUCCESS) {
+                renderer_log.err("destroy_scene_buffers: vkDeviceWaitIdle failed with {d}", .{idle_res});
+            }
         }
     }
 
@@ -1536,13 +1574,48 @@ fn try_submit_secondary(s: *types.VulkanState, record: ?*const fn (c.VkCommandBu
 
     var color_attachment = std.mem.zeroes(c.VkRenderingAttachmentInfo);
     color_attachment.sType = c.VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO;
-    // TODO: Track swapchain image layout for immediate submits and insert barriers if needed.
-    color_attachment.imageView = s.swapchain.image_views.?[s.sync.current_frame];
+    const image_index: u32 = if (s.swapchain.image_count != 0) @intCast(s.sync.current_frame % s.swapchain.image_count) else 0;
+    color_attachment.imageView = s.swapchain.image_views.?[image_index];
     color_attachment.imageLayout = c.VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
     color_attachment.loadOp = c.VK_ATTACHMENT_LOAD_OP_LOAD;
     color_attachment.storeOp = c.VK_ATTACHMENT_STORE_OP_STORE;
 
     rendering_info.pColorAttachments = &color_attachment;
+
+    if (s.context.vkCmdPipelineBarrier2 != null and s.swapchain.images != null and s.swapchain.image_layout_initialized != null and s.swapchain.image_count != 0) {
+        var barrier = std.mem.zeroes(c.VkImageMemoryBarrier2);
+        barrier.sType = c.VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2;
+        barrier.srcQueueFamilyIndex = c.VK_QUEUE_FAMILY_IGNORED;
+        barrier.dstQueueFamilyIndex = c.VK_QUEUE_FAMILY_IGNORED;
+        barrier.image = s.swapchain.images.?[image_index];
+        barrier.subresourceRange.aspectMask = c.VK_IMAGE_ASPECT_COLOR_BIT;
+        barrier.subresourceRange.baseMipLevel = 0;
+        barrier.subresourceRange.levelCount = 1;
+        barrier.subresourceRange.baseArrayLayer = 0;
+        barrier.subresourceRange.layerCount = 1;
+
+        if (!s.swapchain.image_layout_initialized.?[image_index]) {
+            barrier.oldLayout = c.VK_IMAGE_LAYOUT_UNDEFINED;
+            barrier.srcStageMask = c.VK_PIPELINE_STAGE_2_TOP_OF_PIPE_BIT;
+            barrier.srcAccessMask = 0;
+            s.swapchain.image_layout_initialized.?[image_index] = true;
+        } else {
+            barrier.oldLayout = c.VK_IMAGE_LAYOUT_PRESENT_SRC_KHR;
+            barrier.srcStageMask = c.VK_PIPELINE_STAGE_2_BOTTOM_OF_PIPE_BIT;
+            barrier.srcAccessMask = 0;
+        }
+
+        barrier.newLayout = c.VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
+        barrier.dstStageMask = c.VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT;
+        barrier.dstAccessMask = c.VK_ACCESS_2_COLOR_ATTACHMENT_READ_BIT | c.VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT;
+
+        var dep = std.mem.zeroes(c.VkDependencyInfo);
+        dep.sType = c.VK_STRUCTURE_TYPE_DEPENDENCY_INFO;
+        dep.imageMemoryBarrierCount = 1;
+        dep.pImageMemoryBarriers = &barrier;
+
+        s.context.vkCmdPipelineBarrier2.?(primary_cmd, &dep);
+    }
 
     c.vkCmdBeginRendering(primary_cmd, &rendering_info);
 
@@ -1550,6 +1623,33 @@ fn try_submit_secondary(s: *types.VulkanState, record: ?*const fn (c.VkCommandBu
     vk_commands.vulkan_mt.cardinal_mt_execute_secondary_command_buffers(primary_cmd, contexts);
 
     c.vkCmdEndRendering(primary_cmd);
+
+    if (s.context.vkCmdPipelineBarrier2 != null and s.swapchain.images != null and s.swapchain.image_layout_initialized != null and s.swapchain.image_count != 0) {
+        var barrier = std.mem.zeroes(c.VkImageMemoryBarrier2);
+        barrier.sType = c.VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2;
+        barrier.srcQueueFamilyIndex = c.VK_QUEUE_FAMILY_IGNORED;
+        barrier.dstQueueFamilyIndex = c.VK_QUEUE_FAMILY_IGNORED;
+        barrier.image = s.swapchain.images.?[image_index];
+        barrier.subresourceRange.aspectMask = c.VK_IMAGE_ASPECT_COLOR_BIT;
+        barrier.subresourceRange.baseMipLevel = 0;
+        barrier.subresourceRange.levelCount = 1;
+        barrier.subresourceRange.baseArrayLayer = 0;
+        barrier.subresourceRange.layerCount = 1;
+
+        barrier.oldLayout = c.VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
+        barrier.newLayout = c.VK_IMAGE_LAYOUT_PRESENT_SRC_KHR;
+        barrier.srcStageMask = c.VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT;
+        barrier.srcAccessMask = c.VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT;
+        barrier.dstStageMask = c.VK_PIPELINE_STAGE_2_BOTTOM_OF_PIPE_BIT;
+        barrier.dstAccessMask = 0;
+
+        var dep = std.mem.zeroes(c.VkDependencyInfo);
+        dep.sType = c.VK_STRUCTURE_TYPE_DEPENDENCY_INFO;
+        dep.imageMemoryBarrierCount = 1;
+        dep.pImageMemoryBarriers = &barrier;
+
+        s.context.vkCmdPipelineBarrier2.?(primary_cmd, &dep);
+    }
 
     _ = c.vkEndCommandBuffer(primary_cmd);
 

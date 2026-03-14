@@ -23,6 +23,7 @@ const vk_pbr = @import("vulkan_pbr.zig");
 const vk_mesh_shader = @import("vulkan_mesh_shader.zig");
 const vk_simple_pipelines = @import("vulkan_simple_pipelines.zig");
 const vk_post_process = @import("vulkan_post_process.zig");
+const vk_ssao = @import("vulkan_ssao.zig");
 const vk_renderer = @import("vulkan_renderer.zig");
 const vk_texture_manager = @import("vulkan_texture_manager.zig");
 const vk_texture_utils = @import("util/vulkan_texture_utils.zig");
@@ -425,9 +426,12 @@ fn acquire_next_image(s: *types.VulkanState, out_image_index: *u32) bool {
     return true;
 }
 
-fn submit_command_buffer(s: *types.VulkanState, cmd: c.VkCommandBuffer, acquire_sem: c.VkSemaphore, wait_timeline_value: ?u64, image_index: u32) bool {
+fn submit_command_buffer(s: *types.VulkanState, cmd: c.VkCommandBuffer, acquire_sem: c.VkSemaphore, wait_timeline_value: ?u64, image_index: u32, signal_timeline_value: u64) bool {
     const zone = tracy.zoneS(@src(), "Submit Command Buffer");
     defer zone.end();
+
+    const has_timeline_wait = (wait_timeline_value != null and s.sync.timeline_semaphore != null);
+    const has_timeline_signal = (signal_timeline_value != 0 and s.sync.timeline_semaphore != null);
 
     const wait_info = c.VkSemaphoreSubmitInfo{
         .sType = c.VK_STRUCTURE_TYPE_SEMAPHORE_SUBMIT_INFO,
@@ -442,14 +446,14 @@ fn submit_command_buffer(s: *types.VulkanState, cmd: c.VkCommandBuffer, acquire_
         .sType = c.VK_STRUCTURE_TYPE_SEMAPHORE_SUBMIT_INFO,
         .pNext = null,
         .semaphore = s.sync.timeline_semaphore,
-        .value = if (wait_timeline_value) |v| v else 0,
+        .value = if (has_timeline_wait) wait_timeline_value.? else 0,
         .stageMask = c.VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT,
         .deviceIndex = 0,
     };
 
     var wait_infos = [2]c.VkSemaphoreSubmitInfo{ wait_info, timeline_wait_info };
 
-    var signal_infos = [1]c.VkSemaphoreSubmitInfo{.{
+    const binary_signal_info = c.VkSemaphoreSubmitInfo{
         .sType = c.VK_STRUCTURE_TYPE_SEMAPHORE_SUBMIT_INFO,
         .pNext = null,
         .semaphore = blk: {
@@ -462,7 +466,18 @@ fn submit_command_buffer(s: *types.VulkanState, cmd: c.VkCommandBuffer, acquire_
         .value = 0,
         .stageMask = c.VK_PIPELINE_STAGE_2_ALL_GRAPHICS_BIT,
         .deviceIndex = 0,
-    }};
+    };
+
+    const timeline_signal_info = c.VkSemaphoreSubmitInfo{
+        .sType = c.VK_STRUCTURE_TYPE_SEMAPHORE_SUBMIT_INFO,
+        .pNext = null,
+        .semaphore = s.sync.timeline_semaphore,
+        .value = signal_timeline_value,
+        .stageMask = c.VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT,
+        .deviceIndex = 0,
+    };
+
+    var signal_infos = [2]c.VkSemaphoreSubmitInfo{ binary_signal_info, timeline_signal_info };
 
     var cmd_info = c.VkCommandBufferSubmitInfo{
         .sType = c.VK_STRUCTURE_TYPE_COMMAND_BUFFER_SUBMIT_INFO,
@@ -475,11 +490,11 @@ fn submit_command_buffer(s: *types.VulkanState, cmd: c.VkCommandBuffer, acquire_
         .sType = c.VK_STRUCTURE_TYPE_SUBMIT_INFO_2,
         .pNext = null,
         .flags = 0,
-        .waitSemaphoreInfoCount = if (wait_timeline_value != null) 2 else 1,
+        .waitSemaphoreInfoCount = if (has_timeline_wait) 2 else 1,
         .pWaitSemaphoreInfos = &wait_infos[0],
         .commandBufferInfoCount = 1,
         .pCommandBufferInfos = &cmd_info,
-        .signalSemaphoreInfoCount = 1,
+        .signalSemaphoreInfoCount = if (has_timeline_signal) 2 else 1,
         .pSignalSemaphoreInfos = &signal_infos[0],
     };
 
@@ -641,6 +656,14 @@ pub export fn cardinal_renderer_draw_frame(renderer: ?*types.CardinalRenderer) c
         vk_pbr.vk_pbr_update_uniforms(@ptrCast(&s.pipelines.pbr_pipeline), @ptrCast(&s.pipelines.pbr_pipeline.current_ubo), @ptrCast(&s.pipelines.pbr_pipeline.current_lighting), s.sync.current_frame);
     }
 
+    if (s.pipelines.use_ssao and s.pipelines.ssao_pipeline.initialized) {
+        if (s.pipelines.ssao_pipeline.width != s.swapchain.extent.width or s.pipelines.ssao_pipeline.height != s.swapchain.extent.height) {
+            if (!vk_ssao.vk_ssao_resize(s, s.swapchain.extent.width, s.swapchain.extent.height)) {
+                vk_ssao.vk_ssao_destroy(s);
+            }
+        }
+    }
+
     var signal_after_render: u64 = 0;
 
     if (s.swapchain.headless_mode) {
@@ -685,6 +708,7 @@ pub export fn cardinal_renderer_draw_frame(renderer: ?*types.CardinalRenderer) c
         s.sync.image_acquired_semaphores.?[s.sync.current_frame],
         texture_upload_signal,
         image_index,
+        signal_after_render,
     ))
         return;
 

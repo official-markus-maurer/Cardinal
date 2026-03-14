@@ -678,21 +678,24 @@ pub export fn vk_descriptor_manager_set_offsets(manager: ?*types.VulkanDescripto
     var ptr1: ?*anyopaque = null;
     var ptr2: ?*anyopaque = null;
 
-    // TODO: Replace malloc/free with renderer allocator or a reusable scratch buffer.
     if (setCount > 8) {
-        ptr1 = c.malloc(setCount * @sizeOf(u32));
-        ptr2 = c.malloc(setCount * @sizeOf(c.VkDeviceSize));
+        const mem_alloc = memory.cardinal_get_allocator_for_category(.RENDERER);
+        ptr1 = memory.cardinal_alloc(mem_alloc, setCount * @sizeOf(u32));
+        ptr2 = memory.cardinal_alloc(mem_alloc, setCount * @sizeOf(c.VkDeviceSize));
         if (ptr1 == null or ptr2 == null) {
-            if (ptr1) |p| c.free(p);
-            if (ptr2) |p| c.free(p);
+            if (ptr1) |p| memory.cardinal_free(mem_alloc, p);
+            if (ptr2) |p| memory.cardinal_free(mem_alloc, p);
             return;
         }
         bufferIndices = @as([*]u32, @ptrCast(@alignCast(ptr1)));
         offsets = @as([*]c.VkDeviceSize, @ptrCast(@alignCast(ptr2)));
     }
     defer {
-        if (ptr1) |p| c.free(p);
-        if (ptr2) |p| c.free(p);
+        if (setCount > 8) {
+            const mem_alloc = memory.cardinal_get_allocator_for_category(.RENDERER);
+            if (ptr1) |p| memory.cardinal_free(mem_alloc, p);
+            if (ptr2) |p| memory.cardinal_free(mem_alloc, p);
+        }
     }
 
     var i: u32 = 0;

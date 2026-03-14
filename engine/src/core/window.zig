@@ -2,8 +2,6 @@
 //!
 //! Wraps GLFW window handles behind a C-ABI `CardinalWindow` and allows clients to register
 //! callbacks for resize, key, mouse button, and cursor movement.
-//!
-//! TODO: Add multi-window support and avoid global `glfwTerminate` on destroy.
 const std = @import("std");
 const log = @import("log.zig");
 const builtin = @import("builtin");
@@ -12,6 +10,41 @@ const platform = @import("platform.zig");
 const win_log = log.ScopedLogger("WINDOW");
 
 const c = platform.c;
+
+var g_glfw_lock = std.Thread.Mutex{};
+var g_glfw_initialized = false;
+var g_glfw_window_count: u32 = 0;
+
+fn glfw_acquire() bool {
+    g_glfw_lock.lock();
+    defer g_glfw_lock.unlock();
+
+    if (!g_glfw_initialized) {
+        if (c.glfwInit() == c.GLFW_FALSE) {
+            win_log.err("GLFW init failed", .{});
+            return false;
+        }
+        _ = c.glfwSetErrorCallback(glfw_error_callback);
+        g_glfw_initialized = true;
+    }
+
+    g_glfw_window_count += 1;
+    return true;
+}
+
+fn glfw_release() void {
+    g_glfw_lock.lock();
+    defer g_glfw_lock.unlock();
+
+    if (g_glfw_window_count > 0) {
+        g_glfw_window_count -= 1;
+    }
+
+    if (g_glfw_window_count == 0 and g_glfw_initialized) {
+        c.glfwTerminate();
+        g_glfw_initialized = false;
+    }
+}
 
 /// Configuration used by `cardinal_window_create`.
 pub const CardinalWindowConfig = extern struct {
@@ -141,12 +174,9 @@ fn window_iconify_callback(window: ?*c.GLFWwindow, iconified: c_int) callconv(.c
 pub export fn cardinal_window_create(config: *const CardinalWindowConfig) callconv(.c) ?*CardinalWindow {
     win_log.info("cardinal_window_create: begin", .{});
 
-    if (c.glfwInit() == c.GLFW_FALSE) {
-        win_log.err("GLFW init failed", .{});
+    if (!glfw_acquire()) {
         return null;
     }
-
-    _ = c.glfwSetErrorCallback(glfw_error_callback);
 
     c.glfwWindowHint(c.GLFW_CLIENT_API, c.GLFW_NO_API);
     c.glfwWindowHint(c.GLFW_RESIZABLE, if (config.resizable) c.GLFW_TRUE else c.GLFW_FALSE);
@@ -154,14 +184,14 @@ pub export fn cardinal_window_create(config: *const CardinalWindowConfig) callco
     const handle = c.glfwCreateWindow(@intCast(config.width), @intCast(config.height), config.title, null, null);
     if (handle == null) {
         win_log.err("GLFW create window failed", .{});
-        c.glfwTerminate();
+        glfw_release();
         return null;
     }
 
     const win_ptr = c.malloc(@sizeOf(CardinalWindow));
     if (win_ptr == null) {
         c.glfwDestroyWindow(handle);
-        c.glfwTerminate();
+        glfw_release();
         return null;
     }
     const win = @as(*CardinalWindow, @ptrCast(@alignCast(win_ptr)));
@@ -211,7 +241,7 @@ pub export fn cardinal_window_should_close(window: ?*const CardinalWindow) callc
     return true;
 }
 
-/// Destroys the window and terminates GLFW.
+/// Destroys the window.
 pub export fn cardinal_window_destroy(window: ?*CardinalWindow) callconv(.c) void {
     if (window) |win| {
         win.mutex.lock();
@@ -220,11 +250,11 @@ pub export fn cardinal_window_destroy(window: ?*CardinalWindow) callconv(.c) voi
             c.glfwDestroyWindow(h);
             win.handle = null;
         }
-        c.glfwTerminate();
 
         win.mutex.unlock();
 
         c.free(win);
+        glfw_release();
     }
 }
 

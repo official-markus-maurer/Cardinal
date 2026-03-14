@@ -252,21 +252,6 @@ pub fn find_model_index(manager: *const CardinalModelManager, model_id: u32) i32
     return -1;
 }
 
-fn destroy_scene_skin_assets(allocator: *memory.CardinalAllocator, skin: *animation.CardinalSkin) void {
-    // TODO: Deduplicate this helper with the equivalent in scene.zig.
-    if (skin.name) |ptr| memory.cardinal_free(allocator, @ptrCast(ptr));
-
-    if (skin.bones) |bones| {
-        var i: u32 = 0;
-        while (i < skin.bone_count) : (i += 1) {
-            if (bones[i].name) |n| memory.cardinal_free(allocator, @ptrCast(n));
-        }
-        memory.cardinal_free(allocator, @ptrCast(bones));
-    }
-
-    if (skin.mesh_indices) |ptr| memory.cardinal_free(allocator, @ptrCast(ptr));
-}
-
 fn cleanup_combined_scene(manager: *CardinalModelManager) void {
     const s = &manager.combined_scene;
     const allocator = memory.cardinal_get_allocator_for_category(.ASSETS);
@@ -308,7 +293,7 @@ fn cleanup_combined_scene(manager: *CardinalModelManager) void {
         const skins: [*]animation.CardinalSkin = @ptrCast(@alignCast(skins_opaque));
         var i: u32 = 0;
         while (i < s.skin_count) : (i += 1) {
-            destroy_scene_skin_assets(allocator, &skins[i]);
+            scene.destroy_scene_skin_assets(allocator, &skins[i]);
         }
         memory.cardinal_free(allocator, @ptrCast(skins));
     }

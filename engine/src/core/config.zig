@@ -32,7 +32,7 @@ pub const CardinalEngineConfig = struct {
 
     /// Default assets directory path.
     assets_path: []const u8 = "assets",
-    recent_projects: []const []const u8 = &[_][]const u8{},
+    recent_projects: []const [:0]u8 = &[_][:0]u8{},
 
     /// Renderer configuration (paths and feature toggles).
     renderer: vk_types.RendererConfig = .{
@@ -49,20 +49,96 @@ pub const ConfigManager = struct {
     allocator: std.mem.Allocator,
     config: CardinalEngineConfig,
     config_path: []const u8,
+    config_path_owned: bool,
+    window_title_owned: bool,
+    assets_path_owned: bool,
+    recent_projects_owned: bool,
 
     /// Creates a manager for `path`, seeding it with `initial_config`.
     pub fn init(allocator: std.mem.Allocator, path: []const u8, initial_config: CardinalEngineConfig) ConfigManager {
-        // TODO: Make `config_path` ownership explicit; current OOM fallback returns a literal but `deinit` frees unconditionally.
+        var cfg = initial_config;
+
+        var config_path_owned = true;
+        const config_path = allocator.dupe(u8, path) catch blk: {
+            config_path_owned = false;
+            break :blk "cardinal_config.json";
+        };
+
+        var window_title_owned = true;
+        cfg.window_title = allocator.dupe(u8, initial_config.window_title) catch blk: {
+            window_title_owned = false;
+            break :blk initial_config.window_title;
+        };
+
+        var assets_path_owned = true;
+        cfg.assets_path = allocator.dupe(u8, initial_config.assets_path) catch blk: {
+            assets_path_owned = false;
+            break :blk initial_config.assets_path;
+        };
+
+        var recent_projects_owned = false;
+        if (allocator.alloc([:0]u8, initial_config.recent_projects.len) catch null) |alloc_recent| {
+            recent_projects_owned = true;
+            var recent_projects = alloc_recent;
+
+            var filled: usize = 0;
+            for (initial_config.recent_projects, 0..) |p, i| {
+                const dup = allocator.dupeZ(u8, p) catch {
+                    for (recent_projects[0..filled]) |owned_p| {
+                        allocator.free(owned_p[0 .. owned_p.len + 1]);
+                    }
+                    allocator.free(recent_projects);
+                    recent_projects_owned = false;
+                    break;
+                };
+                recent_projects[i] = dup;
+                filled += 1;
+            }
+
+            if (recent_projects_owned) {
+                cfg.recent_projects = recent_projects;
+            } else {
+                cfg.recent_projects = initial_config.recent_projects;
+            }
+        } else {
+            cfg.recent_projects = initial_config.recent_projects;
+        }
+
         return .{
             .allocator = allocator,
-            .config = initial_config,
-            .config_path = allocator.dupe(u8, path) catch "cardinal_config.json",
+            .config = cfg,
+            .config_path = config_path,
+            .config_path_owned = config_path_owned,
+            .window_title_owned = window_title_owned,
+            .assets_path_owned = assets_path_owned,
+            .recent_projects_owned = recent_projects_owned,
         };
     }
 
-    /// Releases owned resources for the manager (not the config strings).
+    /// Releases owned resources for the manager.
     pub fn deinit(self: *ConfigManager) void {
-        self.allocator.free(self.config_path);
+        if (self.recent_projects_owned) {
+            for (self.config.recent_projects) |p| {
+                self.allocator.free(p[0 .. p.len + 1]);
+            }
+            self.allocator.free(self.config.recent_projects);
+            self.recent_projects_owned = false;
+        }
+
+        if (self.assets_path_owned) {
+            self.allocator.free(self.config.assets_path);
+            self.assets_path_owned = false;
+        }
+
+        if (self.window_title_owned) {
+            self.allocator.free(self.config.window_title);
+            self.window_title_owned = false;
+        }
+
+        if (self.config_path_owned) {
+            self.allocator.free(self.config_path);
+            self.config_path_owned = false;
+        }
     }
 
     /// Loads config from disk, keeping defaults for missing/unknown fields.
@@ -123,7 +199,11 @@ pub const ConfigManager = struct {
         const parsed = try std.json.parseFromSlice(ParsedConfig, self.allocator, content, .{ .ignore_unknown_fields = true });
         defer parsed.deinit();
 
-        if (parsed.value.window_title) |val| self.config.window_title = try self.allocator.dupe(u8, val);
+        if (parsed.value.window_title) |val| {
+            if (self.window_title_owned) self.allocator.free(self.config.window_title);
+            self.config.window_title = try self.allocator.dupe(u8, val);
+            self.window_title_owned = true;
+        }
         if (parsed.value.window_width) |val| self.config.window_width = val;
         if (parsed.value.window_height) |val| self.config.window_height = val;
         if (parsed.value.window_resizable) |val| self.config.window_resizable = val;
@@ -132,13 +212,33 @@ pub const ConfigManager = struct {
         if (parsed.value.async_worker_threads) |val| self.config.async_worker_threads = val;
         if (parsed.value.async_queue_size) |val| self.config.async_queue_size = val;
         if (parsed.value.cache_size) |val| self.config.cache_size = val;
-        if (parsed.value.assets_path) |val| self.config.assets_path = try self.allocator.dupe(u8, val);
+        if (parsed.value.assets_path) |val| {
+            if (self.assets_path_owned) self.allocator.free(self.config.assets_path);
+            self.config.assets_path = try self.allocator.dupe(u8, val);
+            self.assets_path_owned = true;
+        }
         if (parsed.value.recent_projects) |val| {
-            const new_list = try self.allocator.alloc([]const u8, val.len);
+            if (self.recent_projects_owned) {
+                for (self.config.recent_projects) |p| {
+                    self.allocator.free(p[0 .. p.len + 1]);
+                }
+                self.allocator.free(self.config.recent_projects);
+                self.recent_projects_owned = false;
+            }
+            var new_list = try self.allocator.alloc([:0]u8, val.len);
+            var filled: usize = 0;
+            errdefer {
+                for (new_list[0..filled]) |p| {
+                    self.allocator.free(p[0 .. p.len + 1]);
+                }
+                self.allocator.free(new_list);
+            }
             for (val, 0..) |path, i| {
                 new_list[i] = try self.allocator.dupeZ(u8, path);
+                filled += 1;
             }
             self.config.recent_projects = new_list;
+            self.recent_projects_owned = true;
         }
 
         if (parsed.value.renderer) |r| {
@@ -244,7 +344,7 @@ pub const ConfigManager = struct {
         async_queue_size: u32,
         cache_size: u32,
         assets_path: []const u8,
-        recent_projects: []const []const u8,
+        recent_projects: []const [:0]u8,
         renderer: SerializableRendererConfig,
 
         pub fn from(cfg: CardinalEngineConfig) SerializableConfig {
@@ -362,6 +462,21 @@ pub const ConfigManager = struct {
                 if (ptr.size == .slice and ptr.child == u8) {
                     const dup = try allocator.dupe(u8, val);
                     json_val = .{ .string = dup };
+                } else if (ptr.size == .slice and @typeInfo(ptr.child) == .pointer) {
+                    const child_ptr = @typeInfo(ptr.child).pointer;
+                    if (child_ptr.size == .slice and child_ptr.child == u8) {
+                        var list = std.array_list.Managed(std.json.Value).init(allocator);
+                        errdefer list.deinit();
+
+                        for (val) |item| {
+                            const dup = try allocator.dupe(u8, item);
+                            try list.append(.{ .string = dup });
+                        }
+
+                        json_val = .{ .array = list };
+                    } else {
+                        return;
+                    }
                 } else if (ptr.size == .one and @typeInfo(ptr.child) == .array) {
                     const slice = val[0..];
                     if (@typeInfo(ptr.child).array.child == u8) {
@@ -420,9 +535,101 @@ pub const ConfigManager = struct {
     }
 
     pub fn setAssetsPath(self: *ConfigManager, new_path: []const u8) !void {
-        if (!std.mem.eql(u8, self.config.assets_path, "assets")) {
-            self.allocator.free(self.config.assets_path);
-        }
+        if (self.assets_path_owned) self.allocator.free(self.config.assets_path);
         self.config.assets_path = try self.allocator.dupe(u8, new_path);
+        self.assets_path_owned = true;
+    }
+
+    pub fn addRecentProject(self: *ConfigManager, path: []const u8) !void {
+        const max: usize = 10;
+        const old_list = self.config.recent_projects;
+
+        var existing_index: ?usize = null;
+        for (old_list, 0..) |existing, i| {
+            if (std.mem.eql(u8, existing, path)) {
+                existing_index = i;
+                break;
+            }
+        }
+
+        if (existing_index != null and existing_index.? == 0) return;
+
+        const extra: usize = if (existing_index == null) 1 else 0;
+        const final_len = @min(old_list.len + extra, max);
+
+        if (!self.recent_projects_owned) {
+            var new_list = try self.allocator.alloc([:0]u8, final_len);
+            var filled: usize = 0;
+            errdefer {
+                for (new_list[0..filled]) |p| self.allocator.free(p[0 .. p.len + 1]);
+                self.allocator.free(new_list);
+            }
+
+            new_list[0] = try self.allocator.dupeZ(u8, path);
+            filled = 1;
+
+            var out_i: usize = 1;
+            for (old_list) |entry| {
+                if (out_i >= final_len) break;
+                if (std.mem.eql(u8, entry, path)) continue;
+                new_list[out_i] = try self.allocator.dupeZ(u8, entry);
+                out_i += 1;
+                filled += 1;
+            }
+
+            self.config.recent_projects = new_list;
+            self.recent_projects_owned = true;
+            return;
+        }
+
+        var new_list = try self.allocator.alloc([:0]u8, final_len);
+        var first_allocated = false;
+        errdefer {
+            if (first_allocated) self.allocator.free(new_list[0][0 .. new_list[0].len + 1]);
+            self.allocator.free(new_list);
+        }
+
+        if (existing_index) |idx| {
+            new_list[0] = old_list[idx];
+        } else {
+            new_list[0] = try self.allocator.dupeZ(u8, path);
+            first_allocated = true;
+        }
+
+        var out_i: usize = 1;
+        for (old_list, 0..) |entry, idx| {
+            if (out_i >= final_len) break;
+            if (existing_index != null and idx == existing_index.?) continue;
+            new_list[out_i] = entry;
+            out_i += 1;
+        }
+
+        for (old_list) |entry| {
+            var used = false;
+            for (new_list) |kept| {
+                if (kept.ptr == entry.ptr and kept.len == entry.len) {
+                    used = true;
+                    break;
+                }
+            }
+            if (!used) self.allocator.free(entry[0 .. entry.len + 1]);
+        }
+        self.allocator.free(old_list);
+
+        self.config.recent_projects = new_list;
+        self.recent_projects_owned = true;
     }
 };
+
+test "ConfigManager recent_projects ownership" {
+    var gpa = std.heap.GeneralPurposeAllocator(.{}){};
+    defer _ = gpa.deinit();
+    const allocator = gpa.allocator();
+
+    var mgr = ConfigManager.init(allocator, "cardinal_config.json", .{});
+    defer mgr.deinit();
+
+    try mgr.addRecentProject("C:/Projects/A");
+    try mgr.addRecentProject("C:/Projects/B");
+    try mgr.addRecentProject("C:/Projects/A");
+}

@@ -1,8 +1,6 @@
 //! Project manager panel.
 //!
 //! Provides a launcher-style UI to open/create projects and manage the recent project list.
-//!
-//! TODO: Fix ownership/lifetime of recent project strings to avoid leaks.
 const std = @import("std");
 const engine = @import("cardinal_engine");
 const log = engine.log;
@@ -86,7 +84,7 @@ pub fn draw_project_manager_panel(state: *EditorState, allocator: std.mem.Alloca
         if (recent.len > 0) {
             for (recent, 0..) |path, i| {
                 c.imgui_bridge_push_id_int(@intCast(i));
-                if (c.imgui_bridge_selectable(path.ptr, false, 0)) {
+                if (c.imgui_bridge_selectable(@as([*:0]const u8, @ptrCast(path.ptr)), false, 0)) {
                     const len = @min(path.len, 511);
                     @memcpy(project_path_buffer[0..len], path[0..len]);
                     project_path_buffer[len] = 0;
@@ -135,10 +133,7 @@ fn load_project(state: *EditorState, allocator: std.mem.Allocator, path: []const
     const assets_path = proj.getAssetsPath() catch return;
     defer allocator.free(assets_path);
 
-    if (state.config_manager.config.assets_path.len > 0) {
-        allocator.free(state.config_manager.config.assets_path);
-    }
-    state.config_manager.config.assets_path = allocator.dupe(u8, assets_path) catch return;
+    state.config_manager.setAssetsPath(assets_path) catch return;
 
     if (state.assets.assets_dir.len > 0) allocator.free(state.assets.assets_dir[0 .. state.assets.assets_dir.len + 1]);
     if (state.assets.current_dir.len > 0) allocator.free(state.assets.current_dir[0 .. state.assets.current_dir.len + 1]);
@@ -168,24 +163,8 @@ fn create_project(state: *EditorState, allocator: std.mem.Allocator, path: []con
 }
 
 fn add_recent_project(state: *EditorState, allocator: std.mem.Allocator, path: []const u8) void {
-    // TODO: Fix ownership and properly free/rotate recent project storage.
-    for (state.config_manager.config.recent_projects) |existing| {
-        if (std.mem.eql(u8, existing, path)) return;
-    }
-
-    const old_list = state.config_manager.config.recent_projects;
-    const new_len = old_list.len + 1;
-    const final_len = if (new_len > 10) 10 else new_len;
-
-    const new_list = allocator.alloc([]const u8, final_len) catch return;
-
-    new_list[0] = allocator.dupeZ(u8, path) catch return;
-
-    var i: usize = 0;
-    while (i < old_list.len and i + 1 < final_len) : (i += 1) {
-        new_list[i + 1] = old_list[i];
-    }
-    state.config_manager.config.recent_projects = new_list;
+    _ = allocator;
+    state.config_manager.addRecentProject(path) catch return;
 
     state.config_manager.save() catch |err| {
         log.cardinal_log_error("Failed to save config: {}", .{err});

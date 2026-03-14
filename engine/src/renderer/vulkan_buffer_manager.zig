@@ -136,10 +136,6 @@ pub export fn vk_buffer_create(buffer_ptr: ?*VulkanBuffer, device: c.VkDevice, a
     bufferInfo.sType = c.VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO;
     bufferInfo.size = createInfo.size;
     bufferInfo.usage = createInfo.usage;
-    // TODO: Only add SHADER_DEVICE_ADDRESS_BIT for buffers that need addresses.
-    if ((bufferInfo.usage & (c.VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT | c.VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | c.VK_BUFFER_USAGE_VERTEX_BUFFER_BIT | c.VK_BUFFER_USAGE_INDEX_BUFFER_BIT)) != 0) {
-        bufferInfo.usage |= c.VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT;
-    }
     bufferInfo.sharingMode = c.VK_SHARING_MODE_EXCLUSIVE;
 
     if (!vk_allocator.allocate_buffer(allocator, &bufferInfo, &buffer.handle, &buffer.memory, &buffer.allocation, createInfo.properties, createInfo.persistentlyMapped, &buffer.mapped)) {
@@ -148,7 +144,7 @@ pub export fn vk_buffer_create(buffer_ptr: ?*VulkanBuffer, device: c.VkDevice, a
     }
 
     buffer.size = createInfo.size;
-    buffer.usage = bufferInfo.usage; // Update usage to reflect added flags
+    buffer.usage = bufferInfo.usage;
     buffer.properties = createInfo.properties;
 
     if (createInfo.persistentlyMapped and buffer.mapped == null) {

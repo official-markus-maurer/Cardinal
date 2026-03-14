@@ -56,14 +56,26 @@ pub fn vk_shadow_render(s: *types.VulkanState, cmd: c.VkCommandBuffer) void {
         return;
     }
 
-    // TODO: Use an explicit light-type enum instead of float tolerance checks.
+    const decode_light_type = struct {
+        fn call(raw: f32) types.PBRLightType {
+            if (!std.math.isFinite(raw)) return .POINT;
+            const v: i32 = @intFromFloat(@round(raw));
+            return switch (v) {
+                0 => .DIRECTIONAL,
+                1 => .POINT,
+                2 => .SPOT,
+                else => .POINT,
+            };
+        }
+    }.call;
+
     var lightDir: math.Vec3 = math.Vec3.zero();
     var bestIntensity: f32 = -1.0;
     var found = false;
     var i: u32 = 0;
     while (i < lighting.count) : (i += 1) {
-        const l_type = lighting.lights[i].lightDirection[3];
-        if (l_type > -0.1 and l_type < 0.1) { // Directional (approx 0.0)
+        const l_type = decode_light_type(lighting.lights[i].lightDirection[3]);
+        if (l_type == .DIRECTIONAL) {
             const intensity = lighting.lights[i].lightColor[3];
             if (intensity > bestIntensity) {
                 bestIntensity = intensity;
@@ -360,11 +372,6 @@ pub fn vk_shadow_render(s: *types.VulkanState, cmd: c.VkCommandBuffer) void {
 
             drawn_count += 1;
 
-            var pushData = std.mem.zeroes([156]u8);
-
-            const modelPtr = @as([*]const u8, @ptrCast(&mesh.transform));
-            @memcpy(pushData[0..64], modelPtr[0..64]);
-
             var packedInfo: u32 = 0;
             if (scn.animation_system != null and scn.skin_count > 0) {
                 shadows_log.debug("Checking skins for mesh {d}. Skin count: {d}", .{ m_i, scn.skin_count });
@@ -395,14 +402,13 @@ pub fn vk_shadow_render(s: *types.VulkanState, cmd: c.VkCommandBuffer) void {
                 }
             }
 
-            const infoPtr = @as([*]const u8, @ptrCast(&packedInfo));
-            @memcpy(pushData[132..136], infoPtr[0..4]);
-
             const cascadeIdx = @as(u32, @intCast(j_layer));
-            const casPtr = @as([*]const u8, @ptrCast(&cascadeIdx));
-            @memcpy(pushData[152..156], casPtr[0..4]);
+            var push = std.mem.zeroes(types.ShadowPushConstants);
+            push.model = mesh.transform;
+            push.packed_info = packedInfo;
+            push.cascade_index = cascadeIdx;
 
-            c.vkCmdPushConstants(cmd, pipe.shadowPipelineLayout, c.VK_SHADER_STAGE_VERTEX_BIT | c.VK_SHADER_STAGE_FRAGMENT_BIT, 0, 156, &pushData);
+            c.vkCmdPushConstants(cmd, pipe.shadowPipelineLayout, c.VK_SHADER_STAGE_VERTEX_BIT | c.VK_SHADER_STAGE_FRAGMENT_BIT, 0, @intCast(@sizeOf(types.ShadowPushConstants)), &push);
 
             if (@as(u64, indexOffset) + @as(u64, mesh.index_count) > @as(u64, pipe.totalIndexCount)) {
                 break;
@@ -457,18 +463,6 @@ pub fn vk_shadow_render(s: *types.VulkanState, cmd: c.VkCommandBuffer) void {
 
                 drawn_count += 1;
 
-                // TODO: Replace the manual byte packing with a typed push-constants struct.
-                var pushData = std.mem.zeroes([156]u8);
-
-                const modelPtr = @as([*]const u8, @ptrCast(&mesh.transform));
-                @memcpy(pushData[0..64], modelPtr[0..64]);
-
-                const texPtr = @as([*]const u8, @ptrCast(&texture_idx));
-                @memcpy(pushData[64..68], texPtr[0..4]);
-
-                const cutPtr = @as([*]const u8, @ptrCast(&alpha_cutoff));
-                @memcpy(pushData[68..72], cutPtr[0..4]);
-
                 var packedInfo: u32 = 0;
                 if (scn.animation_system != null and scn.skin_count > 0) {
                     const skins = @as([*]animation.CardinalSkin, @ptrCast(@alignCast(scn.skins.?)));
@@ -488,14 +482,15 @@ pub fn vk_shadow_render(s: *types.VulkanState, cmd: c.VkCommandBuffer) void {
                     }
                 }
 
-                const infoPtr = @as([*]const u8, @ptrCast(&packedInfo));
-                @memcpy(pushData[132..136], infoPtr[0..4]);
-
                 const cascadeIdx = @as(u32, @intCast(j_layer));
-                const casPtr = @as([*]const u8, @ptrCast(&cascadeIdx));
-                @memcpy(pushData[152..156], casPtr[0..4]);
+                var push = std.mem.zeroes(types.ShadowPushConstants);
+                push.model = mesh.transform;
+                push.texture_index = texture_idx;
+                push.alpha_cutoff = alpha_cutoff;
+                push.packed_info = packedInfo;
+                push.cascade_index = cascadeIdx;
 
-                c.vkCmdPushConstants(cmd, pipe.shadowPipelineLayout, c.VK_SHADER_STAGE_VERTEX_BIT | c.VK_SHADER_STAGE_FRAGMENT_BIT, 0, 156, &pushData);
+                c.vkCmdPushConstants(cmd, pipe.shadowPipelineLayout, c.VK_SHADER_STAGE_VERTEX_BIT | c.VK_SHADER_STAGE_FRAGMENT_BIT, 0, @intCast(@sizeOf(types.ShadowPushConstants)), &push);
 
                 if (@as(u64, indexOffset) + @as(u64, mesh.index_count) > @as(u64, pipe.totalIndexCount)) {
                     break;

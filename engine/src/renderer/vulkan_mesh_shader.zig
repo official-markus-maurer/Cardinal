@@ -328,7 +328,7 @@ pub export fn vk_mesh_shader_create_pipeline(s: ?*types.VulkanState, config: ?*c
     };
 
     var defaultMatBuffer: types.VulkanBuffer = undefined;
-    if (buffer_mgr.vk_buffer_create_device_local(@ptrCast(&defaultMatBuffer), vs.context.device, &vs.allocator, vs.commands.pools.?[0], vs.context.graphics_queue, &defaultMat, @sizeOf(DefaultMaterialData), c.VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT, vs)) {
+    if (buffer_mgr.vk_buffer_create_device_local(@ptrCast(&defaultMatBuffer), vs.context.device, &vs.allocator, vs.commands.pools.?[0], vs.context.graphics_queue, &defaultMat, @sizeOf(DefaultMaterialData), c.VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT | c.VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT, vs)) {
         pipe.defaultMaterialBuffer = defaultMatBuffer;
     } else {
         mesh_shader_log.err("Failed to create default material buffer", .{});
@@ -778,7 +778,7 @@ pub export fn vk_mesh_shader_create_draw_data(s: ?*types.VulkanState, meshlets: 
     // 1. Meshlet Buffer
     const meshletBufferSize = meshlet_count * @sizeOf(types.GpuMeshlet);
     var meshletBuffer: buffer_mgr.VulkanBuffer = undefined;
-    if (buffer_mgr.vk_buffer_create_device_local(&meshletBuffer, vs.context.device, &vs.allocator, vs.commands.pools.?[0], vs.context.graphics_queue, meshlets, meshletBufferSize, c.VK_BUFFER_USAGE_STORAGE_BUFFER_BIT, vs)) {
+    if (buffer_mgr.vk_buffer_create_device_local(&meshletBuffer, vs.context.device, &vs.allocator, vs.commands.pools.?[0], vs.context.graphics_queue, meshlets, meshletBufferSize, c.VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | c.VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT, vs)) {
         data.meshlet_buffer = meshletBuffer.handle;
         data.meshlet_memory = meshletBuffer.memory;
         data.meshlet_allocation = meshletBuffer.allocation;
@@ -790,7 +790,7 @@ pub export fn vk_mesh_shader_create_draw_data(s: ?*types.VulkanState, meshlets: 
 
     // 2. Vertex Buffer
     var vertexBuffer: buffer_mgr.VulkanBuffer = undefined;
-    if (buffer_mgr.vk_buffer_create_device_local(&vertexBuffer, vs.context.device, &vs.allocator, vs.commands.pools.?[0], vs.context.graphics_queue, vertices, vertex_size, c.VK_BUFFER_USAGE_STORAGE_BUFFER_BIT, vs)) {
+    if (buffer_mgr.vk_buffer_create_device_local(&vertexBuffer, vs.context.device, &vs.allocator, vs.commands.pools.?[0], vs.context.graphics_queue, vertices, vertex_size, c.VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | c.VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT, vs)) {
         data.vertex_buffer = vertexBuffer.handle;
         data.vertex_memory = vertexBuffer.memory;
         data.vertex_allocation = vertexBuffer.allocation;
@@ -804,7 +804,7 @@ pub export fn vk_mesh_shader_create_draw_data(s: ?*types.VulkanState, meshlets: 
     // 3. Primitive Buffer
     const primitiveBufferSize = primitive_count * @sizeOf(u32);
     var primitiveBuffer: buffer_mgr.VulkanBuffer = undefined;
-    if (buffer_mgr.vk_buffer_create_device_local(&primitiveBuffer, vs.context.device, &vs.allocator, vs.commands.pools.?[0], vs.context.graphics_queue, primitives, primitiveBufferSize, c.VK_BUFFER_USAGE_STORAGE_BUFFER_BIT, vs)) {
+    if (buffer_mgr.vk_buffer_create_device_local(&primitiveBuffer, vs.context.device, &vs.allocator, vs.commands.pools.?[0], vs.context.graphics_queue, primitives, primitiveBufferSize, c.VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | c.VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT, vs)) {
         data.primitive_buffer = primitiveBuffer.handle;
         data.primitive_memory = primitiveBuffer.memory;
         data.primitive_allocation = primitiveBuffer.allocation;
@@ -832,7 +832,7 @@ pub export fn vk_mesh_shader_create_draw_data(s: ?*types.VulkanState, meshlets: 
     const drawCmdSize = @sizeOf(GpuDrawCommand);
 
     var drawCmdBuffer: buffer_mgr.VulkanBuffer = undefined;
-    if (buffer_mgr.vk_buffer_create_device_local(&drawCmdBuffer, vs.context.device, &vs.allocator, vs.commands.pools.?[0], vs.context.graphics_queue, &drawCmd, drawCmdSize, c.VK_BUFFER_USAGE_STORAGE_BUFFER_BIT, vs)) {
+    if (buffer_mgr.vk_buffer_create_device_local(&drawCmdBuffer, vs.context.device, &vs.allocator, vs.commands.pools.?[0], vs.context.graphics_queue, &drawCmd, drawCmdSize, c.VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | c.VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT, vs)) {
         data.draw_command_buffer = drawCmdBuffer.handle;
         data.draw_command_memory = drawCmdBuffer.memory;
         data.draw_command_allocation = drawCmdBuffer.allocation;
@@ -847,7 +847,7 @@ pub export fn vk_mesh_shader_create_draw_data(s: ?*types.VulkanState, meshlets: 
     const uboSize = @sizeOf(types.MeshShaderUniformBuffer);
     var uboInfo = std.mem.zeroes(buffer_mgr.VulkanBufferCreateInfo);
     uboInfo.size = uboSize;
-    uboInfo.usage = c.VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT;
+    uboInfo.usage = c.VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT | c.VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT;
     uboInfo.properties = c.VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | c.VK_MEMORY_PROPERTY_HOST_COHERENT_BIT;
     uboInfo.persistentlyMapped = true;
 

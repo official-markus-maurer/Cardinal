@@ -727,6 +727,8 @@ pub export fn cardinal_animation_set_time(system: ?*CardinalAnimationSystem, ani
 }
 
 /// Advances all active animation states and applies results to scene node transforms.
+///
+/// Maintains a per-node blend scratch buffer that grows geometrically to amortize allocations.
 pub export fn cardinal_animation_system_update(system: ?*CardinalAnimationSystem, all_nodes: ?[*]?*scene.CardinalSceneNode, all_node_count: u32, delta_time: f32) callconv(.c) void {
     if (system == null) return;
     const sys = system.?;
@@ -735,11 +737,23 @@ pub export fn cardinal_animation_system_update(system: ?*CardinalAnimationSystem
         const allocator = memory.cardinal_get_allocator_for_category(.ENGINE);
         if (sys.blend_states) |ptr| memory.cardinal_free(allocator, ptr);
 
-        // TODO: Use geometric growth for blend_state_capacity to reduce churn.
-        sys.blend_state_capacity = all_node_count + 100;
-        const ptr = memory.cardinal_calloc(allocator, sys.blend_state_capacity, @sizeOf(CardinalBlendState));
+        sys.blend_states = null;
+
+        var new_capacity: u32 = if (sys.blend_state_capacity > 0) sys.blend_state_capacity else 256;
+        while (new_capacity < all_node_count) {
+            const doubled = std.math.mul(u32, new_capacity, 2) catch all_node_count;
+            new_capacity = if (doubled < all_node_count) all_node_count else doubled;
+        }
+
+        const bytes = std.math.mul(usize, @as(usize, new_capacity), @sizeOf(CardinalBlendState)) catch {
+            sys.blend_state_capacity = 0;
+            return;
+        };
+
+        const ptr = memory.cardinal_alloc(allocator, bytes);
         if (ptr) |p| {
-            sys.blend_states = @ptrCast(@alignCast(p));
+            sys.blend_state_capacity = new_capacity;
+            sys.blend_states = @as([*]CardinalBlendState, @ptrCast(@alignCast(p)));
         } else {
             sys.blend_state_capacity = 0;
             return;

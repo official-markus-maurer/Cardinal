@@ -2,8 +2,6 @@
 //!
 //! Provides a simple action system (hashed names -> key/mouse bindings) layered via a stack of
 //! input layers. Also tracks cursor capture and per-frame mouse delta.
-//!
-//! TODO: Add per-action query variants (pressed/released/repeat) instead of only "pressed".
 const std = @import("std");
 const window = @import("window.zig");
 const builtin = @import("builtin");
@@ -42,7 +40,16 @@ pub const InputLayer = struct {
     blocking: bool,
 };
 
+const ActionFrameState = struct {
+    down: bool = false,
+    pressed: bool = false,
+    released: bool = false,
+    repeated: bool = false,
+    repeat_next_ns: u64 = 0,
+};
+
 var g_action_map: std.AutoHashMapUnmanaged(ActionId, ActionBinding) = .{};
+var g_action_state_map: std.AutoHashMapUnmanaged(ActionId, ActionFrameState) = .{};
 var g_layer_stack: std.ArrayListUnmanaged(InputLayer) = .{};
 var g_allocator: std.mem.Allocator = undefined;
 
@@ -51,6 +58,7 @@ pub fn init(allocator: std.mem.Allocator) void {
     g_input_state = .{};
     g_allocator = allocator;
     g_action_map = .{};
+    g_action_state_map = .{};
     g_layer_stack = .{};
 
     pushLayer("Global", false);
@@ -64,6 +72,7 @@ pub fn shutdown() void {
         entry.value_ptr.mouse_buttons.deinit(g_allocator);
     }
     g_action_map.deinit(g_allocator);
+    g_action_state_map.deinit(g_allocator);
     g_layer_stack.deinit(g_allocator);
 }
 
@@ -121,12 +130,7 @@ pub fn registerActionMouseButtonWithLayer(name: []const u8, button: c_int, layer
     result.value_ptr.mouse_buttons.append(g_allocator, button) catch return;
 }
 
-/// Returns true if any binding for `name` is currently active (respecting layer stack).
-pub fn isActionPressed(win: *const window.CardinalWindow, name: []const u8) bool {
-    const id = std.hash.Wyhash.hash(0, name);
-    const binding = g_action_map.get(id) orelse return false;
-
-    // Check if layer is active
+fn isActionDownWithBinding(win: *const window.CardinalWindow, binding: *const ActionBinding) bool {
     if (!isLayerActive(binding.layer_id)) return false;
 
     for (binding.keys.items) |key| {
@@ -136,6 +140,31 @@ pub fn isActionPressed(win: *const window.CardinalWindow, name: []const u8) bool
         if (isMouseButtonPressed(win, btn)) return true;
     }
     return false;
+}
+
+/// Returns true if any binding for `name` is currently active (respecting layer stack).
+pub fn isActionPressed(win: *const window.CardinalWindow, name: []const u8) bool {
+    const id = std.hash.Wyhash.hash(0, name);
+    const binding = g_action_map.getPtr(id) orelse return false;
+    return isActionDownWithBinding(win, binding);
+}
+
+pub fn isActionJustPressed(name: []const u8) bool {
+    const id = std.hash.Wyhash.hash(0, name);
+    const st = g_action_state_map.get(id) orelse return false;
+    return st.pressed;
+}
+
+pub fn isActionJustReleased(name: []const u8) bool {
+    const id = std.hash.Wyhash.hash(0, name);
+    const st = g_action_state_map.get(id) orelse return false;
+    return st.released;
+}
+
+pub fn isActionRepeat(name: []const u8) bool {
+    const id = std.hash.Wyhash.hash(0, name);
+    const st = g_action_state_map.get(id) orelse return false;
+    return st.repeated;
 }
 
 fn isLayerActive(target_layer_id: LayerId) bool {
@@ -180,6 +209,11 @@ pub fn getCursorPos(win: *const window.CardinalWindow) struct { x: f64, y: f64 }
 pub fn update(win: *const window.CardinalWindow) void {
     if (win.handle == null) return;
 
+    const ts = std.time.nanoTimestamp();
+    const now_ns: u64 = if (ts <= 0) 0 else @as(u64, @intCast(ts));
+    const repeat_delay_ns: u64 = 400 * std.time.ns_per_ms;
+    const repeat_interval_ns: u64 = 50 * std.time.ns_per_ms;
+
     var x: f64 = 0;
     var y: f64 = 0;
     c.glfwGetCursorPos(@as(*c.GLFWwindow, @ptrCast(win.handle)), &x, &y);
@@ -194,6 +228,42 @@ pub fn update(win: *const window.CardinalWindow) void {
     g_input_state.mouse_delta_y = g_input_state.last_y - y;
     g_input_state.last_x = x;
     g_input_state.last_y = y;
+
+    var it = g_action_map.iterator();
+    while (it.next()) |entry| {
+        const action_id = entry.key_ptr.*;
+        const binding = entry.value_ptr;
+
+        const down = isActionDownWithBinding(win, binding);
+        var st_entry = g_action_state_map.getOrPut(g_allocator, action_id) catch continue;
+        if (!st_entry.found_existing) {
+            st_entry.value_ptr.* = .{};
+        }
+
+        const prev_down = st_entry.value_ptr.down;
+        st_entry.value_ptr.down = down;
+        st_entry.value_ptr.pressed = down and !prev_down;
+        st_entry.value_ptr.released = !down and prev_down;
+
+        if (!down) {
+            st_entry.value_ptr.repeated = false;
+            st_entry.value_ptr.repeat_next_ns = 0;
+            continue;
+        }
+
+        if (st_entry.value_ptr.pressed) {
+            st_entry.value_ptr.repeated = true;
+            st_entry.value_ptr.repeat_next_ns = now_ns + repeat_delay_ns;
+            continue;
+        }
+
+        if (st_entry.value_ptr.repeat_next_ns != 0 and now_ns >= st_entry.value_ptr.repeat_next_ns) {
+            st_entry.value_ptr.repeated = true;
+            st_entry.value_ptr.repeat_next_ns = now_ns + repeat_interval_ns;
+        } else {
+            st_entry.value_ptr.repeated = false;
+        }
+    }
 }
 
 /// Returns the current frame mouse delta.

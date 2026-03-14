@@ -721,14 +721,6 @@ pub export fn vk_recreate_swapchain(s: ?*types.VulkanState) callconv(.c) bool {
         }
     }
 
-    // TODO: Decouple SSAO resource lifetime from swapchain recreation.
-    if (vs.pipelines.use_ssao) {
-        if (!vk_ssao.vk_ssao_resize(vs, vs.swapchain.extent.width, vs.swapchain.extent.height)) {
-            swap_log.err("Failed to resize SSAO resources", .{});
-            vs.pipelines.use_ssao = false;
-        }
-    }
-
     vs.swapchain.consecutive_recreation_failures = 0;
 
     swap_log.info("Successfully recreated swapchain: {d}x{d} -> {d}x{d}", .{ backup.extent.width, backup.extent.height, vs.swapchain.extent.width, vs.swapchain.extent.height });
