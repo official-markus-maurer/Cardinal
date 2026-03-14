@@ -1,5 +1,5 @@
 {
-  "version": 2,
+  "version": 3,
   "models": [
     {
       "file_path": "assets\\models\\main_sponza\\NewSponza_Main_glTF_003.gltf",
@@ -26,6 +26,9 @@
           "position": [-3.0042202, 2.762083, 0.23737328],
           "rotation": [0, 0, 0, 1],
           "scale": [1, 1, 1]
+        },
+        "Node": {
+          "type": "Node3D"
         }
       }
     },
@@ -37,6 +40,9 @@
           "position": [6.4778843, 1.0242811, -0.7594153],
           "rotation": [0, 0, 0, 1],
           "scale": [1, 1, 1]
+        },
+        "Node": {
+          "type": "Node3D"
         }
       }
     },
@@ -55,6 +61,9 @@
           "position": [0, 0, 0],
           "rotation": [0, 0, 0, 1],
           "scale": [1, 1, 1]
+        },
+        "Node": {
+          "type": "Node3D"
         }
       }
     },
@@ -73,6 +82,9 @@
           "position": [0.14015014, 4.0691648, 3.0872087],
           "rotation": [0, 0, 0, 1],
           "scale": [1, 1, 1]
+        },
+        "Node": {
+          "type": "Node3D"
         },
         "MeshRenderer": {
           "mesh_id": 0,
@@ -116,6 +128,9 @@
           "rotation": [0, 0, 0, 1],
           "scale": [1, 1, 1]
         },
+        "Node": {
+          "type": "Node3D"
+        },
         "MeshRenderer": {
           "mesh_id": 2,
           "material_id": 0,
@@ -158,6 +173,9 @@
           "rotation": [0, -0.00000008742278, 0, 1],
           "scale": [1, 1, 1]
         },
+        "Node": {
+          "type": "Node3D"
+        },
         "MeshRenderer": {
           "mesh_id": 4,
           "material_id": 2,
@@ -199,6 +217,9 @@
           "position": [0.40212217, 4.0961604, -0.15080445],
           "rotation": [0, 0, 0, 1],
           "scale": [1, 1, 1]
+        },
+        "Node": {
+          "type": "Node3D"
         },
         "MeshRenderer": {
           "mesh_id": 6,
@@ -258,6 +279,9 @@
           "position": [15.272646, 3.912449, -2.094284],
           "rotation": [0, 0, 0, 1],
           "scale": [1, 1, 1]
+        },
+        "Node": {
+          "type": "Node3D"
         },
         "MeshRenderer": {
           "mesh_id": 9,
@@ -352,6 +376,9 @@
           "rotation": [0, 0, 0, 1],
           "scale": [1, 1, 1]
         },
+        "Node": {
+          "type": "Node3D"
+        },
         "MeshRenderer": {
           "mesh_id": 14,
           "material_id": 9,
@@ -393,6 +420,9 @@
           "position": [4.207321, -0.012799835, -0.04089896],
           "rotation": [0, 0, 0, 1],
           "scale": [1, 1, 1]
+        },
+        "Node": {
+          "type": "Node3D"
         },
         "MeshRenderer": {
           "mesh_id": 16,
@@ -436,6 +466,9 @@
           "rotation": [0, 0, 0, 1],
           "scale": [1, 1, 1]
         },
+        "Node": {
+          "type": "Node3D"
+        },
         "MeshRenderer": {
           "mesh_id": 18,
           "material_id": 9,
@@ -477,6 +510,9 @@
           "position": [-3.8963153, -0.011481476, -0.036933966],
           "rotation": [0, 0, 0, 1],
           "scale": [1, 1, 1]
+        },
+        "Node": {
+          "type": "Node3D"
         },
         "MeshRenderer": {
           "mesh_id": 20,
@@ -520,6 +556,9 @@
           "rotation": [0, 0, 0, 1],
           "scale": [1, 1, 1]
         },
+        "Node": {
+          "type": "Node3D"
+        },
         "MeshRenderer": {
           "mesh_id": 22,
           "material_id": 9,
@@ -561,6 +600,9 @@
           "position": [15.610797, 3.8830862, -0.9186579],
           "rotation": [0, 0, 0, 1],
           "scale": [1, 1, 1]
+        },
+        "Node": {
+          "type": "Node3D"
         },
         "MeshRenderer": {
           "mesh_id": 24,
@@ -621,6 +663,9 @@
           "rotation": [0, 0, 0, 1],
           "scale": [1, 1, 1]
         },
+        "Node": {
+          "type": "Node3D"
+        },
         "MeshRenderer": {
           "mesh_id": 27,
           "material_id": 2,
@@ -679,6 +724,9 @@
           "position": [15.481618, 1.5200446, 1.4644958],
           "rotation": [0, 0, 0, 1],
           "scale": [1, 1, 1]
+        },
+        "Node": {
+          "type": "Node3D"
         },
         "MeshRenderer": {
           "mesh_id": 30,
@@ -756,6 +804,9 @@
           "rotation": [0, 0, 0, 1],
           "scale": [1, 1, 1]
         },
+        "Node": {
+          "type": "Node3D"
+        },
         "MeshRenderer": {
           "mesh_id": 34,
           "material_id": 7,
@@ -814,6 +865,9 @@
           "position": [6.1955514, 1.7943835, 6.1333275],
           "rotation": [0, 0, 0, 1],
           "scale": [1, 1, 1]
+        },
+        "Node": {
+          "type": "Node3D"
         },
         "MeshRenderer": {
           "mesh_id": 37,
@@ -874,6 +928,9 @@
           "rotation": [0, 0, 0, 1],
           "scale": [1, 1, 1]
         },
+        "Node": {
+          "type": "Node3D"
+        },
         "MeshRenderer": {
           "mesh_id": 40,
           "material_id": 15,
@@ -932,6 +989,9 @@
           "position": [-1.8183588, 1.7943835, 6.1333275],
           "rotation": [0, 0, 0, 1],
           "scale": [1, 1, 1]
+        },
+        "Node": {
+          "type": "Node3D"
         },
         "MeshRenderer": {
           "mesh_id": 43,
@@ -992,6 +1052,9 @@
           "rotation": [0, 0, 0, 1],
           "scale": [1, 1, 1]
         },
+        "Node": {
+          "type": "Node3D"
+        },
         "MeshRenderer": {
           "mesh_id": 46,
           "material_id": 15,
@@ -1050,6 +1113,9 @@
           "position": [-11.230161, 1.7943835, 4.657639],
           "rotation": [0, 0, 0, 1],
           "scale": [1, 1, 1]
+        },
+        "Node": {
+          "type": "Node3D"
         },
         "MeshRenderer": {
           "mesh_id": 49,
@@ -1110,6 +1176,9 @@
           "rotation": [0, 0, 0, 1],
           "scale": [1, 1, 1]
         },
+        "Node": {
+          "type": "Node3D"
+        },
         "MeshRenderer": {
           "mesh_id": 52,
           "material_id": 15,
@@ -1168,6 +1237,9 @@
           "position": [-2.0485272, 1.8174022, -6.098108],
           "rotation": [0, 0, 0, 1],
           "scale": [1, 1, 1]
+        },
+        "Node": {
+          "type": "Node3D"
         },
         "MeshRenderer": {
           "mesh_id": 55,
@@ -1244,6 +1316,9 @@
           "position": [-9.992214, 1.8124776, -4.9496727],
           "rotation": [0, 0, 0, 1],
           "scale": [1, 1, 1]
+        },
+        "Node": {
+          "type": "Node3D"
         },
         "MeshRenderer": {
           "mesh_id": 59,
@@ -1355,6 +1430,9 @@
           "rotation": [0, 0, 0, 1],
           "scale": [1, 1, 1]
         },
+        "Node": {
+          "type": "Node3D"
+        },
         "MeshRenderer": {
           "mesh_id": 65,
           "material_id": 1,
@@ -1379,6 +1457,9 @@
           "position": [2.0093212, 2.1693685, -0.03623718],
           "rotation": [0, 0, 0, 1],
           "scale": [1, 1, 1]
+        },
+        "Node": {
+          "type": "Node3D"
         },
         "MeshRenderer": {
           "mesh_id": 66,
@@ -1456,6 +1537,9 @@
           "rotation": [0, 0, 0, 1],
           "scale": [1, 1, 1]
         },
+        "Node": {
+          "type": "Node3D"
+        },
         "MeshRenderer": {
           "mesh_id": 70,
           "material_id": 17,
@@ -1497,6 +1581,9 @@
           "position": [14.160348, 1.8342667, -2.4963994],
           "rotation": [0, 0, 0, 1],
           "scale": [1, 1, 1]
+        },
+        "Node": {
+          "type": "Node3D"
         },
         "MeshRenderer": {
           "mesh_id": 72,
@@ -1574,6 +1661,9 @@
           "rotation": [0, 0, 0, 1],
           "scale": [1, 1, 1]
         },
+        "Node": {
+          "type": "Node3D"
+        },
         "MeshRenderer": {
           "mesh_id": 76,
           "material_id": 0,
@@ -1632,6 +1722,9 @@
           "position": [2.1830301, 4.823324, -4.795822],
           "rotation": [0, 0.25881907, 0, 0.9659258],
           "scale": [1, 1, 1]
+        },
+        "Node": {
+          "type": "Node3D"
         },
         "MeshRenderer": {
           "mesh_id": 79,
@@ -1692,6 +1785,9 @@
           "rotation": [0, 0, 0, 1],
           "scale": [1, 1, 1]
         },
+        "Node": {
+          "type": "Node3D"
+        },
         "MeshRenderer": {
           "mesh_id": 82,
           "material_id": 2,
@@ -1750,6 +1846,9 @@
           "position": [10.027344, 4.823324, -4.795822],
           "rotation": [0, -0.17364824, 0, 0.9848078],
           "scale": [1, 1, 1]
+        },
+        "Node": {
+          "type": "Node3D"
         },
         "MeshRenderer": {
           "mesh_id": 85,
@@ -1810,6 +1909,9 @@
           "rotation": [0, -0.08715576, 0, 0.9961947],
           "scale": [0.9999999, 1, 0.9999999]
         },
+        "Node": {
+          "type": "Node3D"
+        },
         "MeshRenderer": {
           "mesh_id": 88,
           "material_id": 2,
@@ -1868,6 +1970,9 @@
           "position": [-9.825387, 4.823324, -4.794542],
           "rotation": [0, -0.25881907, 0, 0.9659258],
           "scale": [1, 1, 1]
+        },
+        "Node": {
+          "type": "Node3D"
         },
         "MeshRenderer": {
           "mesh_id": 91,
@@ -1928,6 +2033,9 @@
           "rotation": [0, -0.53729963, 0, 0.8433914],
           "scale": [1, 1, 1]
         },
+        "Node": {
+          "type": "Node3D"
+        },
         "MeshRenderer": {
           "mesh_id": 94,
           "material_id": 2,
@@ -1986,6 +2094,9 @@
           "position": [-1.852336, 4.823324, 4.739069],
           "rotation": [0, 0, 0, 1],
           "scale": [1, 1, 1]
+        },
+        "Node": {
+          "type": "Node3D"
         },
         "MeshRenderer": {
           "mesh_id": 97,
@@ -2046,6 +2157,9 @@
           "rotation": [0, -0.08715576, 0, 0.9961947],
           "scale": [0.9999999, 1, 0.9999999]
         },
+        "Node": {
+          "type": "Node3D"
+        },
         "MeshRenderer": {
           "mesh_id": 100,
           "material_id": 2,
@@ -2104,6 +2218,9 @@
           "position": [-9.825387, 4.823324, 4.740349],
           "rotation": [0, -0.25881907, 0, 0.9659258],
           "scale": [1, 1, 1]
+        },
+        "Node": {
+          "type": "Node3D"
         },
         "MeshRenderer": {
           "mesh_id": 103,
@@ -2164,6 +2281,9 @@
           "rotation": [0, 0.1305262, 0, 0.9914449],
           "scale": [1, 1, 1]
         },
+        "Node": {
+          "type": "Node3D"
+        },
         "MeshRenderer": {
           "mesh_id": 106,
           "material_id": 2,
@@ -2222,6 +2342,9 @@
           "position": [2.1830301, 4.823324, 4.739069],
           "rotation": [0, 0.25881907, 0, 0.9659258],
           "scale": [1, 1, 1]
+        },
+        "Node": {
+          "type": "Node3D"
         },
         "MeshRenderer": {
           "mesh_id": 109,
@@ -2282,6 +2405,9 @@
           "rotation": [0, 0, 0, 1],
           "scale": [1, 1, 1]
         },
+        "Node": {
+          "type": "Node3D"
+        },
         "MeshRenderer": {
           "mesh_id": 112,
           "material_id": 2,
@@ -2340,6 +2466,9 @@
           "position": [4.0554175, -0.42519408, -0.04547119],
           "rotation": [0, 0, 0, 1],
           "scale": [1, 1, 1]
+        },
+        "Node": {
+          "type": "Node3D"
         },
         "MeshRenderer": {
           "mesh_id": 115,
@@ -2416,6 +2545,9 @@
           "position": [2.0093212, 2.1693685, -0.03623718],
           "rotation": [0, 0, 0, 1],
           "scale": [1, 1, 1]
+        },
+        "Node": {
+          "type": "Node3D"
         },
         "MeshRenderer": {
           "mesh_id": 119,
@@ -2595,6 +2727,9 @@
           "rotation": [0, -0.00000008742278, 0, 1],
           "scale": [1, 1, 1]
         },
+        "Node": {
+          "type": "Node3D"
+        },
         "MeshRenderer": {
           "mesh_id": 129,
           "material_id": 0,
@@ -2654,6 +2789,9 @@
           "rotation": [0, -0.7071068, 0, 0.7071067],
           "scale": [0.46996292, 0.46996295, 0.46996292]
         },
+        "Node": {
+          "type": "Node3D"
+        },
         "MeshRenderer": {
           "mesh_id": 132,
           "material_id": 20,
@@ -2679,6 +2817,9 @@
           "rotation": [-0.49999985, -0.5000001, 0.50000024, 0.49999985],
           "scale": [1, 1, 1.0000001]
         },
+        "Node": {
+          "type": "Node3D"
+        },
         "MeshRenderer": {
           "mesh_id": 133,
           "material_id": 21,
@@ -2703,6 +2844,9 @@
           "position": [2.0093212, 2.1693685, -0.03623718],
           "rotation": [0, 0, 0, 1],
           "scale": [1, 1, 1]
+        },
+        "Node": {
+          "type": "Node3D"
         },
         "MeshRenderer": {
           "mesh_id": 134,
@@ -2762,6 +2906,9 @@
           "position": [0, 0, 0],
           "rotation": [0, 0, 0, 1],
           "scale": [1, 1, 1]
+        },
+        "Node": {
+          "type": "Node3D"
         }
       }
     },
@@ -2780,6 +2927,9 @@
           "position": [-8.144192, 6.1001606, 0.021669254],
           "rotation": [0, -0.00000008742278, 0, 1],
           "scale": [1, 1, 1]
+        },
+        "Node": {
+          "type": "Node3D"
         },
         "MeshRenderer": {
           "mesh_id": 137,
@@ -2823,6 +2973,9 @@
           "rotation": [0, 0, 0, 1],
           "scale": [1, 1, 1]
         },
+        "Node": {
+          "type": "Node3D"
+        },
         "MeshRenderer": {
           "mesh_id": 139,
           "material_id": 8,
@@ -2865,6 +3018,9 @@
           "rotation": [0, 0, 0, 1],
           "scale": [1, 1, 1]
         },
+        "Node": {
+          "type": "Node3D"
+        },
         "MeshRenderer": {
           "mesh_id": 141,
           "material_id": 8,
@@ -2906,6 +3062,9 @@
           "position": [-8.069544, 6.1085377, -2.9921136],
           "rotation": [0, 0, 0, 1],
           "scale": [1, 1, 1]
+        },
+        "Node": {
+          "type": "Node3D"
         },
         "MeshRenderer": {
           "mesh_id": 143,
@@ -2966,6 +3125,9 @@
           "rotation": [0, 0, -0.00000008742278, 1],
           "scale": [1, 1, 1]
         },
+        "Node": {
+          "type": "Node3D"
+        },
         "MeshRenderer": {
           "mesh_id": 146,
           "material_id": 1,
@@ -3024,6 +3186,9 @@
           "position": [0.14894958, 9.553944, -0.050252073],
           "rotation": [0, 0, 0, 1],
           "scale": [1, 1, 1]
+        },
+        "Node": {
+          "type": "Node3D"
         },
         "MeshRenderer": {
           "mesh_id": 149,
@@ -3118,6 +3283,9 @@
           "rotation": [0, 0, 0, 1],
           "scale": [1, 1, 1]
         },
+        "Node": {
+          "type": "Node3D"
+        },
         "MeshRenderer": {
           "mesh_id": 154,
           "material_id": 1,
@@ -3176,6 +3344,9 @@
           "position": [10.064915, 10.383441, 4.720072],
           "rotation": [0, 0, 0, 1],
           "scale": [1, 1, 1]
+        },
+        "Node": {
+          "type": "Node3D"
         },
         "MeshRenderer": {
           "mesh_id": 157,
@@ -3236,6 +3407,9 @@
           "rotation": [0, 0, 0, 1],
           "scale": [1, 1, 1]
         },
+        "Node": {
+          "type": "Node3D"
+        },
         "MeshRenderer": {
           "mesh_id": 160,
           "material_id": 19,
@@ -3295,6 +3469,9 @@
           "rotation": [0, 0, 0, 1],
           "scale": [1, 1, 1]
         },
+        "Node": {
+          "type": "Node3D"
+        },
         "MeshRenderer": {
           "mesh_id": 163,
           "material_id": 1,
@@ -3319,6 +3496,9 @@
           "position": [-3.8596532, 6.1085367, 3.1062744],
           "rotation": [0, 0, 0, 1],
           "scale": [1, 1, 1]
+        },
+        "Node": {
+          "type": "Node3D"
         },
         "MeshRenderer": {
           "mesh_id": 164,
@@ -3378,6 +3558,9 @@
           "position": [0.1429721, 6.1077566, 3.10325],
           "rotation": [0, 0, 0, 1],
           "scale": [1, 1, 1]
+        },
+        "Node": {
+          "type": "Node3D"
         },
         "MeshRenderer": {
           "mesh_id": 167,
@@ -3455,6 +3638,9 @@
           "rotation": [0, 0, 0, 1],
           "scale": [1, 1, 1]
         },
+        "Node": {
+          "type": "Node3D"
+        },
         "MeshRenderer": {
           "mesh_id": 171,
           "material_id": 9,
@@ -3530,6 +3716,9 @@
           "position": [8.318652, 6.1085386, 2.9791896],
           "rotation": [0, 0, 0, 1],
           "scale": [1, 1, 1]
+        },
+        "Node": {
+          "type": "Node3D"
         },
         "MeshRenderer": {
           "mesh_id": 175,
@@ -3607,6 +3796,9 @@
           "rotation": [0, 0, 0, 1],
           "scale": [1, 1, 1]
         },
+        "Node": {
+          "type": "Node3D"
+        },
         "MeshRenderer": {
           "mesh_id": 179,
           "material_id": 1,
@@ -3665,6 +3857,9 @@
           "position": [0.14740081, 6.1077557, -3.1207604],
           "rotation": [0, 0, 0, 1],
           "scale": [1, 1, 1]
+        },
+        "Node": {
+          "type": "Node3D"
         },
         "MeshRenderer": {
           "mesh_id": 182,
@@ -3742,6 +3937,9 @@
           "rotation": [0, 0, 0, 1],
           "scale": [1, 1, 1]
         },
+        "Node": {
+          "type": "Node3D"
+        },
         "MeshRenderer": {
           "mesh_id": 186,
           "material_id": 1,
@@ -3800,6 +3998,9 @@
           "position": [8.317799, 6.108539, -2.9828436],
           "rotation": [0, 0, 0, 1],
           "scale": [1, 1, 1]
+        },
+        "Node": {
+          "type": "Node3D"
         },
         "MeshRenderer": {
           "mesh_id": 189,
@@ -3860,6 +4061,9 @@
           "rotation": [0, 0, 0, 1],
           "scale": [1, 1, 1]
         },
+        "Node": {
+          "type": "Node3D"
+        },
         "MeshRenderer": {
           "mesh_id": 192,
           "material_id": 8,
@@ -3901,6 +4105,9 @@
           "position": [2.1651018, 6.1001606, -3.0848207],
           "rotation": [0, 0, 0, 1],
           "scale": [1, 1, 1]
+        },
+        "Node": {
+          "type": "Node3D"
         },
         "MeshRenderer": {
           "mesh_id": 194,
@@ -3944,6 +4151,9 @@
           "rotation": [0, 0, 0, 1],
           "scale": [1, 1, 1]
         },
+        "Node": {
+          "type": "Node3D"
+        },
         "MeshRenderer": {
           "mesh_id": 196,
           "material_id": 8,
@@ -3985,6 +4195,9 @@
           "position": [-1.8683826, 6.1001606, 3.0724497],
           "rotation": [0, 0, 0, 1],
           "scale": [1, 1, 1]
+        },
+        "Node": {
+          "type": "Node3D"
         },
         "MeshRenderer": {
           "mesh_id": 198,
@@ -4028,6 +4241,9 @@
           "rotation": [0, 0, 0, 1],
           "scale": [1, 1, 1]
         },
+        "Node": {
+          "type": "Node3D"
+        },
         "MeshRenderer": {
           "mesh_id": 200,
           "material_id": 8,
@@ -4069,6 +4285,9 @@
           "position": [6.17025, 6.1001606, 3.072448],
           "rotation": [0, 0, 0, 1],
           "scale": [1, 1, 1]
+        },
+        "Node": {
+          "type": "Node3D"
         },
         "MeshRenderer": {
           "mesh_id": 202,
@@ -4112,6 +4331,9 @@
           "rotation": [0, 0, 0, 1],
           "scale": [1, 1, 1]
         },
+        "Node": {
+          "type": "Node3D"
+        },
         "MeshRenderer": {
           "mesh_id": 204,
           "material_id": 8,
@@ -4153,6 +4375,9 @@
           "position": [2.2743313, 5.4509306, -7.4685016],
           "rotation": [0, 0, 0, 1],
           "scale": [1, 1, 1]
+        },
+        "Node": {
+          "type": "Node3D"
         },
         "MeshRenderer": {
           "mesh_id": 206,
@@ -4264,6 +4489,9 @@
           "rotation": [0, 0, 0, 1],
           "scale": [1, 1, 1]
         },
+        "Node": {
+          "type": "Node3D"
+        },
         "MeshRenderer": {
           "mesh_id": 212,
           "material_id": 7,
@@ -4374,6 +4602,9 @@
           "rotation": [0, 0, 0, 1],
           "scale": [1, 1, 1]
         },
+        "Node": {
+          "type": "Node3D"
+        },
         "MeshRenderer": {
           "mesh_id": 218,
           "material_id": 0,
@@ -4466,6 +4697,9 @@
           "position": [10.058539, 5.4509306, -7.468504],
           "rotation": [0, 0, 0, 1],
           "scale": [1, 1, 1]
+        },
+        "Node": {
+          "type": "Node3D"
         },
         "MeshRenderer": {
           "mesh_id": 223,
@@ -4577,6 +4811,9 @@
           "rotation": [0, 0, 0, 1],
           "scale": [1, 1, 1]
         },
+        "Node": {
+          "type": "Node3D"
+        },
         "MeshRenderer": {
           "mesh_id": 229,
           "material_id": 7,
@@ -4687,6 +4924,9 @@
           "rotation": [0, 0, 0, 1],
           "scale": [1, 1, 1]
         },
+        "Node": {
+          "type": "Node3D"
+        },
         "MeshRenderer": {
           "mesh_id": 235,
           "material_id": 8,
@@ -4779,6 +5019,9 @@
           "position": [-12.421672, 5.4509296, -4.708145],
           "rotation": [0, 0, 0, 1],
           "scale": [1, 1, 1]
+        },
+        "Node": {
+          "type": "Node3D"
         },
         "MeshRenderer": {
           "mesh_id": 240,
@@ -4890,6 +5133,9 @@
           "rotation": [0, 0, 0, 1],
           "scale": [1, 1, 1]
         },
+        "Node": {
+          "type": "Node3D"
+        },
         "MeshRenderer": {
           "mesh_id": 246,
           "material_id": 7,
@@ -4999,6 +5245,9 @@
           "position": [2.2569923, 5.4509296, 7.430117],
           "rotation": [0, 0, 0, 1],
           "scale": [1, 1, 1]
+        },
+        "Node": {
+          "type": "Node3D"
         },
         "MeshRenderer": {
           "mesh_id": 252,
@@ -5110,6 +5359,9 @@
           "rotation": [0, 0, 0, 1],
           "scale": [1, 1, 1]
         },
+        "Node": {
+          "type": "Node3D"
+        },
         "MeshRenderer": {
           "mesh_id": 258,
           "material_id": 7,
@@ -5219,6 +5471,9 @@
           "position": [-5.84104, 5.4509296, 7.4301195],
           "rotation": [0, 0, 0, 1],
           "scale": [1, 1, 1]
+        },
+        "Node": {
+          "type": "Node3D"
         },
         "MeshRenderer": {
           "mesh_id": 264,
@@ -5330,6 +5585,9 @@
           "rotation": [0, 0, 0, 1],
           "scale": [1, 1, 1]
         },
+        "Node": {
+          "type": "Node3D"
+        },
         "MeshRenderer": {
           "mesh_id": 270,
           "material_id": 7,
@@ -5440,6 +5698,9 @@
           "rotation": [0, 0, 0, 1],
           "scale": [1, 1, 1]
         },
+        "Node": {
+          "type": "Node3D"
+        },
         "MeshRenderer": {
           "mesh_id": 276,
           "material_id": 0,
@@ -5533,6 +5794,9 @@
           "rotation": [0, 0, 0, 1],
           "scale": [1, 1, 1]
         },
+        "Node": {
+          "type": "Node3D"
+        },
         "MeshRenderer": {
           "mesh_id": 281,
           "material_id": 0,
@@ -5625,6 +5889,9 @@
           "position": [-5.742909, 5.4509306, -7.4685016],
           "rotation": [0, 0, 0, 1],
           "scale": [1, 1, 1]
+        },
+        "Node": {
+          "type": "Node3D"
         },
         "MeshRenderer": {
           "mesh_id": 286,
@@ -5736,6 +6003,9 @@
           "rotation": [0, 0.043619394, 0, 0.99904823],
           "scale": [1, 1, 1]
         },
+        "Node": {
+          "type": "Node3D"
+        },
         "MeshRenderer": {
           "mesh_id": 292,
           "material_id": 2,
@@ -5794,6 +6064,9 @@
           "position": [-5.847364, 10.383441, 4.670384],
           "rotation": [0, 0.64278764, 0, 0.76604444],
           "scale": [1, 1, 1]
+        },
+        "Node": {
+          "type": "Node3D"
         },
         "MeshRenderer": {
           "mesh_id": 295,
@@ -5854,6 +6127,9 @@
           "rotation": [0, 0.8433915, 0, 0.5372996],
           "scale": [1, 1, 1]
         },
+        "Node": {
+          "type": "Node3D"
+        },
         "MeshRenderer": {
           "mesh_id": 298,
           "material_id": 2,
@@ -5912,6 +6188,9 @@
           "position": [2.1634457, 10.383441, -4.6953483],
           "rotation": [0, -0.1305262, 0, 0.9914449],
           "scale": [0.9999999, 1, 0.9999999]
+        },
+        "Node": {
+          "type": "Node3D"
         },
         "MeshRenderer": {
           "mesh_id": 301,
@@ -5972,6 +6251,9 @@
           "rotation": [0, 0.8660254, 0, 0.5],
           "scale": [1, 1, 1]
         },
+        "Node": {
+          "type": "Node3D"
+        },
         "MeshRenderer": {
           "mesh_id": 304,
           "material_id": 2,
@@ -6030,6 +6312,9 @@
           "position": [-9.753705, 10.383441, -4.7264633],
           "rotation": [0, 0.7372774, 0, 0.67559016],
           "scale": [1, 1, 1]
+        },
+        "Node": {
+          "type": "Node3D"
         },
         "MeshRenderer": {
           "mesh_id": 307,
@@ -6090,6 +6375,9 @@
           "rotation": [0, 0.25881907, 0, 0.9659258],
           "scale": [1, 1, 1]
         },
+        "Node": {
+          "type": "Node3D"
+        },
         "MeshRenderer": {
           "mesh_id": 310,
           "material_id": 2,
@@ -6149,6 +6437,9 @@
           "rotation": [0, 0, 0, 1],
           "scale": [1, 1, 1]
         },
+        "Node": {
+          "type": "Node3D"
+        },
         "MeshRenderer": {
           "mesh_id": 313,
           "material_id": 4,
@@ -6191,6 +6482,9 @@
           "rotation": [0, 1, 0, 0.000000011924881],
           "scale": [1, 1, 1]
         },
+        "Node": {
+          "type": "Node3D"
+        },
         "MeshRenderer": {
           "mesh_id": 315,
           "material_id": 21,
@@ -6215,6 +6509,9 @@
           "position": [0, 0, 0],
           "rotation": [0, 0, 0, 1],
           "scale": [1, 1, 1]
+        },
+        "Node": {
+          "type": "Node3D"
         }
       }
     },
@@ -6233,6 +6530,9 @@
           "position": [-11.028592, 16.175005, 5.498769],
           "rotation": [0, 0, 0, 1],
           "scale": [1, 1, 1]
+        },
+        "Node": {
+          "type": "Node3D"
         },
         "MeshRenderer": {
           "mesh_id": 316,
@@ -6276,6 +6576,9 @@
           "rotation": [0, 0, 0, 1],
           "scale": [1, 1, 1]
         },
+        "Node": {
+          "type": "Node3D"
+        },
         "MeshRenderer": {
           "mesh_id": 318,
           "material_id": 8,
@@ -6317,6 +6620,9 @@
           "position": [1.0220263, 12.184655, 0.006693878],
           "rotation": [0, 0, 0, 1],
           "scale": [1, 1, 1]
+        },
+        "Node": {
+          "type": "Node3D"
         },
         "MeshRenderer": {
           "mesh_id": 320,
@@ -6394,6 +6700,9 @@
           "rotation": [0, 0, 0, 1],
           "scale": [1, 1, 1]
         },
+        "Node": {
+          "type": "Node3D"
+        },
         "MeshRenderer": {
           "mesh_id": 324,
           "material_id": 27,
@@ -6418,6 +6727,9 @@
           "position": [0.8993909, 15.942468, -0.0030139158],
           "rotation": [0, 0, 0, 1],
           "scale": [1, 1, 1]
+        },
+        "Node": {
+          "type": "Node3D"
         },
         "MeshRenderer": {
           "mesh_id": 325,
@@ -6461,6 +6773,9 @@
           "rotation": [0, 0, 0, 1],
           "scale": [1, 1, 1]
         },
+        "Node": {
+          "type": "Node3D"
+        },
         "MeshRenderer": {
           "mesh_id": 327,
           "material_id": 8,
@@ -6503,6 +6818,9 @@
           "rotation": [0, 0, 0, 1],
           "scale": [1, 1, 1]
         },
+        "Node": {
+          "type": "Node3D"
+        },
         "MeshRenderer": {
           "mesh_id": 329,
           "material_id": 8,
@@ -6544,6 +6862,9 @@
           "position": [10.204414, 16.703466, 0.14466888],
           "rotation": [0, -0.00000008742278, 0, 1],
           "scale": [1, 1, 1]
+        },
+        "Node": {
+          "type": "Node3D"
         },
         "MeshRenderer": {
           "mesh_id": 331,
@@ -6672,6 +6993,9 @@
           "rotation": [0, -0.00000008742278, 0, 1],
           "scale": [1, 1, 1]
         },
+        "Node": {
+          "type": "Node3D"
+        },
         "MeshRenderer": {
           "mesh_id": 338,
           "material_id": 8,
@@ -6748,6 +7072,9 @@
           "rotation": [0, 0, 0, 1],
           "scale": [1, 1, 1]
         },
+        "Node": {
+          "type": "Node3D"
+        },
         "MeshRenderer": {
           "mesh_id": 342,
           "material_id": 8,
@@ -6790,6 +7117,9 @@
           "rotation": [0, -0.00000008742278, 0, 1],
           "scale": [1, 1, 1]
         },
+        "Node": {
+          "type": "Node3D"
+        },
         "MeshRenderer": {
           "mesh_id": 344,
           "material_id": 8,
@@ -6831,6 +7161,9 @@
           "position": [1.4462537, 13.452463, 0.049446717],
           "rotation": [0, 0, 0, 1],
           "scale": [1, 1, 1]
+        },
+        "Node": {
+          "type": "Node3D"
         },
         "MeshRenderer": {
           "mesh_id": 346,
@@ -6925,6 +7258,9 @@
           "rotation": [0, 0, 0, 1],
           "scale": [1, 1, 1]
         },
+        "Node": {
+          "type": "Node3D"
+        },
         "MeshRenderer": {
           "mesh_id": 351,
           "material_id": 0,
@@ -6983,6 +7319,9 @@
           "position": [0.12733795, 14.929462, -2.9162285],
           "rotation": [0, 0, 0, 1],
           "scale": [1, 1, 1]
+        },
+        "Node": {
+          "type": "Node3D"
         },
         "MeshRenderer": {
           "mesh_id": 354,
@@ -7043,6 +7382,9 @@
           "rotation": [0, 0, 0, 1],
           "scale": [1, 1, 1]
         },
+        "Node": {
+          "type": "Node3D"
+        },
         "MeshRenderer": {
           "mesh_id": 357,
           "material_id": 0,
@@ -7101,6 +7443,9 @@
           "position": [1.0220263, 12.184655, 0.006693878],
           "rotation": [0, 0, 0, 1],
           "scale": [1, 1, 1]
+        },
+        "Node": {
+          "type": "Node3D"
         },
         "MeshRenderer": {
           "mesh_id": 360,
@@ -7178,6 +7523,9 @@
           "rotation": [0, 0, 0, 1],
           "scale": [1, 1, 1]
         },
+        "Node": {
+          "type": "Node3D"
+        },
         "MeshRenderer": {
           "mesh_id": 364,
           "material_id": 1,
@@ -7253,6 +7601,9 @@
           "position": [1.0220263, 12.184655, 0.006693878],
           "rotation": [0, 0, 0, 1],
           "scale": [1, 1, 1]
+        },
+        "Node": {
+          "type": "Node3D"
         },
         "MeshRenderer": {
           "mesh_id": 368,
@@ -7330,6 +7681,9 @@
           "rotation": [0, 0, 0, 1],
           "scale": [1, 1, 1]
         },
+        "Node": {
+          "type": "Node3D"
+        },
         "MeshRenderer": {
           "mesh_id": 372,
           "material_id": 1,
@@ -7406,6 +7760,9 @@
           "rotation": [0, 0, 0, 1],
           "scale": [1, 1, 1]
         },
+        "Node": {
+          "type": "Node3D"
+        },
         "MeshRenderer": {
           "mesh_id": 376,
           "material_id": 21,
@@ -7423,6 +7780,9 @@
           "position": [-3.1591332, 7.6630297, -0.19915539],
           "rotation": [0, 0, 0, 1],
           "scale": [1, 1, 1]
+        },
+        "Node": {
+          "type": "Node3D"
         }
       }
     },
@@ -7434,6 +7794,9 @@
           "position": [-9.668017, 2.4927433, -2.255347],
           "rotation": [0, 0, 0, 1],
           "scale": [1, 1, 1]
+        },
+        "Node": {
+          "type": "Node3D"
         }
       }
     },
@@ -7445,6 +7808,9 @@
           "position": [-7.168819, 6.8690295, 4.4848757],
           "rotation": [0, 0, 0, 1],
           "scale": [1, 1, 1]
+        },
+        "Node": {
+          "type": "Node3D"
         }
       }
     },
@@ -7456,6 +7822,9 @@
           "position": [6.9656787, 3.3236206, -2.2177243],
           "rotation": [0, 0, 0, 1],
           "scale": [1, 1, 1]
+        },
+        "Node": {
+          "type": "Node3D"
         }
       }
     },
@@ -7467,6 +7836,9 @@
           "position": [8.55619, 6.634179, -0.35451406],
           "rotation": [0, 0, 0, 1],
           "scale": [1, 1, 1]
+        },
+        "Node": {
+          "type": "Node3D"
         }
       }
     },
@@ -7478,6 +7850,9 @@
           "position": [1.9864367, 0.0000005, 13.863933],
           "rotation": [0, 0, 0, 1],
           "scale": [1, 1, 1]
+        },
+        "Node": {
+          "type": "Node3D"
         },
         "MeshRenderer": {
           "mesh_id": 377,
@@ -7955,6 +8330,9 @@
           "position": [-0.41305023, 2.089697, -13.786082],
           "rotation": [0.00000005960464, -0.0000000000000013322676, 0.00000001490116, 1],
           "scale": [1, 1, 1]
+        },
+        "Node": {
+          "type": "Node3D"
         }
       }
     },
@@ -7966,6 +8344,9 @@
           "position": [-21.704859, 43.41434, -6.1498837],
           "rotation": [0.29870266, 0.68075705, 0.36124986, 0.56288993],
           "scale": [1.0000001, 1.0000001, 1]
+        },
+        "Node": {
+          "type": "Node3D"
         }
       }
     },
@@ -7977,6 +8358,9 @@
           "position": [15.619152, 3.2758443, -0.9174349],
           "rotation": [-0.000000029802322, 0.6495221, 0, 0.7603427],
           "scale": [0.99999994, 0.99999994, 0.99999994]
+        },
+        "Node": {
+          "type": "Node3D"
         }
       }
     },
@@ -7988,6 +8372,9 @@
           "position": [10.024332, 4.1713915, -4.7909956],
           "rotation": [-0.000000029802322, 0.6495221, 0, 0.7603427],
           "scale": [0.99999994, 0.99999994, 0.99999994]
+        },
+        "Node": {
+          "type": "Node3D"
         }
       }
     },
@@ -7999,6 +8386,9 @@
           "position": [6.141829, 4.1713915, -4.806306],
           "rotation": [-0.000000029802322, 0.6495221, 0, 0.7603427],
           "scale": [0.99999994, 0.99999994, 0.99999994]
+        },
+        "Node": {
+          "type": "Node3D"
         }
       }
     },
@@ -8010,6 +8400,9 @@
           "position": [2.1935785, 4.1713915, -4.806306],
           "rotation": [-0.000000029802322, 0.6495221, 0, 0.7603427],
           "scale": [0.99999994, 0.99999994, 0.99999994]
+        },
+        "Node": {
+          "type": "Node3D"
         }
       }
     },
@@ -8021,6 +8414,9 @@
           "position": [-1.849446, 4.1713915, -4.806306],
           "rotation": [-0.000000029802322, 0.6495221, 0, 0.7603427],
           "scale": [0.99999994, 0.99999994, 0.99999994]
+        },
+        "Node": {
+          "type": "Node3D"
         }
       }
     },
@@ -8032,6 +8428,9 @@
           "position": [-5.928595, 4.1713915, -4.806306],
           "rotation": [-0.000000029802322, 0.6495221, 0, 0.7603427],
           "scale": [0.99999994, 0.99999994, 0.99999994]
+        },
+        "Node": {
+          "type": "Node3D"
         }
       }
     },
@@ -8043,6 +8442,9 @@
           "position": [-9.82472, 4.1713915, -4.806306],
           "rotation": [-0.000000029802322, 0.6495221, 0, 0.7603427],
           "scale": [0.99999994, 0.99999994, 0.99999994]
+        },
+        "Node": {
+          "type": "Node3D"
         }
       }
     },
@@ -8054,6 +8456,9 @@
           "position": [10.024332, 4.1713915, 4.757481],
           "rotation": [-0.000000029802322, 0.6495221, 0, 0.7603427],
           "scale": [0.99999994, 0.99999994, 0.99999994]
+        },
+        "Node": {
+          "type": "Node3D"
         }
       }
     },
@@ -8065,6 +8470,9 @@
           "position": [6.141829, 4.1713915, 4.742171],
           "rotation": [-0.000000029802322, 0.6495221, 0, 0.7603427],
           "scale": [0.99999994, 0.99999994, 0.99999994]
+        },
+        "Node": {
+          "type": "Node3D"
         }
       }
     },
@@ -8076,6 +8484,9 @@
           "position": [2.1935785, 4.1713915, 4.742171],
           "rotation": [-0.000000029802322, 0.6495221, 0, 0.7603427],
           "scale": [0.99999994, 0.99999994, 0.99999994]
+        },
+        "Node": {
+          "type": "Node3D"
         }
       }
     },
@@ -8087,6 +8498,9 @@
           "position": [-1.849446, 4.1713915, 4.742171],
           "rotation": [-0.000000029802322, 0.6495221, 0, 0.7603427],
           "scale": [0.99999994, 0.99999994, 0.99999994]
+        },
+        "Node": {
+          "type": "Node3D"
         }
       }
     },
@@ -8098,6 +8512,9 @@
           "position": [-5.928595, 4.1713915, 4.742171],
           "rotation": [-0.000000029802322, 0.6495221, 0, 0.7603427],
           "scale": [0.99999994, 0.99999994, 0.99999994]
+        },
+        "Node": {
+          "type": "Node3D"
         }
       }
     },
@@ -8109,6 +8526,9 @@
           "position": [-9.82472, 4.1713915, 4.742171],
           "rotation": [-0.000000029802322, 0.6495221, 0, 0.7603427],
           "scale": [0.99999994, 0.99999994, 0.99999994]
+        },
+        "Node": {
+          "type": "Node3D"
         }
       }
     },
@@ -8120,6 +8540,9 @@
           "position": [-5.848376, 9.285233, 4.6650343],
           "rotation": [-0.000000029802322, 0.6495221, 0, 0.7603427],
           "scale": [0.99999994, 0.99999994, 0.99999994]
+        },
+        "Node": {
+          "type": "Node3D"
         }
       }
     },
@@ -8131,6 +8554,9 @@
           "position": [-9.765947, 9.285233, 4.742171],
           "rotation": [-0.000000029802322, 0.6495221, 0, 0.7603427],
           "scale": [0.99999994, 0.99999994, 0.99999994]
+        },
+        "Node": {
+          "type": "Node3D"
         }
       }
     },
@@ -8142,6 +8568,9 @@
           "position": [2.1614978, 9.285233, 4.6650343],
           "rotation": [-0.000000029802322, 0.6495221, 0, 0.7603427],
           "scale": [0.99999994, 0.99999994, 0.99999994]
+        },
+        "Node": {
+          "type": "Node3D"
         }
       }
     },
@@ -8153,6 +8582,9 @@
           "position": [10.075267, 9.285233, 4.725814],
           "rotation": [-0.000000029802322, 0.6495221, 0, 0.7603427],
           "scale": [0.99999994, 0.99999994, 0.99999994]
+        },
+        "Node": {
+          "type": "Node3D"
         }
       }
     },
@@ -8164,6 +8596,9 @@
           "position": [10.075267, 9.285233, -4.7271085],
           "rotation": [-0.000000029802322, 0.6495221, 0, 0.7603427],
           "scale": [0.99999994, 0.99999994, 0.99999994]
+        },
+        "Node": {
+          "type": "Node3D"
         }
       }
     },
@@ -8175,6 +8610,9 @@
           "position": [2.0937212, 9.285233, -4.6540666],
           "rotation": [-0.000000029802322, 0.6495221, 0, 0.7603427],
           "scale": [0.99999994, 0.99999994, 0.99999994]
+        },
+        "Node": {
+          "type": "Node3D"
         }
       }
     },
@@ -8186,6 +8624,9 @@
           "position": [-5.84765, 9.285233, -4.663137],
           "rotation": [-0.000000029802322, 0.6495221, 0, 0.7603427],
           "scale": [0.99999994, 0.99999994, 0.99999994]
+        },
+        "Node": {
+          "type": "Node3D"
         }
       }
     },
@@ -8197,6 +8638,9 @@
           "position": [-9.751104, 9.285233, -4.729569],
           "rotation": [-0.000000029802322, 0.6495221, 0, 0.7603427],
           "scale": [0.99999994, 0.99999994, 0.99999994]
+        },
+        "Node": {
+          "type": "Node3D"
         }
       }
     },
@@ -8208,6 +8652,9 @@
           "position": [-13.589994, 3.867794, 0.06591804],
           "rotation": [-0.000000029802322, 0.6495221, 0, 0.7603427],
           "scale": [0.99999994, 0.99999994, 0.99999994]
+        },
+        "Node": {
+          "type": "Node3D"
         }
       }
     },
@@ -8219,6 +8666,9 @@
           "position": [-8.80743, 1.5922195, -0.85825783],
           "rotation": [-0.062298603, 0.76623154, -0.07516095, 0.63510555],
           "scale": [0.99999994, 0.99999994, 0.9999998]
+        },
+        "Node": {
+          "type": "Node3D"
         }
       }
     },
@@ -8230,6 +8680,9 @@
           "position": [10.531103, 7.352985, 1.5282513],
           "rotation": [-0.008424938, -0.66132605, 0.007428735, 0.7500145],
           "scale": [1, 1, 1]
+        },
+        "Node": {
+          "type": "Node3D"
         }
       }
     },
@@ -8241,6 +8694,9 @@
           "position": [2.7030184, 1.3548956, 2.1113815],
           "rotation": [-0.035302497, -0.5770182, 0.024976108, 0.8155857],
           "scale": [1, 1, 1]
+        },
+        "Node": {
+          "type": "Node3D"
         }
       }
     },
@@ -8252,6 +8708,9 @@
           "position": [-9.594356, 6.921101, 5.35278],
           "rotation": [0.008261681, 0.57577384, 0.005818486, 0.8175466],
           "scale": [0.9999999, 0.99999994, 0.99999994]
+        },
+        "Node": {
+          "type": "Node3D"
         }
       }
     },
@@ -8263,6 +8722,9 @@
           "position": [-2.23714, 0.7440546, 2.3608017],
           "rotation": [-0.10425183, 0.5226034, -0.06457469, 0.8437105],
           "scale": [1, 1, 1.0000001]
+        },
+        "Node": {
+          "type": "Node3D"
         }
       }
     },
@@ -8274,6 +8736,9 @@
           "position": [-6.5954857, 10.879122, -0.6290613],
           "rotation": [0.095385775, 0.70684105, 0.09712984, 0.6941492],
           "scale": [0.99999994, 0.99999994, 1]
+        },
+        "Node": {
+          "type": "Node3D"
         }
       }
     },
@@ -8285,6 +8750,9 @@
           "position": [0.1645671, 4.031386, -3.2706473],
           "rotation": [-0.7071068, 0, 0, 0.7071067],
           "scale": [1, 0.99999994, 0.99999994]
+        },
+        "Node": {
+          "type": "Node3D"
         },
         "MeshRenderer": {
           "mesh_id": 0,
@@ -8304,6 +8772,9 @@
           "rotation": [0, 0, 0, 1],
           "scale": [1, 1, 1]
         },
+        "Node": {
+          "type": "Node3D"
+        },
         "MeshRenderer": {
           "mesh_id": 1,
           "material_id": 1,
@@ -8322,6 +8793,9 @@
           "rotation": [0.50000006, -0.4999999, 0.5000002, -0.4999999],
           "scale": [1.0000001, 1, 1]
         },
+        "Node": {
+          "type": "Node3D"
+        },
         "MeshRenderer": {
           "mesh_id": 2,
           "material_id": 0,
@@ -8339,6 +8813,9 @@
           "position": [-1.7075813, 0, -2.9961667],
           "rotation": [0, 0, 0, 1],
           "scale": [1, 1, 1]
+        },
+        "Node": {
+          "type": "Node3D"
         },
         "MeshRenderer": {
           "mesh_id": 3,
@@ -8392,6 +8869,9 @@
           "rotation": [0, 0, 0, 1],
           "scale": [1, 1, 1]
         },
+        "Node": {
+          "type": "Node3D"
+        },
         "MeshRenderer": {
           "mesh_id": 6,
           "material_id": 4,
@@ -8444,6 +8924,9 @@
           "rotation": [0, 0, 0, 1],
           "scale": [1, 1, 1]
         },
+        "Node": {
+          "type": "Node3D"
+        },
         "MeshRenderer": {
           "mesh_id": 9,
           "material_id": 1,
@@ -8478,6 +8961,9 @@
           "position": [4.149219, 4.828596, -3.0213134],
           "rotation": [0, 0, 0, 1],
           "scale": [1, 1, 1]
+        },
+        "Node": {
+          "type": "Node3D"
         },
         "MeshRenderer": {
           "mesh_id": 11,
@@ -8531,6 +9017,9 @@
           "rotation": [0, 0, 0, 1],
           "scale": [1, 1, 1]
         },
+        "Node": {
+          "type": "Node3D"
+        },
         "MeshRenderer": {
           "mesh_id": 14,
           "material_id": 9,
@@ -8582,6 +9071,9 @@
           "position": [-5.7582464, 2.2240562, -3.155316],
           "rotation": [-0.7071068, 0, 0, 0.7071067],
           "scale": [1, 0.99999994, 0.99999994]
+        },
+        "Node": {
+          "type": "Node3D"
         },
         "MeshRenderer": {
           "mesh_id": 17,
@@ -8635,6 +9127,9 @@
           "rotation": [0, 0, 0, 1],
           "scale": [1, 1, 1]
         },
+        "Node": {
+          "type": "Node3D"
+        },
         "MeshRenderer": {
           "mesh_id": 20,
           "material_id": 9,
@@ -8686,6 +9181,9 @@
           "position": [5.670447, 2.224758, 3.0441115],
           "rotation": [0, 1, 0, 0.00000004371139],
           "scale": [1, 1, 1]
+        },
+        "Node": {
+          "type": "Node3D"
         },
         "MeshRenderer": {
           "mesh_id": 23,
@@ -8739,6 +9237,9 @@
           "rotation": [0, 1, 0, 0.00000004371139],
           "scale": [1, 1, 1]
         },
+        "Node": {
+          "type": "Node3D"
+        },
         "MeshRenderer": {
           "mesh_id": 26,
           "material_id": 12,
@@ -8790,6 +9291,9 @@
           "position": [1.9387213, 0, 2.9062645],
           "rotation": [0, 1, 0, 0.00000004371139],
           "scale": [1, 1, 1]
+        },
+        "Node": {
+          "type": "Node3D"
         },
         "MeshRenderer": {
           "mesh_id": 29,
@@ -8843,6 +9347,9 @@
           "rotation": [0.000000030908627, -0.7071068, 0.7071068, -0.000000030908627],
           "scale": [1.0000002, 1.0000001, 1.0000001]
         },
+        "Node": {
+          "type": "Node3D"
+        },
         "MeshRenderer": {
           "mesh_id": 32,
           "material_id": 2,
@@ -8894,6 +9401,9 @@
           "position": [1.9214761, 0, 2.9681718],
           "rotation": [0, 1, 0, 0.00000004371139],
           "scale": [1, 1, 1]
+        },
+        "Node": {
+          "type": "Node3D"
         },
         "MeshRenderer": {
           "mesh_id": 35,
@@ -8947,6 +9457,9 @@
           "rotation": [0, 1, 0, 0.00000004371139],
           "scale": [1, 1, 1]
         },
+        "Node": {
+          "type": "Node3D"
+        },
         "MeshRenderer": {
           "mesh_id": 38,
           "material_id": 2,
@@ -8981,6 +9494,9 @@
           "position": [-3.8755713, 4.828596, 2.9926424],
           "rotation": [0, 1, 0, 0.00000004371139],
           "scale": [1, 1, 1]
+        },
+        "Node": {
+          "type": "Node3D"
         },
         "MeshRenderer": {
           "mesh_id": 40,
@@ -9034,6 +9550,9 @@
           "rotation": [0.00000008146034, -0, -0, 1],
           "scale": [100, 100, 100]
         },
+        "Node": {
+          "type": "Node3D"
+        },
         "MeshRenderer": {
           "mesh_id": 0,
           "material_id": 0,
@@ -9052,6 +9571,9 @@
           "rotation": [0.00000008146034, -0, -0, 1],
           "scale": [100, 100, 100]
         },
+        "Node": {
+          "type": "Node3D"
+        },
         "MeshRenderer": {
           "mesh_id": 1,
           "material_id": 1,
@@ -9059,6 +9581,28 @@
           "cast_shadows": true,
           "receive_shadows": true
         }
+      }
+    },
+    {
+      "id": 490,
+      "components": {
+        "Name": "Skybox",
+        "Hierarchy": {
+          "parent": null,
+          "first_child": null,
+          "next_sibling": null,
+          "prev_sibling": null,
+          "child_count": 0
+        },
+        "Transform": {
+          "position": [0, 0, 0],
+          "rotation": [0, 0, 0, 1],
+          "scale": [1, 1, 1]
+        },
+        "Node": {
+          "type": "Skybox"
+        },
+        "Skybox": "assets\\models\\JungleRuins\\USD\\kloppenheim_06_puresky_8k.hdr"
       }
     }
   ]

@@ -11,6 +11,7 @@ const scene_serializer = engine.scene_serializer;
 const EditorState = @import("../editor_state.zig").EditorState;
 const math = engine.math;
 const components = engine.ecs_components;
+const node_factory = engine.ecs_node_factory;
 const async_loader = engine.async_loader;
 
 /// Imports the currently loaded `state.combined_scene` into the ECS registry.
@@ -39,7 +40,7 @@ pub fn import_scene_graph(state: *EditorState) void {
             state.registry.add(entity, components.Node{ .type = .Node3D }) catch {};
 
             var transform = components.Transform{};
-            const m = math.Mat4.fromArray(node.world_transform);
+            const m = math.Mat4.fromArray(node.local_transform);
             const decomposed = m.decompose();
             transform.position = decomposed.t;
             transform.rotation = decomposed.r;
@@ -55,7 +56,13 @@ pub fn import_scene_graph(state: *EditorState) void {
                     var target_entity = entity;
                     if (m_idx > 0) {
                         target_entity = state.registry.create() catch continue;
-                        state.registry.add(target_entity, transform) catch {};
+                        var child_name_buf: [64]u8 = undefined;
+                        const parent_name = if (node.name) |n| std.mem.span(n) else "Mesh";
+                        const child_name = std.fmt.bufPrint(&child_name_buf, "{s}:{d}", .{ parent_name, m_idx }) catch parent_name;
+                        state.registry.add(target_entity, components.Name.init(child_name)) catch {};
+                        state.registry.add(target_entity, components.Node{ .type = .MeshInstance3D }) catch {};
+                        state.registry.add(target_entity, components.Transform{}) catch {};
+                        node_factory.append_child(state.registry, entity, target_entity);
                     }
 
                     var material_index: u32 = 0;
@@ -74,6 +81,9 @@ pub fn import_scene_graph(state: *EditorState) void {
                     };
 
                     state.registry.add(target_entity, mesh_renderer) catch {};
+                    if (m_idx == 0) {
+                        if (state.registry.get(components.Node, entity)) |n| n.type = .MeshInstance3D;
+                    }
                 }
             }
 
@@ -127,37 +137,7 @@ pub fn import_scene_graph(state: *EditorState) void {
                 const parent_id = node_to_entity[parent_idx];
                 if (parent_id != std.math.maxInt(u64)) {
                     const parent_entity = engine.ecs_entity.Entity{ .id = parent_id };
-                    var hierarchy = if (state.registry.get(components.Hierarchy, entity)) |h| h.* else components.Hierarchy{};
-                    hierarchy.parent = parent_entity;
-                    state.registry.add(entity, hierarchy) catch {};
-
-                    var parent_hierarchy = if (state.registry.get(components.Hierarchy, parent_entity)) |h| h.* else components.Hierarchy{};
-
-                    if (parent_hierarchy.first_child) |first_child_entity| {
-                        var curr_entity = first_child_entity;
-                        while (true) {
-                            if (state.registry.get(components.Hierarchy, curr_entity)) |h| {
-                                if (h.next_sibling) |next| {
-                                    curr_entity = next;
-                                } else {
-                                    var last_h = h.*;
-                                    last_h.next_sibling = entity;
-                                    state.registry.add(curr_entity, last_h) catch {};
-
-                                    hierarchy.prev_sibling = curr_entity;
-                                    state.registry.add(entity, hierarchy) catch {};
-                                    break;
-                                }
-                            } else {
-                                break;
-                            }
-                        }
-                    } else {
-                        parent_hierarchy.first_child = entity;
-                    }
-
-                    parent_hierarchy.child_count += 1;
-                    state.registry.add(parent_entity, parent_hierarchy) catch {};
+                    node_factory.append_child(state.registry, parent_entity, entity);
                 }
             }
         }
@@ -402,6 +382,7 @@ pub fn load_scene(state: *EditorState, allocator: std.mem.Allocator, path: []con
     // Reset Registry
     state.registry.deinit();
     state.registry.* = engine.ecs_registry.Registry.init(allocator);
+    state.transform_overrides.clearRetainingCapacity();
 
     // Reset Model Manager
     engine.model_manager.cardinal_model_manager_destroy(&state.model_manager);

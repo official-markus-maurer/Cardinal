@@ -77,6 +77,7 @@ pub const ecs_systems = @import("ecs/systems.zig");
 pub const ecs_scheduler = @import("ecs/scheduler.zig");
 pub const ecs_archetype = @import("ecs/archetype.zig");
 pub const ecs_command_buffer = @import("ecs/command_buffer.zig");
+pub const ecs_node_factory = @import("ecs/node_factory.zig");
 
 comptime {
     // TODO: Deduplicate these keep-alive references between `comptime` and `test`.
@@ -117,6 +118,7 @@ comptime {
     _ = ecs_scheduler;
     _ = ecs_archetype;
     _ = ecs_command_buffer;
+    _ = ecs_node_factory;
     _ = vulkan_descriptor_indexing;
     _ = vulkan_shader_utils;
     _ = vulkan_instance;

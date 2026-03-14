@@ -10,6 +10,7 @@ const entity_pkg = @import("../ecs/entity.zig");
 const components = @import("../ecs/components.zig");
 const math = @import("../core/math.zig");
 const model_manager_pkg = @import("model_manager.zig");
+const scene_pkg = @import("scene.zig");
 const transform_math = @import("../core/transform.zig");
 
 const serializer_log = std.log.scoped(.scene_serializer);
@@ -39,7 +40,7 @@ pub const SceneSerializer = struct {
 
         try json_writer.beginObject();
         try json_writer.objectField("version");
-        try json_writer.write(2);
+        try json_writer.write(3);
 
         if (self.model_manager) |mgr| {
             try json_writer.objectField("models");
@@ -121,9 +122,19 @@ pub const SceneSerializer = struct {
                     try serializeTransform(&json_writer, transform);
                 }
 
+                if (self.registry.get(components.Node, entity)) |node| {
+                    try json_writer.objectField("Node");
+                    try serializeNode(&json_writer, node);
+                }
+
                 if (self.registry.get(components.MeshRenderer, entity)) |mesh_renderer| {
                     try json_writer.objectField("MeshRenderer");
                     try serializeMeshRenderer(&json_writer, mesh_renderer);
+                }
+
+                if (self.registry.get(components.Skybox, entity)) |skybox| {
+                    try json_writer.objectField("Skybox");
+                    try serializeSkybox(&json_writer, self.allocator, skybox, root_path);
                 }
 
                 if (self.registry.get(components.Light, entity)) |light| {
@@ -191,7 +202,7 @@ pub const SceneSerializer = struct {
         if (version < 2) {
             return error.UnsupportedVersion;
         }
-        if (version > 2) return error.UnsupportedVersion;
+        if (version > 3) return error.UnsupportedVersion;
 
         var total_mesh_count: u32 = 0;
 
@@ -272,6 +283,10 @@ pub const SceneSerializer = struct {
             };
             var created_entities = std.ArrayListUnmanaged(CreatedEntity){};
             defer created_entities.deinit(self.allocator);
+            var created_entity_handles = std.ArrayListUnmanaged(entity_pkg.Entity){};
+            defer created_entity_handles.deinit(self.allocator);
+            var entity_has_components = std.ArrayListUnmanaged(bool){};
+            defer entity_has_components.deinit(self.allocator);
 
             for (entities.array.items) |entity_val| {
                 if (entity_val != .object) continue;
@@ -285,17 +300,21 @@ pub const SceneSerializer = struct {
                 }
 
                 try created_entities.append(self.allocator, .{ .entity = entity, .val = entity_val });
+                try created_entity_handles.append(self.allocator, entity);
+                try entity_has_components.append(self.allocator, false);
             }
 
             // Second pass: Add components
-            for (created_entities.items) |item| {
+            for (created_entities.items, 0..) |item, idx| {
                 const entity = item.entity;
                 const entity_val = item.val;
 
                 if (entity_val.object.get("components")) |comps| {
                     if (comps != .object) continue;
+                    var has_any = false;
 
                     if (comps.object.get("Name")) |val| {
+                        has_any = true;
                         if (deserializeName(val)) |comp| {
                             self.registry.add(entity, comp) catch |e| serializer_log.err("Failed to add Name component to entity {d}: {}", .{ entity.index(), e });
                         } else |err| {
@@ -304,6 +323,7 @@ pub const SceneSerializer = struct {
                     }
 
                     if (comps.object.get("Transform")) |val| {
+                        has_any = true;
                         if (deserializeTransform(val)) |comp| {
                             self.registry.add(entity, comp) catch |e| serializer_log.err("Failed to add Transform component to entity {d}: {}", .{ entity.index(), e });
                         } else |err| {
@@ -312,6 +332,7 @@ pub const SceneSerializer = struct {
                     }
 
                     if (comps.object.get("Hierarchy")) |val| {
+                        has_any = true;
                         if (deserializeHierarchy(val, &id_map)) |comp| {
                             self.registry.add(entity, comp) catch |e| serializer_log.err("Failed to add Hierarchy component to entity {d}: {}", .{ entity.index(), e });
                         } else |err| {
@@ -319,7 +340,17 @@ pub const SceneSerializer = struct {
                         }
                     }
 
+                    if (comps.object.get("Node")) |val| {
+                        has_any = true;
+                        if (deserializeNode(val)) |comp| {
+                            self.registry.add(entity, comp) catch |e| serializer_log.err("Failed to add Node component to entity {d}: {}", .{ entity.index(), e });
+                        } else |err| {
+                            serializer_log.err("Failed to deserialize Node for entity {d}: {}", .{ entity.index(), err });
+                        }
+                    }
+
                     if (comps.object.get("MeshRenderer")) |val| {
+                        has_any = true;
                         if (deserializeMeshRenderer(val)) |comp| {
                             // Validate mesh index
                             if (comp.mesh.index < total_mesh_count) {
@@ -332,7 +363,17 @@ pub const SceneSerializer = struct {
                         }
                     }
 
+                    if (comps.object.get("Skybox")) |val| {
+                        has_any = true;
+                        if (deserializeSkybox(self.allocator, val, root_path)) |comp| {
+                            self.registry.add(entity, comp) catch |e| serializer_log.err("Failed to add Skybox component to entity {d}: {}", .{ entity.index(), e });
+                        } else |err| {
+                            serializer_log.err("Failed to deserialize Skybox for entity {d}: {}", .{ entity.index(), err });
+                        }
+                    }
+
                     if (comps.object.get("Light")) |val| {
+                        has_any = true;
                         if (deserializeLight(val)) |comp| {
                             self.registry.add(entity, comp) catch |e| serializer_log.err("Failed to add Light component to entity {d}: {}", .{ entity.index(), e });
                         } else |err| {
@@ -341,6 +382,7 @@ pub const SceneSerializer = struct {
                     }
 
                     if (comps.object.get("Camera")) |val| {
+                        has_any = true;
                         if (deserializeCamera(val)) |comp| {
                             self.registry.add(entity, comp) catch |e| serializer_log.err("Failed to add Camera component to entity {d}: {}", .{ entity.index(), e });
                         } else |err| {
@@ -349,14 +391,41 @@ pub const SceneSerializer = struct {
                     }
 
                     if (comps.object.get("Script")) |val| {
+                        has_any = true;
                         if (deserializeScript(val)) |comp| {
                             self.registry.add(entity, comp) catch |e| serializer_log.err("Failed to add Script component to entity {d}: {}", .{ entity.index(), e });
                         } else |err| {
                             serializer_log.err("Failed to deserialize Script for entity {d}: {}", .{ entity.index(), err });
                         }
                     }
+
+                    entity_has_components.items[idx] = has_any;
                 }
             }
+
+            var referenced_as_parent = std.AutoHashMapUnmanaged(u64, void){};
+            defer referenced_as_parent.deinit(self.allocator);
+
+            for (created_entity_handles.items) |ent| {
+                if (self.registry.get(components.Hierarchy, ent)) |h| {
+                    if (h.parent) |p| {
+                        referenced_as_parent.put(self.allocator, p.id, {}) catch {};
+                    }
+                }
+            }
+
+            var kept_entities = std.ArrayListUnmanaged(entity_pkg.Entity){};
+            defer kept_entities.deinit(self.allocator);
+
+            for (created_entity_handles.items, 0..) |ent, idx| {
+                if (entity_has_components.items[idx] or referenced_as_parent.contains(ent.id)) {
+                    kept_entities.append(self.allocator, ent) catch {};
+                } else {
+                    self.registry.destroy(ent);
+                }
+            }
+
+            self.postprocess_loaded_entities(kept_entities.items);
         }
     }
 
@@ -557,6 +626,280 @@ pub const SceneSerializer = struct {
     fn deserializeName(val: std.json.Value) !components.Name {
         if (val != .string) return error.InvalidFormat;
         return components.Name.init(val.string);
+    }
+
+    fn serializeNode(writer: anytype, n: *components.Node) !void {
+        try writer.beginObject();
+        try writer.objectField("type");
+        try writer.write(@tagName(n.type));
+        try writer.endObject();
+    }
+
+    fn deserializeNode(val: std.json.Value) !components.Node {
+        var n = components.Node{};
+        if (val != .object) return error.InvalidFormat;
+        if (val.object.get("type")) |t| {
+            switch (t) {
+                .string => |s| {
+                    if (std.meta.stringToEnum(components.NodeType, s)) |nt| {
+                        n.type = nt;
+                    } else {
+                        return error.InvalidFormat;
+                    }
+                },
+                .integer => |i| n.type = @enumFromInt(i),
+                else => return error.InvalidFormat,
+            }
+        }
+        return n;
+    }
+
+    fn serializeSkybox(writer: anytype, allocator: std.mem.Allocator, s: *components.Skybox, root_path: ?[]const u8) !void {
+        const path_slice = s.slice();
+        if (path_slice.len == 0) {
+            try writer.write("");
+            return;
+        }
+
+        if (root_path) |root| {
+            if (std.fs.path.isAbsolute(path_slice)) {
+                const rel = std.fs.path.relative(allocator, root, path_slice) catch {
+                    try writer.write(path_slice);
+                    return;
+                };
+                defer allocator.free(rel);
+                try writer.write(rel);
+                return;
+            }
+        }
+
+        try writer.write(path_slice);
+    }
+
+    fn deserializeSkybox(allocator: std.mem.Allocator, val: std.json.Value, root_path: ?[]const u8) !components.Skybox {
+        if (val != .string) return error.InvalidFormat;
+        const path_slice = val.string;
+        if (path_slice.len == 0) return components.Skybox{};
+
+        if (root_path) |root| {
+            if (!std.fs.path.isAbsolute(path_slice)) {
+                const full = try std.fs.path.join(allocator, &[_][]const u8{ root, path_slice });
+                defer allocator.free(full);
+                return components.Skybox.init(full);
+            }
+        }
+
+        return components.Skybox.init(path_slice);
+    }
+
+    fn postprocess_loaded_entities(self: *SceneSerializer, entities: []const entity_pkg.Entity) void {
+        var entity_ids = std.AutoHashMapUnmanaged(u64, void){};
+        defer entity_ids.deinit(self.allocator);
+
+        var node_by_name = std.StringHashMapUnmanaged(*scene_pkg.CardinalSceneNode){};
+        defer node_by_name.deinit(self.allocator);
+        var mesh_name_by_index = std.AutoHashMapUnmanaged(u32, []const u8){};
+        defer mesh_name_by_index.deinit(self.allocator);
+
+        const combined_scene: ?*const scene_pkg.CardinalScene = if (self.model_manager) |mgr| model_manager_pkg.cardinal_model_manager_get_combined_scene(mgr) else null;
+        if (combined_scene) |scn| {
+            if (scn.all_nodes) |nodes| {
+                var n: u32 = 0;
+                while (n < scn.all_node_count) : (n += 1) {
+                    const node_opt = nodes[n];
+                    if (node_opt == null) continue;
+                    const node = node_opt.?;
+                    if (node.name == null) continue;
+
+                    const name = std.mem.span(node.name.?);
+                    node_by_name.put(self.allocator, name, node) catch {};
+
+                    if (node.mesh_count > 0 and node.mesh_indices != null) {
+                        var m: u32 = 0;
+                        while (m < node.mesh_count) : (m += 1) {
+                            const mesh_index = node.mesh_indices.?[m];
+                            if (!mesh_name_by_index.contains(mesh_index)) {
+                                mesh_name_by_index.put(self.allocator, mesh_index, name) catch {};
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        const cap: u32 = if (entities.len > std.math.maxInt(u32)) std.math.maxInt(u32) else @intCast(entities.len);
+        entity_ids.ensureTotalCapacity(self.allocator, cap) catch return;
+        for (entities) |e| {
+            entity_ids.putAssumeCapacity(e.id, {});
+        }
+
+        var i: usize = 0;
+        while (i < entities.len) : (i += 1) {
+            const ent = entities[i];
+
+            if (self.registry.get(components.Transform, ent) == null) {
+                self.registry.add(ent, components.Transform{}) catch {};
+            }
+
+            if (self.registry.get(components.Hierarchy, ent) == null) {
+                self.registry.add(ent, components.Hierarchy{}) catch {};
+            }
+
+            const inferred = self.infer_node_type(ent);
+            if (self.registry.get(components.Node, ent)) |node_ptr| {
+                switch (node_ptr.type) {
+                    .Node, .Node3D, .Node2D, .NodeUI => node_ptr.type = inferred,
+                    else => {},
+                }
+            } else {
+                self.registry.add(ent, components.Node{ .type = inferred }) catch {};
+            }
+
+            if (self.registry.get(components.Name, ent) == null) {
+                var buf: [64]u8 = undefined;
+                const name = self.suggest_entity_name(ent, i, &buf, &mesh_name_by_index);
+                self.registry.add(ent, components.Name.init(name)) catch {};
+            }
+
+            if (combined_scene != null and self.registry.get(components.MeshRenderer, ent) == null) {
+                const name_ptr = self.registry.get(components.Name, ent) orelse continue;
+                const key = name_ptr.slice();
+                if (node_by_name.get(key)) |node| {
+                    if (node.mesh_count > 0 and node.mesh_indices != null and combined_scene.?.meshes != null) {
+                        const meshes = combined_scene.?.meshes.?;
+                        var mesh_idx_in_node: u32 = 0;
+                        while (mesh_idx_in_node < node.mesh_count) : (mesh_idx_in_node += 1) {
+                            const mesh_index = node.mesh_indices.?[mesh_idx_in_node];
+                            if (mesh_index >= combined_scene.?.mesh_count) continue;
+
+                            const material_index = meshes[mesh_index].material_index;
+                            const mr = components.MeshRenderer{
+                                .mesh = .{ .index = mesh_index, .generation = 0 },
+                                .material = .{ .index = material_index, .generation = 0 },
+                                .visible = true,
+                                .cast_shadows = true,
+                                .receive_shadows = true,
+                            };
+
+                            if (mesh_idx_in_node == 0) {
+                                self.registry.add(ent, mr) catch {};
+                                if (self.registry.get(components.Node, ent)) |node_ptr| {
+                                    switch (node_ptr.type) {
+                                        .Node, .Node3D, .Node2D, .NodeUI => node_ptr.type = .MeshInstance3D,
+                                        else => {},
+                                    }
+                                }
+                                break;
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        for (entities) |ent| {
+            if (self.registry.get(components.Hierarchy, ent)) |h_ptr| {
+                h_ptr.first_child = null;
+                h_ptr.next_sibling = null;
+                h_ptr.prev_sibling = null;
+                h_ptr.child_count = 0;
+                if (h_ptr.parent) |p| {
+                    if (!entity_ids.contains(p.id)) {
+                        h_ptr.parent = null;
+                    }
+                }
+            }
+        }
+
+        var children = std.AutoHashMapUnmanaged(u64, std.ArrayListUnmanaged(entity_pkg.Entity)){};
+        defer {
+            var it = children.iterator();
+            while (it.next()) |entry| {
+                entry.value_ptr.deinit(self.allocator);
+            }
+            children.deinit(self.allocator);
+        }
+
+        for (entities) |ent| {
+            const h_ptr = self.registry.get(components.Hierarchy, ent) orelse continue;
+            const parent = h_ptr.parent orelse continue;
+
+            const res = children.getOrPut(self.allocator, parent.id) catch continue;
+            if (!res.found_existing) {
+                res.value_ptr.* = .{};
+            }
+            res.value_ptr.append(self.allocator, ent) catch {};
+        }
+
+        var it = children.iterator();
+        while (it.next()) |entry| {
+            const parent_ent = entity_pkg.Entity{ .id = entry.key_ptr.* };
+            const list = entry.value_ptr.*;
+            if (list.items.len == 0) continue;
+
+            const parent_h = self.registry.get(components.Hierarchy, parent_ent) orelse continue;
+            parent_h.first_child = list.items[0];
+            parent_h.child_count = @intCast(list.items.len);
+
+            var idx: usize = 0;
+            while (idx < list.items.len) : (idx += 1) {
+                const child_ent = list.items[idx];
+                const child_h = self.registry.get(components.Hierarchy, child_ent) orelse continue;
+                child_h.parent = parent_ent;
+                child_h.prev_sibling = if (idx > 0) list.items[idx - 1] else null;
+                child_h.next_sibling = if (idx + 1 < list.items.len) list.items[idx + 1] else null;
+            }
+        }
+    }
+
+    fn infer_node_type(self: *SceneSerializer, entity: entity_pkg.Entity) components.NodeType {
+        if (self.registry.get(components.Skybox, entity) != null) return .Skybox;
+        if (self.registry.get(components.Light, entity)) |l| {
+            return switch (l.type) {
+                .Directional => .DirectionalLight3D,
+                .Point => .PointLight3D,
+                .Spot => .SpotLight3D,
+            };
+        }
+        if (self.registry.get(components.Camera, entity)) |c| {
+            return switch (c.type) {
+                .Perspective => .Camera3D,
+                .Orthographic => .Camera2D,
+            };
+        }
+        if (self.registry.get(components.MeshRenderer, entity) != null) return .MeshInstance3D;
+        if (self.registry.get(components.Transform, entity) != null) return .Node3D;
+        return .Node;
+    }
+
+    fn suggest_entity_name(self: *SceneSerializer, entity: entity_pkg.Entity, idx: usize, buf: *[64]u8, mesh_name_by_index: *const std.AutoHashMapUnmanaged(u32, []const u8)) []const u8 {
+        if (self.registry.get(components.Skybox, entity) != null) return "Skybox";
+
+        if (self.registry.get(components.Light, entity)) |l| {
+            return switch (l.type) {
+                .Directional => "Directional Light",
+                .Point => "Point Light",
+                .Spot => "Spot Light",
+            };
+        }
+
+        if (self.registry.get(components.Camera, entity)) |c| {
+            return switch (c.type) {
+                .Perspective => "Camera3D",
+                .Orthographic => "Camera2D",
+            };
+        }
+
+        if (self.registry.get(components.MeshRenderer, entity)) |mr| {
+            if (mesh_name_by_index.get(mr.mesh.index)) |name| return name;
+            return std.fmt.bufPrint(buf, "Mesh{d}", .{mr.mesh.index}) catch "Mesh";
+        }
+
+        if (self.registry.get(components.Script, entity) != null) {
+            return std.fmt.bufPrint(buf, "Script{d}", .{idx}) catch "Script";
+        }
+
+        return std.fmt.bufPrint(buf, "Node{d}", .{idx}) catch "Node";
     }
 
     fn serializeHierarchy(writer: anytype, h: *components.Hierarchy) !void {

@@ -758,8 +758,8 @@ pub const AABB = struct {
 };
 
 pub fn intersectRayAABB(ray: Ray, aabb: AABB, t_min: f32, t_max: f32) ?f32 {
-    var t0 = t_min;
-    var t1 = t_max;
+    var t0: f32 = -std.math.floatMax(f32);
+    var t1: f32 = std.math.floatMax(f32);
 
     const r_origin = ray.origin;
     const r_dir = ray.direction;
@@ -780,7 +780,7 @@ pub fn intersectRayAABB(ray: Ray, aabb: AABB, t_min: f32, t_max: f32) ?f32 {
         t0 = if (t_near > t0) t_near else t0;
         t1 = if (t_far < t1) t_far else t1;
 
-        if (t1 <= t0) return null;
+        if (t1 < t0) return null;
     }
 
     {
@@ -797,7 +797,7 @@ pub fn intersectRayAABB(ray: Ray, aabb: AABB, t_min: f32, t_max: f32) ?f32 {
         t0 = if (t_near > t0) t_near else t0;
         t1 = if (t_far < t1) t_far else t1;
 
-        if (t1 <= t0) return null;
+        if (t1 < t0) return null;
     }
 
     {
@@ -814,8 +814,13 @@ pub fn intersectRayAABB(ray: Ray, aabb: AABB, t_min: f32, t_max: f32) ?f32 {
         t0 = if (t_near > t0) t_near else t0;
         t1 = if (t_far < t1) t_far else t1;
 
-        if (t1 <= t0) return null;
+        if (t1 < t0) return null;
     }
 
-    return t0;
+    if (t1 < t_min or t0 > t_max) return null;
+
+    var t_hit = t0;
+    if (t_hit < t_min) t_hit = t1;
+    if (t_hit < t_min or t_hit > t_max) return null;
+    return t_hit;
 }

@@ -440,6 +440,14 @@ bool imgui_bridge_tree_node_ex(const char *label, int flags) {
 
 void imgui_bridge_tree_pop(void) { ImGui::TreePop(); }
 
+void imgui_bridge_set_next_item_open(bool is_open, int cond) {
+  ImGui::SetNextItemOpen(is_open, (ImGuiCond)cond);
+}
+
+void imgui_bridge_set_scroll_here_y(float center_y_ratio) {
+  ImGui::SetScrollHereY(center_y_ratio);
+}
+
 void imgui_bridge_bullet_text(const char *fmt, ...) {
   va_list args;
   va_start(args, fmt);

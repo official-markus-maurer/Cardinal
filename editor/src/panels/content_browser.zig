@@ -45,11 +45,15 @@ fn load_skybox(state: *EditorState, allocator: std.mem.Allocator, path: []const 
 
     state.skybox_path = allocator.dupeZ(u8, path) catch return;
 
-    const ptr_path: ?[*:0]const u8 = if (state.skybox_path) |p| p.ptr else null;
-    if (vulkan_renderer.cardinal_renderer_set_skybox(state.renderer, ptr_path)) {
+    var view = state.registry.view(engine.ecs_components.Skybox);
+    var it = view.iterator();
+    if (it.next()) |entry| {
+        state.registry.add(entry.entity, engine.ecs_components.Skybox.init(path)) catch {};
         _ = std.fmt.bufPrintZ(&state.status_msg, "Skybox set to: {s}", .{path}) catch {};
     } else {
-        _ = std.fmt.bufPrintZ(&state.status_msg, "Failed to set skybox: {s}", .{path}) catch {};
+        const opts = engine.ecs_node_factory.CreateNodeOptions{ .skybox_path = path };
+        _ = engine.ecs_node_factory.create_node(state.registry, null, .Skybox, "Skybox", opts) catch {};
+        _ = std.fmt.bufPrintZ(&state.status_msg, "Skybox node created: {s}", .{path}) catch {};
     }
 }
 

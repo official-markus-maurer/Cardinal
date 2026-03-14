@@ -44,6 +44,92 @@ var state: EditorState = undefined;
 var initialized: bool = false;
 var device_recovery_failed: bool = false;
 
+fn sync_skybox_from_ecs() void {
+    var view = state.registry.view(engine.ecs_components.Skybox);
+    var it = view.iterator();
+    const entry = it.next() orelse return;
+    const sky = entry.component;
+    const path = sky.slice();
+    if (path.len == 0) return;
+
+    if (state.skybox_path) |p| {
+        if (std.mem.eql(u8, std.mem.span(p.ptr), path)) return;
+        allocator.free(p);
+        state.skybox_path = null;
+    }
+
+    state.skybox_path = allocator.dupeZ(u8, path) catch return;
+}
+
+fn sync_mesh_transforms_from_ecs() void {
+    if (!state.scene_loaded) return;
+    if (state.scene_upload_pending) return;
+    if (state.combined_scene.meshes == null or state.combined_scene.mesh_count == 0) return;
+    const meshes = state.combined_scene.meshes.?;
+
+    var view = state.registry.view(engine.ecs_components.MeshRenderer);
+    var it = view.iterator();
+    while (it.next()) |entry| {
+        if (!state.transform_overrides.contains(entry.entity.id)) continue;
+
+        const mr = entry.component;
+        const mesh_index = mr.mesh.index;
+        if (mesh_index >= state.combined_scene.mesh_count) continue;
+
+        const m = compute_entity_world_matrix(entry.entity);
+        @memcpy(meshes[mesh_index].transform[0..16], m.data[0..16]);
+    }
+}
+
+fn compute_entity_world_matrix(entity: engine.ecs_entity.Entity) engine.math.Mat4 {
+    var chain: [128]engine.ecs_entity.Entity = undefined;
+    var len: usize = 0;
+
+    var current: ?engine.ecs_entity.Entity = entity;
+    var guard: u32 = 0;
+    while (current) |e| {
+        if (guard > 100000) break;
+        guard += 1;
+
+        if (len < chain.len) {
+            chain[len] = e;
+            len += 1;
+        }
+
+        const h = state.registry.get(engine.ecs_components.Hierarchy, e) orelse break;
+        current = h.parent;
+    }
+
+    var world = engine.math.Mat4.identity();
+    var i: usize = len;
+    while (i > 0) {
+        i -= 1;
+        const e = chain[i];
+        if (state.registry.get(engine.ecs_components.Transform, e)) |t| {
+            const local = t.get_matrix();
+            world = world.mul(local);
+        }
+    }
+
+    return world;
+}
+
+fn sync_mesh_visibility_from_ecs() void {
+    if (!state.scene_loaded) return;
+    if (state.scene_upload_pending) return;
+    if (state.combined_scene.meshes == null or state.combined_scene.mesh_count == 0) return;
+    const meshes = state.combined_scene.meshes.?;
+
+    var view = state.registry.view(engine.ecs_components.MeshRenderer);
+    var it = view.iterator();
+    while (it.next()) |entry| {
+        const mr = entry.component;
+        const mesh_index = mr.mesh.index;
+        if (mesh_index >= state.combined_scene.mesh_count) continue;
+        meshes[mesh_index].visible = mr.visible;
+    }
+}
+
 fn check_loading_status() void {
     if (state.loading_tasks.items.len == 0) {
         state.is_loading = false;
@@ -90,6 +176,7 @@ fn check_loading_status() void {
                             }
                         } else {
                             // Full reload
+                            state.transform_overrides.clearRetainingCapacity();
                             state.registry.deinit();
                             state.registry.* = engine.ecs_registry.Registry.init(allocator);
                             scene_io.import_scene_graph(&state);
@@ -613,6 +700,8 @@ pub fn shutdown() void {
 
     model_manager.cardinal_model_manager_destroy(&state.model_manager);
 
+    state.transform_overrides.deinit(allocator);
+
     for (state.loading_tasks.items) |info| {
         async_loader.cardinal_async_free_task(info.task);
         allocator.free(info.path);
@@ -650,6 +739,7 @@ pub fn update() void {
     _ = async_loader.cardinal_async_process_completed_tasks(0);
 
     check_loading_status();
+    sync_skybox_from_ecs();
 
     if (state.model_manager.scene_dirty) {
         renderer.cardinal_renderer_clear_scene(state.renderer);
@@ -658,6 +748,7 @@ pub fn update() void {
             state.pending_scene = state.combined_scene;
             state.scene_upload_pending = true;
             state.scene_loaded = (state.combined_scene.mesh_count > 0);
+            state.transform_overrides.clearRetainingCapacity();
         } else {
             state.scene_loaded = false;
         }
@@ -765,6 +856,9 @@ pub fn update() void {
         }
     }
 
+    sync_mesh_visibility_from_ecs();
+    sync_mesh_transforms_from_ecs();
+
     // Systems update
     input_system.update(&state);
     camera_controller.update(&state, dt);
@@ -835,6 +929,7 @@ pub fn update() void {
                 if (c.imgui_bridge_menu_item("Scene Graph", null, state.show_scene_graph, true)) state.show_scene_graph = !state.show_scene_graph;
                 if (c.imgui_bridge_menu_item("Assets", null, state.show_assets, true)) state.show_assets = !state.show_assets;
                 if (c.imgui_bridge_menu_item("Model Manager", null, state.show_model_manager, true)) state.show_model_manager = !state.show_model_manager;
+                if (c.imgui_bridge_menu_item("Inspector", null, state.show_entity_inspector, true)) state.show_entity_inspector = !state.show_entity_inspector;
                 if (c.imgui_bridge_menu_item("Scene Manager", null, state.show_scene_manager, true)) state.show_scene_manager = !state.show_scene_manager;
                 if (c.imgui_bridge_menu_item("PBR Settings", null, state.show_pbr_settings, true)) state.show_pbr_settings = !state.show_pbr_settings;
                 if (c.imgui_bridge_menu_item("Animation", null, state.show_animation, true)) state.show_animation = !state.show_animation;

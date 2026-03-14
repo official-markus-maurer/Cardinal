@@ -25,6 +25,7 @@ const vulkan_types = @import("../renderer/vulkan_types.zig");
 const ecs_registry = @import("../ecs/registry.zig");
 const ecs_systems = @import("../ecs/systems.zig");
 const ecs_scheduler = @import("../ecs/scheduler.zig");
+const ecs_components = @import("../ecs/components.zig");
 
 /// Runtime configuration for the engine instance.
 pub const CardinalEngineConfig = config_pkg.CardinalEngineConfig;
@@ -55,6 +56,8 @@ pub const CardinalEngine = struct {
     window_initialized: bool = false,
     renderer_initialized: bool = false,
 
+    skybox_path: ?[:0]u8 = null,
+
     /// Allocates and initializes a new engine instance.
     pub fn create(allocator: std.mem.Allocator, config: CardinalEngineConfig) !*CardinalEngine {
         const self = try allocator.create(CardinalEngine);
@@ -80,6 +83,7 @@ pub const CardinalEngine = struct {
         self.caches_initialized = false;
         self.window_initialized = false;
         self.renderer_initialized = false;
+        self.skybox_path = null;
 
         errdefer {
             self.deinit();
@@ -136,6 +140,11 @@ pub const CardinalEngine = struct {
             self.allocator.free(self.frame_memory);
         }
 
+        if (self.skybox_path) |p| {
+            self.allocator.free(p);
+            self.skybox_path = null;
+        }
+
         self.registry.deinit();
         self.config_manager.deinit();
     }
@@ -159,8 +168,29 @@ pub const CardinalEngine = struct {
         }
 
         try self.scheduler.run(delta_time);
+        self.sync_skybox_from_ecs();
 
         try self.module_manager.update(delta_time);
+    }
+
+    fn sync_skybox_from_ecs(self: *CardinalEngine) void {
+        if (!self.renderer_initialized) return;
+        var view = self.registry.view(ecs_components.Skybox);
+        var it = view.iterator();
+        const entry = it.next() orelse return;
+        const sky = entry.component;
+        const path = sky.slice();
+        if (path.len == 0) return;
+
+        if (self.skybox_path) |p| {
+            if (std.mem.eql(u8, std.mem.span(p.ptr), path)) return;
+            self.allocator.free(p);
+            self.skybox_path = null;
+        }
+
+        self.skybox_path = self.allocator.dupeZ(u8, path) catch return;
+        const ptr_path: ?[*:0]const u8 = if (self.skybox_path) |p| p.ptr else null;
+        _ = vulkan_renderer.cardinal_renderer_set_skybox(&self.renderer, ptr_path);
     }
 
     /// Returns true when the window requests close.

@@ -87,6 +87,10 @@ pub const EditorState = struct {
     /// Skybox path used by the renderer (HDR/EXR only).
     skybox_path: ?[:0]u8 = null,
 
+    /// Create-node popup state.
+    create_node_parent: ?engine.ecs_entity.Entity = null,
+    create_node_search: [128]u8 = [_]u8{0} ** 128,
+
     /// Status text shown in the editor UI.
     status_msg: [256]u8 = [_]u8{0} ** 256,
     scene_path: [512]u8 = [_]u8{0} ** 512,
@@ -98,16 +102,28 @@ pub const EditorState = struct {
     open_delete_popup: bool = false,
     selected_model_id: u32 = 0,
     selected_entity: engine.ecs_entity.Entity = .{ .id = std.math.maxInt(u64) },
+    scene_graph_focus_target_id: u64 = std.math.maxInt(u64),
+    scene_graph_focus_pending: bool = false,
+    scene_graph_open_chain: [128]u64 = [_]u64{0} ** 128,
+    scene_graph_open_chain_len: u8 = 0,
+    transform_overrides: std.AutoHashMapUnmanaged(u64, void) = .{},
 
     /// Entity currently being renamed, if any.
     renaming_entity: engine.ecs_entity.Entity = .{ .id = std.math.maxInt(u64) },
     rename_buffer: [256]u8 = [_]u8{0} ** 256,
+    inspector_last_entity_id: u64 = std.math.maxInt(u64),
+    inspector_name_buffer: [256]u8 = [_]u8{0} ** 256,
+    inspector_skybox_buffer: [256]u8 = [_]u8{0} ** 256,
+    inspector_node_type_search: [128]u8 = [_]u8{0} ** 128,
+    inspector_add_component_search: [128]u8 = [_]u8{0} ** 128,
+    inspector_rotation_euler_deg: [3]f32 = .{ 0.0, 0.0, 0.0 },
 
     /// Panel visibility toggles.
     show_scene_graph: bool = true,
     show_scene_view: bool = true,
     show_assets: bool = true,
     show_model_manager: bool = true,
+    show_entity_inspector: bool = true,
     show_scene_manager: bool = true,
     show_pbr_settings: bool = true,
     show_animation: bool = true,
@@ -167,4 +183,37 @@ pub const EditorState = struct {
     // Project
     project: ?@import("project.zig").Project = null,
     project_loaded: bool = false,
+
+    pub fn mark_transform_override_tree(self: *EditorState, root: engine.ecs_entity.Entity) void {
+        const allocator = engine.memory.cardinal_get_allocator_for_category(.ENGINE).as_allocator();
+
+        var stack: [256]engine.ecs_entity.Entity = undefined;
+        var sp: usize = 0;
+
+        stack[sp] = root;
+        sp += 1;
+
+        while (sp > 0) {
+            sp -= 1;
+            const e = stack[sp];
+
+            self.transform_overrides.put(allocator, e.id, {}) catch {};
+
+            const h = self.registry.get(engine.ecs_components.Hierarchy, e) orelse continue;
+            var child = h.first_child;
+            var guard: u32 = 0;
+            while (child) |c_ent| {
+                if (guard > 100000) break;
+                guard += 1;
+
+                if (sp < stack.len) {
+                    stack[sp] = c_ent;
+                    sp += 1;
+                }
+
+                const ch = self.registry.get(engine.ecs_components.Hierarchy, c_ent) orelse break;
+                child = ch.next_sibling;
+            }
+        }
+    }
 };

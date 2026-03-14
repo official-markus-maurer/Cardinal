@@ -86,6 +86,22 @@ pub const Script = struct {
     on_update: ?*const fn (data: ?*anyopaque, delta_time: f32) void = null,
 };
 
+pub const Skybox = struct {
+    path: [256]u8 = [_]u8{0} ** 256,
+
+    pub fn init(path: []const u8) Skybox {
+        var s = Skybox{};
+        const len = @min(path.len, 255);
+        @memcpy(s.path[0..len], path[0..len]);
+        s.path[len] = 0;
+        return s;
+    }
+
+    pub fn slice(self: *const Skybox) []const u8 {
+        return std.mem.sliceTo(&self.path, 0);
+    }
+};
+
 /// Fixed-size, null-terminated name string.
 pub const Name = struct {
     value: [64]u8 = [_]u8{0} ** 64,
@@ -116,9 +132,56 @@ pub const Hierarchy = struct {
 
 /// High-level node category.
 pub const NodeType = enum {
+    Node,
+
     Node3D,
+    Marker3D,
+    Camera3D,
+    MeshInstance3D,
+    DirectionalLight3D,
+    PointLight3D,
+    SpotLight3D,
+    Skybox,
+    AnimationPlayer,
+    Skeleton3D,
+    StaticBody3D,
+    RigidBody3D,
+    CharacterBody3D,
+    Area3D,
+    CollisionShape3D,
+    NavigationRegion3D,
+    AudioStreamPlayer3D,
+    GPUParticles3D,
+
     Node2D,
+    Camera2D,
+    Sprite2D,
+    AnimatedSprite2D,
+    TileMap,
+    StaticBody2D,
+    RigidBody2D,
+    CharacterBody2D,
+    Area2D,
+    CollisionShape2D,
+    AudioStreamPlayer2D,
+    GPUParticles2D,
+
     NodeUI,
+    Control,
+    Label,
+    Button,
+    Panel,
+    TextureRect,
+    CheckBox,
+    Slider,
+    ProgressBar,
+    LineEdit,
+    TextEdit,
+    VBoxContainer,
+    HBoxContainer,
+    GridContainer,
+    MarginContainer,
+    ScrollContainer,
 };
 
 /// Generic node marker component.

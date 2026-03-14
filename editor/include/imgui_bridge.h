@@ -377,6 +377,8 @@ bool imgui_bridge_menu_item(const char *label, const char *shortcut,
 bool imgui_bridge_tree_node(const char *label);
 bool imgui_bridge_tree_node_ex(const char *label, int flags);
 void imgui_bridge_tree_pop(void);
+void imgui_bridge_set_next_item_open(bool is_open, int cond);
+void imgui_bridge_set_scroll_here_y(float center_y_ratio);
 void imgui_bridge_bullet_text(const char *fmt, ...);
 void imgui_bridge_indent(float indent_w);
 void imgui_bridge_unindent(float indent_w);
