@@ -12,21 +12,21 @@ const c = @import("../c.zig").c;
 
 /// Draws the animation panel.
 pub fn draw_animation_panel(state: *editor_state.EditorState) void {
-    if (state.show_animation) {
-        const open = c.imgui_bridge_begin("Animation", &state.show_animation, 0);
+    if (state.ui.show_animation) {
+        const open = c.imgui_bridge_begin("Animation", &state.ui.show_animation, 0);
         defer c.imgui_bridge_end();
 
         if (open) {
-            if (state.scene_loaded and state.combined_scene.animation_system != null) {
-                const anim_sys_opaque = state.combined_scene.animation_system.?;
+            if (state.runtime.scene_loaded and state.runtime.combined_scene.animation_system != null) {
+                const anim_sys_opaque = state.runtime.combined_scene.animation_system.?;
                 const anim_sys = @as(*animation.CardinalAnimationSystem, @ptrCast(@alignCast(anim_sys_opaque)));
 
                 c.imgui_bridge_text("Animations (%d)", anim_sys.animation_count);
                 c.imgui_bridge_separator();
 
-                if (state.selected_animation == -1 and anim_sys.animation_count > 0) {
-                    state.selected_animation = 0;
-                    state.animation_time = 0.0;
+                if (state.ui.selected_animation == -1 and anim_sys.animation_count > 0) {
+                    state.ui.selected_animation = 0;
+                    state.ui.animation_time = 0.0;
                 }
 
                 if (c.imgui_bridge_begin_child("##animation_list", 0, 120, true, 0)) {
@@ -35,10 +35,10 @@ pub fn draw_animation_panel(state: *editor_state.EditorState) void {
                         const anim = &anim_sys.animations.?[i];
                         const name = if (anim.name) |n| std.mem.span(n) else "Unnamed Animation";
 
-                        const is_selected = (state.selected_animation == @as(i32, @intCast(i)));
+                        const is_selected = (state.ui.selected_animation == @as(i32, @intCast(i)));
                         if (c.imgui_bridge_selectable(name.ptr, is_selected, 0)) {
-                            state.selected_animation = @as(i32, @intCast(i));
-                            state.animation_time = 0.0; // Reset time
+                            state.ui.selected_animation = @as(i32, @intCast(i));
+                            state.ui.animation_time = 0.0;
                         }
 
                         c.imgui_bridge_same_line(0, -1);
@@ -49,60 +49,60 @@ pub fn draw_animation_panel(state: *editor_state.EditorState) void {
 
                 c.imgui_bridge_separator();
 
-                if (state.selected_animation >= 0 and state.selected_animation < anim_sys.animation_count) {
-                    const current_anim = &anim_sys.animations.?[@intCast(state.selected_animation)];
+                if (state.ui.selected_animation >= 0 and state.ui.selected_animation < anim_sys.animation_count) {
+                    const current_anim = &anim_sys.animations.?[@intCast(state.ui.selected_animation)];
 
                     c.imgui_bridge_text("Playback Controls");
 
-                    if (state.animation_playing) {
+                    if (state.ui.animation_playing) {
                         if (c.imgui_bridge_button("Pause")) {
-                            state.animation_playing = false;
-                            _ = animation.cardinal_animation_pause(anim_sys, @intCast(state.selected_animation));
+                            state.ui.animation_playing = false;
+                            _ = animation.cardinal_animation_pause(anim_sys, @intCast(state.ui.selected_animation));
                         }
                     } else {
                         if (c.imgui_bridge_button("Play")) {
-                            state.animation_playing = true;
-                            _ = animation.cardinal_animation_play(anim_sys, @intCast(state.selected_animation), state.animation_looping, 1.0);
-                            _ = animation.cardinal_animation_set_speed(anim_sys, @intCast(state.selected_animation), state.animation_speed);
+                            state.ui.animation_playing = true;
+                            _ = animation.cardinal_animation_play(anim_sys, @intCast(state.ui.selected_animation), state.ui.animation_looping, 1.0);
+                            _ = animation.cardinal_animation_set_speed(anim_sys, @intCast(state.ui.selected_animation), state.ui.animation_speed);
                         }
                     }
 
                     c.imgui_bridge_same_line(0, -1);
                     if (c.imgui_bridge_button("Stop")) {
-                        state.animation_playing = false;
-                        state.animation_time = 0.0;
-                        _ = animation.cardinal_animation_stop(anim_sys, @intCast(state.selected_animation));
+                        state.ui.animation_playing = false;
+                        state.ui.animation_time = 0.0;
+                        _ = animation.cardinal_animation_stop(anim_sys, @intCast(state.ui.selected_animation));
                     }
 
                     c.imgui_bridge_same_line(0, -1);
-                    _ = c.imgui_bridge_checkbox("Loop", &state.animation_looping);
+                    _ = c.imgui_bridge_checkbox("Loop", &state.ui.animation_looping);
 
                     // Speed control
                     c.imgui_bridge_set_next_item_width(100);
-                    if (c.imgui_bridge_slider_float("Speed", &state.animation_speed, 0.1, 3.0, "%.1fx")) {
-                        _ = animation.cardinal_animation_set_speed(anim_sys, @intCast(state.selected_animation), state.animation_speed);
+                    if (c.imgui_bridge_slider_float("Speed", &state.ui.animation_speed, 0.1, 3.0, "%.1fx")) {
+                        _ = animation.cardinal_animation_set_speed(anim_sys, @intCast(state.ui.selected_animation), state.ui.animation_speed);
                     }
 
                     c.imgui_bridge_separator();
                     c.imgui_bridge_text("Timeline");
 
-                    c.imgui_bridge_text("Time: %.2f / %.2f seconds", state.animation_time, current_anim.duration);
+                    c.imgui_bridge_text("Time: %.2f / %.2f seconds", state.ui.animation_time, current_anim.duration);
 
-                    if (c.imgui_bridge_slider_float("##timeline", &state.animation_time, 0.0, current_anim.duration, "%.2fs")) {
-                        if (state.animation_time < 0.0) state.animation_time = 0.0;
-                        if (state.animation_time > current_anim.duration) {
-                            if (state.animation_looping) {
+                    if (c.imgui_bridge_slider_float("##timeline", &state.ui.animation_time, 0.0, current_anim.duration, "%.2fs")) {
+                        if (state.ui.animation_time < 0.0) state.ui.animation_time = 0.0;
+                        if (state.ui.animation_time > current_anim.duration) {
+                            if (state.ui.animation_looping) {
                                 if (current_anim.duration > 0.000001) {
-                                    state.animation_time = @mod(state.animation_time, current_anim.duration);
+                                    state.ui.animation_time = @mod(state.ui.animation_time, current_anim.duration);
                                 } else {
-                                    state.animation_time = 0.0;
+                                    state.ui.animation_time = 0.0;
                                 }
                             } else {
-                                state.animation_time = current_anim.duration;
-                                state.animation_playing = false;
+                                state.ui.animation_time = current_anim.duration;
+                                state.ui.animation_playing = false;
                             }
                         }
-                        _ = animation.cardinal_animation_set_time(anim_sys, @intCast(state.selected_animation), state.animation_time);
+                        _ = animation.cardinal_animation_set_time(anim_sys, @intCast(state.ui.selected_animation), state.ui.animation_time);
                     }
 
                     c.imgui_bridge_separator();

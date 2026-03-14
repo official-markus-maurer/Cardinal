@@ -2,8 +2,6 @@
 //!
 //! Owns the editor's UI toggles, selected entities/models, camera settings, and a view of loaded
 //! scene data. This is passed across editor panels and systems each frame.
-//!
-//! TODO: Split renderer-facing state from UI state to reduce coupling.
 const std = @import("std");
 const engine = @import("cardinal_engine");
 const log = engine.log;
@@ -17,6 +15,7 @@ const async_loader = engine.async_loader;
 const animation = engine.animation;
 
 const c = @import("c.zig").c;
+const undo = @import("undo.zig");
 
 pub const AssetState = struct {
     entries: std.ArrayListUnmanaged(AssetEntry) = .{},
@@ -59,7 +58,7 @@ pub const LoadingTaskInfo = struct {
     target_entity: ?engine.ecs_entity.Entity = null,
 };
 
-pub const EditorState = struct {
+pub const EditorRuntimeState = struct {
     renderer: *types.CardinalRenderer = undefined,
     window: *window.CardinalWindow = undefined,
     registry: *engine.ecs_registry.Registry = undefined,
@@ -87,50 +86,9 @@ pub const EditorState = struct {
     /// Skybox path used by the renderer (HDR/EXR only).
     skybox_path: ?[:0]u8 = null,
 
-    /// Create-node popup state.
-    create_node_parent: ?engine.ecs_entity.Entity = null,
-    create_node_search: [128]u8 = [_]u8{0} ** 128,
-
-    /// Status text shown in the editor UI.
-    status_msg: [256]u8 = [_]u8{0} ** 256,
-    scene_path: [512]u8 = [_]u8{0} ** 512,
-    save_scene_name: [256]u8 = [_]u8{0} ** 256,
-    available_scenes: std.ArrayListUnmanaged([]const u8) = .{},
-    scene_context_menu_name: [256]u8 = [_]u8{0} ** 256,
-    rename_scene_buffer: [256]u8 = [_]u8{0} ** 256,
-    open_rename_popup: bool = false,
-    open_delete_popup: bool = false,
-    selected_model_id: u32 = 0,
-    selected_entity: engine.ecs_entity.Entity = .{ .id = std.math.maxInt(u64) },
-    scene_graph_focus_target_id: u64 = std.math.maxInt(u64),
-    scene_graph_focus_pending: bool = false,
-    scene_graph_open_chain: [128]u64 = [_]u64{0} ** 128,
-    scene_graph_open_chain_len: u8 = 0,
     transform_overrides: std.AutoHashMapUnmanaged(u64, void) = .{},
-
-    /// Entity currently being renamed, if any.
-    renaming_entity: engine.ecs_entity.Entity = .{ .id = std.math.maxInt(u64) },
-    rename_buffer: [256]u8 = [_]u8{0} ** 256,
-    inspector_last_entity_id: u64 = std.math.maxInt(u64),
-    inspector_name_buffer: [256]u8 = [_]u8{0} ** 256,
-    inspector_skybox_buffer: [256]u8 = [_]u8{0} ** 256,
-    inspector_node_type_search: [128]u8 = [_]u8{0} ** 128,
-    inspector_add_component_search: [128]u8 = [_]u8{0} ** 128,
-    inspector_rotation_euler_deg: [3]f32 = .{ 0.0, 0.0, 0.0 },
-
-    /// Panel visibility toggles.
-    show_scene_graph: bool = true,
-    show_scene_view: bool = true,
-    show_assets: bool = true,
-    show_model_manager: bool = true,
-    show_entity_inspector: bool = true,
-    show_scene_manager: bool = true,
-    show_pbr_settings: bool = true,
-    show_animation: bool = true,
-    show_project_manager: bool = true,
-
-    /// Asset browser state (current directory, filter, and entry lists).
-    assets: AssetState = .{},
+    mesh_owner_by_mesh_index: std.AutoHashMapUnmanaged(u32, u64) = .{},
+    mesh_entity_by_mesh_index: std.AutoHashMapUnmanaged(u32, u64) = .{},
 
     /// Camera state passed to the renderer.
     camera: types.CardinalCamera = undefined,
@@ -139,30 +97,6 @@ pub const EditorState = struct {
     pbr_enabled: bool = true,
     enable_directional_light: bool = true,
 
-    /// Whether the editor has captured the mouse (FPS camera mode).
-    mouse_captured: bool = false,
-    yaw: f32 = 90.0,
-    pitch: f32 = 0.0,
-    camera_speed: f32 = 5.0,
-    mouse_sensitivity: f32 = 0.1,
-
-    // Animation
-    selected_animation: i32 = -1,
-    animation_time: f32 = 0.0,
-    animation_playing: bool = false,
-    animation_looping: bool = true,
-    animation_speed: f32 = 1.0,
-
-    // Material Override
-    material_override_enabled: bool = false,
-    material_albedo: [4]f32 = .{ 1.0, 1.0, 1.0, 1.0 },
-    material_metallic: f32 = 0.0,
-    material_roughness: f32 = 0.5,
-    material_emissive: [3]f32 = .{ 0.0, 0.0, 0.0 },
-    material_normal_scale: f32 = 1.0,
-    material_ao_strength: f32 = 1.0,
-
-    // Post Process
     post_process: types.PostProcessParams = .{
         .exposure = 1.0,
         .contrast = 1.0,
@@ -173,18 +107,22 @@ pub const EditorState = struct {
         .padding = .{ 0.0, 0.0 },
     },
 
-    // UI Toggles
-    show_material_0_toggle: bool = true,
-    show_grid_axes: bool = true,
+    /// Whether the editor has captured the mouse (FPS camera mode).
+    mouse_captured: bool = false,
+    yaw: f32 = 90.0,
+    pitch: f32 = 0.0,
+    camera_speed: f32 = 5.0,
+    mouse_sensitivity: f32 = 0.1,
 
-    // Optimization Settings
-    show_performance_panel: bool = true,
+    /// Create-node popup state.
+    create_node_parent: ?engine.ecs_entity.Entity = null,
+    create_node_search: [128]u8 = [_]u8{0} ** 128,
 
-    // Project
-    project: ?@import("project.zig").Project = null,
-    project_loaded: bool = false,
-
-    pub fn mark_transform_override_tree(self: *EditorState, root: engine.ecs_entity.Entity) void {
+    /// Marks `root` and all descendants so their render meshes will be driven by ECS transforms.
+    ///
+    /// This is used by the inspector and gizmo to make edits immediately visible, while keeping
+    /// untouched meshes controlled by the model manager / animation system.
+    pub fn mark_transform_override_tree(self: *EditorRuntimeState, root: engine.ecs_entity.Entity) void {
         const allocator = engine.memory.cardinal_get_allocator_for_category(.ENGINE).as_allocator();
 
         var stack: [256]engine.ecs_entity.Entity = undefined;
@@ -216,4 +154,71 @@ pub const EditorState = struct {
             }
         }
     }
+};
+
+pub const EditorUiState = struct {
+    status_msg: [256]u8 = [_]u8{0} ** 256,
+    scene_path: [512]u8 = [_]u8{0} ** 512,
+    save_scene_name: [256]u8 = [_]u8{0} ** 256,
+    available_scenes: std.ArrayListUnmanaged([]const u8) = .{},
+    scene_context_menu_name: [256]u8 = [_]u8{0} ** 256,
+    rename_scene_buffer: [256]u8 = [_]u8{0} ** 256,
+    open_rename_popup: bool = false,
+    open_delete_popup: bool = false,
+
+    selected_model_id: u32 = 0,
+    selected_entity: engine.ecs_entity.Entity = .{ .id = std.math.maxInt(u64) },
+    scene_graph_focus_target_id: u64 = std.math.maxInt(u64),
+    scene_graph_focus_pending: bool = false,
+    scene_graph_open_chain: [128]u64 = [_]u64{0} ** 128,
+    scene_graph_open_chain_len: u8 = 0,
+
+    renaming_entity: engine.ecs_entity.Entity = .{ .id = std.math.maxInt(u64) },
+    rename_buffer: [256]u8 = [_]u8{0} ** 256,
+    inspector_last_entity_id: u64 = std.math.maxInt(u64),
+    inspector_name_buffer: [256]u8 = [_]u8{0} ** 256,
+    inspector_skybox_buffer: [256]u8 = [_]u8{0} ** 256,
+    inspector_node_type_search: [128]u8 = [_]u8{0} ** 128,
+    inspector_add_component_search: [128]u8 = [_]u8{0} ** 128,
+    inspector_rotation_euler_deg: [3]f32 = .{ 0.0, 0.0, 0.0 },
+
+    show_scene_graph: bool = true,
+    show_scene_view: bool = true,
+    show_assets: bool = true,
+    show_model_manager: bool = true,
+    show_entity_inspector: bool = true,
+    show_scene_manager: bool = true,
+    show_pbr_settings: bool = true,
+    show_animation: bool = true,
+    show_project_manager: bool = true,
+
+    assets: AssetState = .{},
+
+    selected_animation: i32 = -1,
+    animation_time: f32 = 0.0,
+    animation_playing: bool = false,
+    animation_looping: bool = true,
+    animation_speed: f32 = 1.0,
+
+    material_override_enabled: bool = false,
+    material_albedo: [4]f32 = .{ 1.0, 1.0, 1.0, 1.0 },
+    material_metallic: f32 = 0.0,
+    material_roughness: f32 = 0.5,
+    material_emissive: [3]f32 = .{ 0.0, 0.0, 0.0 },
+    material_normal_scale: f32 = 1.0,
+    material_ao_strength: f32 = 1.0,
+
+    show_material_0_toggle: bool = true,
+    show_grid_axes: bool = true,
+    show_performance_panel: bool = true,
+
+    undo: undo.UndoState = .{},
+
+    project: ?@import("project.zig").Project = null,
+    project_loaded: bool = false,
+};
+
+pub const EditorState = struct {
+    runtime: EditorRuntimeState = .{},
+    ui: EditorUiState = .{},
 };

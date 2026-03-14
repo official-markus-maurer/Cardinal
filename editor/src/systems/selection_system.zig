@@ -36,6 +36,41 @@ pub const SelectionState = struct {
 
 var selection_state = SelectionState{};
 
+const BVHNode = struct {
+    aabb: math.AABB,
+    left: u32,
+    right: u32,
+    first: u32,
+    count: u32,
+};
+
+const MeshPickBvh = struct {
+    nodes: []BVHNode,
+    tri_offsets: []u32,
+    root: u32,
+    vertices_ptr: usize,
+    indices_ptr: usize,
+    vertex_count: u32,
+    index_count: u32,
+
+    fn deinit(self: *MeshPickBvh, allocator: std.mem.Allocator) void {
+        allocator.free(self.nodes);
+        allocator.free(self.tri_offsets);
+    }
+};
+
+var pick_bvh_cache: std.AutoHashMapUnmanaged(u32, MeshPickBvh) = .{};
+
+pub fn reset_picking_cache() void {
+    const allocator = engine.memory.cardinal_get_allocator_for_category(.ENGINE).as_allocator();
+    var it = pick_bvh_cache.iterator();
+    while (it.next()) |entry| {
+        entry.value_ptr.deinit(allocator);
+    }
+    pick_bvh_cache.deinit(allocator);
+    pick_bvh_cache = .{};
+}
+
 /// Computes a world-space ray from the current mouse position.
 fn get_ray_from_mouse(state: *EditorState) ?math.Ray {
     var mouse_pos_im: c.ImVec2 = undefined;
@@ -44,8 +79,8 @@ fn get_ray_from_mouse(state: *EditorState) ?math.Ray {
 
     if (mouse_pos.x < 0 or mouse_pos.y < 0) return null;
 
-    const win_width = state.window.width;
-    const win_height = state.window.height;
+    const win_width = state.runtime.window.width;
+    const win_height = state.runtime.window.height;
 
     if (win_width == 0 or win_height == 0) return null;
 
@@ -55,7 +90,7 @@ fn get_ray_from_mouse(state: *EditorState) ?math.Ray {
     const ray_nds = math.Vec3{ .x = x, .y = y, .z = 1.0 };
     const ray_clip = math.Vec4{ .x = ray_nds.x, .y = ray_nds.y, .z = -1.0, .w = 1.0 };
 
-    const proj = math.Mat4.perspective(math.toRadians(state.camera.fov), state.camera.aspect, state.camera.near_plane, state.camera.far_plane);
+    const proj = math.Mat4.perspective(math.toRadians(state.runtime.camera.fov), state.runtime.camera.aspect, state.runtime.camera.near_plane, state.runtime.camera.far_plane);
     const inv_proj = proj.invert() orelse return null;
 
     var ray_eye_v4 = inv_proj.mulVec4(ray_clip);
@@ -64,14 +99,14 @@ fn get_ray_from_mouse(state: *EditorState) ?math.Ray {
 
     const ray_eye = math.Vec3{ .x = ray_eye_v4.x, .y = ray_eye_v4.y, .z = ray_eye_v4.z };
 
-    const view = math.Mat4.lookAt(state.camera.position, state.camera.target, state.camera.up);
+    const view = math.Mat4.lookAt(state.runtime.camera.position, state.runtime.camera.target, state.runtime.camera.up);
     const inv_view = view.invert() orelse return null;
 
     const ray_world_v4 = inv_view.mulVec4(math.Vec4{ .x = ray_eye.x, .y = ray_eye.y, .z = ray_eye.z, .w = 0.0 });
     var ray_world = math.Vec3{ .x = ray_world_v4.x, .y = ray_world_v4.y, .z = ray_world_v4.z };
     ray_world = ray_world.normalize();
 
-    return math.Ray{ .origin = state.camera.position, .direction = ray_world };
+    return math.Ray{ .origin = state.runtime.camera.position, .direction = ray_world };
 }
 
 fn check_node_intersection(
@@ -123,9 +158,201 @@ fn check_node_intersection(
     }
 }
 
+fn build_mesh_bvh(mesh: *const scene.CardinalMesh) ?MeshPickBvh {
+    const allocator = engine.memory.cardinal_get_allocator_for_category(.ENGINE).as_allocator();
+    const verts: [*]const scene.CardinalVertex = @ptrCast(mesh.vertices.?);
+    const idxs: [*]const u32 = @ptrCast(mesh.indices.?);
+
+    const tri_count: u32 = mesh.index_count / 3;
+    if (tri_count == 0) return null;
+
+    const TriBuild = struct {
+        tri_offset: u32,
+        centroid: math.Vec3,
+        aabb: math.AABB,
+    };
+
+    var tri_build = allocator.alloc(TriBuild, tri_count) catch return null;
+    defer allocator.free(tri_build);
+
+    var ti: u32 = 0;
+    while (ti < tri_count) : (ti += 1) {
+        const tri_offset: u32 = ti * 3;
+        const idx0 = idxs[tri_offset + 0];
+        const idx1 = idxs[tri_offset + 1];
+        const idx2 = idxs[tri_offset + 2];
+        if (idx0 >= mesh.vertex_count or idx1 >= mesh.vertex_count or idx2 >= mesh.vertex_count) {
+            tri_build[ti] = .{
+                .tri_offset = tri_offset,
+                .centroid = math.Vec3.zero(),
+                .aabb = .{ .min = math.Vec3.zero(), .max = math.Vec3.zero() },
+            };
+            continue;
+        }
+
+        const p0 = math.Vec3{ .x = verts[idx0].px, .y = verts[idx0].py, .z = verts[idx0].pz };
+        const p1 = math.Vec3{ .x = verts[idx1].px, .y = verts[idx1].py, .z = verts[idx1].pz };
+        const p2 = math.Vec3{ .x = verts[idx2].px, .y = verts[idx2].py, .z = verts[idx2].pz };
+
+        const min = math.Vec3{
+            .x = @min(p0.x, @min(p1.x, p2.x)),
+            .y = @min(p0.y, @min(p1.y, p2.y)),
+            .z = @min(p0.z, @min(p1.z, p2.z)),
+        };
+        const max = math.Vec3{
+            .x = @max(p0.x, @max(p1.x, p2.x)),
+            .y = @max(p0.y, @max(p1.y, p2.y)),
+            .z = @max(p0.z, @max(p1.z, p2.z)),
+        };
+
+        tri_build[ti] = .{
+            .tri_offset = tri_offset,
+            .centroid = p0.add(p1).add(p2).mul(1.0 / 3.0),
+            .aabb = .{ .min = min, .max = max },
+        };
+    }
+
+    var tri_offsets = allocator.alloc(u32, tri_count) catch return null;
+    errdefer allocator.free(tri_offsets);
+    for (tri_build, 0..) |t, i| tri_offsets[i] = t.tri_offset;
+
+    var nodes_list = std.ArrayListUnmanaged(BVHNode){};
+    errdefer {
+        allocator.free(tri_offsets);
+        nodes_list.deinit(allocator);
+    }
+
+    const BuildCtx = struct {
+        tris: []TriBuild,
+        offsets: []u32,
+        nodes: *std.ArrayListUnmanaged(BVHNode),
+        allocator: std.mem.Allocator,
+
+        fn centroid_less_than(_: void, a: TriBuild, b: TriBuild) bool {
+            return a.centroid.x < b.centroid.x;
+        }
+
+        fn build(self: *@This(), start: u32, count: u32) !u32 {
+            const node_index: u32 = @intCast(self.nodes.items.len);
+            try self.nodes.append(self.allocator, undefined);
+
+            var bounds_min = math.Vec3{ .x = std.math.floatMax(f32), .y = std.math.floatMax(f32), .z = std.math.floatMax(f32) };
+            var bounds_max = math.Vec3{ .x = -std.math.floatMax(f32), .y = -std.math.floatMax(f32), .z = -std.math.floatMax(f32) };
+
+            var i: u32 = 0;
+            while (i < count) : (i += 1) {
+                const t = self.tris[start + i];
+                bounds_min.x = @min(bounds_min.x, t.aabb.min.x);
+                bounds_min.y = @min(bounds_min.y, t.aabb.min.y);
+                bounds_min.z = @min(bounds_min.z, t.aabb.min.z);
+                bounds_max.x = @max(bounds_max.x, t.aabb.max.x);
+                bounds_max.y = @max(bounds_max.y, t.aabb.max.y);
+                bounds_max.z = @max(bounds_max.z, t.aabb.max.z);
+            }
+
+            if (count <= 8) {
+                self.nodes.items[node_index] = .{
+                    .aabb = .{ .min = bounds_min, .max = bounds_max },
+                    .left = 0,
+                    .right = 0,
+                    .first = start,
+                    .count = count,
+                };
+                return node_index;
+            }
+
+            var cmin = math.Vec3{ .x = std.math.floatMax(f32), .y = std.math.floatMax(f32), .z = std.math.floatMax(f32) };
+            var cmax = math.Vec3{ .x = -std.math.floatMax(f32), .y = -std.math.floatMax(f32), .z = -std.math.floatMax(f32) };
+            i = 0;
+            while (i < count) : (i += 1) {
+                const cent = self.tris[start + i].centroid;
+                cmin.x = @min(cmin.x, cent.x);
+                cmin.y = @min(cmin.y, cent.y);
+                cmin.z = @min(cmin.z, cent.z);
+                cmax.x = @max(cmax.x, cent.x);
+                cmax.y = @max(cmax.y, cent.y);
+                cmax.z = @max(cmax.z, cent.z);
+            }
+
+            const ext = cmax.sub(cmin);
+            const axis: u32 = if (ext.x >= ext.y and ext.x >= ext.z) 0 else if (ext.y >= ext.z) 1 else 2;
+
+            const slice = self.tris[start .. start + count];
+            const Cmp = struct {
+                axis: u32,
+                fn less_than(ctx: @This(), a: TriBuild, b: TriBuild) bool {
+                    return switch (ctx.axis) {
+                        0 => a.centroid.x < b.centroid.x,
+                        1 => a.centroid.y < b.centroid.y,
+                        else => a.centroid.z < b.centroid.z,
+                    };
+                }
+            };
+            std.sort.pdq(TriBuild, slice, Cmp{ .axis = axis }, Cmp.less_than);
+
+            const mid = start + count / 2;
+            const left = try self.build(start, mid - start);
+            const right = try self.build(mid, start + count - mid);
+
+            self.nodes.items[node_index] = .{
+                .aabb = .{ .min = bounds_min, .max = bounds_max },
+                .left = left,
+                .right = right,
+                .first = 0,
+                .count = 0,
+            };
+            return node_index;
+        }
+    };
+
+    var ctx = BuildCtx{ .tris = tri_build, .offsets = tri_offsets, .nodes = &nodes_list, .allocator = allocator };
+    const root = ctx.build(0, tri_count) catch return null;
+
+    for (ctx.tris, 0..) |t, i| ctx.offsets[i] = t.tri_offset;
+
+    const nodes = nodes_list.toOwnedSlice(allocator) catch return null;
+    return .{
+        .nodes = nodes,
+        .tri_offsets = tri_offsets,
+        .root = root,
+        .vertices_ptr = @intFromPtr(mesh.vertices.?),
+        .indices_ptr = @intFromPtr(mesh.indices.?),
+        .vertex_count = mesh.vertex_count,
+        .index_count = mesh.index_count,
+    };
+}
+
+fn get_mesh_bvh(mesh_index: u32, mesh: *const scene.CardinalMesh) ?*const MeshPickBvh {
+    const allocator = engine.memory.cardinal_get_allocator_for_category(.ENGINE).as_allocator();
+
+    if (pick_bvh_cache.getPtr(mesh_index)) |bvh| {
+        if (bvh.vertices_ptr == @intFromPtr(mesh.vertices.?) and
+            bvh.indices_ptr == @intFromPtr(mesh.indices.?) and
+            bvh.vertex_count == mesh.vertex_count and
+            bvh.index_count == mesh.index_count)
+        {
+            return bvh;
+        }
+        bvh.deinit(allocator);
+        _ = pick_bvh_cache.remove(mesh_index);
+    }
+
+    const built = build_mesh_bvh(mesh) orelse return null;
+    pick_bvh_cache.put(allocator, mesh_index, built) catch {
+        var tmp = built;
+        tmp.deinit(allocator);
+        return null;
+    };
+    return pick_bvh_cache.getPtr(mesh_index);
+}
+
+/// Returns the mesh index hit by `ray` in the combined scene.
+///
+/// Uses a coarse AABB test, then triangle intersection. For alpha-masked/blended materials, a hit
+/// must also pass a cheap albedo-alpha test; otherwise the closest non-alpha-tested hit is used.
 fn pick_combined_mesh(state: *EditorState, ray: math.Ray) ?u32 {
-    if (state.combined_scene.meshes == null or state.combined_scene.mesh_count == 0) return null;
-    const meshes = state.combined_scene.meshes.?;
+    if (state.runtime.combined_scene.meshes == null or state.runtime.combined_scene.mesh_count == 0) return null;
+    const meshes = state.runtime.combined_scene.meshes.?;
 
     var closest_t_alpha: f32 = std.math.floatMax(f32);
     var hit_mesh_alpha: ?u32 = null;
@@ -136,7 +363,7 @@ fn pick_combined_mesh(state: *EditorState, ray: math.Ray) ?u32 {
     const t_max: f32 = 10000.0;
 
     var i: u32 = 0;
-    while (i < state.combined_scene.mesh_count) : (i += 1) {
+    while (i < state.runtime.combined_scene.mesh_count) : (i += 1) {
         const mesh = &meshes[i];
         if (!mesh.visible) continue;
         if (mesh.vertices == null or mesh.indices == null or mesh.index_count < 3) continue;
@@ -153,34 +380,69 @@ fn pick_combined_mesh(state: *EditorState, ray: math.Ray) ?u32 {
         const aabb_t = math.intersectRayAABB(ray, world_aabb, t_min, t_max) orelse continue;
         if (aabb_t >= closest_t_any) continue;
 
+        const inv_world = world_mat.invert() orelse continue;
+        const local_origin = inv_world.transformPoint(ray.origin);
+        const local_dir = inv_world.transformVector(ray.direction);
+        const local_ray = math.Ray{ .origin = local_origin, .direction = local_dir };
+
+        const bvh = get_mesh_bvh(i, mesh) orelse continue;
+
         const verts: [*]const scene.CardinalVertex = @ptrCast(mesh.vertices.?);
         const idxs: [*]const u32 = @ptrCast(mesh.indices.?);
 
-        var idx_i: u32 = 0;
-        while (idx_i + 2 < mesh.index_count) : (idx_i += 3) {
-            const idx0 = idxs[idx_i + 0];
-            const idx1 = idxs[idx_i + 1];
-            const idx2 = idxs[idx_i + 2];
-            if (idx0 >= mesh.vertex_count or idx1 >= mesh.vertex_count or idx2 >= mesh.vertex_count) continue;
+        var stack: [128]u32 = undefined;
+        var sp: usize = 0;
+        stack[sp] = bvh.root;
+        sp += 1;
 
-            const p0_local = math.Vec3{ .x = verts[idx0].px, .y = verts[idx0].py, .z = verts[idx0].pz };
-            const p1_local = math.Vec3{ .x = verts[idx1].px, .y = verts[idx1].py, .z = verts[idx1].pz };
-            const p2_local = math.Vec3{ .x = verts[idx2].px, .y = verts[idx2].py, .z = verts[idx2].pz };
+        while (sp > 0) {
+            sp -= 1;
+            const node_index = stack[sp];
+            const node = bvh.nodes[node_index];
 
-            const p0 = world_mat.transformPoint(p0_local);
-            const p1 = world_mat.transformPoint(p1_local);
-            const p2 = world_mat.transformPoint(p2_local);
+            const t_local = math.intersectRayAABB(local_ray, node.aabb, 0.0, std.math.floatMax(f32)) orelse continue;
+            const local_p = local_ray.origin.add(local_ray.direction.mul(t_local));
+            const world_p = world_mat.transformPoint(local_p);
+            const t_world = world_p.sub(ray.origin).dot(ray.direction);
+            if (t_world <= 0.0 or t_world >= closest_t_any) continue;
 
-            if (intersect_ray_triangle(ray, p0, p1, p2, t_min, @min(t_max, closest_t_any))) |hit| {
-                if (hit.t < closest_t_any) {
-                    closest_t_any = hit.t;
-                    hit_mesh_any = i;
+            if (node.count == 0) {
+                if (sp + 2 <= stack.len) {
+                    stack[sp] = node.left;
+                    stack[sp + 1] = node.right;
+                    sp += 2;
                 }
+                continue;
+            }
 
-                if (hit_passes_alpha_test(&state.combined_scene, mesh, verts, idx0, idx1, idx2, hit.u, hit.v)) {
-                    if (hit.t < closest_t_alpha) {
-                        closest_t_alpha = hit.t;
-                        hit_mesh_alpha = i;
+            var j: u32 = 0;
+            while (j < node.count) : (j += 1) {
+                const tri_off = bvh.tri_offsets[node.first + j];
+                if (tri_off + 2 >= mesh.index_count) continue;
+
+                const idx0 = idxs[tri_off + 0];
+                const idx1 = idxs[tri_off + 1];
+                const idx2 = idxs[tri_off + 2];
+                if (idx0 >= mesh.vertex_count or idx1 >= mesh.vertex_count or idx2 >= mesh.vertex_count) continue;
+
+                const p0 = math.Vec3{ .x = verts[idx0].px, .y = verts[idx0].py, .z = verts[idx0].pz };
+                const p1 = math.Vec3{ .x = verts[idx1].px, .y = verts[idx1].py, .z = verts[idx1].pz };
+                const p2 = math.Vec3{ .x = verts[idx2].px, .y = verts[idx2].py, .z = verts[idx2].pz };
+
+                if (intersect_ray_triangle(local_ray, p0, p1, p2, 0.0, std.math.floatMax(f32))) |hit| {
+                    const local_hit = local_ray.origin.add(local_ray.direction.mul(hit.t));
+                    const world_hit = world_mat.transformPoint(local_hit);
+                    const hit_t_world = world_hit.sub(ray.origin).dot(ray.direction);
+                    if (hit_t_world <= 0.0 or hit_t_world >= closest_t_any) continue;
+
+                    closest_t_any = hit_t_world;
+                    hit_mesh_any = i;
+
+                    if (hit_passes_alpha_test(&state.runtime.combined_scene, mesh, verts, idx0, idx1, idx2, hit.u, hit.v)) {
+                        if (hit_t_world < closest_t_alpha) {
+                            closest_t_alpha = hit_t_world;
+                            hit_mesh_alpha = i;
+                        }
                     }
                 }
             }
@@ -190,12 +452,14 @@ fn pick_combined_mesh(state: *EditorState, ray: math.Ray) ?u32 {
     return hit_mesh_alpha orelse hit_mesh_any;
 }
 
+/// Ray/triangle intersection result with barycentric coordinates.
 const TriHit = struct {
     t: f32,
     u: f32,
     v: f32,
 };
 
+/// Möller–Trumbore intersection with barycentric output.
 fn intersect_ray_triangle(ray: math.Ray, v0: math.Vec3, v1: math.Vec3, v2: math.Vec3, t_min: f32, t_max: f32) ?TriHit {
     const eps: f32 = 0.000001;
 
@@ -220,6 +484,9 @@ fn intersect_ray_triangle(ray: math.Ray, v0: math.Vec3, v1: math.Vec3, v2: math.
     return .{ .t = t, .u = u, .v = v };
 }
 
+/// Returns whether the hit point on a triangle should be considered "solid" for selection.
+///
+/// For alpha-masked materials this approximates the fragment discard by sampling albedo alpha.
 fn hit_passes_alpha_test(scn: *const scene.CardinalScene, mesh: *const scene.CardinalMesh, verts: [*]const scene.CardinalVertex, idx0: u32, idx1: u32, idx2: u32, bc_u: f32, bc_v: f32) bool {
     if (scn.materials == null or mesh.material_index >= scn.material_count) return true;
     const mat = &scn.materials.?[mesh.material_index];
@@ -246,6 +513,7 @@ fn hit_passes_alpha_test(scn: *const scene.CardinalScene, mesh: *const scene.Car
     };
 }
 
+/// Applies a glTF-style UV transform.
 fn apply_uv_transform(uv: math.Vec2, tr: scene.CardinalTextureTransform) math.Vec2 {
     var out = uv;
     out.x *= tr.scale[0];
@@ -265,6 +533,7 @@ fn apply_uv_transform(uv: math.Vec2, tr: scene.CardinalTextureTransform) math.Ve
     return out;
 }
 
+/// Wraps `u` for a sampler mode.
 fn wrap_uv(u: f32, mode: c_int) f32 {
     return switch (mode) {
         0 => u - std.math.floor(u),
@@ -278,6 +547,9 @@ fn wrap_uv(u: f32, mode: c_int) f32 {
     };
 }
 
+/// Samples alpha from the albedo texture if possible, multiplying by `albedo_factor.a`.
+///
+/// Falls back to the factor alpha when the texture data is unavailable (e.g. HDR or missing CPU data).
 fn sample_albedo_alpha(scn: *const scene.CardinalScene, mat: *const scene.CardinalMaterial, uv_in: math.Vec2) f32 {
     var alpha: f32 = mat.albedo_factor[3];
 
@@ -306,7 +578,7 @@ fn sample_albedo_alpha(scn: *const scene.CardinalScene, mat: *const scene.Cardin
 }
 
 fn find_entity_for_mesh_index(state: *EditorState, mesh_index: u32) ?engine.ecs_entity.Entity {
-    var view = state.registry.view(components.MeshRenderer);
+    var view = state.runtime.registry.view(components.MeshRenderer);
     var it = view.iterator();
     while (it.next()) |entry| {
         if (entry.component.mesh.index == mesh_index) return entry.entity;
@@ -315,11 +587,11 @@ fn find_entity_for_mesh_index(state: *EditorState, mesh_index: u32) ?engine.ecs_
 }
 
 fn find_node_name_for_mesh_index(state: *EditorState, mesh_index: u32) ?[]const u8 {
-    if (state.combined_scene.all_nodes == null or state.combined_scene.all_node_count == 0) return null;
+    if (state.runtime.combined_scene.all_nodes == null or state.runtime.combined_scene.all_node_count == 0) return null;
 
     var i: u32 = 0;
-    while (i < state.combined_scene.all_node_count) : (i += 1) {
-        const node_opt = state.combined_scene.all_nodes.?[i];
+    while (i < state.runtime.combined_scene.all_node_count) : (i += 1) {
+        const node_opt = state.runtime.combined_scene.all_nodes.?[i];
         if (node_opt == null) continue;
         const node = node_opt.?;
         if (node.name == null or node.mesh_indices == null or node.mesh_count == 0) continue;
@@ -335,19 +607,30 @@ fn find_node_name_for_mesh_index(state: *EditorState, mesh_index: u32) ?[]const 
     return null;
 }
 
+fn mesh_index_to_entity(state: *EditorState, mesh_index: u32, owner: bool) ?engine.ecs_entity.Entity {
+    const id_opt = if (owner) state.runtime.mesh_owner_by_mesh_index.get(mesh_index) else state.runtime.mesh_entity_by_mesh_index.get(mesh_index);
+    if (id_opt) |id| {
+        const ent = engine.ecs_entity.Entity{ .id = id };
+        if (state.runtime.registry.entity_manager.is_alive(ent)) return ent;
+    }
+    return null;
+}
+
+/// Ensures an ECS entity exists for a combined scene mesh index so it can be selected and edited.
 fn ensure_entity_for_mesh_index(state: *EditorState, mesh_index: u32) ?engine.ecs_entity.Entity {
     if (find_entity_for_mesh_index(state, mesh_index)) |ent| return ent;
-    if (state.combined_scene.meshes == null or mesh_index >= state.combined_scene.mesh_count) return null;
+    if (state.runtime.combined_scene.meshes == null or mesh_index >= state.runtime.combined_scene.mesh_count) return null;
 
-    const mesh = &state.combined_scene.meshes.?[mesh_index];
+    const mesh = &state.runtime.combined_scene.meshes.?[mesh_index];
+    const map_alloc = engine.memory.cardinal_get_allocator_for_category(.ENGINE).as_allocator();
 
-    const entity = state.registry.create() catch return null;
+    const entity = state.runtime.registry.create() catch return null;
 
     var name_buf: [64]u8 = undefined;
     const name = find_node_name_for_mesh_index(state, mesh_index) orelse (std.fmt.bufPrint(&name_buf, "Mesh{d}", .{mesh_index}) catch "Mesh");
-    state.registry.add(entity, components.Name.init(name)) catch {};
+    state.runtime.registry.add(entity, components.Name.init(name)) catch {};
 
-    state.registry.add(entity, components.Node{ .type = .MeshInstance3D }) catch {};
+    state.runtime.registry.add(entity, components.Node{ .type = .MeshInstance3D }) catch {};
 
     var transform = components.Transform{};
     const m = math.Mat4.fromArray(mesh.transform);
@@ -355,9 +638,9 @@ fn ensure_entity_for_mesh_index(state: *EditorState, mesh_index: u32) ?engine.ec
     transform.position = decomposed.t;
     transform.rotation = decomposed.r;
     transform.scale = decomposed.s;
-    state.registry.add(entity, transform) catch {};
+    state.runtime.registry.add(entity, transform) catch {};
 
-    state.registry.add(entity, components.Hierarchy{}) catch {};
+    state.runtime.registry.add(entity, components.Hierarchy{}) catch {};
 
     const mr = components.MeshRenderer{
         .mesh = .{ .index = mesh_index, .generation = 0 },
@@ -366,7 +649,10 @@ fn ensure_entity_for_mesh_index(state: *EditorState, mesh_index: u32) ?engine.ec
         .cast_shadows = true,
         .receive_shadows = true,
     };
-    state.registry.add(entity, mr) catch {};
+    state.runtime.registry.add(entity, mr) catch {};
+
+    state.runtime.mesh_owner_by_mesh_index.put(map_alloc, mesh_index, entity.id) catch {};
+    state.runtime.mesh_entity_by_mesh_index.put(map_alloc, mesh_index, entity.id) catch {};
 
     return entity;
 }
@@ -383,7 +669,7 @@ pub fn update(state: *EditorState) void {
         }
     }
 
-    if (state.mouse_captured) {
+    if (state.runtime.mouse_captured) {
         selection_state.is_dragging = false;
         selection_state.drag_axis = null;
         selection_state.drag_is_rotation = false;
@@ -392,24 +678,31 @@ pub fn update(state: *EditorState) void {
     }
 
     const want_capture = c.imgui_bridge_want_capture_mouse();
-    if (!state.mouse_captured and c.imgui_bridge_is_mouse_clicked(0) and !want_capture and !selection_state.is_dragging and selection_state.hover_axis == null) {
+    if (!state.runtime.mouse_captured and c.imgui_bridge_is_mouse_clicked(0) and !want_capture and !selection_state.is_dragging and selection_state.hover_axis == null) {
         if (get_ray_from_mouse(state)) |ray| {
             if (pick_combined_mesh(state, ray)) |mesh_index| {
-                if (find_entity_for_mesh_index(state, mesh_index) orelse ensure_entity_for_mesh_index(state, mesh_index)) |ent| {
-                    state.selected_entity = ent;
-                    state.selected_model_id = 0;
-                    state.scene_graph_focus_target_id = ent.id;
-                    state.scene_graph_focus_pending = true;
+                const pick_single_mesh = c.imgui_bridge_is_alt_down();
+                const ent =
+                    if (pick_single_mesh)
+                        mesh_index_to_entity(state, mesh_index, false) orelse ensure_entity_for_mesh_index(state, mesh_index)
+                    else
+                        mesh_index_to_entity(state, mesh_index, true) orelse mesh_index_to_entity(state, mesh_index, false) orelse ensure_entity_for_mesh_index(state, mesh_index);
+
+                if (ent) |e| {
+                    state.ui.selected_entity = e;
+                    state.ui.selected_model_id = 0;
+                    state.ui.scene_graph_focus_target_id = e.id;
+                    state.ui.scene_graph_focus_pending = true;
                 } else {
-                    state.selected_entity = .{ .id = std.math.maxInt(u64) };
+                    state.ui.selected_entity = .{ .id = std.math.maxInt(u64) };
                 }
             } else {
                 var closest_t: f32 = std.math.floatMax(f32);
                 var hit_model_id: u32 = 0;
 
-                if (state.model_manager.models) |models| {
+                if (state.runtime.model_manager.models) |models| {
                     var i: u32 = 0;
-                    while (i < state.model_manager.model_count) : (i += 1) {
+                    while (i < state.runtime.model_manager.model_count) : (i += 1) {
                         const model = &models[i];
                         if (!model.visible or model.is_loading) continue;
 
@@ -427,24 +720,24 @@ pub fn update(state: *EditorState) void {
                 }
 
                 if (hit_model_id != 0) {
-                    state.selected_model_id = hit_model_id;
-                    state.selected_entity = .{ .id = std.math.maxInt(u64) };
+                    state.ui.selected_model_id = hit_model_id;
+                    state.ui.selected_entity = .{ .id = std.math.maxInt(u64) };
                 } else {
-                    state.selected_model_id = 0;
-                    state.selected_entity = .{ .id = std.math.maxInt(u64) };
+                    state.ui.selected_model_id = 0;
+                    state.ui.selected_entity = .{ .id = std.math.maxInt(u64) };
                 }
             }
         }
     }
 
-    if (state.selected_entity.id != std.math.maxInt(u64)) {
-        if (state.registry.get(components.Transform, state.selected_entity)) |t| {
+    if (state.ui.selected_entity.id != std.math.maxInt(u64)) {
+        if (state.runtime.registry.get(components.Transform, state.ui.selected_entity)) |t| {
             draw_entity_gizmo(state, t);
             return;
         }
     }
 
-    if (state.selected_model_id != 0) draw_gizmo(state);
+    if (state.ui.selected_model_id != 0) draw_gizmo(state);
 }
 
 fn draw_entity_gizmo(state: *EditorState, t: *components.Transform) void {
@@ -452,8 +745,8 @@ fn draw_entity_gizmo(state: *EditorState, t: *components.Transform) void {
     const rot = t.rotation.normalize();
     const scale_vec = t.scale;
 
-    const view = math.Mat4.lookAt(state.camera.position, state.camera.target, state.camera.up);
-    const proj = math.Mat4.perspective(math.toRadians(state.camera.fov), state.camera.aspect, state.camera.near_plane, state.camera.far_plane);
+    const view = math.Mat4.lookAt(state.runtime.camera.position, state.runtime.camera.target, state.runtime.camera.up);
+    const proj = math.Mat4.perspective(math.toRadians(state.runtime.camera.fov), state.runtime.camera.aspect, state.runtime.camera.near_plane, state.runtime.camera.far_plane);
     const view_proj = proj.mul(view);
 
     const screen_pos_v4 = view_proj.mulVec4(math.Vec4{ .x = pos.x, .y = pos.y, .z = pos.z, .w = 1.0 });
@@ -461,8 +754,8 @@ fn draw_entity_gizmo(state: *EditorState, t: *components.Transform) void {
 
     const ndc = math.Vec3{ .x = screen_pos_v4.x / screen_pos_v4.w, .y = screen_pos_v4.y / screen_pos_v4.w, .z = screen_pos_v4.z / screen_pos_v4.w };
 
-    const win_width = state.window.width;
-    const win_height = state.window.height;
+    const win_width = state.runtime.window.width;
+    const win_height = state.runtime.window.height;
 
     const screen_x = (ndc.x + 1.0) * 0.5 * @as(f32, @floatFromInt(win_width));
     const screen_y = (ndc.y + 1.0) * 0.5 * @as(f32, @floatFromInt(win_height));
@@ -489,9 +782,9 @@ fn draw_entity_gizmo(state: *EditorState, t: *components.Transform) void {
 
     var hovered: ?u32 = null;
     var hovered_rot: bool = false;
-    const can_interact = !state.mouse_captured and !c.imgui_bridge_want_capture_mouse();
+    const can_interact = !state.runtime.mouse_captured and !c.imgui_bridge_want_capture_mouse();
 
-    const dist = state.camera.position.sub(pos).length();
+    const dist = state.runtime.camera.position.sub(pos).length();
     const scale_factor = dist * 0.15;
 
     if (selection_state.gizmo_mode == .Translate or selection_state.gizmo_mode == .Rotate) {
@@ -634,12 +927,13 @@ fn draw_entity_gizmo(state: *EditorState, t: *components.Transform) void {
         selection_state.drag_start_pos = pos;
         selection_state.drag_start_rot = rot;
         selection_state.drag_start_val = if (selection_state.gizmo_mode == .Translate) pos else scale_vec;
+        state.ui.undo.begin_entity_transform(state.ui.selected_entity.id, t.*);
 
         if (!hovered_rot) {
             const axis = axes[hovered.?];
-            const cam_dir = state.camera.target.sub(state.camera.position).normalize();
+            const cam_dir = state.runtime.camera.target.sub(state.runtime.camera.position).normalize();
             var plane_normal = axis.cross(cam_dir).cross(axis).normalize();
-            if (plane_normal.lengthSq() < 0.001) plane_normal = axis.cross(state.camera.up).cross(axis).normalize();
+            if (plane_normal.lengthSq() < 0.001) plane_normal = axis.cross(state.runtime.camera.up).cross(axis).normalize();
             selection_state.drag_plane_normal = plane_normal;
 
             var valid_start = false;
@@ -659,7 +953,8 @@ fn draw_entity_gizmo(state: *EditorState, t: *components.Transform) void {
         }
     }
 
-    if (!c.imgui_bridge_is_mouse_down(0)) {
+    if (!c.imgui_bridge_is_mouse_down(0) and selection_state.is_dragging) {
+        state.ui.undo.end_entity_transform(state.ui.selected_entity.id, t.*);
         selection_state.is_dragging = false;
         selection_state.drag_axis = null;
         selection_state.drag_is_rotation = false;
@@ -684,7 +979,7 @@ fn draw_entity_gizmo(state: *EditorState, t: *components.Transform) void {
 
                 t.rotation = new_rot;
                 t.dirty = true;
-                state.mark_transform_override_tree(state.selected_entity);
+                state.runtime.mark_transform_override_tree(state.ui.selected_entity);
             } else {
                 if (get_ray_from_mouse(state)) |ray| {
                     const axis = axes[axis_idx];
@@ -703,7 +998,7 @@ fn draw_entity_gizmo(state: *EditorState, t: *components.Transform) void {
                             new_pos = new_pos.add(axis.mul(delta_t));
                             t.position = new_pos;
                             t.dirty = true;
-                            state.mark_transform_override_tree(state.selected_entity);
+                            state.runtime.mark_transform_override_tree(state.ui.selected_entity);
                         } else if (selection_state.gizmo_mode == .Scale) {
                             const scale_delta = 1.0 + (delta_t / scale_factor);
 
@@ -718,7 +1013,7 @@ fn draw_entity_gizmo(state: *EditorState, t: *components.Transform) void {
 
                             t.scale = new_scale;
                             t.dirty = true;
-                            state.mark_transform_override_tree(state.selected_entity);
+                            state.runtime.mark_transform_override_tree(state.ui.selected_entity);
                         }
                     }
                 }
@@ -730,10 +1025,10 @@ fn draw_entity_gizmo(state: *EditorState, t: *components.Transform) void {
 /// Draws and applies manipulation gizmos for the currently selected model.
 fn draw_gizmo(state: *EditorState) void {
     var selected_model: ?*engine.model_manager.CardinalModelInstance = null;
-    if (state.model_manager.models) |models| {
+    if (state.runtime.model_manager.models) |models| {
         var i: u32 = 0;
-        while (i < state.model_manager.model_count) : (i += 1) {
-            if (models[i].id == state.selected_model_id) {
+        while (i < state.runtime.model_manager.model_count) : (i += 1) {
+            if (models[i].id == state.ui.selected_model_id) {
                 selected_model = &models[i];
                 break;
             }
@@ -748,8 +1043,8 @@ fn draw_gizmo(state: *EditorState) void {
     const rot = transform_parts.r;
     const scale_vec = transform_parts.s;
 
-    const view = math.Mat4.lookAt(state.camera.position, state.camera.target, state.camera.up);
-    const proj = math.Mat4.perspective(math.toRadians(state.camera.fov), state.camera.aspect, state.camera.near_plane, state.camera.far_plane);
+    const view = math.Mat4.lookAt(state.runtime.camera.position, state.runtime.camera.target, state.runtime.camera.up);
+    const proj = math.Mat4.perspective(math.toRadians(state.runtime.camera.fov), state.runtime.camera.aspect, state.runtime.camera.near_plane, state.runtime.camera.far_plane);
     const view_proj = proj.mul(view);
 
     const screen_pos_v4 = view_proj.mulVec4(math.Vec4{ .x = pos.x, .y = pos.y, .z = pos.z, .w = 1.0 });
@@ -757,8 +1052,8 @@ fn draw_gizmo(state: *EditorState) void {
 
     const ndc = math.Vec3{ .x = screen_pos_v4.x / screen_pos_v4.w, .y = screen_pos_v4.y / screen_pos_v4.w, .z = screen_pos_v4.z / screen_pos_v4.w };
 
-    const win_width = state.window.width;
-    const win_height = state.window.height;
+    const win_width = state.runtime.window.width;
+    const win_height = state.runtime.window.height;
 
     const screen_x = (ndc.x + 1.0) * 0.5 * @as(f32, @floatFromInt(win_width));
     const screen_y = (ndc.y + 1.0) * 0.5 * @as(f32, @floatFromInt(win_height));
@@ -767,38 +1062,32 @@ fn draw_gizmo(state: *EditorState) void {
     const axis_thickness = 3.0;
     const handle_size = 6.0;
 
-    // Basis vectors in world space
     const axes = [_]math.Vec3{
-        .{ .x = 1, .y = 0, .z = 0 }, // X
-        .{ .x = 0, .y = 1, .z = 0 }, // Y
-        .{ .x = 0, .y = 0, .z = 1 }, // Z
+        .{ .x = 1, .y = 0, .z = 0 },
+        .{ .x = 0, .y = 1, .z = 0 },
+        .{ .x = 0, .y = 0, .z = 1 },
     };
 
-    // ABGR Colors for ImGui
     const axis_colors = [_]u32{
-        0xFF0000FF, // Red
-        0xFF00FF00, // Green
-        0xFFFF0000, // Blue
+        0xFF0000FF,
+        0xFF00FF00,
+        0xFFFF0000,
     };
 
-    // Interaction
     var mouse_pos_im: c.ImVec2 = undefined;
     c.imgui_bridge_get_mouse_pos(&mouse_pos_im);
     const mouse_pos = mouse_pos_im;
 
     var hovered: ?u32 = null;
     var hovered_rot: bool = false;
-    const can_interact = !state.mouse_captured and !c.imgui_bridge_want_capture_mouse();
+    const can_interact = !state.runtime.mouse_captured and !c.imgui_bridge_want_capture_mouse();
 
-    // Calculate constant screen size for gizmo
-    const dist = state.camera.position.sub(pos).length();
+    const dist = state.runtime.camera.position.sub(pos).length();
     const scale_factor = dist * 0.15;
 
-    // --- ROTATION RINGS (Always visible in Translate/Rotate mode, or specific mode) ---
     if (selection_state.gizmo_mode == .Translate or selection_state.gizmo_mode == .Rotate) {
         inline for (0..3) |i| {
             var is_hovered = false;
-            // Interaction Check (Ray-Plane Intersection)
             if (!selection_state.is_dragging and can_interact) {
                 if (get_ray_from_mouse(state)) |ray| {
                     const denom = axes[i].dot(ray.direction);
@@ -807,7 +1096,6 @@ fn draw_gizmo(state: *EditorState) void {
                         if (t > 0) {
                             const hit_point = ray.origin.add(ray.direction.mul(t));
                             const dist_to_center = hit_point.sub(pos).length();
-                            // Ring radius is scale_factor * 1.2 to be outside arrows
                             const ring_radius = scale_factor * 1.2;
                             const ring_thickness = scale_factor * 0.1;
 
@@ -824,7 +1112,6 @@ fn draw_gizmo(state: *EditorState) void {
 
             const color = if (is_hovered) 0xFFFFFFFF else axis_colors[i];
 
-            // Draw Ring
             var u = math.Vec3{ .x = 0, .y = 1, .z = 0 };
             if (@abs(axes[i].dot(u)) > 0.9) u = math.Vec3{ .x = 0, .y = 0, .z = 1 };
             const v = axes[i].cross(u).normalize();
@@ -855,9 +1142,7 @@ fn draw_gizmo(state: *EditorState) void {
         }
     }
 
-    // --- TRANSLATE / SCALE AXES ---
-    // Only verify hover if we haven't already hovered a rotation ring
-    if (selection_state.gizmo_mode != .Rotate) { // Show axes in Translate/Scale
+    if (selection_state.gizmo_mode != .Rotate) {
         inline for (0..3) |i| {
             const end_pos_world = pos.add(axes[i].mul(scale_factor));
             const end_pos_v4 = view_proj.mulVec4(math.Vec4{ .x = end_pos_world.x, .y = end_pos_world.y, .z = end_pos_world.z, .w = 1.0 });
@@ -869,11 +1154,10 @@ fn draw_gizmo(state: *EditorState) void {
             const p1 = center;
             const p2 = c.ImVec2{ .x = end_screen_x, .y = end_screen_y };
 
-            // Check hover (if not already hovering ring)
             if (!selection_state.is_dragging and can_interact and hovered == null) {
                 const dx = mouse_pos.x - end_screen_x;
                 const dy = mouse_pos.y - end_screen_y;
-                if (dx * dx + dy * dy < 100.0) { // 10 pixel radius
+                if (dx * dx + dy * dy < 100.0) {
                     hovered = @as(u32, @intCast(i));
                     hovered_rot = false;
                 }
@@ -881,32 +1165,28 @@ fn draw_gizmo(state: *EditorState) void {
 
             var color = axis_colors[i];
             if ((hovered == @as(u32, @intCast(i)) and !hovered_rot) or (selection_state.drag_axis == @as(u32, @intCast(i)) and !selection_state.drag_is_rotation)) {
-                color = 0xFFFFFFFF; // White highlight
+                color = 0xFFFFFFFF;
             }
 
             c.imgui_bridge_draw_line(&p1, &p2, color, axis_thickness);
 
             if (selection_state.gizmo_mode == .Scale) {
-                // Draw Pyramid for Scale
                 const pyramid_len = scale_factor * 0.2;
                 const base_width = pyramid_len * 0.5;
 
                 const tip = end_pos_world;
                 const base_center = tip.sub(axes[i].mul(pyramid_len));
 
-                // Find perp vectors
                 var u = math.Vec3{ .x = 0, .y = 1, .z = 0 };
                 if (@abs(axes[i].dot(u)) > 0.9) u = math.Vec3{ .x = 0, .y = 0, .z = 1 };
                 const right = axes[i].cross(u).normalize();
                 const up_vec = right.cross(axes[i]).normalize();
 
-                // 4 Base corners
                 const c1 = base_center.add(right.mul(base_width)).add(up_vec.mul(base_width));
                 const c2 = base_center.sub(right.mul(base_width)).add(up_vec.mul(base_width));
                 const c3 = base_center.sub(right.mul(base_width)).sub(up_vec.mul(base_width));
                 const c4 = base_center.add(right.mul(base_width)).sub(up_vec.mul(base_width));
 
-                // Helper to project
                 const p_tip_v4 = view_proj.mulVec4(math.Vec4{ .x = tip.x, .y = tip.y, .z = tip.z, .w = 1.0 });
                 const p_c1_v4 = view_proj.mulVec4(math.Vec4{ .x = c1.x, .y = c1.y, .z = c1.z, .w = 1.0 });
                 const p_c2_v4 = view_proj.mulVec4(math.Vec4{ .x = c2.x, .y = c2.y, .z = c2.z, .w = 1.0 });
@@ -933,7 +1213,6 @@ fn draw_gizmo(state: *EditorState) void {
                     c.imgui_bridge_draw_triangle_filled(&p_tip, &p_c4, &p_c1, color);
                 }
             } else {
-                // Draw cone/arrow for translate
                 c.imgui_bridge_draw_circle_filled(&p2, handle_size, color);
             }
         }
@@ -942,8 +1221,6 @@ fn draw_gizmo(state: *EditorState) void {
     selection_state.hover_axis = hovered;
     selection_state.hover_is_rotation = hovered_rot;
 
-    // Handle Dragging Start
-    // Added !selection_state.is_dragging check to prevent state changes while already dragging
     if (c.imgui_bridge_is_mouse_clicked(0) and hovered != null and can_interact and !selection_state.is_dragging) {
         selection_state.is_dragging = true;
         selection_state.drag_axis = hovered;
@@ -953,17 +1230,13 @@ fn draw_gizmo(state: *EditorState) void {
         selection_state.drag_start_rot = rot;
         selection_state.drag_start_val = if (selection_state.gizmo_mode == .Translate) pos else scale_vec;
 
-        // Calculate drag plane and start t for 3D dragging
         if (!hovered_rot) {
             const axis = axes[hovered.?];
-            const cam_dir = state.camera.target.sub(state.camera.position).normalize();
+            const cam_dir = state.runtime.camera.target.sub(state.runtime.camera.position).normalize();
 
-            // Plane Normal: Cross(Axis, Cross(CamDir, Axis))
-            // This gives a vector perpendicular to Axis, lying in the plane of Axis and CamDir.
-            // This ensures the plane contains the Axis line and is "most perpendicular" to the View.
             var plane_normal = axis.cross(cam_dir).cross(axis).normalize();
             if (plane_normal.lengthSq() < 0.001) {
-                plane_normal = axis.cross(state.camera.up).cross(axis).normalize();
+                plane_normal = axis.cross(state.runtime.camera.up).cross(axis).normalize();
             }
             selection_state.drag_plane_normal = plane_normal;
 
@@ -979,47 +1252,40 @@ fn draw_gizmo(state: *EditorState) void {
             }
 
             if (!valid_start) {
-                // Abort drag if we can't determine start point
                 selection_state.is_dragging = false;
                 selection_state.drag_axis = null;
             }
         }
     }
 
-    // Stop Dragging
-    if (!c.imgui_bridge_is_mouse_down(0)) {
+    if (!c.imgui_bridge_is_mouse_down(0) and selection_state.is_dragging) {
+        state.ui.undo.end_model_transform(model.id, model.transform);
         selection_state.is_dragging = false;
         selection_state.drag_axis = null;
         selection_state.drag_is_rotation = false;
     }
 
-    // Handle Dragging Update
     if (selection_state.is_dragging) {
         if (selection_state.drag_axis) |axis_idx| {
             if (selection_state.drag_is_rotation) {
-                // Arcball-ish Rotation
                 const mouse_curr = math.Vec2{ .x = mouse_pos.x, .y = mouse_pos.y };
                 const center_2d = math.Vec2{ .x = center.x, .y = center.y };
 
                 const v1 = selection_state.drag_start_mouse.sub(center_2d).normalize();
                 const v2 = mouse_curr.sub(center_2d).normalize();
 
-                // Angle change
-                // 2D cross product: x1*y2 - y1*x2
                 const cross = v1.x * v2.y - v1.y * v2.x;
                 const dot = v1.x * v2.x + v1.y * v2.y;
                 const angle = std.math.atan2(cross, dot);
 
-                // Apply rotation around axis
                 const axis = axes[axis_idx];
                 const delta_rot = math.Quat.fromAxisAngle(axis, angle);
                 const new_rot = delta_rot.mul(selection_state.drag_start_rot).normalize();
 
                 const new_mat = math.Mat4.fromTRS(pos, new_rot, scale_vec);
                 model.transform = new_mat.data;
-                state.model_manager.transform_dirty = true;
+                state.runtime.model_manager.transform_dirty = true;
             } else {
-                // Translate / Scale
                 if (get_ray_from_mouse(state)) |ray| {
                     const axis = axes[axis_idx];
                     const plane_normal = selection_state.drag_plane_normal;
@@ -1029,7 +1295,6 @@ fn draw_gizmo(state: *EditorState) void {
                         const t_hit = selection_state.drag_start_pos.sub(ray.origin).dot(plane_normal) / denom;
                         const hit_point = ray.origin.add(ray.direction.mul(t_hit));
 
-                        // Project onto axis
                         const current_t = hit_point.sub(selection_state.drag_start_pos).dot(axis);
                         const delta_t = current_t - selection_state.drag_start_t;
 
@@ -1039,9 +1304,8 @@ fn draw_gizmo(state: *EditorState) void {
 
                             const new_mat = math.Mat4.fromTRS(new_pos, rot, scale_vec);
                             model.transform = new_mat.data;
-                            state.model_manager.transform_dirty = true;
+                            state.runtime.model_manager.transform_dirty = true;
                         } else if (selection_state.gizmo_mode == .Scale) {
-                            // Normalize delta by scale_factor (gizmo visual size) to make it consistent
                             const scale_delta = 1.0 + (delta_t / scale_factor);
 
                             var new_scale = selection_state.drag_start_val;
@@ -1055,7 +1319,7 @@ fn draw_gizmo(state: *EditorState) void {
 
                             const new_mat = math.Mat4.fromTRS(pos, rot, new_scale);
                             model.transform = new_mat.data;
-                            state.model_manager.transform_dirty = true;
+                            state.runtime.model_manager.transform_dirty = true;
                         }
                     }
                 }

@@ -757,6 +757,10 @@ pub const AABB = struct {
     }
 };
 
+/// Returns the parametric distance `t` where `ray` intersects `aabb`, if any.
+///
+/// When the ray origin starts inside the box, this returns the first valid exit intersection
+/// within `[t_min, t_max]`.
 pub fn intersectRayAABB(ray: Ray, aabb: AABB, t_min: f32, t_max: f32) ?f32 {
     var t0: f32 = -std.math.floatMax(f32);
     var t1: f32 = std.math.floatMax(f32);

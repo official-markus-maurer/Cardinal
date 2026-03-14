@@ -36,47 +36,47 @@ fn load_skybox(state: *EditorState, allocator: std.mem.Allocator, path: []const 
     const ext = std.fs.path.extension(path);
     if (!std.mem.eql(u8, ext, ".hdr") and !std.mem.eql(u8, ext, ".exr")) return;
 
-    _ = std.fmt.bufPrintZ(&state.status_msg, "Loading skybox: {s}...", .{path}) catch {};
+    _ = std.fmt.bufPrintZ(&state.ui.status_msg, "Loading skybox: {s}...", .{path}) catch {};
 
-    if (state.skybox_path) |p| {
+    if (state.runtime.skybox_path) |p| {
         allocator.free(p);
-        state.skybox_path = null;
+        state.runtime.skybox_path = null;
     }
 
-    state.skybox_path = allocator.dupeZ(u8, path) catch return;
+    state.runtime.skybox_path = allocator.dupeZ(u8, path) catch return;
 
-    var view = state.registry.view(engine.ecs_components.Skybox);
+    var view = state.runtime.registry.view(engine.ecs_components.Skybox);
     var it = view.iterator();
     if (it.next()) |entry| {
-        state.registry.add(entry.entity, engine.ecs_components.Skybox.init(path)) catch {};
-        _ = std.fmt.bufPrintZ(&state.status_msg, "Skybox set to: {s}", .{path}) catch {};
+        state.runtime.registry.add(entry.entity, engine.ecs_components.Skybox.init(path)) catch {};
+        _ = std.fmt.bufPrintZ(&state.ui.status_msg, "Skybox set to: {s}", .{path}) catch {};
     } else {
         const opts = engine.ecs_node_factory.CreateNodeOptions{ .skybox_path = path };
-        _ = engine.ecs_node_factory.create_node(state.registry, null, .Skybox, "Skybox", opts) catch {};
-        _ = std.fmt.bufPrintZ(&state.status_msg, "Skybox node created: {s}", .{path}) catch {};
+        _ = engine.ecs_node_factory.create_node(state.runtime.registry, null, .Skybox, "Skybox", opts) catch {};
+        _ = std.fmt.bufPrintZ(&state.ui.status_msg, "Skybox node created: {s}", .{path}) catch {};
     }
 }
 
 /// Scans the current assets directory, populating both raw and filtered entry lists.
 pub fn scan_assets_dir(state: *EditorState, allocator: std.mem.Allocator) void {
-    log.cardinal_log_info("Scanning assets dir: {s}", .{state.assets.current_dir});
+    log.cardinal_log_info("Scanning assets dir: {s}", .{state.ui.assets.current_dir});
 
-    for (state.assets.entries.items) |entry| {
+    for (state.ui.assets.entries.items) |entry| {
         entry.deinit(allocator);
     }
-    state.assets.entries.clearRetainingCapacity();
-    state.assets.filtered_entries.clearRetainingCapacity();
+    state.ui.assets.entries.clearRetainingCapacity();
+    state.ui.assets.filtered_entries.clearRetainingCapacity();
 
-    var dir = std.fs.openDirAbsolute(state.assets.current_dir, .{ .iterate = true }) catch |err| {
-        log.cardinal_log_error("Failed to open directory {s}: {}", .{ state.assets.current_dir, err });
+    var dir = std.fs.openDirAbsolute(state.ui.assets.current_dir, .{ .iterate = true }) catch |err| {
+        log.cardinal_log_error("Failed to open directory {s}: {}", .{ state.ui.assets.current_dir, err });
         return;
     };
     defer dir.close();
 
-    const parent_path = std.fs.path.dirname(state.assets.current_dir);
+    const parent_path = std.fs.path.dirname(state.ui.assets.current_dir);
     if (parent_path) |parent| {
-        if (!std.mem.eql(u8, state.assets.current_dir, state.assets.assets_dir)) {
-            state.assets.entries.append(allocator, .{
+        if (!std.mem.eql(u8, state.ui.assets.current_dir, state.ui.assets.assets_dir)) {
+            state.ui.assets.entries.append(allocator, .{
                 .display = allocator.dupeZ(u8, "..") catch return,
                 .full_path = allocator.dupeZ(u8, parent) catch return,
                 .relative_path = allocator.dupeZ(u8, "..") catch return,
@@ -88,8 +88,8 @@ pub fn scan_assets_dir(state: *EditorState, allocator: std.mem.Allocator) void {
 
     var iterator = dir.iterate();
     while (iterator.next() catch return) |entry| {
-        const full_path = std.fs.path.join(allocator, &[_][]const u8{ state.assets.current_dir, entry.name }) catch continue;
-        const relative = std.fs.path.relative(allocator, state.assets.assets_dir, full_path) catch full_path;
+        const full_path = std.fs.path.join(allocator, &[_][]const u8{ state.ui.assets.current_dir, entry.name }) catch continue;
+        const relative = std.fs.path.relative(allocator, state.ui.assets.assets_dir, full_path) catch full_path;
 
         var asset_type: AssetState.AssetType = .OTHER;
         var is_dir = false;
@@ -106,8 +106,8 @@ pub fn scan_assets_dir(state: *EditorState, allocator: std.mem.Allocator) void {
 
         const full_path_start = @intFromPtr(full_path.ptr);
         const full_path_end = full_path_start + full_path.len;
-        const assets_dir_start = @intFromPtr(state.assets.assets_dir.ptr);
-        const assets_dir_end = assets_dir_start + state.assets.assets_dir.len;
+        const assets_dir_start = @intFromPtr(state.ui.assets.assets_dir.ptr);
+        const assets_dir_end = assets_dir_start + state.ui.assets.assets_dir.len;
         const relative_start = @intFromPtr(relative.ptr);
 
         const is_slice_of_full = (relative_start >= full_path_start and relative_start < full_path_end);
@@ -117,9 +117,9 @@ pub fn scan_assets_dir(state: *EditorState, allocator: std.mem.Allocator) void {
             allocator.free(relative);
         }
 
-        if (full_path.ptr != state.assets.current_dir.ptr) allocator.free(full_path);
+        if (full_path.ptr != state.ui.assets.current_dir.ptr) allocator.free(full_path);
 
-        state.assets.entries.append(allocator, .{
+        state.ui.assets.entries.append(allocator, .{
             .display = allocator.dupeZ(u8, entry.name) catch continue,
             .full_path = full_path_z,
             .relative_path = relative_z,
@@ -128,7 +128,7 @@ pub fn scan_assets_dir(state: *EditorState, allocator: std.mem.Allocator) void {
         }) catch continue;
     }
 
-    std.sort.block(AssetState.AssetEntry, state.assets.entries.items, {}, struct {
+    std.sort.block(AssetState.AssetEntry, state.ui.assets.entries.items, {}, struct {
         fn less(_: void, lhs: AssetState.AssetEntry, rhs: AssetState.AssetEntry) bool {
             if (std.mem.eql(u8, lhs.display, "..")) return true;
             if (std.mem.eql(u8, rhs.display, "..")) return false;
@@ -137,32 +137,32 @@ pub fn scan_assets_dir(state: *EditorState, allocator: std.mem.Allocator) void {
         }
     }.less);
 
-    const filter_text = std.mem.span(@as([*:0]const u8, @ptrCast(state.assets.search_filter.ptr)));
+    const filter_text = std.mem.span(@as([*:0]const u8, @ptrCast(state.ui.assets.search_filter.ptr)));
 
-    for (state.assets.entries.items) |entry| {
+    for (state.ui.assets.entries.items) |entry| {
         if (filter_text.len > 0) {
             if (std.mem.indexOf(u8, entry.display, filter_text) == null) continue;
         }
 
-        if (state.assets.show_folders_only and !entry.is_directory) continue;
-        if (state.assets.show_gltf_only and entry.type != .GLTF and entry.type != .GLB and entry.type != .KFM and entry.type != .NIF) continue;
-        if (state.assets.show_textures_only and entry.type != .TEXTURE) continue;
+        if (state.ui.assets.show_folders_only and !entry.is_directory) continue;
+        if (state.ui.assets.show_gltf_only and entry.type != .GLTF and entry.type != .GLB and entry.type != .KFM and entry.type != .NIF) continue;
+        if (state.ui.assets.show_textures_only and entry.type != .TEXTURE) continue;
 
-        state.assets.filtered_entries.append(allocator, entry) catch continue;
+        state.ui.assets.filtered_entries.append(allocator, entry) catch continue;
     }
 }
 
 /// Starts loading a scene file and tracks it in the editor loading list.
 pub fn load_scene(state: *EditorState, allocator: std.mem.Allocator, path: []const u8) void {
-    state.is_loading = true;
-    _ = std.fmt.bufPrintZ(&state.status_msg, "Loading scene: {s}...", .{path}) catch {};
+    state.runtime.is_loading = true;
+    _ = std.fmt.bufPrintZ(&state.ui.status_msg, "Loading scene: {s}...", .{path}) catch {};
 
     const path_copy = allocator.dupeZ(u8, path) catch return;
 
     const task = loader.cardinal_scene_load_async(path_copy, .HIGH, null, null);
 
     if (task) |t| {
-        state.loading_tasks.append(allocator, .{
+        state.runtime.loading_tasks.append(allocator, .{
             .task = t,
             .path = path_copy,
         }) catch {
@@ -172,15 +172,15 @@ pub fn load_scene(state: *EditorState, allocator: std.mem.Allocator, path: []con
         };
     } else {
         allocator.free(path_copy);
-        _ = std.fmt.bufPrintZ(&state.status_msg, "Failed to start loading: {s}", .{path}) catch {};
+        _ = std.fmt.bufPrintZ(&state.ui.status_msg, "Failed to start loading: {s}", .{path}) catch {};
     }
 }
 
 const scene_io = @import("../systems/scene_io.zig");
 
 pub fn draw_asset_browser_panel(state: *EditorState, allocator: std.mem.Allocator) void {
-    if (state.show_assets) {
-        const open = c.imgui_bridge_begin("Assets", &state.show_assets, 0);
+    if (state.ui.show_assets) {
+        const open = c.imgui_bridge_begin("Assets", &state.ui.show_assets, 0);
         defer c.imgui_bridge_end();
 
         if (open) {
@@ -197,7 +197,7 @@ pub fn draw_asset_browser_panel(state: *EditorState, allocator: std.mem.Allocato
                 c.imgui_bridge_text("Configure Assets Path");
 
                 var path_buf: [512]u8 = [_]u8{0} ** 512;
-                const current_path = state.config_manager.config.assets_path;
+                const current_path = state.runtime.config_manager.config.assets_path;
                 @memcpy(path_buf[0..current_path.len], current_path);
                 path_buf[current_path.len] = 0;
 
@@ -209,23 +209,23 @@ pub fn draw_asset_browser_panel(state: *EditorState, allocator: std.mem.Allocato
                     const new_len = std.mem.indexOf(u8, &path_buf, &[_]u8{0}) orelse path_buf.len;
                     const new_path = path_buf[0..new_len];
 
-                    state.config_manager.setAssetsPath(new_path) catch |err| {
+                    state.runtime.config_manager.setAssetsPath(new_path) catch |err| {
                         log.cardinal_log_error("Failed to set assets path: {}", .{err});
                     };
 
-                    state.config_manager.save() catch |err| {
+                    state.runtime.config_manager.save() catch |err| {
                         log.cardinal_log_error("Failed to save config: {}", .{err});
                     };
 
-                    allocator.free(state.assets.assets_dir);
-                    allocator.free(state.assets.current_dir);
+                    allocator.free(state.ui.assets.assets_dir);
+                    allocator.free(state.ui.assets.current_dir);
 
-                    state.assets.assets_dir = allocator.dupeZ(u8, new_path) catch {
+                    state.ui.assets.assets_dir = allocator.dupeZ(u8, new_path) catch {
                         log.cardinal_log_error("Failed to allocate assets dir", .{});
                         return;
                     };
-                    state.assets.current_dir = allocator.dupeZ(u8, new_path) catch {
-                        allocator.free(state.assets.assets_dir);
+                    state.ui.assets.current_dir = allocator.dupeZ(u8, new_path) catch {
+                        allocator.free(state.ui.assets.assets_dir);
                         log.cardinal_log_error("Failed to allocate current dir", .{});
                         return;
                     };
@@ -243,33 +243,33 @@ pub fn draw_asset_browser_panel(state: *EditorState, allocator: std.mem.Allocato
                 scan_assets_dir(state, allocator);
             }
 
-            c.imgui_bridge_text("Current: %s", state.assets.current_dir.ptr);
+            c.imgui_bridge_text("Current: %s", state.ui.assets.current_dir.ptr);
 
             c.imgui_bridge_separator();
 
             c.imgui_bridge_text("Search & Filter:");
             c.imgui_bridge_set_next_item_width(-1.0);
 
-            if (c.imgui_bridge_input_text_with_hint("##search_filter", "Search files...", @as([*c]u8, @ptrCast(state.assets.search_filter.ptr)), state.assets.search_filter.len)) {
+            if (c.imgui_bridge_input_text_with_hint("##search_filter", "Search files...", @as([*c]u8, @ptrCast(state.ui.assets.search_filter.ptr)), state.ui.assets.search_filter.len)) {
                 scan_assets_dir(state, allocator);
             }
 
             var filter_changed = false;
-            if (c.imgui_bridge_checkbox("Folders Only", &state.assets.show_folders_only)) filter_changed = true;
+            if (c.imgui_bridge_checkbox("Folders Only", &state.ui.assets.show_folders_only)) filter_changed = true;
             c.imgui_bridge_same_line(0, -1);
-            if (c.imgui_bridge_checkbox("Models", &state.assets.show_gltf_only)) filter_changed = true;
+            if (c.imgui_bridge_checkbox("Models", &state.ui.assets.show_gltf_only)) filter_changed = true;
             c.imgui_bridge_same_line(0, -1);
-            if (c.imgui_bridge_checkbox("Textures", &state.assets.show_textures_only)) filter_changed = true;
+            if (c.imgui_bridge_checkbox("Textures", &state.ui.assets.show_textures_only)) filter_changed = true;
 
             if (filter_changed) {
                 scan_assets_dir(state, allocator);
             }
 
             if (c.imgui_bridge_button("Clear Filters")) {
-                @memset(state.assets.search_filter, 0);
-                state.assets.show_folders_only = false;
-                state.assets.show_gltf_only = false;
-                state.assets.show_textures_only = false;
+                @memset(state.ui.assets.search_filter, 0);
+                state.ui.assets.show_folders_only = false;
+                state.ui.assets.show_gltf_only = false;
+                state.ui.assets.show_textures_only = false;
                 scan_assets_dir(state, allocator);
             }
 
@@ -277,17 +277,17 @@ pub fn draw_asset_browser_panel(state: *EditorState, allocator: std.mem.Allocato
 
             c.imgui_bridge_text("Import Model");
             c.imgui_bridge_set_next_item_width(-1.0);
-            if (c.imgui_bridge_input_text_with_hint("##scene_path", "C:/path/to/model.gltf, .glb, .kfm", @ptrCast(&state.scene_path), state.scene_path.len)) {
+            if (c.imgui_bridge_input_text_with_hint("##scene_path", "C:/path/to/model.gltf, .glb, .kfm", @ptrCast(&state.ui.scene_path), state.ui.scene_path.len)) {
                 // Input handling
             }
             if (c.imgui_bridge_button("Import")) {
-                const path_len = std.mem.indexOf(u8, &state.scene_path, &[_]u8{0}) orelse state.scene_path.len;
+                const path_len = std.mem.indexOf(u8, &state.ui.scene_path, &[_]u8{0}) orelse state.ui.scene_path.len;
                 if (path_len > 0) {
-                    load_scene(state, allocator, state.scene_path[0..path_len]);
+                    load_scene(state, allocator, state.ui.scene_path[0..path_len]);
                 }
             }
 
-            if (state.is_loading) {
+            if (state.runtime.is_loading) {
                 c.imgui_bridge_same_line(0, -1);
                 c.imgui_bridge_text("Loading...");
             }
@@ -295,10 +295,10 @@ pub fn draw_asset_browser_panel(state: *EditorState, allocator: std.mem.Allocato
             c.imgui_bridge_separator();
 
             if (c.imgui_bridge_begin_child("##assets_list", 0, 0, true, 0)) {
-                if (state.assets.filtered_entries.items.len == 0) {
-                    c.imgui_bridge_text_disabled("No assets found in '%s'", state.assets.current_dir.ptr);
+                if (state.ui.assets.filtered_entries.items.len == 0) {
+                    c.imgui_bridge_text_disabled("No assets found in '%s'", state.ui.assets.current_dir.ptr);
                 } else {
-                    for (state.assets.filtered_entries.items) |entry| {
+                    for (state.ui.assets.filtered_entries.items) |entry| {
                         const icon = switch (entry.type) {
                             .FOLDER => "[D]",
                             .GLTF, .GLB, .KFM, .NIF => "[M]",
@@ -310,15 +310,15 @@ pub fn draw_asset_browser_panel(state: *EditorState, allocator: std.mem.Allocato
 
                         if (c.imgui_bridge_selectable(@as([*:0]const u8, @ptrCast(entry.display.ptr)), false, 0)) {
                             if (entry.is_directory) {
-                                const old_dir = state.assets.current_dir;
+                                const old_dir = state.ui.assets.current_dir;
                                 if (std.mem.eql(u8, entry.display, "..")) {
                                     const parent = std.fs.path.dirname(old_dir) orelse old_dir;
-                                    state.assets.current_dir = allocator.dupeZ(u8, parent) catch old_dir;
+                                    state.ui.assets.current_dir = allocator.dupeZ(u8, parent) catch old_dir;
                                 } else {
-                                    state.assets.current_dir = allocator.dupeZ(u8, entry.full_path) catch old_dir;
+                                    state.ui.assets.current_dir = allocator.dupeZ(u8, entry.full_path) catch old_dir;
                                 }
 
-                                if (state.assets.current_dir.ptr != old_dir.ptr) allocator.free(old_dir[0 .. old_dir.len + 1]);
+                                if (state.ui.assets.current_dir.ptr != old_dir.ptr) allocator.free(old_dir[0 .. old_dir.len + 1]);
                                 scan_assets_dir(state, allocator);
                                 break;
                             } else if (entry.type == .GLTF or entry.type == .GLB or entry.type == .KFM or entry.type == .NIF) {

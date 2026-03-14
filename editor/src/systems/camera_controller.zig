@@ -13,23 +13,23 @@ const EditorState = @import("../editor_state.zig").EditorState;
 
 /// Advances the editor camera from input state and updates the renderer camera when enabled.
 pub fn update(state: *EditorState, dt: f32) void {
-    const win = state.window;
+    const win = state.runtime.window;
     if (win.handle == null) return;
     if (dt <= 0.0) return;
 
-    if (state.mouse_captured) {
+    if (state.runtime.mouse_captured) {
         const delta = engine.input.getMouseDelta();
         const xoffset = delta.x;
         const yoffset = delta.y;
 
-        state.yaw += @floatCast(xoffset * state.mouse_sensitivity);
-        state.pitch += @floatCast(yoffset * state.mouse_sensitivity);
+        state.runtime.yaw += @floatCast(xoffset * state.runtime.mouse_sensitivity);
+        state.runtime.pitch += @floatCast(yoffset * state.runtime.mouse_sensitivity);
 
-        if (state.pitch > 89.0) state.pitch = 89.0;
-        if (state.pitch < -89.0) state.pitch = -89.0;
+        if (state.runtime.pitch > 89.0) state.runtime.pitch = 89.0;
+        if (state.runtime.pitch < -89.0) state.runtime.pitch = -89.0;
 
-        const radYaw = state.yaw * std.math.pi / 180.0;
-        const radPitch = state.pitch * std.math.pi / 180.0;
+        const radYaw = state.runtime.yaw * std.math.pi / 180.0;
+        const radPitch = state.runtime.pitch * std.math.pi / 180.0;
 
         var front = Vec3{
             .x = @cos(radYaw) * @cos(radPitch),
@@ -38,7 +38,7 @@ pub fn update(state: *EditorState, dt: f32) void {
         };
         front = front.normalize();
 
-        var speed = state.camera_speed * dt;
+        var speed = state.runtime.camera_speed * dt;
         if (engine.input.isActionPressed(win, "Sprint")) {
             speed *= 4.0;
         }
@@ -47,29 +47,29 @@ pub fn update(state: *EditorState, dt: f32) void {
         const right = front.cross(up).normalize();
 
         if (engine.input.isActionPressed(win, "MoveForward")) {
-            state.camera.position = state.camera.position.add(front.mul(speed));
+            state.runtime.camera.position = state.runtime.camera.position.add(front.mul(speed));
         }
         if (engine.input.isActionPressed(win, "MoveBackward")) {
-            state.camera.position = state.camera.position.sub(front.mul(speed));
+            state.runtime.camera.position = state.runtime.camera.position.sub(front.mul(speed));
         }
         if (engine.input.isActionPressed(win, "StrafeLeft")) {
-            state.camera.position = state.camera.position.sub(right.mul(speed));
+            state.runtime.camera.position = state.runtime.camera.position.sub(right.mul(speed));
         }
         if (engine.input.isActionPressed(win, "StrafeRight")) {
-            state.camera.position = state.camera.position.add(right.mul(speed));
+            state.runtime.camera.position = state.runtime.camera.position.add(right.mul(speed));
         }
 
         if (engine.input.isActionPressed(win, "Jump")) {
-            state.camera.position.y += speed;
+            state.runtime.camera.position.y += speed;
         }
         if (engine.input.isActionPressed(win, "Descend")) {
-            state.camera.position.y -= speed;
+            state.runtime.camera.position.y -= speed;
         }
 
-        state.camera.target = state.camera.position.add(front);
+        state.runtime.camera.target = state.runtime.camera.position.add(front);
 
-        if (state.pbr_enabled) {
-            renderer.cardinal_renderer_set_camera(state.renderer, &state.camera);
+        if (state.runtime.pbr_enabled) {
+            renderer.cardinal_renderer_set_camera(state.runtime.renderer, &state.runtime.camera);
         }
     }
 }

@@ -30,6 +30,8 @@ const c = @import("vulkan_c.zig").c;
 const pbr_log = log.ScopedLogger("PBR");
 
 /// Creates and allocates the descriptor manager used by the PBR pipeline.
+///
+/// TODO: Deduplicate descriptor binding setup with other pipelines (shadow, depth prepass).
 fn create_pbr_descriptor_manager(pipeline: *types.VulkanPBRPipeline, device: c.VkDevice, allocator: *types.VulkanAllocator, vulkan_state: ?*types.VulkanState, bindings_map: *std.AutoHashMap(u32, c.VkDescriptorSetLayoutBinding)) bool {
     const mem_alloc = memory.cardinal_get_allocator_for_category(.RENDERER);
     const ptr = memory.cardinal_alloc(mem_alloc, @sizeOf(types.VulkanDescriptorManager));
@@ -39,7 +41,6 @@ fn create_pbr_descriptor_manager(pipeline: *types.VulkanPBRPipeline, device: c.V
     }
     pipeline.descriptorManager = @as(*types.VulkanDescriptorManager, @ptrCast(@alignCast(ptr)));
 
-    // Use DescriptorBuilder to configure bindings
     const renderer_allocator = memory.cardinal_get_allocator_for_category(.RENDERER).as_allocator();
     var builder = descriptor_mgr.DescriptorBuilder.init(renderer_allocator);
     defer builder.deinit();
@@ -71,7 +72,6 @@ fn create_pbr_descriptor_manager(pipeline: *types.VulkanPBRPipeline, device: c.V
         return false;
     }
 
-    // Allocate sets immediately
     var sets: [types.MAX_FRAMES_IN_FLIGHT]c.VkDescriptorSet = undefined;
     if (!descriptor_mgr.vk_descriptor_manager_allocate_sets(pipeline.descriptorManager, types.MAX_FRAMES_IN_FLIGHT, &sets)) {
         pbr_log.err("Failed to allocate descriptor sets", .{});
@@ -296,6 +296,11 @@ fn initialize_pbr_defaults(pipeline: *types.VulkanPBRPipeline, config: *const ty
     }
 }
 
+/// Uploads vertex/index buffers for a scene into device-local GPU buffers.
+///
+/// Uses one persistently-mapped staging buffer for both vertices and indices.
+///
+/// TODO: Replace the full-scene upload with incremental streaming for dynamic scenes.
 fn create_pbr_mesh_buffers(pipeline: *types.VulkanPBRPipeline, device: c.VkDevice, allocator: *types.VulkanAllocator, commandPool: c.VkCommandPool, graphicsQueue: c.VkQueue, scene_data: *const scene.CardinalScene) bool {
     var totalVertices: u32 = 0;
     var totalIndices: u32 = 0;
@@ -313,12 +318,9 @@ fn create_pbr_mesh_buffers(pipeline: *types.VulkanPBRPipeline, device: c.VkDevic
 
     pbr_log.info("create_pbr_mesh_buffers: totalVertices={d}, totalIndices={d}", .{ totalVertices, totalIndices });
 
-    // Batched Staging Buffer Creation
-    // We create ONE staging buffer for both vertex and index data to minimize allocations and synchronizations
     var stagingBuffer = std.mem.zeroes(buffer_mgr.VulkanBuffer);
     var stagingInfo = std.mem.zeroes(buffer_mgr.VulkanBufferCreateInfo);
 
-    // Calculate total size and offsets (align to 16 bytes for safety)
     const vertexBufferSize = totalVertices * @sizeOf(scene.CardinalVertex);
     const vertexStagingSize = (vertexBufferSize + 15) & ~@as(c.VkDeviceSize, 15);
 
@@ -328,13 +330,12 @@ fn create_pbr_mesh_buffers(pipeline: *types.VulkanPBRPipeline, device: c.VkDevic
     stagingInfo.size = vertexStagingSize + indexStagingSize;
     stagingInfo.usage = c.VK_BUFFER_USAGE_TRANSFER_SRC_BIT;
     stagingInfo.properties = c.VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | c.VK_MEMORY_PROPERTY_HOST_COHERENT_BIT;
-    stagingInfo.persistentlyMapped = true; // Map immediately
+    stagingInfo.persistentlyMapped = true;
 
     if (!buffer_mgr.vk_buffer_create(&stagingBuffer, device, @ptrCast(allocator), &stagingInfo)) {
         pbr_log.err("Failed to create batched staging buffer", .{});
         return false;
     }
-    // Ensure we clean up the staging buffer (without waiting, as we handle sync manually)
     defer buffer_mgr.vk_buffer_destroy_immediate(&stagingBuffer, device, @ptrCast(allocator));
 
     // Copy Vertex Data to Staging

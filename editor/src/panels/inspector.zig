@@ -12,6 +12,9 @@ const components = engine.ecs_components;
 const c = @import("../c.zig").c;
 const EditorState = @import("../editor_state.zig").EditorState;
 
+/// Converts a quaternion to Euler angles in degrees (roll/pitch/yaw).
+///
+/// TODO: Consider a shared Euler convention with the gizmo to avoid surprises.
 fn quat_to_euler_deg(q: math.Quat) [3]f32 {
     const qq = q.normalize();
 
@@ -33,6 +36,9 @@ fn quat_to_euler_deg(q: math.Quat) [3]f32 {
     return .{ math.toDegrees(roll_x), math.toDegrees(pitch_y), math.toDegrees(yaw_z) };
 }
 
+/// Converts Euler degrees (roll/pitch/yaw) to a quaternion.
+///
+/// TODO: Clamp/unwrap angles for a smoother inspector UX.
 fn euler_deg_to_quat(euler_deg: [3]f32) math.Quat {
     const roll = math.toRadians(euler_deg[0]);
     const pitch = math.toRadians(euler_deg[1]);
@@ -55,32 +61,32 @@ fn euler_deg_to_quat(euler_deg: [3]f32) math.Quat {
 }
 
 fn sync_entity_buffers(state: *EditorState, entity: engine.ecs_entity.Entity) void {
-    if (state.inspector_last_entity_id == entity.id) return;
-    state.inspector_last_entity_id = entity.id;
+    if (state.ui.inspector_last_entity_id == entity.id) return;
+    state.ui.inspector_last_entity_id = entity.id;
 
-    @memset(&state.inspector_node_type_search, 0);
-    @memset(&state.inspector_add_component_search, 0);
+    @memset(&state.ui.inspector_node_type_search, 0);
+    @memset(&state.ui.inspector_add_component_search, 0);
 
-    @memset(&state.inspector_name_buffer, 0);
-    if (state.registry.get(components.Name, entity)) |n| {
+    @memset(&state.ui.inspector_name_buffer, 0);
+    if (state.runtime.registry.get(components.Name, entity)) |n| {
         const s = n.slice();
-        const len = @min(s.len, state.inspector_name_buffer.len - 1);
-        @memcpy(state.inspector_name_buffer[0..len], s[0..len]);
-        state.inspector_name_buffer[len] = 0;
+        const len = @min(s.len, state.ui.inspector_name_buffer.len - 1);
+        @memcpy(state.ui.inspector_name_buffer[0..len], s[0..len]);
+        state.ui.inspector_name_buffer[len] = 0;
     }
 
-    @memset(&state.inspector_skybox_buffer, 0);
-    if (state.registry.get(components.Skybox, entity)) |sb| {
+    @memset(&state.ui.inspector_skybox_buffer, 0);
+    if (state.runtime.registry.get(components.Skybox, entity)) |sb| {
         const s = sb.slice();
-        const len = @min(s.len, state.inspector_skybox_buffer.len - 1);
-        @memcpy(state.inspector_skybox_buffer[0..len], s[0..len]);
-        state.inspector_skybox_buffer[len] = 0;
+        const len = @min(s.len, state.ui.inspector_skybox_buffer.len - 1);
+        @memcpy(state.ui.inspector_skybox_buffer[0..len], s[0..len]);
+        state.ui.inspector_skybox_buffer[len] = 0;
     }
 
-    if (state.registry.get(components.Transform, entity)) |t| {
-        state.inspector_rotation_euler_deg = quat_to_euler_deg(t.rotation);
+    if (state.runtime.registry.get(components.Transform, entity)) |t| {
+        state.ui.inspector_rotation_euler_deg = quat_to_euler_deg(t.rotation);
     } else {
-        state.inspector_rotation_euler_deg = .{ 0.0, 0.0, 0.0 };
+        state.ui.inspector_rotation_euler_deg = .{ 0.0, 0.0, 0.0 };
     }
 }
 
@@ -90,18 +96,18 @@ fn buffer_slice(buf: []const u8) []const u8 {
 }
 
 fn draw_entity_inspector_panel(state: *EditorState) void {
-    if (!state.show_entity_inspector) return;
-    const open = c.imgui_bridge_begin("Inspector", &state.show_entity_inspector, 0);
+    if (!state.ui.show_entity_inspector) return;
+    const open = c.imgui_bridge_begin("Inspector", &state.ui.show_entity_inspector, 0);
     defer c.imgui_bridge_end();
     if (!open) return;
 
-    if (state.selected_entity.id == std.math.maxInt(u64)) {
+    if (state.ui.selected_entity.id == std.math.maxInt(u64)) {
         c.imgui_bridge_text("No entity selected");
         c.imgui_bridge_text_wrapped("Select an entity from the Scene Graph to edit its properties.");
         return;
     }
 
-    const entity = state.selected_entity;
+    const entity = state.ui.selected_entity;
     sync_entity_buffers(state, entity);
 
     c.imgui_bridge_text("Entity: %d", entity.index());
@@ -112,8 +118,8 @@ fn draw_entity_inspector_panel(state: *EditorState) void {
         }
 
         if (c.imgui_bridge_begin_popup("add_component_popup", 0)) {
-            _ = c.imgui_bridge_input_text_with_hint("##add_component_search", "Search components...", @ptrCast(&state.inspector_add_component_search), state.inspector_add_component_search.len);
-            const query = buffer_slice(&state.inspector_add_component_search);
+            _ = c.imgui_bridge_input_text_with_hint("##add_component_search", "Search components...", @ptrCast(&state.ui.inspector_add_component_search), state.ui.inspector_add_component_search.len);
+            const query = buffer_slice(&state.ui.inspector_add_component_search);
 
             _ = c.imgui_bridge_begin_child("##add_component_list", 360, 180, true, 0);
             defer c.imgui_bridge_end_child();
@@ -134,34 +140,66 @@ fn draw_entity_inspector_panel(state: *EditorState) void {
                 const label_z = std.fmt.bufPrintZ(&buf, "{s}", .{entry.label}) catch continue;
                 if (c.imgui_bridge_selectable(label_z.ptr, false, 0)) {
                     if (std.mem.eql(u8, entry.label, "Camera")) {
-                        if (state.registry.get(components.Camera, entity) == null) {
-                            state.registry.add(entity, components.Camera{ .type = .Perspective }) catch {};
+                        if (state.runtime.registry.get(components.Camera, entity) == null) {
+                            const after = components.Camera{ .type = .Perspective };
+                            state.ui.undo.push(.{ .EntityCamera = .{
+                                .entity_id = entity.id,
+                                .before_present = false,
+                                .after_present = true,
+                                .before = std.mem.zeroes(components.Camera),
+                                .after = after,
+                            } });
+                            state.runtime.registry.add(entity, after) catch {};
                         }
-                        if (state.registry.get(components.Node, entity)) |n| n.type = .Camera3D;
+                        if (state.runtime.registry.get(components.Node, entity)) |n| n.type = .Camera3D;
                     } else if (std.mem.eql(u8, entry.label, "Light")) {
-                        if (state.registry.get(components.Light, entity) == null) {
-                            state.registry.add(entity, components.Light{ .type = .Directional, .cast_shadows = true }) catch {};
+                        if (state.runtime.registry.get(components.Light, entity) == null) {
+                            const after = components.Light{ .type = .Directional, .cast_shadows = true };
+                            state.ui.undo.push(.{ .EntityLight = .{
+                                .entity_id = entity.id,
+                                .before_present = false,
+                                .after_present = true,
+                                .before = std.mem.zeroes(components.Light),
+                                .after = after,
+                            } });
+                            state.runtime.registry.add(entity, after) catch {};
                         }
-                        if (state.registry.get(components.Node, entity)) |n| n.type = .DirectionalLight3D;
+                        if (state.runtime.registry.get(components.Node, entity)) |n| n.type = .DirectionalLight3D;
                     } else if (std.mem.eql(u8, entry.label, "MeshRenderer")) {
-                        if (state.registry.get(components.MeshRenderer, entity) == null) {
-                            state.registry.add(entity, components.MeshRenderer{
+                        if (state.runtime.registry.get(components.MeshRenderer, entity) == null) {
+                            const after = components.MeshRenderer{
                                 .mesh = .{ .index = 0, .generation = 0 },
                                 .material = .{ .index = 0, .generation = 0 },
                                 .visible = true,
                                 .cast_shadows = true,
                                 .receive_shadows = true,
-                            }) catch {};
+                            };
+                            state.ui.undo.push(.{ .EntityMeshRenderer = .{
+                                .entity_id = entity.id,
+                                .before_present = false,
+                                .after_present = true,
+                                .before = std.mem.zeroes(components.MeshRenderer),
+                                .after = after,
+                            } });
+                            state.runtime.registry.add(entity, after) catch {};
                         }
-                        if (state.registry.get(components.Node, entity)) |n| n.type = .MeshInstance3D;
+                        if (state.runtime.registry.get(components.Node, entity)) |n| n.type = .MeshInstance3D;
                     } else if (std.mem.eql(u8, entry.label, "Skybox")) {
-                        if (state.registry.get(components.Skybox, entity) == null) {
-                            state.registry.add(entity, components.Skybox.init(buffer_slice(&state.inspector_skybox_buffer))) catch {};
+                        if (state.runtime.registry.get(components.Skybox, entity) == null) {
+                            const after = components.Skybox.init(buffer_slice(&state.ui.inspector_skybox_buffer));
+                            state.ui.undo.push(.{ .EntitySkybox = .{
+                                .entity_id = entity.id,
+                                .before_present = false,
+                                .after_present = true,
+                                .before = std.mem.zeroes(components.Skybox),
+                                .after = after,
+                            } });
+                            state.runtime.registry.add(entity, after) catch {};
                         }
-                        if (state.registry.get(components.Node, entity)) |n| n.type = .Skybox;
+                        if (state.runtime.registry.get(components.Node, entity)) |n| n.type = .Skybox;
                     } else if (std.mem.eql(u8, entry.label, "Script")) {
-                        if (state.registry.get(components.Script, entity) == null) {
-                            state.registry.add(entity, components.Script{}) catch {};
+                        if (state.runtime.registry.get(components.Script, entity) == null) {
+                            state.runtime.registry.add(entity, components.Script{}) catch {};
                         }
                     }
 
@@ -175,18 +213,28 @@ fn draw_entity_inspector_panel(state: *EditorState) void {
     }
 
     if (c.imgui_bridge_collapsing_header("Name", 0)) {
-        if (c.imgui_bridge_input_text("##entity_name", @ptrCast(&state.inspector_name_buffer), state.inspector_name_buffer.len, 0)) {
-            state.registry.add(entity, components.Name.init(buffer_slice(&state.inspector_name_buffer))) catch {};
+        const before = if (state.runtime.registry.get(components.Name, entity)) |n| n.* else std.mem.zeroes(components.Name);
+        const changed = c.imgui_bridge_input_text("##entity_name", @ptrCast(&state.ui.inspector_name_buffer), state.ui.inspector_name_buffer.len, 0);
+        if (c.imgui_bridge_is_item_active()) {
+            state.ui.undo.begin_entity_name(entity.id, before);
+        }
+        if (changed) {
+            state.runtime.registry.add(entity, components.Name.init(buffer_slice(&state.ui.inspector_name_buffer))) catch {};
+        }
+        if (!c.imgui_bridge_is_any_item_active()) {
+            if (state.runtime.registry.get(components.Name, entity)) |n| {
+                state.ui.undo.end_entity_name(entity.id, n.*);
+            }
         }
     }
 
-    if (state.registry.get(components.Node, entity)) |node| {
+    if (state.runtime.registry.get(components.Node, entity)) |node| {
         if (c.imgui_bridge_collapsing_header("Node", 0)) {
             var type_buf: [128]u8 = undefined;
             const type_z = std.fmt.bufPrintZ(&type_buf, "{s}", .{@tagName(node.type)}) catch unreachable;
             c.imgui_bridge_text("Type: %s", type_z.ptr);
-            _ = c.imgui_bridge_input_text_with_hint("##node_type_search", "Search node types...", @ptrCast(&state.inspector_node_type_search), state.inspector_node_type_search.len);
-            const query = buffer_slice(&state.inspector_node_type_search);
+            _ = c.imgui_bridge_input_text_with_hint("##node_type_search", "Search node types...", @ptrCast(&state.ui.inspector_node_type_search), state.ui.inspector_node_type_search.len);
+            const query = buffer_slice(&state.ui.inspector_node_type_search);
 
             _ = c.imgui_bridge_begin_child("##node_type_list", 0, 180, true, 0);
             defer c.imgui_bridge_end_child();
@@ -199,54 +247,88 @@ fn draw_entity_inspector_panel(state: *EditorState) void {
                 const label_z = std.fmt.bufPrintZ(&buf, "{s}", .{name}) catch continue;
                 const selected = node.type == tag;
                 if (c.imgui_bridge_selectable(label_z.ptr, selected, 0)) {
+                    const before = node.*;
                     node.type = tag;
-                    if (tag == .Camera3D and state.registry.get(components.Camera, entity) == null) {
-                        state.registry.add(entity, components.Camera{ .type = .Perspective }) catch {};
-                    } else if (tag == .Camera2D and state.registry.get(components.Camera, entity) == null) {
-                        state.registry.add(entity, components.Camera{ .type = .Orthographic }) catch {};
-                    } else if ((tag == .DirectionalLight3D or tag == .PointLight3D or tag == .SpotLight3D) and state.registry.get(components.Light, entity) == null) {
+                    state.ui.undo.push(.{ .EntityNode = .{
+                        .entity_id = entity.id,
+                        .before_present = true,
+                        .after_present = true,
+                        .before = before,
+                        .after = node.*,
+                    } });
+                    if (tag == .Camera3D and state.runtime.registry.get(components.Camera, entity) == null) {
+                        state.runtime.registry.add(entity, components.Camera{ .type = .Perspective }) catch {};
+                    } else if (tag == .Camera2D and state.runtime.registry.get(components.Camera, entity) == null) {
+                        state.runtime.registry.add(entity, components.Camera{ .type = .Orthographic }) catch {};
+                    } else if ((tag == .DirectionalLight3D or tag == .PointLight3D or tag == .SpotLight3D) and state.runtime.registry.get(components.Light, entity) == null) {
                         const lt: components.LightType = if (tag == .PointLight3D) .Point else if (tag == .SpotLight3D) .Spot else .Directional;
-                        state.registry.add(entity, components.Light{ .type = lt, .cast_shadows = (lt == .Directional) }) catch {};
-                    } else if (tag == .Skybox and state.registry.get(components.Skybox, entity) == null) {
-                        state.registry.add(entity, components.Skybox.init(buffer_slice(&state.inspector_skybox_buffer))) catch {};
+                        state.runtime.registry.add(entity, components.Light{ .type = lt, .cast_shadows = (lt == .Directional) }) catch {};
+                    } else if (tag == .Skybox and state.runtime.registry.get(components.Skybox, entity) == null) {
+                        state.runtime.registry.add(entity, components.Skybox.init(buffer_slice(&state.ui.inspector_skybox_buffer))) catch {};
                     }
                 }
             }
         }
     }
 
-    if (state.registry.get(components.Transform, entity)) |t| {
+    if (state.runtime.registry.get(components.Transform, entity)) |t| {
         if (c.imgui_bridge_collapsing_header("Transform", 0)) {
+            const any_active = c.imgui_bridge_is_any_item_active();
+
+            const before_pos = t.*;
             var pos = [3]f32{ t.position.x, t.position.y, t.position.z };
             if (c.imgui_bridge_drag_float3("Position", &pos, 0.1, 0.0, 0.0, "%.3f", 0)) {
                 t.position = .{ .x = pos[0], .y = pos[1], .z = pos[2] };
                 t.dirty = true;
-                state.mark_transform_override_tree(entity);
+                state.runtime.mark_transform_override_tree(entity);
+            }
+            if (c.imgui_bridge_is_item_active()) {
+                state.ui.undo.begin_entity_transform(entity.id, before_pos);
             }
 
+            const before_scale = t.*;
             var scale = [3]f32{ t.scale.x, t.scale.y, t.scale.z };
             if (c.imgui_bridge_drag_float3("Scale", &scale, 0.01, 0.0, 0.0, "%.3f", 0)) {
                 t.scale = .{ .x = scale[0], .y = scale[1], .z = scale[2] };
                 t.dirty = true;
-                state.mark_transform_override_tree(entity);
+                state.runtime.mark_transform_override_tree(entity);
+            }
+            if (c.imgui_bridge_is_item_active()) {
+                state.ui.undo.begin_entity_transform(entity.id, before_scale);
             }
 
-            var rot_deg = state.inspector_rotation_euler_deg;
+            const before_rot = t.*;
+            var rot_deg = state.ui.inspector_rotation_euler_deg;
             if (c.imgui_bridge_drag_float3("Rotation (deg)", &rot_deg, 0.1, 0.0, 0.0, "%.3f", 0)) {
-                state.inspector_rotation_euler_deg = rot_deg;
+                state.ui.inspector_rotation_euler_deg = rot_deg;
                 t.rotation = euler_deg_to_quat(rot_deg);
                 t.dirty = true;
-                state.mark_transform_override_tree(entity);
+                state.runtime.mark_transform_override_tree(entity);
+            }
+            if (c.imgui_bridge_is_item_active()) {
+                state.ui.undo.begin_entity_transform(entity.id, before_rot);
+            }
+
+            if (!any_active and !c.imgui_bridge_is_any_item_active()) {
+                state.ui.undo.end_entity_transform(entity.id, t.*);
             }
         }
     }
 
-    if (state.registry.get(components.MeshRenderer, entity)) |mr| {
+    if (state.runtime.registry.get(components.MeshRenderer, entity)) |mr| {
         if (c.imgui_bridge_collapsing_header("MeshRenderer", 0)) {
             c.imgui_bridge_same_line(0, -1);
             if (c.imgui_bridge_button("Remove##MeshRenderer")) {
-                state.registry.remove(components.MeshRenderer, entity);
-                if (state.registry.get(components.Node, entity)) |n| {
+                const before = mr.*;
+                state.ui.undo.push(.{ .EntityMeshRenderer = .{
+                    .entity_id = entity.id,
+                    .before_present = true,
+                    .after_present = false,
+                    .before = before,
+                    .after = std.mem.zeroes(components.MeshRenderer),
+                } });
+                state.runtime.registry.remove(components.MeshRenderer, entity);
+                if (state.runtime.registry.get(components.Node, entity)) |n| {
                     if (n.type == .MeshInstance3D) n.type = .Node3D;
                 }
                 return;
@@ -255,25 +337,49 @@ fn draw_entity_inspector_panel(state: *EditorState) void {
             c.imgui_bridge_text("Material Index: %d", mr.material.index);
             var visible = mr.visible;
             if (c.imgui_bridge_checkbox("Visible", &visible)) {
+                const before = mr.*;
                 mr.visible = visible;
+                state.ui.undo.push(.{ .EntityMeshRenderer = .{
+                    .entity_id = entity.id,
+                    .before_present = true,
+                    .after_present = true,
+                    .before = before,
+                    .after = mr.*,
+                } });
             }
             var cast_shadows = mr.cast_shadows;
             if (c.imgui_bridge_checkbox("Cast Shadows", &cast_shadows)) {
+                const before = mr.*;
                 mr.cast_shadows = cast_shadows;
+                state.ui.undo.push(.{ .EntityMeshRenderer = .{
+                    .entity_id = entity.id,
+                    .before_present = true,
+                    .after_present = true,
+                    .before = before,
+                    .after = mr.*,
+                } });
             }
             var receive_shadows = mr.receive_shadows;
             if (c.imgui_bridge_checkbox("Receive Shadows", &receive_shadows)) {
+                const before = mr.*;
                 mr.receive_shadows = receive_shadows;
+                state.ui.undo.push(.{ .EntityMeshRenderer = .{
+                    .entity_id = entity.id,
+                    .before_present = true,
+                    .after_present = true,
+                    .before = before,
+                    .after = mr.*,
+                } });
             }
         }
     }
 
-    if (state.registry.get(components.Light, entity)) |l| {
+    if (state.runtime.registry.get(components.Light, entity)) |l| {
         if (c.imgui_bridge_collapsing_header("Light", 0)) {
             c.imgui_bridge_same_line(0, -1);
             if (c.imgui_bridge_button("Remove##Light")) {
-                state.registry.remove(components.Light, entity);
-                if (state.registry.get(components.Node, entity)) |n| {
+                state.runtime.registry.remove(components.Light, entity);
+                if (state.runtime.registry.get(components.Node, entity)) |n| {
                     if (n.type == .DirectionalLight3D or n.type == .PointLight3D or n.type == .SpotLight3D) n.type = .Node3D;
                 }
                 return;
@@ -309,12 +415,20 @@ fn draw_entity_inspector_panel(state: *EditorState) void {
         }
     }
 
-    if (state.registry.get(components.Camera, entity)) |cam| {
+    if (state.runtime.registry.get(components.Camera, entity)) |cam| {
         if (c.imgui_bridge_collapsing_header("Camera", 0)) {
             c.imgui_bridge_same_line(0, -1);
             if (c.imgui_bridge_button("Remove##Camera")) {
-                state.registry.remove(components.Camera, entity);
-                if (state.registry.get(components.Node, entity)) |n| {
+                const before = cam.*;
+                state.ui.undo.push(.{ .EntityCamera = .{
+                    .entity_id = entity.id,
+                    .before_present = true,
+                    .after_present = false,
+                    .before = before,
+                    .after = std.mem.zeroes(components.Camera),
+                } });
+                state.runtime.registry.remove(components.Camera, entity);
+                if (state.runtime.registry.get(components.Node, entity)) |n| {
                     if (n.type == .Camera3D or n.type == .Camera2D) n.type = .Node3D;
                 }
                 return;
@@ -336,18 +450,36 @@ fn draw_entity_inspector_panel(state: *EditorState) void {
         }
     }
 
-    if (state.registry.get(components.Skybox, entity)) |sb| {
+    if (state.runtime.registry.get(components.Skybox, entity)) |sb| {
         if (c.imgui_bridge_collapsing_header("Skybox", 0)) {
             c.imgui_bridge_same_line(0, -1);
             if (c.imgui_bridge_button("Remove##Skybox")) {
-                state.registry.remove(components.Skybox, entity);
-                if (state.registry.get(components.Node, entity)) |n| {
+                const before = sb.*;
+                state.ui.undo.push(.{ .EntitySkybox = .{
+                    .entity_id = entity.id,
+                    .before_present = true,
+                    .after_present = false,
+                    .before = before,
+                    .after = std.mem.zeroes(components.Skybox),
+                } });
+                state.runtime.registry.remove(components.Skybox, entity);
+                if (state.runtime.registry.get(components.Node, entity)) |n| {
                     if (n.type == .Skybox) n.type = .Node3D;
                 }
                 return;
             }
-            if (c.imgui_bridge_input_text("Path", @ptrCast(&state.inspector_skybox_buffer), state.inspector_skybox_buffer.len, 0)) {
-                state.registry.add(entity, components.Skybox.init(buffer_slice(&state.inspector_skybox_buffer))) catch {};
+            const before = sb.*;
+            const changed = c.imgui_bridge_input_text("Path", @ptrCast(&state.ui.inspector_skybox_buffer), state.ui.inspector_skybox_buffer.len, 0);
+            if (c.imgui_bridge_is_item_active()) {
+                state.ui.undo.begin_entity_skybox(entity.id, before);
+            }
+            if (changed) {
+                state.runtime.registry.add(entity, components.Skybox.init(buffer_slice(&state.ui.inspector_skybox_buffer))) catch {};
+            }
+            if (!c.imgui_bridge_is_any_item_active()) {
+                if (state.runtime.registry.get(components.Skybox, entity)) |s| {
+                    state.ui.undo.end_entity_skybox(entity.id, s.*);
+                }
             }
 
             if (sb.slice().len != 0) {
@@ -356,11 +488,11 @@ fn draw_entity_inspector_panel(state: *EditorState) void {
         }
     }
 
-    if (state.registry.get(components.Script, entity)) |_| {
+    if (state.runtime.registry.get(components.Script, entity)) |_| {
         if (c.imgui_bridge_collapsing_header("Script", 0)) {
             c.imgui_bridge_same_line(0, -1);
             if (c.imgui_bridge_button("Remove##Script")) {
-                state.registry.remove(components.Script, entity);
+                state.runtime.registry.remove(components.Script, entity);
                 return;
             }
             c.imgui_bridge_text_wrapped("Script component attached.");
@@ -370,15 +502,15 @@ fn draw_entity_inspector_panel(state: *EditorState) void {
 
 pub fn draw_inspector_panel(state: *EditorState) void {
     draw_entity_inspector_panel(state);
-    if (state.show_model_manager) {
-        const open = c.imgui_bridge_begin("Model Manager", &state.show_model_manager, 0);
+    if (state.ui.show_model_manager) {
+        const open = c.imgui_bridge_begin("Model Manager", &state.ui.show_model_manager, 0);
         defer c.imgui_bridge_end();
 
         if (open) {
-            c.imgui_bridge_text("Loaded Models: %d", state.model_manager.model_count);
+            c.imgui_bridge_text("Loaded Models: %d", state.runtime.model_manager.model_count);
             c.imgui_bridge_separator();
 
-            const model_count = state.model_manager.model_count;
+            const model_count = state.runtime.model_manager.model_count;
             if (model_count == 0) {
                 c.imgui_bridge_text("No models loaded");
                 c.imgui_bridge_text_wrapped("Load models from the Assets panel to see them here.");
@@ -388,12 +520,12 @@ pub fn draw_inspector_panel(state: *EditorState) void {
 
                 if (child_visible) {
                     var i: u32 = 0;
-                    while (i < state.model_manager.model_count) {
-                        const model_ptr = model_manager.cardinal_model_manager_get_model_by_index(&state.model_manager, i);
+                    while (i < state.runtime.model_manager.model_count) {
+                        const model_ptr = model_manager.cardinal_model_manager_get_model_by_index(&state.runtime.model_manager, i);
                         if (model_ptr) |model| {
                             c.imgui_bridge_push_id_int(@intCast(model.id));
 
-                            const is_selected = (state.selected_model_id == model.id);
+                            const is_selected = (state.ui.selected_model_id == model.id);
                             const name = if (model.name) |n| std.mem.span(n) else "Unnamed Model";
 
                             const avail_w = c.imgui_bridge_get_content_region_avail_x();
@@ -401,15 +533,15 @@ pub fn draw_inspector_panel(state: *EditorState) void {
                             const label_w = if (avail_w > controls_w) avail_w - controls_w else 10.0;
 
                             if (c.imgui_bridge_selectable_size(name.ptr, is_selected, 0, label_w, 0)) {
-                                state.selected_model_id = model.id;
-                                model_manager.cardinal_model_manager_set_selected(&state.model_manager, model.id);
+                                state.ui.selected_model_id = model.id;
+                                model_manager.cardinal_model_manager_set_selected(&state.runtime.model_manager, model.id);
                             }
 
                             c.imgui_bridge_same_line(0, -1);
 
                             var visible = model.visible;
                             if (c.imgui_bridge_checkbox("##visible", &visible)) {
-                                _ = model_manager.cardinal_model_manager_set_visible(&state.model_manager, model.id, visible);
+                                _ = model_manager.cardinal_model_manager_set_visible(&state.runtime.model_manager, model.id, visible);
                             }
                             if (c.imgui_bridge_is_item_hovered(0)) {
                                 c.imgui_bridge_set_tooltip("Toggle visibility");
@@ -417,22 +549,22 @@ pub fn draw_inspector_panel(state: *EditorState) void {
 
                             c.imgui_bridge_same_line(0, -1);
                             if (c.imgui_bridge_button("Remove")) {
-                                renderer.cardinal_renderer_clear_scene(state.renderer);
-                                _ = model_manager.cardinal_model_manager_remove_model(&state.model_manager, model.id);
-                                if (state.selected_model_id == model.id) {
-                                    state.selected_model_id = 0;
+                                renderer.cardinal_renderer_clear_scene(state.runtime.renderer);
+                                _ = model_manager.cardinal_model_manager_remove_model(&state.runtime.model_manager, model.id);
+                                if (state.ui.selected_model_id == model.id) {
+                                    state.ui.selected_model_id = 0;
                                 }
-                                if (model_manager.cardinal_model_manager_get_combined_scene(&state.model_manager)) |combined| {
-                                    state.combined_scene = combined.*;
-                                    state.pending_scene = state.combined_scene;
-                                    state.scene_upload_pending = true;
-                                    state.scene_loaded = (state.combined_scene.mesh_count > 0);
+                                if (model_manager.cardinal_model_manager_get_combined_scene(&state.runtime.model_manager)) |combined| {
+                                    state.runtime.combined_scene = combined.*;
+                                    state.runtime.pending_scene = state.runtime.combined_scene;
+                                    state.runtime.scene_upload_pending = true;
+                                    state.runtime.scene_loaded = (state.runtime.combined_scene.mesh_count > 0);
                                 } else {
-                                    state.scene_loaded = false;
+                                    state.runtime.scene_loaded = false;
                                 }
-                                state.selected_animation = -1;
-                                state.animation_time = 0.0;
-                                state.animation_playing = false;
+                                state.ui.selected_animation = -1;
+                                state.ui.animation_time = 0.0;
+                                state.ui.animation_playing = false;
                                 c.imgui_bridge_pop_id();
                                 continue;
                             }
@@ -449,6 +581,8 @@ pub fn draw_inspector_panel(state: *EditorState) void {
                                 c.imgui_bridge_separator();
                                 c.imgui_bridge_text("Transform:");
 
+                                const any_active = c.imgui_bridge_is_any_item_active();
+                                const before_model_mat = model.transform;
                                 var pos = [3]f32{ model.transform[12], model.transform[13], model.transform[14] };
                                 if (c.imgui_bridge_drag_float3("Position", &pos, 0.1, 0.0, 0.0, "%.3f", 0)) {
                                     var new_transform: [16]f32 = undefined;
@@ -456,7 +590,10 @@ pub fn draw_inspector_panel(state: *EditorState) void {
                                     new_transform[12] = pos[0];
                                     new_transform[13] = pos[1];
                                     new_transform[14] = pos[2];
-                                    _ = model_manager.cardinal_model_manager_set_transform(&state.model_manager, model.id, &new_transform);
+                                    _ = model_manager.cardinal_model_manager_set_transform(&state.runtime.model_manager, model.id, &new_transform);
+                                }
+                                if (c.imgui_bridge_is_item_active()) {
+                                    state.ui.undo.begin_model_transform(model.id, before_model_mat);
                                 }
 
                                 const current_scale = std.math.sqrt(model.transform[0] * model.transform[0] + model.transform[1] * model.transform[1] + model.transform[2] * model.transform[2]);
@@ -471,7 +608,14 @@ pub fn draw_inspector_panel(state: *EditorState) void {
                                     scale_matrix[12] = pos[0];
                                     scale_matrix[13] = pos[1];
                                     scale_matrix[14] = pos[2];
-                                    _ = model_manager.cardinal_model_manager_set_transform(&state.model_manager, model.id, &scale_matrix);
+                                    _ = model_manager.cardinal_model_manager_set_transform(&state.runtime.model_manager, model.id, &scale_matrix);
+                                }
+                                if (c.imgui_bridge_is_item_active()) {
+                                    state.ui.undo.begin_model_transform(model.id, before_model_mat);
+                                }
+
+                                if (!any_active and !c.imgui_bridge_is_any_item_active()) {
+                                    state.ui.undo.end_model_transform(model.id, model.transform);
                                 }
 
                                 c.imgui_bridge_unindent(10.0);

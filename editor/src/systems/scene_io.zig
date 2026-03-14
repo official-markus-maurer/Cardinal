@@ -16,18 +16,19 @@ const async_loader = engine.async_loader;
 
 /// Imports the currently loaded `state.combined_scene` into the ECS registry.
 pub fn import_scene_graph(state: *EditorState) void {
-    const scene = &state.combined_scene;
+    const scene = &state.runtime.combined_scene;
     if (scene.all_nodes == null or scene.all_node_count == 0) return;
+    const map_alloc = engine.memory.cardinal_get_allocator_for_category(.ENGINE).as_allocator();
 
     log.cardinal_log_info("[SCENE_IO] Importing {d} nodes to ECS...", .{scene.all_node_count});
 
-    var node_to_entity = state.arena_allocator.alloc(u64, scene.all_node_count) catch return;
+    var node_to_entity = state.runtime.arena_allocator.alloc(u64, scene.all_node_count) catch return;
     @memset(node_to_entity, std.math.maxInt(u64));
 
     var i: u32 = 0;
     while (i < scene.all_node_count) : (i += 1) {
         if (scene.all_nodes.?[i]) |node| {
-            const entity = state.registry.create() catch |err| {
+            const entity = state.runtime.registry.create() catch |err| {
                 log.cardinal_log_error("Failed to create entity: {}", .{err});
                 continue;
             };
@@ -35,9 +36,9 @@ pub fn import_scene_graph(state: *EditorState) void {
 
             if (node.name) |name| {
                 const name_comp = components.Name.init(std.mem.span(name));
-                state.registry.add(entity, name_comp) catch {};
+                state.runtime.registry.add(entity, name_comp) catch {};
             }
-            state.registry.add(entity, components.Node{ .type = .Node3D }) catch {};
+            state.runtime.registry.add(entity, components.Node{ .type = .Node3D }) catch {};
 
             var transform = components.Transform{};
             const m = math.Mat4.fromArray(node.local_transform);
@@ -46,7 +47,7 @@ pub fn import_scene_graph(state: *EditorState) void {
             transform.rotation = decomposed.r;
             transform.scale = decomposed.s;
 
-            state.registry.add(entity, transform) catch {};
+            state.runtime.registry.add(entity, transform) catch {};
 
             if (node.mesh_count > 0 and node.mesh_indices != null) {
                 var m_idx: u32 = 0;
@@ -55,14 +56,14 @@ pub fn import_scene_graph(state: *EditorState) void {
 
                     var target_entity = entity;
                     if (m_idx > 0) {
-                        target_entity = state.registry.create() catch continue;
+                        target_entity = state.runtime.registry.create() catch continue;
                         var child_name_buf: [64]u8 = undefined;
                         const parent_name = if (node.name) |n| std.mem.span(n) else "Mesh";
                         const child_name = std.fmt.bufPrint(&child_name_buf, "{s}:{d}", .{ parent_name, m_idx }) catch parent_name;
-                        state.registry.add(target_entity, components.Name.init(child_name)) catch {};
-                        state.registry.add(target_entity, components.Node{ .type = .MeshInstance3D }) catch {};
-                        state.registry.add(target_entity, components.Transform{}) catch {};
-                        node_factory.append_child(state.registry, entity, target_entity);
+                        state.runtime.registry.add(target_entity, components.Name.init(child_name)) catch {};
+                        state.runtime.registry.add(target_entity, components.Node{ .type = .MeshInstance3D }) catch {};
+                        state.runtime.registry.add(target_entity, components.Transform{}) catch {};
+                        node_factory.append_child(state.runtime.registry, entity, target_entity);
                     }
 
                     var material_index: u32 = 0;
@@ -80,10 +81,12 @@ pub fn import_scene_graph(state: *EditorState) void {
                         .receive_shadows = true,
                     };
 
-                    state.registry.add(target_entity, mesh_renderer) catch {};
+                    state.runtime.registry.add(target_entity, mesh_renderer) catch {};
                     if (m_idx == 0) {
-                        if (state.registry.get(components.Node, entity)) |n| n.type = .MeshInstance3D;
+                        if (state.runtime.registry.get(components.Node, entity)) |n| n.type = .MeshInstance3D;
                     }
+                    state.runtime.mesh_owner_by_mesh_index.put(map_alloc, mesh_index, entity.id) catch {};
+                    state.runtime.mesh_entity_by_mesh_index.put(map_alloc, mesh_index, target_entity.id) catch {};
                 }
             }
 
@@ -106,7 +109,7 @@ pub fn import_scene_graph(state: *EditorState) void {
                             .cast_shadows = true,
                         };
 
-                        state.registry.add(entity, light_comp) catch {};
+                        state.runtime.registry.add(entity, light_comp) catch {};
                     }
                 }
             }
@@ -137,7 +140,7 @@ pub fn import_scene_graph(state: *EditorState) void {
                 const parent_id = node_to_entity[parent_idx];
                 if (parent_id != std.math.maxInt(u64)) {
                     const parent_entity = engine.ecs_entity.Entity{ .id = parent_id };
-                    node_factory.append_child(state.registry, parent_entity, entity);
+                    node_factory.append_child(state.runtime.registry, parent_entity, entity);
                 }
             }
         }
@@ -154,12 +157,12 @@ pub fn save_scene(state: *EditorState, allocator: std.mem.Allocator, path: []con
 
     const file = std.fs.cwd().createFile(path, .{}) catch |err| {
         log.cardinal_log_error("Failed to create scene file '{s}': {}", .{ path, err });
-        _ = std.fmt.bufPrintZ(&state.status_msg, "Failed to save scene", .{}) catch {};
+        _ = std.fmt.bufPrintZ(&state.ui.status_msg, "Failed to save scene", .{}) catch {};
         return;
     };
     defer file.close();
 
-    var serializer = scene_serializer.SceneSerializer.init(allocator, state.registry, &state.model_manager);
+    var serializer = scene_serializer.SceneSerializer.init(allocator, state.runtime.registry, &state.runtime.model_manager);
     defer serializer.deinit();
 
     var buffer = std.ArrayListUnmanaged(u8){};
@@ -171,7 +174,7 @@ pub fn save_scene(state: *EditorState, allocator: std.mem.Allocator, path: []con
 
     serializer.serialize(buffer.writer(allocator), root_path) catch |err| {
         log.cardinal_log_error("Failed to serialize scene: {}", .{err});
-        _ = std.fmt.bufPrintZ(&state.status_msg, "Failed to save scene", .{}) catch {};
+        _ = std.fmt.bufPrintZ(&state.ui.status_msg, "Failed to save scene", .{}) catch {};
         return;
     };
 
@@ -181,7 +184,7 @@ pub fn save_scene(state: *EditorState, allocator: std.mem.Allocator, path: []con
     };
 
     log.cardinal_log_info("[EDITOR] Scene saved to {s}", .{path});
-    _ = std.fmt.bufPrintZ(&state.status_msg, "Scene saved to {s}", .{path}) catch {};
+    _ = std.fmt.bufPrintZ(&state.ui.status_msg, "Scene saved to {s}", .{path}) catch {};
 }
 
 /// Starts an async load of `path` and schedules attaching it under `parent`.
@@ -204,64 +207,62 @@ pub fn load_model_to_entity(state: *EditorState, path: []const u8, parent: engin
     const task = task_opt.?;
 
     const path_copy = allocator.dupeZ(u8, path) catch return;
-    state.loading_tasks.append(allocator, .{
+    state.runtime.loading_tasks.append(allocator, .{
         .task = task,
         .path = path_copy,
         .target_entity = parent,
     }) catch {};
 
-    state.is_loading = true;
-    _ = std.fmt.bufPrintZ(&state.status_msg, "Loading model: {s}", .{path}) catch {};
+    state.runtime.is_loading = true;
+    _ = std.fmt.bufPrintZ(&state.ui.status_msg, "Loading model: {s}", .{path}) catch {};
 }
 
+/// Instantiates one loaded model under `parent_entity` by importing its scene nodes into the ECS.
+///
+/// Creates one entity per scene node, and attaches extra mesh primitives as child entities so
+/// parent transforms apply to all meshes.
 pub fn instantiate_model(state: *EditorState, model_id: u32, parent_entity: engine.ecs_entity.Entity) void {
-    const model_ptr = engine.model_manager.cardinal_model_manager_get_model(&state.model_manager, model_id);
+    const model_ptr = engine.model_manager.cardinal_model_manager_get_model(&state.runtime.model_manager, model_id);
     if (model_ptr == null) return;
     const model = model_ptr.?;
     const scene = &model.scene;
+    const map_alloc = engine.memory.cardinal_get_allocator_for_category(.ENGINE).as_allocator();
 
     log.cardinal_log_info("[SCENE_IO] Instantiating model {d} under entity {d}...", .{ model_id, parent_entity.id });
 
-    // Calculate mesh offset
     var mesh_offset: u32 = 0;
     var m_i: u32 = 0;
-    while (m_i < state.model_manager.model_count) : (m_i += 1) {
-        const m = &state.model_manager.models.?[m_i];
+    while (m_i < state.runtime.model_manager.model_count) : (m_i += 1) {
+        const m = &state.runtime.model_manager.models.?[m_i];
         if (m.id == model_id) break;
         mesh_offset += m.scene.mesh_count;
     }
 
-    // Map from scene node index to Entity ID
-    var node_to_entity = state.arena_allocator.alloc(u64, scene.all_node_count) catch return;
+    var node_to_entity = state.runtime.arena_allocator.alloc(u64, scene.all_node_count) catch return;
     @memset(node_to_entity, std.math.maxInt(u64));
 
     var i: u32 = 0;
     while (i < scene.all_node_count) : (i += 1) {
         if (scene.all_nodes.?[i]) |node| {
-            // Create Entity
-            const entity = state.registry.create() catch continue;
+            const entity = state.runtime.registry.create() catch continue;
             node_to_entity[i] = entity.id;
 
-            // Name
             if (node.name) |name| {
                 const name_comp = components.Name.init(std.mem.span(name));
-                state.registry.add(entity, name_comp) catch {};
+                state.runtime.registry.add(entity, name_comp) catch {};
             }
 
-            // Add Node component
-            state.registry.add(entity, components.Node{ .type = .Node3D }) catch {};
+            state.runtime.registry.add(entity, components.Node{ .type = .Node3D }) catch {};
 
-            // Transform
             var transform = components.Transform{};
-            const m = math.Mat4.fromArray(node.local_transform); // Use local transform for children
+            const m = math.Mat4.fromArray(node.local_transform);
             const decomposed = m.decompose();
             transform.position = decomposed.t;
             transform.rotation = decomposed.r;
             transform.scale = decomposed.s;
 
-            state.registry.add(entity, transform) catch {};
+            state.runtime.registry.add(entity, transform) catch {};
 
-            // MeshRenderer
             if (node.mesh_count > 0 and node.mesh_indices != null) {
                 var m_idx: u32 = 0;
                 while (m_idx < node.mesh_count) : (m_idx += 1) {
@@ -270,11 +271,14 @@ pub fn instantiate_model(state: *EditorState, model_id: u32, parent_entity: engi
 
                     var target_entity = entity;
                     if (m_idx > 0) {
-                        target_entity = state.registry.create() catch continue;
-                        state.registry.add(target_entity, transform) catch {};
-                        // Note: Linking multi-mesh entities as siblings/children is skipped for brevity here,
-                        // assuming 1 mesh per node usually. If multiple, they pile up or need hierarchy.
-                        // Ideally we create child entities for extra meshes.
+                        target_entity = state.runtime.registry.create() catch continue;
+                        var child_name_buf: [64]u8 = undefined;
+                        const parent_name = if (node.name) |n| std.mem.span(n) else "Mesh";
+                        const child_name = std.fmt.bufPrint(&child_name_buf, "{s}:{d}", .{ parent_name, m_idx }) catch parent_name;
+                        state.runtime.registry.add(target_entity, components.Name.init(child_name)) catch {};
+                        state.runtime.registry.add(target_entity, components.Node{ .type = .MeshInstance3D }) catch {};
+                        state.runtime.registry.add(target_entity, components.Transform{}) catch {};
+                        node_factory.append_child(state.runtime.registry, entity, target_entity);
                     }
 
                     var material_index: u32 = 0;
@@ -292,67 +296,30 @@ pub fn instantiate_model(state: *EditorState, model_id: u32, parent_entity: engi
                         .receive_shadows = true,
                     };
 
-                    state.registry.add(target_entity, mesh_renderer) catch {};
+                    state.runtime.registry.add(target_entity, mesh_renderer) catch {};
+                    if (m_idx == 0) {
+                        if (state.runtime.registry.get(components.Node, entity)) |n| n.type = .MeshInstance3D;
+                    }
+                    state.runtime.mesh_owner_by_mesh_index.put(map_alloc, mesh_index, entity.id) catch {};
+                    state.runtime.mesh_entity_by_mesh_index.put(map_alloc, mesh_index, target_entity.id) catch {};
                 }
             }
         }
     }
 
-    // Build Hierarchy
     i = 0;
     while (i < scene.all_node_count) : (i += 1) {
         if (scene.all_nodes.?[i]) |node| {
             const entity = engine.ecs_entity.Entity{ .id = node_to_entity[i] };
             if (entity.id == std.math.maxInt(u64)) continue;
 
-            var parent_ent_id: u64 = std.math.maxInt(u64);
-
             if (node.parent_index >= 0) {
-                // Internal parent
-                parent_ent_id = node_to_entity[@intCast(node.parent_index)];
-            } else {
-                // Root of model -> Parent to target entity
-                parent_ent_id = parent_entity.id;
-            }
-
-            if (parent_ent_id != std.math.maxInt(u64)) {
-                const p_entity = engine.ecs_entity.Entity{ .id = parent_ent_id };
-
-                // Add Hierarchy component
-                var hierarchy = if (state.registry.get(components.Hierarchy, entity)) |h| h.* else components.Hierarchy{};
-                hierarchy.parent = p_entity;
-                state.registry.add(entity, hierarchy) catch {};
-
-                // Update parent's hierarchy
-                var parent_hierarchy = if (state.registry.get(components.Hierarchy, p_entity)) |h| h.* else components.Hierarchy{};
-
-                // Link as child
-                if (parent_hierarchy.first_child) |first_child_entity| {
-                    // Find last child
-                    var curr_entity = first_child_entity;
-                    while (true) {
-                        if (state.registry.get(components.Hierarchy, curr_entity)) |h| {
-                            if (h.next_sibling) |next| {
-                                curr_entity = next;
-                            } else {
-                                // Link
-                                var last_h = h.*;
-                                last_h.next_sibling = entity;
-                                state.registry.add(curr_entity, last_h) catch {};
-                                hierarchy.prev_sibling = curr_entity;
-                                state.registry.add(entity, hierarchy) catch {};
-                                break;
-                            }
-                        } else {
-                            break;
-                        }
-                    }
-                } else {
-                    parent_hierarchy.first_child = entity;
+                const parent_id = node_to_entity[@intCast(node.parent_index)];
+                if (parent_id != std.math.maxInt(u64)) {
+                    node_factory.append_child(state.runtime.registry, .{ .id = parent_id }, entity);
                 }
-
-                parent_hierarchy.child_count += 1;
-                state.registry.add(p_entity, parent_hierarchy) catch {};
+            } else {
+                node_factory.append_child(state.runtime.registry, parent_entity, entity);
             }
         }
     }
@@ -361,36 +328,39 @@ pub fn instantiate_model(state: *EditorState, model_id: u32, parent_entity: engi
 pub fn load_scene(state: *EditorState, allocator: std.mem.Allocator, path: []const u8) void {
     const file = std.fs.cwd().openFile(path, .{}) catch |err| {
         log.cardinal_log_error("Failed to open scene file '{s}': {}", .{ path, err });
-        _ = std.fmt.bufPrintZ(&state.status_msg, "Failed to load scene (file not found)", .{}) catch {};
+        _ = std.fmt.bufPrintZ(&state.ui.status_msg, "Failed to load scene (file not found)", .{}) catch {};
         return;
     };
     defer file.close();
 
-    if (state.loading_tasks.items.len > 0) {
-        for (state.loading_tasks.items) |info| {
+    if (state.runtime.loading_tasks.items.len > 0) {
+        for (state.runtime.loading_tasks.items) |info| {
             _ = async_loader.cardinal_async_cancel_task(info.task);
             async_loader.cardinal_async_free_task(info.task);
             allocator.free(info.path);
         }
-        state.loading_tasks.clearRetainingCapacity();
-        state.is_loading = false;
+        state.runtime.loading_tasks.clearRetainingCapacity();
+        state.runtime.is_loading = false;
     }
 
-    state.scene_upload_pending = false;
-    state.pending_scene = std.mem.zeroes(@TypeOf(state.pending_scene));
+    state.runtime.scene_upload_pending = false;
+    state.runtime.pending_scene = std.mem.zeroes(@TypeOf(state.runtime.pending_scene));
+    state.ui.undo.clear();
 
     // Reset Registry
-    state.registry.deinit();
-    state.registry.* = engine.ecs_registry.Registry.init(allocator);
-    state.transform_overrides.clearRetainingCapacity();
+    state.runtime.registry.deinit();
+    state.runtime.registry.* = engine.ecs_registry.Registry.init(allocator);
+    state.runtime.transform_overrides.clearRetainingCapacity();
+    state.runtime.mesh_owner_by_mesh_index.clearRetainingCapacity();
+    state.runtime.mesh_entity_by_mesh_index.clearRetainingCapacity();
 
     // Reset Model Manager
-    engine.model_manager.cardinal_model_manager_destroy(&state.model_manager);
-    _ = engine.model_manager.cardinal_model_manager_init(&state.model_manager);
-    state.combined_scene = std.mem.zeroes(@TypeOf(state.combined_scene));
-    state.scene_loaded = false;
+    engine.model_manager.cardinal_model_manager_destroy(&state.runtime.model_manager);
+    _ = engine.model_manager.cardinal_model_manager_init(&state.runtime.model_manager);
+    state.runtime.combined_scene = std.mem.zeroes(@TypeOf(state.runtime.combined_scene));
+    state.runtime.scene_loaded = false;
 
-    var serializer = scene_serializer.SceneSerializer.init(allocator, state.registry, &state.model_manager);
+    var serializer = scene_serializer.SceneSerializer.init(allocator, state.runtime.registry, &state.runtime.model_manager);
     defer serializer.deinit();
 
     const content = file.readToEndAlloc(allocator, std.math.maxInt(usize)) catch |err| {
@@ -406,39 +376,39 @@ pub fn load_scene(state: *EditorState, allocator: std.mem.Allocator, path: []con
     var fbs = std.io.fixedBufferStream(content);
     serializer.deserialize(fbs.reader(), root_path) catch |err| {
         log.cardinal_log_error("Failed to deserialize scene: {}", .{err});
-        _ = std.fmt.bufPrintZ(&state.status_msg, "Failed to load scene (parse error)", .{}) catch {};
+        _ = std.fmt.bufPrintZ(&state.ui.status_msg, "Failed to load scene (parse error)", .{}) catch {};
         return;
     };
 
     // Force rebuild of combined scene and update editor state
-    if (engine.model_manager.cardinal_model_manager_get_combined_scene(&state.model_manager)) |combined| {
-        state.combined_scene = combined.*;
-        state.scene_loaded = (state.combined_scene.mesh_count > 0);
+    if (engine.model_manager.cardinal_model_manager_get_combined_scene(&state.runtime.model_manager)) |combined| {
+        state.runtime.combined_scene = combined.*;
+        state.runtime.scene_loaded = (state.runtime.combined_scene.mesh_count > 0);
     }
 
     // Check if we need to generate hierarchy
-    const hierarchy_count = state.registry.view(components.Hierarchy).count();
-    if (hierarchy_count == 0 and state.model_manager.model_count > 0) {
+    const hierarchy_count = state.runtime.registry.view(components.Hierarchy).count();
+    if (hierarchy_count == 0 and state.runtime.model_manager.model_count > 0) {
         import_scene_graph(state);
     }
 
-    if (state.combined_scene.mesh_count > 0) {
-        state.pending_scene = state.combined_scene;
-        state.scene_upload_pending = true;
+    if (state.runtime.combined_scene.mesh_count > 0) {
+        state.runtime.pending_scene = state.runtime.combined_scene;
+        state.runtime.scene_upload_pending = true;
         log.cardinal_log_info("[EDITOR] Scene loaded from {s}", .{path});
-        _ = std.fmt.bufPrintZ(&state.status_msg, "Scene loaded from {s}", .{path}) catch {};
+        _ = std.fmt.bufPrintZ(&state.ui.status_msg, "Scene loaded from {s}", .{path}) catch {};
     } else {
         log.cardinal_log_error("[EDITOR] Scene loaded but no meshes: {s}", .{path});
-        _ = std.fmt.bufPrintZ(&state.status_msg, "Scene loaded but no meshes (missing assets?)", .{}) catch {};
+        _ = std.fmt.bufPrintZ(&state.ui.status_msg, "Scene loaded but no meshes (missing assets?)", .{}) catch {};
     }
 }
 
 pub fn refresh_available_scenes(state: *EditorState, allocator: std.mem.Allocator) void {
     // Clear existing
-    for (state.available_scenes.items) |item| {
+    for (state.ui.available_scenes.items) |item| {
         allocator.free(item);
     }
-    state.available_scenes.clearRetainingCapacity();
+    state.ui.available_scenes.clearRetainingCapacity();
 
     const scenes_dir = "assets/scenes";
     var dir = std.fs.cwd().openDir(scenes_dir, .{ .iterate = true }) catch |err| {
@@ -451,7 +421,7 @@ pub fn refresh_available_scenes(state: *EditorState, allocator: std.mem.Allocato
     while (it.next() catch null) |entry| {
         if (entry.kind == .file and std.mem.endsWith(u8, entry.name, ".json")) {
             const name_copy = allocator.dupeZ(u8, entry.name) catch continue;
-            state.available_scenes.append(allocator, name_copy) catch {
+            state.ui.available_scenes.append(allocator, name_copy) catch {
                 allocator.free(name_copy);
                 continue;
             };

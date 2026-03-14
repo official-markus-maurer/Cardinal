@@ -17,8 +17,8 @@ var history_offset: usize = 0;
 
 /// Draws the performance panel.
 pub fn draw_performance_panel(state: *EditorState) void {
-    if (state.show_performance_panel) {
-        const open = c.imgui_bridge_begin("Performance", &state.show_performance_panel, 0);
+    if (state.ui.show_performance_panel) {
+        const open = c.imgui_bridge_begin("Performance", &state.ui.show_performance_panel, 0);
         defer c.imgui_bridge_end();
 
         if (open) {

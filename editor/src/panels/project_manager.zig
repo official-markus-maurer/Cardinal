@@ -80,7 +80,7 @@ pub fn draw_project_manager_panel(state: *EditorState, allocator: std.mem.Alloca
         c.imgui_bridge_separator();
         c.imgui_bridge_text("Recent Projects:");
 
-        const recent = state.config_manager.config.recent_projects;
+        const recent = state.runtime.config_manager.config.recent_projects;
         if (recent.len > 0) {
             for (recent, 0..) |path, i| {
                 c.imgui_bridge_push_id_int(@intCast(i));
@@ -121,25 +121,25 @@ fn load_project(state: *EditorState, allocator: std.mem.Allocator, path: []const
         return;
     };
 
-    state.project = proj;
-    state.project_loaded = true;
+    state.ui.project = proj;
+    state.ui.project_loaded = true;
 
     // Add to recent projects
     add_recent_project(state, allocator, path);
 
-    engine.window.cardinal_window_maximize(state.window);
-    engine.window.cardinal_window_set_title(state.window, "Cardinal Editor");
+    engine.window.cardinal_window_maximize(state.runtime.window);
+    engine.window.cardinal_window_set_title(state.runtime.window, "Cardinal Editor");
 
     const assets_path = proj.getAssetsPath() catch return;
     defer allocator.free(assets_path);
 
-    state.config_manager.setAssetsPath(assets_path) catch return;
+    state.runtime.config_manager.setAssetsPath(assets_path) catch return;
 
-    if (state.assets.assets_dir.len > 0) allocator.free(state.assets.assets_dir[0 .. state.assets.assets_dir.len + 1]);
-    if (state.assets.current_dir.len > 0) allocator.free(state.assets.current_dir[0 .. state.assets.current_dir.len + 1]);
+    if (state.ui.assets.assets_dir.len > 0) allocator.free(state.ui.assets.assets_dir[0 .. state.ui.assets.assets_dir.len + 1]);
+    if (state.ui.assets.current_dir.len > 0) allocator.free(state.ui.assets.current_dir[0 .. state.ui.assets.current_dir.len + 1]);
 
-    state.assets.assets_dir = allocator.dupeZ(u8, assets_path) catch return;
-    state.assets.current_dir = allocator.dupeZ(u8, assets_path) catch return;
+    state.ui.assets.assets_dir = allocator.dupeZ(u8, assets_path) catch return;
+    state.ui.assets.current_dir = allocator.dupeZ(u8, assets_path) catch return;
 
     content_browser.scan_assets_dir(state, allocator);
 }
@@ -164,9 +164,9 @@ fn create_project(state: *EditorState, allocator: std.mem.Allocator, path: []con
 
 fn add_recent_project(state: *EditorState, allocator: std.mem.Allocator, path: []const u8) void {
     _ = allocator;
-    state.config_manager.addRecentProject(path) catch return;
+    state.runtime.config_manager.addRecentProject(path) catch return;
 
-    state.config_manager.save() catch |err| {
+    state.runtime.config_manager.save() catch |err| {
         log.cardinal_log_error("Failed to save config: {}", .{err});
     };
 }

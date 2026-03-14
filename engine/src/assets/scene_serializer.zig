@@ -152,13 +152,13 @@ pub const SceneSerializer = struct {
                     try serializeScript(&json_writer, script);
                 }
 
-                try json_writer.endObject(); // components
-                try json_writer.endObject(); // entity
+                try json_writer.endObject();
+                try json_writer.endObject();
             }
         }
 
-        try json_writer.endArray(); // entities
-        try json_writer.endObject(); // root
+        try json_writer.endArray();
+        try json_writer.endObject();
     }
 
     pub const ParsedScene = struct {
@@ -167,6 +167,7 @@ pub const SceneSerializer = struct {
         allocator: std.mem.Allocator,
         json_content: ?[]u8 = null,
 
+        /// Releases parsed JSON and any owning buffers stored in the parsed scene.
         pub fn deinit(self: *ParsedScene) void {
             self.parsed.deinit();
             if (self.root_path) |p| self.allocator.free(p);
@@ -174,6 +175,9 @@ pub const SceneSerializer = struct {
         }
     };
 
+    /// Parses the JSON payload for later instantiation.
+    ///
+    /// The returned `ParsedScene` owns `json_content` and will free it in `deinit`.
     pub fn loadSceneData(allocator: std.mem.Allocator, json_content: []u8, root_path: ?[]const u8) !ParsedScene {
         const parsed = try std.json.parseFromSlice(std.json.Value, allocator, json_content, .{});
 
@@ -190,6 +194,9 @@ pub const SceneSerializer = struct {
         };
     }
 
+    /// Instantiates models and ECS entities from an already-parsed scene payload.
+    ///
+    /// TODO: Allow async model loading and deferred entity creation for large scenes.
     pub fn instantiateScene(self: *SceneSerializer, data: *ParsedScene) !void {
         const root = data.parsed.value;
         const root_path = data.root_path;
@@ -429,10 +436,11 @@ pub const SceneSerializer = struct {
         }
     }
 
+    /// Loads JSON from `reader` and instantiates it into the current registry/model manager.
+    ///
+    /// The read buffer is transferred into a `ParsedScene` and freed when that object is deinit'd.
     pub fn deserialize(self: *SceneSerializer, reader: anytype, root_path: ?[]const u8) !void {
         const json_content = try reader.readAllAlloc(self.allocator, std.math.maxInt(usize));
-        // We do NOT defer free json_content here; it's passed to loadSceneData which stores it in ParsedScene.
-        // ParsedScene.deinit will free it.
         errdefer self.allocator.free(json_content);
 
         var data = try loadSceneData(self.allocator, json_content, root_path);
@@ -441,16 +449,16 @@ pub const SceneSerializer = struct {
         try self.instantiateScene(&data);
     }
 
-    // Helpers
+    /// Writes a Vec3 in JSON array form.
     fn serializeVec3(writer: anytype, v: math.Vec3) !void {
         var buf: [128]u8 = undefined;
         const str = try std.fmt.bufPrint(&buf, "[{d}, {d}, {d}]", .{ v.x, v.y, v.z });
         try writer.writeRaw(str);
     }
 
+    /// Writes a Mat4 in JSON array form (16 scalars).
     fn serializeMat4(writer: anytype, m: [16]f32) !void {
         var buf: [512]u8 = undefined;
-        // Condensed format: [m0, m1, ..., m15]
         const str = try std.fmt.bufPrint(&buf, "[{d}, {d}, {d}, {d}, {d}, {d}, {d}, {d}, {d}, {d}, {d}, {d}, {d}, {d}, {d}, {d}]", .{ m[0], m[1], m[2], m[3], m[4], m[5], m[6], m[7], m[8], m[9], m[10], m[11], m[12], m[13], m[14], m[15] });
         try writer.writeRaw(str);
     }
@@ -509,10 +517,13 @@ pub const SceneSerializer = struct {
         return t;
     }
 
+    /// Serializes a MeshRenderer component.
+    ///
+    /// TODO: Serialize generation counters once handle lifetime rules are finalized.
     fn serializeMeshRenderer(writer: anytype, mr: *components.MeshRenderer) !void {
         try writer.beginObject();
         try writer.objectField("mesh_id");
-        try writer.write(mr.mesh.index); // Assuming simple ID serialization for now
+        try writer.write(mr.mesh.index);
         try writer.objectField("material_id");
         try writer.write(mr.material.index);
         try writer.objectField("visible");
@@ -524,9 +535,10 @@ pub const SceneSerializer = struct {
         try writer.endObject();
     }
 
+    /// Deserializes a MeshRenderer component.
     fn deserializeMeshRenderer(val: std.json.Value) !components.MeshRenderer {
         var mr = components.MeshRenderer{
-            .mesh = .{ .index = 0, .generation = 0 }, // Invalid defaults
+            .mesh = .{ .index = 0, .generation = 0 },
             .material = .{ .index = 0, .generation = 0 },
         };
 

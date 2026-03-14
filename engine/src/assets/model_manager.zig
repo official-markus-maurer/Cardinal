@@ -252,28 +252,28 @@ pub fn find_model_index(manager: *const CardinalModelManager, model_id: u32) i32
     return -1;
 }
 
+/// Releases heap-owned allocations inside `manager.combined_scene`.
+///
+/// The combined scene intentionally shares mesh vertex/index pointers and node pointers with
+/// per-model scenes, so this only frees the combined arrays and deep-copied resources.
 fn cleanup_combined_scene(manager: *CardinalModelManager) void {
     const s = &manager.combined_scene;
     const allocator = memory.cardinal_get_allocator_for_category(.ASSETS);
 
-    // Free Meshes Array (but NOT contents as they are shared)
     if (s.meshes) |meshes| {
         memory.cardinal_free(allocator, @ptrCast(meshes));
     }
 
-    // Free Materials Array
     if (s.materials) |mats| {
         memory.cardinal_free(allocator, @ptrCast(mats));
     }
 
-    // Free Textures Array
     if (s.textures) |texs| {
         var i: u32 = 0;
         while (i < s.texture_count) : (i += 1) {
             if (texs[i].ref_resource) |r| ref_counting.cardinal_ref_release(r);
             if (texs[i].path) |p| memory.cardinal_free(allocator, @ptrCast(p));
 
-            // If we allocated data in rebuild (no ref), we must free it
             if (texs[i].ref_resource == null and texs[i].data != null) {
                 memory.cardinal_free(allocator, @ptrCast(texs[i].data));
             }
@@ -281,14 +281,11 @@ fn cleanup_combined_scene(manager: *CardinalModelManager) void {
         memory.cardinal_free(allocator, @ptrCast(texs));
     }
 
-    // Free Nodes Arrays (but NOT nodes themselves as they are shared)
     if (s.root_nodes) |nodes| memory.cardinal_free(allocator, @ptrCast(nodes));
     if (s.all_nodes) |nodes| memory.cardinal_free(allocator, @ptrCast(nodes));
 
-    // Lights
     if (s.lights) |lights| memory.cardinal_free(allocator, @ptrCast(lights));
 
-    // Skins (Deep Copied -> Destroy)
     if (s.skins) |skins_opaque| {
         const skins: [*]animation.CardinalSkin = @ptrCast(@alignCast(skins_opaque));
         var i: u32 = 0;
@@ -298,17 +295,20 @@ fn cleanup_combined_scene(manager: *CardinalModelManager) void {
         memory.cardinal_free(allocator, @ptrCast(skins));
     }
 
-    // Animation System (Deep Copied -> Destroy)
     if (s.animation_system) |sys| {
         animation.cardinal_animation_system_destroy(@ptrCast(@alignCast(sys)));
     }
 
-    // Reset struct
     @memset(@as([*]u8, @ptrCast(s))[0..@sizeOf(scene.CardinalScene)], 0);
 }
 
+/// Rebuilds `manager.combined_scene` by concatenating all visible model scenes.
+///
+/// Mesh vertex/index data is shared, while materials/textures/skins are copied so their indices
+/// can be re-based into a single scene namespace.
+///
+/// TODO: Incremental rebuild of only dirty subranges instead of full rebuild.
 fn rebuild_combined_scene(manager: *CardinalModelManager) void {
-    // Clean up existing combined scene safely (without destroying shared data)
     cleanup_combined_scene(manager);
 
     var total_meshes: u32 = 0;
@@ -347,7 +347,6 @@ fn rebuild_combined_scene(manager: *CardinalModelManager) void {
 
     const allocator = memory.cardinal_get_allocator_for_category(.ASSETS);
 
-    // Allocate arrays
     const meshes_ptr = memory.cardinal_calloc(allocator, total_meshes, @sizeOf(scene.CardinalMesh));
     if (meshes_ptr) |ptr| {
         model_log.debug("Allocated combined meshes: {any} size {d}", .{ ptr, total_meshes * @sizeOf(scene.CardinalMesh) });
@@ -371,7 +370,6 @@ fn rebuild_combined_scene(manager: *CardinalModelManager) void {
     manager.combined_scene.all_nodes = @ptrCast(@alignCast(nodes_ptr));
     manager.combined_scene.all_node_count = total_nodes;
 
-    // Allocate animation system if needed
     if (total_animations > 0 or total_skins > 0) {
         manager.combined_scene.animation_system = @ptrCast(animation.cardinal_animation_system_create(total_animations, total_skins));
     }

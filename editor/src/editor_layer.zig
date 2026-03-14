@@ -45,42 +45,49 @@ var initialized: bool = false;
 var device_recovery_failed: bool = false;
 
 fn sync_skybox_from_ecs() void {
-    var view = state.registry.view(engine.ecs_components.Skybox);
+    var view = state.runtime.registry.view(engine.ecs_components.Skybox);
     var it = view.iterator();
     const entry = it.next() orelse return;
     const sky = entry.component;
     const path = sky.slice();
     if (path.len == 0) return;
 
-    if (state.skybox_path) |p| {
+    if (state.runtime.skybox_path) |p| {
         if (std.mem.eql(u8, std.mem.span(p.ptr), path)) return;
         allocator.free(p);
-        state.skybox_path = null;
+        state.runtime.skybox_path = null;
     }
 
-    state.skybox_path = allocator.dupeZ(u8, path) catch return;
+    state.runtime.skybox_path = allocator.dupeZ(u8, path) catch return;
 }
 
+/// Pushes ECS-driven transforms into `state.combined_scene` so the renderer updates mesh placement.
+///
+/// Only entities marked in `state.transform_overrides` are applied, to avoid fighting the model
+/// manager and animation systems.
 fn sync_mesh_transforms_from_ecs() void {
-    if (!state.scene_loaded) return;
-    if (state.scene_upload_pending) return;
-    if (state.combined_scene.meshes == null or state.combined_scene.mesh_count == 0) return;
-    const meshes = state.combined_scene.meshes.?;
+    if (!state.runtime.scene_loaded) return;
+    if (state.runtime.scene_upload_pending) return;
+    if (state.runtime.combined_scene.meshes == null or state.runtime.combined_scene.mesh_count == 0) return;
+    const meshes = state.runtime.combined_scene.meshes.?;
 
-    var view = state.registry.view(engine.ecs_components.MeshRenderer);
+    var view = state.runtime.registry.view(engine.ecs_components.MeshRenderer);
     var it = view.iterator();
     while (it.next()) |entry| {
-        if (!state.transform_overrides.contains(entry.entity.id)) continue;
+        if (!state.runtime.transform_overrides.contains(entry.entity.id)) continue;
 
         const mr = entry.component;
         const mesh_index = mr.mesh.index;
-        if (mesh_index >= state.combined_scene.mesh_count) continue;
+        if (mesh_index >= state.runtime.combined_scene.mesh_count) continue;
 
         const m = compute_entity_world_matrix(entry.entity);
         @memcpy(meshes[mesh_index].transform[0..16], m.data[0..16]);
     }
 }
 
+/// Computes an entity world matrix by walking `Hierarchy.parent` and composing local TRS matrices.
+///
+/// TODO: Cache world matrices per frame to avoid recomputation during large updates.
 fn compute_entity_world_matrix(entity: engine.ecs_entity.Entity) engine.math.Mat4 {
     var chain: [128]engine.ecs_entity.Entity = undefined;
     var len: usize = 0;
@@ -96,7 +103,7 @@ fn compute_entity_world_matrix(entity: engine.ecs_entity.Entity) engine.math.Mat
             len += 1;
         }
 
-        const h = state.registry.get(engine.ecs_components.Hierarchy, e) orelse break;
+        const h = state.runtime.registry.get(engine.ecs_components.Hierarchy, e) orelse break;
         current = h.parent;
     }
 
@@ -105,7 +112,7 @@ fn compute_entity_world_matrix(entity: engine.ecs_entity.Entity) engine.math.Mat
     while (i > 0) {
         i -= 1;
         const e = chain[i];
-        if (state.registry.get(engine.ecs_components.Transform, e)) |t| {
+        if (state.runtime.registry.get(engine.ecs_components.Transform, e)) |t| {
             const local = t.get_matrix();
             world = world.mul(local);
         }
@@ -114,31 +121,32 @@ fn compute_entity_world_matrix(entity: engine.ecs_entity.Entity) engine.math.Mat
     return world;
 }
 
+/// Syncs per-mesh visibility flags from ECS into the combined scene.
 fn sync_mesh_visibility_from_ecs() void {
-    if (!state.scene_loaded) return;
-    if (state.scene_upload_pending) return;
-    if (state.combined_scene.meshes == null or state.combined_scene.mesh_count == 0) return;
-    const meshes = state.combined_scene.meshes.?;
+    if (!state.runtime.scene_loaded) return;
+    if (state.runtime.scene_upload_pending) return;
+    if (state.runtime.combined_scene.meshes == null or state.runtime.combined_scene.mesh_count == 0) return;
+    const meshes = state.runtime.combined_scene.meshes.?;
 
-    var view = state.registry.view(engine.ecs_components.MeshRenderer);
+    var view = state.runtime.registry.view(engine.ecs_components.MeshRenderer);
     var it = view.iterator();
     while (it.next()) |entry| {
         const mr = entry.component;
         const mesh_index = mr.mesh.index;
-        if (mesh_index >= state.combined_scene.mesh_count) continue;
+        if (mesh_index >= state.runtime.combined_scene.mesh_count) continue;
         meshes[mesh_index].visible = mr.visible;
     }
 }
 
 fn check_loading_status() void {
-    if (state.loading_tasks.items.len == 0) {
-        state.is_loading = false;
+    if (state.runtime.loading_tasks.items.len == 0) {
+        state.runtime.is_loading = false;
         return;
     }
 
     var i: usize = 0;
-    while (i < state.loading_tasks.items.len) {
-        const info = state.loading_tasks.items[i];
+    while (i < state.runtime.loading_tasks.items.len) {
+        const info = state.runtime.loading_tasks.items[i];
         const task = info.task;
         const status = async_loader.cardinal_async_get_task_status(task);
 
@@ -148,73 +156,69 @@ fn check_loading_status() void {
                 const path = info.path;
                 const filename = std.fs.path.basename(path);
 
-                // Use Arena for temporary filename
-                const filename_z = state.arena_allocator.dupeZ(u8, filename) catch "unknown";
+                const filename_z = state.runtime.arena_allocator.dupeZ(u8, filename) catch "unknown";
 
-                const model_id = model_manager.cardinal_model_manager_add_scene(&state.model_manager, &loaded_scene, path, filename_z);
+                const model_id = model_manager.cardinal_model_manager_add_scene(&state.runtime.model_manager, &loaded_scene, path, filename_z);
 
-                // On failure, we must destroy loaded_scene to prevent leaks.
-                // If success, this is a no-op as loaded_scene is zeroed.
                 scene.cardinal_scene_destroy(&loaded_scene);
 
                 if (model_id != 0) {
-                    state.selected_model_id = model_id;
-                    const combined = model_manager.cardinal_model_manager_get_combined_scene(&state.model_manager);
+                    state.ui.selected_model_id = model_id;
+                    const combined = model_manager.cardinal_model_manager_get_combined_scene(&state.runtime.model_manager);
                     if (combined) |comb_ptr| {
-                        state.combined_scene = comb_ptr.*;
-                        state.scene_loaded = true;
+                        state.runtime.combined_scene = comb_ptr.*;
+                        state.runtime.scene_loaded = true;
 
-                        // If this was an incremental load (drag & drop to entity), just instantiate.
-                        // Otherwise, rebuild the whole scene graph.
                         if (info.target_entity) |parent| {
                             scene_io.instantiate_model(&state, model_id, parent);
 
-                            // We still need to upload the new combined scene to the GPU
                             if (initialized) {
-                                state.pending_scene = state.combined_scene;
-                                state.scene_upload_pending = true;
+                                state.runtime.pending_scene = state.runtime.combined_scene;
+                                state.runtime.scene_upload_pending = true;
                             }
                         } else {
-                            // Full reload
-                            state.transform_overrides.clearRetainingCapacity();
-                            state.registry.deinit();
-                            state.registry.* = engine.ecs_registry.Registry.init(allocator);
+                            state.runtime.transform_overrides.clearRetainingCapacity();
+                            selection_system.reset_picking_cache();
+                            state.runtime.mesh_owner_by_mesh_index.clearRetainingCapacity();
+                            state.runtime.mesh_entity_by_mesh_index.clearRetainingCapacity();
+                            state.runtime.registry.deinit();
+                            state.runtime.registry.* = engine.ecs_registry.Registry.init(allocator);
                             scene_io.import_scene_graph(&state);
 
                             if (initialized) {
-                                state.pending_scene = state.combined_scene;
-                                state.scene_upload_pending = true;
+                                state.runtime.pending_scene = state.runtime.combined_scene;
+                                state.runtime.scene_upload_pending = true;
                                 // Reset animation selection when new scene is loaded
-                                state.selected_animation = -1;
-                                state.animation_time = 0.0;
-                                state.animation_playing = false;
+                                state.ui.selected_animation = -1;
+                                state.ui.animation_time = 0.0;
+                                state.ui.animation_playing = false;
                             }
                         }
 
                         log.cardinal_log_info("[EDITOR] Deferred scene upload scheduled", .{});
-                        _ = std.fmt.bufPrintZ(&state.status_msg, "Loaded model: {d} meshes from {s} (ID: {d})", .{ loaded_scene.mesh_count, filename, model_id }) catch {};
+                        _ = std.fmt.bufPrintZ(&state.ui.status_msg, "Loaded model: {d} meshes from {s} (ID: {d})", .{ loaded_scene.mesh_count, filename, model_id }) catch {};
                     }
                 }
             }
 
             async_loader.cardinal_async_free_task(task);
             allocator.free(info.path);
-            _ = state.loading_tasks.swapRemove(i);
+            _ = state.runtime.loading_tasks.swapRemove(i);
         } else if (status == .FAILED) {
             const err_msg = async_loader.cardinal_async_get_error_message(task);
             const err_str = if (err_msg) |msg| std.mem.span(msg) else "unknown error";
             const path = info.path;
-            _ = std.fmt.bufPrintZ(&state.status_msg, "Failed to load: {s} - {s}", .{ path, err_str }) catch {};
+            _ = std.fmt.bufPrintZ(&state.ui.status_msg, "Failed to load: {s} - {s}", .{ path, err_str }) catch {};
 
             async_loader.cardinal_async_free_task(task);
             allocator.free(info.path);
-            _ = state.loading_tasks.swapRemove(i);
+            _ = state.runtime.loading_tasks.swapRemove(i);
         } else {
             i += 1;
         }
     }
 
-    state.is_loading = (state.loading_tasks.items.len > 0);
+    state.runtime.is_loading = (state.runtime.loading_tasks.items.len > 0);
 }
 
 fn save_scene() void {
@@ -233,16 +237,16 @@ fn load_scene() void {
 }
 
 fn draw_pbr_settings_panel() void {
-    if (state.show_pbr_settings) {
-        const open = c.imgui_bridge_begin("PBR Settings", &state.show_pbr_settings, 0);
+    if (state.ui.show_pbr_settings) {
+        const open = c.imgui_bridge_begin("PBR Settings", &state.ui.show_pbr_settings, 0);
         defer c.imgui_bridge_end();
 
         if (open) {
-            if (c.imgui_bridge_checkbox("Enable PBR Rendering", &state.pbr_enabled)) {
-                renderer.cardinal_renderer_enable_pbr(state.renderer, state.pbr_enabled);
-                if (state.pbr_enabled) {
-                    renderer.cardinal_renderer_set_camera(state.renderer, &state.camera);
-                    renderer.cardinal_renderer_set_lighting(state.renderer, &state.light);
+            if (c.imgui_bridge_checkbox("Enable PBR Rendering", &state.runtime.pbr_enabled)) {
+                renderer.cardinal_renderer_enable_pbr(state.runtime.renderer, state.runtime.pbr_enabled);
+                if (state.runtime.pbr_enabled) {
+                    renderer.cardinal_renderer_set_camera(state.runtime.renderer, &state.runtime.camera);
+                    renderer.cardinal_renderer_set_lighting(state.runtime.renderer, &state.runtime.light);
                 }
             }
 
@@ -250,12 +254,12 @@ fn draw_pbr_settings_panel() void {
 
             if (c.imgui_bridge_collapsing_header("Camera", c.ImGuiTreeNodeFlags_DefaultOpen)) {
                 var cam_changed = false;
-                if (c.imgui_bridge_drag_float3("Position", @ptrCast(&state.camera.position), 0.1, 0.0, 0.0, "%.3f", 0)) cam_changed = true;
-                if (c.imgui_bridge_drag_float3("Target", @ptrCast(&state.camera.target), 0.1, 0.0, 0.0, "%.3f", 0)) cam_changed = true;
-                if (c.imgui_bridge_slider_float("FOV", &state.camera.fov, 10.0, 120.0, "%.1f")) cam_changed = true;
+                if (c.imgui_bridge_drag_float3("Position", @ptrCast(&state.runtime.camera.position), 0.1, 0.0, 0.0, "%.3f", 0)) cam_changed = true;
+                if (c.imgui_bridge_drag_float3("Target", @ptrCast(&state.runtime.camera.target), 0.1, 0.0, 0.0, "%.3f", 0)) cam_changed = true;
+                if (c.imgui_bridge_slider_float("FOV", &state.runtime.camera.fov, 10.0, 120.0, "%.1f")) cam_changed = true;
 
-                if (cam_changed and state.pbr_enabled) {
-                    renderer.cardinal_renderer_set_camera(state.renderer, &state.camera);
+                if (cam_changed and state.runtime.pbr_enabled) {
+                    renderer.cardinal_renderer_set_camera(state.runtime.renderer, &state.runtime.camera);
                 }
             }
 
@@ -265,15 +269,15 @@ fn draw_pbr_settings_panel() void {
                 var light_changed = false;
 
                 // Enforce Directional Light (User request: remove choosing, always have direct light controls)
-                state.enable_directional_light = true;
-                state.light.type = 0; // Directional
+                state.runtime.enable_directional_light = true;
+                state.runtime.light.type = 0; // Directional
 
                 c.imgui_bridge_text("Directional Light (Sun)");
-                if (c.imgui_bridge_drag_float3("Direction", @ptrCast(&state.light.direction), 0.01, -1.0, 1.0, "%.3f", 0)) light_changed = true;
+                if (c.imgui_bridge_drag_float3("Direction", @ptrCast(&state.runtime.light.direction), 0.01, -1.0, 1.0, "%.3f", 0)) light_changed = true;
 
-                if (c.imgui_bridge_color_edit3("Color", @ptrCast(&state.light.color), 0)) light_changed = true;
-                if (c.imgui_bridge_slider_float("Intensity##DirectionalLight", &state.light.intensity, 0.0, 20.0, "%.2f")) light_changed = true;
-                if (c.imgui_bridge_color_edit3("Ambient", @ptrCast(&state.light.ambient), 0)) light_changed = true;
+                if (c.imgui_bridge_color_edit3("Color", @ptrCast(&state.runtime.light.color), 0)) light_changed = true;
+                if (c.imgui_bridge_slider_float("Intensity##DirectionalLight", &state.runtime.light.intensity, 0.0, 20.0, "%.2f")) light_changed = true;
+                if (c.imgui_bridge_color_edit3("Ambient", @ptrCast(&state.runtime.light.ambient), 0)) light_changed = true;
 
                 if (light_changed) {
                     // Light will be updated in process_pending_uploads
@@ -283,39 +287,39 @@ fn draw_pbr_settings_panel() void {
             c.imgui_bridge_separator();
 
             if (c.imgui_bridge_collapsing_header("Material Override", c.ImGuiTreeNodeFlags_DefaultOpen)) {
-                _ = c.imgui_bridge_checkbox("Enable Material Override", &state.material_override_enabled);
+                _ = c.imgui_bridge_checkbox("Enable Material Override", &state.ui.material_override_enabled);
 
-                if (state.material_override_enabled) {
+                if (state.ui.material_override_enabled) {
                     c.imgui_bridge_separator();
-                    _ = c.imgui_bridge_color_edit3("Albedo Factor", @ptrCast(&state.material_albedo), 0);
-                    _ = c.imgui_bridge_slider_float("Metallic Factor", &state.material_metallic, 0.0, 1.0, "%.3f");
-                    _ = c.imgui_bridge_slider_float("Roughness Factor", &state.material_roughness, 0.0, 1.0, "%.3f");
-                    _ = c.imgui_bridge_color_edit3("Emissive Factor", &state.material_emissive, 0);
-                    _ = c.imgui_bridge_slider_float("Normal Scale", &state.material_normal_scale, 0.0, 2.0, "%.3f");
-                    _ = c.imgui_bridge_slider_float("AO Strength", &state.material_ao_strength, 0.0, 1.0, "%.3f");
+                    _ = c.imgui_bridge_color_edit3("Albedo Factor", @ptrCast(&state.ui.material_albedo), 0);
+                    _ = c.imgui_bridge_slider_float("Metallic Factor", &state.ui.material_metallic, 0.0, 1.0, "%.3f");
+                    _ = c.imgui_bridge_slider_float("Roughness Factor", &state.ui.material_roughness, 0.0, 1.0, "%.3f");
+                    _ = c.imgui_bridge_color_edit3("Emissive Factor", &state.ui.material_emissive, 0);
+                    _ = c.imgui_bridge_slider_float("Normal Scale", &state.ui.material_normal_scale, 0.0, 2.0, "%.3f");
+                    _ = c.imgui_bridge_slider_float("AO Strength", &state.ui.material_ao_strength, 0.0, 1.0, "%.3f");
 
                     if (c.imgui_bridge_button("Apply to All Materials")) {
-                        if (state.scene_loaded and state.combined_scene.material_count > 0) {
+                        if (state.runtime.scene_loaded and state.runtime.combined_scene.material_count > 0) {
                             var i: u32 = 0;
-                            while (i < state.combined_scene.material_count) : (i += 1) {
-                                if (state.combined_scene.materials) |materials| {
+                            while (i < state.runtime.combined_scene.material_count) : (i += 1) {
+                                if (state.runtime.combined_scene.materials) |materials| {
                                     var mat = &materials[i];
 
-                                    mat.albedo_factor = state.material_albedo;
-                                    mat.metallic_factor = state.material_metallic;
-                                    mat.roughness_factor = state.material_roughness;
-                                    mat.emissive_factor = state.material_emissive;
-                                    mat.normal_scale = state.material_normal_scale;
-                                    mat.ao_strength = state.material_ao_strength;
+                                    mat.albedo_factor = state.ui.material_albedo;
+                                    mat.metallic_factor = state.ui.material_metallic;
+                                    mat.roughness_factor = state.ui.material_roughness;
+                                    mat.emissive_factor = state.ui.material_emissive;
+                                    mat.normal_scale = state.ui.material_normal_scale;
+                                    mat.ao_strength = state.ui.material_ao_strength;
                                 }
                             }
 
                             // Schedule re-upload
-                            state.pending_scene = state.combined_scene;
-                            state.scene_upload_pending = true;
-                            _ = std.fmt.bufPrintZ(&state.status_msg, "Applied material override to {d} materials", .{state.combined_scene.material_count}) catch {};
+                            state.runtime.pending_scene = state.runtime.combined_scene;
+                            state.runtime.scene_upload_pending = true;
+                            _ = std.fmt.bufPrintZ(&state.ui.status_msg, "Applied material override to {d} materials", .{state.runtime.combined_scene.material_count}) catch {};
                         } else {
-                            _ = std.fmt.bufPrintZ(&state.status_msg, "No scene loaded or no materials to modify", .{}) catch {};
+                            _ = std.fmt.bufPrintZ(&state.ui.status_msg, "No scene loaded or no materials to modify", .{}) catch {};
                         }
                     }
                 }
@@ -325,25 +329,25 @@ fn draw_pbr_settings_panel() void {
 
             if (c.imgui_bridge_collapsing_header("Post Process", c.ImGuiTreeNodeFlags_DefaultOpen)) {
                 var pp_changed = false;
-                if (c.imgui_bridge_slider_float("Exposure", &state.post_process.exposure, 0.1, 10.0, "%.2f")) pp_changed = true;
-                if (c.imgui_bridge_slider_float("Contrast", &state.post_process.contrast, 0.1, 3.0, "%.2f")) pp_changed = true;
-                if (c.imgui_bridge_slider_float("Saturation", &state.post_process.saturation, 0.0, 3.0, "%.2f")) pp_changed = true;
+                if (c.imgui_bridge_slider_float("Exposure", &state.runtime.post_process.exposure, 0.1, 10.0, "%.2f")) pp_changed = true;
+                if (c.imgui_bridge_slider_float("Contrast", &state.runtime.post_process.contrast, 0.1, 3.0, "%.2f")) pp_changed = true;
+                if (c.imgui_bridge_slider_float("Saturation", &state.runtime.post_process.saturation, 0.0, 3.0, "%.2f")) pp_changed = true;
 
                 c.imgui_bridge_separator();
                 c.imgui_bridge_text("Bloom");
-                if (c.imgui_bridge_slider_float("Bloom Intensity", &state.post_process.bloomIntensity, 0.0, 1.0, "%.3f")) pp_changed = true;
-                if (c.imgui_bridge_slider_float("Threshold", &state.post_process.bloomThreshold, 0.0, 5.0, "%.2f")) pp_changed = true;
-                if (c.imgui_bridge_slider_float("Knee", &state.post_process.bloomKnee, 0.0, 1.0, "%.2f")) pp_changed = true;
+                if (c.imgui_bridge_slider_float("Bloom Intensity", &state.runtime.post_process.bloomIntensity, 0.0, 1.0, "%.3f")) pp_changed = true;
+                if (c.imgui_bridge_slider_float("Threshold", &state.runtime.post_process.bloomThreshold, 0.0, 5.0, "%.2f")) pp_changed = true;
+                if (c.imgui_bridge_slider_float("Knee", &state.runtime.post_process.bloomKnee, 0.0, 1.0, "%.2f")) pp_changed = true;
 
                 if (pp_changed) {
-                    renderer.cardinal_renderer_set_post_process_params(state.renderer, &state.post_process);
+                    renderer.cardinal_renderer_set_post_process_params(state.runtime.renderer, &state.runtime.post_process);
                 }
             }
 
             c.imgui_bridge_separator();
 
             if (c.imgui_bridge_collapsing_header("Rendering Mode", c.ImGuiTreeNodeFlags_DefaultOpen)) {
-                const current_mode = renderer.cardinal_renderer_get_rendering_mode(state.renderer);
+                const current_mode = renderer.cardinal_renderer_get_rendering_mode(state.runtime.renderer);
 
                 // Map enum to combo index
                 // 0: Normal (0)
@@ -370,7 +374,7 @@ fn draw_pbr_settings_panel() void {
                         3 => .MESH_SHADER,
                         else => .NORMAL,
                     };
-                    renderer.cardinal_renderer_set_rendering_mode(state.renderer, new_mode);
+                    renderer.cardinal_renderer_set_rendering_mode(state.runtime.renderer, new_mode);
                 }
             }
         }
@@ -395,13 +399,13 @@ pub fn init(win_ptr: *window.CardinalWindow, rnd_ptr: *types.CardinalRenderer, r
     state = .{};
 
     // Initialize Arena
-    state.arena = std.heap.ArenaAllocator.init(allocator);
-    state.arena_allocator = state.arena.allocator();
+    state.runtime.arena = std.heap.ArenaAllocator.init(allocator);
+    state.runtime.arena_allocator = state.runtime.arena.allocator();
 
-    state.window = win_ptr;
-    state.renderer = rnd_ptr;
-    state.registry = registry;
-    state.camera = .{
+    state.runtime.window = win_ptr;
+    state.runtime.renderer = rnd_ptr;
+    state.runtime.registry = registry;
+    state.runtime.camera = .{
         .position = .{ .x = 0.0, .y = 2.0, .z = 5.0 },
         .target = .{ .x = 0.0, .y = 0.0, .z = 0.0 },
         .up = .{ .x = 0.0, .y = 1.0, .z = 0.0 },
@@ -410,7 +414,7 @@ pub fn init(win_ptr: *window.CardinalWindow, rnd_ptr: *types.CardinalRenderer, r
         .near_plane = 0.1,
         .far_plane = 100.0,
     };
-    state.light = .{
+    state.runtime.light = .{
         .direction = .{ .x = -0.3, .y = -0.7, .z = -0.5 },
         .position = .{ .x = 0.0, .y = 0.0, .z = 0.0 },
         .color = .{ .x = 1.0, .y = 1.0, .z = 0.95 },
@@ -422,13 +426,13 @@ pub fn init(win_ptr: *window.CardinalWindow, rnd_ptr: *types.CardinalRenderer, r
         .type = 0, // Directional
     };
 
-    renderer.cardinal_renderer_set_debug_grid(rnd_ptr, state.show_grid_axes);
+    renderer.cardinal_renderer_set_debug_grid(rnd_ptr, state.ui.show_grid_axes);
 
-    if (!model_manager.cardinal_model_manager_init(&state.model_manager)) return false;
+    if (!model_manager.cardinal_model_manager_init(&state.runtime.model_manager)) return false;
 
     // Init Config
-    state.config_manager = engine.config.ConfigManager.init(allocator, "cardinal_config.json", .{});
-    state.config_manager.load() catch |err| {
+    state.runtime.config_manager = engine.config.ConfigManager.init(allocator, "cardinal_config.json", .{});
+    state.runtime.config_manager.load() catch |err| {
         log.cardinal_log_warn("Failed to load config: {}", .{err});
     };
 
@@ -436,27 +440,27 @@ pub fn init(win_ptr: *window.CardinalWindow, rnd_ptr: *types.CardinalRenderer, r
     var assets_path: []const u8 = undefined;
 
     // Check if configured path exists
-    if (std.fs.cwd().openDir(state.config_manager.config.assets_path, .{})) |dir| {
+    if (std.fs.cwd().openDir(state.runtime.config_manager.config.assets_path, .{})) |dir| {
         var d = dir;
         d.close();
         // Resolve to absolute path
-        assets_path = std.fs.cwd().realpath(state.config_manager.config.assets_path, &buffer) catch |e| {
+        assets_path = std.fs.cwd().realpath(state.runtime.config_manager.config.assets_path, &buffer) catch |e| {
             log.cardinal_log_error("Failed to resolve absolute path for assets: {}", .{e});
             return false;
         };
     } else |err| {
         // Fallback to relative "assets"
-        log.cardinal_log_warn("Configured assets path '{s}' invalid ({}), using default", .{ state.config_manager.config.assets_path, err });
+        log.cardinal_log_warn("Configured assets path '{s}' invalid ({}), using default", .{ state.runtime.config_manager.config.assets_path, err });
         assets_path = std.fs.cwd().realpath("assets", &buffer) catch |e| {
             log.cardinal_log_error("Failed to resolve assets directory: {}", .{e});
             return false;
         };
     }
 
-    state.assets.assets_dir = allocator.dupeZ(u8, assets_path) catch return false;
-    state.assets.current_dir = allocator.dupeZ(u8, assets_path) catch return false;
-    state.assets.search_filter = allocator.alloc(u8, 256) catch return false;
-    @memset(state.assets.search_filter, 0);
+    state.ui.assets.assets_dir = allocator.dupeZ(u8, assets_path) catch return false;
+    state.ui.assets.current_dir = allocator.dupeZ(u8, assets_path) catch return false;
+    state.ui.assets.search_filter = allocator.alloc(u8, 256) catch return false;
+    @memset(state.ui.assets.search_filter, 0);
 
     // Initial scan
     content_browser.scan_assets_dir(&state, allocator);
@@ -503,7 +507,7 @@ pub fn init(win_ptr: *window.CardinalWindow, rnd_ptr: *types.CardinalRenderer, r
     };
 
     const device = @as(c.VkDevice, @ptrCast(renderer.cardinal_renderer_internal_device(rnd_ptr)));
-    if (c.vkCreateDescriptorPool(device, &pool_info, null, &state.descriptor_pool) != c.VK_SUCCESS) return false;
+    if (c.vkCreateDescriptorPool(device, &pool_info, null, &state.runtime.descriptor_pool) != c.VK_SUCCESS) return false;
 
     // Hack: Ensure backend data is clear before init (fixes restart/reload issues)
     c.imgui_bridge_force_clear_backend_data();
@@ -514,7 +518,7 @@ pub fn init(win_ptr: *window.CardinalWindow, rnd_ptr: *types.CardinalRenderer, r
         .device = device,
         .queue_family = renderer.cardinal_renderer_internal_graphics_queue_family(rnd_ptr),
         .queue = @as(c.VkQueue, @ptrCast(renderer.cardinal_renderer_internal_graphics_queue(rnd_ptr))),
-        .descriptor_pool = state.descriptor_pool,
+        .descriptor_pool = state.runtime.descriptor_pool,
         .min_image_count = renderer.cardinal_renderer_internal_swapchain_image_count(rnd_ptr),
         .image_count = renderer.cardinal_renderer_internal_swapchain_image_count(rnd_ptr),
         .msaa_samples = c.VK_SAMPLE_COUNT_1_BIT,
@@ -532,11 +536,11 @@ pub fn init(win_ptr: *window.CardinalWindow, rnd_ptr: *types.CardinalRenderer, r
     content_browser.scan_assets_dir(&state, allocator);
     log.cardinal_log_info("[EDITOR_LAYER] Assets dir scanned.", .{});
 
-    renderer.cardinal_renderer_set_camera(rnd_ptr, &state.camera);
+    renderer.cardinal_renderer_set_camera(rnd_ptr, &state.runtime.camera);
     std.debug.print("[EDITOR_LAYER] Camera set.\n", .{});
-    renderer.cardinal_renderer_set_lighting(rnd_ptr, &state.light);
+    renderer.cardinal_renderer_set_lighting(rnd_ptr, &state.runtime.light);
     std.debug.print("[EDITOR_LAYER] Lighting set.\n", .{});
-    renderer.cardinal_renderer_set_post_process_params(rnd_ptr, &state.post_process);
+    renderer.cardinal_renderer_set_post_process_params(rnd_ptr, &state.runtime.post_process);
     renderer.cardinal_renderer_set_ui_callback(rnd_ptr, @ptrCast(&ui_draw_callback));
 
     // Initialize scene list
@@ -553,9 +557,9 @@ pub fn on_device_loss(_: ?*anyopaque) callconv(.c) void {
 
     // We can use the global 'initialized' flag or check descriptor_pool.
     // If descriptor_pool is set, we definitely initialized.
-    if (state.descriptor_pool != null or initialized) {
+    if (state.runtime.descriptor_pool != null or initialized) {
         c.imgui_bridge_impl_vulkan_shutdown();
-        state.descriptor_pool = null;
+        state.runtime.descriptor_pool = null;
     }
 
     // Mark as uninitialized to prevent update loop from calling backend functions
@@ -567,30 +571,30 @@ pub fn on_device_restored(user_data: ?*anyopaque, success: bool) callconv(.c) vo
     if (!success) {
         log.cardinal_log_error("[EDITOR_LAYER] Device recovery failed, cannot restore ImGui", .{});
         device_recovery_failed = true;
-        _ = std.fmt.bufPrintZ(&state.status_msg, "Vulkan device lost; please restart editor", .{}) catch {};
+        _ = std.fmt.bufPrintZ(&state.ui.status_msg, "Vulkan device lost; please restart editor", .{}) catch {};
         return;
     }
 
     log.cardinal_log_info("[EDITOR_LAYER] Device restored, re-initializing ImGui", .{});
 
     // Check if we are already initialized to prevent leaks
-    if (initialized or state.descriptor_pool != null) {
+    if (initialized or state.runtime.descriptor_pool != null) {
         log.cardinal_log_warn("[EDITOR_LAYER] Device restored but ImGui already initialized. Shutting down old instance.", .{});
         c.imgui_bridge_impl_vulkan_shutdown();
         c.imgui_bridge_impl_glfw_shutdown(); // Fully shutdown
 
-        if (state.descriptor_pool != null) {
-            const rnd_ptr = state.renderer;
+        if (state.runtime.descriptor_pool != null) {
+            const rnd_ptr = state.runtime.renderer;
             const device = @as(c.VkDevice, @ptrCast(renderer.cardinal_renderer_internal_device(rnd_ptr)));
-            c.vkDestroyDescriptorPool(device, state.descriptor_pool, null);
-            state.descriptor_pool = null;
+            c.vkDestroyDescriptorPool(device, state.runtime.descriptor_pool, null);
+            state.runtime.descriptor_pool = null;
         }
         initialized = false;
     }
 
     // Re-init GLFW
     // We need the GLFW handle (not native HWND)
-    const native_window = @as(?*c.GLFWwindow, @ptrCast(window.cardinal_window_get_glfw_handle(state.window)));
+    const native_window = @as(?*c.GLFWwindow, @ptrCast(window.cardinal_window_get_glfw_handle(state.runtime.window)));
     if (native_window == null) {
         log.cardinal_log_error("[EDITOR_LAYER] Failed to get GLFW window handle for ImGui re-init", .{});
         return;
@@ -602,7 +606,7 @@ pub fn on_device_restored(user_data: ?*anyopaque, success: bool) callconv(.c) vo
     }
 
     // Re-create descriptor pool with NEW device
-    const rnd_ptr = state.renderer;
+    const rnd_ptr = state.runtime.renderer;
     const device = @as(c.VkDevice, @ptrCast(renderer.cardinal_renderer_internal_device(rnd_ptr)));
 
     const pool_sizes = [_]c.VkDescriptorPoolSize{
@@ -628,7 +632,7 @@ pub fn on_device_restored(user_data: ?*anyopaque, success: bool) callconv(.c) vo
         .pPoolSizes = &pool_sizes,
     };
 
-    if (c.vkCreateDescriptorPool(device, &pool_info, null, &state.descriptor_pool) != c.VK_SUCCESS) {
+    if (c.vkCreateDescriptorPool(device, &pool_info, null, &state.runtime.descriptor_pool) != c.VK_SUCCESS) {
         log.cardinal_log_error("[EDITOR_LAYER] Failed to recreate descriptor pool", .{});
         return;
     }
@@ -645,7 +649,7 @@ pub fn on_device_restored(user_data: ?*anyopaque, success: bool) callconv(.c) vo
         .device = device,
         .queue_family = renderer.cardinal_renderer_internal_graphics_queue_family(rnd_ptr),
         .queue = @as(c.VkQueue, @ptrCast(renderer.cardinal_renderer_internal_graphics_queue(rnd_ptr))),
-        .descriptor_pool = state.descriptor_pool,
+        .descriptor_pool = state.runtime.descriptor_pool,
         .min_image_count = renderer.cardinal_renderer_internal_swapchain_image_count(rnd_ptr),
         .image_count = renderer.cardinal_renderer_internal_swapchain_image_count(rnd_ptr),
         .msaa_samples = c.VK_SAMPLE_COUNT_1_BIT,
@@ -665,17 +669,18 @@ pub fn on_device_restored(user_data: ?*anyopaque, success: bool) callconv(.c) vo
 }
 
 fn close_project() void {
-    if (state.project) |*proj| {
+    if (state.ui.project) |*proj| {
         proj.deinit();
     }
-    state.project = null;
-    state.project_loaded = false;
+    state.ui.project = null;
+    state.ui.project_loaded = false;
+    state.ui.undo.clear();
 
     // Restore launcher window
-    engine.window.cardinal_window_restore(state.window);
-    engine.window.cardinal_window_set_size(state.window, 600, 400);
-    engine.window.cardinal_window_center(state.window);
-    engine.window.cardinal_window_set_title(state.window, "Cardinal Project Manager");
+    engine.window.cardinal_window_restore(state.runtime.window);
+    engine.window.cardinal_window_set_size(state.runtime.window, 600, 400);
+    engine.window.cardinal_window_center(state.runtime.window);
+    engine.window.cardinal_window_set_title(state.runtime.window, "Cardinal Project Manager");
 }
 
 pub fn has_device_recovery_failed() bool {
@@ -687,37 +692,42 @@ pub fn shutdown() void {
     _ = async_loader.cardinal_async_process_completed_tasks(0);
 
     // Wait for any background texture uploads to finish before we destroy the model manager (which owns the data)
-    renderer.cardinal_renderer_wait_for_texture_uploads(state.renderer);
+    renderer.cardinal_renderer_wait_for_texture_uploads(state.runtime.renderer);
 
     c.imgui_bridge_impl_vulkan_shutdown();
     c.imgui_bridge_impl_glfw_shutdown();
     c.imgui_bridge_destroy_context();
 
-    if (state.descriptor_pool != null) {
-        const device = @as(c.VkDevice, @ptrCast(renderer.cardinal_renderer_internal_device(state.renderer)));
-        c.vkDestroyDescriptorPool(device, state.descriptor_pool, null);
+    if (state.runtime.descriptor_pool != null) {
+        const device = @as(c.VkDevice, @ptrCast(renderer.cardinal_renderer_internal_device(state.runtime.renderer)));
+        c.vkDestroyDescriptorPool(device, state.runtime.descriptor_pool, null);
     }
 
-    model_manager.cardinal_model_manager_destroy(&state.model_manager);
+    model_manager.cardinal_model_manager_destroy(&state.runtime.model_manager);
 
-    state.transform_overrides.deinit(allocator);
+    selection_system.reset_picking_cache();
+    state.runtime.transform_overrides.deinit(allocator);
+    state.runtime.mesh_owner_by_mesh_index.deinit(allocator);
+    state.runtime.mesh_entity_by_mesh_index.deinit(allocator);
 
-    for (state.loading_tasks.items) |info| {
+    for (state.runtime.loading_tasks.items) |info| {
         async_loader.cardinal_async_free_task(info.task);
         allocator.free(info.path);
     }
-    state.loading_tasks.deinit(allocator);
+    state.runtime.loading_tasks.deinit(allocator);
 
-    for (state.assets.entries.items) |entry| {
+    for (state.ui.assets.entries.items) |entry| {
         entry.deinit(allocator);
     }
-    state.assets.entries.deinit(allocator);
-    state.assets.filtered_entries.deinit(allocator);
-    allocator.free(state.assets.assets_dir[0 .. state.assets.assets_dir.len + 1]);
-    allocator.free(state.assets.current_dir[0 .. state.assets.current_dir.len + 1]);
-    allocator.free(state.assets.search_filter);
+    state.ui.assets.entries.deinit(allocator);
+    state.ui.assets.filtered_entries.deinit(allocator);
+    allocator.free(state.ui.assets.assets_dir[0 .. state.ui.assets.assets_dir.len + 1]);
+    allocator.free(state.ui.assets.current_dir[0 .. state.ui.assets.current_dir.len + 1]);
+    allocator.free(state.ui.assets.search_filter);
 
-    state.config_manager.deinit();
+    state.ui.undo.deinit(allocator);
+
+    state.runtime.config_manager.deinit();
 
     initialized = false;
 }
@@ -726,7 +736,7 @@ pub fn update() void {
     if (!initialized) return;
 
     // Project Manager Modal (Blocking)
-    if (!state.project_loaded) {
+    if (!state.ui.project_loaded) {
         c.imgui_bridge_impl_vulkan_new_frame();
         c.imgui_bridge_impl_glfw_new_frame();
         c.imgui_bridge_new_frame();
@@ -741,24 +751,26 @@ pub fn update() void {
     check_loading_status();
     sync_skybox_from_ecs();
 
-    if (state.model_manager.scene_dirty) {
-        renderer.cardinal_renderer_clear_scene(state.renderer);
-        if (model_manager.cardinal_model_manager_get_combined_scene(&state.model_manager)) |comb_ptr| {
-            state.combined_scene = comb_ptr.*;
-            state.pending_scene = state.combined_scene;
-            state.scene_upload_pending = true;
-            state.scene_loaded = (state.combined_scene.mesh_count > 0);
-            state.transform_overrides.clearRetainingCapacity();
+    if (state.runtime.model_manager.scene_dirty) {
+        renderer.cardinal_renderer_clear_scene(state.runtime.renderer);
+        if (model_manager.cardinal_model_manager_get_combined_scene(&state.runtime.model_manager)) |comb_ptr| {
+            state.runtime.combined_scene = comb_ptr.*;
+            state.runtime.pending_scene = state.runtime.combined_scene;
+            state.runtime.scene_upload_pending = true;
+            state.runtime.scene_loaded = (state.runtime.combined_scene.mesh_count > 0);
+            state.runtime.transform_overrides.clearRetainingCapacity();
+            selection_system.reset_picking_cache();
+            state.ui.undo.clear();
         } else {
-            state.scene_loaded = false;
+            state.runtime.scene_loaded = false;
         }
 
-        state.selected_animation = -1;
-        state.animation_time = 0.0;
-        state.animation_playing = false;
-    } else if (state.model_manager.transform_dirty) {
-        if (model_manager.cardinal_model_manager_get_combined_scene(&state.model_manager)) |comb_ptr| {
-            state.combined_scene = comb_ptr.*;
+        state.ui.selected_animation = -1;
+        state.ui.animation_time = 0.0;
+        state.ui.animation_playing = false;
+    } else if (state.runtime.model_manager.transform_dirty) {
+        if (model_manager.cardinal_model_manager_get_combined_scene(&state.runtime.model_manager)) |comb_ptr| {
+            state.runtime.combined_scene = comb_ptr.*;
         }
     }
 
@@ -769,18 +781,18 @@ pub fn update() void {
     const dt = c.imgui_bridge_get_io_delta_time();
 
     // Update animation system if scene is loaded
-    if (state.scene_loaded and state.combined_scene.animation_system != null) {
-        const anim_sys_opaque = state.combined_scene.animation_system.?;
+    if (state.runtime.scene_loaded and state.runtime.combined_scene.animation_system != null) {
+        const anim_sys_opaque = state.runtime.combined_scene.animation_system.?;
         const anim_sys = @as(*animation.CardinalAnimationSystem, @ptrCast(@alignCast(anim_sys_opaque)));
 
-        animation.cardinal_animation_system_update(anim_sys, state.combined_scene.all_nodes, state.combined_scene.all_node_count, dt);
+        animation.cardinal_animation_system_update(anim_sys, state.runtime.combined_scene.all_nodes, state.runtime.combined_scene.all_node_count, dt);
 
         // Propagate animation changes to world transforms
         // We iterate through models to apply model transforms and update mesh transforms
-        if (state.model_manager.models) |models| {
+        if (state.runtime.model_manager.models) |models| {
             var mesh_offset: u32 = 0;
             var m_idx: u32 = 0;
-            while (m_idx < state.model_manager.model_count) : (m_idx += 1) {
+            while (m_idx < state.runtime.model_manager.model_count) : (m_idx += 1) {
                 const model = &models[m_idx];
                 if (!model.visible or model.is_loading) continue;
 
@@ -808,8 +820,8 @@ pub fn update() void {
                                     const mesh_idx = node.mesh_indices.?[m];
                                     const combined_idx = mesh_offset + mesh_idx;
 
-                                    if (combined_idx < state.combined_scene.mesh_count) {
-                                        const mesh = &state.combined_scene.meshes.?[combined_idx];
+                                    if (combined_idx < state.runtime.combined_scene.mesh_count) {
+                                        const mesh = &state.runtime.combined_scene.meshes.?[combined_idx];
                                         // Update mesh transform to match node world transform
                                         // Note: model transform is already baked into node world transform by step 1
                                         @memcpy(&mesh.transform, &node.world_transform);
@@ -826,30 +838,30 @@ pub fn update() void {
 
         // Update skinning matrices
         if (anim_sys.skin_count > 0 and anim_sys.skins != null and anim_sys.bone_matrices != null) {
-            const nodes_ptr = @as(?[*]?*const scene.CardinalSceneNode, @ptrCast(state.combined_scene.all_nodes));
+            const nodes_ptr = @as(?[*]?*const scene.CardinalSceneNode, @ptrCast(state.runtime.combined_scene.all_nodes));
             var s_idx: u32 = 0;
             while (s_idx < anim_sys.skin_count) : (s_idx += 1) {
                 const skin = &anim_sys.skins.?[s_idx];
-                _ = animation.cardinal_skin_update_bone_matrices_bounded(skin, nodes_ptr, state.combined_scene.all_node_count, anim_sys.bone_matrices);
+                _ = animation.cardinal_skin_update_bone_matrices_bounded(skin, nodes_ptr, state.runtime.combined_scene.all_node_count, anim_sys.bone_matrices);
             }
 
             // Upload bone matrices to GPU
             if (anim_sys.bone_matrix_count > 0 and anim_sys.bone_matrices != null) {
                 const matrices = anim_sys.bone_matrices.?;
-                renderer.cardinal_renderer_update_bone_matrices(state.renderer, matrices, anim_sys.bone_matrix_count * 16);
+                renderer.cardinal_renderer_update_bone_matrices(state.runtime.renderer, matrices, anim_sys.bone_matrix_count * 16);
             }
         }
 
         // Sync editor animation time with animation system state
-        if (state.selected_animation >= 0 and state.selected_animation < anim_sys.animation_count) {
+        if (state.ui.selected_animation >= 0 and state.ui.selected_animation < anim_sys.animation_count) {
             var i: u32 = 0;
             while (i < anim_sys.state_count) : (i += 1) {
                 const anim_state = &anim_sys.states.?[i];
-                if (anim_state.animation_index == @as(u32, @intCast(state.selected_animation))) {
-                    state.animation_time = anim_state.current_time;
-                    state.animation_playing = anim_state.is_playing;
-                    state.animation_looping = anim_state.is_looping;
-                    state.animation_speed = anim_state.playback_speed;
+                if (anim_state.animation_index == @as(u32, @intCast(state.ui.selected_animation))) {
+                    state.ui.animation_time = anim_state.current_time;
+                    state.ui.animation_playing = anim_state.is_playing;
+                    state.ui.animation_looping = anim_state.is_looping;
+                    state.ui.animation_speed = anim_state.playback_speed;
                     break;
                 }
             }
@@ -925,18 +937,18 @@ pub fn update() void {
             }
 
             if (c.imgui_bridge_begin_menu("View", true)) {
-                if (c.imgui_bridge_menu_item("Scene View", null, state.show_scene_view, true)) state.show_scene_view = !state.show_scene_view;
-                if (c.imgui_bridge_menu_item("Scene Graph", null, state.show_scene_graph, true)) state.show_scene_graph = !state.show_scene_graph;
-                if (c.imgui_bridge_menu_item("Assets", null, state.show_assets, true)) state.show_assets = !state.show_assets;
-                if (c.imgui_bridge_menu_item("Model Manager", null, state.show_model_manager, true)) state.show_model_manager = !state.show_model_manager;
-                if (c.imgui_bridge_menu_item("Inspector", null, state.show_entity_inspector, true)) state.show_entity_inspector = !state.show_entity_inspector;
-                if (c.imgui_bridge_menu_item("Scene Manager", null, state.show_scene_manager, true)) state.show_scene_manager = !state.show_scene_manager;
-                if (c.imgui_bridge_menu_item("PBR Settings", null, state.show_pbr_settings, true)) state.show_pbr_settings = !state.show_pbr_settings;
-                if (c.imgui_bridge_menu_item("Animation", null, state.show_animation, true)) state.show_animation = !state.show_animation;
-                if (c.imgui_bridge_menu_item("Performance", null, state.show_performance_panel, true)) state.show_performance_panel = !state.show_performance_panel;
-                if (c.imgui_bridge_menu_item("Grid & Axes", null, state.show_grid_axes, true)) {
-                    state.show_grid_axes = !state.show_grid_axes;
-                    renderer.cardinal_renderer_set_debug_grid(state.renderer, state.show_grid_axes);
+                if (c.imgui_bridge_menu_item("Scene View", null, state.ui.show_scene_view, true)) state.ui.show_scene_view = !state.ui.show_scene_view;
+                if (c.imgui_bridge_menu_item("Scene Graph", null, state.ui.show_scene_graph, true)) state.ui.show_scene_graph = !state.ui.show_scene_graph;
+                if (c.imgui_bridge_menu_item("Assets", null, state.ui.show_assets, true)) state.ui.show_assets = !state.ui.show_assets;
+                if (c.imgui_bridge_menu_item("Model Manager", null, state.ui.show_model_manager, true)) state.ui.show_model_manager = !state.ui.show_model_manager;
+                if (c.imgui_bridge_menu_item("Inspector", null, state.ui.show_entity_inspector, true)) state.ui.show_entity_inspector = !state.ui.show_entity_inspector;
+                if (c.imgui_bridge_menu_item("Scene Manager", null, state.ui.show_scene_manager, true)) state.ui.show_scene_manager = !state.ui.show_scene_manager;
+                if (c.imgui_bridge_menu_item("PBR Settings", null, state.ui.show_pbr_settings, true)) state.ui.show_pbr_settings = !state.ui.show_pbr_settings;
+                if (c.imgui_bridge_menu_item("Animation", null, state.ui.show_animation, true)) state.ui.show_animation = !state.ui.show_animation;
+                if (c.imgui_bridge_menu_item("Performance", null, state.ui.show_performance_panel, true)) state.ui.show_performance_panel = !state.ui.show_performance_panel;
+                if (c.imgui_bridge_menu_item("Grid & Axes", null, state.ui.show_grid_axes, true)) {
+                    state.ui.show_grid_axes = !state.ui.show_grid_axes;
+                    renderer.cardinal_renderer_set_debug_grid(state.runtime.renderer, state.ui.show_grid_axes);
                 }
                 c.imgui_bridge_end_menu();
             }
@@ -952,8 +964,8 @@ pub fn update() void {
         performance_panel.draw_performance_panel(&state);
         scene_manager_panel.draw_scene_manager_panel(&state, allocator);
 
-        if (state.show_scene_view) {
-            const open_scene = c.imgui_bridge_begin("Scene", &state.show_scene_view, 0);
+        if (state.ui.show_scene_view) {
+            const open_scene = c.imgui_bridge_begin("Scene", &state.ui.show_scene_view, 0);
             defer c.imgui_bridge_end();
 
             if (open_scene) {
@@ -962,10 +974,10 @@ pub fn update() void {
                 c.imgui_bridge_get_window_pos(&win_pos);
                 c.imgui_bridge_get_window_size(&win_size);
 
-                if (state.show_grid_axes) {
+                if (state.ui.show_grid_axes) {
                     // Grid is rendered in world-space by Vulkan; only draw axes gizmo here.
 
-                    const cam = state.camera;
+                    const cam = state.runtime.camera;
                     const world_up = Vec3{ .x = 0.0, .y = 1.0, .z = 0.0 };
                     var forward = Vec3{
                         .x = cam.target.x - cam.position.x,
@@ -1043,7 +1055,7 @@ pub fn update() void {
         defer c.imgui_bridge_end();
 
         if (status_open) {
-            c.imgui_bridge_text("Status: %s", &state.status_msg);
+            c.imgui_bridge_text("Status: %s", &state.ui.status_msg);
         }
     }
     // c.imgui_bridge_end(); // End DockSpace window (handled by defer)
@@ -1056,57 +1068,57 @@ pub fn render() void {
 }
 
 pub fn process_pending_uploads() void {
-    if (state.scene_upload_pending and initialized) {
+    if (state.runtime.scene_upload_pending and initialized) {
         log.cardinal_log_info("[EDITOR] Pending upload detected", .{});
-        renderer.cardinal_renderer_upload_scene(state.renderer, &state.pending_scene);
+        renderer.cardinal_renderer_upload_scene(state.runtime.renderer, &state.runtime.pending_scene);
 
-        state.combined_scene = state.pending_scene;
-        state.scene_upload_pending = false;
+        state.runtime.combined_scene = state.runtime.pending_scene;
+        state.runtime.scene_upload_pending = false;
 
-        if (state.combined_scene.light_count > 0 and state.combined_scene.lights != null) {
-            const sl = &state.combined_scene.lights.?[0];
-            state.light.color = .{ .x = sl.color[0], .y = sl.color[1], .z = sl.color[2] };
-            state.light.intensity = sl.intensity;
-            state.light.range = sl.range;
-            state.light.type = @intFromEnum(sl.type);
+        if (state.runtime.combined_scene.light_count > 0 and state.runtime.combined_scene.lights != null) {
+            const sl = &state.runtime.combined_scene.lights.?[0];
+            state.runtime.light.color = .{ .x = sl.color[0], .y = sl.color[1], .z = sl.color[2] };
+            state.runtime.light.intensity = sl.intensity;
+            state.runtime.light.range = sl.range;
+            state.runtime.light.type = @intFromEnum(sl.type);
 
-            if (sl.node_index < state.combined_scene.all_node_count and state.combined_scene.all_nodes != null) {
-                if (state.combined_scene.all_nodes.?[sl.node_index]) |node| {
+            if (sl.node_index < state.runtime.combined_scene.all_node_count and state.runtime.combined_scene.all_nodes != null) {
+                if (state.runtime.combined_scene.all_nodes.?[sl.node_index]) |node| {
                     // Extract direction from world transform (assuming -Z is forward)
                     const m = node.world_transform;
                     // Column 2 is Z axis: m[8], m[9], m[10]
                     // Direction = -Z
-                    state.light.direction = .{ .x = -m[8], .y = -m[9], .z = -m[10] };
+                    state.runtime.light.direction = .{ .x = -m[8], .y = -m[9], .z = -m[10] };
                     // Position is column 3: m[12], m[13], m[14]
-                    state.light.position = .{ .x = m[12], .y = m[13], .z = m[14] };
-                    log.cardinal_log_info("Updated light transform from node {d}: Pos=({d:.2},{d:.2},{d:.2})", .{ sl.node_index, state.light.position.x, state.light.position.y, state.light.position.z });
+                    state.runtime.light.position = .{ .x = m[12], .y = m[13], .z = m[14] };
+                    log.cardinal_log_info("Updated light transform from node {d}: Pos=({d:.2},{d:.2},{d:.2})", .{ sl.node_index, state.runtime.light.position.x, state.runtime.light.position.y, state.runtime.light.position.z });
                 }
             }
         }
     }
 
-    if (state.pbr_enabled) {
-        renderer.cardinal_renderer_set_camera(state.renderer, &state.camera);
+    if (state.runtime.pbr_enabled) {
+        renderer.cardinal_renderer_set_camera(state.runtime.renderer, &state.runtime.camera);
 
         var pbr_lights: [types.MAX_LIGHTS]types.PBRLight = undefined;
         var light_count: u32 = 0;
 
         // 1. Add Manual Directional Light (if enabled)
-        if (state.enable_directional_light) {
+        if (state.runtime.enable_directional_light) {
             pbr_lights[light_count] = std.mem.zeroes(types.PBRLight);
             // Ensure type is Directional (0)
-            pbr_lights[light_count].lightDirection = .{ state.light.direction.x, state.light.direction.y, state.light.direction.z, 0.0 };
-            pbr_lights[light_count].lightPosition = .{ state.light.position.x, state.light.position.y, state.light.position.z, 0.0 };
-            pbr_lights[light_count].lightColor = .{ state.light.color.x, state.light.color.y, state.light.color.z, state.light.intensity };
-            pbr_lights[light_count].params = .{ state.light.range, @cos(state.light.inner_cone), @cos(state.light.outer_cone), 0.0 };
+            pbr_lights[light_count].lightDirection = .{ state.runtime.light.direction.x, state.runtime.light.direction.y, state.runtime.light.direction.z, 0.0 };
+            pbr_lights[light_count].lightPosition = .{ state.runtime.light.position.x, state.runtime.light.position.y, state.runtime.light.position.z, 0.0 };
+            pbr_lights[light_count].lightColor = .{ state.runtime.light.color.x, state.runtime.light.color.y, state.runtime.light.color.z, state.runtime.light.intensity };
+            pbr_lights[light_count].params = .{ state.runtime.light.range, @cos(state.runtime.light.inner_cone), @cos(state.runtime.light.outer_cone), 0.0 };
             light_count += 1;
         }
 
         // 2. Add Scene Lights (Point/Spot)
-        if (state.combined_scene.light_count > 0 and state.combined_scene.lights != null) {
+        if (state.runtime.combined_scene.light_count > 0 and state.runtime.combined_scene.lights != null) {
             var i: u32 = 0;
-            while (i < state.combined_scene.light_count and light_count < types.MAX_LIGHTS) : (i += 1) {
-                const sl = &state.combined_scene.lights.?[i];
+            while (i < state.runtime.combined_scene.light_count and light_count < types.MAX_LIGHTS) : (i += 1) {
+                const sl = &state.runtime.combined_scene.lights.?[i];
 
                 // User requested that manual controls be used for Directional Light (Sun),
                 // and scene lights be used for Point/Spot.
@@ -1116,8 +1128,8 @@ pub fn process_pending_uploads() void {
                 var pos = math.Vec3{ .x = 0, .y = 0, .z = 0 };
                 var dir = math.Vec3{ .x = 0, .y = -1, .z = 0 };
 
-                if (sl.node_index < state.combined_scene.all_node_count and state.combined_scene.all_nodes != null) {
-                    if (state.combined_scene.all_nodes.?[sl.node_index]) |node| {
+                if (sl.node_index < state.runtime.combined_scene.all_node_count and state.runtime.combined_scene.all_nodes != null) {
+                    if (state.runtime.combined_scene.all_nodes.?[sl.node_index]) |node| {
                         const m = node.world_transform;
                         dir = .{ .x = -m[8], .y = -m[9], .z = -m[10] };
                         pos = .{ .x = m[12], .y = m[13], .z = m[14] };
@@ -1139,11 +1151,11 @@ pub fn process_pending_uploads() void {
         }
 
         if (light_count > 0) {
-            renderer.cardinal_renderer_set_lights(state.renderer, &pbr_lights, light_count);
+            renderer.cardinal_renderer_set_lights(state.runtime.renderer, &pbr_lights, light_count);
         } else {
             // Fallback if no lights enabled (prevent crash or undefined state)
             // Just send 0 lights
-            renderer.cardinal_renderer_set_lights(state.renderer, null, 0);
+            renderer.cardinal_renderer_set_lights(state.runtime.renderer, null, 0);
         }
     }
 }
