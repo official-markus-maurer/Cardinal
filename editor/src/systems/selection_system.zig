@@ -659,12 +659,15 @@ fn ensure_entity_for_mesh_index(state: *EditorState, mesh_index: u32) ?engine.ec
 
 /// Updates selection and active gizmo state based on input.
 pub fn update(state: *EditorState) void {
-    if (c.imgui_bridge_is_shift_down()) {
-        if (!selection_state.is_dragging) {
+    const ctrl_down = c.imgui_bridge_is_ctrl_down();
+    const shift_down = c.imgui_bridge_is_shift_down();
+
+    if (!selection_state.is_dragging) {
+        if (ctrl_down) {
+            selection_state.gizmo_mode = .Rotate;
+        } else if (shift_down) {
             selection_state.gizmo_mode = .Scale;
-        }
-    } else {
-        if (!selection_state.is_dragging) {
+        } else {
             selection_state.gizmo_mode = .Translate;
         }
     }
@@ -787,7 +790,7 @@ fn draw_entity_gizmo(state: *EditorState, t: *components.Transform) void {
     const dist = state.runtime.camera.position.sub(pos).length();
     const scale_factor = dist * 0.15;
 
-    if (selection_state.gizmo_mode == .Translate or selection_state.gizmo_mode == .Rotate) {
+    if (selection_state.gizmo_mode == .Rotate) {
         inline for (0..3) |i| {
             var is_hovered = false;
             if (!selection_state.is_dragging and can_interact) {
@@ -841,6 +844,7 @@ fn draw_entity_gizmo(state: *EditorState, t: *components.Transform) void {
     }
 
     if (selection_state.gizmo_mode != .Rotate) {
+        const tip_hit_dist_sq: f32 = if (selection_state.gizmo_mode == .Scale) 625.0 else 100.0;
         inline for (0..3) |i| {
             const end_pos_world = pos.add(axes[i].mul(scale_factor));
             const end_pos_v4 = view_proj.mulVec4(math.Vec4{ .x = end_pos_world.x, .y = end_pos_world.y, .z = end_pos_world.z, .w = 1.0 });
@@ -855,7 +859,7 @@ fn draw_entity_gizmo(state: *EditorState, t: *components.Transform) void {
             if (!selection_state.is_dragging and can_interact and hovered == null) {
                 const dx = mouse_pos.x - end_screen_x;
                 const dy = mouse_pos.y - end_screen_y;
-                if (dx * dx + dy * dy < 100.0) {
+                if (dx * dx + dy * dy < tip_hit_dist_sq) {
                     hovered = @as(u32, @intCast(i));
                     hovered_rot = false;
                 }
@@ -1085,7 +1089,7 @@ fn draw_gizmo(state: *EditorState) void {
     const dist = state.runtime.camera.position.sub(pos).length();
     const scale_factor = dist * 0.15;
 
-    if (selection_state.gizmo_mode == .Translate or selection_state.gizmo_mode == .Rotate) {
+    if (selection_state.gizmo_mode == .Rotate) {
         inline for (0..3) |i| {
             var is_hovered = false;
             if (!selection_state.is_dragging and can_interact) {
@@ -1143,6 +1147,7 @@ fn draw_gizmo(state: *EditorState) void {
     }
 
     if (selection_state.gizmo_mode != .Rotate) {
+        const tip_hit_dist_sq: f32 = if (selection_state.gizmo_mode == .Scale) 625.0 else 100.0;
         inline for (0..3) |i| {
             const end_pos_world = pos.add(axes[i].mul(scale_factor));
             const end_pos_v4 = view_proj.mulVec4(math.Vec4{ .x = end_pos_world.x, .y = end_pos_world.y, .z = end_pos_world.z, .w = 1.0 });
@@ -1157,7 +1162,7 @@ fn draw_gizmo(state: *EditorState) void {
             if (!selection_state.is_dragging and can_interact and hovered == null) {
                 const dx = mouse_pos.x - end_screen_x;
                 const dy = mouse_pos.y - end_screen_y;
-                if (dx * dx + dy * dy < 100.0) {
+                if (dx * dx + dy * dy < tip_hit_dist_sq) {
                     hovered = @as(u32, @intCast(i));
                     hovered_rot = false;
                 }

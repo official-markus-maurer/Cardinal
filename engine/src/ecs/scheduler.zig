@@ -23,6 +23,10 @@ pub const Scheduler = struct {
     /// Per-system command buffers (one per scheduled system).
     command_buffers: std.ArrayListUnmanaged(command_buffer_pkg.CommandBuffer),
 
+    last_writer: std.AutoHashMapUnmanaged(u64, *job_system.Job) = .{},
+    last_readers: std.AutoHashMapUnmanaged(u64, std.ArrayListUnmanaged(*job_system.Job)) = .{},
+    frame_jobs: std.ArrayListUnmanaged(*job_system.Job) = .{},
+
     /// Context passed to job execution for one system.
     pub const SystemContext = struct {
         system: system_pkg.System,
@@ -39,11 +43,24 @@ pub const Scheduler = struct {
             .systems = .{},
             .contexts = .{},
             .command_buffers = .{},
+            .last_writer = .{},
+            .last_readers = .{},
+            .frame_jobs = .{},
         };
     }
 
     /// Releases system lists and command buffers.
     pub fn deinit(self: *Scheduler) void {
+        self.last_writer.deinit(self.allocator);
+
+        var it = self.last_readers.iterator();
+        while (it.next()) |entry| {
+            entry.value_ptr.deinit(self.allocator);
+        }
+        self.last_readers.deinit(self.allocator);
+
+        self.frame_jobs.deinit(self.allocator);
+
         self.systems.deinit(self.allocator);
         self.contexts.deinit(self.allocator);
 
@@ -55,8 +72,13 @@ pub const Scheduler = struct {
 
     /// Adds a system descriptor to the schedule.
     pub fn add(self: *Scheduler, system: system_pkg.System) !void {
-        // TODO: Sort systems by `priority` and/or provide explicit ordering groups.
         try self.systems.append(self.allocator, system);
+        std.sort.pdq(system_pkg.System, self.systems.items, {}, struct {
+            fn less_than(_: void, lhs: system_pkg.System, rhs: system_pkg.System) bool {
+                if (lhs.priority != rhs.priority) return lhs.priority < rhs.priority;
+                return std.mem.lessThan(u8, lhs.name, rhs.name);
+            }
+        }.less_than);
     }
 
     fn system_job_wrapper(data: ?*anyopaque) callconv(.c) i32 {
@@ -68,20 +90,13 @@ pub const Scheduler = struct {
     /// Executes all scheduled systems for a frame.
     pub fn run(self: *Scheduler, delta_time: f32) !void {
         self.contexts.clearRetainingCapacity();
+        self.frame_jobs.clearRetainingCapacity();
 
-        var last_writer = std.AutoHashMapUnmanaged(u64, *job_system.Job){};
-        defer last_writer.deinit(self.allocator);
-        var last_readers = std.AutoHashMapUnmanaged(u64, std.ArrayListUnmanaged(*job_system.Job)){};
-        defer {
-            var it = last_readers.iterator();
-            while (it.next()) |entry| {
-                entry.value_ptr.deinit(self.allocator);
-            }
-            last_readers.deinit(self.allocator);
+        self.last_writer.clearRetainingCapacity();
+        var it = self.last_readers.iterator();
+        while (it.next()) |entry| {
+            entry.value_ptr.clearRetainingCapacity();
         }
-
-        var frame_jobs = std.ArrayListUnmanaged(*job_system.Job){};
-        defer frame_jobs.deinit(self.allocator);
 
         try self.contexts.ensureTotalCapacity(self.allocator, self.systems.items.len);
 
@@ -105,15 +120,15 @@ pub const Scheduler = struct {
 
             const job = job_system.create_job(system_job_wrapper, ctx, .NORMAL).?;
             job.push_to_completed_queue = false;
-            try frame_jobs.append(self.allocator, job);
+            try self.frame_jobs.append(self.allocator, job);
 
             // Reads
             for (sys.reads) |type_id| {
-                if (last_writer.get(type_id)) |writer| {
+                if (self.last_writer.get(type_id)) |writer| {
                     _ = job_system.add_dependency(job, writer);
                 }
 
-                const result = try last_readers.getOrPut(self.allocator, type_id);
+                const result = try self.last_readers.getOrPut(self.allocator, type_id);
                 if (!result.found_existing) {
                     result.value_ptr.* = .{};
                 }
@@ -122,11 +137,11 @@ pub const Scheduler = struct {
 
             // Writes
             for (sys.writes) |type_id| {
-                if (last_writer.get(type_id)) |writer| {
+                if (self.last_writer.get(type_id)) |writer| {
                     _ = job_system.add_dependency(job, writer);
                 }
 
-                if (last_readers.get(type_id)) |readers| {
+                if (self.last_readers.get(type_id)) |readers| {
                     for (readers.items) |reader| {
                         if (reader != job) {
                             _ = job_system.add_dependency(job, reader);
@@ -134,29 +149,29 @@ pub const Scheduler = struct {
                     }
                 }
 
-                try last_writer.put(self.allocator, type_id, job);
+                try self.last_writer.put(self.allocator, type_id, job);
 
-                if (last_readers.getPtr(type_id)) |readers| {
+                if (self.last_readers.getPtr(type_id)) |readers| {
                     readers.clearRetainingCapacity();
                 }
             }
         }
 
-        for (frame_jobs.items) |job| {
+        for (self.frame_jobs.items) |job| {
             while (!job_system.submit_job(job)) {
                 std.Thread.yield() catch {};
             }
         }
 
-        job_system.wait_for_jobs(frame_jobs.items);
+        job_system.wait_for_jobs(self.frame_jobs.items);
 
-        for (self.command_buffers.items) |*ecb| {
+        for (self.command_buffers.items[0..self.systems.items.len]) |*ecb| {
             ecb.flush(self.registry) catch |err| {
                 sched_log.err("Failed to flush command buffer: {}", .{err});
             };
         }
 
-        for (frame_jobs.items) |job| {
+        for (self.frame_jobs.items) |job| {
             job_system.free_job(job);
         }
     }

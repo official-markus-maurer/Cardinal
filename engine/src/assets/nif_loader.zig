@@ -1571,6 +1571,133 @@ pub export fn cardinal_nif_load_scene(path: [*:0]const u8, out_scene: *scene.Car
                 propagate_transforms_to_meshes(root, meshes.items);
             }
         }
+
+        for (meshes.items, 0..) |*m, mesh_i| {
+            if (m.indices == null or m.index_count < 3 or m.vertices == null or m.vertex_count == 0) continue;
+
+            const t = m.transform;
+            const m00 = t[0];
+            const m01 = t[4];
+            const m02 = t[8];
+            const m10 = t[1];
+            const m11 = t[5];
+            const m12 = t[9];
+            const m20 = t[2];
+            const m21 = t[6];
+            const m22 = t[10];
+
+            const det = m00 * (m11 * m22 - m12 * m21) - m01 * (m10 * m22 - m12 * m20) + m02 * (m10 * m21 - m11 * m20);
+            const indices = m.indices.?[0..@intCast(m.index_count)];
+            const verts = m.vertices.?[0..@intCast(m.vertex_count)];
+
+            if (det < 0.0) {
+                var ii: usize = 0;
+                while (ii + 2 < indices.len) : (ii += 3) {
+                    const tmp = indices[ii + 1];
+                    indices[ii + 1] = indices[ii + 2];
+                    indices[ii + 2] = tmp;
+                }
+
+                for (verts) |*v| {
+                    v.nx = -v.nx;
+                    v.ny = -v.ny;
+                    v.nz = -v.nz;
+                }
+            }
+
+            var pos_count: u32 = 0;
+            var neg_count: u32 = 0;
+            const sample_tris: usize = @min(indices.len / 3, 512);
+            var tri_i: usize = 0;
+            while (tri_i < sample_tris) : (tri_i += 1) {
+                const base = tri_i * 3;
+                const ia = indices[base + 0];
+                const ib = indices[base + 1];
+                const ic = indices[base + 2];
+                if (ia >= verts.len or ib >= verts.len or ic >= verts.len) continue;
+
+                const a = verts[ia];
+                const b = verts[ib];
+                const vc = verts[ic];
+
+                const abx = b.px - a.px;
+                const aby = b.py - a.py;
+                const abz = b.pz - a.pz;
+                const acx = vc.px - a.px;
+                const acy = vc.py - a.py;
+                const acz = vc.pz - a.pz;
+
+                const fnx = aby * acz - abz * acy;
+                const fny = abz * acx - abx * acz;
+                const fnz = abx * acy - aby * acx;
+
+                const vnx = a.nx + b.nx + vc.nx;
+                const vny = a.ny + b.ny + vc.ny;
+                const vnz = a.nz + b.nz + vc.nz;
+
+                const d = fnx * vnx + fny * vny + fnz * vnz;
+                if (d < 0.0) {
+                    neg_count += 1;
+                } else {
+                    pos_count += 1;
+                }
+            }
+
+            if (pos_count + neg_count > 0) {
+                const flip_all = neg_count > pos_count;
+                if (flip_all) {
+                    var ii: usize = 0;
+                    while (ii + 2 < indices.len) : (ii += 3) {
+                        const tmp = indices[ii + 1];
+                        indices[ii + 1] = indices[ii + 2];
+                        indices[ii + 2] = tmp;
+                    }
+
+                    for (verts) |*v| {
+                        v.nx = -v.nx;
+                        v.ny = -v.ny;
+                        v.nz = -v.nz;
+                    }
+                } else {
+                    var ii: usize = 0;
+                    while (ii + 2 < indices.len) : (ii += 3) {
+                        const ia = indices[ii + 0];
+                        const ib = indices[ii + 1];
+                        const ic = indices[ii + 2];
+                        if (ia >= verts.len or ib >= verts.len or ic >= verts.len) continue;
+
+                        const a = verts[ia];
+                        const b = verts[ib];
+                        const vc = verts[ic];
+
+                        const abx = b.px - a.px;
+                        const aby = b.py - a.py;
+                        const abz = b.pz - a.pz;
+                        const acx = vc.px - a.px;
+                        const acy = vc.py - a.py;
+                        const acz = vc.pz - a.pz;
+
+                        const fnx = aby * acz - abz * acy;
+                        const fny = abz * acx - abx * acz;
+                        const fnz = abx * acy - aby * acx;
+
+                        const vnx = a.nx + b.nx + vc.nx;
+                        const vny = a.ny + b.ny + vc.ny;
+                        const vnz = a.nz + b.nz + vc.nz;
+
+                        const d = fnx * vnx + fny * vny + fnz * vnz;
+                        if (d < 0.0) {
+                            indices[ii + 1] = ic;
+                            indices[ii + 2] = ib;
+                        }
+                    }
+                }
+            }
+
+            if (m.vertex_count == 24 and m.index_count <= 36) {
+                nif_log.warn("Mesh {d} small mesh topology: VCount={d} ICount={d} det={d:.3} dotNeg={d} dotPos={d}", .{ mesh_i, m.vertex_count, m.index_count, det, neg_count, pos_count });
+            }
+        }
     } else {
         out_scene.root_nodes = null;
         out_scene.root_node_count = 0;
@@ -1696,6 +1823,24 @@ pub export fn cardinal_nif_load_scene(path: [*:0]const u8, out_scene: *scene.Car
                                     }
 
                                     transform.cardinal_matrix_multiply(&bone_bind_inv, &skin_bind, &bone.inverse_bind_matrix);
+
+                                    const bone_node_idx: usize = @intCast(bone.node_index);
+                                    if (bone_node_idx < nodes.items.len) {
+                                        if (nodes.items[bone_node_idx]) |bone_node| {
+                                            var skin_world_bind = skin_bind;
+                                            if (new_skin.mesh_count > 0 and new_skin.mesh_indices != null) {
+                                                const mesh_idx: usize = @intCast(new_skin.mesh_indices.?[0]);
+                                                if (mesh_idx < meshes.items.len) {
+                                                    skin_world_bind = meshes.items[mesh_idx].transform;
+                                                }
+                                            }
+
+                                            var bone_world_bind_inv: [16]f32 = undefined;
+                                            if (transform.cardinal_matrix_invert(&bone_node.world_transform, &bone_world_bind_inv)) {
+                                                transform.cardinal_matrix_multiply(&bone_world_bind_inv, &skin_world_bind, &bone.inverse_bind_matrix);
+                                            }
+                                        }
+                                    }
 
                                     // Current Matrix (Identity)
                                     const identity = [16]f32{ 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1 };

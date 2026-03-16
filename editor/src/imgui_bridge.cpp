@@ -286,7 +286,7 @@ void imgui_bridge_invalidate_device_objects(void) {
     // Clear backend data to prevent access to invalid resources
     tex->BackendUserData = nullptr;
     // Clear texture ID as the underlying descriptor set is no longer valid
-    tex->SetTexID((ImTextureID)0);
+    tex->SetTexID(ImTextureID_Invalid);
     // Force recreation on next use
     tex->SetStatus(ImTextureStatus_WantCreate);
   }

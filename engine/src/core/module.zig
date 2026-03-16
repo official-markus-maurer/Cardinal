@@ -90,9 +90,9 @@ pub const ModuleManager = struct {
             }
         }
 
-        while (queue.items.len > 0) {
-            // TODO: Avoid `orderedRemove(0)` O(n) shifts; use a head index or deque.
-            const u = queue.orderedRemove(0);
+        var queue_head: usize = 0;
+        while (queue_head < queue.items.len) : (queue_head += 1) {
+            const u = queue.items[queue_head];
             try sorted_modules.append(self.allocator, self.modules.items[u]);
 
             for (adj.items[u].items) |v| {

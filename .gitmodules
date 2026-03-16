@@ -1,0 +1,20 @@
+[submodule "libs/cgltf"]
+	path = libs/cgltf
+	url = https://github.com/jkuhlmann/cgltf.git
+	branch = master
+[submodule "libs/glfw"]
+	path = libs/glfw
+	url = https://github.com/glfw/glfw.git
+	branch = master
+[submodule "libs/imgui"]
+	path = libs/imgui
+	url = https://github.com/ocornut/imgui.git
+	branch = docking
+[submodule "libs/stb"]
+	path = libs/stb
+	url = https://github.com/nothings/stb.git
+	branch = master
+[submodule "libs/tinyexr"]
+	path = libs/tinyexr
+	url = https://github.com/syoyo/tinyexr.git
+	branch = release

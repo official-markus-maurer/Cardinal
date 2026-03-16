@@ -116,7 +116,16 @@ pub fn import_scene_graph(state: *EditorState) void {
         }
     }
 
-    // TODO: Avoid O(N^2) fallback search by building a pointer->index map.
+    var node_ptr_to_index: std.AutoHashMapUnmanaged(*engine.scene.CardinalSceneNode, u32) = .{};
+    defer node_ptr_to_index.deinit(map_alloc);
+
+    i = 0;
+    while (i < scene.all_node_count) : (i += 1) {
+        if (scene.all_nodes.?[i]) |node| {
+            node_ptr_to_index.put(map_alloc, node, i) catch {};
+        }
+    }
+
     i = 0;
     while (i < scene.all_node_count) : (i += 1) {
         if (scene.all_nodes.?[i]) |node| {
@@ -127,12 +136,8 @@ pub fn import_scene_graph(state: *EditorState) void {
             if (node.parent_index >= 0) {
                 parent_idx = @intCast(node.parent_index);
             } else if (node.parent) |parent| {
-                var k: u32 = 0;
-                while (k < scene.all_node_count) : (k += 1) {
-                    if (scene.all_nodes.?[k] == parent) {
-                        parent_idx = k;
-                        break;
-                    }
+                if (node_ptr_to_index.get(parent)) |idx| {
+                    parent_idx = idx;
                 }
             }
 

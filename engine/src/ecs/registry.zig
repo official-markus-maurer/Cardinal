@@ -12,40 +12,33 @@ pub const Entity = entity_pkg.Entity;
 /// Stores entities and per-component sparse-set storages.
 pub const Registry = struct {
     entity_manager: entity_pkg.EntityManager,
-    /// Maps component type IDs to a type-erased storage interface.
-    storages: std.AutoHashMapUnmanaged(u64, component_pkg.StorageInterface),
-    /// Owns the concrete storage pointers so they can be deinitialized correctly.
-    storage_ptrs: std.AutoHashMapUnmanaged(u64, *anyopaque),
-    /// Maps component type IDs to the correct deinit function for the stored concrete type.
-    deinit_fns: std.AutoHashMapUnmanaged(u64, *const fn (*anyopaque, std.mem.Allocator) void),
+    /// Maps component type IDs to a type-erased storage interface and its deinit function.
+    storages: std.AutoHashMapUnmanaged(u64, StorageEntry),
 
     allocator: std.mem.Allocator,
 
-    /// TODO: Store `{ interface, ptr, deinit_fn }` in a single map to reduce duplication.
+    const StorageEntry = struct {
+        interface: component_pkg.StorageInterface,
+        deinit_fn: *const fn (*anyopaque, std.mem.Allocator) void,
+    };
+
     /// Creates an empty registry.
     pub fn init(allocator: std.mem.Allocator) Registry {
         return .{
             .entity_manager = entity_pkg.EntityManager.init(allocator),
             .storages = .{},
-            .storage_ptrs = .{},
-            .deinit_fns = .{},
             .allocator = allocator,
         };
     }
 
     /// Frees all component storages and entity manager state.
     pub fn deinit(self: *Registry) void {
-        var it = self.storage_ptrs.iterator();
+        var it = self.storages.iterator();
         while (it.next()) |entry| {
-            const type_id = entry.key_ptr.*;
-            const ptr = entry.value_ptr.*;
-            if (self.deinit_fns.get(type_id)) |deinit_fn| {
-                deinit_fn(ptr, self.allocator);
-            }
+            const storage = entry.value_ptr.*;
+            storage.deinit_fn(storage.interface.ptr, self.allocator);
         }
         self.storages.deinit(self.allocator);
-        self.storage_ptrs.deinit(self.allocator);
-        self.deinit_fns.deinit(self.allocator);
         self.entity_manager.deinit();
     }
 
@@ -60,7 +53,7 @@ pub const Registry = struct {
             // Remove components
             var it = self.storages.iterator();
             while (it.next()) |entry| {
-                entry.value_ptr.remove(entity);
+                entry.value_ptr.interface.remove(entity);
             }
         }
     }
@@ -83,16 +76,17 @@ pub const Registry = struct {
     /// Returns the storage for `T`, creating it if needed.
     pub fn assure_storage(self: *Registry, comptime T: type) !*component_pkg.SparseSet(T) {
         const id = get_type_id(T);
-        if (self.storage_ptrs.get(id)) |ptr| {
-            return @ptrCast(@alignCast(ptr));
+        if (self.storages.get(id)) |entry| {
+            return @ptrCast(@alignCast(entry.interface.ptr));
         }
 
         const storage = try self.allocator.create(component_pkg.SparseSet(T));
         storage.* = component_pkg.SparseSet(T).init(self.allocator);
 
-        try self.storage_ptrs.put(self.allocator, id, storage);
-        try self.storages.put(self.allocator, id, storage.interface());
-        try self.deinit_fns.put(self.allocator, id, deinit_wrapper(T));
+        try self.storages.put(self.allocator, id, .{
+            .interface = storage.interface(),
+            .deinit_fn = deinit_wrapper(T),
+        });
 
         return storage;
     }
@@ -107,16 +101,16 @@ pub const Registry = struct {
     /// Removes the `T` component from `entity` if present.
     pub fn remove(self: *Registry, comptime T: type, entity: Entity) void {
         const id = get_type_id(T);
-        if (self.storages.get(id)) |storage| {
-            storage.remove(entity);
+        if (self.storages.get(id)) |entry| {
+            entry.interface.remove(entity);
         }
     }
 
     /// Returns a mutable pointer to `T` for `entity` if present.
     pub fn get(self: *Registry, comptime T: type, entity: Entity) ?*T {
         const id = get_type_id(T);
-        if (self.storage_ptrs.get(id)) |ptr| {
-            const storage: *component_pkg.SparseSet(T) = @ptrCast(@alignCast(ptr));
+        if (self.storages.get(id)) |entry| {
+            const storage: *component_pkg.SparseSet(T) = @ptrCast(@alignCast(entry.interface.ptr));
             return storage.get(entity);
         }
         return null;
@@ -126,8 +120,8 @@ pub const Registry = struct {
     /// Returns a single-component view over `T`.
     pub fn view(self: *Registry, comptime T: type) View(T) {
         const id = get_type_id(T);
-        if (self.storage_ptrs.get(id)) |ptr| {
-            const storage: *component_pkg.SparseSet(T) = @ptrCast(@alignCast(ptr));
+        if (self.storages.get(id)) |entry| {
+            const storage: *component_pkg.SparseSet(T) = @ptrCast(@alignCast(entry.interface.ptr));
             return View(T){ .storage = storage };
         }
         return View(T){ .storage = null };
@@ -140,8 +134,8 @@ pub const Registry = struct {
 
         inline for (types_tuple, 0..) |T, i| {
             const id = get_type_id(T);
-            if (self.storage_ptrs.get(id)) |ptr| {
-                storages[i] = ptr;
+            if (self.storages.get(id)) |entry| {
+                storages[i] = entry.interface.ptr;
             } else {
                 storages[i] = null;
             }
