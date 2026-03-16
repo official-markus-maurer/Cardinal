@@ -450,6 +450,7 @@ pub const Mat4 = extern struct {
         return m;
     }
 
+    /// Decomposes an affine matrix into translation, rotation (unit quaternion), and scale.
     pub fn decompose(self: Mat4) struct { t: Vec3, r: Quat, s: Vec3 } {
         var t: Vec3 = undefined;
         var r: Quat = undefined;
@@ -462,7 +463,7 @@ pub const Mat4 = extern struct {
         const row0 = @as(@Vector(4, f32), self.data[0..4].*);
         const row1 = @as(@Vector(4, f32), self.data[4..8].*);
         const row2 = @as(@Vector(4, f32), self.data[8..12].*);
-        const mask = @Vector(4, f32){ 1, 1, 1, 0 }; // Mask out w component
+        const mask = @Vector(4, f32){ 1, 1, 1, 0 };
 
         var sx = std.math.sqrt(@reduce(.Add, (row0 * row0) * mask));
         const sy = std.math.sqrt(@reduce(.Add, (row1 * row1) * mask));
@@ -527,6 +528,7 @@ pub const Mat4 = extern struct {
         return .{ .t = t, .r = r.normalize(), .s = s };
     }
 
+    /// Builds a perspective projection matrix for Vulkan conventions (Y flipped).
     pub fn perspective(fov_y_radians: f32, aspect: f32, z_near: f32, z_far: f32) Mat4 {
         var m = Mat4.identity();
         @memset(&m.data, 0);
@@ -534,7 +536,7 @@ pub const Mat4 = extern struct {
         const tan_half_fov = std.math.tan(fov_y_radians * 0.5);
 
         m.data[0] = 1.0 / (aspect * tan_half_fov);
-        m.data[5] = -1.0 / tan_half_fov; // Flip Y for Vulkan (if convention requires it) - vulkan_renderer uses this
+        m.data[5] = -1.0 / tan_half_fov;
         m.data[10] = z_far / (z_near - z_far);
         m.data[11] = -1.0;
         m.data[14] = (z_near * z_far) / (z_near - z_far);
@@ -542,11 +544,12 @@ pub const Mat4 = extern struct {
         return m;
     }
 
+    /// Builds an orthographic projection matrix for Vulkan conventions (Y flipped).
     pub fn ortho(left: f32, right: f32, bottom: f32, top: f32, z_near: f32, z_far: f32) Mat4 {
         var m = Mat4.identity();
 
         m.data[0] = 2.0 / (right - left);
-        m.data[5] = 2.0 / (bottom - top); // Flip Y for Vulkan (top is usually -Y in clip space if Y is down? No, standard Vulkan Y is down)
+        m.data[5] = 2.0 / (bottom - top);
 
         m.data[10] = 1.0 / (z_far - z_near);
         m.data[12] = -(right + left) / (right - left);

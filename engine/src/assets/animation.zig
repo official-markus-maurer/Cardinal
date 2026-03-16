@@ -113,6 +113,7 @@ pub const CardinalAnimationSystem = extern struct {
     bone_matrix_count: u32,
     blend_states: ?[*]CardinalBlendState,
     blend_state_capacity: u32,
+    blend_frame_id: u32,
 };
 
 const CardinalBlendState = extern struct {
@@ -122,7 +123,7 @@ const CardinalBlendState = extern struct {
     weight_t: f32,
     weight_r: f32,
     weight_s: f32,
-    /// Bitfield; bit 0 indicates the node was touched this frame.
+    /// Frame stamp; equals `CardinalAnimationSystem.blend_frame_id` when touched this update.
     flags: u32,
 };
 
@@ -470,6 +471,7 @@ pub export fn cardinal_animation_system_create(max_animations: u32, max_skins: u
     system.bone_matrix_count = 256; // Standard max bones
     system.blend_states = null;
     system.blend_state_capacity = 0;
+    system.blend_frame_id = 1;
 
     const bone_matrices_ptr = memory.cardinal_alloc(allocator, system.bone_matrix_count * 16 * @sizeOf(f32));
     if (bone_matrices_ptr) |ptr| {
@@ -806,15 +808,19 @@ pub export fn cardinal_animation_system_update(system: ?*CardinalAnimationSystem
         if (ptr) |p| {
             sys.blend_state_capacity = new_capacity;
             sys.blend_states = @as([*]CardinalBlendState, @ptrCast(@alignCast(p)));
+            _ = c.memset(sys.blend_states.?, 0, bytes);
         } else {
             sys.blend_state_capacity = 0;
             return;
         }
     }
 
-    if (sys.blend_states) |states| {
-        // TODO: Avoid full memset by clearing only the necessary fields.
-        _ = c.memset(states, 0, sys.blend_state_capacity * @sizeOf(CardinalBlendState));
+    sys.blend_frame_id +%= 1;
+    if (sys.blend_frame_id == 0) {
+        sys.blend_frame_id = 1;
+        if (sys.blend_states) |states| {
+            _ = c.memset(states, 0, sys.blend_state_capacity * @sizeOf(CardinalBlendState));
+        }
     }
 
     var i: u32 = 0;
@@ -864,7 +870,15 @@ pub export fn cardinal_animation_system_update(system: ?*CardinalAnimationSystem
                 const weight = state.blend_weight;
                 if (weight <= 0.001) continue;
 
-                blend_state.flags = 1;
+                if (blend_state.flags != sys.blend_frame_id) {
+                    blend_state.translation = .{ 0, 0, 0 };
+                    blend_state.rotation = .{ 0, 0, 0, 0 };
+                    blend_state.scale = .{ 0, 0, 0 };
+                    blend_state.weight_t = 0;
+                    blend_state.weight_r = 0;
+                    blend_state.weight_s = 0;
+                    blend_state.flags = sys.blend_frame_id;
+                }
 
                 switch (channel.target.path) {
                     .TRANSLATION => {
@@ -914,7 +928,7 @@ pub export fn cardinal_animation_system_update(system: ?*CardinalAnimationSystem
         var n_idx: u32 = 0;
         while (n_idx < all_node_count) : (n_idx += 1) {
             const blend_state = &states[n_idx];
-            if (blend_state.flags == 0) continue;
+            if (blend_state.flags != sys.blend_frame_id) continue;
 
             const node = all_nodes.?[n_idx];
             if (node == null) continue;
@@ -1008,6 +1022,45 @@ pub export fn cardinal_skin_update_bone_matrices_bounded(skin: ?*const CardinalS
         const ibm_ptr: *const [16]f32 = &bone.inverse_bind_matrix;
         const bm_ptr: *[16]f32 = @ptrCast(bone_matrix);
         transform.cardinal_matrix_multiply(wt_ptr, ibm_ptr, bm_ptr);
+    }
+
+    return true;
+}
+
+/// Writes mesh-local skin bone matrices using a mesh world transform for re-basing.
+///
+/// This variant enables applying the mesh transform in the vertex shader for skinned meshes.
+pub export fn cardinal_skin_update_bone_matrices_bounded_mesh_local(
+    skin: ?*const CardinalSkin,
+    scene_nodes: ?[*]?*const scene.CardinalSceneNode,
+    all_node_count: u32,
+    mesh_world_transform: ?*const [16]f32,
+    bone_matrices: ?[*]f32,
+) callconv(.c) bool {
+    if (skin == null or scene_nodes == null or bone_matrices == null or skin.?.bones == null or mesh_world_transform == null) return false;
+
+    var mesh_inv: [16]f32 = undefined;
+    if (!transform.cardinal_matrix_invert(mesh_world_transform.?, &mesh_inv)) return false;
+
+    const max_bones: u32 = 256;
+    const bone_count: u32 = @min(skin.?.bone_count, max_bones);
+    var i: u32 = 0;
+    while (i < bone_count) : (i += 1) {
+        const bone = &skin.?.bones.?[i];
+        if (bone.node_index >= all_node_count) continue;
+        const node = scene_nodes.?[bone.node_index];
+        if (node == null) continue;
+
+        const world_transform = scene.cardinal_scene_node_get_world_transform(@constCast(node));
+        const wt_ptr: *const [16]f32 = @ptrCast(world_transform);
+        const ibm_ptr: *const [16]f32 = &bone.inverse_bind_matrix;
+
+        var tmp: [16]f32 = undefined;
+        transform.cardinal_matrix_multiply(&mesh_inv, wt_ptr, &tmp);
+
+        const bone_matrix = &bone_matrices.?[i * 16];
+        const bm_ptr: *[16]f32 = @ptrCast(bone_matrix);
+        transform.cardinal_matrix_multiply(&tmp, ibm_ptr, bm_ptr);
     }
 
     return true;

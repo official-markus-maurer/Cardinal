@@ -77,7 +77,6 @@ pub fn draw_animation_panel(state: *editor_state.EditorState) void {
                     c.imgui_bridge_same_line(0, -1);
                     _ = c.imgui_bridge_checkbox("Loop", &state.ui.animation_looping);
 
-                    // Speed control
                     c.imgui_bridge_set_next_item_width(100);
                     if (c.imgui_bridge_slider_float("Speed", &state.ui.animation_speed, 0.1, 3.0, "%.1fx")) {
                         _ = animation.cardinal_animation_set_speed(anim_sys, @intCast(state.ui.selected_animation), state.ui.animation_speed);

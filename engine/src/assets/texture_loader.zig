@@ -70,6 +70,7 @@ pub const TextureCacheStats = extern struct {
 };
 
 const TextureCacheEntry = struct {
+    /// File path slice; allocation includes a trailing 0 byte for C interop.
     filepath: []const u8,
     resource: *ref_counting.CardinalRefCountedResource,
     last_access_time: u64,
@@ -102,7 +103,7 @@ var g_placeholder_texture = TextureData{
     .height = 1,
     .channels = 4,
     .is_hdr = 0,
-    .format = 0, // VK_FORMAT_UNDEFINED (will be treated as SRGB)
+    .format = VK_FORMAT_UNDEFINED,
     .data_size = 4,
 };
 
@@ -213,7 +214,6 @@ pub export fn texture_load_from_memory(data: [*]const u8, size: usize, out_textu
         return true;
     }
 
-    // Check for HDR (stb)
     const is_hdr = (stbi_is_hdr_from_memory(data, @intCast(size)) != 0);
 
     var pixels: ?*anyopaque = null;
@@ -270,19 +270,17 @@ fn normalize_path(allocator: *memory.CardinalAllocator, path: []const u8) ?[]u8 
     if (normalized) |ptr| {
         const slice = @as([*]u8, @ptrCast(ptr))[0..path.len];
         @memcpy(slice, path);
-        @as([*]u8, @ptrCast(ptr))[path.len] = 0; // Null terminate
+        @as([*]u8, @ptrCast(ptr))[path.len] = 0;
 
         for (slice) |*c| {
             if (c.* == '\\') c.* = '/';
         }
 
-        // Remove /./ from path
         var write_idx: usize = 0;
         var read_idx: usize = 0;
         while (read_idx < slice.len) {
-            // Check for /./
             if (read_idx + 2 < slice.len and slice[read_idx] == '/' and slice[read_idx + 1] == '.' and slice[read_idx + 2] == '/') {
-                read_idx += 2; // Skip /., keep the last / (which will be copied in next iter)
+                read_idx += 2;
                 continue;
             }
             slice[write_idx] = slice[read_idx];
@@ -290,7 +288,6 @@ fn normalize_path(allocator: *memory.CardinalAllocator, path: []const u8) ?[]u8 
             read_idx += 1;
         }
 
-        // Null terminate at new length
         @as([*]u8, @ptrCast(ptr))[write_idx] = 0;
         return @as([*]u8, @ptrCast(ptr))[0..write_idx];
     }
@@ -310,7 +307,6 @@ fn texture_load_async_func(task: ?*async_loader.CardinalAsyncTask, user_data: ?*
     const resource = context.resource;
     const loading_thread_id = context.loading_thread_id;
 
-    // Ensure we clean up context and release resource reference at the end
     defer {
         const allocator = memory.cardinal_get_allocator_for_category(.ASSETS);
         memory.cardinal_free(allocator, context);
@@ -518,6 +514,7 @@ fn texture_cache_get(filepath: []const u8) ?*ref_counting.CardinalRefCountedReso
     return null;
 }
 
+/// Adds `resource` to the cache, evicting entries as needed.
 fn texture_cache_put(filepath: []const u8, resource: *ref_counting.CardinalRefCountedResource) bool {
     if (!g_texture_cache.initialized) return false;
 
@@ -527,7 +524,6 @@ fn texture_cache_put(filepath: []const u8, resource: *ref_counting.CardinalRefCo
     g_texture_cache.mutex.lock();
     defer g_texture_cache.mutex.unlock();
 
-    // Evict entries
     while ((g_texture_cache.total_memory_usage + texture_memory > g_texture_cache.max_memory_usage or
         g_texture_cache.entry_count >= g_texture_cache.max_entries) and
         g_texture_cache.tail != null)
@@ -549,7 +545,6 @@ fn texture_cache_put(filepath: []const u8, resource: *ref_counting.CardinalRefCo
 
     const allocator = memory.cardinal_get_allocator_for_category(.ASSETS);
 
-    // Allocate new entry
     const entry_ptr = memory.cardinal_alloc(allocator, @sizeOf(TextureCacheEntry));
     if (entry_ptr == null) {
         texture_log.err("Failed to allocate cache entry for {s}", .{filepath});
@@ -557,7 +552,6 @@ fn texture_cache_put(filepath: []const u8, resource: *ref_counting.CardinalRefCo
     }
     const new_entry: *TextureCacheEntry = @ptrCast(@alignCast(entry_ptr));
 
-    // Copy filepath
     const filepath_ptr = memory.cardinal_alloc(allocator, filepath.len + 1);
     if (filepath_ptr == null) {
         texture_log.err("Failed to allocate filepath for {s}", .{filepath});
@@ -569,7 +563,7 @@ fn texture_cache_put(filepath: []const u8, resource: *ref_counting.CardinalRefCo
     new_filepath[filepath.len] = 0;
 
     new_entry.* = .{
-        .filepath = new_filepath[0..filepath.len], // store slice excluding null terminator for convenience, but allocation includes it
+        .filepath = new_filepath[0..filepath.len],
         .resource = resource,
         .last_access_time = get_current_time_ms(),
         .memory_usage = texture_memory,
@@ -577,10 +571,8 @@ fn texture_cache_put(filepath: []const u8, resource: *ref_counting.CardinalRefCo
         .prev = null,
     };
 
-    // Increment ref count
     _ = @atomicRmw(u32, &resource.ref_count, .Add, 1, .seq_cst);
 
-    // Add to head
     if (g_texture_cache.head) |head| {
         head.prev = new_entry;
         new_entry.next = g_texture_cache.head;
@@ -597,7 +589,7 @@ fn texture_cache_put(filepath: []const u8, resource: *ref_counting.CardinalRefCo
     return true;
 }
 
-// Destructor
+/// Destructor for `TextureData` stored in a ref-counted resource.
 export fn texture_data_destructor(resource: ?*anyopaque) callconv(.c) void {
     if (resource == null) {
         texture_log.warn("texture_data_destructor called with NULL resource", .{});
@@ -640,6 +632,11 @@ pub export fn texture_data_free(texture: ?*TextureData) void {
     t.channels = 0;
 }
 
+/// Loads a texture through the ref-counted resource registry.
+///
+/// If the texture is already loaded, returns a retained resource and copies pixels into
+/// `out_texture`. If the texture is still loading, this may return a placeholder resource that
+/// will be filled in asynchronously.
 pub export fn texture_load_with_ref_counting(filepath: ?[*]const u8, out_texture: ?*TextureData) ?*ref_counting.CardinalRefCountedResource {
     if (filepath == null or out_texture == null) return null;
     const filename_c: [*:0]const u8 = @ptrCast(filepath.?);
@@ -649,15 +646,12 @@ pub export fn texture_load_with_ref_counting(filepath: ?[*]const u8, out_texture
         _ = texture_cache_initialize(256);
     }
 
-    // Normalize path
     const allocator = memory.cardinal_get_allocator_for_category(.ASSETS);
     const normalized_path_slice = normalize_path(allocator, raw_path);
     if (normalized_path_slice == null) return null;
     defer memory.cardinal_free(allocator, @ptrCast(normalized_path_slice.?.ptr));
 
-    // Create null-terminated pointer for C APIs
     const path = normalized_path_slice.?;
-    // We can cast ptr because we allocated size+1 and null terminated it in normalize_path
     const path_c: [*:0]const u8 = @ptrCast(path.ptr);
 
     texture_log.debug("Texture load request: {s} (raw: {s})", .{ path, raw_path });
@@ -682,14 +676,12 @@ pub export fn texture_load_with_ref_counting(filepath: ?[*]const u8, out_texture
     }
 
     if (state == .LOADING) {
-        // Check cache for placeholder
         if (texture_cache_get(path)) |res| {
             const existing: *TextureData = @ptrCast(@alignCast(res.resource.?));
             out_texture.?.* = existing.*;
             return res;
         }
 
-        // Short wait to handle race condition where registration is finishing
         if (resource_state.cardinal_resource_state_wait_for(path_c, .LOADED, 10)) {
             if (texture_cache_get(path)) |res| {
                 const existing: *TextureData = @ptrCast(@alignCast(res.resource.?));
@@ -701,17 +693,12 @@ pub export fn texture_load_with_ref_counting(filepath: ?[*]const u8, out_texture
 
     const thread_id = getCurrentThreadId();
 
-    // Register temp ref for state tracking
-    // We need to persist the path for the identifier
-
-    // Allocate TextureData first
     const data_ptr = memory.cardinal_alloc(allocator, @sizeOf(TextureData));
     if (data_ptr == null) {
         texture_log.err("Failed to allocate TextureData for {s}", .{path});
         return null;
     }
     const tex_data = @as(*TextureData, @ptrCast(@alignCast(data_ptr)));
-    // Initialize with placeholder
     tex_data.data = g_placeholder_texture.data;
     tex_data.width = g_placeholder_texture.width;
     tex_data.height = g_placeholder_texture.height;
@@ -725,36 +712,26 @@ pub export fn texture_load_with_ref_counting(filepath: ?[*]const u8, out_texture
 
     if (temp_ref_opt) |temp_ref| {
         if (resource_state.cardinal_resource_state_register(temp_ref) == null) {
-            // Recursion here is dangerous if register fails repeatedly.
-            // Instead of recursive call, return null to avoid stack overflow.
             log.cardinal_log_error("[TEXTURE] Failed to register resource state for {s}", .{path});
-            // Release the ref we just created (which will trigger removal from registry and destructor)
             ref_counting.cardinal_ref_release(temp_ref);
             return null;
         }
 
-        // Cache it immediately so others find it
         _ = texture_cache_put(path, temp_ref);
 
-        // Set state to LOADING
         if (resource_state.cardinal_resource_state_try_acquire_loading(temp_ref.identifier.?, thread_id)) {
-            // Create context for async task
             const ctx_ptr = memory.cardinal_alloc(allocator, @sizeOf(TextureLoadContext));
             if (ctx_ptr) |cp| {
                 const ctx = @as(*TextureLoadContext, @ptrCast(@alignCast(cp)));
                 ctx.resource = temp_ref;
                 ctx.loading_thread_id = thread_id;
 
-                // Increment ref count for the task (released in task)
                 _ = @atomicRmw(u32, &temp_ref.ref_count, .Add, 1, .seq_cst);
 
-                // Launch Async Task
                 const task = async_loader.cardinal_async_submit_custom_task(texture_load_async_func, ctx, .NORMAL, texture_load_task_cleanup, null);
                 if (task == null) {
-                    // Failed to submit task, clean up
                     log.cardinal_log_error("[TEXTURE] Failed to submit async task for {s}", .{path});
                     memory.cardinal_free(allocator, ctx);
-                    // Release the ref we added for the task
                     _ = @atomicRmw(u32, &temp_ref.ref_count, .Sub, 1, .seq_cst);
                     _ = resource_state.cardinal_resource_state_set(temp_ref.identifier.?, .ERROR, thread_id);
                 }
@@ -778,10 +755,10 @@ pub export fn texture_release_ref_counted(ref_resource: ?*ref_counting.CardinalR
     }
 }
 
+/// Schedules a texture load through the async loader and returns the task handle.
 pub export fn texture_load_async(filepath: ?[*]const u8, priority: async_loader.CardinalAsyncPriority, callback: async_loader.CardinalAsyncCallback, user_data: ?*anyopaque) ?*async_loader.CardinalAsyncTask {
     if (filepath == null) return null;
 
-    // In C this checked if initialized, but async_loader_load_texture does that too.
     const filepath_c: [*:0]const u8 = @ptrCast(filepath.?);
     return async_loader.cardinal_async_load_texture(filepath_c, priority, callback, user_data);
 }

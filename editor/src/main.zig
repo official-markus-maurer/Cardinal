@@ -1,6 +1,8 @@
 //! Cardinal editor entrypoint.
 //!
 //! The editor boots the engine, initializes editor UI layers, and runs the main loop.
+//!
+//! TODO: Move the bootstrap memory budget into config or build-time options.
 const std = @import("std");
 const engine = @import("cardinal_engine");
 const log = engine.log;
@@ -8,6 +10,9 @@ const EditorApp = @import("app.zig").EditorApp;
 const EditorConfig = @import("app.zig").EditorConfig;
 
 const editor_log = log.ScopedLogger("EDITOR");
+
+/// Default memory budget used by the editor bootstrap.
+const default_memory_budget_bytes = 1024 * 1024 * 512;
 
 /// Prints CLI usage text.
 fn print_usage(program_name: []const u8) void {
@@ -20,9 +25,7 @@ fn print_usage(program_name: []const u8) void {
 /// Bootstraps logging/memory and runs the editor application.
 pub fn main() !u8 {
     const memory = engine.memory;
-    // TODO: Move bootstrap memory sizing into config or build-time options.
-    const memory_budget_bytes = 1024 * 1024 * 512;
-    memory.cardinal_memory_init(memory_budget_bytes);
+    memory.cardinal_memory_init(default_memory_budget_bytes);
 
     const allocator = memory.cardinal_get_allocator_for_category(.ENGINE).as_allocator();
 
@@ -68,8 +71,7 @@ pub fn main() !u8 {
     };
     defer app.destroy();
 
-    std.debug.print("[MAIN] App created. Calling run()...\n", .{});
-    // TODO: Route this message through the logging system (or remove).
+    editor_log.info("App created. Calling run()...", .{});
     app.run() catch |err| {
         editor_log.err("Runtime error: {}", .{err});
         _ = engine.platform.write_minidump();

@@ -50,7 +50,6 @@ pub const Registry = struct {
     /// Destroys an entity and removes its components from all storages.
     pub fn destroy(self: *Registry, entity: Entity) void {
         if (self.entity_manager.destroy(entity)) {
-            // Remove components
             var it = self.storages.iterator();
             while (it.next()) |entry| {
                 entry.value_ptr.interface.remove(entity);
@@ -116,7 +115,6 @@ pub const Registry = struct {
         return null;
     }
 
-    // View iterator helper
     /// Returns a single-component view over `T`.
     pub fn view(self: *Registry, comptime T: type) View(T) {
         const id = get_type_id(T);
@@ -221,7 +219,6 @@ pub fn MultiView(comptime types_tuple: anytype) type {
                     self.index += 1;
 
                     var all_present = true;
-                    // Check if entity is present in all storages
                     inline for (types_tuple, 0..) |T, i| {
                         if (self.storages[i]) |ptr| {
                             const storage: *component_pkg.SparseSet(T) = @ptrCast(@alignCast(ptr));
@@ -235,7 +232,6 @@ pub fn MultiView(comptime types_tuple: anytype) type {
 
                     if (!all_present) continue;
 
-                    // If we are here, entity is in all storages
                     var components: ComponentsTuple = undefined;
                     inline for (types_tuple, 0..) |T, i| {
                         if (self.storages[i]) |ptr| {
@@ -276,7 +272,6 @@ pub fn MultiView(comptime types_tuple: anytype) type {
                 };
             }
 
-            // Get entities from best storage
             var entities: []const Entity = undefined;
             inline for (types_tuple, 0..) |T, i| {
                 if (i == best_index) {
@@ -299,41 +294,34 @@ test "MultiView iteration" {
     var registry = Registry.init(allocator);
     defer registry.deinit();
 
-    // Define some components for testing
     const CompA = struct { value: u32 };
     const CompB = struct { value: f32 };
     const CompC = struct { value: bool };
 
-    // Create entities
     const e1 = try registry.create();
     const e2 = try registry.create();
     const e3 = try registry.create();
     const e4 = try registry.create();
 
-    // e1: A, B
     try registry.add(e1, CompA{ .value = 10 });
     try registry.add(e1, CompB{ .value = 1.0 });
 
-    // e2: A, B, C
     try registry.add(e2, CompA{ .value = 20 });
     try registry.add(e2, CompB{ .value = 2.0 });
     try registry.add(e2, CompC{ .value = true });
 
-    // e3: A only
     try registry.add(e3, CompA{ .value = 30 });
 
-    // e4: B, C
     try registry.add(e4, CompB{ .value = 4.0 });
     try registry.add(e4, CompC{ .value = false });
 
-    // Test MultiView(A, B) -> Should match e1, e2
     var view_ab = registry.multi_view(.{ CompA, CompB });
     var it_ab = view_ab.iterator();
     var count_ab: usize = 0;
     while (it_ab.next()) |entry| {
         count_ab += 1;
         const e = entry.entity;
-        const comps = entry.components; // tuple { *CompA, *CompB }
+        const comps = entry.components;
 
         if (e.id == e1.id) {
             try std.testing.expectEqual(@as(u32, 10), comps[0].value);
@@ -342,12 +330,11 @@ test "MultiView iteration" {
             try std.testing.expectEqual(@as(u32, 20), comps[0].value);
             try std.testing.expectEqual(@as(f32, 2.0), comps[1].value);
         } else {
-            try std.testing.expect(false); // Unexpected entity
+            try std.testing.expect(false);
         }
     }
     try std.testing.expectEqual(@as(usize, 2), count_ab);
 
-    // Test MultiView(B, C) -> Should match e2, e4
     var view_bc = registry.multi_view(.{ CompB, CompC });
     var it_bc = view_bc.iterator();
     var count_bc: usize = 0;
@@ -368,7 +355,6 @@ test "MultiView iteration" {
     }
     try std.testing.expectEqual(@as(usize, 2), count_bc);
 
-    // Test MultiView(A, B, C) -> Should match e2 only
     var view_abc = registry.multi_view(.{ CompA, CompB, CompC });
     var it_abc = view_abc.iterator();
     var count_abc: usize = 0;

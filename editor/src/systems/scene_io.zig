@@ -25,6 +25,35 @@ pub fn import_scene_graph(state: *EditorState) void {
     var node_to_entity = state.runtime.arena_allocator.alloc(u64, scene.all_node_count) catch return;
     @memset(node_to_entity, std.math.maxInt(u64));
 
+    var node_base_offsets = state.runtime.arena_allocator.alloc(u32, scene.all_node_count) catch return;
+    var node_mesh_offsets = state.runtime.arena_allocator.alloc(u32, scene.all_node_count) catch return;
+    @memset(node_base_offsets, 0);
+    @memset(node_mesh_offsets, 0);
+
+    if (state.runtime.model_manager.models) |models| {
+        var node_cursor: u32 = 0;
+        var mesh_cursor: u32 = 0;
+        var m_i: u32 = 0;
+        while (m_i < state.runtime.model_manager.model_count) : (m_i += 1) {
+            const model = &models[m_i];
+            if (!model.visible or model.is_loading) continue;
+
+            var n_i: u32 = 0;
+            while (n_i < model.scene.all_node_count and node_cursor + n_i < scene.all_node_count) : (n_i += 1) {
+                node_base_offsets[node_cursor + n_i] = node_cursor;
+                node_mesh_offsets[node_cursor + n_i] = mesh_cursor;
+            }
+
+            node_cursor += model.scene.all_node_count;
+            mesh_cursor += model.scene.mesh_count;
+        }
+
+        if (node_cursor != scene.all_node_count or mesh_cursor != scene.mesh_count) {
+            @memset(node_base_offsets, 0);
+            @memset(node_mesh_offsets, 0);
+        }
+    }
+
     var i: u32 = 0;
     while (i < scene.all_node_count) : (i += 1) {
         if (scene.all_nodes.?[i]) |node| {
@@ -52,7 +81,9 @@ pub fn import_scene_graph(state: *EditorState) void {
             if (node.mesh_count > 0 and node.mesh_indices != null) {
                 var m_idx: u32 = 0;
                 while (m_idx < node.mesh_count) : (m_idx += 1) {
-                    const mesh_index = node.mesh_indices.?[m_idx];
+                    const local_mesh_index = node.mesh_indices.?[m_idx];
+                    const mesh_index = node_mesh_offsets[i] + local_mesh_index;
+                    if (mesh_index >= scene.mesh_count) continue;
 
                     var target_entity = entity;
                     if (m_idx > 0) {
@@ -133,11 +164,15 @@ pub fn import_scene_graph(state: *EditorState) void {
             if (entity.id == std.math.maxInt(u64)) continue;
 
             var parent_idx: u32 = 0xFFFFFFFF;
-            if (node.parent_index >= 0) {
-                parent_idx = @intCast(node.parent_index);
-            } else if (node.parent) |parent| {
+            if (node.parent) |parent| {
                 if (node_ptr_to_index.get(parent)) |idx| {
                     parent_idx = idx;
+                }
+            } else if (node.parent_index >= 0) {
+                const local_parent_idx: u32 = @intCast(node.parent_index);
+                const base = node_base_offsets[i];
+                if (base + local_parent_idx < scene.all_node_count) {
+                    parent_idx = base + local_parent_idx;
                 }
             }
 
@@ -596,6 +631,44 @@ pub fn remove_model_entities_and_rebase(state: *EditorState, model_id: u32) void
     rebase_mesh_maps_and_components(state, start, count);
 }
 
+/// Cancels outstanding async loading tasks and clears the list.
+fn cancel_loading_tasks(state: *EditorState, allocator: std.mem.Allocator) void {
+    if (state.runtime.loading_tasks.items.len == 0) return;
+    for (state.runtime.loading_tasks.items) |info| {
+        _ = async_loader.cardinal_async_cancel_task(info.task);
+        async_loader.cardinal_async_free_task(info.task);
+        allocator.free(info.path);
+    }
+    state.runtime.loading_tasks.clearRetainingCapacity();
+    state.runtime.is_loading = false;
+}
+
+/// Resets runtime state prior to deserializing a new scene.
+fn reset_state_for_scene_load(state: *EditorState, allocator: std.mem.Allocator) void {
+    state.runtime.scene_upload_pending = false;
+    state.runtime.pending_scene = std.mem.zeroes(@TypeOf(state.runtime.pending_scene));
+    state.ui.undo.clear();
+
+    state.runtime.registry.deinit();
+    state.runtime.registry.* = engine.ecs_registry.Registry.init(allocator);
+    state.runtime.transform_overrides.clearRetainingCapacity();
+    state.runtime.mesh_owner_by_mesh_index.clearRetainingCapacity();
+    state.runtime.mesh_entity_by_mesh_index.clearRetainingCapacity();
+
+    engine.model_manager.cardinal_model_manager_destroy(&state.runtime.model_manager);
+    _ = engine.model_manager.cardinal_model_manager_init(&state.runtime.model_manager);
+    state.runtime.combined_scene = std.mem.zeroes(@TypeOf(state.runtime.combined_scene));
+    state.runtime.scene_loaded = false;
+}
+
+/// Updates `combined_scene` after deserialization by querying the model manager.
+fn refresh_combined_scene_after_deserialize(state: *EditorState) void {
+    if (engine.model_manager.cardinal_model_manager_get_combined_scene(&state.runtime.model_manager)) |combined| {
+        state.runtime.combined_scene = combined.*;
+        state.runtime.scene_loaded = (state.runtime.combined_scene.mesh_count > 0);
+    }
+}
+
 pub fn load_scene(state: *EditorState, allocator: std.mem.Allocator, path: []const u8) void {
     const file = std.fs.cwd().openFile(path, .{}) catch |err| {
         log.cardinal_log_error("Failed to open scene file '{s}': {}", .{ path, err });
@@ -604,32 +677,8 @@ pub fn load_scene(state: *EditorState, allocator: std.mem.Allocator, path: []con
     };
     defer file.close();
 
-    if (state.runtime.loading_tasks.items.len > 0) {
-        for (state.runtime.loading_tasks.items) |info| {
-            _ = async_loader.cardinal_async_cancel_task(info.task);
-            async_loader.cardinal_async_free_task(info.task);
-            allocator.free(info.path);
-        }
-        state.runtime.loading_tasks.clearRetainingCapacity();
-        state.runtime.is_loading = false;
-    }
-
-    state.runtime.scene_upload_pending = false;
-    state.runtime.pending_scene = std.mem.zeroes(@TypeOf(state.runtime.pending_scene));
-    state.ui.undo.clear();
-
-    // Reset Registry
-    state.runtime.registry.deinit();
-    state.runtime.registry.* = engine.ecs_registry.Registry.init(allocator);
-    state.runtime.transform_overrides.clearRetainingCapacity();
-    state.runtime.mesh_owner_by_mesh_index.clearRetainingCapacity();
-    state.runtime.mesh_entity_by_mesh_index.clearRetainingCapacity();
-
-    // Reset Model Manager
-    engine.model_manager.cardinal_model_manager_destroy(&state.runtime.model_manager);
-    _ = engine.model_manager.cardinal_model_manager_init(&state.runtime.model_manager);
-    state.runtime.combined_scene = std.mem.zeroes(@TypeOf(state.runtime.combined_scene));
-    state.runtime.scene_loaded = false;
+    cancel_loading_tasks(state, allocator);
+    reset_state_for_scene_load(state, allocator);
 
     var serializer = scene_serializer.SceneSerializer.init(allocator, state.runtime.registry, &state.runtime.model_manager);
     defer serializer.deinit();
@@ -651,13 +700,8 @@ pub fn load_scene(state: *EditorState, allocator: std.mem.Allocator, path: []con
         return;
     };
 
-    // Force rebuild of combined scene and update editor state
-    if (engine.model_manager.cardinal_model_manager_get_combined_scene(&state.runtime.model_manager)) |combined| {
-        state.runtime.combined_scene = combined.*;
-        state.runtime.scene_loaded = (state.runtime.combined_scene.mesh_count > 0);
-    }
+    refresh_combined_scene_after_deserialize(state);
 
-    // Check if we need to generate hierarchy
     const hierarchy_count = state.runtime.registry.view(components.Hierarchy).count();
     if (hierarchy_count == 0 and state.runtime.model_manager.model_count > 0) {
         import_scene_graph(state);
@@ -674,12 +718,16 @@ pub fn load_scene(state: *EditorState, allocator: std.mem.Allocator, path: []con
     }
 }
 
-pub fn refresh_available_scenes(state: *EditorState, allocator: std.mem.Allocator) void {
-    // Clear existing
+/// Clears `available_scenes` and frees owned strings.
+fn clear_available_scenes(state: *EditorState, allocator: std.mem.Allocator) void {
     for (state.ui.available_scenes.items) |item| {
         allocator.free(item);
     }
     state.ui.available_scenes.clearRetainingCapacity();
+}
+
+pub fn refresh_available_scenes(state: *EditorState, allocator: std.mem.Allocator) void {
+    clear_available_scenes(state, allocator);
 
     const scenes_dir = "assets/scenes";
     var dir = std.fs.cwd().openDir(scenes_dir, .{ .iterate = true }) catch |err| {

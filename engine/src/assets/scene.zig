@@ -185,12 +185,15 @@ pub const CardinalSceneNode = extern struct {
     bone_index: u32,
     skin_index: u32,
 
-    light_index: i32, // -1 if no light
-    parent_index: i32, // -1 if no parent (index in all_nodes)
+    /// Index into `CardinalScene.lights`, or -1 when this node has no light.
+    light_index: i32,
+    /// Index into `CardinalScene.all_nodes`, or -1 when this node has no parent.
+    parent_index: i32,
 };
 
-// Forward declaration for AnimationSystem and Skin (opaque for now)
+/// Opaque animation system handle exposed through the C ABI.
 pub const CardinalAnimationSystem = opaque {};
+/// Opaque skin handle exposed through the C ABI.
 pub const CardinalSkin = opaque {};
 
 /// Top-level scene container for meshes/materials/textures/nodes and optional animation data.
@@ -219,14 +222,12 @@ pub const CardinalScene = extern struct {
 };
 
 pub fn resolve_parent_idx(node: *const CardinalSceneNode, node_ptr_to_index: *const std.AutoHashMapUnmanaged(*CardinalSceneNode, u32)) u32 {
-    if (node.parent_index >= 0) return @intCast(node.parent_index);
     if (node.parent) |parent| {
         if (node_ptr_to_index.get(parent)) |idx| return idx;
     }
+    if (node.parent_index >= 0) return @intCast(node.parent_index);
     return 0xFFFFFFFF;
 }
-
-// --- Functions ---
 
 /// Allocates a scene node from the global pool and copies the optional name.
 pub export fn cardinal_scene_node_create(name: ?[*:0]const u8) ?*CardinalSceneNode {
@@ -236,7 +237,6 @@ pub export fn cardinal_scene_node_create(name: ?[*:0]const u8) ?*CardinalSceneNo
 
     node.* = std.mem.zeroes(CardinalSceneNode);
 
-    // Identity matrix
     const identity = [16]f32{ 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1 };
     @memcpy(&node.local_transform, &identity);
     @memcpy(&node.world_transform, &identity);
@@ -264,7 +264,6 @@ pub export fn cardinal_scene_node_destroy(node: ?*CardinalSceneNode) void {
     const n = node.?;
     const allocator = memory.cardinal_get_allocator_for_category(.ASSETS);
 
-    // Destroy children
     if (n.children) |children| {
         var i: u32 = 0;
         while (i < n.child_count) : (i += 1) {
@@ -362,7 +361,6 @@ pub export fn cardinal_scene_node_remove_from_parent(child: ?*CardinalSceneNode)
         while (i < p.child_count) : (i += 1) {
             if (children[i] == c) {
                 found = true;
-                // Shift remaining
                 var j = i;
                 while (j < p.child_count - 1) : (j += 1) {
                     children[j] = children[j + 1];
@@ -405,9 +403,7 @@ pub export fn cardinal_scene_node_find_by_name(root: ?*CardinalSceneNode, name: 
     return null;
 }
 
-// Matrix multiplication helper
-// Using transform_math for consistency
-
+/// Updates `node.world_transform` from local transforms, then recurses into children.
 pub export fn cardinal_scene_node_update_transforms(node: ?*CardinalSceneNode, parent_world_transform: ?*const [16]f32) void {
     if (node == null) return;
     const n = node.?;
@@ -463,7 +459,6 @@ pub export fn cardinal_scene_destroy(scene: ?*CardinalScene) void {
     const s = scene.?;
     const allocator = memory.cardinal_get_allocator_for_category(.ASSETS);
 
-    // Destroy meshes
     if (s.meshes) |meshes| {
         var i: u32 = 0;
         while (i < s.mesh_count) : (i += 1) {
@@ -474,12 +469,10 @@ pub export fn cardinal_scene_destroy(scene: ?*CardinalScene) void {
         memory.cardinal_free(allocator, @ptrCast(meshes));
     }
 
-    // Destroy materials
     if (s.materials) |mats| {
         memory.cardinal_free(allocator, @ptrCast(mats));
     }
 
-    // Destroy textures
     if (s.textures) |texs| {
         var i: u32 = 0;
         while (i < s.texture_count) : (i += 1) {
@@ -489,7 +482,6 @@ pub export fn cardinal_scene_destroy(scene: ?*CardinalScene) void {
         memory.cardinal_free(allocator, @ptrCast(texs));
     }
 
-    // Destroy nodes
     if (s.root_nodes) |nodes| {
         var i: u32 = 0;
         while (i < s.root_node_count) : (i += 1) {
@@ -500,12 +492,10 @@ pub export fn cardinal_scene_destroy(scene: ?*CardinalScene) void {
 
     if (s.all_nodes) |nodes| memory.cardinal_free(allocator, @ptrCast(nodes));
 
-    // Destroy lights
     if (s.lights) |lights| {
         memory.cardinal_free(allocator, @ptrCast(lights));
     }
 
-    // Destroy skins
     if (s.skins) |skins_opaque| {
         const skins: [*]animation.CardinalSkin = @ptrCast(@alignCast(skins_opaque));
         var i: u32 = 0;
@@ -515,7 +505,6 @@ pub export fn cardinal_scene_destroy(scene: ?*CardinalScene) void {
         memory.cardinal_free(allocator, @ptrCast(skins));
     }
 
-    // Destroy animation system
     if (s.animation_system) |sys| {
         animation.cardinal_animation_system_destroy(@ptrCast(@alignCast(sys)));
     }

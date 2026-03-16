@@ -1,3 +1,8 @@
+//! Editor undo/redo stack.
+//!
+//! Stores discrete commands plus "capture" helpers that coalesce drag interactions into one step.
+//!
+//! TODO: Replace fixed-size reparent snapshots with a dynamic adjacency snapshot.
 const std = @import("std");
 const engine = @import("cardinal_engine");
 const components = engine.ecs_components;
@@ -7,6 +12,7 @@ fn allocator() std.mem.Allocator {
     return engine.memory.cardinal_get_allocator_for_category(.ENGINE).as_allocator();
 }
 
+/// Generic "before/after" component diff for a single entity.
 fn EntityComponentCommand(comptime T: type) type {
     return struct {
         entity_id: u64,
@@ -47,6 +53,7 @@ const EntitySnapshot = struct {
     skybox: components.Skybox = undefined,
 };
 
+/// Snapshot-based subtree command used for create/delete undo.
 const EntitySubtreeCommand = struct {
     mode: SubtreeMode,
     root_id: u64,
@@ -57,6 +64,7 @@ const EntitySubtreeCommand = struct {
     hierarchy_count: u8,
 };
 
+/// Undoable editor command.
 pub const UndoCommand = union(enum) {
     EntityTransform: EntityComponentCommand(components.Transform),
     EntityName: EntityComponentCommand(components.Name),
@@ -94,6 +102,7 @@ pub const UndoState = struct {
     redo_stack: std.ArrayListUnmanaged(UndoCommand) = .{},
     capture: ?Capture = null,
 
+    /// Releases any heap-backed commands and clears stacks.
     pub fn deinit(self: *UndoState, alloc: std.mem.Allocator) void {
         free_stack_items(self.undo_stack.items);
         free_stack_items(self.redo_stack.items);
@@ -102,6 +111,7 @@ pub const UndoState = struct {
         self.capture = null;
     }
 
+    /// Clears all undo/redo state.
     pub fn clear(self: *UndoState) void {
         free_stack_items(self.undo_stack.items);
         free_stack_items(self.redo_stack.items);
@@ -110,12 +120,14 @@ pub const UndoState = struct {
         self.capture = null;
     }
 
+    /// Pushes a new undo command and clears redo.
     pub fn push(self: *UndoState, cmd: UndoCommand) void {
         self.undo_stack.append(allocator(), cmd) catch return;
         free_stack_items(self.redo_stack.items);
         self.redo_stack.clearRetainingCapacity();
     }
 
+    /// Applies the latest undo command and moves it to redo.
     pub fn undo(self: *UndoState, runtime: anytype) void {
         if (self.undo_stack.items.len == 0) return;
         const idx = self.undo_stack.items.len - 1;
@@ -126,6 +138,7 @@ pub const UndoState = struct {
         self.redo_stack.append(allocator(), cmd) catch {};
     }
 
+    /// Applies the latest redo command and moves it back to undo.
     pub fn redo(self: *UndoState, runtime: anytype) void {
         if (self.redo_stack.items.len == 0) return;
         const idx = self.redo_stack.items.len - 1;

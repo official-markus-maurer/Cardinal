@@ -3,6 +3,7 @@
 //! Displays basic frame timing and the engine's global memory statistics.
 //!
 //! TODO: Track per-frame allocation deltas instead of only absolute totals.
+//! TODO: Derive category names from the engine memory category enum to avoid drift.
 const std = @import("std");
 const engine = @import("cardinal_engine");
 const c = @import("../c.zig").c;
@@ -14,6 +15,9 @@ const memory = engine.memory;
 const HISTORY_SIZE = 240;
 var frame_time_history: [HISTORY_SIZE]f32 = [_]f32{0} ** HISTORY_SIZE;
 var history_offset: usize = 0;
+
+/// Display names for memory categories in `CardinalGlobalMemoryStats`.
+const memory_category_names = [_][:0]const u8{ "Unknown", "Engine", "Renderer", "Vulkan Buffers", "Vulkan Device", "Textures", "Meshes", "Assets", "Shaders", "Window", "Logging", "Temporary" };
 
 /// Draws the performance panel.
 pub fn draw_performance_panel(state: *EditorState) void {
@@ -59,17 +63,14 @@ pub fn draw_performance_panel(state: *EditorState) void {
                     c.imgui_bridge_table_setup_column("Count", c.ImGuiTableColumnFlags_None, 0.0, 0);
                     c.imgui_bridge_table_headers_row();
 
-                    // TODO: Derive this from the engine memory category enum to avoid drift.
-                    const categories = [_][:0]const u8{ "Unknown", "Engine", "Renderer", "Vulkan Buffers", "Vulkan Device", "Textures", "Meshes", "Assets", "Shaders", "Window", "Logging", "Temporary" };
-
                     var i: usize = 0;
-                    while (i < categories.len) : (i += 1) {
+                    while (i < memory_category_names.len) : (i += 1) {
                         const cat_stats = stats.categories[i];
                         if (cat_stats.current_usage > 0 or cat_stats.peak_usage > 0) {
                             c.imgui_bridge_table_next_row(0, 0.0);
 
                             c.imgui_bridge_table_set_column_index(0);
-                            c.imgui_bridge_text("%s", categories[i].ptr);
+                            c.imgui_bridge_text("%s", memory_category_names[i].ptr);
 
                             c.imgui_bridge_table_set_column_index(1);
                             const usage_mb = @as(f64, @floatFromInt(cat_stats.current_usage)) / (1024.0 * 1024.0);

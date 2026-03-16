@@ -50,69 +50,6 @@ pub const CardinalModelManager = extern struct {
     selected_model_id: u32,
 };
 
-const FinalizeContext = struct {
-    scene_task: *async_loader.CardinalAsyncTask,
-};
-
-const FinalizedModelData = struct {
-    scene: scene.CardinalScene,
-    bbox_min: [3]f32,
-    bbox_max: [3]f32,
-};
-
-/// Async task finalize callback that computes bounds and packages the loaded scene.
-///
-/// Ownership: `ctx.scene_task.result_data` is owned by the async loader and is freed by
-/// `cardinal_async_free_task`, so this callback must not free it.
-fn finalize_model_task(task: ?*async_loader.CardinalAsyncTask, user_data: ?*anyopaque) callconv(.c) bool {
-    if (user_data == null) return false;
-    const ctx = @as(*FinalizeContext, @ptrCast(@alignCast(user_data)));
-    const allocator = memory.cardinal_get_allocator_for_category(.ASSETS);
-    defer memory.cardinal_free(allocator, ctx);
-
-    defer async_loader.cardinal_async_free_task(ctx.scene_task);
-
-    if (ctx.scene_task.status != .COMPLETED) {
-        if (ctx.scene_task.status == .FAILED) {
-            const err_msg = async_loader.cardinal_async_get_error_message(ctx.scene_task);
-            const err_str = if (err_msg) |msg| std.mem.span(msg) else "unknown error";
-            model_log.err("Scene load task failed: {s}", .{err_str});
-        } else {
-            model_log.err("Scene load task did not complete (status: {any})", .{ctx.scene_task.status});
-        }
-        return false;
-    }
-
-    if (ctx.scene_task.result_data == null) {
-        model_log.err("Scene load task completed but returned no result", .{});
-        return false;
-    }
-
-    const loaded_scene_ptr = @as(*scene.CardinalScene, @ptrCast(@alignCast(ctx.scene_task.result_data)));
-
-    const result_ptr = memory.cardinal_alloc(allocator, @sizeOf(FinalizedModelData));
-    if (result_ptr == null) {
-        model_log.err("Failed to allocate finalize result data", .{});
-        scene.cardinal_scene_destroy(loaded_scene_ptr);
-        const engine_allocator = memory.cardinal_get_allocator_for_category(.ENGINE);
-        memory.cardinal_free(engine_allocator, loaded_scene_ptr);
-        return false;
-    }
-    const result = @as(*FinalizedModelData, @ptrCast(@alignCast(result_ptr)));
-
-    result.scene = loaded_scene_ptr.*;
-
-    calculate_scene_bounds(&result.scene, &result.bbox_min, &result.bbox_max);
-
-    if (task) |t| {
-        t.result_data = result;
-        t.result_size = @sizeOf(FinalizedModelData);
-    }
-
-    model_log.info("Async model finalization calculated bounds: min({d},{d},{d}) max({d},{d},{d})", .{ result.bbox_min[0], result.bbox_min[1], result.bbox_min[2], result.bbox_max[0], result.bbox_max[1], result.bbox_max[2] });
-    return true;
-}
-
 /// Generates a display name derived from the file name.
 fn generate_model_name(file_path: ?[*:0]const u8) ?[*:0]u8 {
     if (file_path == null) return null;
@@ -189,7 +126,6 @@ fn calculate_scene_bounds(scn: *const scene.CardinalScene, bbox_min: *[3]f32, bb
 
     var first_vertex = true;
 
-    // Safety check for meshes pointer
     if (scn.meshes == null) return;
     const meshes = scn.meshes.?;
 
@@ -306,11 +242,7 @@ fn cleanup_combined_scene(manager: *CardinalModelManager) void {
 ///
 /// Mesh vertex/index data is shared, while materials/textures/skins are copied so their indices
 /// can be re-based into a single scene namespace.
-///
-/// TODO: Incremental rebuild of only dirty subranges instead of full rebuild.
 fn rebuild_combined_scene(manager: *CardinalModelManager) void {
-    cleanup_combined_scene(manager);
-
     var total_meshes: u32 = 0;
     var total_materials: u32 = 0;
     var total_textures: u32 = 0;
@@ -323,10 +255,15 @@ fn rebuild_combined_scene(manager: *CardinalModelManager) void {
         return;
     };
 
+    var visible_indices = std.ArrayListUnmanaged(u32){};
+    defer visible_indices.deinit(memory.cardinal_get_allocator_for_category(.ENGINE).as_allocator());
+
     var i: u32 = 0;
     while (i < manager.model_count) : (i += 1) {
         const model = &models[i];
         if (model.visible and !model.is_loading) {
+            visible_indices.append(memory.cardinal_get_allocator_for_category(.ENGINE).as_allocator(), i) catch return;
+
             total_meshes += model.scene.mesh_count;
             total_materials += model.scene.material_count;
             total_textures += model.scene.texture_count;
@@ -346,6 +283,227 @@ fn rebuild_combined_scene(manager: *CardinalModelManager) void {
     }
 
     const allocator = memory.cardinal_get_allocator_for_category(.ASSETS);
+
+    const existing_meshes: u32 = manager.combined_scene.mesh_count;
+    const existing_materials: u32 = manager.combined_scene.material_count;
+    const existing_textures: u32 = manager.combined_scene.texture_count;
+    const existing_nodes: u32 = manager.combined_scene.all_node_count;
+
+    if (manager.combined_scene.meshes != null and
+        manager.combined_scene.materials != null and
+        manager.combined_scene.textures != null and
+        manager.combined_scene.all_nodes != null and
+        existing_meshes > 0 and
+        total_animations == 0 and
+        total_skins == 0)
+    {
+        var prefix_meshes: u32 = 0;
+        var prefix_materials: u32 = 0;
+        var prefix_textures: u32 = 0;
+        var prefix_nodes: u32 = 0;
+        var prefix_visible_count: u32 = 0;
+
+        for (visible_indices.items) |model_idx| {
+            if (prefix_meshes == existing_meshes and
+                prefix_materials == existing_materials and
+                prefix_textures == existing_textures and
+                prefix_nodes == existing_nodes)
+            {
+                break;
+            }
+
+            const m = &models[model_idx];
+            prefix_meshes += m.scene.mesh_count;
+            prefix_materials += m.scene.material_count;
+            prefix_textures += m.scene.texture_count;
+            prefix_nodes += m.scene.all_node_count;
+            prefix_visible_count += 1;
+        }
+
+        if (prefix_meshes == existing_meshes and
+            prefix_materials == existing_materials and
+            prefix_textures == existing_textures and
+            prefix_nodes == existing_nodes and
+            prefix_visible_count < visible_indices.items.len)
+        {
+            const new_meshes = total_meshes;
+            const new_materials = total_materials;
+            const new_textures = total_textures;
+            const new_nodes = total_nodes;
+
+            const meshes_bytes = std.math.mul(usize, @as(usize, new_meshes), @sizeOf(scene.CardinalMesh)) catch 0;
+            const materials_bytes = std.math.mul(usize, @as(usize, new_materials), @sizeOf(scene.CardinalMaterial)) catch 0;
+            const textures_bytes = std.math.mul(usize, @as(usize, new_textures), @sizeOf(scene.CardinalTexture)) catch 0;
+            const nodes_bytes = std.math.mul(usize, @as(usize, new_nodes), @sizeOf(?*scene.CardinalSceneNode)) catch 0;
+
+            const meshes_ptr = if (meshes_bytes > 0)
+                memory.cardinal_realloc(allocator, @ptrCast(manager.combined_scene.meshes), meshes_bytes)
+            else
+                null;
+            const materials_ptr = if (materials_bytes > 0)
+                memory.cardinal_realloc(allocator, @ptrCast(manager.combined_scene.materials), materials_bytes)
+            else
+                null;
+            const textures_ptr = if (textures_bytes > 0)
+                memory.cardinal_realloc(allocator, @ptrCast(manager.combined_scene.textures), textures_bytes)
+            else
+                null;
+            const nodes_ptr = if (nodes_bytes > 0)
+                memory.cardinal_realloc(allocator, @ptrCast(manager.combined_scene.all_nodes), nodes_bytes)
+            else
+                null;
+
+            if ((new_meshes == 0 or meshes_ptr != null) and
+                (new_materials == 0 or materials_ptr != null) and
+                (new_textures == 0 or textures_ptr != null) and
+                (new_nodes == 0 or nodes_ptr != null))
+            {
+                manager.combined_scene.meshes = if (meshes_ptr) |p| @ptrCast(@alignCast(p)) else null;
+                manager.combined_scene.materials = if (materials_ptr) |p| @ptrCast(@alignCast(p)) else null;
+                manager.combined_scene.textures = if (textures_ptr) |p| @ptrCast(@alignCast(p)) else null;
+                manager.combined_scene.all_nodes = if (nodes_ptr) |p| @ptrCast(@alignCast(p)) else null;
+
+                var mesh_offset: u32 = existing_meshes;
+                var material_offset: u32 = existing_materials;
+                var texture_offset: u32 = existing_textures;
+                var node_offset: u32 = existing_nodes;
+
+                var append_i: usize = prefix_visible_count;
+                while (append_i < visible_indices.items.len) : (append_i += 1) {
+                    const model = &models[visible_indices.items[append_i]];
+                    const scn = &model.scene;
+
+                    if (scn.meshes) |src_meshes| {
+                        var m: u32 = 0;
+                        while (m < scn.mesh_count) : (m += 1) {
+                            const src_mesh = &src_meshes[m];
+                            const dst_mesh = &manager.combined_scene.meshes.?[mesh_offset + m];
+
+                            if (src_mesh.vertices == null or src_mesh.vertex_count == 0 or
+                                src_mesh.indices == null or src_mesh.index_count == 0)
+                            {
+                                @memset(@as([*]u8, @ptrCast(dst_mesh))[0..@sizeOf(scene.CardinalMesh)], 0);
+                                dst_mesh.visible = false;
+                                continue;
+                            }
+
+                            dst_mesh.* = src_mesh.*;
+                            dst_mesh.material_index += material_offset;
+                            transform_math.cardinal_matrix_multiply(&model.transform, &src_mesh.transform, &dst_mesh.transform);
+                        }
+                    }
+
+                    if (scn.materials) |src_materials| {
+                        var mat: u32 = 0;
+                        while (mat < scn.material_count) : (mat += 1) {
+                            const src_material = &src_materials[mat];
+                            const dst_material = &manager.combined_scene.materials.?[material_offset + mat];
+
+                            dst_material.* = src_material.*;
+                            if (dst_material.albedo_texture.is_valid()) dst_material.albedo_texture.index += texture_offset;
+                            if (dst_material.normal_texture.is_valid()) dst_material.normal_texture.index += texture_offset;
+                            if (dst_material.metallic_roughness_texture.is_valid()) dst_material.metallic_roughness_texture.index += texture_offset;
+                            if (dst_material.ao_texture.is_valid()) dst_material.ao_texture.index += texture_offset;
+                            if (dst_material.emissive_texture.is_valid()) dst_material.emissive_texture.index += texture_offset;
+                        }
+                    }
+
+                    if (scn.textures) |src_textures| {
+                        var tex: u32 = 0;
+                        while (tex < scn.texture_count) : (tex += 1) {
+                            const src_texture = &src_textures[tex];
+                            const dst_texture = &manager.combined_scene.textures.?[texture_offset + tex];
+
+                            dst_texture.* = src_texture.*;
+
+                            var used_ref_counting = false;
+                            if (src_texture.ref_resource) |res| {
+                                _ = @atomicRmw(u32, &res.ref_count, .Add, 1, .seq_cst);
+                                dst_texture.ref_resource = res;
+
+                                if (res.resource) |r| {
+                                    const tex_data = @as(*texture_loader.TextureData, @ptrCast(@alignCast(r)));
+                                    dst_texture.data = tex_data.data;
+                                    dst_texture.width = tex_data.width;
+                                    dst_texture.height = tex_data.height;
+                                    dst_texture.channels = tex_data.channels;
+                                    dst_texture.is_hdr = tex_data.is_hdr;
+                                    dst_texture.format = tex_data.format;
+                                    dst_texture.data_size = tex_data.data_size;
+                                } else {
+                                    dst_texture.data = src_texture.data;
+                                }
+                                used_ref_counting = true;
+                            }
+
+                            if (!used_ref_counting) {
+                                dst_texture.ref_resource = null;
+                                if (src_texture.data != null and src_texture.width > 0 and src_texture.height > 0) {
+                                    const data_size = src_texture.width * src_texture.height * src_texture.channels;
+                                    const data_ptr = memory.cardinal_alloc(allocator, data_size);
+                                    if (data_ptr) |dp| {
+                                        @memcpy(@as([*]u8, @ptrCast(dp))[0..data_size], @as([*]u8, @ptrCast(src_texture.data.?))[0..data_size]);
+                                        dst_texture.data = @ptrCast(dp);
+                                    } else {
+                                        dst_texture.data = null;
+                                    }
+                                } else {
+                                    dst_texture.data = null;
+                                }
+                            }
+
+                            if (src_texture.path) |p| {
+                                const path_len = std.mem.len(p);
+                                const path_ptr = memory.cardinal_alloc(allocator, path_len + 1);
+                                if (path_ptr) |pp| {
+                                    @memcpy(@as([*]u8, @ptrCast(pp))[0..path_len], @as([*]const u8, @ptrCast(p))[0..path_len]);
+                                    @as([*]u8, @ptrCast(pp))[path_len] = 0;
+                                    dst_texture.path = @ptrCast(pp);
+                                } else {
+                                    dst_texture.path = null;
+                                }
+                            } else {
+                                dst_texture.path = null;
+                            }
+
+                            if (dst_texture.ref_resource == null and src_texture.ref_resource != null) {
+                                if (src_texture.width == 2 and src_texture.height == 2) {
+                                    if (src_texture.ref_resource.?.identifier) |id| {
+                                        if (ref_counting.cardinal_ref_acquire(id)) |acquired_res| {
+                                            dst_texture.ref_resource = acquired_res;
+                                            dst_texture.data = src_texture.data;
+                                        }
+                                    }
+                                }
+                            }
+
+                            if (dst_texture.ref_resource == null and src_texture.ref_resource != null) {
+                                model_log.warn("Texture copy failed to preserve ref_resource! Src: {*}, Dst: {*}", .{ src_texture.ref_resource, dst_texture.ref_resource });
+                            }
+                        }
+                    }
+
+                    if (scn.all_nodes) |src_nodes| {
+                        @memcpy(manager.combined_scene.all_nodes.?[node_offset .. node_offset + scn.all_node_count], src_nodes[0..scn.all_node_count]);
+                    }
+
+                    mesh_offset += scn.mesh_count;
+                    material_offset += scn.material_count;
+                    texture_offset += scn.texture_count;
+                    node_offset += scn.all_node_count;
+                }
+
+                manager.combined_scene.mesh_count = new_meshes;
+                manager.combined_scene.material_count = new_materials;
+                manager.combined_scene.texture_count = new_textures;
+                manager.combined_scene.all_node_count = new_nodes;
+                manager.scene_dirty = false;
+                return;
+            }
+        }
+    }
+
+    cleanup_combined_scene(manager);
 
     const meshes_ptr = memory.cardinal_calloc(allocator, total_meshes, @sizeOf(scene.CardinalMesh));
     if (meshes_ptr) |ptr| {
@@ -386,7 +544,6 @@ fn rebuild_combined_scene(manager: *CardinalModelManager) void {
 
         const scn = &model.scene;
 
-        // Copy meshes (No baking vertices, just transform matrix)
         if (scn.meshes) |src_meshes| {
             var m: u32 = 0;
             while (m < scn.mesh_count) : (m += 1) {
@@ -396,22 +553,18 @@ fn rebuild_combined_scene(manager: *CardinalModelManager) void {
                 if (src_mesh.vertices == null or src_mesh.vertex_count == 0 or
                     src_mesh.indices == null or src_mesh.index_count == 0)
                 {
-                    // Initialize empty
                     @memset(@as([*]u8, @ptrCast(dst_mesh))[0..@sizeOf(scene.CardinalMesh)], 0);
                     dst_mesh.visible = false;
                     continue;
                 }
 
-                // Shallow copy mesh data (vertices/indices pointers are shared)
                 dst_mesh.* = src_mesh.*;
                 dst_mesh.material_index += material_offset;
 
-                // Apply model transform to mesh transform
                 transform_math.cardinal_matrix_multiply(&model.transform, &src_mesh.transform, &dst_mesh.transform);
             }
         }
 
-        // Deep copy materials
         if (scn.materials) |src_materials| {
             var mat: u32 = 0;
             while (mat < scn.material_count) : (mat += 1) {
@@ -420,7 +573,6 @@ fn rebuild_combined_scene(manager: *CardinalModelManager) void {
 
                 dst_material.* = src_material.*;
 
-                // Adjust texture indices
                 if (dst_material.albedo_texture.is_valid()) dst_material.albedo_texture.index += texture_offset;
                 if (dst_material.normal_texture.is_valid()) dst_material.normal_texture.index += texture_offset;
                 if (dst_material.metallic_roughness_texture.is_valid()) dst_material.metallic_roughness_texture.index += texture_offset;
@@ -429,7 +581,6 @@ fn rebuild_combined_scene(manager: *CardinalModelManager) void {
             }
         }
 
-        // Deep copy textures
         if (scn.textures) |src_textures| {
             var tex: u32 = 0;
             while (tex < scn.texture_count) : (tex += 1) {
@@ -440,12 +591,9 @@ fn rebuild_combined_scene(manager: *CardinalModelManager) void {
 
                 var used_ref_counting = false;
                 if (src_texture.ref_resource) |res| {
-                    // Directly increment ref count and use the existing resource pointer
-                    // This ensures we preserve the link to the async loading resource
                     _ = @atomicRmw(u32, &res.ref_count, .Add, 1, .seq_cst);
                     dst_texture.ref_resource = res;
 
-                    // Update data pointer from the resource directly
                     if (res.resource) |r| {
                         const tex_data = @as(*texture_loader.TextureData, @ptrCast(@alignCast(r)));
                         dst_texture.data = tex_data.data;
@@ -477,7 +625,6 @@ fn rebuild_combined_scene(manager: *CardinalModelManager) void {
                     }
                 }
 
-                // Copy path
                 if (src_texture.path) |p| {
                     const path_len = std.mem.len(p);
                     const path_ptr = memory.cardinal_alloc(allocator, path_len + 1);
@@ -492,11 +639,8 @@ fn rebuild_combined_scene(manager: *CardinalModelManager) void {
                     dst_texture.path = null;
                 }
 
-                // Copy fallback texture
                 if (dst_texture.ref_resource == null and src_texture.ref_resource != null) {
-                    // Check if it's the fallback texture
                     if (src_texture.width == 2 and src_texture.height == 2) {
-                        // Try to acquire again
                         if (src_texture.ref_resource.?.identifier) |id| {
                             if (ref_counting.cardinal_ref_acquire(id)) |acquired_res| {
                                 dst_texture.ref_resource = acquired_res;
@@ -506,22 +650,16 @@ fn rebuild_combined_scene(manager: *CardinalModelManager) void {
                     }
                 }
 
-                // Debug logging
                 if (dst_texture.ref_resource == null and src_texture.ref_resource != null) {
                     model_log.warn("Texture copy failed to preserve ref_resource! Src: {*}, Dst: {*}", .{ src_texture.ref_resource, dst_texture.ref_resource });
-                } else if (dst_texture.ref_resource != null) {
-                    // model_log.debug("Texture copy preserved ref_resource: {*}", .{dst_texture.ref_resource});
                 }
             }
         }
 
-        // Copy Nodes
         if (scn.all_nodes) |src_nodes| {
-            // Shallow copy node pointers
             @memcpy(manager.combined_scene.all_nodes.?[node_offset .. node_offset + scn.all_node_count], src_nodes[0..scn.all_node_count]);
         }
 
-        // Copy Root Nodes
         if (scn.root_nodes) |src_roots| {
             if (manager.combined_scene.root_nodes) |dst_roots| {
                 @memcpy(dst_roots[manager.combined_scene.root_node_count .. manager.combined_scene.root_node_count + scn.root_node_count], src_roots[0..scn.root_node_count]);
@@ -529,25 +667,20 @@ fn rebuild_combined_scene(manager: *CardinalModelManager) void {
             }
         }
 
-        // Copy Animation System Data
         if (scn.animation_system != null and manager.combined_scene.animation_system != null) {
             const src_sys = @as(*animation.CardinalAnimationSystem, @ptrCast(@alignCast(scn.animation_system.?)));
             const dst_sys = @as(*animation.CardinalAnimationSystem, @ptrCast(@alignCast(manager.combined_scene.animation_system.?)));
 
-            // Copy Animations
             var anim_idx: u32 = 0;
             while (anim_idx < src_sys.animation_count) : (anim_idx += 1) {
-                // We need to create a temporary copy to adjust indices before adding
                 var anim = src_sys.animations.?[anim_idx];
 
-                // Deep copy channels to adjust indices
                 if (anim.channel_count > 0) {
                     const channels_ptr = memory.cardinal_alloc(allocator, anim.channel_count * @sizeOf(animation.CardinalAnimationChannel));
                     if (channels_ptr) |cp| {
                         const channels = @as([*]animation.CardinalAnimationChannel, @ptrCast(@alignCast(cp)));
                         @memcpy(channels[0..anim.channel_count], anim.channels.?[0..anim.channel_count]);
 
-                        // Adjust node indices
                         var c_idx: u32 = 0;
                         while (c_idx < anim.channel_count) : (c_idx += 1) {
                             channels[c_idx].target.node_index += node_offset;
@@ -557,7 +690,6 @@ fn rebuild_combined_scene(manager: *CardinalModelManager) void {
                         _ = animation.cardinal_animation_system_add_animation(dst_sys, &anim);
                         memory.cardinal_free(allocator, cp);
                     } else {
-                        // Fallback: add as is (will point to wrong nodes)
                         _ = animation.cardinal_animation_system_add_animation(dst_sys, &anim);
                     }
                 } else {
@@ -565,20 +697,13 @@ fn rebuild_combined_scene(manager: *CardinalModelManager) void {
                 }
             }
 
-            // Copy Skins
             var skin_idx: u32 = 0;
             while (skin_idx < src_sys.skin_count) : (skin_idx += 1) {
                 var skin = src_sys.skins.?[skin_idx];
 
-                // We need to adjust mesh_indices and bone node indices
-                // Skin structure is complex, might need deep copy of arrays if we can't modify in place.
-                // cardinal_animation_system_add_skin makes a deep copy.
-                // So we can allocate temps, modify, add, free.
-
                 var new_mesh_indices: ?[*]u32 = null;
                 var new_bones: ?[*]animation.CardinalBone = null;
 
-                // Adjust Mesh Indices
                 if (skin.mesh_count > 0 and skin.mesh_indices != null) {
                     const mi_ptr = memory.cardinal_alloc(allocator, skin.mesh_count * @sizeOf(u32));
                     if (mi_ptr) |mip| {
@@ -593,7 +718,6 @@ fn rebuild_combined_scene(manager: *CardinalModelManager) void {
                     }
                 }
 
-                // Adjust Bones
                 if (skin.bone_count > 0 and skin.bones != null) {
                     const b_ptr = memory.cardinal_alloc(allocator, skin.bone_count * @sizeOf(animation.CardinalBone));
                     if (b_ptr) |bp| {
@@ -637,10 +761,8 @@ fn rebuild_combined_scene(manager: *CardinalModelManager) void {
                     const src_skin = &sys.skins.?[skin_copy_idx];
                     const dst_skin = &dst_skins[skin_copy_idx];
 
-                    // Shallow copy struct first
                     dst_skin.* = src_skin.*;
 
-                    // Deep copy name
                     if (src_skin.name) |n| {
                         const len = std.mem.len(n);
                         const n_ptr = memory.cardinal_alloc(allocator, len + 1);
@@ -655,14 +777,12 @@ fn rebuild_combined_scene(manager: *CardinalModelManager) void {
                         dst_skin.name = null;
                     }
 
-                    // Deep copy bones
                     if (src_skin.bone_count > 0 and src_skin.bones != null) {
                         const bones_ptr = memory.cardinal_alloc(allocator, src_skin.bone_count * @sizeOf(animation.CardinalBone));
                         if (bones_ptr) |bp| {
                             dst_skin.bones = @ptrCast(@alignCast(bp));
                             @memcpy(dst_skin.bones.?[0..src_skin.bone_count], src_skin.bones.?[0..src_skin.bone_count]);
 
-                            // Deep copy bone names
                             var b: u32 = 0;
                             while (b < src_skin.bone_count) : (b += 1) {
                                 const src_bone = &src_skin.bones.?[b];
@@ -691,7 +811,6 @@ fn rebuild_combined_scene(manager: *CardinalModelManager) void {
                         dst_skin.bone_count = 0;
                     }
 
-                    // Deep copy mesh indices
                     if (src_skin.mesh_count > 0 and src_skin.mesh_indices != null) {
                         const mi_ptr = memory.cardinal_alloc(allocator, src_skin.mesh_count * @sizeOf(u32));
                         if (mi_ptr) |mip| {
@@ -743,25 +862,11 @@ fn update_combined_mesh_transforms(manager: *CardinalModelManager) void {
 
 fn free_model_load_task(task: *async_loader.CardinalAsyncTask) void {
     const status = async_loader.cardinal_async_get_task_status(task);
-    // If the task hasn't run (PENDING or CANCELLED), we need to clean up the custom data
-    // because finalize_model_task won't run to do it.
-    if (task.type == .CUSTOM and task.custom_data != null and (status == .PENDING or status == .CANCELLED)) {
-        const ctx = @as(*FinalizeContext, @ptrCast(@alignCast(task.custom_data)));
-        const allocator = memory.cardinal_get_allocator_for_category(.ASSETS);
-
-        // Free the dependency scene task which is otherwise leaked
-        async_loader.cardinal_async_free_task(ctx.scene_task);
-
-        // Free the context struct
-        memory.cardinal_free(allocator, ctx);
-
-        // Clear custom_data to prevent double free if something else tries
-        task.custom_data = null;
-    }
+    if (status == .RUNNING) return;
+    _ = async_loader.cardinal_async_cancel_task(task);
     async_loader.cardinal_async_free_task(task);
 }
 
-// Public API
 /// Initializes a model manager in-place.
 pub export fn cardinal_model_manager_init(manager: ?*CardinalModelManager) callconv(.c) bool {
     if (manager == null) return false;
@@ -798,7 +903,6 @@ pub export fn cardinal_model_manager_destroy(manager: ?*CardinalModelManager) ca
         memory.cardinal_free(allocator, models);
     }
 
-    // Destroy combined scene to release references
     cleanup_combined_scene(mgr);
 
     @memset(@as([*]u8, @ptrCast(mgr))[0..@sizeOf(CardinalModelManager)], 0);
@@ -809,15 +913,12 @@ pub export fn cardinal_model_manager_destroy(manager: ?*CardinalModelManager) ca
 pub export fn cardinal_model_manager_load_model(manager: ?*CardinalModelManager, file_path: ?[*:0]const u8, name: ?[*:0]const u8) callconv(.c) u32 {
     if (manager == null or file_path == null) return 0;
 
-    // Use the async loader but wait for completion to maintain synchronous API contract
-    // Priority 2 = HIGH
     const id = cardinal_model_manager_load_model_async(manager, file_path, name, 2);
     if (id == 0) return 0;
 
     const model = cardinal_model_manager_get_model(manager, id);
     if (model == null) return 0;
 
-    // Wait for the task chain to complete
     if (model.?.load_task) |task| {
         if (!async_loader.cardinal_async_wait_for_task(task, 0)) {
             model_log.err("Failed to wait for model load task for {s}", .{file_path.?});
@@ -827,41 +928,23 @@ pub export fn cardinal_model_manager_load_model(manager: ?*CardinalModelManager,
 
         const status = async_loader.cardinal_async_get_task_status(task);
         if (status == .COMPLETED) {
-            // Finalize the model (logic duplicated from update loop)
-            var success = false;
-            if (task.type == .CUSTOM) {
-                if (task.result_data) |result_ptr| {
-                    model_log.debug("Processing result data at {*}, model at {*}", .{ result_ptr, model.? });
-                    const result = @as(*FinalizedModelData, @ptrCast(@alignCast(result_ptr)));
+            const got_scene = async_loader.cardinal_async_get_scene_result(task, &model.?.scene);
 
-                    // Copy data to model
-                    model.?.scene = result.scene;
-                    model.?.bbox_min = result.bbox_min;
-                    model.?.bbox_max = result.bbox_max;
-
-                    // Free the result struct
-                    const allocator = memory.cardinal_get_allocator_for_category(.ASSETS);
-                    memory.cardinal_free(allocator, result_ptr);
-
-                    success = true;
-                    model.?.is_loading = false;
-                    manager.?.scene_dirty = true;
-
-                    const model_name_str = if (model.?.name) |n| n else "Unnamed";
-                    model_log.info("Synchronous (via Async) loading completed for model '{s}' (ID: {d}, {d} meshes)", .{ model_name_str, model.?.id, model.?.scene.mesh_count });
-                } else {
-                    model_log.err("Task completed but result_data is null", .{});
-                }
-            }
-
-            // Cleanup task
             free_model_load_task(task);
             model.?.load_task = null;
 
-            if (!success) {
+            if (!got_scene) {
                 _ = cardinal_model_manager_remove_model(manager, id);
                 return 0;
             }
+
+            optimize_scene_animations(&model.?.scene);
+            calculate_scene_bounds(&model.?.scene, &model.?.bbox_min, &model.?.bbox_max);
+            model.?.is_loading = false;
+            manager.?.scene_dirty = true;
+
+            const model_name_str = if (model.?.name) |n| n else "Unnamed";
+            model_log.info("Synchronous (via Async) loading completed for model '{s}' (ID: {d}, {d} meshes)", .{ model_name_str, model.?.id, model.?.scene.mesh_count });
         } else {
             const error_msg = async_loader.cardinal_async_get_error_message(task);
             const err_str = if (error_msg) |e| e else "Unknown error";
@@ -920,72 +1003,27 @@ pub export fn cardinal_model_manager_load_model_async(manager: ?*CardinalModelMa
     model.selected = false;
     model.is_loading = true;
 
-    // 1. Create Scene Load Task (Dependency)
-    // We don't set callbacks here as we'll handle everything in the chain
     const scene_task = async_loader.cardinal_async_load_scene(@ptrCast(file_path.?), @enumFromInt(priority), null, null);
     if (scene_task == null) {
         model_log.err("Failed to start async loading for {s}", .{file_path.?});
         if (model.name) |n| memory.cardinal_free(allocator, @ptrCast(n));
         if (model.file_path) |p| memory.cardinal_free(allocator, @ptrCast(p));
-        // Reset loading state
         model.is_loading = false;
         return 0;
     }
-
-    // 2. Create Context for Finalization
-    const ctx_ptr = memory.cardinal_alloc(allocator, @sizeOf(FinalizeContext));
-    if (ctx_ptr == null) {
-        async_loader.cardinal_async_free_task(scene_task);
-        if (model.name) |n| memory.cardinal_free(allocator, @ptrCast(n));
-        if (model.file_path) |p| memory.cardinal_free(allocator, @ptrCast(p));
-        return 0;
-    }
-    const ctx = @as(*FinalizeContext, @ptrCast(@alignCast(ctx_ptr)));
-    ctx.scene_task = scene_task.?;
-
-    // 3. Create Finalize Task (Dependent)
-    // This runs after scene load completes
-    // Note: We use create_custom_task (no submit) to ensure we can add dependencies before it starts
-    const finalize_task = async_loader.cardinal_async_create_custom_task(finalize_model_task, ctx, @enumFromInt(priority), null, null);
-    if (finalize_task == null) {
-        memory.cardinal_free(allocator, ctx_ptr);
-        async_loader.cardinal_async_free_task(scene_task);
-        if (model.name) |n| memory.cardinal_free(allocator, @ptrCast(n));
-        if (model.file_path) |p| memory.cardinal_free(allocator, @ptrCast(p));
-        return 0;
-    }
-
-    // 4. Add Dependency
-    // finalize_task depends on scene_task
-    if (!async_loader.cardinal_async_add_dependency(finalize_task, scene_task)) {
-        model_log.err("Failed to add task dependency", .{});
-        // If dependency add fails, we should cleanup.
-        // But since we haven't submitted finalize_task yet, we can safely free it.
-        async_loader.cardinal_async_free_task(finalize_task);
-        // scene_task is already submitted, let it run or cancel?
-        // Let's try to cancel
-        _ = async_loader.cardinal_async_cancel_task(scene_task);
-        return 0;
-    }
-
-    // 5. Submit Finalize Task
-    if (!async_loader.cardinal_async_submit_task(finalize_task)) {
-        model_log.err("Failed to submit finalize task", .{});
-        async_loader.cardinal_async_free_task(finalize_task);
-        return 0;
-    }
-
-    model.load_task = finalize_task;
+    model.load_task = scene_task;
 
     mgr.model_count += 1;
 
     const model_name_str = if (model.name) |n| n else "Unnamed";
-    model_log.info("Started async loading of model '{s}' from {s} (ID: {d}) with dependency chain", .{ model_name_str, file_path.?, model.id });
+    model_log.info("Started async loading of model '{s}' from {s} (ID: {d})", .{ model_name_str, file_path.?, model.id });
 
     return model.id;
 }
 
 /// Adds a loaded scene to the manager, taking ownership of its internal allocations.
+///
+/// This copies `in_scene` into the model instance and zeroes `in_scene` to prevent double-free.
 pub export fn cardinal_model_manager_add_scene(manager: ?*CardinalModelManager, in_scene: ?*scene.CardinalScene, file_path: ?[*:0]const u8, name: ?[*:0]const u8) callconv(.c) u32 {
     if (manager == null or in_scene == null) return 0;
     const mgr = manager.?;
@@ -1035,20 +1073,10 @@ pub export fn cardinal_model_manager_add_scene(manager: ?*CardinalModelManager, 
     model.is_loading = false;
     model.load_task = null;
 
-    // Move scene data
     model.scene = in_scene.?.*;
 
-    // We must NOT zero out the input scene here if it was allocated on the heap by the loader,
-    // because that would leave us with a dangling pointer or double-free issues if the loader tries to clean up.
-    // However, the loader (cardinal_async_load_scene) likely allocated the scene struct itself.
-    // By zeroing it, we prevent the loader from freeing the internal arrays (meshes, materials) which we just took ownership of.
-    // This is correct transfer of ownership.
     @memset(@as([*]u8, @ptrCast(in_scene.?))[0..@sizeOf(scene.CardinalScene)], 0);
 
-    // Optimize animations
-    // Note: optimization modifies the animation system in-place.
-    // We should only do this if we are sure the animation system is valid and initialized.
-    // The KFM loader might produce an empty animation system or one with 0 animations but non-null pointer?
     optimize_scene_animations(&model.scene);
 
     calculate_scene_bounds(&model.scene, &model.bbox_min, &model.bbox_max);
@@ -1208,46 +1236,19 @@ pub export fn cardinal_model_manager_update(manager: ?*CardinalModelManager) cal
 
                 if (status == .COMPLETED) {
                     const task = model.load_task.?;
-                    var success = false;
+                    const success = async_loader.cardinal_async_get_scene_result(task, &model.scene);
 
-                    if (task.type == .CUSTOM) {
-                        // This is the finalize task in the dependency chain
-                        if (task.result_data) |result_ptr| {
-                            const result = @as(*FinalizedModelData, @ptrCast(@alignCast(result_ptr)));
-
-                            // Copy data to model
-                            model.scene = result.scene;
-                            model.bbox_min = result.bbox_min;
-                            model.bbox_max = result.bbox_max;
-
-                            // Free the result struct (allocated in finalize_model_task)
-                            const allocator = memory.cardinal_get_allocator_for_category(.ASSETS);
-                            memory.cardinal_free(allocator, result_ptr);
-
-                            success = true;
-                            model.is_loading = false;
-                            mgr.scene_dirty = true;
-
-                            const model_name_str = if (model.name) |n| n else "Unnamed";
-                            model_log.info("Async loading chain completed for model '{s}' (ID: {d}, {d} meshes)", .{ model_name_str, model.id, model.scene.mesh_count });
-                        } else {
-                            model_log.err("Finalize task completed but no result data found", .{});
-                            success = false;
-                        }
-                    } else if (async_loader.cardinal_async_get_scene_result(task, &model.scene)) {
-                        // Direct scene load task
+                    if (!success) {
+                        const model_name_str = if (model.name) |n| n else "Unnamed";
+                        model_log.err("Failed to get scene result for model '{s}'", .{model_name_str});
+                    } else {
+                        optimize_scene_animations(&model.scene);
                         calculate_scene_bounds(&model.scene, &model.bbox_min, &model.bbox_max);
                         model.is_loading = false;
                         mgr.scene_dirty = true;
 
                         const model_name_str = if (model.name) |n| n else "Unnamed";
                         model_log.info("Async loading completed for model '{s}' (ID: {d}, {d} meshes)", .{ model_name_str, model.id, model.scene.mesh_count });
-                        success = true;
-                    }
-
-                    if (!success) {
-                        const model_name_str = if (model.name) |n| n else "Unnamed";
-                        model_log.err("Failed to get scene result for model '{s}'", .{model_name_str});
                     }
 
                     free_model_load_task(model.load_task.?);

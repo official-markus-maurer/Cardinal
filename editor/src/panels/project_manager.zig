@@ -124,7 +124,6 @@ fn load_project(state: *EditorState, allocator: std.mem.Allocator, path: []const
     state.ui.project = proj;
     state.ui.project_loaded = true;
 
-    // Add to recent projects
     add_recent_project(state, allocator, path);
 
     engine.window.cardinal_window_maximize(state.runtime.window);
@@ -162,6 +161,7 @@ fn create_project(state: *EditorState, allocator: std.mem.Allocator, path: []con
     load_project(state, allocator, path);
 }
 
+/// Adds `path` to the persisted recent-project list.
 fn add_recent_project(state: *EditorState, allocator: std.mem.Allocator, path: []const u8) void {
     _ = allocator;
     state.runtime.config_manager.addRecentProject(path) catch return;

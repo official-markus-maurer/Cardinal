@@ -12,6 +12,16 @@
       "transform": [1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1]
     },
     {
+      "file_path": "assets\\models\\pkg_a_curtains\\NewSponza_Curtains_glTF.gltf",
+      "visible": true,
+      "transform": [1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1]
+    },
+    {
+      "file_path": "assets\\models\\pkg_b_ivy\\NewSponza_IvyGrowth_glTF.gltf",
+      "visible": true,
+      "transform": [1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1]
+    },
+    {
       "file_path": "assets\\models\\pkg_b_ivy\\NewSponza_IvyGrowth_glTF.gltf",
       "visible": true,
       "transform": [1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1]
@@ -192,7 +202,7 @@
         },
         "Transform": {
           "position": [0.11376464, 4.373891, -0.016881408],
-          "rotation": [0, -0.00000008742278, 0, 1],
+          "rotation": [0, 0.00000008742278, 0, 1],
           "scale": [1, 1, 1]
         },
         "Node": {
@@ -2292,7 +2302,7 @@
         },
         "Transform": {
           "position": [2.1830301, 4.823324, -4.795822],
-          "rotation": [-0, 0.25881907, -0, 0.9659258],
+          "rotation": [0, -0.25881907, 0, 0.9659258],
           "scale": [1, 1, 1]
         },
         "Node": {
@@ -2460,7 +2470,7 @@
         },
         "Transform": {
           "position": [10.027344, 4.823324, -4.795822],
-          "rotation": [0, -0.17364824, 0, 0.9848078],
+          "rotation": [0, 0.17364824, 0, 0.9848078],
           "scale": [1, 1, 1]
         },
         "Node": {
@@ -2544,7 +2554,7 @@
         },
         "Transform": {
           "position": [-5.9220834, 4.823324, -4.794542],
-          "rotation": [0, -0.08715576, 0, 0.9961947],
+          "rotation": [0, 0.08715576, 0, 0.9961947],
           "scale": [0.9999999, 1, 0.9999999]
         },
         "Node": {
@@ -2628,7 +2638,7 @@
         },
         "Transform": {
           "position": [-9.825387, 4.823324, -4.794542],
-          "rotation": [0, -0.25881907, 0, 0.9659258],
+          "rotation": [0, 0.25881907, 0, 0.9659258],
           "scale": [1, 1, 1]
         },
         "Node": {
@@ -2712,7 +2722,7 @@
         },
         "Transform": {
           "position": [-13.5982065, 4.5638723, 0.062637106],
-          "rotation": [0, -0.53729963, 0, 0.8433914],
+          "rotation": [0, 0.53729963, 0, 0.8433914],
           "scale": [1, 1, 1]
         },
         "Node": {
@@ -2880,7 +2890,7 @@
         },
         "Transform": {
           "position": [-5.9220834, 4.823324, 4.740349],
-          "rotation": [0, -0.08715576, 0, 0.9961947],
+          "rotation": [0, 0.08715576, 0, 0.9961947],
           "scale": [0.9999999, 1, 0.9999999]
         },
         "Node": {
@@ -2964,7 +2974,7 @@
         },
         "Transform": {
           "position": [-9.825387, 4.823324, 4.740349],
-          "rotation": [0, -0.25881907, 0, 0.9659258],
+          "rotation": [0, 0.25881907, 0, 0.9659258],
           "scale": [1, 1, 1]
         },
         "Node": {
@@ -3048,7 +3058,7 @@
         },
         "Transform": {
           "position": [10.158051, 4.823324, 4.743867],
-          "rotation": [-0, 0.1305262, -0, 0.9914449],
+          "rotation": [0, -0.1305262, 0, 0.9914449],
           "scale": [1, 1, 1]
         },
         "Node": {
@@ -3132,7 +3142,7 @@
         },
         "Transform": {
           "position": [2.1830301, 4.823324, 4.739069],
-          "rotation": [-0, 0.25881907, -0, 0.9659258],
+          "rotation": [0, -0.25881907, 0, 0.9659258],
           "scale": [1, 1, 1]
         },
         "Node": {
@@ -3692,7 +3702,7 @@
         },
         "Transform": {
           "position": [0.11376464, 4.373891, -0.016881408],
-          "rotation": [0, -0.00000008742278, 0, 1],
+          "rotation": [0, 0.00000008742278, 0, 1],
           "scale": [1, 1, 1]
         },
         "Node": {
@@ -3776,7 +3786,7 @@
         },
         "Transform": {
           "position": [-15.945751, 0.22804444, 0.09938076],
-          "rotation": [0, -0.7071068, 0, 0.7071067],
+          "rotation": [0, 0.7071068, 0, 0.7071067],
           "scale": [0.46996292, 0.46996295, 0.46996292]
         },
         "Node": {
@@ -3804,7 +3814,7 @@
         },
         "Transform": {
           "position": [-11.116789, 1.1709985, -4.7802944],
-          "rotation": [-0.49999985, -0.5000001, 0.50000024, 0.49999985],
+          "rotation": [-0.49999985, -0.5000001, 0.50000024, -0.49999985],
           "scale": [1, 1, 1.0000001]
         },
         "Node": {
@@ -3937,7 +3947,7 @@
         },
         "Transform": {
           "position": [-8.144192, 6.1001606, 0.021669254],
-          "rotation": [0, -0.00000008742278, 0, 1],
+          "rotation": [0, 0.00000008742278, 0, 1],
           "scale": [1, 1, 1]
         },
         "Node": {
@@ -4189,7 +4199,7 @@
         },
         "Transform": {
           "position": [-8.063949, 6.06661, 2.9510303],
-          "rotation": [0, 0, -0.00000008742278, 1],
+          "rotation": [0, 0, 0.00000008742278, 1],
           "scale": [1, 1, 1]
         },
         "Node": {
@@ -8277,7 +8287,7 @@
         },
         "Transform": {
           "position": [2.1635416, 10.383441, 4.6642475],
-          "rotation": [-0, 0.043619394, -0, 0.99904823],
+          "rotation": [0, -0.043619394, 0, 0.99904823],
           "scale": [1, 1, 1]
         },
         "Node": {
@@ -8361,7 +8371,7 @@
         },
         "Transform": {
           "position": [-5.847364, 10.383441, 4.670384],
-          "rotation": [-0, 0.64278764, -0, 0.76604444],
+          "rotation": [0, -0.64278764, 0, 0.76604444],
           "scale": [1, 1, 1]
         },
         "Node": {
@@ -8445,7 +8455,7 @@
         },
         "Transform": {
           "position": [-9.773459, 10.383441, 4.7402296],
-          "rotation": [-0, 0.8433915, -0, 0.5372996],
+          "rotation": [0, -0.8433915, 0, 0.5372996],
           "scale": [1, 1, 1]
         },
         "Node": {
@@ -8529,7 +8539,7 @@
         },
         "Transform": {
           "position": [2.1634457, 10.383441, -4.6953483],
-          "rotation": [0, -0.1305262, 0, 0.9914449],
+          "rotation": [0, 0.1305262, 0, 0.9914449],
           "scale": [0.9999999, 1, 0.9999999]
         },
         "Node": {
@@ -8613,7 +8623,7 @@
         },
         "Transform": {
           "position": [-5.852589, 10.383441, -4.661562],
-          "rotation": [0, 0.8660254, 0, 0.5],
+          "rotation": [0, 0.8660254, 0, -0.5],
           "scale": [1, 1, 1]
         },
         "Node": {
@@ -8697,7 +8707,7 @@
         },
         "Transform": {
           "position": [-9.753705, 10.383441, -4.7264633],
-          "rotation": [-0, 0.7372774, -0, 0.67559016],
+          "rotation": [0, -0.7372774, 0, 0.67559016],
           "scale": [1, 1, 1]
         },
         "Node": {
@@ -8781,7 +8791,7 @@
         },
         "Transform": {
           "position": [10.066172, 10.383441, -4.7245164],
-          "rotation": [-0, 0.25881907, -0, 0.9659258],
+          "rotation": [0, -0.25881907, 0, 0.9659258],
           "scale": [1, 1, 1]
         },
         "Node": {
@@ -8921,7 +8931,7 @@
         },
         "Transform": {
           "position": [0.1679242, 8.079009, -0.30849546],
-          "rotation": [0, 1, 0, 0.000000011924881],
+          "rotation": [0, 1, 0, -0.000000011924881],
           "scale": [1, 1, 1]
         },
         "Node": {
@@ -9390,7 +9400,7 @@
         },
         "Transform": {
           "position": [10.204414, 16.703466, 0.14466888],
-          "rotation": [0, -0.00000008742278, 0, 1],
+          "rotation": [0, 0.00000008742278, 0, 1],
           "scale": [1, 1, 1]
         },
         "Node": {
@@ -9586,7 +9596,7 @@
         },
         "Transform": {
           "position": [-11.965725, 16.884779, 0.01802246],
-          "rotation": [0, -0.00000008742278, 0, 1],
+          "rotation": [0, 0.00000008742278, 0, 1],
           "scale": [1, 1, 1]
         },
         "Node": {
@@ -9754,7 +9764,7 @@
         },
         "Transform": {
           "position": [7.517241, 16.175005, -5.4767466],
-          "rotation": [0, -0.00000008742278, 0, 1],
+          "rotation": [0, 0.00000008742278, 0, 1],
           "scale": [1, 1, 1]
         },
         "Node": {
@@ -11525,7 +11535,7 @@
         "Name": "HDRI_SKY",
         "Transform": {
           "position": [-0.41305023, 2.089697, -13.786082],
-          "rotation": [0.00000005960464, -0.0000000000000013322676, 0.00000001490116, 1],
+          "rotation": [-0.00000005960464, 0.0000000000000013322676, -0.00000001490116, 1],
           "scale": [1, 1, 1]
         },
         "Node": {
@@ -11539,7 +11549,7 @@
         "Name": "SUN",
         "Transform": {
           "position": [-21.704859, 43.41434, -6.1498837],
-          "rotation": [0.29870266, 0.68075705, 0.36124986, 0.56288993],
+          "rotation": [-0.29870266, -0.68075705, -0.36124986, 0.56288993],
           "scale": [1.0000001, 1.0000001, 1]
         },
         "Node": {
@@ -11553,7 +11563,7 @@
         "Name": "lamp_light_1st_floor_12",
         "Transform": {
           "position": [15.619152, 3.2758443, -0.9174349],
-          "rotation": [-0.000000029802322, 0.6495221, 0, 0.7603427],
+          "rotation": [0.000000029802322, -0.6495221, 0, 0.7603427],
           "scale": [0.99999994, 0.99999994, 0.99999994]
         },
         "Node": {
@@ -11567,7 +11577,7 @@
         "Name": "lamp_light_1st_floor_11",
         "Transform": {
           "position": [10.024332, 4.1713915, -4.7909956],
-          "rotation": [-0.000000029802322, 0.6495221, 0, 0.7603427],
+          "rotation": [0.000000029802322, -0.6495221, 0, 0.7603427],
           "scale": [0.99999994, 0.99999994, 0.99999994]
         },
         "Node": {
@@ -11581,7 +11591,7 @@
         "Name": "lamp_light_1st_floor_10",
         "Transform": {
           "position": [6.141829, 4.1713915, -4.806306],
-          "rotation": [-0.000000029802322, 0.6495221, 0, 0.7603427],
+          "rotation": [0.000000029802322, -0.6495221, 0, 0.7603427],
           "scale": [0.99999994, 0.99999994, 0.99999994]
         },
         "Node": {
@@ -11595,7 +11605,7 @@
         "Name": "lamp_light_1st_floor_09",
         "Transform": {
           "position": [2.1935785, 4.1713915, -4.806306],
-          "rotation": [-0.000000029802322, 0.6495221, 0, 0.7603427],
+          "rotation": [0.000000029802322, -0.6495221, 0, 0.7603427],
           "scale": [0.99999994, 0.99999994, 0.99999994]
         },
         "Node": {
@@ -11609,7 +11619,7 @@
         "Name": "lamp_light_1st_floor_08",
         "Transform": {
           "position": [-1.849446, 4.1713915, -4.806306],
-          "rotation": [-0.000000029802322, 0.6495221, 0, 0.7603427],
+          "rotation": [0.000000029802322, -0.6495221, 0, 0.7603427],
           "scale": [0.99999994, 0.99999994, 0.99999994]
         },
         "Node": {
@@ -11623,7 +11633,7 @@
         "Name": "lamp_light_1st_floor_07",
         "Transform": {
           "position": [-5.928595, 4.1713915, -4.806306],
-          "rotation": [-0.000000029802322, 0.6495221, 0, 0.7603427],
+          "rotation": [0.000000029802322, -0.6495221, 0, 0.7603427],
           "scale": [0.99999994, 0.99999994, 0.99999994]
         },
         "Node": {
@@ -11637,7 +11647,7 @@
         "Name": "lamp_light_1st_floor_06",
         "Transform": {
           "position": [-9.82472, 4.1713915, -4.806306],
-          "rotation": [-0.000000029802322, 0.6495221, 0, 0.7603427],
+          "rotation": [0.000000029802322, -0.6495221, 0, 0.7603427],
           "scale": [0.99999994, 0.99999994, 0.99999994]
         },
         "Node": {
@@ -11651,7 +11661,7 @@
         "Name": "lamp_light_1st_floor_05",
         "Transform": {
           "position": [10.024332, 4.1713915, 4.757481],
-          "rotation": [-0.000000029802322, 0.6495221, 0, 0.7603427],
+          "rotation": [0.000000029802322, -0.6495221, 0, 0.7603427],
           "scale": [0.99999994, 0.99999994, 0.99999994]
         },
         "Node": {
@@ -11665,7 +11675,7 @@
         "Name": "lamp_light_1st_floor_04",
         "Transform": {
           "position": [6.141829, 4.1713915, 4.742171],
-          "rotation": [-0.000000029802322, 0.6495221, 0, 0.7603427],
+          "rotation": [0.000000029802322, -0.6495221, 0, 0.7603427],
           "scale": [0.99999994, 0.99999994, 0.99999994]
         },
         "Node": {
@@ -11679,7 +11689,7 @@
         "Name": "lamp_light_1st_floor_03",
         "Transform": {
           "position": [2.1935785, 4.1713915, 4.742171],
-          "rotation": [-0.000000029802322, 0.6495221, 0, 0.7603427],
+          "rotation": [0.000000029802322, -0.6495221, 0, 0.7603427],
           "scale": [0.99999994, 0.99999994, 0.99999994]
         },
         "Node": {
@@ -11693,7 +11703,7 @@
         "Name": "lamp_light_1st_floor_02",
         "Transform": {
           "position": [-1.849446, 4.1713915, 4.742171],
-          "rotation": [-0.000000029802322, 0.6495221, 0, 0.7603427],
+          "rotation": [0.000000029802322, -0.6495221, 0, 0.7603427],
           "scale": [0.99999994, 0.99999994, 0.99999994]
         },
         "Node": {
@@ -11707,7 +11717,7 @@
         "Name": "lamp_light_1st_floor_01",
         "Transform": {
           "position": [-5.928595, 4.1713915, 4.742171],
-          "rotation": [-0.000000029802322, 0.6495221, 0, 0.7603427],
+          "rotation": [0.000000029802322, -0.6495221, 0, 0.7603427],
           "scale": [0.99999994, 0.99999994, 0.99999994]
         },
         "Node": {
@@ -11721,7 +11731,7 @@
         "Name": "lamp_light_1st_floor_13",
         "Transform": {
           "position": [-9.82472, 4.1713915, 4.742171],
-          "rotation": [-0.000000029802322, 0.6495221, 0, 0.7603427],
+          "rotation": [0.000000029802322, -0.6495221, 0, 0.7603427],
           "scale": [0.99999994, 0.99999994, 0.99999994]
         },
         "Node": {
@@ -11735,7 +11745,7 @@
         "Name": "lamp_light_2nd_floor_08",
         "Transform": {
           "position": [-5.848376, 9.285233, 4.6650343],
-          "rotation": [-0.000000029802322, 0.6495221, 0, 0.7603427],
+          "rotation": [0.000000029802322, -0.6495221, 0, 0.7603427],
           "scale": [0.99999994, 0.99999994, 0.99999994]
         },
         "Node": {
@@ -11749,7 +11759,7 @@
         "Name": "lamp_light_2nd_floor_01",
         "Transform": {
           "position": [-9.765947, 9.285233, 4.742171],
-          "rotation": [-0.000000029802322, 0.6495221, 0, 0.7603427],
+          "rotation": [0.000000029802322, -0.6495221, 0, 0.7603427],
           "scale": [0.99999994, 0.99999994, 0.99999994]
         },
         "Node": {
@@ -11763,7 +11773,7 @@
         "Name": "lamp_light_2nd_floor_02",
         "Transform": {
           "position": [2.1614978, 9.285233, 4.6650343],
-          "rotation": [-0.000000029802322, 0.6495221, 0, 0.7603427],
+          "rotation": [0.000000029802322, -0.6495221, 0, 0.7603427],
           "scale": [0.99999994, 0.99999994, 0.99999994]
         },
         "Node": {
@@ -11777,7 +11787,7 @@
         "Name": "lamp_light_2nd_floor_03",
         "Transform": {
           "position": [10.075267, 9.285233, 4.725814],
-          "rotation": [-0.000000029802322, 0.6495221, 0, 0.7603427],
+          "rotation": [0.000000029802322, -0.6495221, 0, 0.7603427],
           "scale": [0.99999994, 0.99999994, 0.99999994]
         },
         "Node": {
@@ -11791,7 +11801,7 @@
         "Name": "lamp_light_2nd_floor_04",
         "Transform": {
           "position": [10.075267, 9.285233, -4.7271085],
-          "rotation": [-0.000000029802322, 0.6495221, 0, 0.7603427],
+          "rotation": [0.000000029802322, -0.6495221, 0, 0.7603427],
           "scale": [0.99999994, 0.99999994, 0.99999994]
         },
         "Node": {
@@ -11805,7 +11815,7 @@
         "Name": "lamp_light_2nd_floor_05",
         "Transform": {
           "position": [2.0937212, 9.285233, -4.6540666],
-          "rotation": [-0.000000029802322, 0.6495221, 0, 0.7603427],
+          "rotation": [0.000000029802322, -0.6495221, 0, 0.7603427],
           "scale": [0.99999994, 0.99999994, 0.99999994]
         },
         "Node": {
@@ -11819,7 +11829,7 @@
         "Name": "lamp_light_2nd_floor_06",
         "Transform": {
           "position": [-5.84765, 9.285233, -4.663137],
-          "rotation": [-0.000000029802322, 0.6495221, 0, 0.7603427],
+          "rotation": [0.000000029802322, -0.6495221, 0, 0.7603427],
           "scale": [0.99999994, 0.99999994, 0.99999994]
         },
         "Node": {
@@ -11833,7 +11843,7 @@
         "Name": "lamp_light_2nd_floor_07",
         "Transform": {
           "position": [-9.751104, 9.285233, -4.729569],
-          "rotation": [-0.000000029802322, 0.6495221, 0, 0.7603427],
+          "rotation": [0.000000029802322, -0.6495221, 0, 0.7603427],
           "scale": [0.99999994, 0.99999994, 0.99999994]
         },
         "Node": {
@@ -11847,7 +11857,7 @@
         "Name": "lamp_light_1st_floor_14",
         "Transform": {
           "position": [-13.589994, 3.867794, 0.06591804],
-          "rotation": [-0.000000029802322, 0.6495221, 0, 0.7603427],
+          "rotation": [0.000000029802322, -0.6495221, 0, 0.7603427],
           "scale": [0.99999994, 0.99999994, 0.99999994]
         },
         "Node": {
@@ -11861,7 +11871,7 @@
         "Name": "PhysCamera001",
         "Transform": {
           "position": [-8.80743, 1.5922195, -0.85825783],
-          "rotation": [-0.062298603, 0.76623154, -0.07516095, 0.63510555],
+          "rotation": [0.062298603, -0.76623154, 0.07516095, 0.63510555],
           "scale": [0.99999994, 0.99999994, 0.9999998]
         },
         "Node": {
@@ -11875,7 +11885,7 @@
         "Name": "PhysCamera002",
         "Transform": {
           "position": [10.531103, 7.352985, 1.5282513],
-          "rotation": [-0.008424938, -0.66132605, 0.007428735, 0.7500145],
+          "rotation": [0.008424938, 0.66132605, -0.007428735, 0.7500145],
           "scale": [1, 1, 1]
         },
         "Node": {
@@ -11889,7 +11899,7 @@
         "Name": "PhysCamera003",
         "Transform": {
           "position": [2.7030184, 1.3548956, 2.1113815],
-          "rotation": [-0.035302497, -0.5770182, 0.024976108, 0.8155857],
+          "rotation": [0.035302497, 0.5770182, -0.024976108, 0.8155857],
           "scale": [1, 1, 1]
         },
         "Node": {
@@ -11903,7 +11913,7 @@
         "Name": "PhysCamera004",
         "Transform": {
           "position": [-9.594356, 6.921101, 5.35278],
-          "rotation": [0.008261681, 0.57577384, 0.005818486, 0.8175466],
+          "rotation": [-0.008261681, -0.57577384, -0.005818486, 0.8175466],
           "scale": [0.9999999, 0.99999994, 0.99999994]
         },
         "Node": {
@@ -11917,7 +11927,7 @@
         "Name": "PhysCamera005",
         "Transform": {
           "position": [-2.23714, 0.7440546, 2.3608017],
-          "rotation": [-0.10425183, 0.5226034, -0.06457469, 0.8437105],
+          "rotation": [0.10425183, -0.5226034, 0.06457469, 0.8437105],
           "scale": [1, 1, 1.0000001]
         },
         "Node": {
@@ -11931,7 +11941,7 @@
         "Name": "PhysCamera006",
         "Transform": {
           "position": [-6.5954857, 10.879122, -0.6290613],
-          "rotation": [0.095385775, 0.70684105, 0.09712984, 0.6941492],
+          "rotation": [-0.095385775, -0.70684105, -0.09712984, 0.6941492],
           "scale": [0.99999994, 0.99999994, 1]
         },
         "Node": {
@@ -11945,15 +11955,15 @@
         "Name": "curtain_holder_01",
         "Transform": {
           "position": [0.1645671, 4.031386, -3.2706473],
-          "rotation": [-0.7071068, 0, 0, 0.7071067],
+          "rotation": [0.7071068, 0, 0, 0.7071067],
           "scale": [1, 0.99999994, 0.99999994]
         },
         "Node": {
           "type": "MeshInstance3D"
         },
         "MeshRenderer": {
-          "mesh_id": 0,
-          "material_id": 0,
+          "mesh_id": 405,
+          "material_id": 28,
           "visible": true,
           "cast_shadows": true,
           "receive_shadows": true
@@ -11973,8 +11983,8 @@
           "type": "MeshInstance3D"
         },
         "MeshRenderer": {
-          "mesh_id": 1,
-          "material_id": 1,
+          "mesh_id": 406,
+          "material_id": 28,
           "visible": true,
           "cast_shadows": true,
           "receive_shadows": true
@@ -11987,15 +11997,15 @@
         "Name": "curtain_01",
         "Transform": {
           "position": [8.344225, 3.1049097, 1.5779229],
-          "rotation": [0.50000006, -0.4999999, 0.5000002, -0.4999999],
+          "rotation": [0.50000006, -0.4999999, 0.5000002, 0.4999999],
           "scale": [1.0000001, 1, 1]
         },
         "Node": {
           "type": "MeshInstance3D"
         },
         "MeshRenderer": {
-          "mesh_id": 2,
-          "material_id": 0,
+          "mesh_id": 407,
+          "material_id": 29,
           "visible": true,
           "cast_shadows": true,
           "receive_shadows": true
@@ -12022,8 +12032,8 @@
           "type": "MeshInstance3D"
         },
         "MeshRenderer": {
-          "mesh_id": 3,
-          "material_id": 1,
+          "mesh_id": 408,
+          "material_id": 28,
           "visible": true,
           "cast_shadows": true,
           "receive_shadows": true
@@ -12050,8 +12060,8 @@
           "type": "MeshInstance3D"
         },
         "MeshRenderer": {
-          "mesh_id": 4,
-          "material_id": 2,
+          "mesh_id": 409,
+          "material_id": 29,
           "visible": true,
           "cast_shadows": true,
           "receive_shadows": true
@@ -12078,8 +12088,8 @@
           "type": "MeshInstance3D"
         },
         "MeshRenderer": {
-          "mesh_id": 5,
-          "material_id": 3,
+          "mesh_id": 410,
+          "material_id": 30,
           "visible": true,
           "cast_shadows": true,
           "receive_shadows": true
@@ -12106,8 +12116,8 @@
           "type": "MeshInstance3D"
         },
         "MeshRenderer": {
-          "mesh_id": 6,
-          "material_id": 4,
+          "mesh_id": 411,
+          "material_id": 28,
           "visible": true,
           "cast_shadows": true,
           "receive_shadows": true
@@ -12134,8 +12144,8 @@
           "type": "MeshInstance3D"
         },
         "MeshRenderer": {
-          "mesh_id": 7,
-          "material_id": 5,
+          "mesh_id": 412,
+          "material_id": 29,
           "visible": true,
           "cast_shadows": true,
           "receive_shadows": true
@@ -12162,8 +12172,8 @@
           "type": "MeshInstance3D"
         },
         "MeshRenderer": {
-          "mesh_id": 8,
-          "material_id": 6,
+          "mesh_id": 413,
+          "material_id": 31,
           "visible": true,
           "cast_shadows": true,
           "receive_shadows": true
@@ -12190,8 +12200,8 @@
           "type": "MeshInstance3D"
         },
         "MeshRenderer": {
-          "mesh_id": 9,
-          "material_id": 1,
+          "mesh_id": 414,
+          "material_id": 28,
           "visible": true,
           "cast_shadows": true,
           "receive_shadows": true
@@ -12218,8 +12228,8 @@
           "type": "MeshInstance3D"
         },
         "MeshRenderer": {
-          "mesh_id": 10,
-          "material_id": 7,
+          "mesh_id": 415,
+          "material_id": 29,
           "visible": true,
           "cast_shadows": true,
           "receive_shadows": true
@@ -12246,8 +12256,8 @@
           "type": "MeshInstance3D"
         },
         "MeshRenderer": {
-          "mesh_id": 11,
-          "material_id": 8,
+          "mesh_id": 416,
+          "material_id": 28,
           "visible": true,
           "cast_shadows": true,
           "receive_shadows": true
@@ -12274,8 +12284,8 @@
           "type": "MeshInstance3D"
         },
         "MeshRenderer": {
-          "mesh_id": 12,
-          "material_id": 5,
+          "mesh_id": 417,
+          "material_id": 29,
           "visible": true,
           "cast_shadows": true,
           "receive_shadows": true
@@ -12302,8 +12312,8 @@
           "type": "MeshInstance3D"
         },
         "MeshRenderer": {
-          "mesh_id": 13,
-          "material_id": 6,
+          "mesh_id": 418,
+          "material_id": 31,
           "visible": true,
           "cast_shadows": true,
           "receive_shadows": true
@@ -12330,8 +12340,8 @@
           "type": "MeshInstance3D"
         },
         "MeshRenderer": {
-          "mesh_id": 14,
-          "material_id": 9,
+          "mesh_id": 419,
+          "material_id": 28,
           "visible": true,
           "cast_shadows": true,
           "receive_shadows": true
@@ -12358,8 +12368,8 @@
           "type": "MeshInstance3D"
         },
         "MeshRenderer": {
-          "mesh_id": 15,
-          "material_id": 10,
+          "mesh_id": 420,
+          "material_id": 29,
           "visible": true,
           "cast_shadows": true,
           "receive_shadows": true
@@ -12386,8 +12396,8 @@
           "type": "MeshInstance3D"
         },
         "MeshRenderer": {
-          "mesh_id": 16,
-          "material_id": 9,
+          "mesh_id": 421,
+          "material_id": 30,
           "visible": true,
           "cast_shadows": true,
           "receive_shadows": true
@@ -12407,15 +12417,15 @@
         },
         "Transform": {
           "position": [-5.7582464, 2.2240562, -3.155316],
-          "rotation": [-0.7071068, 0, 0, 0.7071067],
+          "rotation": [0.7071068, 0, 0, 0.7071067],
           "scale": [1, 0.99999994, 0.99999994]
         },
         "Node": {
           "type": "MeshInstance3D"
         },
         "MeshRenderer": {
-          "mesh_id": 17,
-          "material_id": 10,
+          "mesh_id": 422,
+          "material_id": 28,
           "visible": true,
           "cast_shadows": true,
           "receive_shadows": true
@@ -12442,8 +12452,8 @@
           "type": "MeshInstance3D"
         },
         "MeshRenderer": {
-          "mesh_id": 18,
-          "material_id": 9,
+          "mesh_id": 423,
+          "material_id": 29,
           "visible": true,
           "cast_shadows": true,
           "receive_shadows": true
@@ -12470,8 +12480,8 @@
           "type": "MeshInstance3D"
         },
         "MeshRenderer": {
-          "mesh_id": 19,
-          "material_id": 10,
+          "mesh_id": 424,
+          "material_id": 30,
           "visible": true,
           "cast_shadows": true,
           "receive_shadows": true
@@ -12498,8 +12508,8 @@
           "type": "MeshInstance3D"
         },
         "MeshRenderer": {
-          "mesh_id": 20,
-          "material_id": 9,
+          "mesh_id": 425,
+          "material_id": 28,
           "visible": true,
           "cast_shadows": true,
           "receive_shadows": true
@@ -12526,8 +12536,8 @@
           "type": "MeshInstance3D"
         },
         "MeshRenderer": {
-          "mesh_id": 21,
-          "material_id": 10,
+          "mesh_id": 426,
+          "material_id": 29,
           "visible": true,
           "cast_shadows": true,
           "receive_shadows": true
@@ -12554,8 +12564,8 @@
           "type": "MeshInstance3D"
         },
         "MeshRenderer": {
-          "mesh_id": 22,
-          "material_id": 9,
+          "mesh_id": 427,
+          "material_id": 30,
           "visible": true,
           "cast_shadows": true,
           "receive_shadows": true
@@ -12575,15 +12585,15 @@
         },
         "Transform": {
           "position": [5.670447, 2.224758, 3.0441115],
-          "rotation": [0, 1, 0, 0.00000004371139],
+          "rotation": [0, 1, 0, -0.00000004371139],
           "scale": [1, 1, 1]
         },
         "Node": {
           "type": "MeshInstance3D"
         },
         "MeshRenderer": {
-          "mesh_id": 23,
-          "material_id": 10,
+          "mesh_id": 428,
+          "material_id": 28,
           "visible": true,
           "cast_shadows": true,
           "receive_shadows": true
@@ -12610,8 +12620,8 @@
           "type": "MeshInstance3D"
         },
         "MeshRenderer": {
-          "mesh_id": 24,
-          "material_id": 2,
+          "mesh_id": 429,
+          "material_id": 29,
           "visible": true,
           "cast_shadows": true,
           "receive_shadows": true
@@ -12638,8 +12648,8 @@
           "type": "MeshInstance3D"
         },
         "MeshRenderer": {
-          "mesh_id": 25,
-          "material_id": 11,
+          "mesh_id": 430,
+          "material_id": 30,
           "visible": true,
           "cast_shadows": true,
           "receive_shadows": true
@@ -12659,15 +12669,15 @@
         },
         "Transform": {
           "position": [-2.0598884, 0, 2.9039712],
-          "rotation": [0, 1, 0, 0.00000004371139],
+          "rotation": [0, 1, 0, -0.00000004371139],
           "scale": [1, 1, 1]
         },
         "Node": {
           "type": "MeshInstance3D"
         },
         "MeshRenderer": {
-          "mesh_id": 26,
-          "material_id": 12,
+          "mesh_id": 431,
+          "material_id": 28,
           "visible": true,
           "cast_shadows": true,
           "receive_shadows": true
@@ -12694,8 +12704,8 @@
           "type": "MeshInstance3D"
         },
         "MeshRenderer": {
-          "mesh_id": 27,
-          "material_id": 2,
+          "mesh_id": 432,
+          "material_id": 29,
           "visible": true,
           "cast_shadows": true,
           "receive_shadows": true
@@ -12722,8 +12732,8 @@
           "type": "MeshInstance3D"
         },
         "MeshRenderer": {
-          "mesh_id": 28,
-          "material_id": 11,
+          "mesh_id": 433,
+          "material_id": 30,
           "visible": true,
           "cast_shadows": true,
           "receive_shadows": true
@@ -12743,15 +12753,15 @@
         },
         "Transform": {
           "position": [1.9387213, 0, 2.9062645],
-          "rotation": [0, 1, 0, 0.00000004371139],
+          "rotation": [0, 1, 0, -0.00000004371139],
           "scale": [1, 1, 1]
         },
         "Node": {
           "type": "MeshInstance3D"
         },
         "MeshRenderer": {
-          "mesh_id": 29,
-          "material_id": 12,
+          "mesh_id": 434,
+          "material_id": 28,
           "visible": true,
           "cast_shadows": true,
           "receive_shadows": true
@@ -12778,8 +12788,8 @@
           "type": "MeshInstance3D"
         },
         "MeshRenderer": {
-          "mesh_id": 30,
-          "material_id": 7,
+          "mesh_id": 435,
+          "material_id": 29,
           "visible": true,
           "cast_shadows": true,
           "receive_shadows": true
@@ -12806,8 +12816,8 @@
           "type": "MeshInstance3D"
         },
         "MeshRenderer": {
-          "mesh_id": 31,
-          "material_id": 13,
+          "mesh_id": 436,
+          "material_id": 30,
           "visible": true,
           "cast_shadows": true,
           "receive_shadows": true
@@ -12827,15 +12837,15 @@
         },
         "Transform": {
           "position": [6.0632925, 2.2240562, 3.0547326],
-          "rotation": [0.000000030908627, -0.7071068, 0.7071068, -0.000000030908627],
+          "rotation": [0.000000030908627, -0.7071068, 0.7071068, 0.000000030908627],
           "scale": [1.0000002, 1.0000001, 1.0000001]
         },
         "Node": {
           "type": "MeshInstance3D"
         },
         "MeshRenderer": {
-          "mesh_id": 32,
-          "material_id": 2,
+          "mesh_id": 437,
+          "material_id": 28,
           "visible": true,
           "cast_shadows": true,
           "receive_shadows": true
@@ -12862,8 +12872,8 @@
           "type": "MeshInstance3D"
         },
         "MeshRenderer": {
-          "mesh_id": 33,
-          "material_id": 14,
+          "mesh_id": 438,
+          "material_id": 29,
           "visible": true,
           "cast_shadows": true,
           "receive_shadows": true
@@ -12890,8 +12900,8 @@
           "type": "MeshInstance3D"
         },
         "MeshRenderer": {
-          "mesh_id": 34,
-          "material_id": 7,
+          "mesh_id": 439,
+          "material_id": 30,
           "visible": true,
           "cast_shadows": true,
           "receive_shadows": true
@@ -12911,15 +12921,15 @@
         },
         "Transform": {
           "position": [1.9214761, 0, 2.9681718],
-          "rotation": [0, 1, 0, 0.00000004371139],
+          "rotation": [0, 1, 0, -0.00000004371139],
           "scale": [1, 1, 1]
         },
         "Node": {
           "type": "MeshInstance3D"
         },
         "MeshRenderer": {
-          "mesh_id": 35,
-          "material_id": 15,
+          "mesh_id": 440,
+          "material_id": 28,
           "visible": true,
           "cast_shadows": true,
           "receive_shadows": true
@@ -12946,8 +12956,8 @@
           "type": "MeshInstance3D"
         },
         "MeshRenderer": {
-          "mesh_id": 36,
-          "material_id": 2,
+          "mesh_id": 441,
+          "material_id": 29,
           "visible": true,
           "cast_shadows": true,
           "receive_shadows": true
@@ -12974,8 +12984,8 @@
           "type": "MeshInstance3D"
         },
         "MeshRenderer": {
-          "mesh_id": 37,
-          "material_id": 15,
+          "mesh_id": 442,
+          "material_id": 31,
           "visible": true,
           "cast_shadows": true,
           "receive_shadows": true
@@ -12995,15 +13005,15 @@
         },
         "Transform": {
           "position": [-2.0894747, 0, 2.967459],
-          "rotation": [0, 1, 0, 0.00000004371139],
+          "rotation": [0, 1, 0, -0.00000004371139],
           "scale": [1, 1, 1]
         },
         "Node": {
           "type": "MeshInstance3D"
         },
         "MeshRenderer": {
-          "mesh_id": 38,
-          "material_id": 2,
+          "mesh_id": 443,
+          "material_id": 28,
           "visible": true,
           "cast_shadows": true,
           "receive_shadows": true
@@ -13030,8 +13040,8 @@
           "type": "MeshInstance3D"
         },
         "MeshRenderer": {
-          "mesh_id": 39,
-          "material_id": 14,
+          "mesh_id": 444,
+          "material_id": 29,
           "visible": true,
           "cast_shadows": true,
           "receive_shadows": true
@@ -13051,15 +13061,15 @@
         },
         "Transform": {
           "position": [-3.8755713, 4.828596, 2.9926424],
-          "rotation": [0, 1, 0, 0.00000004371139],
+          "rotation": [0, 1, 0, -0.00000004371139],
           "scale": [1, 1, 1]
         },
         "Node": {
           "type": "MeshInstance3D"
         },
         "MeshRenderer": {
-          "mesh_id": 40,
-          "material_id": 15,
+          "mesh_id": 445,
+          "material_id": 28,
           "visible": true,
           "cast_shadows": true,
           "receive_shadows": true
@@ -13086,8 +13096,8 @@
           "type": "MeshInstance3D"
         },
         "MeshRenderer": {
-          "mesh_id": 41,
-          "material_id": 2,
+          "mesh_id": 446,
+          "material_id": 29,
           "visible": true,
           "cast_shadows": true,
           "receive_shadows": true
@@ -13114,8 +13124,8 @@
           "type": "MeshInstance3D"
         },
         "MeshRenderer": {
-          "mesh_id": 42,
-          "material_id": 14,
+          "mesh_id": 447,
+          "material_id": 31,
           "visible": true,
           "cast_shadows": true,
           "receive_shadows": true
@@ -13125,18 +13135,18 @@
     {
       "id": 4294967784,
       "components": {
-        "Name": "IvySim_Leaves",
+        "Name": "curtain_holder_01",
         "Transform": {
-          "position": [0, 0, 0],
-          "rotation": [0.00000008146034, -0, -0, 1],
-          "scale": [100, 100, 100]
+          "position": [0.1645671, 4.031386, -3.2706473],
+          "rotation": [0.7071068, 0, 0, 0.7071067],
+          "scale": [1, 0.99999994, 0.99999994]
         },
         "Node": {
           "type": "MeshInstance3D"
         },
         "MeshRenderer": {
-          "mesh_id": 0,
-          "material_id": 0,
+          "mesh_id": 448,
+          "material_id": 32,
           "visible": true,
           "cast_shadows": true,
           "receive_shadows": true
@@ -13146,18 +13156,18 @@
     {
       "id": 4294967785,
       "components": {
-        "Name": "IvySim_Lianas",
+        "Name": "curtain_holder_02",
         "Transform": {
-          "position": [0, 0, 0],
-          "rotation": [0.00000008146034, -0, -0, 1],
-          "scale": [100, 100, 100]
+          "position": [0.1351805, 4.031386, 3.1761916],
+          "rotation": [0, 0, 0, 1],
+          "scale": [1, 1, 1]
         },
         "Node": {
           "type": "MeshInstance3D"
         },
         "MeshRenderer": {
-          "mesh_id": 1,
-          "material_id": 1,
+          "mesh_id": 449,
+          "material_id": 32,
           "visible": true,
           "cast_shadows": true,
           "receive_shadows": true
@@ -13167,25 +13177,18 @@
     {
       "id": 4294967786,
       "components": {
-        "Name": "Mesh432",
-        "Hierarchy": {
-          "parent": null,
-          "first_child": null,
-          "next_sibling": null,
-          "prev_sibling": null,
-          "child_count": 0
-        },
+        "Name": "curtain_01",
         "Transform": {
-          "position": [-2.0598884, 0, 2.9039712],
-          "rotation": [0, 1, 0, 0.00000004371139],
-          "scale": [1, 1, 1]
+          "position": [8.344225, 3.1049097, 1.5779229],
+          "rotation": [0.50000006, -0.4999999, 0.5000002, 0.4999999],
+          "scale": [1.0000001, 1, 1]
         },
         "Node": {
           "type": "MeshInstance3D"
         },
         "MeshRenderer": {
-          "mesh_id": 432,
-          "material_id": 29,
+          "mesh_id": 450,
+          "material_id": 33,
           "visible": true,
           "cast_shadows": true,
           "receive_shadows": true
@@ -13195,9 +13198,205 @@
     {
       "id": 4294967787,
       "components": {
-        "Name": "Skybox",
+        "Name": "curtain_04",
         "Hierarchy": {
           "parent": null,
+          "first_child": 4294967788,
+          "next_sibling": null,
+          "prev_sibling": null,
+          "child_count": 2
+        },
+        "Transform": {
+          "position": [-1.7075813, 0, -2.9961667],
+          "rotation": [0, 0, 0, 1],
+          "scale": [1, 1, 1]
+        },
+        "Node": {
+          "type": "MeshInstance3D"
+        },
+        "MeshRenderer": {
+          "mesh_id": 451,
+          "material_id": 32,
+          "visible": true,
+          "cast_shadows": true,
+          "receive_shadows": true
+        }
+      }
+    },
+    {
+      "id": 4294967788,
+      "components": {
+        "Name": "curtain_04:1",
+        "Hierarchy": {
+          "parent": 4294967787,
+          "first_child": null,
+          "next_sibling": 4294967789,
+          "prev_sibling": null,
+          "child_count": 0
+        },
+        "Transform": {
+          "position": [0, 0, 0],
+          "rotation": [0, 0, 0, 1],
+          "scale": [1, 1, 1]
+        },
+        "Node": {
+          "type": "MeshInstance3D"
+        },
+        "MeshRenderer": {
+          "mesh_id": 452,
+          "material_id": 33,
+          "visible": true,
+          "cast_shadows": true,
+          "receive_shadows": true
+        }
+      }
+    },
+    {
+      "id": 4294967789,
+      "components": {
+        "Name": "curtain_04:2",
+        "Hierarchy": {
+          "parent": 4294967787,
+          "first_child": null,
+          "next_sibling": null,
+          "prev_sibling": 4294967788,
+          "child_count": 0
+        },
+        "Transform": {
+          "position": [0, 0, 0],
+          "rotation": [0, 0, 0, 1],
+          "scale": [1, 1, 1]
+        },
+        "Node": {
+          "type": "MeshInstance3D"
+        },
+        "MeshRenderer": {
+          "mesh_id": 453,
+          "material_id": 34,
+          "visible": true,
+          "cast_shadows": true,
+          "receive_shadows": true
+        }
+      }
+    },
+    {
+      "id": 4294967790,
+      "components": {
+        "Name": "curtain_hanging_03",
+        "Hierarchy": {
+          "parent": null,
+          "first_child": 4294967791,
+          "next_sibling": null,
+          "prev_sibling": null,
+          "child_count": 2
+        },
+        "Transform": {
+          "position": [-1.647828, 0, -2.996843],
+          "rotation": [0, 0, 0, 1],
+          "scale": [1, 1, 1]
+        },
+        "Node": {
+          "type": "MeshInstance3D"
+        },
+        "MeshRenderer": {
+          "mesh_id": 454,
+          "material_id": 32,
+          "visible": true,
+          "cast_shadows": true,
+          "receive_shadows": true
+        }
+      }
+    },
+    {
+      "id": 4294967791,
+      "components": {
+        "Name": "curtain_hanging_03:1",
+        "Hierarchy": {
+          "parent": 4294967790,
+          "first_child": null,
+          "next_sibling": 4294967792,
+          "prev_sibling": null,
+          "child_count": 0
+        },
+        "Transform": {
+          "position": [0, 0, 0],
+          "rotation": [0, 0, 0, 1],
+          "scale": [1, 1, 1]
+        },
+        "Node": {
+          "type": "MeshInstance3D"
+        },
+        "MeshRenderer": {
+          "mesh_id": 455,
+          "material_id": 33,
+          "visible": true,
+          "cast_shadows": true,
+          "receive_shadows": true
+        }
+      }
+    },
+    {
+      "id": 4294967792,
+      "components": {
+        "Name": "curtain_hanging_03:2",
+        "Hierarchy": {
+          "parent": 4294967790,
+          "first_child": null,
+          "next_sibling": null,
+          "prev_sibling": 4294967791,
+          "child_count": 0
+        },
+        "Transform": {
+          "position": [0, 0, 0],
+          "rotation": [0, 0, 0, 1],
+          "scale": [1, 1, 1]
+        },
+        "Node": {
+          "type": "MeshInstance3D"
+        },
+        "MeshRenderer": {
+          "mesh_id": 456,
+          "material_id": 35,
+          "visible": true,
+          "cast_shadows": true,
+          "receive_shadows": true
+        }
+      }
+    },
+    {
+      "id": 4294967793,
+      "components": {
+        "Name": "curtain_hanging_02",
+        "Hierarchy": {
+          "parent": null,
+          "first_child": 4294967794,
+          "next_sibling": null,
+          "prev_sibling": null,
+          "child_count": 1
+        },
+        "Transform": {
+          "position": [2.3631227, 0, -2.9961302],
+          "rotation": [0, 0, 0, 1],
+          "scale": [1, 1, 1]
+        },
+        "Node": {
+          "type": "MeshInstance3D"
+        },
+        "MeshRenderer": {
+          "mesh_id": 457,
+          "material_id": 32,
+          "visible": true,
+          "cast_shadows": true,
+          "receive_shadows": true
+        }
+      }
+    },
+    {
+      "id": 4294967794,
+      "components": {
+        "Name": "curtain_hanging_02:1",
+        "Hierarchy": {
+          "parent": 4294967793,
           "first_child": null,
           "next_sibling": null,
           "prev_sibling": null,
@@ -13209,9 +13408,995 @@
           "scale": [1, 1, 1]
         },
         "Node": {
-          "type": "Skybox"
+          "type": "MeshInstance3D"
         },
-        "Skybox": "assets\\models\\JungleRuins\\USD\\kloppenheim_06_puresky_8k.hdr"
+        "MeshRenderer": {
+          "mesh_id": 458,
+          "material_id": 33,
+          "visible": true,
+          "cast_shadows": true,
+          "receive_shadows": true
+        }
+      }
+    },
+    {
+      "id": 4294967795,
+      "components": {
+        "Name": "curtain_hanging_01",
+        "Hierarchy": {
+          "parent": null,
+          "first_child": 4294967796,
+          "next_sibling": null,
+          "prev_sibling": null,
+          "child_count": 2
+        },
+        "Transform": {
+          "position": [4.149219, 4.828596, -3.0213134],
+          "rotation": [0, 0, 0, 1],
+          "scale": [1, 1, 1]
+        },
+        "Node": {
+          "type": "MeshInstance3D"
+        },
+        "MeshRenderer": {
+          "mesh_id": 459,
+          "material_id": 32,
+          "visible": true,
+          "cast_shadows": true,
+          "receive_shadows": true
+        }
+      }
+    },
+    {
+      "id": 4294967796,
+      "components": {
+        "Name": "curtain_hanging_01:1",
+        "Hierarchy": {
+          "parent": 4294967795,
+          "first_child": null,
+          "next_sibling": 4294967797,
+          "prev_sibling": null,
+          "child_count": 0
+        },
+        "Transform": {
+          "position": [0, 0, 0],
+          "rotation": [0, 0, 0, 1],
+          "scale": [1, 1, 1]
+        },
+        "Node": {
+          "type": "MeshInstance3D"
+        },
+        "MeshRenderer": {
+          "mesh_id": 460,
+          "material_id": 33,
+          "visible": true,
+          "cast_shadows": true,
+          "receive_shadows": true
+        }
+      }
+    },
+    {
+      "id": 4294967797,
+      "components": {
+        "Name": "curtain_hanging_01:2",
+        "Hierarchy": {
+          "parent": 4294967795,
+          "first_child": null,
+          "next_sibling": null,
+          "prev_sibling": 4294967796,
+          "child_count": 0
+        },
+        "Transform": {
+          "position": [0, 0, 0],
+          "rotation": [0, 0, 0, 1],
+          "scale": [1, 1, 1]
+        },
+        "Node": {
+          "type": "MeshInstance3D"
+        },
+        "MeshRenderer": {
+          "mesh_id": 461,
+          "material_id": 35,
+          "visible": true,
+          "cast_shadows": true,
+          "receive_shadows": true
+        }
+      }
+    },
+    {
+      "id": 4294967798,
+      "components": {
+        "Name": "curtain_03",
+        "Hierarchy": {
+          "parent": null,
+          "first_child": 4294967799,
+          "next_sibling": null,
+          "prev_sibling": null,
+          "child_count": 2
+        },
+        "Transform": {
+          "position": [2.3626876, 0, -2.9966354],
+          "rotation": [0, 0, 0, 1],
+          "scale": [1, 1, 1]
+        },
+        "Node": {
+          "type": "MeshInstance3D"
+        },
+        "MeshRenderer": {
+          "mesh_id": 462,
+          "material_id": 32,
+          "visible": true,
+          "cast_shadows": true,
+          "receive_shadows": true
+        }
+      }
+    },
+    {
+      "id": 4294967799,
+      "components": {
+        "Name": "curtain_03:1",
+        "Hierarchy": {
+          "parent": 4294967798,
+          "first_child": null,
+          "next_sibling": 4294967800,
+          "prev_sibling": null,
+          "child_count": 0
+        },
+        "Transform": {
+          "position": [0, 0, 0],
+          "rotation": [0, 0, 0, 1],
+          "scale": [1, 1, 1]
+        },
+        "Node": {
+          "type": "MeshInstance3D"
+        },
+        "MeshRenderer": {
+          "mesh_id": 463,
+          "material_id": 33,
+          "visible": true,
+          "cast_shadows": true,
+          "receive_shadows": true
+        }
+      }
+    },
+    {
+      "id": 4294967800,
+      "components": {
+        "Name": "curtain_03:2",
+        "Hierarchy": {
+          "parent": 4294967798,
+          "first_child": null,
+          "next_sibling": null,
+          "prev_sibling": 4294967799,
+          "child_count": 0
+        },
+        "Transform": {
+          "position": [0, 0, 0],
+          "rotation": [0, 0, 0, 1],
+          "scale": [1, 1, 1]
+        },
+        "Node": {
+          "type": "MeshInstance3D"
+        },
+        "MeshRenderer": {
+          "mesh_id": 464,
+          "material_id": 34,
+          "visible": true,
+          "cast_shadows": true,
+          "receive_shadows": true
+        }
+      }
+    },
+    {
+      "id": 4294967801,
+      "components": {
+        "Name": "curtain_05",
+        "Hierarchy": {
+          "parent": null,
+          "first_child": 4294967802,
+          "next_sibling": null,
+          "prev_sibling": null,
+          "child_count": 2
+        },
+        "Transform": {
+          "position": [-5.7582464, 2.2240562, -3.155316],
+          "rotation": [0.7071068, 0, 0, 0.7071067],
+          "scale": [1, 0.99999994, 0.99999994]
+        },
+        "Node": {
+          "type": "MeshInstance3D"
+        },
+        "MeshRenderer": {
+          "mesh_id": 465,
+          "material_id": 32,
+          "visible": true,
+          "cast_shadows": true,
+          "receive_shadows": true
+        }
+      }
+    },
+    {
+      "id": 4294967802,
+      "components": {
+        "Name": "curtain_05:1",
+        "Hierarchy": {
+          "parent": 4294967801,
+          "first_child": null,
+          "next_sibling": 4294967803,
+          "prev_sibling": null,
+          "child_count": 0
+        },
+        "Transform": {
+          "position": [0, 0, 0],
+          "rotation": [0, 0, 0, 1],
+          "scale": [1, 1, 1]
+        },
+        "Node": {
+          "type": "MeshInstance3D"
+        },
+        "MeshRenderer": {
+          "mesh_id": 466,
+          "material_id": 33,
+          "visible": true,
+          "cast_shadows": true,
+          "receive_shadows": true
+        }
+      }
+    },
+    {
+      "id": 4294967803,
+      "components": {
+        "Name": "curtain_05:2",
+        "Hierarchy": {
+          "parent": 4294967801,
+          "first_child": null,
+          "next_sibling": null,
+          "prev_sibling": 4294967802,
+          "child_count": 0
+        },
+        "Transform": {
+          "position": [0, 0, 0],
+          "rotation": [0, 0, 0, 1],
+          "scale": [1, 1, 1]
+        },
+        "Node": {
+          "type": "MeshInstance3D"
+        },
+        "MeshRenderer": {
+          "mesh_id": 467,
+          "material_id": 34,
+          "visible": true,
+          "cast_shadows": true,
+          "receive_shadows": true
+        }
+      }
+    },
+    {
+      "id": 4294967804,
+      "components": {
+        "Name": "curtain_02",
+        "Hierarchy": {
+          "parent": null,
+          "first_child": 4294967805,
+          "next_sibling": null,
+          "prev_sibling": null,
+          "child_count": 2
+        },
+        "Transform": {
+          "position": [-5.365208, 2.224758, -3.1316109],
+          "rotation": [0, 0, 0, 1],
+          "scale": [1, 1, 1]
+        },
+        "Node": {
+          "type": "MeshInstance3D"
+        },
+        "MeshRenderer": {
+          "mesh_id": 468,
+          "material_id": 32,
+          "visible": true,
+          "cast_shadows": true,
+          "receive_shadows": true
+        }
+      }
+    },
+    {
+      "id": 4294967805,
+      "components": {
+        "Name": "curtain_02:1",
+        "Hierarchy": {
+          "parent": 4294967804,
+          "first_child": null,
+          "next_sibling": 4294967806,
+          "prev_sibling": null,
+          "child_count": 0
+        },
+        "Transform": {
+          "position": [0, 0, 0],
+          "rotation": [0, 0, 0, 1],
+          "scale": [1, 1, 1]
+        },
+        "Node": {
+          "type": "MeshInstance3D"
+        },
+        "MeshRenderer": {
+          "mesh_id": 469,
+          "material_id": 33,
+          "visible": true,
+          "cast_shadows": true,
+          "receive_shadows": true
+        }
+      }
+    },
+    {
+      "id": 4294967806,
+      "components": {
+        "Name": "curtain_02:2",
+        "Hierarchy": {
+          "parent": 4294967804,
+          "first_child": null,
+          "next_sibling": null,
+          "prev_sibling": 4294967805,
+          "child_count": 0
+        },
+        "Transform": {
+          "position": [0, 0, 0],
+          "rotation": [0, 0, 0, 1],
+          "scale": [1, 1, 1]
+        },
+        "Node": {
+          "type": "MeshInstance3D"
+        },
+        "MeshRenderer": {
+          "mesh_id": 470,
+          "material_id": 34,
+          "visible": true,
+          "cast_shadows": true,
+          "receive_shadows": true
+        }
+      }
+    },
+    {
+      "id": 4294967807,
+      "components": {
+        "Name": "curtain_06",
+        "Hierarchy": {
+          "parent": null,
+          "first_child": 4294967808,
+          "next_sibling": null,
+          "prev_sibling": null,
+          "child_count": 2
+        },
+        "Transform": {
+          "position": [5.670447, 2.224758, 3.0441115],
+          "rotation": [0, 1, 0, -0.00000004371139],
+          "scale": [1, 1, 1]
+        },
+        "Node": {
+          "type": "MeshInstance3D"
+        },
+        "MeshRenderer": {
+          "mesh_id": 471,
+          "material_id": 32,
+          "visible": true,
+          "cast_shadows": true,
+          "receive_shadows": true
+        }
+      }
+    },
+    {
+      "id": 4294967808,
+      "components": {
+        "Name": "curtain_06:1",
+        "Hierarchy": {
+          "parent": 4294967807,
+          "first_child": null,
+          "next_sibling": 4294967809,
+          "prev_sibling": null,
+          "child_count": 0
+        },
+        "Transform": {
+          "position": [0, 0, 0],
+          "rotation": [0, 0, 0, 1],
+          "scale": [1, 1, 1]
+        },
+        "Node": {
+          "type": "MeshInstance3D"
+        },
+        "MeshRenderer": {
+          "mesh_id": 472,
+          "material_id": 33,
+          "visible": true,
+          "cast_shadows": true,
+          "receive_shadows": true
+        }
+      }
+    },
+    {
+      "id": 4294967809,
+      "components": {
+        "Name": "curtain_06:2",
+        "Hierarchy": {
+          "parent": 4294967807,
+          "first_child": null,
+          "next_sibling": null,
+          "prev_sibling": 4294967808,
+          "child_count": 0
+        },
+        "Transform": {
+          "position": [0, 0, 0],
+          "rotation": [0, 0, 0, 1],
+          "scale": [1, 1, 1]
+        },
+        "Node": {
+          "type": "MeshInstance3D"
+        },
+        "MeshRenderer": {
+          "mesh_id": 473,
+          "material_id": 34,
+          "visible": true,
+          "cast_shadows": true,
+          "receive_shadows": true
+        }
+      }
+    },
+    {
+      "id": 4294967810,
+      "components": {
+        "Name": "curtain_07",
+        "Hierarchy": {
+          "parent": null,
+          "first_child": 4294967811,
+          "next_sibling": null,
+          "prev_sibling": null,
+          "child_count": 2
+        },
+        "Transform": {
+          "position": [-2.0598884, 0, 2.9039712],
+          "rotation": [0, 1, 0, -0.00000004371139],
+          "scale": [1, 1, 1]
+        },
+        "Node": {
+          "type": "MeshInstance3D"
+        },
+        "MeshRenderer": {
+          "mesh_id": 474,
+          "material_id": 32,
+          "visible": true,
+          "cast_shadows": true,
+          "receive_shadows": true
+        }
+      }
+    },
+    {
+      "id": 4294967811,
+      "components": {
+        "Name": "curtain_07:1",
+        "Hierarchy": {
+          "parent": 4294967810,
+          "first_child": null,
+          "next_sibling": 4294967812,
+          "prev_sibling": null,
+          "child_count": 0
+        },
+        "Transform": {
+          "position": [0, 0, 0],
+          "rotation": [0, 0, 0, 1],
+          "scale": [1, 1, 1]
+        },
+        "Node": {
+          "type": "MeshInstance3D"
+        },
+        "MeshRenderer": {
+          "mesh_id": 475,
+          "material_id": 33,
+          "visible": true,
+          "cast_shadows": true,
+          "receive_shadows": true
+        }
+      }
+    },
+    {
+      "id": 4294967812,
+      "components": {
+        "Name": "curtain_07:2",
+        "Hierarchy": {
+          "parent": 4294967810,
+          "first_child": null,
+          "next_sibling": null,
+          "prev_sibling": 4294967811,
+          "child_count": 0
+        },
+        "Transform": {
+          "position": [0, 0, 0],
+          "rotation": [0, 0, 0, 1],
+          "scale": [1, 1, 1]
+        },
+        "Node": {
+          "type": "MeshInstance3D"
+        },
+        "MeshRenderer": {
+          "mesh_id": 476,
+          "material_id": 34,
+          "visible": true,
+          "cast_shadows": true,
+          "receive_shadows": true
+        }
+      }
+    },
+    {
+      "id": 4294967813,
+      "components": {
+        "Name": "curtain_08",
+        "Hierarchy": {
+          "parent": null,
+          "first_child": 4294967814,
+          "next_sibling": null,
+          "prev_sibling": null,
+          "child_count": 2
+        },
+        "Transform": {
+          "position": [1.9387213, 0, 2.9062645],
+          "rotation": [0, 1, 0, -0.00000004371139],
+          "scale": [1, 1, 1]
+        },
+        "Node": {
+          "type": "MeshInstance3D"
+        },
+        "MeshRenderer": {
+          "mesh_id": 477,
+          "material_id": 32,
+          "visible": true,
+          "cast_shadows": true,
+          "receive_shadows": true
+        }
+      }
+    },
+    {
+      "id": 4294967814,
+      "components": {
+        "Name": "curtain_08:1",
+        "Hierarchy": {
+          "parent": 4294967813,
+          "first_child": null,
+          "next_sibling": 4294967815,
+          "prev_sibling": null,
+          "child_count": 0
+        },
+        "Transform": {
+          "position": [0, 0, 0],
+          "rotation": [0, 0, 0, 1],
+          "scale": [1, 1, 1]
+        },
+        "Node": {
+          "type": "MeshInstance3D"
+        },
+        "MeshRenderer": {
+          "mesh_id": 478,
+          "material_id": 33,
+          "visible": true,
+          "cast_shadows": true,
+          "receive_shadows": true
+        }
+      }
+    },
+    {
+      "id": 4294967815,
+      "components": {
+        "Name": "curtain_08:2",
+        "Hierarchy": {
+          "parent": 4294967813,
+          "first_child": null,
+          "next_sibling": null,
+          "prev_sibling": 4294967814,
+          "child_count": 0
+        },
+        "Transform": {
+          "position": [0, 0, 0],
+          "rotation": [0, 0, 0, 1],
+          "scale": [1, 1, 1]
+        },
+        "Node": {
+          "type": "MeshInstance3D"
+        },
+        "MeshRenderer": {
+          "mesh_id": 479,
+          "material_id": 34,
+          "visible": true,
+          "cast_shadows": true,
+          "receive_shadows": true
+        }
+      }
+    },
+    {
+      "id": 4294967816,
+      "components": {
+        "Name": "curtain_09",
+        "Hierarchy": {
+          "parent": null,
+          "first_child": 4294967817,
+          "next_sibling": null,
+          "prev_sibling": null,
+          "child_count": 2
+        },
+        "Transform": {
+          "position": [6.0632925, 2.2240562, 3.0547326],
+          "rotation": [0.000000030908627, -0.7071068, 0.7071068, 0.000000030908627],
+          "scale": [1.0000002, 1.0000001, 1.0000001]
+        },
+        "Node": {
+          "type": "MeshInstance3D"
+        },
+        "MeshRenderer": {
+          "mesh_id": 480,
+          "material_id": 32,
+          "visible": true,
+          "cast_shadows": true,
+          "receive_shadows": true
+        }
+      }
+    },
+    {
+      "id": 4294967817,
+      "components": {
+        "Name": "curtain_09:1",
+        "Hierarchy": {
+          "parent": 4294967816,
+          "first_child": null,
+          "next_sibling": 4294967818,
+          "prev_sibling": null,
+          "child_count": 0
+        },
+        "Transform": {
+          "position": [0, 0, 0],
+          "rotation": [0, 0, 0, 1],
+          "scale": [1, 1, 1]
+        },
+        "Node": {
+          "type": "MeshInstance3D"
+        },
+        "MeshRenderer": {
+          "mesh_id": 481,
+          "material_id": 33,
+          "visible": true,
+          "cast_shadows": true,
+          "receive_shadows": true
+        }
+      }
+    },
+    {
+      "id": 4294967818,
+      "components": {
+        "Name": "curtain_09:2",
+        "Hierarchy": {
+          "parent": 4294967816,
+          "first_child": null,
+          "next_sibling": null,
+          "prev_sibling": 4294967817,
+          "child_count": 0
+        },
+        "Transform": {
+          "position": [0, 0, 0],
+          "rotation": [0, 0, 0, 1],
+          "scale": [1, 1, 1]
+        },
+        "Node": {
+          "type": "MeshInstance3D"
+        },
+        "MeshRenderer": {
+          "mesh_id": 482,
+          "material_id": 34,
+          "visible": true,
+          "cast_shadows": true,
+          "receive_shadows": true
+        }
+      }
+    },
+    {
+      "id": 4294967819,
+      "components": {
+        "Name": "curtain_hanging_06",
+        "Hierarchy": {
+          "parent": null,
+          "first_child": 4294967820,
+          "next_sibling": null,
+          "prev_sibling": null,
+          "child_count": 2
+        },
+        "Transform": {
+          "position": [1.9214761, 0, 2.9681718],
+          "rotation": [0, 1, 0, -0.00000004371139],
+          "scale": [1, 1, 1]
+        },
+        "Node": {
+          "type": "MeshInstance3D"
+        },
+        "MeshRenderer": {
+          "mesh_id": 483,
+          "material_id": 32,
+          "visible": true,
+          "cast_shadows": true,
+          "receive_shadows": true
+        }
+      }
+    },
+    {
+      "id": 4294967820,
+      "components": {
+        "Name": "curtain_hanging_06:1",
+        "Hierarchy": {
+          "parent": 4294967819,
+          "first_child": null,
+          "next_sibling": 4294967821,
+          "prev_sibling": null,
+          "child_count": 0
+        },
+        "Transform": {
+          "position": [0, 0, 0],
+          "rotation": [0, 0, 0, 1],
+          "scale": [1, 1, 1]
+        },
+        "Node": {
+          "type": "MeshInstance3D"
+        },
+        "MeshRenderer": {
+          "mesh_id": 484,
+          "material_id": 33,
+          "visible": true,
+          "cast_shadows": true,
+          "receive_shadows": true
+        }
+      }
+    },
+    {
+      "id": 4294967821,
+      "components": {
+        "Name": "curtain_hanging_06:2",
+        "Hierarchy": {
+          "parent": 4294967819,
+          "first_child": null,
+          "next_sibling": null,
+          "prev_sibling": 4294967820,
+          "child_count": 0
+        },
+        "Transform": {
+          "position": [0, 0, 0],
+          "rotation": [0, 0, 0, 1],
+          "scale": [1, 1, 1]
+        },
+        "Node": {
+          "type": "MeshInstance3D"
+        },
+        "MeshRenderer": {
+          "mesh_id": 485,
+          "material_id": 35,
+          "visible": true,
+          "cast_shadows": true,
+          "receive_shadows": true
+        }
+      }
+    },
+    {
+      "id": 4294967822,
+      "components": {
+        "Name": "curtain_hanging_05",
+        "Hierarchy": {
+          "parent": null,
+          "first_child": 4294967823,
+          "next_sibling": null,
+          "prev_sibling": null,
+          "child_count": 1
+        },
+        "Transform": {
+          "position": [-2.0894747, 0, 2.967459],
+          "rotation": [0, 1, 0, -0.00000004371139],
+          "scale": [1, 1, 1]
+        },
+        "Node": {
+          "type": "MeshInstance3D"
+        },
+        "MeshRenderer": {
+          "mesh_id": 486,
+          "material_id": 32,
+          "visible": true,
+          "cast_shadows": true,
+          "receive_shadows": true
+        }
+      }
+    },
+    {
+      "id": 4294967823,
+      "components": {
+        "Name": "curtain_hanging_05:1",
+        "Hierarchy": {
+          "parent": 4294967822,
+          "first_child": null,
+          "next_sibling": null,
+          "prev_sibling": null,
+          "child_count": 0
+        },
+        "Transform": {
+          "position": [0, 0, 0],
+          "rotation": [0, 0, 0, 1],
+          "scale": [1, 1, 1]
+        },
+        "Node": {
+          "type": "MeshInstance3D"
+        },
+        "MeshRenderer": {
+          "mesh_id": 487,
+          "material_id": 33,
+          "visible": true,
+          "cast_shadows": true,
+          "receive_shadows": true
+        }
+      }
+    },
+    {
+      "id": 4294967824,
+      "components": {
+        "Name": "curtain_hanging_04",
+        "Hierarchy": {
+          "parent": null,
+          "first_child": 4294967825,
+          "next_sibling": null,
+          "prev_sibling": null,
+          "child_count": 2
+        },
+        "Transform": {
+          "position": [-3.8755713, 4.828596, 2.9926424],
+          "rotation": [0, 1, 0, -0.00000004371139],
+          "scale": [1, 1, 1]
+        },
+        "Node": {
+          "type": "MeshInstance3D"
+        },
+        "MeshRenderer": {
+          "mesh_id": 488,
+          "material_id": 32,
+          "visible": true,
+          "cast_shadows": true,
+          "receive_shadows": true
+        }
+      }
+    },
+    {
+      "id": 4294967825,
+      "components": {
+        "Name": "curtain_hanging_04:1",
+        "Hierarchy": {
+          "parent": 4294967824,
+          "first_child": null,
+          "next_sibling": 4294967826,
+          "prev_sibling": null,
+          "child_count": 0
+        },
+        "Transform": {
+          "position": [0, 0, 0],
+          "rotation": [0, 0, 0, 1],
+          "scale": [1, 1, 1]
+        },
+        "Node": {
+          "type": "MeshInstance3D"
+        },
+        "MeshRenderer": {
+          "mesh_id": 489,
+          "material_id": 33,
+          "visible": true,
+          "cast_shadows": true,
+          "receive_shadows": true
+        }
+      }
+    },
+    {
+      "id": 4294967826,
+      "components": {
+        "Name": "curtain_hanging_04:2",
+        "Hierarchy": {
+          "parent": 4294967824,
+          "first_child": null,
+          "next_sibling": null,
+          "prev_sibling": 4294967825,
+          "child_count": 0
+        },
+        "Transform": {
+          "position": [0, 0, 0],
+          "rotation": [0, 0, 0, 1],
+          "scale": [1, 1, 1]
+        },
+        "Node": {
+          "type": "MeshInstance3D"
+        },
+        "MeshRenderer": {
+          "mesh_id": 490,
+          "material_id": 35,
+          "visible": true,
+          "cast_shadows": true,
+          "receive_shadows": true
+        }
+      }
+    },
+    {
+      "id": 4294967827,
+      "components": {
+        "Name": "IvySim_Leaves",
+        "Transform": {
+          "position": [0, 0, 0],
+          "rotation": [-0.00000008146034, 0, 0, 1],
+          "scale": [100, 100, 100]
+        },
+        "Node": {
+          "type": "MeshInstance3D"
+        },
+        "MeshRenderer": {
+          "mesh_id": 491,
+          "material_id": 36,
+          "visible": true,
+          "cast_shadows": true,
+          "receive_shadows": true
+        }
+      }
+    },
+    {
+      "id": 4294967828,
+      "components": {
+        "Name": "IvySim_Lianas",
+        "Transform": {
+          "position": [0, 0, 0],
+          "rotation": [-0.00000008146034, 0, 0, 1],
+          "scale": [100, 100, 100]
+        },
+        "Node": {
+          "type": "MeshInstance3D"
+        },
+        "MeshRenderer": {
+          "mesh_id": 492,
+          "material_id": 37,
+          "visible": true,
+          "cast_shadows": true,
+          "receive_shadows": true
+        }
+      }
+    },
+    {
+      "id": 4294967829,
+      "components": {
+        "Name": "IvySim_Leaves",
+        "Transform": {
+          "position": [0, 0, 0],
+          "rotation": [-0.00000008146034, 0, 0, 1],
+          "scale": [100, 100, 100]
+        },
+        "Node": {
+          "type": "MeshInstance3D"
+        },
+        "MeshRenderer": {
+          "mesh_id": 493,
+          "material_id": 38,
+          "visible": true,
+          "cast_shadows": true,
+          "receive_shadows": true
+        }
+      }
+    },
+    {
+      "id": 4294967830,
+      "components": {
+        "Name": "IvySim_Lianas",
+        "Transform": {
+          "position": [0, 0, 0],
+          "rotation": [-0.00000008146034, 0, 0, 1],
+          "scale": [100, 100, 100]
+        },
+        "Node": {
+          "type": "MeshInstance3D"
+        },
+        "MeshRenderer": {
+          "mesh_id": 494,
+          "material_id": 39,
+          "visible": true,
+          "cast_shadows": true,
+          "receive_shadows": true
+        }
       }
     }
   ]

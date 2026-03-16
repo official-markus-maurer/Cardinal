@@ -68,15 +68,8 @@ void main() {
         finalNormal = normalize(mat3(boneTransform) * inNormal);
     }
     
-    // Transform position to world space using push constant model matrix
-    vec4 worldPos;
-    if (hasSkeleton) {
-        worldPos = vec4(finalPosition, 1.0);
-        fragNormal = normalize(finalNormal);
-    } else {
-        worldPos = pushConstants.modelMatrix * vec4(finalPosition, 1.0);
-        fragNormal = normalize(mat3(pushConstants.modelMatrix) * finalNormal);
-    }
+    vec4 worldPos = pushConstants.modelMatrix * vec4(finalPosition, 1.0);
+    fragNormal = normalize(mat3(pushConstants.modelMatrix) * finalNormal);
     
     fragWorldPos = worldPos.xyz;
     

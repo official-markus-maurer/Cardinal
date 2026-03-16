@@ -104,11 +104,12 @@ pub fn draw_scene_manager_panel(state: *EditorState, allocator: std.mem.Allocato
                 if (c.imgui_bridge_is_window_appearing()) {
                     c.imgui_bridge_set_keyboard_focus_here(0);
                 }
-                const flags = (1 << 5) | (1 << 4); // ImGuiInputTextFlags_EnterReturnsTrue | ImGuiInputTextFlags_AutoSelectAll
+                const input_flag_enter_returns_true = 1 << 5;
+                const input_flag_auto_select_all = 1 << 4;
+                const flags = input_flag_enter_returns_true | input_flag_auto_select_all;
                 const enter_pressed = c.imgui_bridge_input_text("##new_name", @ptrCast(&state.ui.rename_scene_buffer), state.ui.rename_scene_buffer.len, flags);
 
                 if (c.imgui_bridge_button("Rename") or enter_pressed) {
-                    // Check if rename buffer is empty, if so, don't rename
                     const len = std.mem.indexOf(u8, &state.ui.rename_scene_buffer, &[_]u8{0}) orelse state.ui.rename_scene_buffer.len;
                     if (len > 0) {
                         rename_scene(state, allocator);
@@ -117,7 +118,8 @@ pub fn draw_scene_manager_panel(state: *EditorState, allocator: std.mem.Allocato
                     }
                 }
                 c.imgui_bridge_same_line(0, -1);
-                if (c.imgui_bridge_button("Cancel") or c.imgui_bridge_is_key_pressed(526)) { // ImGuiKey_Escape
+                const imgui_key_escape: c_int = 526;
+                if (c.imgui_bridge_button("Cancel") or c.imgui_bridge_is_key_pressed(imgui_key_escape)) {
                     c.imgui_bridge_close_current_popup();
                 }
                 c.imgui_bridge_end_popup();

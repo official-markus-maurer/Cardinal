@@ -311,7 +311,6 @@ pub const SceneSerializer = struct {
                 try entity_has_components.append(self.allocator, false);
             }
 
-            // Second pass: Add components
             for (created_entities.items, 0..) |item, idx| {
                 const entity = item.entity;
                 const entity_val = item.val;
@@ -359,7 +358,6 @@ pub const SceneSerializer = struct {
                     if (comps.object.get("MeshRenderer")) |val| {
                         has_any = true;
                         if (deserializeMeshRenderer(val)) |comp| {
-                            // Validate mesh index
                             if (comp.mesh.index < total_mesh_count) {
                                 self.registry.add(entity, comp) catch |e| serializer_log.err("Failed to add MeshRenderer component to entity {d}: {}", .{ entity.index(), e });
                             } else {
@@ -617,11 +615,11 @@ pub const SceneSerializer = struct {
         return c;
     }
 
+    /// Serializes script metadata only; runtime payloads are not persisted.
     fn serializeScript(writer: anytype, s: *components.Script) !void {
         try writer.beginObject();
         try writer.objectField("script_id");
         try writer.write(s.script_id);
-        // data and on_update cannot be trivially serialized
         try writer.endObject();
     }
 
@@ -937,7 +935,6 @@ pub const SceneSerializer = struct {
                 if (id_map.get(old_id)) |new_entity| {
                     h.parent = new_entity;
                 } else {
-                    // This is a normal warning, not a critical error that should crash or stop
                     serializer_log.warn("Hierarchy: parent ID {d} not found in map", .{old_id});
                 }
             }
