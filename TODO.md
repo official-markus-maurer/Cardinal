@@ -90,9 +90,27 @@ This document outlines the roadmap for the Cardinal Engine, focusing on robustne
 ### UI/UX
 - [ ] **Asset Browser**: Thumbnail generation and drag-and-drop support.
 - [ ] **Inspector**: Generic reflection-based property editing for components.
-- [ ] **Transform Editing**: Support full TRS (Translate, Rotate, Scale) editing in `inspector.zig` instead of simplified uniform scale.
+- [x] **Transform Editing**: Support full TRS (Translate, Rotate, Scale) editing in `inspector.zig`.
 - [ ] **Multiple Windows**: Support for detaching editor panels (ImGui Viewports).
 - [ ] **Grid & Axes**: Visual reference guides.
+
+### Scene Graph & Inspector (Next)
+- [ ] **Undo/Redo (Hierarchy)**: Add undoable Create/Rename/Delete/Reparent operations in Scene Graph.
+- [ ] **Drag-Drop Reparenting**: Reparent entities by dragging onto another entity in Scene Graph.
+- [ ] **Sibling Reordering**: Support drag reorder among siblings + stable ordering persistence.
+- [ ] **Multi-Select**: Support multi-select and batch operations (delete, visibility, component add/remove).
+- [ ] **Search & Filter**: Add fast search (name/type) with filter chips (Meshes/Lights/Cameras/etc).
+- [ ] **Inspector Undo Coverage**: Add undo for Light and Camera field edits (not just add/remove).
+- [ ] **Resource Pickers**: Mesh/material pickers in MeshRenderer (names + asset drag-drop), not raw indices.
+- [ ] **Copy/Paste Components**: Copy component data between entities; duplicate entity/subtree.
+- [ ] **Component Grouping**: Reorder components, pin favorites, and collapse/expand all.
+- [ ] **Transform UX**: Local/world toggle, reset buttons, numeric input + copy/paste TRS fields.
+- [ ] **Hierarchy Integrity**: Prevent cycles and enforce invariants (child_count, sibling links) on edits.
+- [x] **Deletion Cleanup**: Clear mesh ownership maps + transform overrides when entities are destroyed.
+- [x] **Large Scene Performance**: Virtualize Scene Graph rendering (ImGui clipper) for thousands of nodes.
+- [x] **Focus & Selection Polish**: Keep selection visible across filters; add “Frame in Scene View”.
+- [x] **Selection X-Ray Highlight**: Render selected entity subtree visible through geometry (overlay/outline).
+- [x] **Scene Serialization IDs**: Move hierarchy serialization from entity index to stable IDs/UUIDs.
 
 ## 7. Quality Assurance
 

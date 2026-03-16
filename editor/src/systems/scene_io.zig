@@ -235,12 +235,23 @@ pub fn instantiate_model(state: *EditorState, model_id: u32, parent_entity: engi
 
     log.cardinal_log_info("[SCENE_IO] Instantiating model {d} under entity {d}...", .{ model_id, parent_entity.id });
 
+    const root_entity = state.runtime.registry.create() catch return;
+    const root_name = if (model.name) |n| std.mem.span(n) else "Model";
+    var root_name_buf: [320]u8 = undefined;
+    const root_name_full = std.fmt.bufPrint(&root_name_buf, "Model: {s}", .{root_name}) catch root_name;
+    state.runtime.registry.add(root_entity, components.Name.init(root_name_full)) catch {};
+    state.runtime.registry.add(root_entity, components.Node{ .type = .Node3D }) catch {};
+    state.runtime.registry.add(root_entity, components.Transform{}) catch {};
+    state.runtime.registry.add(root_entity, components.Hierarchy{}) catch {};
+    node_factory.append_child(state.runtime.registry, parent_entity, root_entity);
+    state.runtime.model_root_by_id.put(map_alloc, model_id, root_entity.id) catch {};
+
     var mesh_offset: u32 = 0;
     var m_i: u32 = 0;
     while (m_i < state.runtime.model_manager.model_count) : (m_i += 1) {
         const m = &state.runtime.model_manager.models.?[m_i];
         if (m.id == model_id) break;
-        mesh_offset += m.scene.mesh_count;
+        if (m.visible and !m.is_loading) mesh_offset += m.scene.mesh_count;
     }
 
     var node_to_entity = state.runtime.arena_allocator.alloc(u64, scene.all_node_count) catch return;
@@ -312,22 +323,277 @@ pub fn instantiate_model(state: *EditorState, model_id: u32, parent_entity: engi
         }
     }
 
+    var node_ptr_to_index: std.AutoHashMapUnmanaged(*engine.scene.CardinalSceneNode, u32) = .{};
+    defer node_ptr_to_index.deinit(map_alloc);
+
+    i = 0;
+    while (i < scene.all_node_count) : (i += 1) {
+        if (scene.all_nodes.?[i]) |node| {
+            node_ptr_to_index.put(map_alloc, node, i) catch {};
+        }
+    }
+
     i = 0;
     while (i < scene.all_node_count) : (i += 1) {
         if (scene.all_nodes.?[i]) |node| {
             const entity = engine.ecs_entity.Entity{ .id = node_to_entity[i] };
             if (entity.id == std.math.maxInt(u64)) continue;
 
-            if (node.parent_index >= 0) {
-                const parent_id = node_to_entity[@intCast(node.parent_index)];
+            const parent_idx = engine.scene.resolve_parent_idx(node, &node_ptr_to_index);
+
+            if (parent_idx != 0xFFFFFFFF) {
+                const parent_id = node_to_entity[parent_idx];
                 if (parent_id != std.math.maxInt(u64)) {
                     node_factory.append_child(state.runtime.registry, .{ .id = parent_id }, entity);
+                } else {
+                    node_factory.append_child(state.runtime.registry, root_entity, entity);
                 }
             } else {
-                node_factory.append_child(state.runtime.registry, parent_entity, entity);
+                node_factory.append_child(state.runtime.registry, root_entity, entity);
             }
         }
     }
+}
+
+fn get_model_combined_mesh_range(state: *EditorState, model_id: u32) ?struct { start: u32, count: u32 } {
+    if (state.runtime.model_manager.models == null) return null;
+    const models = state.runtime.model_manager.models.?;
+
+    var offset: u32 = 0;
+    var i: u32 = 0;
+    while (i < state.runtime.model_manager.model_count) : (i += 1) {
+        const m = &models[i];
+        if (!m.visible or m.is_loading) continue;
+        if (m.id == model_id) return .{ .start = offset, .count = m.scene.mesh_count };
+        offset += m.scene.mesh_count;
+    }
+    return null;
+}
+
+fn unlink_entity_from_parent(state: *EditorState, entity: engine.ecs_entity.Entity) void {
+    const hierarchy_ptr = state.runtime.registry.get(components.Hierarchy, entity) orelse return;
+    var hierarchy = hierarchy_ptr.*;
+
+    const parent = hierarchy.parent orelse {
+        hierarchy.prev_sibling = null;
+        hierarchy.next_sibling = null;
+        state.runtime.registry.add(entity, hierarchy) catch {};
+        return;
+    };
+
+    const parent_h_ptr = state.runtime.registry.get(components.Hierarchy, parent) orelse {
+        hierarchy.parent = null;
+        hierarchy.prev_sibling = null;
+        hierarchy.next_sibling = null;
+        state.runtime.registry.add(entity, hierarchy) catch {};
+        return;
+    };
+    var parent_h = parent_h_ptr.*;
+
+    if (parent_h.first_child) |fc| {
+        if (fc.id == entity.id) {
+            parent_h.first_child = hierarchy.next_sibling;
+        }
+    }
+
+    if (hierarchy.prev_sibling) |prev| {
+        if (state.runtime.registry.get(components.Hierarchy, prev)) |prev_h_ptr| {
+            var prev_h = prev_h_ptr.*;
+            prev_h.next_sibling = hierarchy.next_sibling;
+            state.runtime.registry.add(prev, prev_h) catch {};
+        }
+    }
+
+    if (hierarchy.next_sibling) |next| {
+        if (state.runtime.registry.get(components.Hierarchy, next)) |next_h_ptr| {
+            var next_h = next_h_ptr.*;
+            next_h.prev_sibling = hierarchy.prev_sibling;
+            state.runtime.registry.add(next, next_h) catch {};
+        }
+    }
+
+    if (parent_h.child_count > 0) parent_h.child_count -= 1;
+    state.runtime.registry.add(parent, parent_h) catch {};
+
+    hierarchy.parent = null;
+    hierarchy.prev_sibling = null;
+    hierarchy.next_sibling = null;
+    state.runtime.registry.add(entity, hierarchy) catch {};
+}
+
+fn cleanup_deleted_entities(state: *EditorState, root: engine.ecs_entity.Entity) void {
+    const alloc = engine.memory.cardinal_get_allocator_for_category(.ENGINE).as_allocator();
+
+    var deleted: std.AutoHashMapUnmanaged(u64, void) = .{};
+    defer deleted.deinit(alloc);
+
+    var stack: std.ArrayListUnmanaged(engine.ecs_entity.Entity) = .{};
+    defer stack.deinit(alloc);
+
+    stack.append(alloc, root) catch return;
+
+    while (stack.items.len != 0) {
+        const last_index = stack.items.len - 1;
+        const e = stack.items[last_index];
+        stack.items.len = last_index;
+        if (deleted.contains(e.id)) continue;
+        deleted.put(alloc, e.id, {}) catch {};
+
+        if (state.runtime.registry.get(components.Hierarchy, e)) |h_ptr| {
+            const h = h_ptr.*;
+            var child = h.first_child;
+            var loop_guard: u32 = 0;
+            while (child) |c_ent| {
+                if (loop_guard > 100000) break;
+                loop_guard += 1;
+
+                stack.append(alloc, c_ent) catch {};
+                child = if (state.runtime.registry.get(components.Hierarchy, c_ent)) |ch| ch.next_sibling else null;
+            }
+        }
+    }
+
+    if (deleted.contains(state.ui.selected_entity.id)) {
+        state.ui.selected_entity = .{ .id = std.math.maxInt(u64) };
+    }
+
+    var deleted_it = deleted.iterator();
+    while (deleted_it.next()) |entry| {
+        _ = state.runtime.transform_overrides.remove(entry.key_ptr.*);
+    }
+
+    var mesh_keys_to_remove: std.ArrayListUnmanaged(u32) = .{};
+    defer mesh_keys_to_remove.deinit(alloc);
+
+    var owner_it = state.runtime.mesh_owner_by_mesh_index.iterator();
+    while (owner_it.next()) |entry| {
+        if (deleted.contains(entry.value_ptr.*)) {
+            mesh_keys_to_remove.append(alloc, entry.key_ptr.*) catch {};
+        }
+    }
+    for (mesh_keys_to_remove.items) |k| {
+        _ = state.runtime.mesh_owner_by_mesh_index.remove(k);
+    }
+
+    mesh_keys_to_remove.clearRetainingCapacity();
+    var mesh_ent_it = state.runtime.mesh_entity_by_mesh_index.iterator();
+    while (mesh_ent_it.next()) |entry| {
+        if (deleted.contains(entry.value_ptr.*)) {
+            mesh_keys_to_remove.append(alloc, entry.key_ptr.*) catch {};
+        }
+    }
+    for (mesh_keys_to_remove.items) |k| {
+        _ = state.runtime.mesh_entity_by_mesh_index.remove(k);
+    }
+}
+
+fn destroy_entity_recursive(state: *EditorState, entity: engine.ecs_entity.Entity, depth: u32) void {
+    if (depth > 2048) return;
+
+    if (state.runtime.registry.get(components.Hierarchy, entity)) |h_ptr| {
+        const h = h_ptr.*;
+        var child = h.first_child;
+        var loop_guard: u32 = 0;
+        while (child) |c_ent| {
+            if (loop_guard > 100000) break;
+            loop_guard += 1;
+
+            const next = if (state.runtime.registry.get(components.Hierarchy, c_ent)) |ch| ch.next_sibling else null;
+            destroy_entity_recursive(state, c_ent, depth + 1);
+            child = next;
+        }
+    }
+
+    state.runtime.registry.destroy(entity);
+}
+
+fn remove_entity_subtree(state: *EditorState, root: engine.ecs_entity.Entity) void {
+    cleanup_deleted_entities(state, root);
+    unlink_entity_from_parent(state, root);
+    destroy_entity_recursive(state, root, 0);
+}
+
+fn ascend_to_top_root(state: *EditorState, entity: engine.ecs_entity.Entity) engine.ecs_entity.Entity {
+    var current = entity;
+    var guard: u32 = 0;
+    while (guard < 2048) : (guard += 1) {
+        const h = state.runtime.registry.get(components.Hierarchy, current) orelse break;
+        const p = h.parent orelse break;
+        current = p;
+    }
+    return current;
+}
+
+fn rebase_mesh_maps_and_components(state: *EditorState, start: u32, count: u32) void {
+    const alloc = engine.memory.cardinal_get_allocator_for_category(.ENGINE).as_allocator();
+    const end = start + count;
+
+    var view = state.runtime.registry.view(components.MeshRenderer);
+    var it = view.iterator();
+    while (it.next()) |entry| {
+        const mr = entry.component;
+        if (mr.mesh.index >= end) {
+            mr.mesh.index -= count;
+        }
+    }
+
+    var new_owner: std.AutoHashMapUnmanaged(u32, u64) = .{};
+    var owner_it = state.runtime.mesh_owner_by_mesh_index.iterator();
+    while (owner_it.next()) |entry| {
+        const k = entry.key_ptr.*;
+        const v = entry.value_ptr.*;
+        if (k >= start and k < end) continue;
+        const nk = if (k >= end) k - count else k;
+        new_owner.put(alloc, nk, v) catch {};
+    }
+    state.runtime.mesh_owner_by_mesh_index.deinit(alloc);
+    state.runtime.mesh_owner_by_mesh_index = new_owner;
+
+    var new_ent: std.AutoHashMapUnmanaged(u32, u64) = .{};
+    var ent_it = state.runtime.mesh_entity_by_mesh_index.iterator();
+    while (ent_it.next()) |entry| {
+        const k = entry.key_ptr.*;
+        const v = entry.value_ptr.*;
+        if (k >= start and k < end) continue;
+        const nk = if (k >= end) k - count else k;
+        new_ent.put(alloc, nk, v) catch {};
+    }
+    state.runtime.mesh_entity_by_mesh_index.deinit(alloc);
+    state.runtime.mesh_entity_by_mesh_index = new_ent;
+}
+
+pub fn remove_model_entities_and_rebase(state: *EditorState, model_id: u32) void {
+    const range = get_model_combined_mesh_range(state, model_id) orelse return;
+    if (range.count == 0) return;
+    const start = range.start;
+    const count = range.count;
+    const end = start + count;
+
+    if (state.runtime.model_root_by_id.get(model_id)) |root_id| {
+        remove_entity_subtree(state, .{ .id = root_id });
+        _ = state.runtime.model_root_by_id.remove(model_id);
+        rebase_mesh_maps_and_components(state, start, count);
+        return;
+    }
+
+    const alloc = engine.memory.cardinal_get_allocator_for_category(.ENGINE).as_allocator();
+    var roots: std.AutoHashMapUnmanaged(u64, void) = .{};
+    defer roots.deinit(alloc);
+
+    var mesh_idx: u32 = start;
+    while (mesh_idx < end) : (mesh_idx += 1) {
+        const owner_id = state.runtime.mesh_owner_by_mesh_index.get(mesh_idx) orelse state.runtime.mesh_entity_by_mesh_index.get(mesh_idx);
+        if (owner_id == null) continue;
+        const root = ascend_to_top_root(state, .{ .id = owner_id.? });
+        roots.put(alloc, root.id, {}) catch {};
+    }
+
+    var root_it = roots.iterator();
+    while (root_it.next()) |entry| {
+        remove_entity_subtree(state, .{ .id = entry.key_ptr.* });
+    }
+
+    rebase_mesh_maps_and_components(state, start, count);
 }
 
 pub fn load_scene(state: *EditorState, allocator: std.mem.Allocator, path: []const u8) void {

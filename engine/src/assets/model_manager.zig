@@ -1127,7 +1127,11 @@ pub export fn cardinal_model_manager_set_transform(manager: ?*CardinalModelManag
     if (model == null) return false;
 
     @memcpy(&model.?.transform, transform.?);
-    manager.?.scene_dirty = true;
+    if (manager.?.combined_scene.meshes == null and manager.?.scene_dirty == false) {
+        manager.?.scene_dirty = true;
+    } else {
+        manager.?.transform_dirty = true;
+    }
     return true;
 }
 

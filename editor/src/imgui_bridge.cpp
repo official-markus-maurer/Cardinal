@@ -463,6 +463,25 @@ void imgui_bridge_push_id_int(int int_id) { ImGui::PushID(int_id); }
 
 void imgui_bridge_pop_id(void) { ImGui::PopID(); }
 
+float imgui_bridge_get_style_indent_spacing(void) {
+  return ImGui::GetStyle().IndentSpacing;
+}
+
+void imgui_bridge_list_clipper(int items_count, float items_height,
+                               ImGuiBridgeClipperCallback cb,
+                               void *user_data) {
+  if (items_count <= 0 || cb == nullptr) {
+    return;
+  }
+
+  ImGuiListClipper clipper;
+  clipper.Begin(items_count, items_height);
+  while (clipper.Step()) {
+    cb(user_data, clipper.DisplayStart, clipper.DisplayEnd);
+  }
+  clipper.End();
+}
+
 // Tables
 bool imgui_bridge_begin_table(const char *str_id, int column, int flags,
                               const ImVec2 *outer_size, float inner_width) {

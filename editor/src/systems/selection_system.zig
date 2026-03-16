@@ -6,6 +6,7 @@
 const std = @import("std");
 const engine = @import("cardinal_engine");
 const math = engine.math;
+const renderer = engine.vulkan_renderer;
 const scene = engine.scene;
 const components = engine.ecs_components;
 const EditorState = @import("../editor_state.zig").EditorState;
@@ -35,6 +36,190 @@ pub const SelectionState = struct {
 };
 
 var selection_state = SelectionState{};
+
+fn collect_subtree_entities(state: *EditorState, root: engine.ecs_entity.Entity, out: *std.AutoHashMapUnmanaged(u64, void)) void {
+    const alloc = engine.memory.cardinal_get_allocator_for_category(.ENGINE).as_allocator();
+
+    var stack: std.ArrayListUnmanaged(engine.ecs_entity.Entity) = .{};
+    defer stack.deinit(alloc);
+
+    stack.append(alloc, root) catch return;
+
+    while (stack.items.len > 0) {
+        const last = stack.items.len - 1;
+        const e = stack.items[last];
+        stack.items.len = last;
+
+        out.put(alloc, e.id, {}) catch {};
+
+        const h = state.runtime.registry.get(components.Hierarchy, e) orelse continue;
+        var child = h.first_child;
+        var guard: u32 = 0;
+        while (child) |c_ent| {
+            if (guard > 100000) break;
+            guard += 1;
+
+            stack.append(alloc, c_ent) catch return;
+
+            const ch = state.runtime.registry.get(components.Hierarchy, c_ent) orelse break;
+            child = ch.next_sibling;
+        }
+    }
+}
+
+fn compute_selection_world_aabb(state: *EditorState, root: engine.ecs_entity.Entity) ?math.AABB {
+    if (state.runtime.combined_scene.meshes == null or state.runtime.combined_scene.mesh_count == 0) return null;
+
+    const alloc = engine.memory.cardinal_get_allocator_for_category(.ENGINE).as_allocator();
+    var subtree: std.AutoHashMapUnmanaged(u64, void) = .{};
+    defer subtree.deinit(alloc);
+    collect_subtree_entities(state, root, &subtree);
+
+    var found_any = false;
+    var out = math.AABB{ .min = math.Vec3.zero(), .max = math.Vec3.zero() };
+
+    const meshes = state.runtime.combined_scene.meshes.?;
+    var i: u32 = 0;
+    while (i < state.runtime.combined_scene.mesh_count) : (i += 1) {
+        const owner = state.runtime.mesh_owner_by_mesh_index.get(i);
+        const ent = state.runtime.mesh_entity_by_mesh_index.get(i);
+        const in_subtree = (owner != null and subtree.contains(owner.?)) or (ent != null and subtree.contains(ent.?));
+        if (!in_subtree) continue;
+
+        const mesh = &meshes[i];
+        const min_arr = mesh.bounding_box_min;
+        const max_arr = mesh.bounding_box_max;
+        const min = math.Vec3{ .x = min_arr[0], .y = min_arr[1], .z = min_arr[2] };
+        const max = math.Vec3{ .x = max_arr[0], .y = max_arr[1], .z = max_arr[2] };
+
+        const aabb = math.AABB{ .min = min, .max = max };
+        const world_mat = math.Mat4.fromArray(mesh.transform);
+        const world_aabb = aabb.transform(world_mat);
+
+        if (!found_any) {
+            out = world_aabb;
+            found_any = true;
+        } else {
+            out.min.x = @min(out.min.x, world_aabb.min.x);
+            out.min.y = @min(out.min.y, world_aabb.min.y);
+            out.min.z = @min(out.min.z, world_aabb.min.z);
+            out.max.x = @max(out.max.x, world_aabb.max.x);
+            out.max.y = @max(out.max.y, world_aabb.max.y);
+            out.max.z = @max(out.max.z, world_aabb.max.z);
+        }
+    }
+
+    return if (found_any) out else null;
+}
+
+pub fn frame_entity_in_scene_view(state: *EditorState, root: engine.ecs_entity.Entity) void {
+    const aabb = compute_selection_world_aabb(state, root) orelse return;
+    const center = aabb.min.add(aabb.max).mul(0.5);
+    const extent = aabb.max.sub(aabb.min);
+    const radius = 0.5 * extent.length();
+    const dist = @max(2.0, radius * 2.5);
+
+    var dir = state.runtime.camera.position.sub(state.runtime.camera.target);
+    if (dir.lengthSq() < 0.0001) {
+        dir = math.Vec3{ .x = 0.0, .y = 0.0, .z = 1.0 };
+    }
+    dir = dir.normalize();
+
+    state.runtime.camera.target = center;
+    state.runtime.camera.position = center.add(dir.mul(dist));
+
+    const front = state.runtime.camera.target.sub(state.runtime.camera.position).normalize();
+    state.runtime.pitch = math.toDegrees(std.math.asin(front.y));
+    state.runtime.yaw = math.toDegrees(std.math.atan2(front.z, front.x));
+
+    if (state.runtime.pbr_enabled) {
+        renderer.cardinal_renderer_set_camera(state.runtime.renderer, &state.runtime.camera);
+    }
+}
+
+fn project_to_screen(state: *EditorState, view_proj: math.Mat4, p: math.Vec3) ?c.ImVec2 {
+    const win_width = state.runtime.window.width;
+    const win_height = state.runtime.window.height;
+
+    const v4 = view_proj.mulVec4(math.Vec4{ .x = p.x, .y = p.y, .z = p.z, .w = 1.0 });
+    if (v4.w <= 0.0) return null;
+    const ndc = math.Vec3{ .x = v4.x / v4.w, .y = v4.y / v4.w, .z = v4.z / v4.w };
+
+    const x = (ndc.x + 1.0) * 0.5 * @as(f32, @floatFromInt(win_width));
+    const y = (ndc.y + 1.0) * 0.5 * @as(f32, @floatFromInt(win_height));
+    return c.ImVec2{ .x = x, .y = y };
+}
+
+fn draw_aabb_xray(state: *EditorState, view_proj: math.Mat4, aabb: math.AABB, color: u32, thickness: f32) void {
+    const min = aabb.min;
+    const max = aabb.max;
+
+    const corners = [_]math.Vec3{
+        .{ .x = min.x, .y = min.y, .z = min.z },
+        .{ .x = max.x, .y = min.y, .z = min.z },
+        .{ .x = max.x, .y = max.y, .z = min.z },
+        .{ .x = min.x, .y = max.y, .z = min.z },
+        .{ .x = min.x, .y = min.y, .z = max.z },
+        .{ .x = max.x, .y = min.y, .z = max.z },
+        .{ .x = max.x, .y = max.y, .z = max.z },
+        .{ .x = min.x, .y = max.y, .z = max.z },
+    };
+
+    var pts: [8]?c.ImVec2 = undefined;
+    for (0..8) |i| {
+        pts[i] = project_to_screen(state, view_proj, corners[i]);
+    }
+
+    const edges = [_][2]u8{
+        .{ 0, 1 }, .{ 1, 2 }, .{ 2, 3 }, .{ 3, 0 },
+        .{ 4, 5 }, .{ 5, 6 }, .{ 6, 7 }, .{ 7, 4 },
+        .{ 0, 4 }, .{ 1, 5 }, .{ 2, 6 }, .{ 3, 7 },
+    };
+
+    for (edges) |e| {
+        const a = pts[e[0]];
+        const b = pts[e[1]];
+        if (a == null or b == null) continue;
+        var pa = a.?;
+        var pb = b.?;
+        c.imgui_bridge_draw_line(&pa, &pb, color, thickness);
+    }
+}
+
+fn draw_selection_xray(state: *EditorState, root: engine.ecs_entity.Entity) void {
+    if (state.runtime.combined_scene.meshes == null or state.runtime.combined_scene.mesh_count == 0) return;
+
+    const alloc = engine.memory.cardinal_get_allocator_for_category(.ENGINE).as_allocator();
+    var subtree: std.AutoHashMapUnmanaged(u64, void) = .{};
+    defer subtree.deinit(alloc);
+    collect_subtree_entities(state, root, &subtree);
+
+    const view = math.Mat4.lookAt(state.runtime.camera.position, state.runtime.camera.target, state.runtime.camera.up);
+    const proj = math.Mat4.perspective(math.toRadians(state.runtime.camera.fov), state.runtime.camera.aspect, state.runtime.camera.near_plane, state.runtime.camera.far_plane);
+    const view_proj = proj.mul(view);
+
+    const meshes = state.runtime.combined_scene.meshes.?;
+    var i: u32 = 0;
+    while (i < state.runtime.combined_scene.mesh_count) : (i += 1) {
+        const owner_id = state.runtime.mesh_owner_by_mesh_index.get(i);
+        const ent_id = state.runtime.mesh_entity_by_mesh_index.get(i);
+        const in_subtree = (owner_id != null and subtree.contains(owner_id.?)) or (ent_id != null and subtree.contains(ent_id.?));
+        if (!in_subtree) continue;
+
+        const mesh = &meshes[i];
+        const min_arr = mesh.bounding_box_min;
+        const max_arr = mesh.bounding_box_max;
+        const min = math.Vec3{ .x = min_arr[0], .y = min_arr[1], .z = min_arr[2] };
+        const max = math.Vec3{ .x = max_arr[0], .y = max_arr[1], .z = max_arr[2] };
+
+        const aabb = math.AABB{ .min = min, .max = max };
+        const world_mat = math.Mat4.fromArray(mesh.transform);
+        const world_aabb = aabb.transform(world_mat);
+
+        const is_root = (ent_id != null and ent_id.? == root.id) or (owner_id != null and owner_id.? == root.id);
+        draw_aabb_xray(state, view_proj, world_aabb, if (is_root) 0x8000FFFF else 0x4000FFFF, if (is_root) 2.0 else 1.0);
+    }
+}
 
 const BVHNode = struct {
     aabb: math.AABB,
@@ -685,11 +870,10 @@ pub fn update(state: *EditorState) void {
         if (get_ray_from_mouse(state)) |ray| {
             if (pick_combined_mesh(state, ray)) |mesh_index| {
                 const pick_single_mesh = c.imgui_bridge_is_alt_down();
-                const ent =
-                    if (pick_single_mesh)
-                        mesh_index_to_entity(state, mesh_index, false) orelse ensure_entity_for_mesh_index(state, mesh_index)
-                    else
-                        mesh_index_to_entity(state, mesh_index, true) orelse mesh_index_to_entity(state, mesh_index, false) orelse ensure_entity_for_mesh_index(state, mesh_index);
+                const ent = if (pick_single_mesh)
+                    mesh_index_to_entity(state, mesh_index, false)
+                else
+                    mesh_index_to_entity(state, mesh_index, true) orelse mesh_index_to_entity(state, mesh_index, false);
 
                 if (ent) |e| {
                     state.ui.selected_entity = e;
@@ -700,47 +884,20 @@ pub fn update(state: *EditorState) void {
                     state.ui.selected_entity = .{ .id = std.math.maxInt(u64) };
                 }
             } else {
-                var closest_t: f32 = std.math.floatMax(f32);
-                var hit_model_id: u32 = 0;
-
-                if (state.runtime.model_manager.models) |models| {
-                    var i: u32 = 0;
-                    while (i < state.runtime.model_manager.model_count) : (i += 1) {
-                        const model = &models[i];
-                        if (!model.visible or model.is_loading) continue;
-
-                        const scn = &model.scene;
-
-                        if (scn.root_nodes) |roots| {
-                            var r: u32 = 0;
-                            while (r < scn.root_node_count) : (r += 1) {
-                                if (roots[r]) |root| {
-                                    check_node_intersection(root, model, ray, &closest_t, &hit_model_id);
-                                }
-                            }
-                        }
-                    }
-                }
-
-                if (hit_model_id != 0) {
-                    state.ui.selected_model_id = hit_model_id;
-                    state.ui.selected_entity = .{ .id = std.math.maxInt(u64) };
-                } else {
-                    state.ui.selected_model_id = 0;
-                    state.ui.selected_entity = .{ .id = std.math.maxInt(u64) };
-                }
+                state.ui.selected_entity = .{ .id = std.math.maxInt(u64) };
             }
         }
     }
 
     if (state.ui.selected_entity.id != std.math.maxInt(u64)) {
+        draw_selection_xray(state, state.ui.selected_entity);
         if (state.runtime.registry.get(components.Transform, state.ui.selected_entity)) |t| {
             draw_entity_gizmo(state, t);
             return;
         }
     }
 
-    if (state.ui.selected_model_id != 0) draw_gizmo(state);
+    state.ui.selected_model_id = 0;
 }
 
 fn draw_entity_gizmo(state: *EditorState, t: *components.Transform) void {
@@ -931,7 +1088,6 @@ fn draw_entity_gizmo(state: *EditorState, t: *components.Transform) void {
         selection_state.drag_start_pos = pos;
         selection_state.drag_start_rot = rot;
         selection_state.drag_start_val = if (selection_state.gizmo_mode == .Translate) pos else scale_vec;
-        state.ui.undo.begin_entity_transform(state.ui.selected_entity.id, t.*);
 
         if (!hovered_rot) {
             const axis = axes[hovered.?];
@@ -954,6 +1110,10 @@ fn draw_entity_gizmo(state: *EditorState, t: *components.Transform) void {
                 selection_state.is_dragging = false;
                 selection_state.drag_axis = null;
             }
+        }
+
+        if (selection_state.is_dragging) {
+            state.ui.undo.begin_entity_transform(state.ui.selected_entity.id, t.*);
         }
     }
 
@@ -1260,6 +1420,10 @@ fn draw_gizmo(state: *EditorState) void {
                 selection_state.is_dragging = false;
                 selection_state.drag_axis = null;
             }
+        }
+
+        if (selection_state.is_dragging) {
+            state.ui.undo.begin_model_transform(model.id, model.transform);
         }
     }
 

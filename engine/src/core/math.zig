@@ -501,26 +501,26 @@ pub const Mat4 = extern struct {
         if (trace > 0) {
             const val = std.math.sqrt(trace + 1.0) * 2;
             r.w = 0.25 * val;
-            r.x = (rot_matrix[7] - rot_matrix[5]) / val;
-            r.y = (rot_matrix[2] - rot_matrix[6]) / val;
-            r.z = (rot_matrix[3] - rot_matrix[1]) / val;
+            r.x = (rot_matrix[5] - rot_matrix[7]) / val;
+            r.y = (rot_matrix[6] - rot_matrix[2]) / val;
+            r.z = (rot_matrix[1] - rot_matrix[3]) / val;
         } else if ((rot_matrix[0] > rot_matrix[4]) and (rot_matrix[0] > rot_matrix[8])) {
             const val = std.math.sqrt(1.0 + rot_matrix[0] - rot_matrix[4] - rot_matrix[8]) * 2;
-            r.w = (rot_matrix[7] - rot_matrix[5]) / val;
+            r.w = (rot_matrix[5] - rot_matrix[7]) / val;
             r.x = 0.25 * val;
-            r.y = (rot_matrix[1] + rot_matrix[3]) / val;
-            r.z = (rot_matrix[2] + rot_matrix[6]) / val;
+            r.y = (rot_matrix[3] + rot_matrix[1]) / val;
+            r.z = (rot_matrix[6] + rot_matrix[2]) / val;
         } else if (rot_matrix[4] > rot_matrix[8]) {
             const val = std.math.sqrt(1.0 + rot_matrix[4] - rot_matrix[0] - rot_matrix[8]) * 2;
-            r.w = (rot_matrix[2] - rot_matrix[6]) / val;
-            r.x = (rot_matrix[1] + rot_matrix[3]) / val;
+            r.w = (rot_matrix[6] - rot_matrix[2]) / val;
+            r.x = (rot_matrix[3] + rot_matrix[1]) / val;
             r.y = 0.25 * val;
-            r.z = (rot_matrix[5] + rot_matrix[7]) / val;
+            r.z = (rot_matrix[7] + rot_matrix[5]) / val;
         } else {
             const val = std.math.sqrt(1.0 + rot_matrix[8] - rot_matrix[0] - rot_matrix[4]) * 2;
-            r.w = (rot_matrix[3] - rot_matrix[1]) / val;
-            r.x = (rot_matrix[2] + rot_matrix[6]) / val;
-            r.y = (rot_matrix[5] + rot_matrix[7]) / val;
+            r.w = (rot_matrix[1] - rot_matrix[3]) / val;
+            r.x = (rot_matrix[6] + rot_matrix[2]) / val;
+            r.y = (rot_matrix[7] + rot_matrix[5]) / val;
             r.z = 0.25 * val;
         }
 

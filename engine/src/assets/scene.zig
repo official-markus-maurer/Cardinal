@@ -218,6 +218,14 @@ pub const CardinalScene = extern struct {
     skin_count: u32,
 };
 
+pub fn resolve_parent_idx(node: *const CardinalSceneNode, node_ptr_to_index: *const std.AutoHashMapUnmanaged(*CardinalSceneNode, u32)) u32 {
+    if (node.parent_index >= 0) return @intCast(node.parent_index);
+    if (node.parent) |parent| {
+        if (node_ptr_to_index.get(parent)) |idx| return idx;
+    }
+    return 0xFFFFFFFF;
+}
+
 // --- Functions ---
 
 /// Allocates a scene node from the global pool and copies the optional name.

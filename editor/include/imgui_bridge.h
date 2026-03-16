@@ -384,6 +384,13 @@ void imgui_bridge_indent(float indent_w);
 void imgui_bridge_unindent(float indent_w);
 void imgui_bridge_push_id_int(int int_id);
 void imgui_bridge_pop_id(void);
+float imgui_bridge_get_style_indent_spacing(void);
+
+typedef void (*ImGuiBridgeClipperCallback)(void *user_data, int display_start,
+                                          int display_end);
+void imgui_bridge_list_clipper(int items_count, float items_height,
+                               ImGuiBridgeClipperCallback cb,
+                               void *user_data);
 
 // Tables
 bool imgui_bridge_begin_table(const char *str_id, int column, int flags,

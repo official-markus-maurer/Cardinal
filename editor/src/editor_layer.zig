@@ -43,6 +43,8 @@ const allocator = engine.memory.cardinal_get_allocator_for_category(.ENGINE).as_
 var state: EditorState = undefined;
 var initialized: bool = false;
 var device_recovery_failed: bool = false;
+var world_matrix_cache: std.AutoHashMapUnmanaged(u64, math.Mat4) = .{};
+var override_cache: std.AutoHashMapUnmanaged(u64, bool) = .{};
 
 fn sync_skybox_from_ecs() void {
     var view = state.runtime.registry.view(engine.ecs_components.Skybox);
@@ -62,20 +64,17 @@ fn sync_skybox_from_ecs() void {
 }
 
 /// Pushes ECS-driven transforms into `state.combined_scene` so the renderer updates mesh placement.
-///
-/// Only entities marked in `state.transform_overrides` are applied, to avoid fighting the model
-/// manager and animation systems.
 fn sync_mesh_transforms_from_ecs() void {
     if (!state.runtime.scene_loaded) return;
     if (state.runtime.scene_upload_pending) return;
     if (state.runtime.combined_scene.meshes == null or state.runtime.combined_scene.mesh_count == 0) return;
     const meshes = state.runtime.combined_scene.meshes.?;
 
+    world_matrix_cache.clearRetainingCapacity();
+
     var view = state.runtime.registry.view(engine.ecs_components.MeshRenderer);
     var it = view.iterator();
     while (it.next()) |entry| {
-        if (!state.runtime.transform_overrides.contains(entry.entity.id)) continue;
-
         const mr = entry.component;
         const mesh_index = mr.mesh.index;
         if (mesh_index >= state.runtime.combined_scene.mesh_count) continue;
@@ -85,39 +84,28 @@ fn sync_mesh_transforms_from_ecs() void {
     }
 }
 
-/// Computes an entity world matrix by walking `Hierarchy.parent` and composing local TRS matrices.
-///
-/// TODO: Cache world matrices per frame to avoid recomputation during large updates.
 fn compute_entity_world_matrix(entity: engine.ecs_entity.Entity) engine.math.Mat4 {
-    var chain: [128]engine.ecs_entity.Entity = undefined;
-    var len: usize = 0;
+    return compute_entity_world_matrix_cached(entity, 0);
+}
 
-    var current: ?engine.ecs_entity.Entity = entity;
-    var guard: u32 = 0;
-    while (current) |e| {
-        if (guard > 100000) break;
-        guard += 1;
+fn compute_entity_world_matrix_cached(entity: engine.ecs_entity.Entity, depth: u32) engine.math.Mat4 {
+    if (world_matrix_cache.get(entity.id)) |m| return m;
+    if (depth > 2048) return math.Mat4.identity();
 
-        if (len < chain.len) {
-            chain[len] = e;
-            len += 1;
-        }
-
-        const h = state.runtime.registry.get(engine.ecs_components.Hierarchy, e) orelse break;
-        current = h.parent;
-    }
-
-    var world = engine.math.Mat4.identity();
-    var i: usize = len;
-    while (i > 0) {
-        i -= 1;
-        const e = chain[i];
-        if (state.runtime.registry.get(engine.ecs_components.Transform, e)) |t| {
-            const local = t.get_matrix();
-            world = world.mul(local);
+    var parent_world = math.Mat4.identity();
+    if (state.runtime.registry.get(engine.ecs_components.Hierarchy, entity)) |h| {
+        if (h.parent) |p| {
+            parent_world = compute_entity_world_matrix_cached(p, depth + 1);
         }
     }
 
+    var world = parent_world;
+    if (state.runtime.registry.get(engine.ecs_components.Transform, entity)) |t| {
+        const local = math.Mat4.fromTRS(t.position, t.rotation, t.scale);
+        world = parent_world.mul(local);
+    }
+
+    world_matrix_cache.put(allocator, entity.id, world) catch {};
     return world;
 }
 
@@ -128,6 +116,11 @@ fn sync_mesh_visibility_from_ecs() void {
     if (state.runtime.combined_scene.meshes == null or state.runtime.combined_scene.mesh_count == 0) return;
     const meshes = state.runtime.combined_scene.meshes.?;
 
+    var i: u32 = 0;
+    while (i < state.runtime.combined_scene.mesh_count) : (i += 1) {
+        meshes[i].visible = false;
+    }
+
     var view = state.runtime.registry.view(engine.ecs_components.MeshRenderer);
     var it = view.iterator();
     while (it.next()) |entry| {
@@ -135,6 +128,21 @@ fn sync_mesh_visibility_from_ecs() void {
         const mesh_index = mr.mesh.index;
         if (mesh_index >= state.runtime.combined_scene.mesh_count) continue;
         meshes[mesh_index].visible = mr.visible;
+    }
+}
+
+fn sync_mesh_index_maps_from_ecs() void {
+    if (!state.runtime.scene_loaded) return;
+
+    state.runtime.mesh_entity_by_mesh_index.clearRetainingCapacity();
+    state.runtime.mesh_owner_by_mesh_index.clearRetainingCapacity();
+
+    var view = state.runtime.registry.view(engine.ecs_components.MeshRenderer);
+    var it = view.iterator();
+    while (it.next()) |entry| {
+        const mr = entry.component;
+        state.runtime.mesh_entity_by_mesh_index.put(allocator, mr.mesh.index, entry.entity.id) catch {};
+        state.runtime.mesh_owner_by_mesh_index.put(allocator, mr.mesh.index, entry.entity.id) catch {};
     }
 }
 
@@ -163,7 +171,6 @@ fn check_loading_status() void {
                 scene.cardinal_scene_destroy(&loaded_scene);
 
                 if (model_id != 0) {
-                    state.ui.selected_model_id = model_id;
                     const combined = model_manager.cardinal_model_manager_get_combined_scene(&state.runtime.model_manager);
                     if (combined) |comb_ptr| {
                         state.runtime.combined_scene = comb_ptr.*;
@@ -709,6 +716,7 @@ pub fn shutdown() void {
     state.runtime.transform_overrides.deinit(allocator);
     state.runtime.mesh_owner_by_mesh_index.deinit(allocator);
     state.runtime.mesh_entity_by_mesh_index.deinit(allocator);
+    state.runtime.model_root_by_id.deinit(allocator);
 
     for (state.runtime.loading_tasks.items) |info| {
         async_loader.cardinal_async_free_task(info.task);
@@ -726,8 +734,11 @@ pub fn shutdown() void {
     allocator.free(state.ui.assets.search_filter);
 
     state.ui.undo.deinit(allocator);
+    state.ui.scene_graph_open_state.deinit(allocator);
 
     state.runtime.config_manager.deinit();
+    world_matrix_cache.deinit(allocator);
+    override_cache.deinit(allocator);
 
     initialized = false;
 }
@@ -870,6 +881,7 @@ pub fn update() void {
 
     sync_mesh_visibility_from_ecs();
     sync_mesh_transforms_from_ecs();
+    sync_mesh_index_maps_from_ecs();
 
     // Systems update
     input_system.update(&state);

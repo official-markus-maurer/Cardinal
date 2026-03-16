@@ -89,6 +89,7 @@ pub const EditorRuntimeState = struct {
     transform_overrides: std.AutoHashMapUnmanaged(u64, void) = .{},
     mesh_owner_by_mesh_index: std.AutoHashMapUnmanaged(u32, u64) = .{},
     mesh_entity_by_mesh_index: std.AutoHashMapUnmanaged(u32, u64) = .{},
+    model_root_by_id: std.AutoHashMapUnmanaged(u32, u64) = .{},
 
     /// Camera state passed to the renderer.
     camera: types.CardinalCamera = undefined,
@@ -125,15 +126,15 @@ pub const EditorRuntimeState = struct {
     pub fn mark_transform_override_tree(self: *EditorRuntimeState, root: engine.ecs_entity.Entity) void {
         const allocator = engine.memory.cardinal_get_allocator_for_category(.ENGINE).as_allocator();
 
-        var stack: [256]engine.ecs_entity.Entity = undefined;
-        var sp: usize = 0;
+        var stack: std.ArrayListUnmanaged(engine.ecs_entity.Entity) = .{};
+        defer stack.deinit(allocator);
 
-        stack[sp] = root;
-        sp += 1;
+        stack.append(allocator, root) catch return;
 
-        while (sp > 0) {
-            sp -= 1;
-            const e = stack[sp];
+        while (stack.items.len > 0) {
+            const last = stack.items.len - 1;
+            const e = stack.items[last];
+            stack.items.len = last;
 
             self.transform_overrides.put(allocator, e.id, {}) catch {};
 
@@ -144,10 +145,7 @@ pub const EditorRuntimeState = struct {
                 if (guard > 100000) break;
                 guard += 1;
 
-                if (sp < stack.len) {
-                    stack[sp] = c_ent;
-                    sp += 1;
-                }
+                stack.append(allocator, c_ent) catch return;
 
                 const ch = self.registry.get(engine.ecs_components.Hierarchy, c_ent) orelse break;
                 child = ch.next_sibling;
@@ -172,6 +170,7 @@ pub const EditorUiState = struct {
     scene_graph_focus_pending: bool = false,
     scene_graph_open_chain: [128]u64 = [_]u64{0} ** 128,
     scene_graph_open_chain_len: u8 = 0,
+    scene_graph_open_state: std.AutoHashMapUnmanaged(u64, bool) = .{},
 
     renaming_entity: engine.ecs_entity.Entity = .{ .id = std.math.maxInt(u64) },
     rename_buffer: [256]u8 = [_]u8{0} ** 256,
@@ -181,6 +180,10 @@ pub const EditorUiState = struct {
     inspector_node_type_search: [128]u8 = [_]u8{0} ** 128,
     inspector_add_component_search: [128]u8 = [_]u8{0} ** 128,
     inspector_rotation_euler_deg: [3]f32 = .{ 0.0, 0.0, 0.0 },
+    inspector_rotation_editing: bool = false,
+    inspector_last_model_id: u32 = 0,
+    inspector_model_rotation_euler_deg: [3]f32 = .{ 0.0, 0.0, 0.0 },
+    inspector_model_rotation_editing: bool = false,
 
     show_scene_graph: bool = true,
     show_scene_view: bool = true,

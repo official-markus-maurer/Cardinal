@@ -7,7 +7,6 @@ const std = @import("std");
 const engine = @import("cardinal_engine");
 const math = engine.math;
 const scene = engine.scene;
-const model_manager = engine.model_manager;
 const animation = engine.animation;
 const components = engine.ecs_components;
 const entity_module = engine.ecs_entity;
@@ -15,6 +14,7 @@ const node_factory = engine.ecs_node_factory;
 const c = @import("../c.zig").c;
 const EditorState = @import("../editor_state.zig").EditorState;
 const scene_io = @import("../systems/scene_io.zig");
+const selection_system = @import("../systems/selection_system.zig");
 
 const NodeEntry = struct {
     label: []const u8,
@@ -95,12 +95,65 @@ fn open_create_node_popup(state: *EditorState, parent: ?entity_module.Entity) vo
     c.imgui_bridge_open_popup("create_node_popup");
 }
 
+fn capture_append_hierarchy(state: *EditorState, parent: entity_module.Entity) struct { ids: [6]u64, hier: [6]components.Hierarchy, count: u8 } {
+    var ids: [6]u64 = [_]u64{0} ** 6;
+    var hier: [6]components.Hierarchy = undefined;
+    var count: u8 = 0;
+
+    ids[count] = parent.id;
+    count += 1;
+
+    const parent_h = ensure_hierarchy(state, parent);
+    if (parent_h.first_child) |fc| {
+        var last = fc;
+        var guard: u32 = 0;
+        while (guard < 100000) : (guard += 1) {
+            const lh = state.runtime.registry.get(components.Hierarchy, last) orelse break;
+            if (lh.next_sibling) |nx| {
+                last = nx;
+            } else {
+                break;
+            }
+        }
+        ids[count] = last.id;
+        count += 1;
+    }
+
+    var i: u8 = 0;
+    while (i < count) : (i += 1) {
+        hier[i] = ensure_hierarchy(state, .{ .id = ids[i] });
+    }
+
+    return .{ .ids = ids, .hier = hier, .count = count };
+}
+
 fn create_entity(state: *EditorState, parent: ?entity_module.Entity, node_type: components.NodeType, default_name: []const u8) ?entity_module.Entity {
     var opts = node_factory.CreateNodeOptions{};
     if (node_type == .Skybox and state.runtime.skybox_path != null) {
         opts.skybox_path = std.mem.span(state.runtime.skybox_path.?.ptr);
     }
-    return node_factory.create_node(state.runtime.registry, parent, node_type, default_name, opts) catch null;
+
+    var before_ids: [6]u64 = [_]u64{0} ** 6;
+    var before_h: [6]components.Hierarchy = undefined;
+    var before_count: u8 = 0;
+    if (parent) |p| {
+        const pack = capture_append_hierarchy(state, p);
+        before_ids = pack.ids;
+        before_h = pack.hier;
+        before_count = pack.count;
+    }
+
+    const created = node_factory.create_node(state.runtime.registry, parent, node_type, default_name, opts) catch null;
+    if (created == null) return null;
+
+    var after_h: [6]components.Hierarchy = undefined;
+    var i: u8 = 0;
+    while (i < before_count) : (i += 1) {
+        after_h[i] = ensure_hierarchy(state, .{ .id = before_ids[i] });
+    }
+
+    state.ui.undo.push_entity_subtree(state.runtime.registry, created.?, .Create, before_ids[0..before_count], before_h[0..before_count], after_h[0..before_count]);
+    return created;
 }
 
 fn draw_create_node_popup(state: *EditorState) void {
@@ -131,6 +184,8 @@ fn draw_create_node_popup(state: *EditorState) void {
             const name_str = base_label(entry.label);
             if (create_entity(state, state.runtime.create_node_parent, entry.node_type, name_str)) |created| {
                 state.ui.selected_entity = created;
+                state.ui.scene_graph_focus_target_id = created.id;
+                state.ui.scene_graph_focus_pending = true;
             }
             @memset(&state.runtime.create_node_search, 0);
             state.runtime.create_node_parent = null;
@@ -138,6 +193,105 @@ fn draw_create_node_popup(state: *EditorState) void {
             break;
         }
     }
+}
+
+fn is_descendant_of(state: *EditorState, maybe_descendant: entity_module.Entity, ancestor: entity_module.Entity) bool {
+    var current: ?entity_module.Entity = maybe_descendant;
+    var guard: u32 = 0;
+    while (current) |e| {
+        if (guard > 2048) break;
+        guard += 1;
+        if (e.id == ancestor.id) return true;
+        const h = state.runtime.registry.get(components.Hierarchy, e) orelse break;
+        current = h.parent;
+    }
+    return false;
+}
+
+fn ensure_hierarchy(state: *EditorState, entity: entity_module.Entity) components.Hierarchy {
+    if (state.runtime.registry.get(components.Hierarchy, entity)) |h| return h.*;
+    state.runtime.registry.add(entity, components.Hierarchy{}) catch {};
+    return components.Hierarchy{};
+}
+
+fn push_unique_entity(ids: *[6]u64, count: *u8, id: u64) void {
+    var i: u8 = 0;
+    while (i < count.*) : (i += 1) {
+        if (ids[i] == id) return;
+    }
+    if (count.* < ids.len) {
+        ids[count.*] = id;
+        count.* += 1;
+    }
+}
+
+fn capture_reparent_before(state: *EditorState, child: entity_module.Entity, new_parent: entity_module.Entity) struct {
+    ids: [6]u64,
+    before: [6]components.Hierarchy,
+    count: u8,
+} {
+    var ids: [6]u64 = [_]u64{0} ** 6;
+    var before: [6]components.Hierarchy = undefined;
+    var count: u8 = 0;
+
+    const child_h = ensure_hierarchy(state, child);
+    if (child_h.parent) |p| {
+        push_unique_entity(&ids, &count, p.id);
+    }
+    if (child_h.prev_sibling) |p| push_unique_entity(&ids, &count, p.id);
+    if (child_h.next_sibling) |n| push_unique_entity(&ids, &count, n.id);
+    push_unique_entity(&ids, &count, new_parent.id);
+
+    const new_parent_h = ensure_hierarchy(state, new_parent);
+    if (new_parent_h.first_child) |fc| {
+        var last = fc;
+        var guard: u32 = 0;
+        while (guard < 100000) : (guard += 1) {
+            const lh = state.runtime.registry.get(components.Hierarchy, last) orelse break;
+            if (lh.next_sibling) |nx| {
+                last = nx;
+            } else {
+                break;
+            }
+        }
+        push_unique_entity(&ids, &count, last.id);
+    }
+
+    push_unique_entity(&ids, &count, child.id);
+
+    var i: u8 = 0;
+    while (i < count) : (i += 1) {
+        before[i] = ensure_hierarchy(state, .{ .id = ids[i] });
+    }
+
+    return .{ .ids = ids, .before = before, .count = count };
+}
+
+fn capture_reparent_after(state: *EditorState, ids: [6]u64, count: u8) [6]components.Hierarchy {
+    var after: [6]components.Hierarchy = undefined;
+    var i: u8 = 0;
+    while (i < count) : (i += 1) {
+        after[i] = ensure_hierarchy(state, .{ .id = ids[i] });
+    }
+    return after;
+}
+
+fn reparent_entity(state: *EditorState, child: entity_module.Entity, new_parent: entity_module.Entity) void {
+    if (child.id == new_parent.id) return;
+    if (is_descendant_of(state, new_parent, child)) return;
+
+    const before_pack = capture_reparent_before(state, child, new_parent);
+
+    unlink_entity_from_parent(state, child);
+    node_factory.append_child(state.runtime.registry, new_parent, child);
+
+    const after = capture_reparent_after(state, before_pack.ids, before_pack.count);
+    state.ui.undo.push(.{ .EntityReparent = .{
+        .entity_ids = before_pack.ids,
+        .before = before_pack.before,
+        .after = after,
+        .count = before_pack.count,
+    } });
 }
 
 fn unlink_entity_from_parent(state: *EditorState, entity: entity_module.Entity) void {
@@ -189,6 +343,96 @@ fn unlink_entity_from_parent(state: *EditorState, entity: entity_module.Entity) 
     hierarchy.prev_sibling = null;
     hierarchy.next_sibling = null;
     state.runtime.registry.add(entity, hierarchy) catch {};
+}
+
+fn cleanup_deleted_entities(state: *EditorState, root: entity_module.Entity) void {
+    const alloc = engine.memory.cardinal_get_allocator_for_category(.ENGINE).as_allocator();
+
+    var deleted: std.AutoHashMapUnmanaged(u64, void) = .{};
+    defer deleted.deinit(alloc);
+
+    var stack: std.ArrayListUnmanaged(entity_module.Entity) = .{};
+    defer stack.deinit(alloc);
+
+    stack.append(alloc, root) catch return;
+
+    while (stack.items.len != 0) {
+        const last_index = stack.items.len - 1;
+        const e = stack.items[last_index];
+        stack.items.len = last_index;
+        deleted.put(alloc, e.id, {}) catch {};
+
+        if (state.runtime.registry.get(components.Hierarchy, e)) |h_ptr| {
+            const h = h_ptr.*;
+            var child = h.first_child;
+            var loop_guard: u32 = 0;
+            while (child) |c_ent| {
+                if (loop_guard > 100000) break;
+                loop_guard += 1;
+
+                stack.append(alloc, c_ent) catch {};
+                child = if (state.runtime.registry.get(components.Hierarchy, c_ent)) |ch| ch.next_sibling else null;
+            }
+        }
+    }
+
+    var deleted_it = deleted.iterator();
+    while (deleted_it.next()) |entry| {
+        _ = state.runtime.transform_overrides.remove(entry.key_ptr.*);
+    }
+
+    var mesh_keys_to_remove: std.ArrayListUnmanaged(u32) = .{};
+    defer mesh_keys_to_remove.deinit(alloc);
+
+    var owner_it = state.runtime.mesh_owner_by_mesh_index.iterator();
+    while (owner_it.next()) |entry| {
+        if (deleted.contains(entry.value_ptr.*)) {
+            mesh_keys_to_remove.append(alloc, entry.key_ptr.*) catch {};
+        }
+    }
+    for (mesh_keys_to_remove.items) |k| {
+        _ = state.runtime.mesh_owner_by_mesh_index.remove(k);
+    }
+
+    mesh_keys_to_remove.clearRetainingCapacity();
+    var mesh_ent_it = state.runtime.mesh_entity_by_mesh_index.iterator();
+    while (mesh_ent_it.next()) |entry| {
+        if (deleted.contains(entry.value_ptr.*)) {
+            mesh_keys_to_remove.append(alloc, entry.key_ptr.*) catch {};
+        }
+    }
+    for (mesh_keys_to_remove.items) |k| {
+        _ = state.runtime.mesh_entity_by_mesh_index.remove(k);
+    }
+}
+
+fn strip_entities_for_delete(state: *EditorState, snaps: anytype) void {
+    var i: usize = 0;
+    while (i < snaps.len) : (i += 1) {
+        const ent = entity_module.Entity{ .id = snaps[i].entity_id };
+
+        if (state.ui.selected_entity.id == ent.id) {
+            state.ui.selected_entity = .{ .id = std.math.maxInt(u64) };
+        }
+        if (state.ui.renaming_entity.id == ent.id) {
+            state.ui.renaming_entity = .{ .id = std.math.maxInt(u64) };
+        }
+        if (state.ui.scene_graph_focus_target_id == ent.id) {
+            state.ui.scene_graph_focus_target_id = std.math.maxInt(u64);
+            state.ui.scene_graph_focus_pending = false;
+        }
+
+        _ = state.ui.scene_graph_open_state.remove(ent.id);
+
+        state.runtime.registry.remove(components.Name, ent);
+        state.runtime.registry.remove(components.Transform, ent);
+        state.runtime.registry.remove(components.Node, ent);
+        state.runtime.registry.remove(components.MeshRenderer, ent);
+        state.runtime.registry.remove(components.Light, ent);
+        state.runtime.registry.remove(components.Camera, ent);
+        state.runtime.registry.remove(components.Skybox, ent);
+        state.runtime.registry.remove(components.Hierarchy, ent);
+    }
 }
 
 fn destroy_entity_recursive(state: *EditorState, entity: entity_module.Entity, depth: u32) void {
@@ -247,46 +491,93 @@ fn focus_chain_contains(state: *EditorState, entity_id: u64) bool {
     return false;
 }
 
-/// Draws one ECS entity node and recurses through its children.
-fn draw_entity_node(state: *EditorState, entity: entity_module.Entity, depth: u32) void {
-    if (depth > 100) return;
+const FlatNode = struct {
+    entity: entity_module.Entity,
+    depth: u32,
+    parent_index: i32,
+};
 
-    const hierarchy = state.runtime.registry.get(components.Hierarchy, entity);
-    if (hierarchy == null) return;
+fn flat_append_visible(state: *EditorState, entity: entity_module.Entity, depth: u32, parent_index: i32, out: *std.ArrayListUnmanaged(FlatNode)) void {
+    if (depth > 2048) return;
+    if (state.runtime.registry.get(components.Hierarchy, entity) == null) return;
+
+    const idx: i32 = @intCast(out.items.len);
+    out.append(state.runtime.arena_allocator, .{ .entity = entity, .depth = depth, .parent_index = parent_index }) catch return;
+
+    const open = state.ui.scene_graph_open_state.get(entity.id) orelse false;
+    if (!open) return;
+
+    const h_ptr = state.runtime.registry.get(components.Hierarchy, entity) orelse return;
+    var child = h_ptr.first_child;
+    var loop_guard: u32 = 0;
+    while (child) |c_ent| {
+        if (loop_guard > 100000) break;
+        loop_guard += 1;
+
+        flat_append_visible(state, c_ent, depth + 1, idx, out);
+        child = if (state.runtime.registry.get(components.Hierarchy, c_ent)) |ch| ch.next_sibling else null;
+    }
+}
+
+fn draw_flat_node(state: *EditorState, node: FlatNode, indent_spacing: f32) void {
+    if (!state.runtime.registry.entity_manager.is_alive(node.entity)) return;
+
+    const hierarchy = state.runtime.registry.get(components.Hierarchy, node.entity) orelse return;
+
+    const has_children = hierarchy.first_child != null;
+    const open_before = if (has_children) (state.ui.scene_graph_open_state.get(node.entity.id) orelse false) else false;
+
+    if (node.depth > 0) {
+        c.imgui_bridge_indent(indent_spacing * @as(f32, @floatFromInt(node.depth)));
+    }
+    defer if (node.depth > 0) c.imgui_bridge_unindent(indent_spacing * @as(f32, @floatFromInt(node.depth)));
 
     var name_buf: [256]u8 = undefined;
     var name: []const u8 = "Entity";
-    if (state.runtime.registry.get(components.Name, entity)) |n| {
+    if (state.runtime.registry.get(components.Name, node.entity)) |n| {
         name = n.slice();
     }
 
     var prefix: []const u8 = "";
-    if (state.runtime.registry.get(components.Node, entity)) |node_comp| {
+    if (state.runtime.registry.get(components.Node, node.entity)) |node_comp| {
         prefix = node_prefix(node_comp.type);
     }
 
-    var flags: i32 = c.ImGuiTreeNodeFlags_OpenOnArrow | c.ImGuiTreeNodeFlags_SpanAvailWidth;
-    if (state.ui.selected_entity.id == entity.id) {
+    var flags: i32 = c.ImGuiTreeNodeFlags_OpenOnArrow | c.ImGuiTreeNodeFlags_SpanAvailWidth | c.ImGuiTreeNodeFlags_NoTreePushOnOpen;
+    if (state.ui.selected_entity.id == node.entity.id) {
         flags |= c.ImGuiTreeNodeFlags_Selected;
     }
-
-    if (hierarchy.?.first_child == null) {
+    if (!has_children) {
         flags |= c.ImGuiTreeNodeFlags_Leaf;
     }
 
-    var open: bool = false;
+    const open = blk: {
+        if (state.ui.renaming_entity.id == node.entity.id) {
+            const id_label = std.fmt.bufPrintZ(&name_buf, "##{d}", .{node.entity.id}) catch "##";
+            if (state.ui.scene_graph_focus_pending and focus_chain_contains(state, node.entity.id)) {
+                c.imgui_bridge_set_next_item_open(true, c.ImGuiCond_Once);
+            }
+            break :blk c.imgui_bridge_tree_node_ex(id_label.ptr, flags | c.ImGuiTreeNodeFlags_AllowItemOverlap);
+        }
 
-    if (state.ui.renaming_entity.id == entity.id) {
-        const id_label = std.fmt.bufPrintZ(&name_buf, "##{d}", .{entity.id}) catch "##";
-        if (state.ui.scene_graph_focus_pending and focus_chain_contains(state, entity.id)) {
+        const label = std.fmt.bufPrintZ(&name_buf, "{s}{s}##{d}", .{ prefix, name, node.entity.id }) catch "Entity";
+        if (state.ui.scene_graph_focus_pending and focus_chain_contains(state, node.entity.id)) {
             c.imgui_bridge_set_next_item_open(true, c.ImGuiCond_Once);
         }
-        open = c.imgui_bridge_tree_node_ex(id_label.ptr, flags | c.ImGuiTreeNodeFlags_AllowItemOverlap);
+        break :blk c.imgui_bridge_tree_node_ex(label.ptr, flags);
+    };
 
+    if (has_children and open != open_before) {
+        const alloc = engine.memory.cardinal_get_allocator_for_category(.ENGINE).as_allocator();
+        state.ui.scene_graph_open_state.put(alloc, node.entity.id, open) catch {};
+    }
+
+    if (state.ui.renaming_entity.id == node.entity.id) {
         c.imgui_bridge_same_line(0, 0);
         c.imgui_bridge_push_item_width(-1);
+        defer c.imgui_bridge_pop_item_width();
 
-        if (state.ui.renaming_entity.id == entity.id and c.imgui_bridge_is_window_focused(0) and !c.imgui_bridge_is_any_item_active()) {
+        if (c.imgui_bridge_is_window_focused(0) and !c.imgui_bridge_is_any_item_active()) {
             c.imgui_bridge_set_keyboard_focus_here(0);
         }
 
@@ -294,28 +585,43 @@ fn draw_entity_node(state: *EditorState, entity: entity_module.Entity, depth: u3
             const new_len = std.mem.indexOfScalar(u8, &state.ui.rename_buffer, 0) orelse state.ui.rename_buffer.len;
             const new_name = state.ui.rename_buffer[0..new_len];
             if (new_len > 0) {
-                state.runtime.registry.add(entity, components.Name.init(new_name)) catch {};
+                const before_ptr = state.runtime.registry.get(components.Name, node.entity);
+                const before_present = before_ptr != null;
+                const before = if (before_ptr) |p| p.* else std.mem.zeroes(components.Name);
+                const after = components.Name.init(new_name);
+                state.ui.undo.push(.{ .EntityName = .{
+                    .entity_id = node.entity.id,
+                    .before_present = before_present,
+                    .after_present = true,
+                    .before = before,
+                    .after = after,
+                } });
+                state.runtime.registry.add(node.entity, after) catch {};
             }
             state.ui.renaming_entity.id = std.math.maxInt(u64);
         }
-        c.imgui_bridge_pop_item_width();
 
         if (!c.imgui_bridge_is_item_active() and (c.imgui_bridge_is_mouse_clicked(0) or c.imgui_bridge_is_key_pressed(c.ImGuiKey_Escape))) {
             state.ui.renaming_entity.id = std.math.maxInt(u64);
         }
     } else {
-        const label = std.fmt.bufPrintZ(&name_buf, "{s}{s}##{d}", .{ prefix, name, entity.id }) catch "Entity";
-        if (state.ui.scene_graph_focus_pending and focus_chain_contains(state, entity.id)) {
-            c.imgui_bridge_set_next_item_open(true, c.ImGuiCond_Once);
-        }
-        open = c.imgui_bridge_tree_node_ex(label.ptr, flags);
-
         if (c.imgui_bridge_is_item_clicked(0)) {
-            state.ui.selected_entity = entity;
+            state.ui.selected_entity = node.entity;
         }
     }
 
-    if (state.ui.scene_graph_focus_pending and state.ui.scene_graph_focus_target_id == entity.id) {
+    if (state.ui.renaming_entity.id != node.entity.id) {
+        if (c.imgui_bridge_begin_drag_drop_source(0)) {
+            const id_copy: u64 = node.entity.id;
+            _ = c.imgui_bridge_set_drag_drop_payload("SCENE_ENTITY", &id_copy, @sizeOf(u64), 0);
+            var drag_label_buf: [256]u8 = undefined;
+            const drag_label_z = std.fmt.bufPrintZ(&drag_label_buf, "{s}{s}", .{ prefix, name }) catch "Entity";
+            c.imgui_bridge_text("%s", drag_label_z.ptr);
+            c.imgui_bridge_end_drag_drop_source();
+        }
+    }
+
+    if (state.ui.scene_graph_focus_pending and state.ui.scene_graph_focus_target_id == node.entity.id) {
         c.imgui_bridge_set_scroll_here_y(0.5);
         state.ui.scene_graph_focus_pending = false;
         state.ui.scene_graph_open_chain_len = 0;
@@ -324,19 +630,55 @@ fn draw_entity_node(state: *EditorState, entity: entity_module.Entity, depth: u3
 
     if (c.imgui_bridge_begin_popup_context_item()) {
         if (c.imgui_bridge_menu_item("Create...", null, false, true)) {
-            open_create_node_popup(state, entity);
+            open_create_node_popup(state, node.entity);
         }
 
         if (c.imgui_bridge_menu_item("Rename", null, false, true)) {
-            state.ui.renaming_entity = entity;
+            state.ui.renaming_entity = node.entity;
             @memset(&state.ui.rename_buffer, 0);
             const len = @min(name.len, 255);
             @memcpy(state.ui.rename_buffer[0..len], name[0..len]);
         }
 
+        if (c.imgui_bridge_menu_item("Frame in Scene View", null, false, true)) {
+            state.ui.selected_entity = node.entity;
+            selection_system.frame_entity_in_scene_view(state, node.entity);
+        }
+
         if (c.imgui_bridge_menu_item("Delete", null, false, true)) {
-            unlink_entity_from_parent(state, entity);
-            destroy_entity_recursive(state, entity, 0);
+            var ids: [6]u64 = [_]u64{0} ** 6;
+            var before: [6]components.Hierarchy = undefined;
+            var count: u8 = 0;
+
+            const h = ensure_hierarchy(state, node.entity);
+            if (h.parent) |p| push_unique_entity(&ids, &count, p.id);
+            if (h.prev_sibling) |p| push_unique_entity(&ids, &count, p.id);
+            if (h.next_sibling) |n| push_unique_entity(&ids, &count, n.id);
+
+            var i: u8 = 0;
+            while (i < count) : (i += 1) {
+                before[i] = ensure_hierarchy(state, .{ .id = ids[i] });
+            }
+
+            const snaps = state.ui.undo.capture_entity_subtree(state.runtime.registry, node.entity) orelse {
+                cleanup_deleted_entities(state, node.entity);
+                unlink_entity_from_parent(state, node.entity);
+                destroy_entity_recursive(state, node.entity, 0);
+                c.imgui_bridge_end_popup();
+                return;
+            };
+
+            cleanup_deleted_entities(state, node.entity);
+            unlink_entity_from_parent(state, node.entity);
+
+            var after: [6]components.Hierarchy = undefined;
+            i = 0;
+            while (i < count) : (i += 1) {
+                after[i] = ensure_hierarchy(state, .{ .id = ids[i] });
+            }
+
+            state.ui.undo.push_entity_subtree_snapshots(node.entity.id, .Delete, snaps, ids[0..count], before[0..count], after[0..count]);
+            strip_entities_for_delete(state, snaps);
         }
         c.imgui_bridge_end_popup();
     }
@@ -349,26 +691,35 @@ fn draw_entity_node(state: *EditorState, entity: entity_module.Entity, depth: u3
             const len = @as(usize, @intCast(data_size));
             const path = data[0..len];
 
-            scene_io.load_model_to_entity(state, path, entity);
+            scene_io.load_model_to_entity(state, path, node.entity);
+        }
+        if (c.imgui_bridge_accept_drag_drop_payload("SCENE_ENTITY", 0)) |payload| {
+            const data_ptr = c.imgui_bridge_payload_get_data(payload);
+            const data_size = c.imgui_bridge_payload_get_data_size(payload);
+            if (data_ptr != null and data_size == @sizeOf(u64)) {
+                const dragged_id = @as(*const u64, @ptrCast(@alignCast(data_ptr))).*;
+                const dragged = entity_module.Entity{ .id = dragged_id };
+                if (state.runtime.registry.entity_manager.is_alive(dragged)) {
+                    reparent_entity(state, dragged, node.entity);
+                }
+            }
         }
         c.imgui_bridge_end_drag_drop_target();
     }
+}
 
-    if (open) {
-        var child = hierarchy.?.first_child;
-        var loop_guard: u32 = 0;
-        while (child) |c_ent| {
-            if (loop_guard > 1000) break;
-            loop_guard += 1;
+const FlatRenderCtx = struct {
+    state: *EditorState,
+    nodes: []const FlatNode,
+    indent_spacing: f32,
+};
 
-            draw_entity_node(state, c_ent, depth + 1);
-            if (state.runtime.registry.get(components.Hierarchy, c_ent)) |h| {
-                child = h.next_sibling;
-            } else {
-                child = null;
-            }
-        }
-        c.imgui_bridge_tree_pop();
+fn render_flat_range(user_data: ?*anyopaque, start: c_int, end: c_int) callconv(.c) void {
+    const ctx: *const FlatRenderCtx = @ptrCast(@alignCast(user_data.?));
+    var i: usize = @intCast(start);
+    const e: usize = @intCast(end);
+    while (i < e and i < ctx.nodes.len) : (i += 1) {
+        draw_flat_node(ctx.state, ctx.nodes[i], ctx.indent_spacing);
     }
 }
 
@@ -437,6 +788,11 @@ pub fn draw_hierarchy_panel(state: *EditorState) void {
         if (open) {
             if (state.ui.scene_graph_focus_pending and state.ui.selected_entity.id != std.math.maxInt(u64)) {
                 build_focus_open_chain(state, state.ui.selected_entity);
+                const alloc = engine.memory.cardinal_get_allocator_for_category(.ENGINE).as_allocator();
+                var i: u8 = 0;
+                while (i < state.ui.scene_graph_open_chain_len) : (i += 1) {
+                    state.ui.scene_graph_open_state.put(alloc, state.ui.scene_graph_open_chain[i], true) catch {};
+                }
             }
 
             if (c.imgui_bridge_button("Create Node +")) {
@@ -453,14 +809,25 @@ pub fn draw_hierarchy_panel(state: *EditorState) void {
                 c.imgui_bridge_bullet_text("Camera");
                 c.imgui_bridge_bullet_text("Directional Light");
 
+                var flat: std.ArrayListUnmanaged(FlatNode) = .{};
                 var it = state.runtime.registry.view(components.Hierarchy).iterator();
                 while (it.next()) |entry| {
                     const entity = entry.entity;
                     if (state.runtime.registry.get(components.Hierarchy, entity)) |h| {
                         if (h.parent == null or h.parent.?.id == std.math.maxInt(u64)) {
-                            draw_entity_node(state, entity, 0);
+                            flat_append_visible(state, entity, 0, -1, &flat);
                         }
                     }
+                }
+
+                const count: c_int = @intCast(flat.items.len);
+                if (count > 0) {
+                    const ctx = FlatRenderCtx{
+                        .state = state,
+                        .nodes = flat.items,
+                        .indent_spacing = c.imgui_bridge_get_style_indent_spacing(),
+                    };
+                    c.imgui_bridge_list_clipper(count, -1.0, render_flat_range, @ptrCast(@constCast(&ctx)));
                 }
 
                 c.imgui_bridge_tree_pop();

@@ -40,7 +40,7 @@ pub const SceneSerializer = struct {
 
         try json_writer.beginObject();
         try json_writer.objectField("version");
-        try json_writer.write(3);
+        try json_writer.write(4);
 
         if (self.model_manager) |mgr| {
             try json_writer.objectField("models");
@@ -102,7 +102,7 @@ pub const SceneSerializer = struct {
                 try json_writer.beginObject();
 
                 try json_writer.objectField("id");
-                try json_writer.write(entity.index());
+                try json_writer.write(entity.id);
 
                 try json_writer.objectField("components");
                 try json_writer.beginObject();
@@ -209,7 +209,7 @@ pub const SceneSerializer = struct {
         if (version < 2) {
             return error.UnsupportedVersion;
         }
-        if (version > 3) return error.UnsupportedVersion;
+        if (version > 4) return error.UnsupportedVersion;
 
         var total_mesh_count: u32 = 0;
 
@@ -281,7 +281,7 @@ pub const SceneSerializer = struct {
                 return error.InvalidSceneFormat;
             }
 
-            var id_map = std.AutoHashMap(u32, entity_pkg.Entity).init(self.allocator);
+            var id_map = std.AutoHashMap(u64, entity_pkg.Entity).init(self.allocator);
             defer id_map.deinit();
 
             const CreatedEntity = struct {
@@ -917,23 +917,23 @@ pub const SceneSerializer = struct {
     fn serializeHierarchy(writer: anytype, h: *components.Hierarchy) !void {
         try writer.beginObject();
         try writer.objectField("parent");
-        if (h.parent) |p| try writer.write(p.index()) else try writer.write(null);
+        if (h.parent) |p| try writer.write(p.id) else try writer.write(null);
         try writer.objectField("first_child");
-        if (h.first_child) |c| try writer.write(c.index()) else try writer.write(null);
+        if (h.first_child) |c| try writer.write(c.id) else try writer.write(null);
         try writer.objectField("next_sibling");
-        if (h.next_sibling) |s| try writer.write(s.index()) else try writer.write(null);
+        if (h.next_sibling) |s| try writer.write(s.id) else try writer.write(null);
         try writer.objectField("prev_sibling");
-        if (h.prev_sibling) |s| try writer.write(s.index()) else try writer.write(null);
+        if (h.prev_sibling) |s| try writer.write(s.id) else try writer.write(null);
         try writer.objectField("child_count");
         try writer.write(h.child_count);
         try writer.endObject();
     }
 
-    fn deserializeHierarchy(val: std.json.Value, id_map: *std.AutoHashMap(u32, entity_pkg.Entity)) !components.Hierarchy {
+    fn deserializeHierarchy(val: std.json.Value, id_map: *std.AutoHashMap(u64, entity_pkg.Entity)) !components.Hierarchy {
         var h = components.Hierarchy{};
         if (val.object.get("parent")) |p| {
             if (p != .null) {
-                const old_id: u32 = @intCast(p.integer);
+                const old_id: u64 = @intCast(p.integer);
                 if (id_map.get(old_id)) |new_entity| {
                     h.parent = new_entity;
                 } else {
@@ -944,7 +944,7 @@ pub const SceneSerializer = struct {
         }
         if (val.object.get("first_child")) |c| {
             if (c != .null) {
-                const old_id: u32 = @intCast(c.integer);
+                const old_id: u64 = @intCast(c.integer);
                 if (id_map.get(old_id)) |new_entity| {
                     h.first_child = new_entity;
                 } else {
@@ -954,7 +954,7 @@ pub const SceneSerializer = struct {
         }
         if (val.object.get("next_sibling")) |s| {
             if (s != .null) {
-                const old_id: u32 = @intCast(s.integer);
+                const old_id: u64 = @intCast(s.integer);
                 if (id_map.get(old_id)) |new_entity| {
                     h.next_sibling = new_entity;
                 } else {
@@ -964,7 +964,7 @@ pub const SceneSerializer = struct {
         }
         if (val.object.get("prev_sibling")) |s| {
             if (s != .null) {
-                const old_id: u32 = @intCast(s.integer);
+                const old_id: u64 = @intCast(s.integer);
                 if (id_map.get(old_id)) |new_entity| {
                     h.prev_sibling = new_entity;
                 } else {

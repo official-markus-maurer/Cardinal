@@ -289,11 +289,61 @@ fn slerp_quaternion(a: [*]const f32, b: [*]const f32, t: f32, result: [*]f32) vo
 }
 
 /// Cubic-spline interpolation helper.
-fn cubic_spline_interpolate(values: [*]const f32, prev_index: u32, next_index: u32, factor: f32, component_count: u32, result: [*]f32) void {
-    // TODO: Implement cubic-spline tangents; current implementation falls back to linear.
-    const prev_value = values + prev_index * component_count;
-    const next_value = values + next_index * component_count;
-    lerp_vector(prev_value, next_value, factor, component_count, result);
+fn cubic_spline_interpolate(values: [*]const f32, prev_index: u32, next_index: u32, factor: f32, time_diff: f32, component_count: u32, result: [*]f32) void {
+    const prev_base = prev_index * component_count * 3;
+    const prev_value = values + prev_base + component_count;
+
+    if (prev_index == next_index or time_diff <= 0.0) {
+        const src_slice = prev_value[0..component_count];
+        const dst_slice = result[0..component_count];
+        @memcpy(dst_slice, src_slice);
+        return;
+    }
+
+    const next_base = next_index * component_count * 3;
+    const next_in_tangent = values + next_base;
+    const next_value = values + next_base + component_count;
+    const prev_out_tangent = values + prev_base + component_count * 2;
+
+    const t = factor;
+    const t2 = t * t;
+    const t3 = t2 * t;
+
+    const h00 = 2.0 * t3 - 3.0 * t2 + 1.0;
+    const h10 = t3 - 2.0 * t2 + t;
+    const h01 = -2.0 * t3 + 3.0 * t2;
+    const h11 = t3 - t2;
+
+    const tangent_scale = time_diff;
+
+    var p1_sign: f32 = 1.0;
+    if (component_count == 4) {
+        const dot = prev_value[0] * next_value[0] +
+            prev_value[1] * next_value[1] +
+            prev_value[2] * next_value[2] +
+            prev_value[3] * next_value[3];
+        if (dot < 0.0) p1_sign = -1.0;
+    }
+
+    var i: u32 = 0;
+    while (i < component_count) : (i += 1) {
+        const p0 = prev_value[i];
+        const m0 = prev_out_tangent[i] * tangent_scale;
+        const p1 = next_value[i] * p1_sign;
+        const m1 = next_in_tangent[i] * (tangent_scale * p1_sign);
+
+        result[i] = h00 * p0 + h10 * m0 + h01 * p1 + h11 * m1;
+    }
+
+    if (component_count == 4) {
+        const len = std.math.sqrt(result[0] * result[0] + result[1] * result[1] + result[2] * result[2] + result[3] * result[3]);
+        if (len > 0.0) {
+            result[0] /= len;
+            result[1] /= len;
+            result[2] /= len;
+            result[3] /= len;
+        }
+    }
 }
 
 /// Samples an animation curve at `time` given keyframe `input` times and `output` values.
@@ -331,7 +381,8 @@ pub export fn cardinal_animation_interpolate(interpolation: CardinalAnimationInt
             }
         },
         .CUBICSPLINE => {
-            cubic_spline_interpolate(output.?, prev_index, next_index, factor, component_count, result.?);
+            const time_diff = input.?[next_index] - input.?[prev_index];
+            cubic_spline_interpolate(output.?, prev_index, next_index, factor, time_diff, component_count, result.?);
         },
     }
 
@@ -373,7 +424,8 @@ fn sampler_interpolate_cached(sampler: *CardinalAnimationSampler, time: f32, com
             }
         },
         .CUBICSPLINE => {
-            cubic_spline_interpolate(sampler.output.?, prev_index, next_index, factor, component_count, result.?);
+            const time_diff = sampler.input.?[next_index] - sampler.input.?[prev_index];
+            cubic_spline_interpolate(sampler.output.?, prev_index, next_index, factor, time_diff, component_count, result.?);
         },
     }
 

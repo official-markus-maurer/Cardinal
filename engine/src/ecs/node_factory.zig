@@ -81,4 +81,3 @@ pub fn append_child(registry: *registry_pkg.Registry, parent: entity_pkg.Entity,
     registry.add(parent, parent_h) catch {};
     registry.add(child, child_h) catch {};
 }
-

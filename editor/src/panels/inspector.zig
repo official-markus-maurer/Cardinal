@@ -1,21 +1,43 @@
 //! Inspector panel.
 //!
-//! Displays selected model details and exposes basic visibility/removal controls.
-//!
-//! TODO: Replace the simplified scale editor with full TRS editing.
+//! Displays selected entity details and exposes component editing.
 const std = @import("std");
 const engine = @import("cardinal_engine");
 const math = engine.math;
-const model_manager = engine.model_manager;
-const renderer = engine.vulkan_renderer;
 const components = engine.ecs_components;
 const c = @import("../c.zig").c;
 const EditorState = @import("../editor_state.zig").EditorState;
 
-/// Converts a quaternion to Euler angles in degrees (roll/pitch/yaw).
-///
-/// TODO: Consider a shared Euler convention with the gizmo to avoid surprises.
-fn quat_to_euler_deg(q: math.Quat) [3]f32 {
+fn wrap_angle_deg_180(angle_deg: f32) f32 {
+    return angle_deg - 360.0 * std.math.floor((angle_deg + 180.0) / 360.0);
+}
+
+fn unwrap_angle_deg(prev_deg: f32, curr_deg: f32) f32 {
+    var curr = wrap_angle_deg_180(curr_deg);
+    var delta = curr - prev_deg;
+
+    while (delta > 180.0) {
+        curr -= 360.0;
+        delta -= 360.0;
+    }
+
+    while (delta < -180.0) {
+        curr += 360.0;
+        delta += 360.0;
+    }
+
+    return curr;
+}
+
+fn unwrap_euler_deg(prev_deg: [3]f32, curr_deg: [3]f32) [3]f32 {
+    return .{
+        unwrap_angle_deg(prev_deg[0], curr_deg[0]),
+        unwrap_angle_deg(prev_deg[1], curr_deg[1]),
+        unwrap_angle_deg(prev_deg[2], curr_deg[2]),
+    };
+}
+
+fn quat_to_euler_xyz_deg(q: math.Quat) [3]f32 {
     const qq = q.normalize();
 
     const two: f32 = 2.0;
@@ -33,16 +55,17 @@ fn quat_to_euler_deg(q: math.Quat) [3]f32 {
     const cosy_cosp: f32 = one - two * (qq.y * qq.y + qq.z * qq.z);
     const yaw_z = std.math.atan2(siny_cosp, cosy_cosp);
 
-    return .{ math.toDegrees(roll_x), math.toDegrees(pitch_y), math.toDegrees(yaw_z) };
+    return .{
+        wrap_angle_deg_180(math.toDegrees(roll_x)),
+        wrap_angle_deg_180(math.toDegrees(pitch_y)),
+        wrap_angle_deg_180(math.toDegrees(yaw_z)),
+    };
 }
 
-/// Converts Euler degrees (roll/pitch/yaw) to a quaternion.
-///
-/// TODO: Clamp/unwrap angles for a smoother inspector UX.
-fn euler_deg_to_quat(euler_deg: [3]f32) math.Quat {
-    const roll = math.toRadians(euler_deg[0]);
-    const pitch = math.toRadians(euler_deg[1]);
-    const yaw = math.toRadians(euler_deg[2]);
+fn euler_xyz_deg_to_quat(euler_deg: [3]f32) math.Quat {
+    const roll = math.toRadians(wrap_angle_deg_180(euler_deg[0]));
+    const pitch = math.toRadians(wrap_angle_deg_180(euler_deg[1]));
+    const yaw = math.toRadians(wrap_angle_deg_180(euler_deg[2]));
 
     const half: f32 = 0.5;
     const cy = std.math.cos(yaw * half);
@@ -63,6 +86,7 @@ fn euler_deg_to_quat(euler_deg: [3]f32) math.Quat {
 fn sync_entity_buffers(state: *EditorState, entity: engine.ecs_entity.Entity) void {
     if (state.ui.inspector_last_entity_id == entity.id) return;
     state.ui.inspector_last_entity_id = entity.id;
+    state.ui.inspector_rotation_editing = false;
 
     @memset(&state.ui.inspector_node_type_search, 0);
     @memset(&state.ui.inspector_add_component_search, 0);
@@ -84,7 +108,7 @@ fn sync_entity_buffers(state: *EditorState, entity: engine.ecs_entity.Entity) vo
     }
 
     if (state.runtime.registry.get(components.Transform, entity)) |t| {
-        state.ui.inspector_rotation_euler_deg = quat_to_euler_deg(t.rotation);
+        state.ui.inspector_rotation_euler_deg = quat_to_euler_xyz_deg(t.rotation);
     } else {
         state.ui.inspector_rotation_euler_deg = .{ 0.0, 0.0, 0.0 };
     }
@@ -298,13 +322,18 @@ fn draw_entity_inspector_panel(state: *EditorState) void {
             }
 
             const before_rot = t.*;
+            if (!state.ui.inspector_rotation_editing) {
+                const curr = quat_to_euler_xyz_deg(t.rotation);
+                state.ui.inspector_rotation_euler_deg = unwrap_euler_deg(state.ui.inspector_rotation_euler_deg, curr);
+            }
             var rot_deg = state.ui.inspector_rotation_euler_deg;
-            if (c.imgui_bridge_drag_float3("Rotation (deg)", &rot_deg, 0.1, 0.0, 0.0, "%.3f", 0)) {
+            if (c.imgui_bridge_drag_float3("Rotation XYZ (deg)", &rot_deg, 0.1, 0.0, 0.0, "%.3f", 0)) {
                 state.ui.inspector_rotation_euler_deg = rot_deg;
-                t.rotation = euler_deg_to_quat(rot_deg);
+                t.rotation = euler_xyz_deg_to_quat(rot_deg);
                 t.dirty = true;
                 state.runtime.mark_transform_override_tree(entity);
             }
+            state.ui.inspector_rotation_editing = c.imgui_bridge_is_item_active();
             if (c.imgui_bridge_is_item_active()) {
                 state.ui.undo.begin_entity_transform(entity.id, before_rot);
             }
@@ -378,12 +407,23 @@ fn draw_entity_inspector_panel(state: *EditorState) void {
         if (c.imgui_bridge_collapsing_header("Light", 0)) {
             c.imgui_bridge_same_line(0, -1);
             if (c.imgui_bridge_button("Remove##Light")) {
+                const before = l.*;
+                state.ui.undo.push(.{ .EntityLight = .{
+                    .entity_id = entity.id,
+                    .before_present = true,
+                    .after_present = false,
+                    .before = before,
+                    .after = std.mem.zeroes(components.Light),
+                } });
                 state.runtime.registry.remove(components.Light, entity);
                 if (state.runtime.registry.get(components.Node, entity)) |n| {
                     if (n.type == .DirectionalLight3D or n.type == .PointLight3D or n.type == .SpotLight3D) n.type = .Node3D;
                 }
                 return;
             }
+
+            const any_active = c.imgui_bridge_is_any_item_active();
+
             const items = [_][*:0]const u8{ "Directional", "Point", "Spot" };
             var current: c_int = switch (l.type) {
                 .Directional => 0,
@@ -391,26 +431,66 @@ fn draw_entity_inspector_panel(state: *EditorState) void {
                 .Spot => 2,
             };
             if (c.imgui_bridge_combo("Type", &current, &items, items.len, items.len)) {
+                const before = l.*;
                 l.type = switch (current) {
                     0 => .Directional,
                     1 => .Point,
                     else => .Spot,
                 };
+                state.ui.undo.push(.{ .EntityLight = .{
+                    .entity_id = entity.id,
+                    .before_present = true,
+                    .after_present = true,
+                    .before = before,
+                    .after = l.*,
+                } });
             }
 
             var color = [3]f32{ l.color.x, l.color.y, l.color.z };
             if (c.imgui_bridge_color_edit3("Color", &color, 0)) {
+                const before = l.*;
                 l.color = .{ .x = color[0], .y = color[1], .z = color[2] };
+                if (c.imgui_bridge_is_item_active()) {
+                    state.ui.undo.begin_entity_light(entity.id, before);
+                }
             }
 
-            _ = c.imgui_bridge_drag_float("Intensity", &l.intensity, 0.01, 0.0, 1000.0, "%.3f", 0);
-            _ = c.imgui_bridge_drag_float("Range", &l.range, 0.1, 0.0, 10000.0, "%.3f", 0);
-            _ = c.imgui_bridge_drag_float("Inner Cone", &l.inner_cone_angle, 0.01, 0.0, 3.14, "%.3f", 0);
-            _ = c.imgui_bridge_drag_float("Outer Cone", &l.outer_cone_angle, 0.01, 0.0, 3.14, "%.3f", 0);
+            {
+                const before = l.*;
+                _ = c.imgui_bridge_drag_float("Intensity", &l.intensity, 0.01, 0.0, 1000.0, "%.3f", 0);
+                if (c.imgui_bridge_is_item_active()) state.ui.undo.begin_entity_light(entity.id, before);
+            }
+            {
+                const before = l.*;
+                _ = c.imgui_bridge_drag_float("Range", &l.range, 0.1, 0.0, 10000.0, "%.3f", 0);
+                if (c.imgui_bridge_is_item_active()) state.ui.undo.begin_entity_light(entity.id, before);
+            }
+            {
+                const before = l.*;
+                _ = c.imgui_bridge_drag_float("Inner Cone", &l.inner_cone_angle, 0.01, 0.0, 3.14, "%.3f", 0);
+                if (c.imgui_bridge_is_item_active()) state.ui.undo.begin_entity_light(entity.id, before);
+            }
+            {
+                const before = l.*;
+                _ = c.imgui_bridge_drag_float("Outer Cone", &l.outer_cone_angle, 0.01, 0.0, 3.14, "%.3f", 0);
+                if (c.imgui_bridge_is_item_active()) state.ui.undo.begin_entity_light(entity.id, before);
+            }
 
             var cast_shadows = l.cast_shadows;
             if (c.imgui_bridge_checkbox("Cast Shadows", &cast_shadows)) {
+                const before = l.*;
                 l.cast_shadows = cast_shadows;
+                state.ui.undo.push(.{ .EntityLight = .{
+                    .entity_id = entity.id,
+                    .before_present = true,
+                    .after_present = true,
+                    .before = before,
+                    .after = l.*,
+                } });
+            }
+
+            if (!any_active and !c.imgui_bridge_is_any_item_active()) {
+                state.ui.undo.end_entity_light(entity.id, l.*);
             }
         }
     }
@@ -433,20 +513,53 @@ fn draw_entity_inspector_panel(state: *EditorState) void {
                 }
                 return;
             }
+            const any_active = c.imgui_bridge_is_any_item_active();
             const items = [_][*:0]const u8{ "Perspective", "Orthographic" };
             var current: c_int = switch (cam.type) {
                 .Perspective => 0,
                 .Orthographic => 1,
             };
             if (c.imgui_bridge_combo("Type", &current, &items, items.len, items.len)) {
+                const before = cam.*;
                 cam.type = if (current == 0) .Perspective else .Orthographic;
+                state.ui.undo.push(.{ .EntityCamera = .{
+                    .entity_id = entity.id,
+                    .before_present = true,
+                    .after_present = true,
+                    .before = before,
+                    .after = cam.*,
+                } });
             }
 
-            _ = c.imgui_bridge_drag_float("FOV", &cam.fov, 0.1, 1.0, 179.0, "%.2f", 0);
-            _ = c.imgui_bridge_drag_float("Aspect", &cam.aspect_ratio, 0.01, 0.1, 10.0, "%.3f", 0);
-            _ = c.imgui_bridge_drag_float("Near", &cam.near_plane, 0.01, 0.001, 1000.0, "%.3f", 0);
-            _ = c.imgui_bridge_drag_float("Far", &cam.far_plane, 1.0, 0.01, 100000.0, "%.3f", 0);
-            _ = c.imgui_bridge_drag_float("Ortho Size", &cam.ortho_size, 0.1, 0.01, 100000.0, "%.3f", 0);
+            {
+                const before = cam.*;
+                _ = c.imgui_bridge_drag_float("FOV", &cam.fov, 0.1, 1.0, 179.0, "%.2f", 0);
+                if (c.imgui_bridge_is_item_active()) state.ui.undo.begin_entity_camera(entity.id, before);
+            }
+            {
+                const before = cam.*;
+                _ = c.imgui_bridge_drag_float("Aspect", &cam.aspect_ratio, 0.01, 0.1, 10.0, "%.3f", 0);
+                if (c.imgui_bridge_is_item_active()) state.ui.undo.begin_entity_camera(entity.id, before);
+            }
+            {
+                const before = cam.*;
+                _ = c.imgui_bridge_drag_float("Near", &cam.near_plane, 0.01, 0.001, 1000.0, "%.3f", 0);
+                if (c.imgui_bridge_is_item_active()) state.ui.undo.begin_entity_camera(entity.id, before);
+            }
+            {
+                const before = cam.*;
+                _ = c.imgui_bridge_drag_float("Far", &cam.far_plane, 1.0, 0.01, 100000.0, "%.3f", 0);
+                if (c.imgui_bridge_is_item_active()) state.ui.undo.begin_entity_camera(entity.id, before);
+            }
+            {
+                const before = cam.*;
+                _ = c.imgui_bridge_drag_float("Ortho Size", &cam.ortho_size, 0.1, 0.01, 100000.0, "%.3f", 0);
+                if (c.imgui_bridge_is_item_active()) state.ui.undo.begin_entity_camera(entity.id, before);
+            }
+
+            if (!any_active and !c.imgui_bridge_is_any_item_active()) {
+                state.ui.undo.end_entity_camera(entity.id, cam.*);
+            }
         }
     }
 
@@ -502,131 +615,4 @@ fn draw_entity_inspector_panel(state: *EditorState) void {
 
 pub fn draw_inspector_panel(state: *EditorState) void {
     draw_entity_inspector_panel(state);
-    if (state.ui.show_model_manager) {
-        const open = c.imgui_bridge_begin("Model Manager", &state.ui.show_model_manager, 0);
-        defer c.imgui_bridge_end();
-
-        if (open) {
-            c.imgui_bridge_text("Loaded Models: %d", state.runtime.model_manager.model_count);
-            c.imgui_bridge_separator();
-
-            const model_count = state.runtime.model_manager.model_count;
-            if (model_count == 0) {
-                c.imgui_bridge_text("No models loaded");
-                c.imgui_bridge_text_wrapped("Load models from the Assets panel to see them here.");
-            } else {
-                const child_visible = c.imgui_bridge_begin_child("##model_list", 0, 300, true, 0);
-                defer c.imgui_bridge_end_child();
-
-                if (child_visible) {
-                    var i: u32 = 0;
-                    while (i < state.runtime.model_manager.model_count) {
-                        const model_ptr = model_manager.cardinal_model_manager_get_model_by_index(&state.runtime.model_manager, i);
-                        if (model_ptr) |model| {
-                            c.imgui_bridge_push_id_int(@intCast(model.id));
-
-                            const is_selected = (state.ui.selected_model_id == model.id);
-                            const name = if (model.name) |n| std.mem.span(n) else "Unnamed Model";
-
-                            const avail_w = c.imgui_bridge_get_content_region_avail_x();
-                            const controls_w: f32 = 120.0;
-                            const label_w = if (avail_w > controls_w) avail_w - controls_w else 10.0;
-
-                            if (c.imgui_bridge_selectable_size(name.ptr, is_selected, 0, label_w, 0)) {
-                                state.ui.selected_model_id = model.id;
-                                model_manager.cardinal_model_manager_set_selected(&state.runtime.model_manager, model.id);
-                            }
-
-                            c.imgui_bridge_same_line(0, -1);
-
-                            var visible = model.visible;
-                            if (c.imgui_bridge_checkbox("##visible", &visible)) {
-                                _ = model_manager.cardinal_model_manager_set_visible(&state.runtime.model_manager, model.id, visible);
-                            }
-                            if (c.imgui_bridge_is_item_hovered(0)) {
-                                c.imgui_bridge_set_tooltip("Toggle visibility");
-                            }
-
-                            c.imgui_bridge_same_line(0, -1);
-                            if (c.imgui_bridge_button("Remove")) {
-                                renderer.cardinal_renderer_clear_scene(state.runtime.renderer);
-                                _ = model_manager.cardinal_model_manager_remove_model(&state.runtime.model_manager, model.id);
-                                if (state.ui.selected_model_id == model.id) {
-                                    state.ui.selected_model_id = 0;
-                                }
-                                if (model_manager.cardinal_model_manager_get_combined_scene(&state.runtime.model_manager)) |combined| {
-                                    state.runtime.combined_scene = combined.*;
-                                    state.runtime.pending_scene = state.runtime.combined_scene;
-                                    state.runtime.scene_upload_pending = true;
-                                    state.runtime.scene_loaded = (state.runtime.combined_scene.mesh_count > 0);
-                                } else {
-                                    state.runtime.scene_loaded = false;
-                                }
-                                state.ui.selected_animation = -1;
-                                state.ui.animation_time = 0.0;
-                                state.ui.animation_playing = false;
-                                c.imgui_bridge_pop_id();
-                                continue;
-                            }
-
-                            if (is_selected) {
-                                c.imgui_bridge_indent(10.0);
-                                c.imgui_bridge_text("ID: %d", model.id);
-                                c.imgui_bridge_text("Meshes: %d", model.scene.mesh_count);
-                                c.imgui_bridge_text("Materials: %d", model.scene.material_count);
-                                if (model.file_path) |fp| {
-                                    c.imgui_bridge_text("Path: %s", fp);
-                                }
-
-                                c.imgui_bridge_separator();
-                                c.imgui_bridge_text("Transform:");
-
-                                const any_active = c.imgui_bridge_is_any_item_active();
-                                const before_model_mat = model.transform;
-                                var pos = [3]f32{ model.transform[12], model.transform[13], model.transform[14] };
-                                if (c.imgui_bridge_drag_float3("Position", &pos, 0.1, 0.0, 0.0, "%.3f", 0)) {
-                                    var new_transform: [16]f32 = undefined;
-                                    @memcpy(&new_transform, &model.transform);
-                                    new_transform[12] = pos[0];
-                                    new_transform[13] = pos[1];
-                                    new_transform[14] = pos[2];
-                                    _ = model_manager.cardinal_model_manager_set_transform(&state.runtime.model_manager, model.id, &new_transform);
-                                }
-                                if (c.imgui_bridge_is_item_active()) {
-                                    state.ui.undo.begin_model_transform(model.id, before_model_mat);
-                                }
-
-                                const current_scale = std.math.sqrt(model.transform[0] * model.transform[0] + model.transform[1] * model.transform[1] + model.transform[2] * model.transform[2]);
-                                var scale = current_scale;
-                                if (c.imgui_bridge_drag_float("Scale", &scale, 0.01, 0.01, 10.0, "%.3f", 0)) {
-                                    var scale_matrix: [16]f32 = undefined;
-                                    @memset(&scale_matrix, 0);
-                                    scale_matrix[0] = scale;
-                                    scale_matrix[5] = scale;
-                                    scale_matrix[10] = scale;
-                                    scale_matrix[15] = 1.0;
-                                    scale_matrix[12] = pos[0];
-                                    scale_matrix[13] = pos[1];
-                                    scale_matrix[14] = pos[2];
-                                    _ = model_manager.cardinal_model_manager_set_transform(&state.runtime.model_manager, model.id, &scale_matrix);
-                                }
-                                if (c.imgui_bridge_is_item_active()) {
-                                    state.ui.undo.begin_model_transform(model.id, before_model_mat);
-                                }
-
-                                if (!any_active and !c.imgui_bridge_is_any_item_active()) {
-                                    state.ui.undo.end_model_transform(model.id, model.transform);
-                                }
-
-                                c.imgui_bridge_unindent(10.0);
-                            }
-
-                            c.imgui_bridge_pop_id();
-                        }
-                        i += 1;
-                    }
-                }
-            }
-        }
-    }
 }
