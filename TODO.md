@@ -28,6 +28,63 @@ This document outlines the roadmap for the Cardinal Engine, focusing on robustne
 - [ ] **Level Streaming**: Implement a system to load/unload grid-based world chunks asynchronously.
 - [ ] **Terrain System**: Implement heightmap-based terrain with LOD (CDLOD or Geometry Clipmaps).
 
+#### Terrain System (Scene Graph + Editor Tooling)
+
+**Implementation Checklist**
+- [x] Add `Terrain3D` node type and `Terrain` ECS component.
+- [x] Add Terrain editor panel and Create Terrain action.
+- [x] Add sculpt MVP (vertex displacement + upload on stroke end).
+- [x] Optimize sculpt/paint brushes to edit only affected vertices.
+- [x] Add sculpt brush modes (raise/lower/flatten/smooth).
+- [x] Add paint tool MVP (vertex color / splat preview).
+- [x] Add stroke-based undo/redo for terrain edits.
+- [x] Switch terrain edits to CPU heightmap + splatmap source-of-truth.
+- [x] Upload heightmap + splatmap as GPU textures with sub-updates.
+- [x] Add terrain material blending (multi-layer PBR via splatmap).
+- [ ] Add chunked terrain + LOD (CDLOD/clipmaps).
+
+**Data Model**
+- **Scene graph/ECS**
+  - Add `NodeType.Terrain3D` and a `components.Terrain` component attached to an entity.
+  - `components.Terrain` stores high-level parameters (world size, resolution) and links to render backing resources (height/splat/normal textures, mesh range or model id).
+- **Terrain representation**
+  - Render as a regular grid mesh (static topology) displaced by a height texture.
+  - Use a splat/alphamap texture for blending surface layers (up to 4 channels per map).
+  - Optional derived normal map for correct lighting.
+
+**Rendering Integration**
+- **Phase 1 (MVP)**
+  - Generate a grid mesh and render it using existing PBR pipeline/materials.
+  - Feed the terrain mesh into the existing `combined_scene` flow so picking/selection works.
+- **Phase 2 (Terrain shader)**
+  - Add a terrain-specific material layout that binds height/splat/normal textures and blends up to 4 PBR layers.
+- **Phase 3 (LOD)**
+  - Implement CDLOD or Geometry Clipmaps and render terrain in chunks/patches.
+  - Consider compute/mesh-shader driven traversal/culling.
+
+**Editor Tooling (Terrain Panel)**
+- **Creation**
+  - Create terrain at selection or at root with configurable size/resolution.
+  - Automatically adds required ECS components and render backing assets/resources.
+- **Sculpting tools**
+  - Raise/Lower/Flatten/Smooth brushes with radius/strength and falloff.
+  - Efficient updates via region updates to the height texture (avoid full scene reupload).
+- **Texture painting tools**
+  - Paint splatmap channels per layer with optional normalization.
+  - Layer assignment UI (Grass/Dirt/Rock/etc) and brush preview.
+
+**Picking + Brush Placement**
+- Use camera ray casting to position the brush on terrain (world hit point -> terrain-local UV -> texel coords).
+- Keep brush interactions single-step undoable (stroke-based).
+
+**Undo/Redo + Persistence**
+- Undo stores only affected texel regions (height/splat rectangles) per stroke, not full maps.
+- Scene serialization stores terrain parameters + external asset references; large textures live as separate files.
+
+**Performance Targets**
+- Interactive edits should update only dirty tiles/regions per frame.
+- Avoid rebuilding/reuploading the entire scene for every brush tick; prefer texture sub-updates or compute edits.
+
 ### Asset System
 - [ ] **Asset Database**: Implement a metadata system (`.meta` files) to store import settings and GUIDs for assets, decoupling file paths from asset identity.
 - [ ] **Binary Asset Format**: Implement offline conversion of textures/meshes to binary formats (e.g., KTX2, custom mesh format) for faster loading.

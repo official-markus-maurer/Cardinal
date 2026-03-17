@@ -633,16 +633,30 @@ pub export fn vk_texture_create_from_data(allocator: ?*types.VulkanAllocator, de
     allocInfo.commandBufferCount = 1;
 
     var commandBuffer: c.VkCommandBuffer = null;
-    _ = c.vkAllocateCommandBuffers(device, &allocInfo, &commandBuffer);
+    if (c.vkAllocateCommandBuffers(device, &allocInfo, &commandBuffer) != c.VK_SUCCESS or commandBuffer == null) {
+        vk_allocator.free_buffer(allocator, stagingBuffer, stagingBufferAllocation);
+        vk_allocator.free_image(allocator, textureImage.?.*, textureAllocation.?.*);
+        return false;
+    }
 
     var beginInfo = std.mem.zeroes(c.VkCommandBufferBeginInfo);
     beginInfo.sType = c.VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
     beginInfo.flags = c.VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
-    _ = c.vkBeginCommandBuffer(commandBuffer, &beginInfo);
+    if (c.vkBeginCommandBuffer(commandBuffer, &beginInfo) != c.VK_SUCCESS) {
+        c.vkFreeCommandBuffers(device, commandPool, 1, &commandBuffer);
+        vk_allocator.free_buffer(allocator, stagingBuffer, stagingBufferAllocation);
+        vk_allocator.free_image(allocator, textureImage.?.*, textureAllocation.?.*);
+        return false;
+    }
 
     record_texture_copy_commands(commandBuffer, stagingBuffer, textureImage.?.*, texture.?.width, texture.?.height);
 
-    _ = c.vkEndCommandBuffer(commandBuffer);
+    if (c.vkEndCommandBuffer(commandBuffer) != c.VK_SUCCESS) {
+        c.vkFreeCommandBuffers(device, commandPool, 1, &commandBuffer);
+        vk_allocator.free_buffer(allocator, stagingBuffer, stagingBufferAllocation);
+        vk_allocator.free_image(allocator, textureImage.?.*, textureAllocation.?.*);
+        return false;
+    }
 
     if (!submit_texture_upload(device, graphicsQueue, commandBuffer, sync_manager, outTimelineValue)) {
         tex_utils_log.err("Failed to submit texture upload", .{});
@@ -669,6 +683,19 @@ pub export fn vk_texture_create_from_data(allocator: ?*types.VulkanAllocator, de
     return true;
 }
 
+/// Submits a one-shot command buffer and synchronously waits for the queue to idle.
+/// TODO: Prefer timeline-semaphore waits when a sync manager is available.
+fn submit_one_shot_and_wait_idle(queue: c.VkQueue, cmd: c.VkCommandBuffer) bool {
+    if (queue == null or cmd == null) return false;
+    var submitInfo = std.mem.zeroes(c.VkSubmitInfo);
+    submitInfo.sType = c.VK_STRUCTURE_TYPE_SUBMIT_INFO;
+    submitInfo.commandBufferCount = 1;
+    submitInfo.pCommandBuffers = &cmd;
+    if (vk_sync_manager.vulkan_sync_manager_submit_queue(queue, 1, @ptrCast(&submitInfo), null) != c.VK_SUCCESS) return false;
+    if (vk_sync_manager.vulkan_sync_manager_queue_wait_idle(queue) != c.VK_SUCCESS) return false;
+    return true;
+}
+
 pub fn transition_image_layout(device: c.VkDevice, graphicsQueue: c.VkQueue, commandPool: c.VkCommandPool, image: c.VkImage, format: c.VkFormat, oldLayout: c.VkImageLayout, newLayout: c.VkImageLayout) void {
     _ = format;
 
@@ -680,13 +707,18 @@ pub fn transition_image_layout(device: c.VkDevice, graphicsQueue: c.VkQueue, com
     allocInfo.commandPool = commandPool;
     allocInfo.commandBufferCount = 1;
 
-    _ = c.vkAllocateCommandBuffers(device, &allocInfo, &commandBuffer);
+    if (c.vkAllocateCommandBuffers(device, &allocInfo, &commandBuffer) != c.VK_SUCCESS or commandBuffer == null) {
+        return;
+    }
 
     var beginInfo = std.mem.zeroes(c.VkCommandBufferBeginInfo);
     beginInfo.sType = c.VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
     beginInfo.flags = c.VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
 
-    _ = c.vkBeginCommandBuffer(commandBuffer, &beginInfo);
+    if (c.vkBeginCommandBuffer(commandBuffer, &beginInfo) != c.VK_SUCCESS) {
+        c.vkFreeCommandBuffers(device, commandPool, 1, &commandBuffer);
+        return;
+    }
 
     var barrier = std.mem.zeroes(c.VkImageMemoryBarrier2);
     barrier.sType = c.VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2;
@@ -736,19 +768,15 @@ pub fn transition_image_layout(device: c.VkDevice, graphicsQueue: c.VkQueue, com
 
     c.vkCmdPipelineBarrier2(commandBuffer, &depInfo);
 
-    _ = c.vkEndCommandBuffer(commandBuffer);
+    if (c.vkEndCommandBuffer(commandBuffer) != c.VK_SUCCESS) {
+        c.vkFreeCommandBuffers(device, commandPool, 1, &commandBuffer);
+        return;
+    }
 
-    var cmdBufferInfo = std.mem.zeroes(c.VkCommandBufferSubmitInfo);
-    cmdBufferInfo.sType = c.VK_STRUCTURE_TYPE_COMMAND_BUFFER_SUBMIT_INFO;
-    cmdBufferInfo.commandBuffer = commandBuffer;
-
-    var submitInfo = std.mem.zeroes(c.VkSubmitInfo2);
-    submitInfo.sType = c.VK_STRUCTURE_TYPE_SUBMIT_INFO_2;
-    submitInfo.commandBufferInfoCount = 1;
-    submitInfo.pCommandBufferInfos = &cmdBufferInfo;
-
-    _ = c.vkQueueSubmit2(graphicsQueue, 1, &submitInfo, null);
-    _ = c.vkQueueWaitIdle(graphicsQueue);
+    if (!submit_one_shot_and_wait_idle(graphicsQueue, commandBuffer)) {
+        c.vkFreeCommandBuffers(device, commandPool, 1, &commandBuffer);
+        return;
+    }
 
     c.vkFreeCommandBuffers(device, commandPool, 1, &commandBuffer);
 }
@@ -770,6 +798,9 @@ pub export fn vk_texture_create_placeholder(allocator: ?*types.VulkanAllocator, 
 }
 
 pub fn copy_buffer_to_image(device: c.VkDevice, graphicsQueue: c.VkQueue, commandPool: c.VkCommandPool, buffer: c.VkBuffer, image: c.VkImage, width: u32, height: u32) void {
+    if (device == null or graphicsQueue == null or commandPool == null) return;
+    if (buffer == null or image == null) return;
+    if (width == 0 or height == 0) return;
     var commandBuffer: c.VkCommandBuffer = null;
 
     var allocInfo = std.mem.zeroes(c.VkCommandBufferAllocateInfo);
@@ -778,13 +809,18 @@ pub fn copy_buffer_to_image(device: c.VkDevice, graphicsQueue: c.VkQueue, comman
     allocInfo.commandPool = commandPool;
     allocInfo.commandBufferCount = 1;
 
-    _ = c.vkAllocateCommandBuffers(device, &allocInfo, &commandBuffer);
+    if (c.vkAllocateCommandBuffers(device, &allocInfo, &commandBuffer) != c.VK_SUCCESS or commandBuffer == null) {
+        return;
+    }
 
     var beginInfo = std.mem.zeroes(c.VkCommandBufferBeginInfo);
     beginInfo.sType = c.VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
     beginInfo.flags = c.VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
 
-    _ = c.vkBeginCommandBuffer(commandBuffer, &beginInfo);
+    if (c.vkBeginCommandBuffer(commandBuffer, &beginInfo) != c.VK_SUCCESS) {
+        c.vkFreeCommandBuffers(device, commandPool, 1, &commandBuffer);
+        return;
+    }
 
     var region = std.mem.zeroes(c.VkBufferImageCopy);
     region.bufferOffset = 0;
@@ -799,19 +835,15 @@ pub fn copy_buffer_to_image(device: c.VkDevice, graphicsQueue: c.VkQueue, comman
 
     c.vkCmdCopyBufferToImage(commandBuffer, buffer, image, c.VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &region);
 
-    _ = c.vkEndCommandBuffer(commandBuffer);
+    if (c.vkEndCommandBuffer(commandBuffer) != c.VK_SUCCESS) {
+        c.vkFreeCommandBuffers(device, commandPool, 1, &commandBuffer);
+        return;
+    }
 
-    var cmdBufferInfo = std.mem.zeroes(c.VkCommandBufferSubmitInfo);
-    cmdBufferInfo.sType = c.VK_STRUCTURE_TYPE_COMMAND_BUFFER_SUBMIT_INFO;
-    cmdBufferInfo.commandBuffer = commandBuffer;
-
-    var submitInfo = std.mem.zeroes(c.VkSubmitInfo2);
-    submitInfo.sType = c.VK_STRUCTURE_TYPE_SUBMIT_INFO_2;
-    submitInfo.commandBufferInfoCount = 1;
-    submitInfo.pCommandBufferInfos = &cmdBufferInfo;
-
-    _ = c.vkQueueSubmit2(graphicsQueue, 1, &submitInfo, null);
-    _ = c.vkQueueWaitIdle(graphicsQueue);
+    if (!submit_one_shot_and_wait_idle(graphicsQueue, commandBuffer)) {
+        c.vkFreeCommandBuffers(device, commandPool, 1, &commandBuffer);
+        return;
+    }
 
     c.vkFreeCommandBuffers(device, commandPool, 1, &commandBuffer);
 }

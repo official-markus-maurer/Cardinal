@@ -277,7 +277,11 @@ fn transition_images(s: *types.VulkanState, cmd: c.VkCommandBuffer, image_index:
             cmd_log.warn("Pipeline barrier validation failed for depth image transition", .{});
         }
 
-        s.context.vkCmdPipelineBarrier2.?(cmd, &dep);
+        if (s.context.vkCmdPipelineBarrier2) |func| {
+            func(cmd, &dep);
+        } else {
+            c.vkCmdPipelineBarrier2(cmd, &dep);
+        }
         s.swapchain.depth_layout_initialized = true;
     }
 
@@ -335,7 +339,11 @@ fn transition_images(s: *types.VulkanState, cmd: c.VkCommandBuffer, image_index:
         cmd_log.warn("Pipeline barrier validation failed for swapchain image transition", .{});
     }
 
-    s.context.vkCmdPipelineBarrier2.?(cmd, &dep);
+    if (s.context.vkCmdPipelineBarrier2) |func| {
+        func(cmd, &dep);
+    } else {
+        c.vkCmdPipelineBarrier2(cmd, &dep);
+    }
 
     s.swapchain.image_layout_initialized.?[image_index] = true;
     if (s.swapchain.image_layouts != null and s.swapchain.image_stage_masks != null and s.swapchain.image_access_masks != null) {
@@ -443,7 +451,11 @@ fn end_recording(s: *types.VulkanState, cmd: c.VkCommandBuffer, image_index: u32
             cmd_log.warn("Pipeline barrier validation failed for swapchain present transition", .{});
         }
 
-        s.context.vkCmdPipelineBarrier2.?(cmd, &dep);
+        if (s.context.vkCmdPipelineBarrier2) |func| {
+            func(cmd, &dep);
+        } else {
+            c.vkCmdPipelineBarrier2(cmd, &dep);
+        }
     }
 
     const end_result = c.vkEndCommandBuffer(cmd);

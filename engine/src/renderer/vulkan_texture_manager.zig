@@ -340,6 +340,10 @@ fn ensure_capacity(manager: *types.VulkanTextureManager, required: u32) bool {
     return false;
 }
 
+pub fn vk_texture_manager_ensure_capacity(manager: *types.VulkanTextureManager, required: u32) bool {
+    return ensure_capacity(manager, required);
+}
+
 /// Creates a placeholder texture at slot 0 if missing.
 pub fn vk_texture_manager_create_placeholder(manager: *types.VulkanTextureManager, out_index: *u32) bool {
     if (manager.hasPlaceholder and manager.textureCount > 0) {
@@ -376,6 +380,7 @@ pub fn vk_texture_manager_create_placeholder(manager: *types.VulkanTextureManage
         var bindless_idx: u32 = 0;
         if (vk_descriptor_indexing.vk_bindless_texture_register_existing(&manager.bindless_pool, tex.image, tex.view, tex.sampler, &bindless_idx)) {
             tex.bindless_index = bindless_idx;
+            _ = vk_descriptor_indexing.vk_bindless_texture_set_extent(&manager.bindless_pool, bindless_idx, tex.width, tex.height);
             _ = vk_descriptor_indexing.vk_bindless_texture_flush_updates(&manager.bindless_pool);
         }
     }
@@ -853,7 +858,11 @@ pub fn vk_texture_manager_update_textures(manager: *types.VulkanTextureManager, 
 
         var stack_bufs: [64]c.VkCommandBuffer = undefined;
         const cmd_bufs_ptr = if (completed_count > stack_bufs.len) memory.cardinal_alloc(mem_alloc, @sizeOf(c.VkCommandBuffer) * completed_count) else null;
-        const bufs = if (completed_count > stack_bufs.len) @as([*]c.VkCommandBuffer, @ptrCast(@alignCast(cmd_bufs_ptr.?))) else &stack_bufs;
+        if (completed_count > stack_bufs.len and cmd_bufs_ptr == null) {
+            tex_mgr_log.err("Failed to allocate command buffer batch list for {d} uploads", .{completed_count});
+            return null;
+        }
+        const bufs: [*]c.VkCommandBuffer = if (completed_count > stack_bufs.len) @as([*]c.VkCommandBuffer, @ptrCast(@alignCast(cmd_bufs_ptr.?))) else &stack_bufs;
         var valid_count: u32 = 0;
 
         var iter = completed_list;
@@ -889,7 +898,9 @@ pub fn vk_texture_manager_update_textures(manager: *types.VulkanTextureManager, 
             if (reusable_cmd != null) {
                 primary_cmd = reusable_cmd;
                 using_reusable = true;
-                _ = c.vkResetCommandBuffer(primary_cmd, 0);
+                if (c.vkResetCommandBuffer(primary_cmd, 0) != c.VK_SUCCESS) {
+                    primary_cmd = null;
+                }
             } else {
                 var cmd_buf_info = std.mem.zeroes(c.VkCommandBufferAllocateInfo);
                 cmd_buf_info.sType = c.VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO;
@@ -897,7 +908,7 @@ pub fn vk_texture_manager_update_textures(manager: *types.VulkanTextureManager, 
                 cmd_buf_info.level = c.VK_COMMAND_BUFFER_LEVEL_PRIMARY;
                 cmd_buf_info.commandBufferCount = 1;
 
-                if (c.vkAllocateCommandBuffers(manager.device, &cmd_buf_info, &primary_cmd) != c.VK_SUCCESS) {
+                if (c.vkAllocateCommandBuffers(manager.device, &cmd_buf_info, &primary_cmd) != c.VK_SUCCESS or primary_cmd == null) {
                     primary_cmd = null;
                 }
             }
@@ -907,9 +918,25 @@ pub fn vk_texture_manager_update_textures(manager: *types.VulkanTextureManager, 
                 begin_info.sType = c.VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
                 begin_info.flags = c.VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
 
-                _ = c.vkBeginCommandBuffer(primary_cmd, &begin_info);
+                if (c.vkBeginCommandBuffer(primary_cmd, &begin_info) != c.VK_SUCCESS) {
+                    if (!using_reusable) {
+                        c.vkFreeCommandBuffers(manager.device, manager.commandPool, 1, &primary_cmd);
+                    }
+                    primary_cmd = null;
+                }
+            }
+
+            if (primary_cmd != null) {
                 c.vkCmdExecuteCommands(primary_cmd, valid_count, bufs);
-                _ = c.vkEndCommandBuffer(primary_cmd);
+                if (c.vkEndCommandBuffer(primary_cmd) != c.VK_SUCCESS) {
+                    if (!using_reusable) {
+                        c.vkFreeCommandBuffers(manager.device, manager.commandPool, 1, &primary_cmd);
+                    }
+                    primary_cmd = null;
+                }
+            }
+
+            if (primary_cmd != null) {
 
                 var submit_info = std.mem.zeroes(c.VkSubmitInfo2);
                 submit_info.sType = c.VK_STRUCTURE_TYPE_SUBMIT_INFO_2;
@@ -941,6 +968,9 @@ pub fn vk_texture_manager_update_textures(manager: *types.VulkanTextureManager, 
                     last_signal_value = signal_val;
                 } else {
                     tex_mgr_log.err("vkQueueSubmit2 failed", .{});
+                    if (!using_reusable) {
+                        c.vkFreeCommandBuffers(manager.device, manager.commandPool, 1, &primary_cmd);
+                    }
                 }
             } else {
                 tex_mgr_log.err("Failed to allocate primary command buffer for async upload batch", .{});
@@ -1007,6 +1037,7 @@ pub fn vk_texture_manager_update_textures(manager: *types.VulkanTextureManager, 
                         if (vk_descriptor_indexing.vk_bindless_texture_update_at_index(&manager.bindless_pool, old_idx, tex.image, tex.view, tex.sampler)) {
                             bindless_idx = old_idx;
                             success = true;
+                            _ = vk_descriptor_indexing.vk_bindless_texture_set_extent(&manager.bindless_pool, bindless_idx, tex.width, tex.height);
                             tex_mgr_log.debug("Async texture upload complete. Updated existing bindless index: {d}", .{old_idx});
                         }
                     }
@@ -1015,6 +1046,7 @@ pub fn vk_texture_manager_update_textures(manager: *types.VulkanTextureManager, 
                         if (tex.sampler != null and vk_descriptor_indexing.vk_bindless_texture_register_existing(&manager.bindless_pool, tex.image, tex.view, tex.sampler, &bindless_idx)) {
                             tex.bindless_index = bindless_idx;
                             success = true;
+                            _ = vk_descriptor_indexing.vk_bindless_texture_set_extent(&manager.bindless_pool, bindless_idx, tex.width, tex.height);
                             tex_mgr_log.debug("Async texture upload complete. Allocated new bindless index: {d} (Old: {d})", .{ bindless_idx, old_idx });
                         } else if (tex.sampler == null) {
                             tex_mgr_log.err("Cannot register bindless texture: sampler is null", .{});

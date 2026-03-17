@@ -342,32 +342,89 @@ void main() {
     vec2 metallicRoughnessUV = applyTextureTransform(getUV(getUVIndex(2)), 2);
     vec2 aoUV = applyTextureTransform(getUV(getUVIndex(3)), 3);
     vec2 emissiveUV = applyTextureTransform(getUV(getUVIndex(4)), 4);
+
+    bool isTerrain = material.emissiveStrength < 0.0;
     
     // Enhanced material property sampling with quad control
     vec4 albedoSample = vec4(1.0);
     vec3 albedo = vec3(material.albedo.xyz);
-    if (!isNoTex(material.albedoTextureIndex)) {
-        if (canUseArray(material.albedoTextureIndex)) {
-            // Use enhanced derivatives for transformed UV coordinates
-            vec2 dx = dFdxFine(albedoUV);
-            vec2 dy = dFdyFine(albedoUV);
-            albedoSample = textureGrad(textures[nonuniformEXT(material.albedoTextureIndex)], albedoUV, dx, dy);
-        } else {
-            vec2 dx = dFdxFine(albedoUV);
-            vec2 dy = dFdyFine(albedoUV);
-            albedoSample = textureGrad(albedoMap, albedoUV, dx, dy);
+    float alpha = 1.0;
+    if (isTerrain) {
+        vec2 dx0 = dFdxFine(albedoUV);
+        vec2 dy0 = dFdyFine(albedoUV);
+
+        vec4 splat = vec4(1.0, 0.0, 0.0, 0.0);
+        if (!isNoTex(material.emissiveTextureIndex)) {
+            vec2 dxs = dFdxFine(emissiveUV);
+            vec2 dys = dFdyFine(emissiveUV);
+            if (canUseArray(material.emissiveTextureIndex)) {
+                splat = textureGrad(textures[nonuniformEXT(material.emissiveTextureIndex)], emissiveUV, dxs, dys);
+            } else {
+                splat = textureGrad(emissiveMap, emissiveUV, dxs, dys);
+            }
         }
-        albedo *= albedoSample.rgb;
+        splat = max(splat, 0.0);
+        float sum = splat.r + splat.g + splat.b + splat.a;
+        splat = (sum > 0.0) ? (splat / sum) : vec4(1.0, 0.0, 0.0, 0.0);
+
+        vec3 layer0 = vec3(0.31, 0.55, 0.31);
+        if (!isNoTex(material.albedoTextureIndex)) {
+            if (canUseArray(material.albedoTextureIndex)) {
+                layer0 = textureGrad(textures[nonuniformEXT(material.albedoTextureIndex)], albedoUV, dx0, dy0).rgb;
+            } else {
+                layer0 = textureGrad(albedoMap, albedoUV, dx0, dy0).rgb;
+            }
+        }
+
+        vec3 layer1 = vec3(0.47, 0.37, 0.24);
+        if (!isNoTex(material.normalTextureIndex)) {
+            if (canUseArray(material.normalTextureIndex)) {
+                layer1 = textureGrad(textures[nonuniformEXT(material.normalTextureIndex)], albedoUV, dx0, dy0).rgb;
+            } else {
+                layer1 = textureGrad(normalMap, albedoUV, dx0, dy0).rgb;
+            }
+        }
+
+        vec3 layer2 = vec3(0.51, 0.51, 0.51);
+        if (!isNoTex(material.metallicRoughnessTextureIndex)) {
+            if (canUseArray(material.metallicRoughnessTextureIndex)) {
+                layer2 = textureGrad(textures[nonuniformEXT(material.metallicRoughnessTextureIndex)], albedoUV, dx0, dy0).rgb;
+            } else {
+                layer2 = textureGrad(metallicRoughnessMap, albedoUV, dx0, dy0).rgb;
+            }
+        }
+
+        vec3 layer3 = vec3(0.78, 0.78, 0.63);
+        if (!isNoTex(material.aoTextureIndex)) {
+            if (canUseArray(material.aoTextureIndex)) {
+                layer3 = textureGrad(textures[nonuniformEXT(material.aoTextureIndex)], albedoUV, dx0, dy0).rgb;
+            } else {
+                layer3 = textureGrad(aoMap, albedoUV, dx0, dy0).rgb;
+            }
+        }
+
+        albedo = layer0 * splat.r + layer1 * splat.g + layer2 * splat.b + layer3 * splat.a;
+        alpha = 1.0;
+    } else {
+        if (!isNoTex(material.albedoTextureIndex)) {
+            if (canUseArray(material.albedoTextureIndex)) {
+                vec2 dx = dFdxFine(albedoUV);
+                vec2 dy = dFdyFine(albedoUV);
+                albedoSample = textureGrad(textures[nonuniformEXT(material.albedoTextureIndex)], albedoUV, dx, dy);
+            } else {
+                vec2 dx = dFdxFine(albedoUV);
+                vec2 dy = dFdyFine(albedoUV);
+                albedoSample = textureGrad(albedoMap, albedoUV, dx, dy);
+            }
+            albedo *= albedoSample.rgb;
+        }
+
+        alpha = albedoSample.a * material.albedo.a * fragColor.a;
+        albedo *= fragColor.rgb;
     }
-
-    // Alpha Handling
-    float alpha = albedoSample.a * material.albedo.a * fragColor.a;
-
-    // Multiply albedo by vertex color
-    albedo *= fragColor.rgb;
     
     // MASK mode (1): Discard if alpha is below cutoff
-    uint alphaMode = getAlphaMode();
+    uint alphaMode = isTerrain ? 0u : getAlphaMode();
     if (alphaMode == 1) {
         float cutoff = material.metallicNormalAO.w;
         if (alpha < cutoff) {
@@ -384,7 +441,7 @@ void main() {
     vec3 metallicRoughness;
     float metallic;
     float roughness;
-    if (!isNoTex(material.metallicRoughnessTextureIndex)) {
+    if (!isTerrain && !isNoTex(material.metallicRoughnessTextureIndex)) {
         if (canUseArray(material.metallicRoughnessTextureIndex)) {
             vec2 dx = dFdxFine(metallicRoughnessUV);
             vec2 dy = dFdyFine(metallicRoughnessUV);
@@ -402,7 +459,7 @@ void main() {
     }
     
     float ao = 1.0; // Default AO value according to GLTF 2.0 spec
-    if (!isNoTex(material.aoTextureIndex)) {
+    if (!isTerrain && !isNoTex(material.aoTextureIndex)) {
         if (canUseArray(material.aoTextureIndex)) {
             vec2 dx = dFdxFine(aoUV);
             vec2 dy = dFdyFine(aoUV);
@@ -423,7 +480,9 @@ void main() {
     ao *= mix(1.0, ssao, 0.75);
     
     vec3 emissive = vec3(material.emissiveAndRoughness.xyz);
-    if (!isNoTex(material.emissiveTextureIndex)) {
+    if (isTerrain) {
+        emissive = vec3(0.0);
+    } else if (!isNoTex(material.emissiveTextureIndex)) {
         if (canUseArray(material.emissiveTextureIndex)) {
             vec2 dx = dFdxFine(emissiveUV);
             vec2 dy = dFdyFine(emissiveUV);
@@ -439,7 +498,7 @@ void main() {
     emissive *= material.emissiveStrength;
 
     // Get normal from normal map
-    vec3 N = getNormalFromMap(normalUV);
+    vec3 N = isTerrain ? normalize(fragNormal) : getNormalFromMap(normalUV);
     vec3 V = normalize(fragViewPos - fragWorldPos);
     
     // Calculate reflectance at normal incidence

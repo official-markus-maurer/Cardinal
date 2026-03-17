@@ -890,6 +890,7 @@ pub const SceneSerializer = struct {
 
     fn infer_node_type(self: *SceneSerializer, entity: entity_pkg.Entity) components.NodeType {
         if (self.registry.get(components.Skybox, entity) != null) return .Skybox;
+        if (self.registry.get(components.Terrain, entity) != null) return .Terrain3D;
         if (self.registry.get(components.Light, entity)) |l| {
             return switch (l.type) {
                 .Directional => .DirectionalLight3D,

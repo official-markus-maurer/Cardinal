@@ -1,3 +1,7 @@
+//! Mesh shader pipeline and draw submission.
+//!
+//! Provides initialization, per-frame draw batching, and pipeline management for the mesh shader
+//! rendering path.
 const std = @import("std");
 const builtin = @import("builtin");
 const log = @import("../core/log.zig");
@@ -15,23 +19,22 @@ const handles = @import("../core/handles.zig");
 
 const vk_pso = @import("vulkan_pso.zig");
 const vk_desc_mgr = @import("vulkan_descriptor_manager.zig");
+const descriptor_init = @import("util/vulkan_descriptor_init.zig");
 
 const mesh_shader_log = log.ScopedLogger("MESH_SHADER");
 
-// Helper Functions
+/// Loads a SPIR-V shader module from disk.
 fn load_shader_module(device: c.VkDevice, path: [*:0]const u8, out_module: *c.VkShaderModule) bool {
-    // Using vk_shader_create_module from vulkan_shader_utils.zig
     return shader_utils.vk_shader_create_module(device, path, out_module);
 }
 
-// Implementation
+/// Initializes mesh shader renderer state and per-frame staging lists.
 pub export fn vk_mesh_shader_init(s: ?*types.VulkanState) callconv(.c) bool {
     if (s == null) return false;
     const vs = s.?;
 
     const frames = if (vs.sync.max_frames_in_flight > 0) vs.sync.max_frames_in_flight else 3;
 
-    // Allocate arrays for per-frame lists
     const mem_alloc = memory.cardinal_get_allocator_for_category(.RENDERER);
     const lists_ptr = memory.cardinal_calloc(mem_alloc, frames, @sizeOf([*]types.MeshShaderDrawData));
     const counts_ptr = memory.cardinal_calloc(mem_alloc, frames, @sizeOf(u32));
@@ -246,37 +249,6 @@ pub export fn vk_mesh_shader_create_pipeline(s: ?*types.VulkanState, config: ?*c
         descriptor.task_shader = null;
     }
 
-    // Create Managers
-    const create_manager = struct {
-        fn f(alloc: std.mem.Allocator, map: *std.AutoHashMap(u32, BindingInfo), out_manager: *?*types.VulkanDescriptorManager, vulkan_state: *types.VulkanState, max_sets: u32) bool {
-            // Allocate manager struct
-            const mem_alloc = memory.cardinal_get_allocator_for_category(.RENDERER);
-            const ptr = memory.cardinal_alloc(mem_alloc, @sizeOf(types.VulkanDescriptorManager));
-            if (ptr == null) return false;
-            const mgr = @as(*types.VulkanDescriptorManager, @ptrCast(@alignCast(ptr)));
-            @memset(@as([*]u8, @ptrCast(mgr))[0..@sizeOf(types.VulkanDescriptorManager)], 0);
-
-            out_manager.* = mgr;
-
-            var desc_builder = vk_desc_mgr.DescriptorBuilder.init(alloc);
-            defer desc_builder.deinit();
-
-            var keys = std.ArrayListUnmanaged(u32){};
-            var kit = map.keyIterator();
-            while (kit.next()) |k| keys.append(alloc, k.*) catch return false;
-            std.mem.sort(u32, keys.items, {}, std.sort.asc(u32));
-            defer keys.deinit(alloc);
-
-            for (keys.items) |k| {
-                const entry = map.get(k).?;
-                desc_builder.add_binding(entry.binding.binding, entry.binding.descriptorType, entry.binding.descriptorCount, entry.binding.stageFlags) catch return false;
-            }
-
-            // Prefer descriptor buffers if supported
-            return desc_builder.build(mgr, vulkan_state.context.device, &vulkan_state.allocator, vulkan_state, max_sets, true);
-        }
-    }.f;
-
     // Cleanup existing managers if any
     if (pipe.set0_manager != null or pipe.set1_manager != null) {
         // Invalidate pending sets that might reference the old managers
@@ -295,8 +267,8 @@ pub export fn vk_mesh_shader_create_pipeline(s: ?*types.VulkanState, config: ?*c
         }
     }
 
-    if (!create_manager(allocator, &set0_bindings, &pipe.set0_manager, vs, 10000)) return false;
-    if (!create_manager(allocator, &set1_bindings, &pipe.set1_manager, vs, 10000)) return false;
+    if (!descriptor_init.create_descriptor_manager_from_binding_map(allocator, &pipe.set0_manager, vs.context.device, &vs.allocator, vs, &set0_bindings, 10000, true)) return false;
+    if (!descriptor_init.create_descriptor_manager_from_binding_map(allocator, &pipe.set1_manager, vs.context.device, &vs.allocator, vs, &set1_bindings, 10000, true)) return false;
 
     pipe.global_descriptor_set = null;
 

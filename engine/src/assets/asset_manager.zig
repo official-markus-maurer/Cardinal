@@ -282,7 +282,7 @@ pub fn toStdAllocator(allocator: *memory.CardinalAllocator) Allocator {
     };
 }
 
-// Global instance
+/// Global singleton instance used by the engine-facing convenience API.
 var g_asset_manager: AssetManager = undefined;
 var g_initialized: bool = false;
 

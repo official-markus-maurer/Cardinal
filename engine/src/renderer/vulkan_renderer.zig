@@ -38,6 +38,7 @@ const transform = @import("../core/transform.zig");
 const render_graph = @import("render_graph.zig");
 const vk_post_process = @import("vulkan_post_process.zig");
 const vk_texture_manager = @import("vulkan_texture_manager.zig");
+const vk_descriptor_indexing = @import("vulkan_descriptor_indexing.zig");
 const vk_shadows = @import("vulkan_shadows.zig");
 
 /// Casts an opaque renderer handle into the backing `VulkanState`.
@@ -1490,7 +1491,9 @@ pub export fn cardinal_renderer_immediate_submit(renderer: ?*types.CardinalRende
     };
 
     var cmd: c.VkCommandBuffer = null;
-    _ = c.vkAllocateCommandBuffers(s.context.device, &ai, &cmd);
+    if (c.vkAllocateCommandBuffers(s.context.device, &ai, &cmd) != c.VK_SUCCESS or cmd == null) {
+        return;
+    }
 
     var bi = c.VkCommandBufferBeginInfo{
         .sType = c.VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO,
@@ -1498,21 +1501,420 @@ pub export fn cardinal_renderer_immediate_submit(renderer: ?*types.CardinalRende
         .flags = c.VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT,
         .pInheritanceInfo = null,
     };
-    _ = c.vkBeginCommandBuffer(cmd, &bi);
+    if (c.vkBeginCommandBuffer(cmd, &bi) != c.VK_SUCCESS) {
+        const free_pool: c.VkCommandPool = if (s.commands.transient_pools != null) s.commands.transient_pools.?[s.sync.current_frame] else s.commands.pools.?[s.sync.current_frame];
+        c.vkFreeCommandBuffers(s.context.device, free_pool, 1, &cmd);
+        return;
+    }
 
     if (record) |rec| {
         rec(cmd);
     }
 
-    _ = c.vkEndCommandBuffer(cmd);
+    if (c.vkEndCommandBuffer(cmd) != c.VK_SUCCESS) {
+        const free_pool: c.VkCommandPool = if (s.commands.transient_pools != null) s.commands.transient_pools.?[s.sync.current_frame] else s.commands.pools.?[s.sync.current_frame];
+        c.vkFreeCommandBuffers(s.context.device, free_pool, 1, &cmd);
+        return;
+    }
 
     submit_and_wait(s, cmd);
+}
+
+fn immediate_submit_with_timeline(s: *types.VulkanState, record_fn: *const fn (c.VkCommandBuffer, u64, ?*anyopaque) void, user_data: ?*anyopaque) bool {
+    var ai = c.VkCommandBufferAllocateInfo{
+        .sType = c.VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO,
+        .pNext = null,
+        .commandPool = if (s.commands.transient_pools != null) s.commands.transient_pools.?[s.sync.current_frame] else s.commands.pools.?[s.sync.current_frame],
+        .level = c.VK_COMMAND_BUFFER_LEVEL_PRIMARY,
+        .commandBufferCount = 1,
+    };
+
+    var cmd: c.VkCommandBuffer = null;
+    if (c.vkAllocateCommandBuffers(s.context.device, &ai, &cmd) != c.VK_SUCCESS or cmd == null) {
+        return false;
+    }
+
+    var bi = c.VkCommandBufferBeginInfo{
+        .sType = c.VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO,
+        .pNext = null,
+        .flags = c.VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT,
+        .pInheritanceInfo = null,
+    };
+    if (c.vkBeginCommandBuffer(cmd, &bi) != c.VK_SUCCESS) {
+        const free_pool: c.VkCommandPool = if (s.commands.transient_pools != null) s.commands.transient_pools.?[s.sync.current_frame] else s.commands.pools.?[s.sync.current_frame];
+        c.vkFreeCommandBuffers(s.context.device, free_pool, 1, &cmd);
+        return false;
+    }
+
+    if (s.sync_manager != null) {
+        const sm = s.sync_manager.?;
+        const timeline_value = vk_sync_manager.vulkan_sync_manager_get_next_timeline_value(sm);
+        record_fn(cmd, timeline_value, user_data);
+        if (c.vkEndCommandBuffer(cmd) != c.VK_SUCCESS) {
+            const free_pool: c.VkCommandPool = if (s.commands.transient_pools != null) s.commands.transient_pools.?[s.sync.current_frame] else s.commands.pools.?[s.sync.current_frame];
+            c.vkFreeCommandBuffers(s.context.device, free_pool, 1, &cmd);
+            return false;
+        }
+
+        var cmd_info = c.VkCommandBufferSubmitInfo{
+            .sType = c.VK_STRUCTURE_TYPE_COMMAND_BUFFER_SUBMIT_INFO,
+            .pNext = null,
+            .commandBuffer = cmd,
+            .deviceMask = 0,
+        };
+        var signal_semaphore_info = c.VkSemaphoreSubmitInfo{
+            .sType = c.VK_STRUCTURE_TYPE_SEMAPHORE_SUBMIT_INFO,
+            .pNext = null,
+            .semaphore = sm.timeline_semaphore,
+            .value = timeline_value,
+            .stageMask = c.VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT,
+            .deviceIndex = 0,
+        };
+        var submit2 = c.VkSubmitInfo2{
+            .sType = c.VK_STRUCTURE_TYPE_SUBMIT_INFO_2,
+            .pNext = null,
+            .flags = 0,
+            .waitSemaphoreInfoCount = 0,
+            .pWaitSemaphoreInfos = null,
+            .commandBufferInfoCount = 1,
+            .pCommandBufferInfos = &cmd_info,
+            .signalSemaphoreInfoCount = 1,
+            .pSignalSemaphoreInfos = &signal_semaphore_info,
+        };
+
+        const submit_result = vk_sync_manager.vulkan_sync_manager_submit_queue2(s.context.graphics_queue, 1, @ptrCast(&submit2), null, s.context.vkQueueSubmit2);
+        if (submit_result != c.VK_SUCCESS) {
+            const free_pool: c.VkCommandPool = if (s.commands.transient_pools != null) s.commands.transient_pools.?[s.sync.current_frame] else s.commands.pools.?[s.sync.current_frame];
+            c.vkFreeCommandBuffers(s.context.device, free_pool, 1, &cmd);
+            return false;
+        }
+
+        const wait_result = vk_sync_manager.vulkan_sync_manager_wait_timeline(sm, timeline_value, c.UINT64_MAX);
+        if (wait_result != c.VK_SUCCESS) {
+            const free_pool: c.VkCommandPool = if (s.commands.transient_pools != null) s.commands.transient_pools.?[s.sync.current_frame] else s.commands.pools.?[s.sync.current_frame];
+            c.vkFreeCommandBuffers(s.context.device, free_pool, 1, &cmd);
+            return false;
+        }
+
+        const free_pool: c.VkCommandPool = if (s.commands.transient_pools != null) s.commands.transient_pools.?[s.sync.current_frame] else s.commands.pools.?[s.sync.current_frame];
+        c.vkFreeCommandBuffers(s.context.device, free_pool, 1, &cmd);
+        return true;
+    } else {
+        record_fn(cmd, 0, user_data);
+        if (c.vkEndCommandBuffer(cmd) != c.VK_SUCCESS) {
+            const free_pool: c.VkCommandPool = if (s.commands.transient_pools != null) s.commands.transient_pools.?[s.sync.current_frame] else s.commands.pools.?[s.sync.current_frame];
+            c.vkFreeCommandBuffers(s.context.device, free_pool, 1, &cmd);
+            return false;
+        }
+
+        var cmd_info = c.VkCommandBufferSubmitInfo{
+            .sType = c.VK_STRUCTURE_TYPE_COMMAND_BUFFER_SUBMIT_INFO,
+            .pNext = null,
+            .commandBuffer = cmd,
+            .deviceMask = 0,
+        };
+        var submit2 = c.VkSubmitInfo2{
+            .sType = c.VK_STRUCTURE_TYPE_SUBMIT_INFO_2,
+            .pNext = null,
+            .flags = 0,
+            .waitSemaphoreInfoCount = 0,
+            .pWaitSemaphoreInfos = null,
+            .commandBufferInfoCount = 1,
+            .pCommandBufferInfos = &cmd_info,
+            .signalSemaphoreInfoCount = 0,
+            .pSignalSemaphoreInfos = null,
+        };
+        if (vk_sync_manager.vulkan_sync_manager_submit_queue2(s.context.graphics_queue, 1, @ptrCast(&submit2), null, s.context.vkQueueSubmit2) != c.VK_SUCCESS) {
+            const free_pool: c.VkCommandPool = if (s.commands.transient_pools != null) s.commands.transient_pools.?[s.sync.current_frame] else s.commands.pools.?[s.sync.current_frame];
+            c.vkFreeCommandBuffers(s.context.device, free_pool, 1, &cmd);
+            return false;
+        }
+        if (c.vkQueueWaitIdle(s.context.graphics_queue) != c.VK_SUCCESS) {
+            const free_pool: c.VkCommandPool = if (s.commands.transient_pools != null) s.commands.transient_pools.?[s.sync.current_frame] else s.commands.pools.?[s.sync.current_frame];
+            c.vkFreeCommandBuffers(s.context.device, free_pool, 1, &cmd);
+            return false;
+        }
+        const free_pool: c.VkCommandPool = if (s.commands.transient_pools != null) s.commands.transient_pools.?[s.sync.current_frame] else s.commands.pools.?[s.sync.current_frame];
+        c.vkFreeCommandBuffers(s.context.device, free_pool, 1, &cmd);
+        return true;
+    }
+}
+
+pub export fn cardinal_renderer_bindless_texture_allocate(renderer: ?*types.CardinalRenderer, width: u32, height: u32, format: c.VkFormat, out_index: ?*u32) callconv(.c) bool {
+    if (renderer == null or out_index == null) return false;
+    const s = get_state(renderer) orelse return false;
+    const mgr = s.pipelines.pbr_pipeline.textureManager orelse return false;
+
+    var info = std.mem.zeroes(types.BindlessTextureCreateInfo);
+    info.format = format;
+    info.extent = .{ .width = width, .height = height, .depth = 1 };
+    info.mip_levels = 1;
+    info.samples = c.VK_SAMPLE_COUNT_1_BIT;
+    info.usage = c.VK_IMAGE_USAGE_SAMPLED_BIT | c.VK_IMAGE_USAGE_TRANSFER_DST_BIT;
+    info.custom_sampler = null;
+
+    const ok = vk_descriptor_indexing.vk_bindless_texture_allocate(&mgr.bindless_pool, &info, out_index);
+    if (!ok) return false;
+    return vk_descriptor_indexing.vk_bindless_texture_flush_updates(&mgr.bindless_pool);
+}
+
+pub export fn cardinal_renderer_bindless_texture_free(renderer: ?*types.CardinalRenderer, texture_index: u32) callconv(.c) void {
+    if (renderer == null) return;
+    const s = get_state(renderer) orelse return;
+    const mgr = s.pipelines.pbr_pipeline.textureManager orelse return;
+    vk_descriptor_indexing.vk_bindless_texture_free(&mgr.bindless_pool, texture_index);
+    _ = vk_descriptor_indexing.vk_bindless_texture_flush_updates(&mgr.bindless_pool);
+}
+
+pub export fn cardinal_renderer_bindless_texture_upload_full(renderer: ?*types.CardinalRenderer, texture_index: u32, data: ?*const anyopaque, data_size: usize) callconv(.c) bool {
+    if (renderer == null or data == null or data_size == 0) return false;
+    const s = get_state(renderer) orelse return false;
+    const mgr = s.pipelines.pbr_pipeline.textureManager orelse return false;
+
+    const Ctx = struct {
+        pool: *types.BindlessTexturePool,
+        idx: u32,
+        ptr: *const anyopaque,
+        size: usize,
+    };
+    var ctx = Ctx{
+        .pool = &mgr.bindless_pool,
+        .idx = texture_index,
+        .ptr = data.?,
+        .size = data_size,
+    };
+
+    const Wrapper = struct {
+        pub fn call(cmd: c.VkCommandBuffer, timeline_value: u64, user: ?*anyopaque) void {
+            if (user == null) return;
+            const cctx: *Ctx = @ptrCast(@alignCast(user.?));
+            _ = vk_descriptor_indexing.vk_bindless_texture_upload_full(cctx.pool, cctx.idx, cctx.ptr, @intCast(cctx.size), cmd, timeline_value);
+        }
+    };
+
+    return immediate_submit_with_timeline(s, Wrapper.call, &ctx);
+}
+
+pub export fn cardinal_renderer_bindless_texture_update_subregion(renderer: ?*types.CardinalRenderer, texture_index: u32, x: u32, y: u32, width: u32, height: u32, data: ?*const anyopaque, data_size: usize) callconv(.c) bool {
+    if (renderer == null or data == null or data_size == 0) return false;
+    const s = get_state(renderer) orelse return false;
+    const mgr = s.pipelines.pbr_pipeline.textureManager orelse return false;
+
+    const Ctx = struct {
+        pool: *types.BindlessTexturePool,
+        idx: u32,
+        x: u32,
+        y: u32,
+        w: u32,
+        h: u32,
+        ptr: *const anyopaque,
+        size: usize,
+    };
+    var ctx = Ctx{
+        .pool = &mgr.bindless_pool,
+        .idx = texture_index,
+        .x = x,
+        .y = y,
+        .w = width,
+        .h = height,
+        .ptr = data.?,
+        .size = data_size,
+    };
+
+    const Wrapper = struct {
+        pub fn call(cmd: c.VkCommandBuffer, timeline_value: u64, user: ?*anyopaque) void {
+            if (user == null) return;
+            const cctx: *Ctx = @ptrCast(@alignCast(user.?));
+            _ = vk_descriptor_indexing.vk_bindless_texture_update_subregion(cctx.pool, cctx.idx, cctx.x, cctx.y, cctx.w, cctx.h, cctx.ptr, @intCast(cctx.size), cmd, timeline_value);
+        }
+    };
+
+    return immediate_submit_with_timeline(s, Wrapper.call, &ctx);
+}
+
+/// Maps a runtime texture handle index to the backing texture slot inside the texture manager.
+fn resolve_runtime_texture_slot(mgr: *types.VulkanTextureManager, handle_index: u32) ?*types.VulkanManagedTexture {
+    const slot = if (mgr.hasPlaceholder) handle_index + 1 else handle_index;
+    if (mgr.textures == null) return null;
+    if (slot >= mgr.textureCount) return null;
+    return &mgr.textures.?[slot];
+}
+
+/// Allocates a runtime-managed texture and returns a `TextureHandle.index` compatible value.
+pub export fn cardinal_renderer_runtime_texture_allocate(renderer: ?*types.CardinalRenderer, width: u32, height: u32, format: c.VkFormat, out_handle_index: ?*u32) callconv(.c) bool {
+    if (renderer == null or out_handle_index == null) return false;
+    const s = get_state(renderer) orelse return false;
+    const mgr = s.pipelines.pbr_pipeline.textureManager orelse return false;
+
+    var placeholder_slot: u32 = 0;
+    if (!vk_texture_manager.vk_texture_manager_create_placeholder(mgr, &placeholder_slot)) {
+        return false;
+    }
+
+    const slot = mgr.textureCount;
+    if (!vk_texture_manager.vk_texture_manager_ensure_capacity(mgr, slot + 1)) return false;
+
+    const tex = &mgr.textures.?[slot];
+    @memset(@as([*]u8, @ptrCast(tex))[0..@sizeOf(types.VulkanManagedTexture)], 0);
+
+    tex.width = width;
+    tex.height = height;
+    tex.channels = 4;
+    tex.format = format;
+    tex.mip_levels = 1;
+    tex.layer_count = 1;
+    tex.is_allocated = false;
+    tex.isPlaceholder = false;
+    tex.path = null;
+    tex.bindless_index = c.UINT32_MAX;
+    tex.resource = null;
+
+    if (!vk_texture_utils.create_image_and_memory(mgr.allocator, s.context.device, width, height, format, &tex.image, &tex.memory, &tex.allocation)) {
+        return false;
+    }
+    if (!vk_texture_utils.create_texture_image_view(s.context.device, tex.image, &tex.view, format)) {
+        vk_allocator.free_image(mgr.allocator, tex.image, tex.allocation);
+        return false;
+    }
+    if (!vk_texture_utils.vk_texture_create_sampler(s.context.device, s.context.physical_device, &tex.sampler)) {
+        c.vkDestroyImageView(s.context.device, tex.view, null);
+        vk_allocator.free_image(mgr.allocator, tex.image, tex.allocation);
+        return false;
+    }
+
+    var bindless_idx: u32 = 0;
+    if (!vk_descriptor_indexing.vk_bindless_texture_register_existing(&mgr.bindless_pool, tex.image, tex.view, tex.sampler, &bindless_idx)) {
+        c.vkDestroySampler(s.context.device, tex.sampler, null);
+        c.vkDestroyImageView(s.context.device, tex.view, null);
+        vk_allocator.free_image(mgr.allocator, tex.image, tex.allocation);
+        return false;
+    }
+    _ = vk_descriptor_indexing.vk_bindless_texture_set_extent(&mgr.bindless_pool, bindless_idx, width, height);
+    tex.bindless_index = bindless_idx;
+    tex.is_allocated = true;
+
+    if (!vk_descriptor_indexing.vk_bindless_texture_flush_updates(&mgr.bindless_pool)) {
+        vk_descriptor_indexing.vk_bindless_texture_free(&mgr.bindless_pool, bindless_idx);
+        c.vkDestroySampler(s.context.device, tex.sampler, null);
+        c.vkDestroyImageView(s.context.device, tex.view, null);
+        vk_allocator.free_image(mgr.allocator, tex.image, tex.allocation);
+        return false;
+    }
+
+    mgr.textureCount = slot + 1;
+    out_handle_index.?.* = slot - 1;
+    return true;
+}
+
+/// Frees a runtime-managed texture handle and releases its bindless slot.
+pub export fn cardinal_renderer_runtime_texture_free(renderer: ?*types.CardinalRenderer, handle_index: u32) callconv(.c) void {
+    if (renderer == null) return;
+    const s = get_state(renderer) orelse return;
+    const mgr = s.pipelines.pbr_pipeline.textureManager orelse return;
+    const tex = resolve_runtime_texture_slot(mgr, handle_index) orelse return;
+
+    if (tex.bindless_index != c.UINT32_MAX) {
+        vk_descriptor_indexing.vk_bindless_texture_free(&mgr.bindless_pool, tex.bindless_index);
+        _ = vk_descriptor_indexing.vk_bindless_texture_flush_updates(&mgr.bindless_pool);
+        tex.bindless_index = c.UINT32_MAX;
+    }
+
+    if (tex.view != null) c.vkDestroyImageView(s.context.device, tex.view, null);
+    if (tex.sampler != null) c.vkDestroySampler(s.context.device, tex.sampler, null);
+    if (tex.image != null and tex.allocation != null) vk_allocator.free_image(mgr.allocator, tex.image, tex.allocation);
+
+    tex.image = null;
+    tex.view = null;
+    tex.sampler = null;
+    tex.memory = null;
+    tex.allocation = null;
+    tex.is_allocated = false;
+    tex.isPlaceholder = true;
+}
+
+/// Uploads a full texture image for a runtime-managed texture handle.
+pub export fn cardinal_renderer_runtime_texture_upload_full(renderer: ?*types.CardinalRenderer, handle_index: u32, data: ?*const anyopaque, data_size: usize) callconv(.c) bool {
+    if (renderer == null or data == null or data_size == 0) return false;
+    const s = get_state(renderer) orelse return false;
+    const mgr = s.pipelines.pbr_pipeline.textureManager orelse return false;
+    const tex = resolve_runtime_texture_slot(mgr, handle_index) orelse return false;
+    if (tex.bindless_index == c.UINT32_MAX) return false;
+
+    const Ctx = struct {
+        pool: *types.BindlessTexturePool,
+        idx: u32,
+        ptr: *const anyopaque,
+        size: usize,
+    };
+    var ctx = Ctx{
+        .pool = &mgr.bindless_pool,
+        .idx = tex.bindless_index,
+        .ptr = data.?,
+        .size = data_size,
+    };
+
+    const Wrapper = struct {
+        pub fn call(cmd: c.VkCommandBuffer, timeline_value: u64, user: ?*anyopaque) void {
+            if (user == null) return;
+            const cctx: *Ctx = @ptrCast(@alignCast(user.?));
+            _ = vk_descriptor_indexing.vk_bindless_texture_upload_full(cctx.pool, cctx.idx, cctx.ptr, @intCast(cctx.size), cmd, timeline_value);
+        }
+    };
+
+    return immediate_submit_with_timeline(s, Wrapper.call, &ctx);
+}
+
+/// Uploads a sub-rectangle update for a runtime-managed texture handle.
+pub export fn cardinal_renderer_runtime_texture_update_subregion(renderer: ?*types.CardinalRenderer, handle_index: u32, x: u32, y: u32, width: u32, height: u32, data: ?*const anyopaque, data_size: usize) callconv(.c) bool {
+    if (renderer == null or data == null or data_size == 0) return false;
+    const s = get_state(renderer) orelse return false;
+    const mgr = s.pipelines.pbr_pipeline.textureManager orelse return false;
+    const tex = resolve_runtime_texture_slot(mgr, handle_index) orelse return false;
+    if (tex.bindless_index == c.UINT32_MAX) return false;
+
+    const Ctx = struct {
+        pool: *types.BindlessTexturePool,
+        idx: u32,
+        x: u32,
+        y: u32,
+        w: u32,
+        h: u32,
+        ptr: *const anyopaque,
+        size: usize,
+    };
+    var ctx = Ctx{
+        .pool = &mgr.bindless_pool,
+        .idx = tex.bindless_index,
+        .x = x,
+        .y = y,
+        .w = width,
+        .h = height,
+        .ptr = data.?,
+        .size = data_size,
+    };
+
+    const Wrapper = struct {
+        pub fn call(cmd: c.VkCommandBuffer, timeline_value: u64, user: ?*anyopaque) void {
+            if (user == null) return;
+            const cctx: *Ctx = @ptrCast(@alignCast(user.?));
+            _ = vk_descriptor_indexing.vk_bindless_texture_update_subregion(cctx.pool, cctx.idx, cctx.x, cctx.y, cctx.w, cctx.h, cctx.ptr, @intCast(cctx.size), cmd, timeline_value);
+        }
+    };
+
+    return immediate_submit_with_timeline(s, Wrapper.call, &ctx);
 }
 
 /// Attempts to record a one-shot secondary command buffer using the MT manager.
 fn try_submit_secondary(s: *types.VulkanState, record: ?*const fn (c.VkCommandBuffer) callconv(.c) void) bool {
     const mt_manager = vk_commands.vk_get_mt_command_manager() orelse return false;
     if (!mt_manager.thread_pools.?[0].is_active) {
+        return false;
+    }
+
+    if (s.swapchain.image_count == 0 or s.swapchain.image_views == null or s.swapchain.images == null) {
+        return false;
+    }
+    if (s.context.vkCmdBeginRendering == null or s.context.vkCmdEndRendering == null) {
         return false;
     }
 
@@ -1525,7 +1927,9 @@ fn try_submit_secondary(s: *types.VulkanState, record: ?*const fn (c.VkCommandBu
     };
 
     var primary_cmd: c.VkCommandBuffer = null;
-    _ = c.vkAllocateCommandBuffers(s.context.device, &ai, &primary_cmd);
+    if (c.vkAllocateCommandBuffers(s.context.device, &ai, &primary_cmd) != c.VK_SUCCESS or primary_cmd == null) {
+        return false;
+    }
 
     var bi = c.VkCommandBufferBeginInfo{
         .sType = c.VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO,
@@ -1533,11 +1937,17 @@ fn try_submit_secondary(s: *types.VulkanState, record: ?*const fn (c.VkCommandBu
         .flags = c.VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT,
         .pInheritanceInfo = null,
     };
-    _ = c.vkBeginCommandBuffer(primary_cmd, &bi);
+    if (c.vkBeginCommandBuffer(primary_cmd, &bi) != c.VK_SUCCESS) {
+        const free_pool: c.VkCommandPool = if (s.commands.transient_pools != null) s.commands.transient_pools.?[s.sync.current_frame] else s.commands.pools.?[s.sync.current_frame];
+        c.vkFreeCommandBuffers(s.context.device, free_pool, 1, &primary_cmd);
+        return false;
+    }
 
     var secondary_context: types.CardinalSecondaryCommandContext = undefined;
     if (!vk_commands.vulkan_mt.cardinal_mt_allocate_secondary_command_buffer(&mt_manager.thread_pools.?[0], &secondary_context)) {
         _ = c.vkEndCommandBuffer(primary_cmd);
+        const free_pool: c.VkCommandPool = if (s.commands.transient_pools != null) s.commands.transient_pools.?[s.sync.current_frame] else s.commands.pools.?[s.sync.current_frame];
+        c.vkFreeCommandBuffers(s.context.device, free_pool, 1, &primary_cmd);
         return false;
     }
 
@@ -1561,6 +1971,8 @@ fn try_submit_secondary(s: *types.VulkanState, record: ?*const fn (c.VkCommandBu
 
     if (!vk_commands.vulkan_mt.cardinal_mt_begin_secondary_command_buffer(&secondary_context, &inheritance_info)) {
         _ = c.vkEndCommandBuffer(primary_cmd);
+        const free_pool: c.VkCommandPool = if (s.commands.transient_pools != null) s.commands.transient_pools.?[s.sync.current_frame] else s.commands.pools.?[s.sync.current_frame];
+        c.vkFreeCommandBuffers(s.context.device, free_pool, 1, &primary_cmd);
         return false;
     }
 
@@ -1570,6 +1982,8 @@ fn try_submit_secondary(s: *types.VulkanState, record: ?*const fn (c.VkCommandBu
 
     if (!vk_commands.vulkan_mt.cardinal_mt_end_secondary_command_buffer(&secondary_context)) {
         _ = c.vkEndCommandBuffer(primary_cmd);
+        const free_pool: c.VkCommandPool = if (s.commands.transient_pools != null) s.commands.transient_pools.?[s.sync.current_frame] else s.commands.pools.?[s.sync.current_frame];
+        c.vkFreeCommandBuffers(s.context.device, free_pool, 1, &primary_cmd);
         return false;
     }
 
@@ -1583,6 +1997,12 @@ fn try_submit_secondary(s: *types.VulkanState, record: ?*const fn (c.VkCommandBu
     var color_attachment = std.mem.zeroes(c.VkRenderingAttachmentInfo);
     color_attachment.sType = c.VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO;
     const image_index: u32 = if (s.swapchain.image_count != 0) @intCast(s.sync.current_frame % s.swapchain.image_count) else 0;
+    if (image_index >= s.swapchain.image_count) {
+        _ = c.vkEndCommandBuffer(primary_cmd);
+        const free_pool: c.VkCommandPool = if (s.commands.transient_pools != null) s.commands.transient_pools.?[s.sync.current_frame] else s.commands.pools.?[s.sync.current_frame];
+        c.vkFreeCommandBuffers(s.context.device, free_pool, 1, &primary_cmd);
+        return false;
+    }
     color_attachment.imageView = s.swapchain.image_views.?[image_index];
     color_attachment.imageLayout = c.VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
     color_attachment.loadOp = c.VK_ATTACHMENT_LOAD_OP_LOAD;
@@ -1633,7 +2053,11 @@ fn try_submit_secondary(s: *types.VulkanState, record: ?*const fn (c.VkCommandBu
         dep.pImageMemoryBarriers = &barrier;
 
         if (barrier.oldLayout != wanted_layout) {
-            s.context.vkCmdPipelineBarrier2.?(primary_cmd, &dep);
+            if (s.context.vkCmdPipelineBarrier2) |func| {
+                func(primary_cmd, &dep);
+            } else {
+                c.vkCmdPipelineBarrier2(primary_cmd, &dep);
+            }
         }
 
         s.swapchain.image_layout_initialized.?[image_index] = true;
@@ -1642,12 +2066,12 @@ fn try_submit_secondary(s: *types.VulkanState, record: ?*const fn (c.VkCommandBu
         s.swapchain.image_access_masks.?[image_index] = dst_access;
     }
 
-    c.vkCmdBeginRendering(primary_cmd, &rendering_info);
+    s.context.vkCmdBeginRendering.?(primary_cmd, &rendering_info);
 
     const contexts = @as([*]types.CardinalSecondaryCommandContext, @ptrCast(&secondary_context))[0..1];
     vk_commands.vulkan_mt.cardinal_mt_execute_secondary_command_buffers(primary_cmd, contexts);
 
-    c.vkCmdEndRendering(primary_cmd);
+    s.context.vkCmdEndRendering.?(primary_cmd);
 
     if (s.context.vkCmdPipelineBarrier2 != null and s.swapchain.images != null and s.swapchain.image_layout_initialized != null and s.swapchain.image_count != 0) {
         var barrier = std.mem.zeroes(c.VkImageMemoryBarrier2);
@@ -1673,7 +2097,11 @@ fn try_submit_secondary(s: *types.VulkanState, record: ?*const fn (c.VkCommandBu
         dep.imageMemoryBarrierCount = 1;
         dep.pImageMemoryBarriers = &barrier;
 
-        s.context.vkCmdPipelineBarrier2.?(primary_cmd, &dep);
+        if (s.context.vkCmdPipelineBarrier2) |func| {
+            func(primary_cmd, &dep);
+        } else {
+            c.vkCmdPipelineBarrier2(primary_cmd, &dep);
+        }
 
         s.swapchain.image_layout_initialized.?[image_index] = true;
         s.swapchain.image_layouts.?[image_index] = c.VK_IMAGE_LAYOUT_PRESENT_SRC_KHR;
@@ -1681,7 +2109,11 @@ fn try_submit_secondary(s: *types.VulkanState, record: ?*const fn (c.VkCommandBu
         s.swapchain.image_access_masks.?[image_index] = 0;
     }
 
-    _ = c.vkEndCommandBuffer(primary_cmd);
+    if (c.vkEndCommandBuffer(primary_cmd) != c.VK_SUCCESS) {
+        const free_pool: c.VkCommandPool = if (s.commands.transient_pools != null) s.commands.transient_pools.?[s.sync.current_frame] else s.commands.pools.?[s.sync.current_frame];
+        c.vkFreeCommandBuffers(s.context.device, free_pool, 1, &primary_cmd);
+        return false;
+    }
 
     submit_and_wait(s, primary_cmd);
     return true;

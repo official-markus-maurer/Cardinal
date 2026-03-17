@@ -28,6 +28,7 @@ const content_browser = @import("panels/content_browser.zig");
 const inspector = @import("panels/inspector.zig");
 const animation_panel = @import("panels/animation_panel.zig");
 const scene_manager_panel = @import("panels/scene_manager_panel.zig");
+const terrain_panel = @import("panels/terrain_panel.zig");
 const selection_system = @import("systems/selection_system.zig");
 const performance_panel = @import("panels/performance_panel.zig");
 const input_system = @import("systems/input.zig");
@@ -684,6 +685,26 @@ fn close_project() void {
     state.ui.project_loaded = false;
     state.ui.undo.clear();
 
+    {
+        var it = state.runtime.terrain_data_by_entity.iterator();
+        while (it.next()) |entry| {
+            if (entry.value_ptr.height_handle != std.math.maxInt(u32)) {
+                renderer.cardinal_renderer_runtime_texture_free(state.runtime.renderer, entry.value_ptr.height_handle);
+            }
+            if (entry.value_ptr.splat_handle != std.math.maxInt(u32)) {
+                renderer.cardinal_renderer_runtime_texture_free(state.runtime.renderer, entry.value_ptr.splat_handle);
+            }
+            for (entry.value_ptr.layer_handles) |h| {
+                if (h != std.math.maxInt(u32)) {
+                    renderer.cardinal_renderer_runtime_texture_free(state.runtime.renderer, h);
+                }
+            }
+            allocator.free(entry.value_ptr.height);
+            allocator.free(entry.value_ptr.splat);
+        }
+        state.runtime.terrain_data_by_entity.clearRetainingCapacity();
+    }
+
     engine.window.cardinal_window_restore(state.runtime.window);
     engine.window.cardinal_window_set_size(state.runtime.window, 600, 400);
     engine.window.cardinal_window_center(state.runtime.window);
@@ -720,6 +741,25 @@ pub fn shutdown() void {
     state.runtime.mesh_owner_by_mesh_index.deinit(allocator);
     state.runtime.mesh_entity_by_mesh_index.deinit(allocator);
     state.runtime.model_root_by_id.deinit(allocator);
+    {
+        var it = state.runtime.terrain_data_by_entity.iterator();
+        while (it.next()) |entry| {
+            if (entry.value_ptr.height_handle != std.math.maxInt(u32)) {
+                renderer.cardinal_renderer_runtime_texture_free(state.runtime.renderer, entry.value_ptr.height_handle);
+            }
+            if (entry.value_ptr.splat_handle != std.math.maxInt(u32)) {
+                renderer.cardinal_renderer_runtime_texture_free(state.runtime.renderer, entry.value_ptr.splat_handle);
+            }
+            for (entry.value_ptr.layer_handles) |h| {
+                if (h != std.math.maxInt(u32)) {
+                    renderer.cardinal_renderer_runtime_texture_free(state.runtime.renderer, h);
+                }
+            }
+            allocator.free(entry.value_ptr.height);
+            allocator.free(entry.value_ptr.splat);
+        }
+        state.runtime.terrain_data_by_entity.deinit(allocator);
+    }
 
     for (state.runtime.loading_tasks.items) |info| {
         async_loader.cardinal_async_free_task(info.task);
@@ -778,6 +818,25 @@ pub fn update() void {
             state.runtime.transform_overrides.clearRetainingCapacity();
             selection_system.reset_picking_cache();
             state.ui.undo.clear();
+            {
+                var it = state.runtime.terrain_data_by_entity.iterator();
+                while (it.next()) |entry| {
+                    if (entry.value_ptr.height_handle != std.math.maxInt(u32)) {
+                        renderer.cardinal_renderer_runtime_texture_free(state.runtime.renderer, entry.value_ptr.height_handle);
+                    }
+                    if (entry.value_ptr.splat_handle != std.math.maxInt(u32)) {
+                        renderer.cardinal_renderer_runtime_texture_free(state.runtime.renderer, entry.value_ptr.splat_handle);
+                    }
+                    for (entry.value_ptr.layer_handles) |h| {
+                        if (h != std.math.maxInt(u32)) {
+                            renderer.cardinal_renderer_runtime_texture_free(state.runtime.renderer, h);
+                        }
+                    }
+                    allocator.free(entry.value_ptr.height);
+                    allocator.free(entry.value_ptr.splat);
+                }
+                state.runtime.terrain_data_by_entity.clearRetainingCapacity();
+            }
         } else {
             state.runtime.scene_loaded = false;
         }
@@ -789,6 +848,11 @@ pub fn update() void {
         if (model_manager.cardinal_model_manager_get_combined_scene(&state.runtime.model_manager)) |comb_ptr| {
             state.runtime.combined_scene = comb_ptr.*;
         }
+    }
+
+    if (state.runtime.picking_cache_dirty) {
+        selection_system.reset_picking_cache();
+        state.runtime.picking_cache_dirty = false;
     }
 
     c.imgui_bridge_impl_vulkan_new_frame();
@@ -980,6 +1044,7 @@ pub fn update() void {
                 if (c.imgui_bridge_menu_item("Scene Manager", null, state.ui.show_scene_manager, true)) state.ui.show_scene_manager = !state.ui.show_scene_manager;
                 if (c.imgui_bridge_menu_item("PBR Settings", null, state.ui.show_pbr_settings, true)) state.ui.show_pbr_settings = !state.ui.show_pbr_settings;
                 if (c.imgui_bridge_menu_item("Animation", null, state.ui.show_animation, true)) state.ui.show_animation = !state.ui.show_animation;
+                if (c.imgui_bridge_menu_item("Terrain", null, state.ui.show_terrain_panel, true)) state.ui.show_terrain_panel = !state.ui.show_terrain_panel;
                 if (c.imgui_bridge_menu_item("Performance", null, state.ui.show_performance_panel, true)) state.ui.show_performance_panel = !state.ui.show_performance_panel;
                 if (c.imgui_bridge_menu_item("Grid & Axes", null, state.ui.show_grid_axes, true)) {
                     state.ui.show_grid_axes = !state.ui.show_grid_axes;
@@ -996,6 +1061,7 @@ pub fn update() void {
         inspector.draw_inspector_panel(&state);
         draw_pbr_settings_panel();
         animation_panel.draw_animation_panel(&state);
+        terrain_panel.draw_terrain_panel(&state);
         performance_panel.draw_performance_panel(&state);
         scene_manager_panel.draw_scene_manager_panel(&state, allocator);
 

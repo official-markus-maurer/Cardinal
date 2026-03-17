@@ -13,6 +13,7 @@ const math = engine.math;
 const components = engine.ecs_components;
 const node_factory = engine.ecs_node_factory;
 const async_loader = engine.async_loader;
+const hierarchy_system = @import("hierarchy_system.zig");
 
 /// Imports the currently loaded `state.combined_scene` into the ECS registry.
 pub fn import_scene_graph(state: *EditorState) void {
@@ -405,147 +406,8 @@ fn get_model_combined_mesh_range(state: *EditorState, model_id: u32) ?struct { s
     return null;
 }
 
-fn unlink_entity_from_parent(state: *EditorState, entity: engine.ecs_entity.Entity) void {
-    const hierarchy_ptr = state.runtime.registry.get(components.Hierarchy, entity) orelse return;
-    var hierarchy = hierarchy_ptr.*;
-
-    const parent = hierarchy.parent orelse {
-        hierarchy.prev_sibling = null;
-        hierarchy.next_sibling = null;
-        state.runtime.registry.add(entity, hierarchy) catch {};
-        return;
-    };
-
-    const parent_h_ptr = state.runtime.registry.get(components.Hierarchy, parent) orelse {
-        hierarchy.parent = null;
-        hierarchy.prev_sibling = null;
-        hierarchy.next_sibling = null;
-        state.runtime.registry.add(entity, hierarchy) catch {};
-        return;
-    };
-    var parent_h = parent_h_ptr.*;
-
-    if (parent_h.first_child) |fc| {
-        if (fc.id == entity.id) {
-            parent_h.first_child = hierarchy.next_sibling;
-        }
-    }
-
-    if (hierarchy.prev_sibling) |prev| {
-        if (state.runtime.registry.get(components.Hierarchy, prev)) |prev_h_ptr| {
-            var prev_h = prev_h_ptr.*;
-            prev_h.next_sibling = hierarchy.next_sibling;
-            state.runtime.registry.add(prev, prev_h) catch {};
-        }
-    }
-
-    if (hierarchy.next_sibling) |next| {
-        if (state.runtime.registry.get(components.Hierarchy, next)) |next_h_ptr| {
-            var next_h = next_h_ptr.*;
-            next_h.prev_sibling = hierarchy.prev_sibling;
-            state.runtime.registry.add(next, next_h) catch {};
-        }
-    }
-
-    if (parent_h.child_count > 0) parent_h.child_count -= 1;
-    state.runtime.registry.add(parent, parent_h) catch {};
-
-    hierarchy.parent = null;
-    hierarchy.prev_sibling = null;
-    hierarchy.next_sibling = null;
-    state.runtime.registry.add(entity, hierarchy) catch {};
-}
-
-fn cleanup_deleted_entities(state: *EditorState, root: engine.ecs_entity.Entity) void {
-    const alloc = engine.memory.cardinal_get_allocator_for_category(.ENGINE).as_allocator();
-
-    var deleted: std.AutoHashMapUnmanaged(u64, void) = .{};
-    defer deleted.deinit(alloc);
-
-    var stack: std.ArrayListUnmanaged(engine.ecs_entity.Entity) = .{};
-    defer stack.deinit(alloc);
-
-    stack.append(alloc, root) catch return;
-
-    while (stack.items.len != 0) {
-        const last_index = stack.items.len - 1;
-        const e = stack.items[last_index];
-        stack.items.len = last_index;
-        if (deleted.contains(e.id)) continue;
-        deleted.put(alloc, e.id, {}) catch {};
-
-        if (state.runtime.registry.get(components.Hierarchy, e)) |h_ptr| {
-            const h = h_ptr.*;
-            var child = h.first_child;
-            var loop_guard: u32 = 0;
-            while (child) |c_ent| {
-                if (loop_guard > 100000) break;
-                loop_guard += 1;
-
-                stack.append(alloc, c_ent) catch {};
-                child = if (state.runtime.registry.get(components.Hierarchy, c_ent)) |ch| ch.next_sibling else null;
-            }
-        }
-    }
-
-    if (deleted.contains(state.ui.selected_entity.id)) {
-        state.ui.selected_entity = .{ .id = std.math.maxInt(u64) };
-    }
-
-    var deleted_it = deleted.iterator();
-    while (deleted_it.next()) |entry| {
-        _ = state.runtime.transform_overrides.remove(entry.key_ptr.*);
-    }
-
-    var mesh_keys_to_remove: std.ArrayListUnmanaged(u32) = .{};
-    defer mesh_keys_to_remove.deinit(alloc);
-
-    var owner_it = state.runtime.mesh_owner_by_mesh_index.iterator();
-    while (owner_it.next()) |entry| {
-        if (deleted.contains(entry.value_ptr.*)) {
-            mesh_keys_to_remove.append(alloc, entry.key_ptr.*) catch {};
-        }
-    }
-    for (mesh_keys_to_remove.items) |k| {
-        _ = state.runtime.mesh_owner_by_mesh_index.remove(k);
-    }
-
-    mesh_keys_to_remove.clearRetainingCapacity();
-    var mesh_ent_it = state.runtime.mesh_entity_by_mesh_index.iterator();
-    while (mesh_ent_it.next()) |entry| {
-        if (deleted.contains(entry.value_ptr.*)) {
-            mesh_keys_to_remove.append(alloc, entry.key_ptr.*) catch {};
-        }
-    }
-    for (mesh_keys_to_remove.items) |k| {
-        _ = state.runtime.mesh_entity_by_mesh_index.remove(k);
-    }
-}
-
-fn destroy_entity_recursive(state: *EditorState, entity: engine.ecs_entity.Entity, depth: u32) void {
-    if (depth > 2048) return;
-
-    if (state.runtime.registry.get(components.Hierarchy, entity)) |h_ptr| {
-        const h = h_ptr.*;
-        var child = h.first_child;
-        var loop_guard: u32 = 0;
-        while (child) |c_ent| {
-            if (loop_guard > 100000) break;
-            loop_guard += 1;
-
-            const next = if (state.runtime.registry.get(components.Hierarchy, c_ent)) |ch| ch.next_sibling else null;
-            destroy_entity_recursive(state, c_ent, depth + 1);
-            child = next;
-        }
-    }
-
-    state.runtime.registry.destroy(entity);
-}
-
 fn remove_entity_subtree(state: *EditorState, root: engine.ecs_entity.Entity) void {
-    cleanup_deleted_entities(state, root);
-    unlink_entity_from_parent(state, root);
-    destroy_entity_recursive(state, root, 0);
+    hierarchy_system.remove_entity_subtree(state, root);
 }
 
 fn ascend_to_top_root(state: *EditorState, entity: engine.ecs_entity.Entity) engine.ecs_entity.Entity {
@@ -648,6 +510,26 @@ fn reset_state_for_scene_load(state: *EditorState, allocator: std.mem.Allocator)
     state.runtime.scene_upload_pending = false;
     state.runtime.pending_scene = std.mem.zeroes(@TypeOf(state.runtime.pending_scene));
     state.ui.undo.clear();
+
+    {
+        var it = state.runtime.terrain_data_by_entity.iterator();
+        while (it.next()) |entry| {
+            if (entry.value_ptr.height_handle != std.math.maxInt(u32)) {
+                engine.vulkan_renderer.cardinal_renderer_runtime_texture_free(state.runtime.renderer, entry.value_ptr.height_handle);
+            }
+            if (entry.value_ptr.splat_handle != std.math.maxInt(u32)) {
+                engine.vulkan_renderer.cardinal_renderer_runtime_texture_free(state.runtime.renderer, entry.value_ptr.splat_handle);
+            }
+            for (entry.value_ptr.layer_handles) |h| {
+                if (h != std.math.maxInt(u32)) {
+                    engine.vulkan_renderer.cardinal_renderer_runtime_texture_free(state.runtime.renderer, h);
+                }
+            }
+            allocator.free(entry.value_ptr.height);
+            allocator.free(entry.value_ptr.splat);
+        }
+        state.runtime.terrain_data_by_entity.clearRetainingCapacity();
+    }
 
     state.runtime.registry.deinit();
     state.runtime.registry.* = engine.ecs_registry.Registry.init(allocator);

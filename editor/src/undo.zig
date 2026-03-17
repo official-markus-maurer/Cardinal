@@ -7,6 +7,8 @@ const std = @import("std");
 const engine = @import("cardinal_engine");
 const components = engine.ecs_components;
 const model_manager = engine.model_manager;
+const renderer = engine.vulkan_renderer;
+const vk = @import("c.zig").c;
 
 fn allocator() std.mem.Allocator {
     return engine.memory.cardinal_get_allocator_for_category(.ENGINE).as_allocator();
@@ -64,6 +66,16 @@ const EntitySubtreeCommand = struct {
     hierarchy_count: u8,
 };
 
+pub const TerrainMeshEditCommand = struct {
+    model_id: u32,
+    combined_mesh_index: u32,
+    vertex_indices: []u32,
+    before_y: []f32,
+    after_y: []f32,
+    before_color: [][4]f32,
+    after_color: [][4]f32,
+};
+
 /// Undoable editor command.
 pub const UndoCommand = union(enum) {
     EntityTransform: EntityComponentCommand(components.Transform),
@@ -81,6 +93,7 @@ pub const UndoCommand = union(enum) {
         count: u8,
     },
     EntitySubtree: *EntitySubtreeCommand,
+    TerrainMeshEdit: *TerrainMeshEditCommand,
     ModelTransform: struct {
         model_id: u32,
         before: [16]f32,
@@ -365,6 +378,138 @@ fn apply(runtime: anytype, cmd: UndoCommand, forward: bool) void {
             }
         },
         .EntitySubtree => |p| apply_entity_subtree(runtime, p, forward),
+        .TerrainMeshEdit => |p| {
+            const use_y = if (forward) p.after_y else p.before_y;
+            const use_c = if (forward) p.after_color else p.before_color;
+
+            const model = model_manager.cardinal_model_manager_get_model(&runtime.model_manager, p.model_id) orelse return;
+            if (model.scene.meshes == null or model.scene.mesh_count == 0) return;
+            const mesh = &model.scene.meshes.?[0];
+            if (mesh.vertices == null or mesh.vertex_count == 0) return;
+
+            const verts = @as([*]engine.scene.CardinalVertex, @ptrCast(mesh.vertices.?));
+
+            const count = @min(p.vertex_indices.len, @min(use_y.len, use_c.len));
+            var i: usize = 0;
+            while (i < count) : (i += 1) {
+                const vi = p.vertex_indices[i];
+                if (vi >= mesh.vertex_count) continue;
+                verts[vi].py = use_y[i];
+                verts[vi].color = use_c[i];
+            }
+
+            var min_y: f32 = std.math.floatMax(f32);
+            var max_y: f32 = -std.math.floatMax(f32);
+            var v: u32 = 0;
+            while (v < mesh.vertex_count) : (v += 1) {
+                min_y = @min(min_y, verts[v].py);
+                max_y = @max(max_y, verts[v].py);
+            }
+            mesh.bounding_box_min[1] = min_y;
+            mesh.bounding_box_max[1] = max_y;
+
+            if (runtime.combined_scene.meshes) |meshes| {
+                if (p.combined_mesh_index < runtime.combined_scene.mesh_count) {
+                    meshes[p.combined_mesh_index].bounding_box_min[1] = min_y;
+                    meshes[p.combined_mesh_index].bounding_box_max[1] = max_y;
+                }
+            }
+
+            if (runtime.mesh_entity_by_mesh_index.get(p.combined_mesh_index)) |entity_id| {
+                if (runtime.terrain_data_by_entity.getPtr(entity_id)) |td| {
+                    const max_vi: usize = @min(@as(usize, mesh.vertex_count), td.height.len);
+                    var j: usize = 0;
+                    while (j < count) : (j += 1) {
+                        const vi_u32 = p.vertex_indices[j];
+                        const vi: usize = @intCast(vi_u32);
+                        if (vi >= max_vi) continue;
+                        td.height[vi] = verts[vi_u32].py;
+                        const base = vi * 4;
+                        if (base + 3 < td.splat.len) {
+                            const c4 = verts[vi_u32].color;
+                            td.splat[base + 0] = @intFromFloat(@min(1.0, @max(0.0, c4[0])) * 255.0 + 0.5);
+                            td.splat[base + 1] = @intFromFloat(@min(1.0, @max(0.0, c4[1])) * 255.0 + 0.5);
+                            td.splat[base + 2] = @intFromFloat(@min(1.0, @max(0.0, c4[2])) * 255.0 + 0.5);
+                            td.splat[base + 3] = 255;
+                        }
+                    }
+
+                    if (td.height_handle == std.math.maxInt(u32)) {
+                        var h: u32 = 0;
+                        if (renderer.cardinal_renderer_runtime_texture_allocate(runtime.renderer, td.dims, td.dims, vk.VK_FORMAT_R32_SFLOAT, &h)) {
+                            td.height_handle = h;
+                            _ = renderer.cardinal_renderer_runtime_texture_upload_full(runtime.renderer, h, @ptrCast(td.height.ptr), td.height.len * @sizeOf(f32));
+                        }
+                    }
+                    if (td.splat_handle == std.math.maxInt(u32)) {
+                        var h: u32 = 0;
+                        if (renderer.cardinal_renderer_runtime_texture_allocate(runtime.renderer, td.dims, td.dims, vk.VK_FORMAT_R8G8B8A8_UNORM, &h)) {
+                            td.splat_handle = h;
+                            _ = renderer.cardinal_renderer_runtime_texture_upload_full(runtime.renderer, h, @ptrCast(td.splat.ptr), td.splat.len);
+                        }
+                    }
+
+                    if (td.height_handle != std.math.maxInt(u32) and td.splat_handle != std.math.maxInt(u32) and count > 0) {
+                        var min_x: u32 = std.math.maxInt(u32);
+                        var min_ty: u32 = std.math.maxInt(u32);
+                        var max_x: u32 = 0;
+                        var max_ty: u32 = 0;
+
+                        var k: usize = 0;
+                        while (k < count) : (k += 1) {
+                            const vi_u32 = p.vertex_indices[k];
+                            const x: u32 = vi_u32 % td.dims;
+                            const y: u32 = vi_u32 / td.dims;
+                            min_x = @min(min_x, x);
+                            min_ty = @min(min_ty, y);
+                            max_x = @max(max_x, x);
+                            max_ty = @max(max_ty, y);
+                        }
+
+                        if (min_x != std.math.maxInt(u32) and min_ty != std.math.maxInt(u32) and max_x < td.dims and max_ty < td.dims) {
+                            const w: u32 = max_x - min_x + 1;
+                            const h: u32 = max_ty - min_ty + 1;
+                            const w_usize: usize = @intCast(w);
+                            const h_usize: usize = @intCast(h);
+
+                            const tmp_height = allocator().alloc(f32, w_usize * h_usize) catch null;
+                            const tmp_splat = allocator().alloc(u8, (w_usize * h_usize) * 4) catch null;
+                            if (tmp_height != null and tmp_splat != null) {
+                                const th = tmp_height.?;
+                                const ts = tmp_splat.?;
+
+                                var row: u32 = 0;
+                                while (row < h) : (row += 1) {
+                                    const src_y: usize = @as(usize, min_ty + row);
+                                    const src_base: usize = src_y * @as(usize, td.dims) + @as(usize, min_x);
+                                    const dst_base: usize = @as(usize, row) * w_usize;
+
+                                    @memcpy(th[dst_base .. dst_base + w_usize], td.height[src_base .. src_base + w_usize]);
+
+                                    const src_s_base: usize = src_base * 4;
+                                    const dst_s_base: usize = dst_base * 4;
+                                    @memcpy(ts[dst_s_base .. dst_s_base + w_usize * 4], td.splat[src_s_base .. src_s_base + w_usize * 4]);
+                                }
+
+                                _ = renderer.cardinal_renderer_runtime_texture_update_subregion(runtime.renderer, td.height_handle, min_x, min_ty, w, h, @ptrCast(th.ptr), th.len * @sizeOf(f32));
+                                _ = renderer.cardinal_renderer_runtime_texture_update_subregion(runtime.renderer, td.splat_handle, min_x, min_ty, w, h, @ptrCast(ts.ptr), ts.len);
+
+                                allocator().free(ts);
+                                allocator().free(th);
+                            } else {
+                                if (tmp_height) |th| allocator().free(th);
+                                if (tmp_splat) |ts| allocator().free(ts);
+                            }
+                        }
+                    }
+                }
+            }
+
+            runtime.pending_scene = runtime.combined_scene;
+            runtime.scene_upload_pending = true;
+            runtime.scene_loaded = (runtime.combined_scene.mesh_count > 0);
+            runtime.picking_cache_dirty = true;
+        },
         .ModelTransform => |m| {
             const mat = if (forward) m.after else m.before;
             _ = model_manager.cardinal_model_manager_set_transform(&runtime.model_manager, m.model_id, &mat);
@@ -559,6 +704,15 @@ fn free_command(cmd: UndoCommand) void {
         .EntitySubtree => |p| {
             const alloc = allocator();
             alloc.free(p.entities);
+            alloc.destroy(p);
+        },
+        .TerrainMeshEdit => |p| {
+            const alloc = allocator();
+            alloc.free(p.vertex_indices);
+            alloc.free(p.before_y);
+            alloc.free(p.after_y);
+            alloc.free(p.before_color);
+            alloc.free(p.after_color);
             alloc.destroy(p);
         },
         else => {},

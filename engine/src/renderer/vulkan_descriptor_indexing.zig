@@ -367,6 +367,22 @@ pub export fn vk_bindless_texture_register_existing(pool: ?*types.BindlessTextur
     return true;
 }
 
+/// Sets the logical extent for an already-registered bindless texture slot.
+pub export fn vk_bindless_texture_set_extent(pool: ?*types.BindlessTexturePool, texture_index: u32, width: u32, height: u32) callconv(.c) bool {
+    if (pool == null) return false;
+    const p = pool.?;
+    if (texture_index >= p.max_textures) return false;
+
+    const texture = &p.textures.?[texture_index];
+    if (!texture.is_allocated) return false;
+    if (width == 0 or height == 0) return false;
+
+    texture.extent.width = width;
+    texture.extent.height = height;
+    texture.extent.depth = 1;
+    return true;
+}
+
 /// Updates an existing slot to reference a different image.
 pub export fn vk_bindless_texture_update_at_index(pool: ?*types.BindlessTexturePool, index: u32, image: c.VkImage, view: c.VkImageView, sampler: c.VkSampler) callconv(.c) bool {
     if (pool == null) return false;
@@ -446,6 +462,10 @@ pub export fn vk_bindless_texture_update_data(pool: ?*types.BindlessTexturePool,
         desc_idx_log.err("Texture at index {d} is not allocated", .{texture_index});
         return false;
     }
+    if (texture.extent.width == 0 or texture.extent.height == 0) {
+        desc_idx_log.err("Texture at index {d} has invalid extent {d}x{d}", .{ texture_index, texture.extent.width, texture.extent.height });
+        return false;
+    }
 
     var bufferInfo = std.mem.zeroes(c.VkBufferCreateInfo);
     bufferInfo.sType = c.VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO;
@@ -505,7 +525,7 @@ pub export fn vk_bindless_texture_update_data(pool: ?*types.BindlessTexturePool,
     region.imageSubresource.baseArrayLayer = 0;
     region.imageSubresource.layerCount = 1;
     region.imageOffset = .{ .x = 0, .y = 0, .z = 0 };
-    region.imageExtent = texture.extent;
+    region.imageExtent = .{ .width = texture.extent.width, .height = texture.extent.height, .depth = 1 };
 
     c.vkCmdCopyBufferToImage(command_buffer, staging_buffer, texture.image, c.VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &region);
 
@@ -520,6 +540,175 @@ pub export fn vk_bindless_texture_update_data(pool: ?*types.BindlessTexturePool,
 
     vk_texture_utils.add_staging_buffer_cleanup(p.allocator, staging_buffer, staging_memory, staging_allocation, p.device, timeline_value);
 
+    return true;
+}
+
+pub export fn vk_bindless_texture_upload_full(pool: ?*types.BindlessTexturePool, texture_index: u32, data: ?*const anyopaque, data_size: c.VkDeviceSize, command_buffer: c.VkCommandBuffer, timeline_value: u64) callconv(.c) bool {
+    if (pool == null or data == null or data_size == 0) return false;
+    const p = pool.?;
+
+    if (texture_index >= p.max_textures) return false;
+
+    const texture = &p.textures.?[texture_index];
+    if (!texture.is_allocated) return false;
+    if (texture.extent.width == 0 or texture.extent.height == 0) return false;
+
+    var bufferInfo = std.mem.zeroes(c.VkBufferCreateInfo);
+    bufferInfo.sType = c.VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO;
+    bufferInfo.size = data_size;
+    bufferInfo.usage = c.VK_BUFFER_USAGE_TRANSFER_SRC_BIT;
+    bufferInfo.sharingMode = c.VK_SHARING_MODE_EXCLUSIVE;
+
+    var staging_buffer: c.VkBuffer = null;
+    var staging_memory: c.VkDeviceMemory = null;
+    var staging_allocation: c.VmaAllocation = null;
+
+    if (!vk_allocator.allocate_buffer(p.allocator, &bufferInfo, &staging_buffer, &staging_memory, &staging_allocation, c.VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | c.VK_MEMORY_PROPERTY_HOST_COHERENT_BIT, false, null)) {
+        return false;
+    }
+
+    var mapped_data: ?*anyopaque = null;
+    if (vk_allocator.map_memory(p.allocator, staging_allocation, &mapped_data) != c.VK_SUCCESS) {
+        vk_allocator.free_buffer(p.allocator, staging_buffer, staging_allocation);
+        return false;
+    }
+
+    @memcpy(@as([*]u8, @ptrCast(mapped_data.?))[0..data_size], @as([*]const u8, @ptrCast(data.?))[0..data_size]);
+    vk_allocator.unmap_memory(p.allocator, staging_allocation);
+
+    var barrier = std.mem.zeroes(c.VkImageMemoryBarrier2);
+    barrier.sType = c.VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2;
+    barrier.srcStageMask = c.VK_PIPELINE_STAGE_2_TOP_OF_PIPE_BIT;
+    barrier.srcAccessMask = 0;
+    barrier.dstStageMask = c.VK_PIPELINE_STAGE_2_TRANSFER_BIT;
+    barrier.dstAccessMask = c.VK_ACCESS_2_TRANSFER_WRITE_BIT;
+    barrier.oldLayout = c.VK_IMAGE_LAYOUT_UNDEFINED;
+    barrier.newLayout = c.VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
+    barrier.srcQueueFamilyIndex = c.VK_QUEUE_FAMILY_IGNORED;
+    barrier.dstQueueFamilyIndex = c.VK_QUEUE_FAMILY_IGNORED;
+    barrier.image = texture.image;
+    barrier.subresourceRange.aspectMask = c.VK_IMAGE_ASPECT_COLOR_BIT;
+    barrier.subresourceRange.baseMipLevel = 0;
+    barrier.subresourceRange.levelCount = 1;
+    barrier.subresourceRange.baseArrayLayer = 0;
+    barrier.subresourceRange.layerCount = 1;
+
+    var dep_info = std.mem.zeroes(c.VkDependencyInfo);
+    dep_info.sType = c.VK_STRUCTURE_TYPE_DEPENDENCY_INFO;
+    dep_info.imageMemoryBarrierCount = 1;
+    dep_info.pImageMemoryBarriers = &barrier;
+
+    c.vkCmdPipelineBarrier2(command_buffer, &dep_info);
+
+    var region = std.mem.zeroes(c.VkBufferImageCopy);
+    region.bufferOffset = 0;
+    region.bufferRowLength = 0;
+    region.bufferImageHeight = 0;
+    region.imageSubresource.aspectMask = c.VK_IMAGE_ASPECT_COLOR_BIT;
+    region.imageSubresource.mipLevel = 0;
+    region.imageSubresource.baseArrayLayer = 0;
+    region.imageSubresource.layerCount = 1;
+    region.imageOffset = .{ .x = 0, .y = 0, .z = 0 };
+    region.imageExtent = .{ .width = texture.extent.width, .height = texture.extent.height, .depth = 1 };
+
+    c.vkCmdCopyBufferToImage(command_buffer, staging_buffer, texture.image, c.VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &region);
+
+    barrier.srcStageMask = c.VK_PIPELINE_STAGE_2_TRANSFER_BIT;
+    barrier.srcAccessMask = c.VK_ACCESS_2_TRANSFER_WRITE_BIT;
+    barrier.dstStageMask = c.VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT;
+    barrier.dstAccessMask = c.VK_ACCESS_2_SHADER_READ_BIT;
+    barrier.oldLayout = c.VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
+    barrier.newLayout = c.VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+
+    c.vkCmdPipelineBarrier2(command_buffer, &dep_info);
+
+    vk_texture_utils.add_staging_buffer_cleanup(p.allocator, staging_buffer, staging_memory, staging_allocation, p.device, timeline_value);
+    return true;
+}
+
+pub export fn vk_bindless_texture_update_subregion(pool: ?*types.BindlessTexturePool, texture_index: u32, x: u32, y: u32, width: u32, height: u32, data: ?*const anyopaque, data_size: c.VkDeviceSize, command_buffer: c.VkCommandBuffer, timeline_value: u64) callconv(.c) bool {
+    if (pool == null or data == null or data_size == 0) return false;
+    const p = pool.?;
+
+    if (texture_index >= p.max_textures) return false;
+
+    const texture = &p.textures.?[texture_index];
+    if (!texture.is_allocated) return false;
+
+    if (width == 0 or height == 0) return false;
+    if (x + width > texture.extent.width) return false;
+    if (y + height > texture.extent.height) return false;
+
+    var bufferInfo = std.mem.zeroes(c.VkBufferCreateInfo);
+    bufferInfo.sType = c.VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO;
+    bufferInfo.size = data_size;
+    bufferInfo.usage = c.VK_BUFFER_USAGE_TRANSFER_SRC_BIT;
+    bufferInfo.sharingMode = c.VK_SHARING_MODE_EXCLUSIVE;
+
+    var staging_buffer: c.VkBuffer = null;
+    var staging_memory: c.VkDeviceMemory = null;
+    var staging_allocation: c.VmaAllocation = null;
+
+    if (!vk_allocator.allocate_buffer(p.allocator, &bufferInfo, &staging_buffer, &staging_memory, &staging_allocation, c.VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | c.VK_MEMORY_PROPERTY_HOST_COHERENT_BIT, false, null)) {
+        return false;
+    }
+
+    var mapped_data: ?*anyopaque = null;
+    if (vk_allocator.map_memory(p.allocator, staging_allocation, &mapped_data) != c.VK_SUCCESS) {
+        vk_allocator.free_buffer(p.allocator, staging_buffer, staging_allocation);
+        return false;
+    }
+
+    @memcpy(@as([*]u8, @ptrCast(mapped_data.?))[0..data_size], @as([*]const u8, @ptrCast(data.?))[0..data_size]);
+    vk_allocator.unmap_memory(p.allocator, staging_allocation);
+
+    var barrier = std.mem.zeroes(c.VkImageMemoryBarrier2);
+    barrier.sType = c.VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2;
+    barrier.srcStageMask = c.VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT;
+    barrier.srcAccessMask = c.VK_ACCESS_2_SHADER_READ_BIT;
+    barrier.dstStageMask = c.VK_PIPELINE_STAGE_2_TRANSFER_BIT;
+    barrier.dstAccessMask = c.VK_ACCESS_2_TRANSFER_WRITE_BIT;
+    barrier.oldLayout = c.VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+    barrier.newLayout = c.VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
+    barrier.srcQueueFamilyIndex = c.VK_QUEUE_FAMILY_IGNORED;
+    barrier.dstQueueFamilyIndex = c.VK_QUEUE_FAMILY_IGNORED;
+    barrier.image = texture.image;
+    barrier.subresourceRange.aspectMask = c.VK_IMAGE_ASPECT_COLOR_BIT;
+    barrier.subresourceRange.baseMipLevel = 0;
+    barrier.subresourceRange.levelCount = 1;
+    barrier.subresourceRange.baseArrayLayer = 0;
+    barrier.subresourceRange.layerCount = 1;
+
+    var dep_info = std.mem.zeroes(c.VkDependencyInfo);
+    dep_info.sType = c.VK_STRUCTURE_TYPE_DEPENDENCY_INFO;
+    dep_info.imageMemoryBarrierCount = 1;
+    dep_info.pImageMemoryBarriers = &barrier;
+
+    c.vkCmdPipelineBarrier2(command_buffer, &dep_info);
+
+    var region = std.mem.zeroes(c.VkBufferImageCopy);
+    region.bufferOffset = 0;
+    region.bufferRowLength = 0;
+    region.bufferImageHeight = 0;
+    region.imageSubresource.aspectMask = c.VK_IMAGE_ASPECT_COLOR_BIT;
+    region.imageSubresource.mipLevel = 0;
+    region.imageSubresource.baseArrayLayer = 0;
+    region.imageSubresource.layerCount = 1;
+    region.imageOffset = .{ .x = @intCast(x), .y = @intCast(y), .z = 0 };
+    region.imageExtent = .{ .width = width, .height = height, .depth = 1 };
+
+    c.vkCmdCopyBufferToImage(command_buffer, staging_buffer, texture.image, c.VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &region);
+
+    barrier.srcStageMask = c.VK_PIPELINE_STAGE_2_TRANSFER_BIT;
+    barrier.srcAccessMask = c.VK_ACCESS_2_TRANSFER_WRITE_BIT;
+    barrier.dstStageMask = c.VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT;
+    barrier.dstAccessMask = c.VK_ACCESS_2_SHADER_READ_BIT;
+    barrier.oldLayout = c.VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
+    barrier.newLayout = c.VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+
+    c.vkCmdPipelineBarrier2(command_buffer, &dep_info);
+
+    vk_texture_utils.add_staging_buffer_cleanup(p.allocator, staging_buffer, staging_memory, staging_allocation, p.device, timeline_value);
     return true;
 }
 

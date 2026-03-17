@@ -1,8 +1,6 @@
 //! Scene hierarchy panel.
 //!
 //! Renders the entity hierarchy tree view and supports selection, rename, and basic creation.
-//!
-//! TODO: Centralize hierarchy mutations in one system to avoid duplication.
 const std = @import("std");
 const engine = @import("cardinal_engine");
 const math = engine.math;
@@ -14,6 +12,7 @@ const node_factory = engine.ecs_node_factory;
 const c = @import("../c.zig").c;
 const EditorState = @import("../editor_state.zig").EditorState;
 const scene_io = @import("../systems/scene_io.zig");
+const hierarchy_system = @import("../systems/hierarchy_system.zig");
 const selection_system = @import("../systems/selection_system.zig");
 
 const NodeEntry = struct {
@@ -29,6 +28,7 @@ const node_entries = [_]NodeEntry{
     .{ .label = "3D/PointLight3D", .node_type = .PointLight3D },
     .{ .label = "3D/SpotLight3D", .node_type = .SpotLight3D },
     .{ .label = "3D/MeshInstance3D", .node_type = .MeshInstance3D },
+    .{ .label = "3D/Terrain3D", .node_type = .Terrain3D },
     .{ .label = "3D/AnimationPlayer", .node_type = .AnimationPlayer },
     .{ .label = "3D/Skeleton3D", .node_type = .Skeleton3D },
     .{ .label = "3D/StaticBody3D", .node_type = .StaticBody3D },
@@ -282,7 +282,7 @@ fn reparent_entity(state: *EditorState, child: entity_module.Entity, new_parent:
 
     const before_pack = capture_reparent_before(state, child, new_parent);
 
-    unlink_entity_from_parent(state, child);
+    hierarchy_system.unlink_entity_from_parent(state, child);
     node_factory.append_child(state.runtime.registry, new_parent, child);
 
     const after = capture_reparent_after(state, before_pack.ids, before_pack.count);
@@ -292,118 +292,6 @@ fn reparent_entity(state: *EditorState, child: entity_module.Entity, new_parent:
         .after = after,
         .count = before_pack.count,
     } });
-}
-
-fn unlink_entity_from_parent(state: *EditorState, entity: entity_module.Entity) void {
-    const hierarchy_ptr = state.runtime.registry.get(components.Hierarchy, entity) orelse return;
-    var hierarchy = hierarchy_ptr.*;
-
-    const parent = hierarchy.parent orelse {
-        hierarchy.prev_sibling = null;
-        hierarchy.next_sibling = null;
-        state.runtime.registry.add(entity, hierarchy) catch {};
-        return;
-    };
-
-    const parent_h_ptr = state.runtime.registry.get(components.Hierarchy, parent) orelse {
-        hierarchy.parent = null;
-        hierarchy.prev_sibling = null;
-        hierarchy.next_sibling = null;
-        state.runtime.registry.add(entity, hierarchy) catch {};
-        return;
-    };
-    var parent_h = parent_h_ptr.*;
-
-    if (parent_h.first_child) |fc| {
-        if (fc.id == entity.id) {
-            parent_h.first_child = hierarchy.next_sibling;
-        }
-    }
-
-    if (hierarchy.prev_sibling) |prev| {
-        if (state.runtime.registry.get(components.Hierarchy, prev)) |prev_h_ptr| {
-            var prev_h = prev_h_ptr.*;
-            prev_h.next_sibling = hierarchy.next_sibling;
-            state.runtime.registry.add(prev, prev_h) catch {};
-        }
-    }
-
-    if (hierarchy.next_sibling) |next| {
-        if (state.runtime.registry.get(components.Hierarchy, next)) |next_h_ptr| {
-            var next_h = next_h_ptr.*;
-            next_h.prev_sibling = hierarchy.prev_sibling;
-            state.runtime.registry.add(next, next_h) catch {};
-        }
-    }
-
-    if (parent_h.child_count > 0) parent_h.child_count -= 1;
-    state.runtime.registry.add(parent, parent_h) catch {};
-
-    hierarchy.parent = null;
-    hierarchy.prev_sibling = null;
-    hierarchy.next_sibling = null;
-    state.runtime.registry.add(entity, hierarchy) catch {};
-}
-
-fn cleanup_deleted_entities(state: *EditorState, root: entity_module.Entity) void {
-    const alloc = engine.memory.cardinal_get_allocator_for_category(.ENGINE).as_allocator();
-
-    var deleted: std.AutoHashMapUnmanaged(u64, void) = .{};
-    defer deleted.deinit(alloc);
-
-    var stack: std.ArrayListUnmanaged(entity_module.Entity) = .{};
-    defer stack.deinit(alloc);
-
-    stack.append(alloc, root) catch return;
-
-    while (stack.items.len != 0) {
-        const last_index = stack.items.len - 1;
-        const e = stack.items[last_index];
-        stack.items.len = last_index;
-        deleted.put(alloc, e.id, {}) catch {};
-
-        if (state.runtime.registry.get(components.Hierarchy, e)) |h_ptr| {
-            const h = h_ptr.*;
-            var child = h.first_child;
-            var loop_guard: u32 = 0;
-            while (child) |c_ent| {
-                if (loop_guard > 100000) break;
-                loop_guard += 1;
-
-                stack.append(alloc, c_ent) catch {};
-                child = if (state.runtime.registry.get(components.Hierarchy, c_ent)) |ch| ch.next_sibling else null;
-            }
-        }
-    }
-
-    var deleted_it = deleted.iterator();
-    while (deleted_it.next()) |entry| {
-        _ = state.runtime.transform_overrides.remove(entry.key_ptr.*);
-    }
-
-    var mesh_keys_to_remove: std.ArrayListUnmanaged(u32) = .{};
-    defer mesh_keys_to_remove.deinit(alloc);
-
-    var owner_it = state.runtime.mesh_owner_by_mesh_index.iterator();
-    while (owner_it.next()) |entry| {
-        if (deleted.contains(entry.value_ptr.*)) {
-            mesh_keys_to_remove.append(alloc, entry.key_ptr.*) catch {};
-        }
-    }
-    for (mesh_keys_to_remove.items) |k| {
-        _ = state.runtime.mesh_owner_by_mesh_index.remove(k);
-    }
-
-    mesh_keys_to_remove.clearRetainingCapacity();
-    var mesh_ent_it = state.runtime.mesh_entity_by_mesh_index.iterator();
-    while (mesh_ent_it.next()) |entry| {
-        if (deleted.contains(entry.value_ptr.*)) {
-            mesh_keys_to_remove.append(alloc, entry.key_ptr.*) catch {};
-        }
-    }
-    for (mesh_keys_to_remove.items) |k| {
-        _ = state.runtime.mesh_entity_by_mesh_index.remove(k);
-    }
 }
 
 fn strip_entities_for_delete(state: *EditorState, snaps: anytype) void {
@@ -433,33 +321,6 @@ fn strip_entities_for_delete(state: *EditorState, snaps: anytype) void {
         state.runtime.registry.remove(components.Skybox, ent);
         state.runtime.registry.remove(components.Hierarchy, ent);
     }
-}
-
-fn destroy_entity_recursive(state: *EditorState, entity: entity_module.Entity, depth: u32) void {
-    if (depth > 2048) return;
-
-    if (state.ui.selected_entity.id == entity.id) {
-        state.ui.selected_entity = .{ .id = std.math.maxInt(u64) };
-    }
-    if (state.ui.renaming_entity.id == entity.id) {
-        state.ui.renaming_entity = .{ .id = std.math.maxInt(u64) };
-    }
-
-    if (state.runtime.registry.get(components.Hierarchy, entity)) |h_ptr| {
-        const h = h_ptr.*;
-        var child = h.first_child;
-        var loop_guard: u32 = 0;
-        while (child) |c_ent| {
-            if (loop_guard > 100000) break;
-            loop_guard += 1;
-
-            const next = if (state.runtime.registry.get(components.Hierarchy, c_ent)) |ch| ch.next_sibling else null;
-            destroy_entity_recursive(state, c_ent, depth + 1);
-            child = next;
-        }
-    }
-
-    state.runtime.registry.destroy(entity);
 }
 
 fn build_focus_open_chain(state: *EditorState, entity: entity_module.Entity) void {
@@ -519,7 +380,7 @@ fn flat_append_visible(state: *EditorState, entity: entity_module.Entity, depth:
     }
 }
 
-fn draw_flat_node(state: *EditorState, node: FlatNode, indent_spacing: f32) void {
+fn draw_flat_node(state: *EditorState, node: FlatNode, indent_spacing: f32, rebuild_requested: *bool) void {
     if (!state.runtime.registry.entity_manager.is_alive(node.entity)) return;
 
     const hierarchy = state.runtime.registry.get(components.Hierarchy, node.entity) orelse return;
@@ -570,6 +431,7 @@ fn draw_flat_node(state: *EditorState, node: FlatNode, indent_spacing: f32) void
     if (has_children and open != open_before) {
         const alloc = engine.memory.cardinal_get_allocator_for_category(.ENGINE).as_allocator();
         state.ui.scene_graph_open_state.put(alloc, node.entity.id, open) catch {};
+        rebuild_requested.* = true;
     }
 
     if (state.ui.renaming_entity.id == node.entity.id) {
@@ -661,15 +523,13 @@ fn draw_flat_node(state: *EditorState, node: FlatNode, indent_spacing: f32) void
             }
 
             const snaps = state.ui.undo.capture_entity_subtree(state.runtime.registry, node.entity) orelse {
-                cleanup_deleted_entities(state, node.entity);
-                unlink_entity_from_parent(state, node.entity);
-                destroy_entity_recursive(state, node.entity, 0);
+                hierarchy_system.remove_entity_subtree(state, node.entity);
                 c.imgui_bridge_end_popup();
                 return;
             };
 
-            cleanup_deleted_entities(state, node.entity);
-            unlink_entity_from_parent(state, node.entity);
+            hierarchy_system.cleanup_deleted_entities(state, node.entity);
+            hierarchy_system.unlink_entity_from_parent(state, node.entity);
 
             var after: [6]components.Hierarchy = undefined;
             i = 0;
@@ -712,19 +572,62 @@ const FlatRenderCtx = struct {
     state: *EditorState,
     nodes: []const FlatNode,
     indent_spacing: f32,
+    rebuild_requested: *bool,
 };
 
 fn render_flat_range(user_data: ?*anyopaque, start: c_int, end: c_int) callconv(.c) void {
-    const ctx: *const FlatRenderCtx = @ptrCast(@alignCast(user_data.?));
+    const ctx: *FlatRenderCtx = @ptrCast(@alignCast(user_data.?));
     var i: usize = @intCast(start);
     const e: usize = @intCast(end);
     while (i < e and i < ctx.nodes.len) : (i += 1) {
-        draw_flat_node(ctx.state, ctx.nodes[i], ctx.indent_spacing);
+        draw_flat_node(ctx.state, ctx.nodes[i], ctx.indent_spacing, ctx.rebuild_requested);
     }
 }
 
+fn combined_scene_filter_enabled(state: *EditorState) bool {
+    var it = state.runtime.mesh_entity_by_mesh_index.iterator();
+    return it.next() != null;
+}
+
+fn mesh_entity_for_index(state: *EditorState, mesh_index: u32) ?entity_module.Entity {
+    if (state.runtime.mesh_entity_by_mesh_index.get(mesh_index)) |id| {
+        const ent = entity_module.Entity{ .id = id };
+        if (!state.runtime.registry.entity_manager.is_alive(ent)) return null;
+        if (state.runtime.registry.get(components.MeshRenderer, ent) == null) return null;
+        return ent;
+    }
+    return null;
+}
+
+fn is_mesh_active(state: *EditorState, mesh_index: u32, filter: bool) bool {
+    if (!filter) return true;
+    return mesh_entity_for_index(state, mesh_index) != null;
+}
+
+fn node_has_active_content(state: *EditorState, scene_ptr: *scene.CardinalScene, node: *scene.CardinalSceneNode, depth: u32, filter: bool) bool {
+    if (depth > 2048) return false;
+    if (node.mesh_count > 0 and node.mesh_indices != null) {
+        var i: u32 = 0;
+        while (i < node.mesh_count) : (i += 1) {
+            const mesh_idx = node.mesh_indices.?[i];
+            if (mesh_idx < scene_ptr.mesh_count and is_mesh_active(state, mesh_idx, filter)) return true;
+        }
+    }
+    if (node.child_count > 0 and node.children != null) {
+        var i: u32 = 0;
+        while (i < node.child_count) : (i += 1) {
+            if (node.children.?[i]) |child| {
+                if (node_has_active_content(state, scene_ptr, child, depth + 1, filter)) return true;
+            }
+        }
+    }
+    return false;
+}
+
 /// Draws a debug tree view of an engine-loaded `CardinalSceneNode`.
-fn draw_scene_node(state: *EditorState, scene_ptr: *scene.CardinalScene, node: *scene.CardinalSceneNode, depth: i32) void {
+fn draw_scene_node(state: *EditorState, scene_ptr: *scene.CardinalScene, node: *scene.CardinalSceneNode, depth: i32, filter: bool) bool {
+    if (!node_has_active_content(state, scene_ptr, node, @intCast(@max(0, depth)), filter)) return false;
+
     var node_id_buf: [256]u8 = undefined;
     const node_name = if (node.name) |n| std.mem.span(n) else "Unnamed Node";
     const node_id = std.fmt.bufPrintZ(&node_id_buf, "{s}##{*}", .{ node_name, node }) catch "Node";
@@ -749,17 +652,28 @@ fn draw_scene_node(state: *EditorState, scene_ptr: *scene.CardinalScene, node: *
             while (i < node.mesh_count) : (i += 1) {
                 if (node.mesh_indices) |indices| {
                     const mesh_idx = indices[i];
-                    if (mesh_idx < scene_ptr.mesh_count) {
-                        if (scene_ptr.meshes) |meshes| {
-                            const m = &meshes[mesh_idx];
+                    if (mesh_idx >= scene_ptr.mesh_count) continue;
+                    if (!is_mesh_active(state, mesh_idx, filter)) continue;
+                    if (scene_ptr.meshes) |meshes| {
+                        const m = &meshes[mesh_idx];
 
-                            var cb_id: [64]u8 = undefined;
-                            const cb_id_z = std.fmt.bufPrintZ(&cb_id, "Visible##mesh_{d}", .{mesh_idx}) catch "Visible";
+                        var cb_id: [64]u8 = undefined;
+                        const cb_id_z = std.fmt.bufPrintZ(&cb_id, "Visible##mesh_{d}", .{mesh_idx}) catch "Visible";
 
+                        if (filter) {
+                            if (mesh_entity_for_index(state, mesh_idx)) |ent| {
+                                if (state.runtime.registry.get(components.MeshRenderer, ent)) |mr| {
+                                    var visible = mr.visible;
+                                    if (c.imgui_bridge_checkbox(cb_id_z.ptr, &visible)) {
+                                        mr.visible = visible;
+                                    }
+                                }
+                            }
+                        } else {
                             _ = c.imgui_bridge_checkbox(cb_id_z.ptr, &m.visible);
-                            c.imgui_bridge_same_line(0, -1);
-                            c.imgui_bridge_bullet_text("Mesh %d: %d vertices, %d indices", mesh_idx, m.vertex_count, m.index_count);
                         }
+                        c.imgui_bridge_same_line(0, -1);
+                        c.imgui_bridge_bullet_text("Mesh %d: %d vertices, %d indices", mesh_idx, m.vertex_count, m.index_count);
                     }
                 }
             }
@@ -770,13 +684,14 @@ fn draw_scene_node(state: *EditorState, scene_ptr: *scene.CardinalScene, node: *
         while (i < node.child_count) : (i += 1) {
             if (node.children) |children| {
                 if (children[i]) |child| {
-                    draw_scene_node(state, scene_ptr, child, depth + 1);
+                    _ = draw_scene_node(state, scene_ptr, child, depth + 1, filter);
                 }
             }
         }
 
         c.imgui_bridge_tree_pop();
     }
+    return true;
 }
 
 /// Draws the Scene Graph panel (ECS tree + optional combined-scene debug view).
@@ -810,24 +725,40 @@ pub fn draw_hierarchy_panel(state: *EditorState) void {
                 c.imgui_bridge_bullet_text("Directional Light");
 
                 var flat: std.ArrayListUnmanaged(FlatNode) = .{};
-                var it = state.runtime.registry.view(components.Hierarchy).iterator();
-                while (it.next()) |entry| {
-                    const entity = entry.entity;
-                    if (state.runtime.registry.get(components.Hierarchy, entity)) |h| {
-                        if (h.parent == null or h.parent.?.id == std.math.maxInt(u64)) {
-                            flat_append_visible(state, entity, 0, -1, &flat);
+                var rebuild_requested = false;
+
+                const build_flat = struct {
+                    fn f(st: *EditorState, out: *std.ArrayListUnmanaged(FlatNode)) void {
+                        out.clearRetainingCapacity();
+                        var it = st.runtime.registry.view(components.Hierarchy).iterator();
+                        while (it.next()) |entry| {
+                            const entity = entry.entity;
+                            if (st.runtime.registry.get(components.Hierarchy, entity)) |h| {
+                                if (h.parent == null or h.parent.?.id == std.math.maxInt(u64)) {
+                                    flat_append_visible(st, entity, 0, -1, out);
+                                }
+                            }
                         }
                     }
-                }
+                }.f;
 
-                const count: c_int = @intCast(flat.items.len);
-                if (count > 0) {
-                    const ctx = FlatRenderCtx{
-                        .state = state,
-                        .nodes = flat.items,
-                        .indent_spacing = c.imgui_bridge_get_style_indent_spacing(),
-                    };
-                    c.imgui_bridge_list_clipper(count, -1.0, render_flat_range, @ptrCast(@constCast(&ctx)));
+                build_flat(state, &flat);
+
+                var pass: u8 = 0;
+                while (pass < 2) : (pass += 1) {
+                    const count: c_int = @intCast(flat.items.len);
+                    if (count > 0) {
+                        var ctx = FlatRenderCtx{
+                            .state = state,
+                            .nodes = flat.items,
+                            .indent_spacing = c.imgui_bridge_get_style_indent_spacing(),
+                            .rebuild_requested = &rebuild_requested,
+                        };
+                        c.imgui_bridge_list_clipper(count, -1.0, render_flat_range, @ptrCast(&ctx));
+                    }
+                    if (!rebuild_requested) break;
+                    rebuild_requested = false;
+                    build_flat(state, &flat);
                 }
 
                 c.imgui_bridge_tree_pop();
@@ -835,60 +766,131 @@ pub fn draw_hierarchy_panel(state: *EditorState) void {
 
             if (state.runtime.scene_loaded) {
                 if (c.imgui_bridge_tree_node("Combined Scene (Debug)")) {
-                    c.imgui_bridge_text("Total Meshes: %d", state.runtime.combined_scene.mesh_count);
+                    const filter = combined_scene_filter_enabled(state);
+                    var active_meshes: u32 = 0;
+                    var mi: u32 = 0;
+                    while (mi < state.runtime.combined_scene.mesh_count) : (mi += 1) {
+                        if (is_mesh_active(state, mi, filter)) active_meshes += 1;
+                    }
+
+                    if (filter) {
+                        c.imgui_bridge_text("Meshes: %d active / %d total", active_meshes, state.runtime.combined_scene.mesh_count);
+                    } else {
+                        c.imgui_bridge_text("Total Meshes: %d", state.runtime.combined_scene.mesh_count);
+                    }
                     c.imgui_bridge_text("Root Nodes: %d", state.runtime.combined_scene.root_node_count);
 
                     c.imgui_bridge_separator();
                     c.imgui_bridge_text("Bulk Visibility Controls:");
 
                     if (c.imgui_bridge_button("Show All Meshes")) {
-                        var i: u32 = 0;
-                        while (i < state.runtime.combined_scene.mesh_count) : (i += 1) {
-                            if (state.runtime.combined_scene.meshes) |meshes| {
-                                meshes[i].visible = true;
+                        if (filter) {
+                            var view = state.runtime.registry.view(components.MeshRenderer);
+                            var it = view.iterator();
+                            while (it.next()) |entry| {
+                                entry.component.visible = true;
+                            }
+                        } else {
+                            var i: u32 = 0;
+                            while (i < state.runtime.combined_scene.mesh_count) : (i += 1) {
+                                if (state.runtime.combined_scene.meshes) |meshes| {
+                                    meshes[i].visible = true;
+                                }
                             }
                         }
                     }
                     c.imgui_bridge_same_line(0, -1);
                     if (c.imgui_bridge_button("Hide All Meshes")) {
-                        var i: u32 = 0;
-                        while (i < state.runtime.combined_scene.mesh_count) : (i += 1) {
-                            if (state.runtime.combined_scene.meshes) |meshes| {
-                                meshes[i].visible = false;
+                        if (filter) {
+                            var view = state.runtime.registry.view(components.MeshRenderer);
+                            var it = view.iterator();
+                            while (it.next()) |entry| {
+                                entry.component.visible = false;
+                            }
+                        } else {
+                            var i: u32 = 0;
+                            while (i < state.runtime.combined_scene.mesh_count) : (i += 1) {
+                                if (state.runtime.combined_scene.meshes) |meshes| {
+                                    meshes[i].visible = false;
+                                }
                             }
                         }
                     }
 
                     if (c.imgui_bridge_button("Show Only Material 0")) {
-                        var i: u32 = 0;
-                        while (i < state.runtime.combined_scene.mesh_count) : (i += 1) {
+                        if (filter) {
                             if (state.runtime.combined_scene.meshes) |meshes| {
-                                meshes[i].visible = (meshes[i].material_index == 0);
+                                var view = state.runtime.registry.view(components.MeshRenderer);
+                                var it = view.iterator();
+                                while (it.next()) |entry| {
+                                    const mr = entry.component;
+                                    if (mr.mesh.index < state.runtime.combined_scene.mesh_count) {
+                                        mr.visible = (meshes[mr.mesh.index].material_index == 0);
+                                    }
+                                }
+                            }
+                        } else {
+                            var i: u32 = 0;
+                            while (i < state.runtime.combined_scene.mesh_count) : (i += 1) {
+                                if (state.runtime.combined_scene.meshes) |meshes| {
+                                    meshes[i].visible = (meshes[i].material_index == 0);
+                                }
                             }
                         }
                     }
                     c.imgui_bridge_same_line(0, -1);
                     if (c.imgui_bridge_button("Show Only Material 1")) {
-                        var i: u32 = 0;
-                        while (i < state.runtime.combined_scene.mesh_count) : (i += 1) {
+                        if (filter) {
                             if (state.runtime.combined_scene.meshes) |meshes| {
-                                meshes[i].visible = (meshes[i].material_index == 1);
+                                var view = state.runtime.registry.view(components.MeshRenderer);
+                                var it = view.iterator();
+                                while (it.next()) |entry| {
+                                    const mr = entry.component;
+                                    if (mr.mesh.index < state.runtime.combined_scene.mesh_count) {
+                                        mr.visible = (meshes[mr.mesh.index].material_index == 1);
+                                    }
+                                }
+                            }
+                        } else {
+                            var i: u32 = 0;
+                            while (i < state.runtime.combined_scene.mesh_count) : (i += 1) {
+                                if (state.runtime.combined_scene.meshes) |meshes| {
+                                    meshes[i].visible = (meshes[i].material_index == 1);
+                                }
                             }
                         }
                     }
 
                     if (c.imgui_bridge_button("Toggle Materials 0/1")) {
-                        var i: u32 = 0;
-                        while (i < state.runtime.combined_scene.mesh_count) : (i += 1) {
+                        if (filter) {
                             if (state.runtime.combined_scene.meshes) |meshes| {
-                                if (meshes[i].material_index == 0) {
-                                    meshes[i].visible = state.ui.show_material_0_toggle;
-                                } else if (meshes[i].material_index == 1) {
-                                    meshes[i].visible = !state.ui.show_material_0_toggle;
+                                var view = state.runtime.registry.view(components.MeshRenderer);
+                                var it = view.iterator();
+                                while (it.next()) |entry| {
+                                    const mr = entry.component;
+                                    if (mr.mesh.index < state.runtime.combined_scene.mesh_count) {
+                                        if (meshes[mr.mesh.index].material_index == 0) {
+                                            mr.visible = state.ui.show_material_0_toggle;
+                                        } else if (meshes[mr.mesh.index].material_index == 1) {
+                                            mr.visible = !state.ui.show_material_0_toggle;
+                                        }
+                                    }
                                 }
                             }
+                            state.ui.show_material_0_toggle = !state.ui.show_material_0_toggle;
+                        } else {
+                            var i: u32 = 0;
+                            while (i < state.runtime.combined_scene.mesh_count) : (i += 1) {
+                                if (state.runtime.combined_scene.meshes) |meshes| {
+                                    if (meshes[i].material_index == 0) {
+                                        meshes[i].visible = state.ui.show_material_0_toggle;
+                                    } else if (meshes[i].material_index == 1) {
+                                        meshes[i].visible = !state.ui.show_material_0_toggle;
+                                    }
+                                }
+                            }
+                            state.ui.show_material_0_toggle = !state.ui.show_material_0_toggle;
                         }
-                        state.ui.show_material_0_toggle = !state.ui.show_material_0_toggle;
                     }
 
                     if (state.runtime.combined_scene.root_node_count > 0) {
@@ -897,7 +899,7 @@ pub fn draw_hierarchy_panel(state: *EditorState) void {
                         while (i < state.runtime.combined_scene.root_node_count) : (i += 1) {
                             if (state.runtime.combined_scene.root_nodes) |root_nodes| {
                                 if (root_nodes[i]) |root| {
-                                    draw_scene_node(state, &state.runtime.combined_scene, root, 0);
+                                    _ = draw_scene_node(state, &state.runtime.combined_scene, root, 0, filter);
                                 }
                             }
                         }
@@ -906,10 +908,22 @@ pub fn draw_hierarchy_panel(state: *EditorState) void {
                         var i: u32 = 0;
                         while (i < state.runtime.combined_scene.mesh_count) : (i += 1) {
                             if (state.runtime.combined_scene.meshes) |meshes| {
+                                if (!is_mesh_active(state, i, filter)) continue;
                                 const m = &meshes[i];
                                 var cb_id: [64]u8 = undefined;
                                 const cb_id_z = std.fmt.bufPrintZ(&cb_id, "Visible##flat_mesh_{d}", .{i}) catch "Visible";
-                                _ = c.imgui_bridge_checkbox(cb_id_z.ptr, &m.visible);
+                                if (filter) {
+                                    if (mesh_entity_for_index(state, i)) |ent| {
+                                        if (state.runtime.registry.get(components.MeshRenderer, ent)) |mr| {
+                                            var visible = mr.visible;
+                                            if (c.imgui_bridge_checkbox(cb_id_z.ptr, &visible)) {
+                                                mr.visible = visible;
+                                            }
+                                        }
+                                    }
+                                } else {
+                                    _ = c.imgui_bridge_checkbox(cb_id_z.ptr, &m.visible);
+                                }
                                 c.imgui_bridge_same_line(0, -1);
                                 c.imgui_bridge_bullet_text("Mesh %d: %d vertices, %d indices", i, m.vertex_count, m.index_count);
                             }

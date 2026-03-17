@@ -1,3 +1,10 @@
+//! Lightweight runtime validation for Vulkan barriers and resource access ordering.
+//!
+//! Tracks recent resource accesses and validates barrier parameters to detect common hazards such as
+//! missing transitions or overlapping usage. Designed as a debug aid; it is not a full GPU hazard
+//! tracker.
+//!
+//! TODO: Replace linear access tracking with a fixed-size hash map to reduce O(n) scans.
 const std = @import("std");
 const builtin = @import("builtin");
 const log = @import("../core/log.zig");
@@ -8,19 +15,19 @@ const types = @import("vulkan_types.zig");
 
 const c = @import("vulkan_c.zig").c;
 
-// Global state
+/// Global validation context storing recent access records.
 var g_validation_context: types.CardinalBarrierValidationContext = std.mem.zeroes(types.CardinalBarrierValidationContext);
 var g_validation_initialized: bool = false;
 
-// Statistics
+/// Cumulative counts used for diagnostics.
 var g_total_accesses: u32 = 0;
 var g_validation_errors: u32 = 0;
 var g_race_conditions: u32 = 0;
 
-// Mutex
+/// Platform mutex guarding the global validation context.
 var g_validation_mutex: if (builtin.os.tag == .windows) c.CRITICAL_SECTION else c.pthread_mutex_t = undefined;
 
-// Helpers
+/// Returns a monotonically-increasing timestamp for access ordering.
 fn get_timestamp() u64 {
     if (builtin.os.tag == .windows) {
         var counter: c.LARGE_INTEGER = undefined;

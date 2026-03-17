@@ -308,7 +308,7 @@ pub export fn cardinal_window_get_content_scale(window: ?*const CardinalWindow, 
     }
 }
 
-// Additional window functions for Project Manager
+/// Convenience window mutation helpers used by editor tooling.
 pub export fn cardinal_window_set_size(window: ?*CardinalWindow, width: u32, height: u32) callconv(.c) void {
     if (window) |win| {
         if (win.handle) |h| {

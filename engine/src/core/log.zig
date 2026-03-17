@@ -244,10 +244,8 @@ pub export fn cardinal_log_init_with_level(level: CardinalLogLevel) void {
 
     if (g_initialized) return;
 
-    // Add console sink by default
     g_sinks[0] = &g_console_sink;
 
-    // Add default file sink
     var file_sink = cardinal_log_create_file_sink("build/cardinal_debug.log");
     if (file_sink == null) {
         file_sink = cardinal_log_create_file_sink("cardinal_debug.log");
@@ -260,9 +258,6 @@ pub export fn cardinal_log_init_with_level(level: CardinalLogLevel) void {
 
     const msg = "==== Cardinal Log Start ====";
 
-    // Initial log
-    // We can't use standard log machinery easily here without a dummy file/line
-    // So we just iterate sinks manually
     for (g_sinks) |s| {
         if (s) |sink| {
             sink.log_func(sink.user_data, .INFO, "GENERAL", null, "log.zig", 0, msg);
@@ -302,7 +297,6 @@ pub export fn cardinal_log_shutdown() void {
         }
     }
 
-    // Destroy all sinks except console (which is static)
     for (g_sinks, 0..) |s, i| {
         if (s) |sink| {
             if (sink != &g_console_sink) {
@@ -343,7 +337,7 @@ pub export fn cardinal_log_parse_level(level_str_input: ?[*:0]const u8) Cardinal
     return .INFO;
 }
 
-// Sink Management
+/// Sink management helpers.
 /// Adds a sink if there is an available slot.
 pub export fn cardinal_log_add_sink(sink_ptr: ?*CardinalLogSink) void {
     if (sink_ptr == null) return;
@@ -351,12 +345,10 @@ pub export fn cardinal_log_add_sink(sink_ptr: ?*CardinalLogSink) void {
     g_sinks_mutex.lock();
     defer g_sinks_mutex.unlock();
 
-    // Check if already added
     for (g_sinks) |s| {
         if (s == sink_ptr) return;
     }
 
-    // Find empty slot
     for (g_sinks, 0..) |s, i| {
         if (s == null) {
             g_sinks[i] = sink_ptr;
@@ -384,7 +376,6 @@ pub export fn cardinal_log_remove_sink(sink_ptr: ?*CardinalLogSink) void {
 pub export fn cardinal_log_destroy_sink(sink_ptr: ?*CardinalLogSink) void {
     if (sink_ptr == null) return;
 
-    // Remove if attached
     cardinal_log_remove_sink(sink_ptr);
 
     if (sink_ptr.?.destroy_func) |destroy| {
@@ -394,7 +385,6 @@ pub export fn cardinal_log_destroy_sink(sink_ptr: ?*CardinalLogSink) void {
     allocator.destroy(sink_ptr.?);
 }
 
-// Log Output
 /// Formats a message and emits it to all sinks, optionally with JSON fields.
 pub export fn cardinal_log_output_full(level: CardinalLogLevel, category: [*:0]const u8, json_fields: ?[*:0]const u8, file: [*:0]const u8, line: c_int, fmt: [*:0]const u8, args: c.va_list) void {
     if (@intFromEnum(level) < @intFromEnum(min_log_level)) return;
@@ -416,7 +406,6 @@ pub export fn cardinal_log_output_full(level: CardinalLogLevel, category: [*:0]c
     }
     final_filename = @ptrCast(file + offset);
 
-    // If async enabled and not fatal, push to queue
     if (g_async_enabled and level != .FATAL) {
         const allocator = memory.cardinal_get_allocator_for_category(.LOGGING).as_allocator();
 
@@ -476,35 +465,31 @@ pub export fn cardinal_log_output_v(level: CardinalLogLevel, file: [*:0]const u8
     cardinal_log_output_full(level, "GENERAL", null, file, line, fmt, args);
 }
 
-// Zig-friendly wrappers
+/// Zig-side logging implementation used by `ScopedLogger`.
 fn log_internal(comptime level: CardinalLogLevel, category: []const u8, fields: anytype, comptime fmt: []const u8, args: anytype, src: std.builtin.SourceLocation) void {
     if (@intFromEnum(level) < @intFromEnum(min_log_level)) return;
 
     var buffer: [4096]u8 = undefined;
     const msg = std.fmt.bufPrintZ(&buffer, fmt, args) catch "Log message too long";
 
-    // Handle structured data
     var json_buffer: [4096]u8 = undefined;
     var json_ptr: ?[*:0]const u8 = null;
     if (@TypeOf(fields) != void and @TypeOf(fields) != @TypeOf(null)) {
         var fbs = std.io.fixedBufferStream(&json_buffer);
         fbs.writer().print("{f}", .{std.json.fmt(fields, .{})}) catch {};
 
-        // Manually write null terminator if space allows
         if (fbs.pos < json_buffer.len) {
             json_buffer[fbs.pos] = 0;
             json_ptr = @ptrCast(&json_buffer);
         }
     }
 
-    // Handle category string (convert to null-terminated)
     var cat_buffer: [64]u8 = undefined;
     const cat_len = @min(category.len, 63);
     @memcpy(cat_buffer[0..cat_len], category[0..cat_len]);
     cat_buffer[cat_len] = 0;
 
     var final_filename_slice: []const u8 = src.file;
-    // Simple path extraction (std.fs.path.basename equivalent)
     var i = final_filename_slice.len;
     while (i > 0) : (i -= 1) {
         if (final_filename_slice[i - 1] == '/' or final_filename_slice[i - 1] == '\\') {
@@ -513,13 +498,11 @@ fn log_internal(comptime level: CardinalLogLevel, category: []const u8, fields: 
         }
     }
 
-    // Convert slice to null-terminated for C interop
     var filename_buf: [256]u8 = undefined;
     const len = @min(final_filename_slice.len, 255);
     @memcpy(filename_buf[0..len], final_filename_slice[0..len]);
     filename_buf[len] = 0;
 
-    // If async enabled and not fatal, push to queue
     if (g_async_enabled and level != .FATAL) {
         const allocator = memory.cardinal_get_allocator_for_category(.LOGGING).as_allocator();
 
@@ -542,7 +525,6 @@ fn log_internal(comptime level: CardinalLogLevel, category: []const u8, fields: 
             .json = json_copy,
         };
 
-        // Use existing cat_buffer/cat_len
         @memcpy(entry.category[0..cat_len], cat_buffer[0..cat_len]);
         entry.category[cat_len] = 0;
 
@@ -594,7 +576,7 @@ pub fn ScopedLogger(comptime category: []const u8) type {
             log_internal(.FATAL, category, null, fmt, args, @src());
         }
 
-        // Structured logging versions
+        /// Structured logging variants that include JSON fields.
         pub fn trace_s(fields: anytype, comptime fmt: []const u8, args: anytype) void {
             log_internal(.TRACE, category, fields, fmt, args, @src());
         }

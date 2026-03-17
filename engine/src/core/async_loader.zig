@@ -943,11 +943,6 @@ pub export fn cardinal_async_process_completed_tasks(max_tasks: u32) callconv(.c
         }
 
         const task = @as(*CardinalAsyncTask, @ptrCast(@alignCast(job.data)));
-
-        // Debug log (temporary)
-        // std.debug.print("[ASYNC] Processing completed task ID: {d}, Type: {any}\n", .{task.id, task.type});
-
-        // Detach job from task to prevent double-free or race conditions
         task.next = null;
 
         const cb = task.callback;
@@ -959,7 +954,6 @@ pub export fn cardinal_async_process_completed_tasks(max_tasks: u32) callconv(.c
             f(task, cb_data);
         }
 
-        // We are responsible for freeing the job now that it's out of the queue
         job_system.free_job(job);
 
         processed += 1;
@@ -968,7 +962,7 @@ pub export fn cardinal_async_process_completed_tasks(max_tasks: u32) callconv(.c
     return processed;
 }
 
-// Handle System API
+/// Returns a stable handle for a task that can outlive the pointer value.
 pub export fn cardinal_async_get_handle(task: ?*CardinalAsyncTask) callconv(.c) handles.AsyncHandle {
     if (task) |t| {
         g_async_loader.state_mutex.lock();

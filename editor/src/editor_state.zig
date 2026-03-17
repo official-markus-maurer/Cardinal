@@ -58,6 +58,20 @@ pub const LoadingTaskInfo = struct {
     target_entity: ?engine.ecs_entity.Entity = null,
 };
 
+pub const TerrainData = struct {
+    dims: u32,
+    height: []f32,
+    splat: []u8,
+    height_handle: u32 = std.math.maxInt(u32),
+    splat_handle: u32 = std.math.maxInt(u32),
+    layer_handles: [4]u32 = .{
+        std.math.maxInt(u32),
+        std.math.maxInt(u32),
+        std.math.maxInt(u32),
+        std.math.maxInt(u32),
+    },
+};
+
 pub const EditorRuntimeState = struct {
     renderer: *types.CardinalRenderer = undefined,
     window: *window.CardinalWindow = undefined,
@@ -90,6 +104,7 @@ pub const EditorRuntimeState = struct {
     mesh_owner_by_mesh_index: std.AutoHashMapUnmanaged(u32, u64) = .{},
     mesh_entity_by_mesh_index: std.AutoHashMapUnmanaged(u32, u64) = .{},
     model_root_by_id: std.AutoHashMapUnmanaged(u32, u64) = .{},
+    terrain_data_by_entity: std.AutoHashMapUnmanaged(u64, TerrainData) = .{},
 
     /// Camera state passed to the renderer.
     camera: types.CardinalCamera = undefined,
@@ -110,6 +125,7 @@ pub const EditorRuntimeState = struct {
 
     /// Whether the editor has captured the mouse (FPS camera mode).
     mouse_captured: bool = false,
+    picking_cache_dirty: bool = false,
     yaw: f32 = 90.0,
     pitch: f32 = 0.0,
     camera_speed: f32 = 5.0,
@@ -193,6 +209,7 @@ pub const EditorUiState = struct {
     show_scene_manager: bool = true,
     show_pbr_settings: bool = true,
     show_animation: bool = true,
+    show_terrain_panel: bool = true,
     show_project_manager: bool = true,
 
     assets: AssetState = .{},
@@ -214,6 +231,14 @@ pub const EditorUiState = struct {
     show_material_0_toggle: bool = true,
     show_grid_axes: bool = true,
     show_performance_panel: bool = true,
+
+    terrain_sculpt_enabled: bool = false,
+    terrain_tool: i32 = 0,
+    terrain_sculpt_mode: i32 = 0,
+    terrain_paint_color: [3]f32 = .{ 0.8, 0.2, 0.2 },
+    terrain_brush_radius: f32 = 2.0,
+    terrain_brush_strength: f32 = 0.5,
+    terrain_brush_last_mouse_down: bool = false,
 
     undo: undo.UndoState = .{},
 

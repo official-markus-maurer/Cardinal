@@ -22,6 +22,7 @@ const vk_utils = @import("vulkan_utils.zig");
 const vk_descriptor_indexing = @import("vulkan_descriptor_indexing.zig");
 const wrappers = @import("vulkan_wrappers.zig");
 const vk_pso = @import("vulkan_pso.zig");
+const pbr_init = @import("util/vulkan_pbr_init.zig");
 const scene = @import("../assets/scene.zig");
 const animation = @import("../assets/animation.zig");
 
@@ -31,92 +32,13 @@ const pbr_log = log.ScopedLogger("PBR");
 
 /// Creates and allocates the descriptor manager used by the PBR pipeline.
 ///
-/// TODO: Deduplicate descriptor binding setup with other pipelines (shadow, depth prepass).
 fn create_pbr_descriptor_manager(pipeline: *types.VulkanPBRPipeline, device: c.VkDevice, allocator: *types.VulkanAllocator, vulkan_state: ?*types.VulkanState, bindings_map: *std.AutoHashMap(u32, c.VkDescriptorSetLayoutBinding)) bool {
-    const mem_alloc = memory.cardinal_get_allocator_for_category(.RENDERER);
-    const ptr = memory.cardinal_alloc(mem_alloc, @sizeOf(types.VulkanDescriptorManager));
-    if (ptr == null) {
-        pbr_log.err("Failed to allocate memory for descriptor manager", .{});
-        return false;
-    }
-    pipeline.descriptorManager = @as(*types.VulkanDescriptorManager, @ptrCast(@alignCast(ptr)));
-
-    const renderer_allocator = memory.cardinal_get_allocator_for_category(.RENDERER).as_allocator();
-    var builder = descriptor_mgr.DescriptorBuilder.init(renderer_allocator);
-    defer builder.deinit();
-
-    var bindings_added = true;
-    var it = bindings_map.iterator();
-    while (it.next()) |entry| {
-        const b = entry.value_ptr.*;
-        builder.add_binding(b.binding, b.descriptorType, b.descriptorCount, b.stageFlags) catch {
-            bindings_added = false;
-            break;
-        };
-    }
-
-    if (!bindings_added) {
-        pbr_log.err("Failed to add bindings to descriptor builder", .{});
-        memory.cardinal_free(mem_alloc, pipeline.descriptorManager);
-        pipeline.descriptorManager = null;
-        return false;
-    }
-
-    const prefer_descriptor_buffers = true;
-    pbr_log.info("Creating PBR descriptor manager with {d} max sets (prefer buffers: {s})", .{ types.MAX_FRAMES_IN_FLIGHT, if (prefer_descriptor_buffers) "true" else "false" });
-
-    if (!builder.build(pipeline.descriptorManager.?, device, @ptrCast(allocator), @ptrCast(vulkan_state), types.MAX_FRAMES_IN_FLIGHT, prefer_descriptor_buffers)) {
-        pbr_log.err("Failed to create descriptor manager!", .{});
-        memory.cardinal_free(mem_alloc, pipeline.descriptorManager);
-        pipeline.descriptorManager = null;
-        return false;
-    }
-
-    var sets: [types.MAX_FRAMES_IN_FLIGHT]c.VkDescriptorSet = undefined;
-    if (!descriptor_mgr.vk_descriptor_manager_allocate_sets(pipeline.descriptorManager, types.MAX_FRAMES_IN_FLIGHT, &sets)) {
-        pbr_log.err("Failed to allocate descriptor sets", .{});
-        descriptor_mgr.vk_descriptor_manager_destroy(pipeline.descriptorManager);
-        memory.cardinal_free(mem_alloc, pipeline.descriptorManager);
-        pipeline.descriptorManager = null;
-        return false;
-    }
-
-    return true;
+    return pbr_init.create_pbr_descriptor_manager(pipeline, device, allocator, vulkan_state, bindings_map);
 }
 
 /// Initializes the texture manager used by the PBR pipeline (including bindless pool).
 fn create_pbr_texture_manager(pipeline: *types.VulkanPBRPipeline, device: c.VkDevice, allocator: *types.VulkanAllocator, commandPool: c.VkCommandPool, graphicsQueue: c.VkQueue, vulkan_state: ?*types.VulkanState) bool {
-    const mem_alloc = memory.cardinal_get_allocator_for_category(.RENDERER);
-    const ptr = memory.cardinal_alloc(mem_alloc, @sizeOf(types.VulkanTextureManager));
-    if (ptr == null) {
-        pbr_log.err("Failed to allocate texture manager for PBR pipeline", .{});
-        return false;
-    }
-    pipeline.textureManager = @as(*types.VulkanTextureManager, @ptrCast(@alignCast(ptr)));
-
-    var textureConfig = std.mem.zeroes(types.VulkanTextureManagerConfig);
-    textureConfig.device = device;
-    textureConfig.allocator = allocator;
-    textureConfig.commandPool = commandPool;
-    textureConfig.graphicsQueue = graphicsQueue;
-    textureConfig.syncManager = null;
-
-    if (vulkan_state != null and vulkan_state.?.sync_manager != null and
-        vulkan_state.?.sync_manager.?.timeline_semaphore != null)
-    {
-        textureConfig.syncManager = vulkan_state.?.sync_manager;
-    }
-
-    textureConfig.vulkan_state = vulkan_state;
-    textureConfig.initialCapacity = 16;
-
-    if (!vk_texture_mgr.vk_texture_manager_init(pipeline.textureManager.?, &textureConfig)) {
-        pbr_log.err("Failed to initialize texture manager for PBR pipeline", .{});
-        memory.cardinal_free(mem_alloc, pipeline.textureManager);
-        pipeline.textureManager = null;
-        return false;
-    }
-    return true;
+    return pbr_init.create_pbr_texture_manager(pipeline, device, allocator, commandPool, graphicsQueue, vulkan_state);
 }
 
 /// Creates the pipeline layout, optionally including the bindless texture set layout.
@@ -300,7 +222,6 @@ fn initialize_pbr_defaults(pipeline: *types.VulkanPBRPipeline, config: *const ty
 ///
 /// Uses one persistently-mapped staging buffer for both vertices and indices.
 ///
-/// TODO: Replace the full-scene upload with incremental streaming for dynamic scenes.
 fn create_pbr_mesh_buffers(pipeline: *types.VulkanPBRPipeline, device: c.VkDevice, allocator: *types.VulkanAllocator, commandPool: c.VkCommandPool, graphicsQueue: c.VkQueue, scene_data: *const scene.CardinalScene) bool {
     var totalVertices: u32 = 0;
     var totalIndices: u32 = 0;
@@ -419,31 +340,103 @@ fn create_pbr_mesh_buffers(pipeline: *types.VulkanPBRPipeline, device: c.VkDevic
     cmdAllocInfo.commandBufferCount = 1;
 
     var commandBuffer: c.VkCommandBuffer = null;
-    _ = c.vkAllocateCommandBuffers(device, &cmdAllocInfo, &commandBuffer);
+    if (c.vkAllocateCommandBuffers(device, &cmdAllocInfo, &commandBuffer) != c.VK_SUCCESS or commandBuffer == null) {
+        buffer_mgr.vk_buffer_destroy(&stagingBuffer, device, @ptrCast(allocator), null);
+        buffer_mgr.vk_buffer_destroy(&vertexBufferObj, device, @ptrCast(allocator), null);
+        if (totalIndices > 0) buffer_mgr.vk_buffer_destroy(&indexBufferObj, device, @ptrCast(allocator), null);
+        return false;
+    }
 
     var beginInfo = std.mem.zeroes(c.VkCommandBufferBeginInfo);
     beginInfo.sType = c.VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
     beginInfo.flags = c.VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
 
-    _ = c.vkBeginCommandBuffer(commandBuffer, &beginInfo);
+    if (c.vkBeginCommandBuffer(commandBuffer, &beginInfo) != c.VK_SUCCESS) {
+        c.vkFreeCommandBuffers(device, commandPool, 1, &commandBuffer);
+        buffer_mgr.vk_buffer_destroy(&stagingBuffer, device, @ptrCast(allocator), null);
+        buffer_mgr.vk_buffer_destroy(&vertexBufferObj, device, @ptrCast(allocator), null);
+        if (totalIndices > 0) buffer_mgr.vk_buffer_destroy(&indexBufferObj, device, @ptrCast(allocator), null);
+        return false;
+    }
 
-    // Copy Vertex Region
-    var vCopy = std.mem.zeroes(c.VkBufferCopy);
-    vCopy.srcOffset = 0;
-    vCopy.dstOffset = 0;
-    vCopy.size = vertexBufferSize;
-    c.vkCmdCopyBuffer(commandBuffer, stagingBuffer.handle, vertexBufferObj.handle, 1, &vCopy);
+    var renderer_alloc = memory.cardinal_get_allocator_for_category(.RENDERER).as_allocator();
+
+    const v_regions_count: usize = @intCast(scene_data.mesh_count);
+    const v_regions = renderer_alloc.alloc(c.VkBufferCopy, v_regions_count) catch null;
+    if (v_regions) |regs| {
+        var v_src: c.VkDeviceSize = 0;
+        var v_dst: c.VkDeviceSize = 0;
+        var mi: u32 = 0;
+        while (mi < scene_data.mesh_count) : (mi += 1) {
+            const vc: c.VkDeviceSize = scene_data.meshes.?[mi].vertex_count * @sizeOf(scene.CardinalVertex);
+            regs[mi].srcOffset = v_src;
+            regs[mi].dstOffset = v_dst;
+            regs[mi].size = vc;
+            v_src += vc;
+            v_dst += vc;
+        }
+        if (v_regions_count > 0) {
+            c.vkCmdCopyBuffer(commandBuffer, stagingBuffer.handle, vertexBufferObj.handle, @intCast(v_regions_count), regs.ptr);
+        }
+        renderer_alloc.free(regs);
+    } else {
+        var vCopy = std.mem.zeroes(c.VkBufferCopy);
+        vCopy.srcOffset = 0;
+        vCopy.dstOffset = 0;
+        vCopy.size = vertexBufferSize;
+        c.vkCmdCopyBuffer(commandBuffer, stagingBuffer.handle, vertexBufferObj.handle, 1, &vCopy);
+    }
 
     // Copy Index Region
     if (totalIndices > 0) {
-        var iCopy = std.mem.zeroes(c.VkBufferCopy);
-        iCopy.srcOffset = vertexStagingSize;
-        iCopy.dstOffset = 0;
-        iCopy.size = indexBufferSize;
-        c.vkCmdCopyBuffer(commandBuffer, stagingBuffer.handle, indexBufferObj.handle, 1, &iCopy);
+        const i_regions_count: usize = @intCast(scene_data.mesh_count);
+        const i_regions = renderer_alloc.alloc(c.VkBufferCopy, i_regions_count) catch null;
+        if (i_regions) |iregs| {
+            var src_off: c.VkDeviceSize = vertexStagingSize;
+            var dst_off: c.VkDeviceSize = 0;
+            var mi: u32 = 0;
+            while (mi < scene_data.mesh_count) : (mi += 1) {
+                const ic: c.VkDeviceSize = scene_data.meshes.?[mi].index_count * @sizeOf(u32);
+                iregs[mi].srcOffset = src_off;
+                iregs[mi].dstOffset = dst_off;
+                iregs[mi].size = ic;
+                src_off += ic;
+                dst_off += ic;
+            }
+            var valid: u32 = 0;
+            const tmp = renderer_alloc.alloc(c.VkBufferCopy, i_regions_count) catch null;
+            if (tmp) |tmpregs| {
+                var k: usize = 0;
+                while (k < i_regions_count) : (k += 1) {
+                    if (iregs[k].size != 0) {
+                        tmpregs[valid] = iregs[k];
+                        valid += 1;
+                    }
+                }
+                if (valid > 0) {
+                    c.vkCmdCopyBuffer(commandBuffer, stagingBuffer.handle, indexBufferObj.handle, valid, tmpregs.ptr);
+                }
+                renderer_alloc.free(tmpregs);
+            } else {
+                c.vkCmdCopyBuffer(commandBuffer, stagingBuffer.handle, indexBufferObj.handle, @intCast(i_regions_count), iregs.ptr);
+            }
+            renderer_alloc.free(iregs);
+        } else {
+            var iCopy = std.mem.zeroes(c.VkBufferCopy);
+            iCopy.srcOffset = vertexStagingSize;
+            iCopy.dstOffset = 0;
+            iCopy.size = indexBufferSize;
+            c.vkCmdCopyBuffer(commandBuffer, stagingBuffer.handle, indexBufferObj.handle, 1, &iCopy);
+        }
     }
 
-    _ = c.vkEndCommandBuffer(commandBuffer);
+    if (c.vkEndCommandBuffer(commandBuffer) != c.VK_SUCCESS) {
+        c.vkFreeCommandBuffers(device, commandPool, 1, &commandBuffer);
+        buffer_mgr.vk_buffer_destroy(&stagingBuffer, device, @ptrCast(allocator), null);
+        buffer_mgr.vk_buffer_destroy(&vertexBufferObj, device, @ptrCast(allocator), null);
+        if (totalIndices > 0) buffer_mgr.vk_buffer_destroy(&indexBufferObj, device, @ptrCast(allocator), null);
+        return false;
+    }
 
     // Submit and Wait (Queue Idle is simplest here and robust)
     var submitInfo = std.mem.zeroes(c.VkSubmitInfo);
@@ -451,7 +444,13 @@ fn create_pbr_mesh_buffers(pipeline: *types.VulkanPBRPipeline, device: c.VkDevic
     submitInfo.commandBufferCount = 1;
     submitInfo.pCommandBuffers = &commandBuffer;
 
-    _ = c.vkQueueSubmit(graphicsQueue, 1, &submitInfo, null);
+    if (c.vkQueueSubmit(graphicsQueue, 1, &submitInfo, null) != c.VK_SUCCESS) {
+        c.vkFreeCommandBuffers(device, commandPool, 1, &commandBuffer);
+        buffer_mgr.vk_buffer_destroy(&stagingBuffer, device, @ptrCast(allocator), null);
+        buffer_mgr.vk_buffer_destroy(&vertexBufferObj, device, @ptrCast(allocator), null);
+        if (totalIndices > 0) buffer_mgr.vk_buffer_destroy(&indexBufferObj, device, @ptrCast(allocator), null);
+        return false;
+    }
     _ = c.vkQueueWaitIdle(graphicsQueue);
 
     c.vkFreeCommandBuffers(device, commandPool, 1, &commandBuffer);

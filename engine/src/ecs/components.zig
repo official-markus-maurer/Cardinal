@@ -35,6 +35,13 @@ pub const MeshRenderer = struct {
     receive_shadows: bool = true,
 };
 
+pub const Terrain = struct {
+    size: math.Vec2 = .{ .x = 64.0, .y = 64.0 },
+    resolution: u32 = 128,
+    model_id: u32 = 0,
+    mesh_index: u32 = 0,
+};
+
 /// Light category.
 pub const LightType = enum {
     Directional,
@@ -138,6 +145,7 @@ pub const NodeType = enum {
     Marker3D,
     Camera3D,
     MeshInstance3D,
+    Terrain3D,
     DirectionalLight3D,
     PointLight3D,
     SpotLight3D,

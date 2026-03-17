@@ -34,18 +34,24 @@ fn begin_single_time_commands(device: c.VkDevice, commandPool: c.VkCommandPool) 
     allocInfo.commandBufferCount = 1;
 
     var commandBuffer: c.VkCommandBuffer = null;
-    _ = c.vkAllocateCommandBuffers(device, &allocInfo, &commandBuffer);
+    if (c.vkAllocateCommandBuffers(device, &allocInfo, &commandBuffer) != c.VK_SUCCESS or commandBuffer == null) {
+        return null;
+    }
 
     var beginInfo = std.mem.zeroes(c.VkCommandBufferBeginInfo);
     beginInfo.sType = c.VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
     beginInfo.flags = c.VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
 
-    _ = c.vkBeginCommandBuffer(commandBuffer, &beginInfo);
+    if (c.vkBeginCommandBuffer(commandBuffer, &beginInfo) != c.VK_SUCCESS) {
+        c.vkFreeCommandBuffers(device, commandPool, 1, &commandBuffer);
+        return null;
+    }
     return commandBuffer;
 }
 
 /// Ends and submits a one-shot command buffer, signaling the shared timeline semaphore.
 fn end_single_time_commands(device: c.VkDevice, commandPool: c.VkCommandPool, queue: c.VkQueue, commandBuffer: c.VkCommandBuffer, vulkan_state: *types.VulkanState) void {
+    if (commandBuffer == null) return;
     const result = c.vkEndCommandBuffer(commandBuffer);
     if (result != c.VK_SUCCESS) {
         buf_log.err("CMD_END_FAILED: Failed to end command buffer {any}: {d}", .{ commandBuffer, result });
@@ -90,7 +96,7 @@ fn end_single_time_commands(device: c.VkDevice, commandPool: c.VkCommandPool, qu
         submit_info.signalSemaphoreInfoCount = 1;
         submit_info.pSignalSemaphoreInfos = &signal_semaphore_info;
 
-        const submit_result = vulkan_state.context.vkQueueSubmit2.?(queue, 1, &submit_info, null);
+        const submit_result = vk_sync_manager.vulkan_sync_manager_submit_queue2(queue, 1, @ptrCast(&submit_info), null, vulkan_state.context.vkQueueSubmit2);
         if (submit_result != c.VK_SUCCESS) {
             buf_log.err("CMD_SUBMIT_FAILED: Failed to submit command buffer {any}: {d}", .{ commandBuffer, submit_result });
             buf_log.warn("CMD_LEAK_WARNING: Command buffer {any} may leak due to submit failure - cannot free while potentially in pending state", .{commandBuffer});
