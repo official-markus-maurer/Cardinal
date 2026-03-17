@@ -3,8 +3,6 @@
 //! Provides synchronous and async-capable texture loading for common formats via stb_image, DDS,
 //! and TinyEXR. Textures are typically backed by a `ref_counting.CardinalRefCountedResource` so
 //! they can be shared across scenes/materials.
-//!
-//! TODO: Split decode backends (stb/dds/exr) into separate modules to reduce compile cost.
 const std = @import("std");
 const memory = @import("../core/memory.zig");
 const log = @import("../core/log.zig");
@@ -12,31 +10,12 @@ const ref_counting = @import("../core/ref_counting.zig");
 const async_loader = @import("../core/async_loader.zig");
 const resource_state = @import("../core/resource_state.zig");
 const dds_loader = @import("dds_loader.zig");
-
-/// Vulkan format constants used by the decoders.
-const VK_FORMAT_UNDEFINED = 0;
-const VK_FORMAT_R8G8B8A8_SRGB = 43;
-const VK_FORMAT_R32G32B32A32_SFLOAT = 109;
+const texture_types = @import("texture_types.zig");
+const decode_stb = @import("texture_decode_stb.zig");
+const decode_exr = @import("texture_decode_exr.zig");
+const vk_formats = @import("../renderer/vulkan_format_constants.zig");
 
 const texture_log = log.ScopedLogger("TEXTURE");
-
-/// stb_image entrypoints.
-extern fn stbi_load(filename: [*]const u8, x: *c_int, y: *c_int, channels_in_file: *c_int, desired_channels: c_int) ?[*]u8;
-extern fn stbi_image_free(retval_from_stbi_load: ?*anyopaque) void;
-extern fn stbi_failure_reason() ?[*]const u8;
-extern fn stbi_set_flip_vertically_on_load(flag_true_if_should_flip: c_int) void;
-extern fn stbi_is_hdr(filename: [*]const u8) c_int;
-extern fn stbi_loadf(filename: [*]const u8, x: *c_int, y: *c_int, channels_in_file: *c_int, desired_channels: c_int) ?[*]f32;
-extern fn stbi_load_from_memory(buffer: [*]const u8, len: c_int, x: *c_int, y: *c_int, channels_in_file: *c_int, desired_channels: c_int) ?[*]u8;
-extern fn stbi_is_hdr_from_memory(buffer: [*]const u8, len: c_int) c_int;
-extern fn stbi_loadf_from_memory(buffer: [*]const u8, len: c_int, x: *c_int, y: *c_int, channels_in_file: *c_int, desired_channels: c_int) ?[*]f32;
-
-/// TinyEXR entrypoints.
-extern fn LoadEXR(out_rgba: *?[*]f32, width: *c_int, height: *c_int, filename: [*]const u8, err: *?[*]const u8) c_int;
-extern fn IsEXR(filename: [*]const u8) c_int;
-extern fn LoadEXRFromMemory(out_rgba: *?[*]f32, width: *c_int, height: *c_int, memory: [*]const u8, size: usize, err: *?[*]const u8) c_int;
-extern fn IsEXRFromMemory(memory: [*]const u8, size: usize) c_int;
-extern fn FreeEXRErrorMessage(msg: [*]const u8) void;
 
 const builtin = @import("builtin");
 /// Returns the current OS thread id.
@@ -49,18 +28,7 @@ fn getCurrentThreadId() u32 {
     }
 }
 
-pub const TextureData = extern struct {
-    data: ?[*]u8,
-    width: u32,
-    height: u32,
-    channels: u32,
-    /// Explicit u32 for ABI stability.
-    is_hdr: u32,
-    /// Vulkan format (0 = undefined/auto).
-    format: u32,
-    /// Size in bytes (0 means infer from dimensions).
-    data_size: u64,
-};
+pub const TextureData = texture_types.TextureData;
 
 pub const TextureCacheStats = extern struct {
     entry_count: u32,
@@ -103,7 +71,7 @@ var g_placeholder_texture = TextureData{
     .height = 1,
     .channels = 4,
     .is_hdr = 0,
-    .format = VK_FORMAT_UNDEFINED,
+    .format = vk_formats.VK_FORMAT_UNDEFINED,
     .data_size = 4,
 };
 
@@ -156,10 +124,6 @@ pub export fn texture_load_from_disk(path: [*:0]const u8, out_texture: *TextureD
 ///
 /// Format detection is based on magic bytes for DDS and EXR before falling back to stb_image.
 pub export fn texture_load_from_memory(data: [*]const u8, size: usize, out_texture: *TextureData) bool {
-    var w: c_int = 0;
-    var h: c_int = 0;
-    var c: c_int = 0;
-
     var is_dds = false;
     if (size >= 4) {
         if (data[0] == 0x44 and data[1] == 0x44 and data[2] == 0x53 and data[3] == 0x20) {
@@ -186,50 +150,14 @@ pub export fn texture_load_from_memory(data: [*]const u8, size: usize, out_textu
     }
 
     if (is_exr) {
-        var exr_data: ?[*]f32 = null;
-        var err: ?[*]const u8 = null;
-        const res = LoadEXRFromMemory(&exr_data, &w, &h, data, size, &err);
-
-        if (res != 0) {
-            if (err) |e| {
-                const e_span = @as([*:0]const u8, @ptrCast(e));
-                texture_log.err("TinyEXR memory load failed: {s}", .{std.mem.span(e_span)});
-                FreeEXRErrorMessage(e);
-            }
-            return false;
+        if (decode_exr.decode_from_memory(data, size, out_texture)) {
+            out_texture.format = vk_formats.VK_FORMAT_R32G32B32A32_SFLOAT;
+            return true;
         }
-
-        if (w <= 0 or h <= 0 or w > 16384 or h > 16384) {
-            texture_log.err("Invalid dimensions from EXR memory load: {d}x{d}", .{ w, h });
-            if (exr_data) |ptr| std.c.free(ptr); // TinyEXR uses malloc/free
-            return false;
-        }
-
-        out_texture.data = @ptrCast(exr_data);
-        out_texture.width = @intCast(w);
-        out_texture.height = @intCast(h);
-        out_texture.channels = 4;
-        out_texture.is_hdr = 1;
-        out_texture.data_size = @as(u64, out_texture.width) * out_texture.height * 16; // 4 floats * 4 bytes
-        return true;
+        return false;
     }
 
-    const is_hdr = (stbi_is_hdr_from_memory(data, @intCast(size)) != 0);
-
-    var pixels: ?*anyopaque = null;
-    if (is_hdr) {
-        pixels = @ptrCast(stbi_loadf_from_memory(data, @intCast(size), &w, &h, &c, 4));
-    } else {
-        pixels = @ptrCast(stbi_load_from_memory(data, @intCast(size), &w, &h, &c, 4));
-    }
-
-    if (pixels == null) {
-        const reason = stbi_failure_reason();
-        texture_log.err("Failed to load texture from memory (Size: {d})", .{size});
-        if (reason) |r| {
-            const r_c: [*:0]const u8 = @ptrCast(r);
-            texture_log.err("STB failure reason: {s}", .{std.mem.span(r_c)});
-        }
+    if (!decode_stb.decode_from_memory(data, size, out_texture)) {
         if (size >= 4) {
             texture_log.err("Magic Bytes: {X:0>2} {X:0>2} {X:0>2} {X:0>2}", .{ data[0], data[1], data[2], data[3] });
             if (data[0] == 0x89 and data[1] == 0x50 and data[2] == 0x4E and data[3] == 0x47) {
@@ -244,24 +172,6 @@ pub export fn texture_load_from_memory(data: [*]const u8, size: usize, out_textu
         }
         return false;
     }
-
-    if (w <= 0 or h <= 0 or w > 16384 or h > 16384) {
-        texture_log.err("Invalid dimensions from memory load: {d}x{d}", .{ w, h });
-        stbi_image_free(pixels);
-        return false;
-    }
-
-    out_texture.data = @ptrCast(pixels);
-    out_texture.width = @intCast(w);
-    out_texture.height = @intCast(h);
-    out_texture.channels = 4;
-    out_texture.is_hdr = if (is_hdr) 1 else 0;
-    out_texture.format = if (is_hdr) VK_FORMAT_R32G32B32A32_SFLOAT else VK_FORMAT_R8G8B8A8_SRGB;
-    const pixel_size: u64 = if (is_hdr) 16 else 4;
-    out_texture.data_size = @as(u64, out_texture.width) * out_texture.height * pixel_size;
-
-    texture_log.debug("STB loaded: {d}x{d}, Size: {d}, Format: {d} (is_hdr: {any})", .{ out_texture.width, out_texture.height, out_texture.data_size, out_texture.format, is_hdr });
-
     return true;
 }
 
@@ -601,7 +511,7 @@ export fn texture_data_destructor(resource: ?*anyopaque) callconv(.c) void {
 
     if (texture.data) |data| {
         texture_log.debug("Freeing texture pixel data at {*}", .{data});
-        stbi_image_free(data);
+        decode_stb.free_pixels(data);
         texture.data = null;
         texture_log.debug("Texture pixel data freed and nullified", .{});
     } else {
@@ -623,7 +533,7 @@ pub export fn texture_data_free(texture: ?*TextureData) void {
     texture_log.debug("Freeing texture data at {*}", .{t});
 
     if (t.data) |data| {
-        stbi_image_free(data);
+        decode_stb.free_pixels(data);
         t.data = null;
     }
 

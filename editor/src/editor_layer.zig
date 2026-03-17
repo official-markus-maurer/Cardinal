@@ -1,8 +1,6 @@
 //! Editor layer.
 //!
 //! Owns editor state, panels, and per-frame UI orchestration on top of the engine runtime.
-//!
-//! TODO: Split this file into smaller panel/system coordinators to reduce rebuild time.
 const std = @import("std");
 const engine = @import("cardinal_engine");
 const math = engine.math;
@@ -34,6 +32,7 @@ const performance_panel = @import("panels/performance_panel.zig");
 const input_system = @import("systems/input.zig");
 const camera_controller = @import("systems/camera_controller.zig");
 const scene_io = @import("systems/scene_io.zig");
+const scene_sync = @import("systems/editor_scene_sync.zig");
 const project_manager = @import("panels/project_manager.zig");
 
 const c = @import("c.zig").c;
@@ -46,112 +45,6 @@ var initialized: bool = false;
 var device_recovery_failed: bool = false;
 var imgui_context: ?*anyopaque = null;
 var world_matrix_cache: std.AutoHashMapUnmanaged(u64, math.Mat4) = .{};
-var override_cache: std.AutoHashMapUnmanaged(u64, bool) = .{};
-
-/// Syncs the active skybox asset from ECS into runtime state.
-fn sync_skybox_from_ecs() void {
-    var view = state.runtime.registry.view(engine.ecs_components.Skybox);
-    var it = view.iterator();
-    const entry = it.next() orelse return;
-    const sky = entry.component;
-    const path = sky.slice();
-    if (path.len == 0) return;
-
-    if (state.runtime.skybox_path) |p| {
-        if (std.mem.eql(u8, std.mem.span(p.ptr), path)) return;
-        allocator.free(p);
-        state.runtime.skybox_path = null;
-    }
-
-    state.runtime.skybox_path = allocator.dupeZ(u8, path) catch return;
-}
-
-/// Pushes ECS-driven transforms into `state.combined_scene` so the renderer updates mesh placement.
-fn sync_mesh_transforms_from_ecs() void {
-    if (!state.runtime.scene_loaded) return;
-    if (state.runtime.scene_upload_pending) return;
-    if (state.runtime.combined_scene.meshes == null or state.runtime.combined_scene.mesh_count == 0) return;
-    const meshes = state.runtime.combined_scene.meshes.?;
-
-    world_matrix_cache.clearRetainingCapacity();
-
-    var view = state.runtime.registry.view(engine.ecs_components.MeshRenderer);
-    var it = view.iterator();
-    while (it.next()) |entry| {
-        if (state.runtime.transform_overrides.get(entry.entity.id) == null) continue;
-        const mr = entry.component;
-        const mesh_index = mr.mesh.index;
-        if (mesh_index >= state.runtime.combined_scene.mesh_count) continue;
-
-        const m = compute_entity_world_matrix(entry.entity);
-        @memcpy(meshes[mesh_index].transform[0..16], m.data[0..16]);
-    }
-}
-
-/// Computes the world transform for `entity` by walking `Hierarchy` and composing `Transform`.
-fn compute_entity_world_matrix(entity: engine.ecs_entity.Entity) engine.math.Mat4 {
-    return compute_entity_world_matrix_cached(entity, 0);
-}
-
-/// Cached variant of `compute_entity_world_matrix` to avoid repeated hierarchy walks.
-fn compute_entity_world_matrix_cached(entity: engine.ecs_entity.Entity, depth: u32) engine.math.Mat4 {
-    if (world_matrix_cache.get(entity.id)) |m| return m;
-    if (depth > 2048) return math.Mat4.identity();
-
-    var parent_world = math.Mat4.identity();
-    if (state.runtime.registry.get(engine.ecs_components.Hierarchy, entity)) |h| {
-        if (h.parent) |p| {
-            parent_world = compute_entity_world_matrix_cached(p, depth + 1);
-        }
-    }
-
-    var world = parent_world;
-    if (state.runtime.registry.get(engine.ecs_components.Transform, entity)) |t| {
-        const local = math.Mat4.fromTRS(t.position, t.rotation, t.scale);
-        world = parent_world.mul(local);
-    }
-
-    world_matrix_cache.put(allocator, entity.id, world) catch {};
-    return world;
-}
-
-/// Syncs per-mesh visibility flags from ECS into the combined scene.
-fn sync_mesh_visibility_from_ecs() void {
-    if (!state.runtime.scene_loaded) return;
-    if (state.runtime.scene_upload_pending) return;
-    if (state.runtime.combined_scene.meshes == null or state.runtime.combined_scene.mesh_count == 0) return;
-    const meshes = state.runtime.combined_scene.meshes.?;
-
-    var i: u32 = 0;
-    while (i < state.runtime.combined_scene.mesh_count) : (i += 1) {
-        meshes[i].visible = false;
-    }
-
-    var view = state.runtime.registry.view(engine.ecs_components.MeshRenderer);
-    var it = view.iterator();
-    while (it.next()) |entry| {
-        const mr = entry.component;
-        const mesh_index = mr.mesh.index;
-        if (mesh_index >= state.runtime.combined_scene.mesh_count) continue;
-        meshes[mesh_index].visible = mr.visible;
-    }
-}
-
-/// Rebuilds mesh-index -> entity maps from ECS `MeshRenderer` components.
-fn sync_mesh_index_maps_from_ecs() void {
-    if (!state.runtime.scene_loaded) return;
-
-    state.runtime.mesh_entity_by_mesh_index.clearRetainingCapacity();
-    state.runtime.mesh_owner_by_mesh_index.clearRetainingCapacity();
-
-    var view = state.runtime.registry.view(engine.ecs_components.MeshRenderer);
-    var it = view.iterator();
-    while (it.next()) |entry| {
-        const mr = entry.component;
-        state.runtime.mesh_entity_by_mesh_index.put(allocator, mr.mesh.index, entry.entity.id) catch {};
-        state.runtime.mesh_owner_by_mesh_index.put(allocator, mr.mesh.index, entry.entity.id) catch {};
-    }
-}
 
 fn check_loading_status() void {
     if (state.runtime.loading_tasks.items.len == 0) {
@@ -287,7 +180,7 @@ fn draw_pbr_settings_panel() void {
                 var light_changed = false;
 
                 state.runtime.enable_directional_light = true;
-                state.runtime.light.type = 0; // Directional
+                state.runtime.light.type = 0;
 
                 c.imgui_bridge_text("Directional Light (Sun)");
                 if (c.imgui_bridge_drag_float3("Direction", @ptrCast(&state.runtime.light.direction), 0.01, -1.0, 1.0, "%.3f", 0)) light_changed = true;
@@ -439,7 +332,7 @@ pub fn init(win_ptr: *window.CardinalWindow, rnd_ptr: *types.CardinalRenderer, r
         .range = 100.0,
         .inner_cone = 0.0,
         .outer_cone = 0.0,
-        .type = 0, // Directional
+        .type = 0,
     };
 
     renderer.cardinal_renderer_set_debug_grid(rnd_ptr, state.ui.show_grid_axes);
@@ -781,7 +674,6 @@ pub fn shutdown() void {
 
     state.runtime.config_manager.deinit();
     world_matrix_cache.deinit(allocator);
-    override_cache.deinit(allocator);
 
     initialized = false;
 }
@@ -792,7 +684,6 @@ pub fn update() void {
         c.imgui_bridge_set_current_context(imgui_context);
     }
 
-    // Project Manager Modal (Blocking)
     if (!state.ui.project_loaded) {
         c.imgui_bridge_impl_vulkan_new_frame();
         c.imgui_bridge_impl_glfw_new_frame();
@@ -802,11 +693,10 @@ pub fn update() void {
         return;
     }
 
-    // Process async callbacks (frees fire-and-forget tasks like textures)
     _ = async_loader.cardinal_async_process_completed_tasks(0);
 
     check_loading_status();
-    sync_skybox_from_ecs();
+    scene_sync.sync_skybox_from_ecs(&state, allocator);
 
     if (state.runtime.model_manager.scene_dirty) {
         renderer.cardinal_renderer_clear_scene(state.runtime.renderer);
@@ -861,15 +751,12 @@ pub fn update() void {
 
     const dt = c.imgui_bridge_get_io_delta_time();
 
-    // Update animation system if scene is loaded
     if (state.runtime.scene_loaded and state.runtime.combined_scene.animation_system != null) {
         const anim_sys_opaque = state.runtime.combined_scene.animation_system.?;
         const anim_sys = @as(*animation.CardinalAnimationSystem, @ptrCast(@alignCast(anim_sys_opaque)));
 
         animation.cardinal_animation_system_update(anim_sys, state.runtime.combined_scene.all_nodes, state.runtime.combined_scene.all_node_count, dt);
 
-        // Propagate animation changes to world transforms
-        // We iterate through models to apply model transforms and update mesh transforms
         if (state.runtime.model_manager.models) |models| {
             var mesh_offset: u32 = 0;
             var m_idx: u32 = 0;
@@ -879,18 +766,13 @@ pub fn update() void {
 
                 const scn = &model.scene;
 
-                // 1. Update root nodes with model transform
-                // This propagates down the hierarchy, updating world_transform for all nodes
                 if (scn.root_nodes) |roots| {
                     var r: u32 = 0;
                     while (r < scn.root_node_count) : (r += 1) {
-                        // Pass model transform as parent to bake it into world transform
                         scene.cardinal_scene_node_update_transforms(roots[r], &model.transform);
                     }
                 }
 
-                // 2. Update mesh transforms from node world transforms
-                // We need to iterate nodes that have meshes
                 if (scn.all_nodes) |nodes| {
                     var n: u32 = 0;
                     while (n < scn.all_node_count) : (n += 1) {
@@ -903,8 +785,6 @@ pub fn update() void {
 
                                     if (combined_idx < state.runtime.combined_scene.mesh_count) {
                                         const mesh = &state.runtime.combined_scene.meshes.?[combined_idx];
-                                        // Update mesh transform to match node world transform
-                                        // Note: model transform is already baked into node world transform by step 1
                                         @memcpy(&mesh.transform, &node.world_transform);
                                     }
                                 }
@@ -917,7 +797,6 @@ pub fn update() void {
             }
         }
 
-        // Sync editor animation time with animation system state
         if (state.ui.selected_animation >= 0 and state.ui.selected_animation < anim_sys.animation_count) {
             var i: u32 = 0;
             while (i < anim_sys.state_count) : (i += 1) {
@@ -933,8 +812,8 @@ pub fn update() void {
         }
     }
 
-    sync_mesh_visibility_from_ecs();
-    sync_mesh_transforms_from_ecs();
+    scene_sync.sync_mesh_visibility_from_ecs(&state);
+    scene_sync.sync_mesh_transforms_from_ecs(&state, allocator, &world_matrix_cache);
 
     if (state.runtime.scene_loaded and state.runtime.combined_scene.animation_system != null) {
         const anim_sys_opaque = state.runtime.combined_scene.animation_system.?;
@@ -968,14 +847,11 @@ pub fn update() void {
             }
         }
     }
-    sync_mesh_index_maps_from_ecs();
+    scene_sync.sync_mesh_index_maps_from_ecs(&state, allocator);
 
-    // Systems update
     input_system.update(&state);
     camera_controller.update(&state, dt);
 
-    // --- Main DockSpace ---
-    // Create a full-screen window for the dockspace
     const window_flags = c.ImGuiWindowFlags_MenuBar | c.ImGuiWindowFlags_NoTitleBar |
         c.ImGuiWindowFlags_NoCollapse | c.ImGuiWindowFlags_NoResize |
         c.ImGuiWindowFlags_NoMove | c.ImGuiWindowFlags_NoBringToFrontOnFocus |
@@ -984,7 +860,6 @@ pub fn update() void {
 
     const viewport = c.imgui_bridge_get_main_viewport().?;
 
-    // Use accessors since ImGuiViewport is opaque in Zig
     var work_pos: c.ImVec2 = undefined;
     var work_size: c.ImVec2 = undefined;
     c.imgui_bridge_viewport_get_work_pos(viewport, &work_pos);
@@ -998,19 +873,15 @@ pub fn update() void {
 
     const dockspace_open = c.imgui_bridge_begin("DockSpace", null, window_flags);
     c.imgui_bridge_pop_style_var(1);
-    defer c.imgui_bridge_end(); // Ensure End() is always called
+    defer c.imgui_bridge_end();
 
     if (dockspace_open) {
-        // DockSpace
         const dock_id = c.imgui_bridge_get_id("EditorDockSpace");
         const dock_flags = c.ImGuiDockNodeFlags_PassthruCentralNode;
         c.imgui_bridge_dock_space(dock_id, &zero_vec, dock_flags);
 
-        // Update Selection System (Gizmos)
-        // Drawn into the DockSpace window (which has PassthruCentralNode), so it appears over the scene
         selection_system.update(&state);
 
-        // Main Menu Bar
         if (c.imgui_bridge_begin_menu_bar()) {
             if (c.imgui_bridge_begin_menu("File", true)) {
                 if (c.imgui_bridge_menu_item("New Project...", null, false, true)) {
@@ -1027,11 +898,7 @@ pub fn update() void {
                     load_scene();
                 }
                 c.imgui_bridge_separator();
-                if (c.imgui_bridge_menu_item("Exit", "Ctrl+Q", false, true)) {
-                    // Exit logic - set window should close?
-                    // We don't have direct access to window.should_close from here cleanly without externs or helpers
-                    // But usually main loop handles this. For now just placeholder.
-                }
+                if (c.imgui_bridge_menu_item("Exit", "Ctrl+Q", false, true)) {}
                 c.imgui_bridge_end_menu();
             }
 
@@ -1055,7 +922,6 @@ pub fn update() void {
             c.imgui_bridge_end_menu_bar();
         }
 
-        // Panels
         hierarchy_panel.draw_hierarchy_panel(&state);
         content_browser.draw_asset_browser_panel(&state, allocator);
         inspector.draw_inspector_panel(&state);
@@ -1076,8 +942,6 @@ pub fn update() void {
                 c.imgui_bridge_get_window_size(&win_size);
 
                 if (state.ui.show_grid_axes) {
-                    // Grid is rendered in world-space by Vulkan; only draw axes gizmo here.
-
                     const cam = state.runtime.camera;
                     const world_up = Vec3{ .x = 0.0, .y = 1.0, .z = 0.0 };
                     var forward = Vec3{
@@ -1150,8 +1014,6 @@ pub fn update() void {
             }
         }
 
-        // Status Bar (as a simple window for now, or part of dockspace)
-        // Note: Begin() must be matched with End() regardless of return value
         const status_open = c.imgui_bridge_begin("Status", null, 0);
         defer c.imgui_bridge_end();
 
@@ -1159,13 +1021,11 @@ pub fn update() void {
             c.imgui_bridge_text("Status: %s", &state.ui.status_msg);
         }
     }
-    // c.imgui_bridge_end(); // End DockSpace window (handled by defer)
 }
 
 pub fn render() void {
     if (!initialized) return;
     c.imgui_bridge_render();
-    // Render call is handled by callback
 }
 
 pub fn process_pending_uploads() void {
@@ -1185,12 +1045,8 @@ pub fn process_pending_uploads() void {
 
             if (sl.node_index < state.runtime.combined_scene.all_node_count and state.runtime.combined_scene.all_nodes != null) {
                 if (state.runtime.combined_scene.all_nodes.?[sl.node_index]) |node| {
-                    // Extract direction from world transform (assuming -Z is forward)
                     const m = node.world_transform;
-                    // Column 2 is Z axis: m[8], m[9], m[10]
-                    // Direction = -Z
                     state.runtime.light.direction = .{ .x = -m[8], .y = -m[9], .z = -m[10] };
-                    // Position is column 3: m[12], m[13], m[14]
                     state.runtime.light.position = .{ .x = m[12], .y = m[13], .z = m[14] };
                     log.cardinal_log_info("Updated light transform from node {d}: Pos=({d:.2},{d:.2},{d:.2})", .{ sl.node_index, state.runtime.light.position.x, state.runtime.light.position.y, state.runtime.light.position.z });
                 }
@@ -1204,10 +1060,8 @@ pub fn process_pending_uploads() void {
         var pbr_lights: [types.MAX_LIGHTS]types.PBRLight = undefined;
         var light_count: u32 = 0;
 
-        // 1. Add Manual Directional Light (if enabled)
         if (state.runtime.enable_directional_light) {
             pbr_lights[light_count] = std.mem.zeroes(types.PBRLight);
-            // Ensure type is Directional (0)
             pbr_lights[light_count].lightDirection = .{ state.runtime.light.direction.x, state.runtime.light.direction.y, state.runtime.light.direction.z, 0.0 };
             pbr_lights[light_count].lightPosition = .{ state.runtime.light.position.x, state.runtime.light.position.y, state.runtime.light.position.z, 0.0 };
             pbr_lights[light_count].lightColor = .{ state.runtime.light.color.x, state.runtime.light.color.y, state.runtime.light.color.z, state.runtime.light.intensity };
@@ -1215,15 +1069,11 @@ pub fn process_pending_uploads() void {
             light_count += 1;
         }
 
-        // 2. Add Scene Lights (Point/Spot)
         if (state.runtime.combined_scene.light_count > 0 and state.runtime.combined_scene.lights != null) {
             var i: u32 = 0;
             while (i < state.runtime.combined_scene.light_count and light_count < types.MAX_LIGHTS) : (i += 1) {
                 const sl = &state.runtime.combined_scene.lights.?[i];
 
-                // User requested that manual controls be used for Directional Light (Sun),
-                // and scene lights be used for Point/Spot.
-                // We skip scene directional lights to ensure the manual sun is the only one.
                 if (sl.type == .DIRECTIONAL) continue;
 
                 var pos = math.Vec3{ .x = 0, .y = 0, .z = 0 };
@@ -1238,13 +1088,12 @@ pub fn process_pending_uploads() void {
                 }
 
                 var intensity = sl.intensity;
-                if (intensity < 100.0) intensity *= 100.0; // Auto-boost
+                if (intensity < 100.0) intensity *= 100.0;
 
                 pbr_lights[light_count] = std.mem.zeroes(types.PBRLight);
                 pbr_lights[light_count].lightDirection = .{ dir.x, dir.y, dir.z, @floatFromInt(@intFromEnum(sl.type)) };
                 pbr_lights[light_count].lightPosition = .{ pos.x, pos.y, pos.z, 0.0 };
                 pbr_lights[light_count].lightColor = .{ sl.color[0], sl.color[1], sl.color[2], intensity };
-                // Set params (range, inner, outer)
                 pbr_lights[light_count].params = .{ sl.range, @cos(sl.inner_cone_angle), @cos(sl.outer_cone_angle), 0.0 };
 
                 light_count += 1;
@@ -1254,8 +1103,6 @@ pub fn process_pending_uploads() void {
         if (light_count > 0) {
             renderer.cardinal_renderer_set_lights(state.runtime.renderer, &pbr_lights, light_count);
         } else {
-            // Fallback if no lights enabled (prevent crash or undefined state)
-            // Just send 0 lights
             renderer.cardinal_renderer_set_lights(state.runtime.renderer, null, 0);
         }
     }

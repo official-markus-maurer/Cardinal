@@ -3,8 +3,6 @@
 //! Provides a small thread-safe cache of meshes keyed by identifier, backed by the ref-counting
 //! registry. Mesh decoding is currently delegated to scene loaders (glTF/NIF) that populate
 //! `scene.CardinalMesh` data.
-//!
-//! TODO: Replace FIFO eviction with a real LRU and track memory usage per mesh.
 const std = @import("std");
 const scene = @import("scene.zig");
 const ref_counting = @import("../core/ref_counting.zig");
@@ -19,26 +17,34 @@ const mesh_log = log.ScopedLogger("MESH");
 const MeshCacheEntry = struct {
     mesh_id: [:0]const u8,
     resource: *ref_counting.CardinalRefCountedResource,
+    mesh_bytes: usize,
+    prev: ?*MeshCacheEntry,
     next: ?*MeshCacheEntry,
 };
 
 /// Mesh cache protected by a mutex.
 const MeshCache = struct {
-    entries: ?*MeshCacheEntry,
+    head: ?*MeshCacheEntry,
+    tail: ?*MeshCacheEntry,
     entry_count: u32,
     max_entries: u32,
     cache_hits: u32,
     cache_misses: u32,
+    total_bytes: usize,
+    peak_bytes: usize,
     initialized: bool,
     mutex: std.Thread.Mutex,
 };
 
 var g_mesh_cache: MeshCache = .{
-    .entries = null,
+    .head = null,
+    .tail = null,
     .entry_count = 0,
     .max_entries = 0,
     .cache_hits = 0,
     .cache_misses = 0,
+    .total_bytes = 0,
+    .peak_bytes = 0,
     .initialized = false,
     .mutex = .{},
 };
@@ -52,15 +58,71 @@ fn mesh_cache_init(max_entries: u32) bool {
         return true;
     }
 
-    g_mesh_cache.entries = null;
+    g_mesh_cache.head = null;
+    g_mesh_cache.tail = null;
     g_mesh_cache.entry_count = 0;
     g_mesh_cache.max_entries = max_entries;
     g_mesh_cache.cache_hits = 0;
     g_mesh_cache.cache_misses = 0;
+    g_mesh_cache.total_bytes = 0;
+    g_mesh_cache.peak_bytes = 0;
     g_mesh_cache.initialized = true;
 
     mesh_log.info_s(.{ .max_entries = max_entries }, "Cache initialized", .{});
     return true;
+}
+
+fn entry_detach(entry: *MeshCacheEntry) void {
+    if (entry.prev) |p| {
+        p.next = entry.next;
+    } else {
+        g_mesh_cache.head = entry.next;
+    }
+    if (entry.next) |n| {
+        n.prev = entry.prev;
+    } else {
+        g_mesh_cache.tail = entry.prev;
+    }
+    entry.prev = null;
+    entry.next = null;
+}
+
+fn entry_push_front(entry: *MeshCacheEntry) void {
+    entry.prev = null;
+    entry.next = g_mesh_cache.head;
+    if (g_mesh_cache.head) |h| {
+        h.prev = entry;
+    } else {
+        g_mesh_cache.tail = entry;
+    }
+    g_mesh_cache.head = entry;
+}
+
+fn entry_mesh_bytes(resource: *ref_counting.CardinalRefCountedResource) usize {
+    const mesh: *scene.CardinalMesh = @ptrCast(@alignCast(resource.resource.?));
+    var bytes: usize = @sizeOf(scene.CardinalMesh);
+    if (mesh.vertices != null and mesh.vertex_count > 0) {
+        bytes += @as(usize, @intCast(mesh.vertex_count)) * @sizeOf(scene.CardinalVertex);
+    }
+    if (mesh.indices != null and mesh.index_count > 0) {
+        bytes += @as(usize, @intCast(mesh.index_count)) * @sizeOf(u32);
+    }
+    return bytes;
+}
+
+fn evict_tail_if_needed(allocator: *memory.CardinalAllocator) void {
+    if (g_mesh_cache.max_entries == 0) return;
+    while (g_mesh_cache.entry_count >= g_mesh_cache.max_entries) {
+        const to_remove = g_mesh_cache.tail orelse return;
+        entry_detach(to_remove);
+
+        memory.cardinal_free(allocator, @ptrCast(@constCast(to_remove.mesh_id.ptr)));
+        ref_counting.cardinal_ref_release(to_remove.resource);
+        g_mesh_cache.total_bytes -|= to_remove.mesh_bytes;
+        memory.cardinal_free(allocator, to_remove);
+
+        if (g_mesh_cache.entry_count > 0) g_mesh_cache.entry_count -= 1;
+    }
 }
 
 /// Returns a retained mesh resource if present in cache.
@@ -72,11 +134,15 @@ fn mesh_cache_get(mesh_id: []const u8) ?*ref_counting.CardinalRefCountedResource
         return null;
     }
 
-    var entry = g_mesh_cache.entries;
+    var entry = g_mesh_cache.head;
     while (entry) |e| {
         if (std.mem.eql(u8, e.mesh_id, mesh_id)) {
             if (ref_counting.cardinal_ref_acquire(e.resource.identifier)) |res| {
                 g_mesh_cache.cache_hits += 1;
+                if (g_mesh_cache.head == null or g_mesh_cache.head.?.mesh_id.ptr != e.mesh_id.ptr) {
+                    entry_detach(e);
+                    entry_push_front(e);
+                }
                 return res;
             }
         }
@@ -98,29 +164,19 @@ fn mesh_cache_put(mesh_id: [:0]const u8, resource: *ref_counting.CardinalRefCoun
 
     const allocator = memory.cardinal_get_allocator_for_category(.ASSETS);
 
-    if (g_mesh_cache.entry_count >= g_mesh_cache.max_entries) {
-        var prev: ?*MeshCacheEntry = null;
-        var curr = g_mesh_cache.entries;
-
-        while (curr) |c| {
-            if (c.next == null) break;
-            prev = c;
-            curr = c.next;
-        }
-
-        if (curr) |to_remove| {
-            if (prev) |p| {
-                p.next = null;
-            } else {
-                g_mesh_cache.entries = null;
+    var it = g_mesh_cache.head;
+    while (it) |e| {
+        if (std.mem.eql(u8, e.mesh_id, mesh_id)) {
+            if (g_mesh_cache.head == null or g_mesh_cache.head.?.mesh_id.ptr != e.mesh_id.ptr) {
+                entry_detach(e);
+                entry_push_front(e);
             }
-
-            memory.cardinal_free(allocator, @ptrCast(@constCast(to_remove.mesh_id.ptr)));
-            ref_counting.cardinal_ref_release(to_remove.resource);
-            memory.cardinal_free(allocator, to_remove);
-            g_mesh_cache.entry_count -= 1;
+            return;
         }
+        it = e.next;
     }
+
+    evict_tail_if_needed(allocator);
 
     const new_entry_ptr = memory.cardinal_alloc(allocator, @sizeOf(MeshCacheEntry));
     if (new_entry_ptr == null) return;
@@ -139,9 +195,13 @@ fn mesh_cache_put(mesh_id: [:0]const u8, resource: *ref_counting.CardinalRefCoun
 
     new_entry.resource = resource;
     _ = ref_counting.cardinal_ref_acquire(resource.identifier);
+    new_entry.mesh_bytes = entry_mesh_bytes(resource);
+    g_mesh_cache.total_bytes += new_entry.mesh_bytes;
+    if (g_mesh_cache.total_bytes > g_mesh_cache.peak_bytes) g_mesh_cache.peak_bytes = g_mesh_cache.total_bytes;
 
-    new_entry.next = g_mesh_cache.entries;
-    g_mesh_cache.entries = new_entry;
+    new_entry.prev = null;
+    new_entry.next = null;
+    entry_push_front(new_entry);
     g_mesh_cache.entry_count += 1;
 }
 
@@ -238,7 +298,6 @@ pub export fn mesh_load_with_ref_counting(mesh_data: ?*const scene.CardinalMesh,
         return null;
     }
 
-    // Initialize cache
     if (!g_mesh_cache.initialized) {
         _ = mesh_cache_init(128);
     }
@@ -250,9 +309,8 @@ pub export fn mesh_load_with_ref_counting(mesh_data: ?*const scene.CardinalMesh,
     }
     const mesh_id = mesh_id_slice.?;
     const allocator = memory.cardinal_get_allocator_for_category(.ASSETS);
-    defer memory.cardinal_free(allocator, @ptrCast(@constCast(mesh_id.ptr))); // Free ID at end
+    defer memory.cardinal_free(allocator, @ptrCast(@constCast(mesh_id.ptr)));
 
-    // Try cache
     if (mesh_cache_get(mesh_id)) |ref_resource| {
         const existing_mesh: *scene.CardinalMesh = @ptrCast(@alignCast(ref_resource.resource.?));
         out_mesh.?.* = existing_mesh.*;
@@ -260,7 +318,6 @@ pub export fn mesh_load_with_ref_counting(mesh_data: ?*const scene.CardinalMesh,
         return ref_resource;
     }
 
-    // Try registry
     if (ref_counting.cardinal_ref_acquire(mesh_id.ptr)) |ref_resource| {
         const existing_mesh: *scene.CardinalMesh = @ptrCast(@alignCast(ref_resource.resource.?));
         out_mesh.?.* = existing_mesh.*;
@@ -269,7 +326,6 @@ pub export fn mesh_load_with_ref_counting(mesh_data: ?*const scene.CardinalMesh,
         return ref_resource;
     }
 
-    // Create deep copy
     const mesh_copy_ptr = memory.cardinal_alloc(allocator, @sizeOf(scene.CardinalMesh));
     if (mesh_copy_ptr == null) {
         mesh_log.err("Failed to allocate memory for mesh copy", .{});
@@ -278,7 +334,6 @@ pub export fn mesh_load_with_ref_counting(mesh_data: ?*const scene.CardinalMesh,
     const mesh_copy: *scene.CardinalMesh = @ptrCast(@alignCast(mesh_copy_ptr));
     mesh_copy.* = mesh_data.?.*;
 
-    // Deep copy vertices
     if (mesh_data.?.vertices) |vertices| {
         if (mesh_data.?.vertex_count > 0) {
             const vertex_size = mesh_data.?.vertex_count * @sizeOf(scene.CardinalVertex);
@@ -293,7 +348,6 @@ pub export fn mesh_load_with_ref_counting(mesh_data: ?*const scene.CardinalMesh,
         }
     }
 
-    // Deep copy indices
     if (mesh_data.?.indices) |indices| {
         if (mesh_data.?.index_count > 0) {
             const index_size = mesh_data.?.index_count * @sizeOf(u32);
@@ -309,7 +363,6 @@ pub export fn mesh_load_with_ref_counting(mesh_data: ?*const scene.CardinalMesh,
         }
     }
 
-    // Register
     const ref_resource = ref_counting.cardinal_ref_create(mesh_id.ptr, mesh_copy, @sizeOf(scene.CardinalMesh), mesh_data_destructor);
     if (ref_resource == null) {
         mesh_log.err("Failed to register mesh: {s}", .{mesh_id});
@@ -356,7 +409,6 @@ pub export fn mesh_load_async(mesh_data: ?*const scene.CardinalMesh, priority: a
 
     mesh_log.debug("Starting async load for mesh", .{});
 
-    // In C: return cardinal_async_load_mesh(mesh_data, priority, callback, user_data);
     return async_loader.cardinal_async_load_mesh(mesh_data, priority, callback, user_data);
 }
 
@@ -371,16 +423,18 @@ pub export fn mesh_cache_shutdown_system() callconv(.c) void {
     if (!g_mesh_cache.initialized) return;
 
     const allocator = memory.cardinal_get_allocator_for_category(.ASSETS);
-    var entry = g_mesh_cache.entries;
+    var entry = g_mesh_cache.head;
     while (entry) |e| {
         const next = e.next;
         memory.cardinal_free(allocator, @ptrCast(@constCast(e.mesh_id.ptr)));
         ref_counting.cardinal_ref_release(e.resource);
+        g_mesh_cache.total_bytes -|= e.mesh_bytes;
         memory.cardinal_free(allocator, e);
         entry = next;
     }
 
-    g_mesh_cache.entries = null;
+    g_mesh_cache.head = null;
+    g_mesh_cache.tail = null;
     g_mesh_cache.entry_count = 0;
     g_mesh_cache.initialized = false;
     mesh_log.info("Cache shutdown complete", .{});
@@ -414,16 +468,26 @@ pub export fn mesh_cache_clear() callconv(.c) void {
     if (!g_mesh_cache.initialized) return;
 
     const allocator = memory.cardinal_get_allocator_for_category(.ASSETS);
-    var entry = g_mesh_cache.entries;
+    var entry = g_mesh_cache.head;
     while (entry) |e| {
         const next = e.next;
         memory.cardinal_free(allocator, @ptrCast(@constCast(e.mesh_id.ptr)));
         ref_counting.cardinal_ref_release(e.resource);
+        g_mesh_cache.total_bytes -|= e.mesh_bytes;
         memory.cardinal_free(allocator, e);
         entry = next;
     }
 
-    g_mesh_cache.entries = null;
+    g_mesh_cache.head = null;
+    g_mesh_cache.tail = null;
     g_mesh_cache.entry_count = 0;
     mesh_log.info("Cache cleared", .{});
+}
+
+pub export fn mesh_cache_get_memory_stats(total_bytes: ?*u64, peak_bytes: ?*u64) callconv(.c) void {
+    g_mesh_cache.mutex.lock();
+    defer g_mesh_cache.mutex.unlock();
+
+    if (total_bytes) |t| t.* = @intCast(g_mesh_cache.total_bytes);
+    if (peak_bytes) |p| p.* = @intCast(g_mesh_cache.peak_bytes);
 }

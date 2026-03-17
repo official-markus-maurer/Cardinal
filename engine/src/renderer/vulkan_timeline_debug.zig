@@ -2,8 +2,6 @@
 //!
 //! Provides a small ring buffer of events and aggregate performance counters to help diagnose
 //! synchronization stalls and timeline semaphore misuse.
-//!
-//! TODO: Unify mutex helpers between timeline debug and timeline pool modules.
 const std = @import("std");
 const builtin = @import("builtin");
 const log = @import("../core/log.zig");
@@ -11,72 +9,9 @@ const tl_dbg_log = log.ScopedLogger("TL_DEBUG");
 const platform = @import("../core/platform.zig");
 const memory = @import("../core/memory.zig");
 const types = @import("vulkan_timeline_types.zig");
+const timeline_mutex = @import("util/vulkan_timeline_mutex.zig");
 
 const c = types.c;
-
-/// Initializes a platform mutex used by the debug recorder.
-fn debug_mutex_init(mutex: *?*anyopaque) bool {
-    const allocator = memory.cardinal_get_allocator_for_category(.RENDERER);
-    if (builtin.os.tag == .windows) {
-        const ptr = memory.cardinal_alloc(allocator, @sizeOf(c.CRITICAL_SECTION));
-        if (ptr == null) return false;
-        const cs = @as(*c.CRITICAL_SECTION, @ptrCast(@alignCast(ptr)));
-
-        c.InitializeCriticalSection(cs);
-        mutex.* = cs;
-        return true;
-    } else {
-        const ptr = memory.cardinal_alloc(allocator, @sizeOf(c.pthread_mutex_t));
-        if (ptr == null) return false;
-        const m = @as(*c.pthread_mutex_t, @ptrCast(@alignCast(ptr)));
-
-        if (c.pthread_mutex_init(m, null) != 0) {
-            memory.cardinal_free(allocator, m);
-            return false;
-        }
-        mutex.* = m;
-        return true;
-    }
-}
-
-/// Destroys a platform mutex created by `debug_mutex_init`.
-fn debug_mutex_destroy(mutex: *?*anyopaque) void {
-    const allocator = memory.cardinal_get_allocator_for_category(.RENDERER);
-    if (mutex.*) |m| {
-        if (builtin.os.tag == .windows) {
-            const cs: *c.CRITICAL_SECTION = @ptrCast(@alignCast(m));
-            c.DeleteCriticalSection(cs);
-            memory.cardinal_free(allocator, cs);
-        } else {
-            const pm: *c.pthread_mutex_t = @ptrCast(@alignCast(m));
-            _ = c.pthread_mutex_destroy(pm);
-            memory.cardinal_free(allocator, pm);
-        }
-        mutex.* = null;
-    }
-}
-
-/// Locks a platform mutex.
-fn debug_mutex_lock(mutex: ?*anyopaque) void {
-    if (mutex) |m| {
-        if (builtin.os.tag == .windows) {
-            c.EnterCriticalSection(@ptrCast(@alignCast(m)));
-        } else {
-            _ = c.pthread_mutex_lock(@ptrCast(@alignCast(m)));
-        }
-    }
-}
-
-/// Unlocks a platform mutex.
-fn debug_mutex_unlock(mutex: ?*anyopaque) void {
-    if (mutex) |m| {
-        if (builtin.os.tag == .windows) {
-            c.LeaveCriticalSection(@ptrCast(@alignCast(m)));
-        } else {
-            _ = c.pthread_mutex_unlock(@ptrCast(@alignCast(m)));
-        }
-    }
-}
 
 /// Returns a monotonic timestamp in nanoseconds.
 pub export fn vulkan_timeline_debug_get_timestamp_ns() callconv(.c) u64 {
@@ -107,7 +42,7 @@ pub export fn vulkan_timeline_debug_event_type_to_string(type_enum: types.Vulkan
 pub export fn vulkan_timeline_debug_init(debug_ctx: *types.VulkanTimelineDebugContext) callconv(.c) bool {
     @memset(@as([*]u8, @ptrCast(debug_ctx))[0..@sizeOf(types.VulkanTimelineDebugContext)], 0);
 
-    if (!debug_mutex_init(&debug_ctx.mutex)) {
+    if (!timeline_mutex.init(&debug_ctx.mutex)) {
         tl_dbg_log.err("Failed to allocate mutex", .{});
         return false;
     }
@@ -138,9 +73,9 @@ pub export fn vulkan_timeline_debug_init(debug_ctx: *types.VulkanTimelineDebugCo
 
 /// Destroys a debug context.
 pub export fn vulkan_timeline_debug_destroy(debug_ctx: *types.VulkanTimelineDebugContext) callconv(.c) void {
-    if (debug_ctx.mutex == null) return;
+    if (debug_ctx.mutex.initialized == 0) return;
 
-    debug_mutex_destroy(&debug_ctx.mutex);
+    timeline_mutex.destroy(&debug_ctx.mutex);
     @memset(@as([*]u8, @ptrCast(debug_ctx))[0..@sizeOf(types.VulkanTimelineDebugContext)], 0);
 
     tl_dbg_log.info("Debug context destroyed", .{});
@@ -150,7 +85,7 @@ pub export fn vulkan_timeline_debug_destroy(debug_ctx: *types.VulkanTimelineDebu
 pub export fn vulkan_timeline_debug_reset(debug_ctx: *types.VulkanTimelineDebugContext) callconv(.c) void {
     if (!debug_ctx.enabled) return;
 
-    debug_mutex_lock(debug_ctx.mutex);
+    timeline_mutex.lock(&debug_ctx.mutex);
 
     @atomicStore(u32, &debug_ctx.event_write_index, 0, .seq_cst);
     @atomicStore(u32, &debug_ctx.event_count, 0, .seq_cst);
@@ -168,7 +103,7 @@ pub export fn vulkan_timeline_debug_reset(debug_ctx: *types.VulkanTimelineDebugC
 
     debug_ctx.last_snapshot_time = vulkan_timeline_debug_get_timestamp_ns();
 
-    debug_mutex_unlock(debug_ctx.mutex);
+    timeline_mutex.unlock(&debug_ctx.mutex);
 
     tl_dbg_log.info("Debug context reset", .{});
 }
@@ -345,7 +280,7 @@ pub export fn vulkan_timeline_debug_increment_recovery_count(debug_ctx: *types.V
 pub export fn vulkan_timeline_debug_take_snapshot(debug_ctx: *types.VulkanTimelineDebugContext, device: c.VkDevice, timeline_semaphore: c.VkSemaphore) callconv(.c) void {
     if (!debug_ctx.enabled or device == null or timeline_semaphore == null) return;
 
-    debug_mutex_lock(debug_ctx.mutex);
+    timeline_mutex.lock(&debug_ctx.mutex);
 
     const snapshot = &debug_ctx.last_snapshot;
     const result = c.vkGetSemaphoreCounterValue(device, timeline_semaphore, &snapshot.current_value);
@@ -361,7 +296,7 @@ pub export fn vulkan_timeline_debug_take_snapshot(debug_ctx: *types.VulkanTimeli
 
     debug_ctx.last_snapshot_time = vulkan_timeline_debug_get_timestamp_ns();
 
-    debug_mutex_unlock(debug_ctx.mutex);
+    timeline_mutex.unlock(&debug_ctx.mutex);
 
     if (debug_ctx.verbose_logging) {
         tl_dbg_log.debug("Snapshot taken: value={d}, valid={s}", .{ snapshot.current_value, if (snapshot.is_valid) "true" else "false" });
@@ -388,9 +323,9 @@ pub export fn vulkan_timeline_debug_get_performance_metrics(debug_ctx: *types.Vu
 }
 
 pub export fn vulkan_timeline_debug_get_last_snapshot(debug_ctx: *types.VulkanTimelineDebugContext, snapshot: *types.VulkanTimelineStateSnapshot) callconv(.c) bool {
-    debug_mutex_lock(debug_ctx.mutex);
+    timeline_mutex.lock(&debug_ctx.mutex);
     snapshot.* = debug_ctx.last_snapshot;
-    debug_mutex_unlock(debug_ctx.mutex);
+    timeline_mutex.unlock(&debug_ctx.mutex);
     return true;
 }
 
@@ -400,7 +335,7 @@ pub export fn vulkan_timeline_debug_get_event_count(debug_ctx: *types.VulkanTime
 }
 
 pub export fn vulkan_timeline_debug_get_events(debug_ctx: *types.VulkanTimelineDebugContext, events: [*]types.VulkanTimelineDebugEvent, max_events: u32, actual_count: *u32) callconv(.c) bool {
-    debug_mutex_lock(debug_ctx.mutex);
+    timeline_mutex.lock(&debug_ctx.mutex);
 
     const available_events = vulkan_timeline_debug_get_event_count(debug_ctx);
     const copy_count = if (available_events < max_events) available_events else max_events;
@@ -420,7 +355,7 @@ pub export fn vulkan_timeline_debug_get_events(debug_ctx: *types.VulkanTimelineD
 
     actual_count.* = copy_count;
 
-    debug_mutex_unlock(debug_ctx.mutex);
+    timeline_mutex.unlock(&debug_ctx.mutex);
     return true;
 }
 
@@ -429,8 +364,8 @@ pub export fn vulkan_timeline_debug_dump_events(debug_ctx: *types.VulkanTimeline
 
     tl_dbg_log.info("=== Timeline Event Dump ({d} events) ===", .{count});
 
-    debug_mutex_lock(debug_ctx.mutex);
-    defer debug_mutex_unlock(debug_ctx.mutex);
+    timeline_mutex.lock(&debug_ctx.mutex);
+    defer timeline_mutex.unlock(&debug_ctx.mutex);
 
     const event_count = vulkan_timeline_debug_get_event_count(debug_ctx);
     const dump_count = if (count > event_count) event_count else count;
@@ -517,7 +452,7 @@ pub export fn vulkan_timeline_debug_print_state_report(debug_ctx: *types.VulkanT
     tl_dbg_log.info("=================", .{});
 }
 
-// Export functions (simplified)
+/// Exports captured timeline events for offline analysis.
 pub export fn vulkan_timeline_debug_export_events_csv(debug_ctx: *types.VulkanTimelineDebugContext, filename: [*c]const u8) callconv(.c) bool {
     if (filename == null) {
         tl_dbg_log.err("Invalid filename for CSV export", .{});

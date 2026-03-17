@@ -2,8 +2,6 @@
 //!
 //! Selects surface formats and present modes, creates swapchain images/views, and handles
 //! recreation on resize/out-of-date events with basic backoff.
-//!
-//! TODO: Split format/present-mode selection into a separate policy module.
 const std = @import("std");
 const builtin = @import("builtin");
 const log = @import("../core/log.zig");
@@ -14,6 +12,8 @@ const vk_commands = @import("vulkan_commands.zig");
 const vk_pipeline = @import("vulkan_pipeline.zig");
 const vk_mesh_shader = @import("vulkan_mesh_shader.zig");
 const vk_ssao = @import("vulkan_ssao.zig");
+const swapchain_util = @import("util/vulkan_swapchain_util.zig");
+const swapchain_policy = @import("util/vulkan_swapchain_policy.zig");
 const platform = @import("../core/platform.zig");
 
 const swap_log = log.ScopedLogger("SWAPCHAIN");
@@ -53,114 +53,6 @@ fn should_throttle_recreation(s: *types.VulkanState) bool {
     return false;
 }
 
-/// Chooses a swapchain surface format from candidates.
-fn choose_surface_format(formats: [*]const c.VkSurfaceFormatKHR, count: u32, prefer_hdr_config: bool) c.VkSurfaceFormatKHR {
-    if (count == 0) {
-        return std.mem.zeroes(c.VkSurfaceFormatKHR);
-    }
-
-    var prefer_hdr = prefer_hdr_config;
-    const env_hdr = c.getenv("CARDINAL_PREFER_HDR");
-    if (env_hdr != null) {
-        const h = env_hdr[0];
-        if (h == '1' or h == 'T' or h == 't' or h == 'Y' or h == 'y') {
-            prefer_hdr = true;
-        }
-    }
-
-    var best_score: i32 = -1;
-    var best = formats[0];
-
-    var i: u32 = 0;
-    while (i < count) : (i += 1) {
-        const f = &formats[i];
-        var score: i32 = 0;
-
-        if (prefer_hdr) {
-            if (f.colorSpace == c.VK_COLOR_SPACE_HDR10_ST2084_EXT or
-                f.colorSpace == c.VK_COLOR_SPACE_EXTENDED_SRGB_LINEAR_EXT or
-                f.colorSpace == c.VK_COLOR_SPACE_BT2020_LINEAR_EXT)
-            {
-                score += 50;
-            }
-        }
-        if (f.colorSpace == c.VK_COLOR_SPACE_SRGB_NONLINEAR_KHR) {
-            score += 10;
-        }
-
-        switch (f.format) {
-            c.VK_FORMAT_R16G16B16A16_SFLOAT => {
-                if (prefer_hdr) score += 40;
-            },
-            c.VK_FORMAT_A2B10G10R10_UNORM_PACK32 => {
-                if (prefer_hdr) score += 30;
-            },
-            c.VK_FORMAT_B8G8R8A8_UNORM => {
-                score += 20;
-            },
-            c.VK_FORMAT_R8G8B8A8_UNORM => {
-                score += 15;
-            },
-            else => {},
-        }
-
-        if (score > best_score) {
-            best_score = score;
-            best = f.*;
-        }
-    }
-
-    return best;
-}
-
-/// Chooses a present mode, honoring `preferred` when available.
-fn choose_present_mode(modes: [*]const c.VkPresentModeKHR, count: u32, preferred: c.VkPresentModeKHR) c.VkPresentModeKHR {
-    var has_mailbox = false;
-    var has_fifo_relaxed = false;
-    var has_immediate = false;
-
-    var i: u32 = 0;
-    while (i < count) : (i += 1) {
-        const mode = modes[i];
-        if (mode == c.VK_PRESENT_MODE_MAILBOX_KHR) {
-            has_mailbox = true;
-        } else if (mode == c.VK_PRESENT_MODE_FIFO_RELAXED_KHR) {
-            has_fifo_relaxed = true;
-        } else if (mode == c.VK_PRESENT_MODE_IMMEDIATE_KHR) {
-            has_immediate = true;
-        }
-    }
-
-    if (builtin.mode == .Debug) {
-        swap_log.info("Present modes: MAILBOX={any}, FIFO_RELAXED={any}, IMMEDIATE={any}", .{ has_mailbox, has_fifo_relaxed, has_immediate });
-    }
-
-    if (preferred != 0) {
-        var idx: u32 = 0;
-        while (idx < count) : (idx += 1) {
-            if (modes[idx] == preferred) {
-                return preferred;
-            }
-        }
-    }
-
-    if (builtin.mode == .Debug or builtin.mode == .ReleaseSafe) {
-        if (has_fifo_relaxed) {
-            return c.VK_PRESENT_MODE_FIFO_RELAXED_KHR;
-        }
-        return c.VK_PRESENT_MODE_FIFO_KHR;
-    }
-
-    if (has_mailbox) {
-        return c.VK_PRESENT_MODE_MAILBOX_KHR;
-    }
-    if (has_immediate) {
-        return c.VK_PRESENT_MODE_IMMEDIATE_KHR;
-    }
-
-    return c.VK_PRESENT_MODE_FIFO_KHR;
-}
-
 /// Waits for the device to become idle before swapchain operations.
 fn wait_device_idle_for_swapchain(s: *types.VulkanState) bool {
     const t_idle0 = platform.get_time_ms();
@@ -184,8 +76,16 @@ fn wait_device_idle_for_swapchain(s: *types.VulkanState) bool {
 
 /// Queries surface capabilities and picks the surface format and present mode.
 fn get_surface_details(s: *types.VulkanState, caps: *c.VkSurfaceCapabilitiesKHR, out_fmt: *c.VkSurfaceFormatKHR, out_mode: *c.VkPresentModeKHR) bool {
-    if (c.vkGetPhysicalDeviceSurfaceCapabilitiesKHR(s.context.physical_device, s.context.surface, caps) != c.VK_SUCCESS) {
-        swap_log.err("Failed to get surface capabilities", .{});
+    const alloc = memory.cardinal_get_allocator_for_category(.RENDERER).as_allocator();
+    var formats: []c.VkSurfaceFormatKHR = &.{};
+    var modes: []c.VkPresentModeKHR = &.{};
+    defer {
+        if (formats.len != 0) alloc.free(formats);
+        if (modes.len != 0) alloc.free(modes);
+    }
+
+    if (!swapchain_util.query_surface_support(alloc, s.context.physical_device, s.context.surface, caps, &formats, &modes)) {
+        swap_log.err("Failed to query surface support", .{});
         return false;
     }
 
@@ -194,23 +94,7 @@ fn get_surface_details(s: *types.VulkanState, caps: *c.VkSurfaceCapabilitiesKHR,
         return false;
     }
 
-    var count: u32 = 0;
-    if (c.vkGetPhysicalDeviceSurfaceFormatsKHR(s.context.physical_device, s.context.surface, &count, null) != c.VK_SUCCESS or count == 0) {
-        swap_log.err("Failed to get surface formats", .{});
-        return false;
-    }
-
-    const mem_alloc = memory.cardinal_get_allocator_for_category(.RENDERER);
-    const fmts_ptr = memory.cardinal_alloc(mem_alloc, @sizeOf(c.VkSurfaceFormatKHR) * count);
-    if (fmts_ptr == null) return false;
-    const fmts = @as([*]c.VkSurfaceFormatKHR, @ptrCast(@alignCast(fmts_ptr)));
-    defer memory.cardinal_free(mem_alloc, fmts_ptr);
-
-    if (c.vkGetPhysicalDeviceSurfaceFormatsKHR(s.context.physical_device, s.context.surface, &count, fmts) != c.VK_SUCCESS) {
-        swap_log.err("Failed to retrieve surface formats", .{});
-        return false;
-    }
-    out_fmt.* = choose_surface_format(fmts, count, s.config.prefer_hdr);
+    out_fmt.* = swapchain_policy.choose_surface_format(formats.ptr, @intCast(formats.len), s.config.prefer_hdr);
 
     const is_hdr10 = out_fmt.colorSpace == c.VK_COLOR_SPACE_HDR10_ST2084_EXT;
     const is_bt2020 = out_fmt.colorSpace == c.VK_COLOR_SPACE_BT2020_LINEAR_EXT or out_fmt.colorSpace == c.VK_COLOR_SPACE_EXTENDED_SRGB_LINEAR_EXT;
@@ -220,21 +104,25 @@ fn get_surface_details(s: *types.VulkanState, caps: *c.VkSurfaceCapabilitiesKHR,
         swap_log.info("Swapchain format selected: fmt={d}, colorSpace={d}, HDR={any}, HDR10={any}", .{ out_fmt.format, out_fmt.colorSpace, is_hdr, is_hdr10 });
     }
 
-    if (c.vkGetPhysicalDeviceSurfacePresentModesKHR(s.context.physical_device, s.context.surface, &count, null) != c.VK_SUCCESS or count == 0) {
-        swap_log.err("Failed to get present modes", .{});
-        return false;
-    }
+    out_mode.* = swapchain_policy.choose_present_mode(modes.ptr, @intCast(modes.len), s.config.present_mode);
 
-    const modes_ptr = memory.cardinal_alloc(mem_alloc, @sizeOf(c.VkPresentModeKHR) * count);
-    if (modes_ptr == null) return false;
-    const modes = @as([*]c.VkPresentModeKHR, @ptrCast(@alignCast(modes_ptr)));
-    defer memory.cardinal_free(mem_alloc, modes_ptr);
-
-    if (c.vkGetPhysicalDeviceSurfacePresentModesKHR(s.context.physical_device, s.context.surface, &count, modes) != c.VK_SUCCESS) {
-        swap_log.err("Failed to retrieve present modes", .{});
-        return false;
+    if (builtin.mode == .Debug) {
+        var has_mailbox = false;
+        var has_fifo_relaxed = false;
+        var has_immediate = false;
+        var i: usize = 0;
+        while (i < modes.len) : (i += 1) {
+            const mode = modes[i];
+            if (mode == c.VK_PRESENT_MODE_MAILBOX_KHR) {
+                has_mailbox = true;
+            } else if (mode == c.VK_PRESENT_MODE_FIFO_RELAXED_KHR) {
+                has_fifo_relaxed = true;
+            } else if (mode == c.VK_PRESENT_MODE_IMMEDIATE_KHR) {
+                has_immediate = true;
+            }
+        }
+        swap_log.info("Present modes: MAILBOX={any}, FIFO_RELAXED={any}, IMMEDIATE={any}", .{ has_mailbox, has_fifo_relaxed, has_immediate });
     }
-    out_mode.* = choose_present_mode(modes, count, s.config.present_mode);
 
     if (builtin.mode == .Debug) {
         swap_log.info("Swapchain present mode selected: mode={d}", .{out_mode.*});
@@ -263,12 +151,7 @@ fn select_swapchain_extent(s: *types.VulkanState, caps: *const c.VkSurfaceCapabi
         extent.height = s.swapchain.pending_height;
     }
 
-    if (extent.width < caps.minImageExtent.width) extent.width = caps.minImageExtent.width;
-    if (extent.width > caps.maxImageExtent.width) extent.width = caps.maxImageExtent.width;
-    if (extent.height < caps.minImageExtent.height) extent.height = caps.minImageExtent.height;
-    if (extent.height > caps.maxImageExtent.height) extent.height = caps.maxImageExtent.height;
-
-    return extent;
+    return swapchain_util.choose_extent(caps, extent);
 }
 
 fn create_swapchain_object(s: *types.VulkanState, caps: *const c.VkSurfaceCapabilitiesKHR, fmt: c.VkSurfaceFormatKHR, mode: c.VkPresentModeKHR, extent: c.VkExtent2D) bool {
@@ -317,59 +200,28 @@ fn create_swapchain_object(s: *types.VulkanState, caps: *const c.VkSurfaceCapabi
 }
 
 fn retrieve_swapchain_images(s: *types.VulkanState) bool {
-    if (c.vkGetSwapchainImagesKHR(s.context.device, s.swapchain.handle, &s.swapchain.image_count, null) != c.VK_SUCCESS or s.swapchain.image_count == 0) {
-        swap_log.err("Failed to get image count", .{});
-        return false;
-    }
-
-    const mem_alloc = memory.cardinal_get_allocator_for_category(.RENDERER);
-    const images_ptr = memory.cardinal_alloc(mem_alloc, @sizeOf(c.VkImage) * s.swapchain.image_count);
-    if (images_ptr == null) return false;
-    s.swapchain.images = @as([*]c.VkImage, @ptrCast(@alignCast(images_ptr)));
-
-    if (c.vkGetSwapchainImagesKHR(s.context.device, s.swapchain.handle, &s.swapchain.image_count, s.swapchain.images.?) != c.VK_SUCCESS) {
+    const alloc = memory.cardinal_get_allocator_for_category(.RENDERER).as_allocator();
+    var images: []c.VkImage = &.{};
+    if (!swapchain_util.retrieve_swapchain_images(alloc, s.context.device, s.swapchain.handle, &images)) {
         swap_log.err("Failed to get images", .{});
         return false;
     }
+    s.swapchain.image_count = @intCast(images.len);
+    s.swapchain.images = images.ptr;
     return true;
 }
 
 fn create_swapchain_image_views(s: *types.VulkanState) bool {
-    const mem_alloc = memory.cardinal_get_allocator_for_category(.RENDERER);
-    const views_ptr = memory.cardinal_alloc(mem_alloc, @sizeOf(c.VkImageView) * s.swapchain.image_count);
-    if (views_ptr == null) return false;
-    s.swapchain.image_views = @as([*]c.VkImageView, @ptrCast(@alignCast(views_ptr)));
-
-    var i: u32 = 0;
-    while (i < s.swapchain.image_count) : (i += 1) {
-        s.swapchain.image_views.?[i] = null;
+    const alloc = memory.cardinal_get_allocator_for_category(.RENDERER).as_allocator();
+    const images: []const c.VkImage = s.swapchain.images.?[0..@as(usize, @intCast(s.swapchain.image_count))];
+    var views: []c.VkImageView = &.{};
+    if (!swapchain_util.create_image_views(alloc, s.context.device, images, s.swapchain.format, &views)) {
+        swap_log.err("Failed to create swapchain image views", .{});
+        return false;
     }
-
-    i = 0;
-    while (i < s.swapchain.image_count) : (i += 1) {
-        var iv = std.mem.zeroes(c.VkImageViewCreateInfo);
-        iv.sType = c.VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO;
-        iv.image = s.swapchain.images.?[i];
-        iv.viewType = c.VK_IMAGE_VIEW_TYPE_2D;
-        iv.format = s.swapchain.format;
-        iv.subresourceRange.aspectMask = c.VK_IMAGE_ASPECT_COLOR_BIT;
-        iv.subresourceRange.levelCount = 1;
-        iv.subresourceRange.layerCount = 1;
-
-        if (c.vkCreateImageView(s.context.device, &iv, null, &s.swapchain.image_views.?[i]) != c.VK_SUCCESS) {
-            swap_log.err("Failed to create image view {d}", .{i});
-            var j: u32 = 0;
-            while (j < i) : (j += 1) {
-                c.vkDestroyImageView(s.context.device, s.swapchain.image_views.?[j], null);
-            }
-            memory.cardinal_free(mem_alloc, @as(?*anyopaque, @ptrCast(s.swapchain.image_views)));
-            s.swapchain.image_views = null;
-            return false;
-        }
-    }
+    s.swapchain.image_views = views.ptr;
     return true;
 }
-
 /// Swapchain state snapshot used to roll back after a failed recreation attempt.
 const SwapchainBackupState = struct {
     handle: c.VkSwapchainKHR,

@@ -512,7 +512,7 @@ pub export fn cardinal_animation_system_create(max_animations: u32, max_skins: u
     system.skin_count = 0;
     system.state_count = 0;
 
-    system.bone_matrix_count = 256; // Standard max bones
+    system.bone_matrix_count = 256;
     system.blend_states = null;
     system.blend_state_capacity = 0;
     system.blend_frame_id = 1;

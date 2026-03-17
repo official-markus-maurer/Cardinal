@@ -425,7 +425,7 @@ pub const NifReader = struct {
     }
 };
 
-// Helper: Get property block from a list of properties
+/// Finds the first property of the requested block tag from a property list.
 fn findProperty(reader: *NifReader, properties: ?[]i32, comptime Tag: std.meta.Tag(nif_schema.NifBlockData)) ?std.meta.TagPayload(nif_schema.NifBlockData, Tag) {
     @setEvalBranchQuota(100000);
     if (properties) |props| {
@@ -442,7 +442,7 @@ fn findProperty(reader: *NifReader, properties: ?[]i32, comptime Tag: std.meta.T
     return null;
 }
 
-// Helper: Resolve NIF file path (SizedString or IndexString)
+/// Resolves a NIF file path represented as either an index into the string table or an inline string.
 fn resolveFilePath(reader: *NifReader, file_path: ?nif_schema.FilePath) ?[]const u8 {
     if (file_path) |fp| {
         if (fp.Index) |idx| {

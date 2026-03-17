@@ -7,6 +7,10 @@ const types = @import("../vulkan_types.zig");
 const descriptor_mgr = @import("../vulkan_descriptor_manager.zig");
 const c = @import("../vulkan_c.zig").c;
 
+/// Creates a descriptor manager from a binding map keyed by binding number.
+///
+/// The produced manager is heap-allocated using the renderer allocator and returned via
+/// `out_manager`. On failure, no ownership is transferred.
 pub fn create_descriptor_manager_from_binding_map(alloc: std.mem.Allocator, out_manager: *?*types.VulkanDescriptorManager, device: c.VkDevice, allocator: *types.VulkanAllocator, vulkan_state: ?*types.VulkanState, map: anytype, max_sets: u32, prefer_descriptor_buffers: bool) bool {
     const mem_alloc = memory.cardinal_get_allocator_for_category(.RENDERER);
     const ptr = memory.cardinal_alloc(mem_alloc, @sizeOf(types.VulkanDescriptorManager));
@@ -42,6 +46,36 @@ pub fn create_descriptor_manager_from_binding_map(alloc: std.mem.Allocator, out_
             }
             @compileError("Unsupported binding map value type");
         };
+        builder.add_binding(b.binding, b.descriptorType, b.descriptorCount, b.stageFlags) catch {
+            memory.cardinal_free(mem_alloc, ptr);
+            return false;
+        };
+    }
+
+    if (!builder.build(mgr, device, allocator, vulkan_state, max_sets, prefer_descriptor_buffers)) {
+        memory.cardinal_free(mem_alloc, ptr);
+        return false;
+    }
+
+    out_manager.* = mgr;
+    return true;
+}
+
+/// Creates a descriptor manager from pre-ordered layout bindings.
+///
+/// This avoids building and sorting a temporary key list when the caller already has bindings in
+/// the desired order.
+pub fn create_descriptor_manager_from_bindings(alloc: std.mem.Allocator, out_manager: *?*types.VulkanDescriptorManager, device: c.VkDevice, allocator: *types.VulkanAllocator, vulkan_state: ?*types.VulkanState, bindings: []const c.VkDescriptorSetLayoutBinding, max_sets: u32, prefer_descriptor_buffers: bool) bool {
+    const mem_alloc = memory.cardinal_get_allocator_for_category(.RENDERER);
+    const ptr = memory.cardinal_alloc(mem_alloc, @sizeOf(types.VulkanDescriptorManager));
+    if (ptr == null) return false;
+    const mgr = @as(*types.VulkanDescriptorManager, @ptrCast(@alignCast(ptr)));
+    @memset(@as([*]u8, @ptrCast(mgr))[0..@sizeOf(types.VulkanDescriptorManager)], 0);
+
+    var builder = descriptor_mgr.DescriptorBuilder.init(alloc);
+    defer builder.deinit();
+
+    for (bindings) |b| {
         builder.add_binding(b.binding, b.descriptorType, b.descriptorCount, b.stageFlags) catch {
             memory.cardinal_free(mem_alloc, ptr);
             return false;

@@ -107,7 +107,8 @@ pub const CardinalMaterial = extern struct {
     alpha_mode: CardinalAlphaMode,
     alpha_cutoff: f32,
     double_sided: bool,
-    uv_indices: [5]u8, // Albedo, Normal, MR, AO, Emissive
+    /// UV set indices in order: albedo, normal, metallic-roughness, AO, emissive.
+    uv_indices: [5]u8,
 
     albedo_transform: CardinalTextureTransform,
     normal_transform: CardinalTextureTransform,
@@ -124,7 +125,8 @@ pub const CardinalLight = extern struct {
     range: f32,
     inner_cone_angle: f32,
     outer_cone_angle: f32,
-    node_index: u32, // Index of the node this light is attached to (for transform)
+    /// Node index that provides the light's transform.
+    node_index: u32,
     _padding: u32,
 };
 
@@ -139,15 +141,21 @@ pub const CardinalTexture = extern struct {
     sampler: CardinalSampler,
     path: ?[*:0]u8,
     ref_resource: ?*ref_counting.CardinalRefCountedResource,
-    is_hdr: u32, // Changed from bool to u32 for ABI stability
-    format: u32, // VkFormat (0 = undefined/auto)
-    data_size: u64, // Size of data in bytes (0 if calculated from w*h*c)
+    /// HDR flag stored as an integer for ABI stability.
+    is_hdr: u32,
+    /// Vulkan `VkFormat` value (0 means unspecified/auto).
+    format: u32,
+    /// Size of `data` in bytes (0 means derived from dimensions).
+    data_size: u64,
 };
 
 pub const CardinalMorphTarget = extern struct {
-    positions: ?[*]f32, // vec3 * vertex_count
-    normals: ?[*]f32, // vec3 * vertex_count
-    tangents: ?[*]f32, // vec3 * vertex_count
+    /// Position deltas as `vec3 * vertex_count`.
+    positions: ?[*]f32,
+    /// Normal deltas as `vec3 * vertex_count`.
+    normals: ?[*]f32,
+    /// Tangent deltas as `vec3 * vertex_count`.
+    tangents: ?[*]f32,
 };
 
 pub const CardinalMesh = extern struct {

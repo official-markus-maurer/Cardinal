@@ -1,82 +1,17 @@
 //! Timeline semaphore pool.
 //!
 //! Manages a reusable pool of timeline semaphores to avoid frequent create/destroy churn.
-//!
-//! TODO: Unify mutex helpers between timeline pool and timeline debug modules.
 const std = @import("std");
 const builtin = @import("builtin");
 const log = @import("../core/log.zig");
 const tl_pool_log = log.ScopedLogger("TL_POOL");
 const platform = @import("../core/platform.zig");
 const types = @import("vulkan_timeline_types.zig");
+const timeline_mutex = @import("util/vulkan_timeline_mutex.zig");
 
 const c = types.c;
 
 const memory = @import("../core/memory.zig");
-
-/// Initializes a platform mutex used by the pool.
-fn pool_mutex_init(mutex: *?*anyopaque) bool {
-    const allocator = memory.cardinal_get_allocator_for_category(.RENDERER);
-    if (builtin.os.tag == .windows) {
-        const ptr = memory.cardinal_alloc(allocator, @sizeOf(c.CRITICAL_SECTION));
-        if (ptr == null) return false;
-        const cs = @as(*c.CRITICAL_SECTION, @ptrCast(@alignCast(ptr)));
-
-        c.InitializeCriticalSection(cs);
-        mutex.* = cs;
-        return true;
-    } else {
-        const ptr = memory.cardinal_alloc(allocator, @sizeOf(c.pthread_mutex_t));
-        if (ptr == null) return false;
-        const m = @as(*c.pthread_mutex_t, @ptrCast(@alignCast(ptr)));
-
-        if (c.pthread_mutex_init(m, null) != 0) {
-            memory.cardinal_free(allocator, m);
-            return false;
-        }
-        mutex.* = m;
-        return true;
-    }
-}
-
-/// Destroys a platform mutex created by `pool_mutex_init`.
-fn pool_mutex_destroy(mutex: *?*anyopaque) void {
-    const allocator = memory.cardinal_get_allocator_for_category(.RENDERER);
-    if (mutex.*) |m| {
-        if (builtin.os.tag == .windows) {
-            const cs: *c.CRITICAL_SECTION = @ptrCast(@alignCast(m));
-            c.DeleteCriticalSection(cs);
-            memory.cardinal_free(allocator, cs);
-        } else {
-            const pm: *c.pthread_mutex_t = @ptrCast(@alignCast(m));
-            _ = c.pthread_mutex_destroy(pm);
-            memory.cardinal_free(allocator, pm);
-        }
-        mutex.* = null;
-    }
-}
-
-/// Locks a platform mutex.
-fn pool_mutex_lock(mutex: ?*anyopaque) void {
-    if (mutex) |m| {
-        if (builtin.os.tag == .windows) {
-            c.EnterCriticalSection(@ptrCast(@alignCast(m)));
-        } else {
-            _ = c.pthread_mutex_lock(@ptrCast(@alignCast(m)));
-        }
-    }
-}
-
-/// Unlocks a platform mutex.
-fn pool_mutex_unlock(mutex: ?*anyopaque) void {
-    if (mutex) |m| {
-        if (builtin.os.tag == .windows) {
-            c.LeaveCriticalSection(@ptrCast(@alignCast(m)));
-        } else {
-            _ = c.pthread_mutex_unlock(@ptrCast(@alignCast(m)));
-        }
-    }
-}
 
 /// Returns a monotonic timestamp in nanoseconds.
 fn get_current_time_ns() u64 {
@@ -137,7 +72,7 @@ pub export fn vulkan_timeline_pool_init(pool: *types.VulkanTimelinePool, device:
     @memset(entries, std.mem.zeroes(types.VulkanTimelinePoolEntry));
     pool.entries = entries.ptr;
 
-    if (!pool_mutex_init(&pool.mutex)) {
+    if (!timeline_mutex.init(&pool.mutex)) {
         tl_pool_log.err("Failed to allocate mutex", .{});
         allocator.free(entries);
         return false;
@@ -177,7 +112,7 @@ pub export fn vulkan_timeline_pool_destroy(pool: *types.VulkanTimelinePool) call
         return;
     }
 
-    pool_mutex_lock(pool.mutex);
+    timeline_mutex.lock(&pool.mutex);
 
     var i: u32 = 0;
     while (i < pool.pool_size) : (i += 1) {
@@ -186,9 +121,9 @@ pub export fn vulkan_timeline_pool_destroy(pool: *types.VulkanTimelinePool) call
         }
     }
 
-    pool_mutex_unlock(pool.mutex);
+    timeline_mutex.unlock(&pool.mutex);
 
-    pool_mutex_destroy(&pool.mutex);
+    timeline_mutex.destroy(&pool.mutex);
 
     const allocator = memory.cardinal_get_allocator_for_category(.RENDERER).as_allocator();
     allocator.free(pool.entries[0..pool.max_pool_size]);
@@ -204,7 +139,7 @@ pub export fn vulkan_timeline_pool_allocate(pool: *types.VulkanTimelinePool, all
         return false;
     }
 
-    pool_mutex_lock(pool.mutex);
+    timeline_mutex.lock(&pool.mutex);
 
     var i: u32 = 0;
     while (i < pool.pool_size) : (i += 1) {
@@ -218,7 +153,7 @@ pub export fn vulkan_timeline_pool_allocate(pool: *types.VulkanTimelinePool, all
             _ = @atomicRmw(u64, &pool.allocations, .Add, 1, .seq_cst);
             _ = @atomicRmw(u64, &pool.cache_hits, .Add, 1, .seq_cst);
 
-            pool_mutex_unlock(pool.mutex);
+            timeline_mutex.unlock(&pool.mutex);
             return true;
         }
     }
@@ -239,12 +174,12 @@ pub export fn vulkan_timeline_pool_allocate(pool: *types.VulkanTimelinePool, all
             _ = @atomicRmw(u64, &pool.allocations, .Add, 1, .seq_cst);
             _ = @atomicRmw(u64, &pool.cache_misses, .Add, 1, .seq_cst);
 
-            pool_mutex_unlock(pool.mutex);
+            timeline_mutex.unlock(&pool.mutex);
             return true;
         }
     }
 
-    pool_mutex_unlock(pool.mutex);
+    timeline_mutex.unlock(&pool.mutex);
     return false;
 }
 
@@ -253,7 +188,7 @@ pub export fn vulkan_timeline_pool_deallocate(pool: *types.VulkanTimelinePool, p
         return;
     }
 
-    pool_mutex_lock(pool.mutex);
+    timeline_mutex.lock(&pool.mutex);
 
     if (pool.entries[pool_index].in_use) {
         pool.entries[pool_index].in_use = false;
@@ -263,7 +198,7 @@ pub export fn vulkan_timeline_pool_deallocate(pool: *types.VulkanTimelinePool, p
         _ = @atomicRmw(u64, &pool.deallocations, .Add, 1, .seq_cst);
     }
 
-    pool_mutex_unlock(pool.mutex);
+    timeline_mutex.unlock(&pool.mutex);
 }
 
 pub export fn vulkan_timeline_pool_cleanup_idle(pool: *types.VulkanTimelinePool, current_time_ns: u64) callconv(.c) u32 {
@@ -271,7 +206,7 @@ pub export fn vulkan_timeline_pool_cleanup_idle(pool: *types.VulkanTimelinePool,
         return 0;
     }
 
-    pool_mutex_lock(pool.mutex);
+    timeline_mutex.lock(&pool.mutex);
 
     var cleaned_up: u32 = 0;
 
@@ -289,7 +224,7 @@ pub export fn vulkan_timeline_pool_cleanup_idle(pool: *types.VulkanTimelinePool,
         }
     }
 
-    pool_mutex_unlock(pool.mutex);
+    timeline_mutex.unlock(&pool.mutex);
 
     if (cleaned_up > 0) {
         tl_pool_log.debug("Cleaned up {d} idle semaphores", .{cleaned_up});
@@ -325,10 +260,10 @@ pub export fn vulkan_timeline_pool_configure_cleanup(pool: *types.VulkanTimeline
         return;
     }
 
-    pool_mutex_lock(pool.mutex);
+    timeline_mutex.lock(&pool.mutex);
     pool.auto_cleanup_enabled = enabled;
     pool.max_idle_time_ns = max_idle_time_ns;
-    pool_mutex_unlock(pool.mutex);
+    timeline_mutex.unlock(&pool.mutex);
 
     tl_pool_log.info("Auto-cleanup {s}, max idle time: {d} ns", .{ if (enabled) "enabled" else "disabled", max_idle_time_ns });
 }

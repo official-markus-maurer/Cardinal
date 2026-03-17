@@ -2,25 +2,14 @@
 //!
 //! Provides a small, self-contained swapchain creation/recreation helper used by older code paths.
 //! The main renderer also has its own swapchain code; this manager is primarily kept for C interop.
-//!
-//! TODO: Consolidate swapchain ownership into a single implementation.
 const std = @import("std");
-const builtin = @import("builtin");
 const log = @import("../core/log.zig");
+const swapchain_util = @import("util/vulkan_swapchain_util.zig");
+const swapchain_policy = @import("util/vulkan_swapchain_policy.zig");
 
 const swapchain_log = log.ScopedLogger("SWAPCHAIN");
 
-const c = @cImport({
-    @cDefine("CARDINAL_ZIG_BUILD", "1");
-    @cInclude("stdlib.h");
-    @cInclude("string.h");
-    @cInclude("vulkan/vulkan.h");
-    if (builtin.os.tag == .windows) {
-        @cInclude("windows.h");
-    } else {
-        @cInclude("time.h");
-    }
-});
+const c = @import("vulkan_c.zig").c;
 
 pub const VulkanSwapchainManager = extern struct {
     device: c.VkDevice,
@@ -71,82 +60,41 @@ fn get_current_time_ms() u64 {
     return @intCast(std.time.milliTimestamp());
 }
 
-/// Creates swapchain image views for all swapchain images.
-fn create_image_views(manager: *VulkanSwapchainManager) bool {
-    const ptr = c.malloc(manager.imageCount * @sizeOf(c.VkImageView));
-    if (ptr == null) {
-        swapchain_log.err("Failed to allocate memory for image views", .{});
-        return false;
-    }
-    manager.imageViews = @as([*]c.VkImageView, @ptrCast(@alignCast(ptr.?)));
-
-    var i: u32 = 0;
-    while (i < manager.imageCount) : (i += 1) {
-        manager.imageViews.?[i] = null;
-    }
-
-    i = 0;
-    while (i < manager.imageCount) : (i += 1) {
-        var createInfo = std.mem.zeroes(c.VkImageViewCreateInfo);
-        createInfo.sType = c.VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO;
-        createInfo.image = manager.images.?[i];
-        createInfo.viewType = c.VK_IMAGE_VIEW_TYPE_2D;
-        createInfo.format = manager.format;
-        createInfo.components.r = c.VK_COMPONENT_SWIZZLE_IDENTITY;
-        createInfo.components.g = c.VK_COMPONENT_SWIZZLE_IDENTITY;
-        createInfo.components.b = c.VK_COMPONENT_SWIZZLE_IDENTITY;
-        createInfo.components.a = c.VK_COMPONENT_SWIZZLE_IDENTITY;
-        createInfo.subresourceRange.aspectMask = c.VK_IMAGE_ASPECT_COLOR_BIT;
-        createInfo.subresourceRange.baseMipLevel = 0;
-        createInfo.subresourceRange.levelCount = 1;
-        createInfo.subresourceRange.baseArrayLayer = 0;
-        createInfo.subresourceRange.layerCount = 1;
-
-        if (c.vkCreateImageView(manager.device, &createInfo, null, &manager.imageViews.?[i]) != c.VK_SUCCESS) {
-            swapchain_log.err("Failed to create image view {d}", .{i});
-
-            var j: u32 = 0;
-            while (j < i) : (j += 1) {
-                if (manager.imageViews.?[j] != null) {
-                    c.vkDestroyImageView(manager.device, manager.imageViews.?[j], null);
-                }
-            }
-            c.free(@ptrCast(manager.imageViews));
-            manager.imageViews = null;
-            return false;
-        }
-    }
-
-    swapchain_log.debug("Created {d} image views", .{manager.imageCount});
-    return true;
-}
-
 fn destroy_image_views(manager: *VulkanSwapchainManager) void {
     if (manager.imageViews != null) {
+        const alloc = std.heap.c_allocator;
+        const views: []c.VkImageView = manager.imageViews.?[0..@as(usize, @intCast(manager.imageCount))];
         var i: u32 = 0;
         while (i < manager.imageCount) : (i += 1) {
             if (manager.imageViews.?[i] != null) {
                 c.vkDestroyImageView(manager.device, manager.imageViews.?[i], null);
             }
         }
-        c.free(@ptrCast(manager.imageViews));
+        alloc.free(views);
         manager.imageViews = null;
     }
 }
 
 fn create_swapchain_internal(manager: *VulkanSwapchainManager, createInfo: *const VulkanSwapchainCreateInfo) bool {
-    var support = std.mem.zeroes(VulkanSurfaceSupport);
-    if (!vk_swapchain_query_surface_support(manager.physicalDevice, manager.surface, &support)) {
+    const alloc = std.heap.c_allocator;
+    var caps = std.mem.zeroes(c.VkSurfaceCapabilitiesKHR);
+    var formats: []c.VkSurfaceFormatKHR = &.{};
+    var modes: []c.VkPresentModeKHR = &.{};
+    defer {
+        if (formats.len != 0) alloc.free(formats);
+        if (modes.len != 0) alloc.free(modes);
+    }
+
+    if (!swapchain_util.query_surface_support(alloc, manager.physicalDevice, manager.surface, &caps, &formats, &modes)) {
         swapchain_log.err("Failed to query surface support", .{});
         return false;
     }
-    defer vk_swapchain_free_surface_support(&support);
 
-    const surfaceFormat = vk_swapchain_choose_surface_format(support.formats, support.formatCount, createInfo.preferredFormat, createInfo.preferredColorSpace);
+    const surfaceFormat = swapchain_policy.choose_surface_format_with_preference(formats.ptr, @intCast(formats.len), createInfo.preferredFormat, createInfo.preferredColorSpace, false);
 
-    const presentMode = vk_swapchain_choose_present_mode(support.presentModes, support.presentModeCount, createInfo.preferredPresentMode);
+    const presentMode = swapchain_policy.choose_present_mode(modes.ptr, @intCast(modes.len), createInfo.preferredPresentMode);
 
-    const extent = vk_swapchain_choose_extent(&support.capabilities, createInfo.windowExtent);
+    const extent = swapchain_util.choose_extent(&caps, createInfo.windowExtent);
 
     if (extent.width == 0 or extent.height == 0) {
         swapchain_log.err("Invalid swapchain extent: {d}x{d}", .{ extent.width, extent.height });
@@ -155,20 +103,20 @@ fn create_swapchain_internal(manager: *VulkanSwapchainManager, createInfo: *cons
 
     var imageCount = createInfo.preferredImageCount;
     if (imageCount == 0) {
-        imageCount = support.capabilities.minImageCount + 1;
-        if (support.capabilities.maxImageCount > 0 and
-            imageCount > support.capabilities.maxImageCount)
+        imageCount = caps.minImageCount + 1;
+        if (caps.maxImageCount > 0 and
+            imageCount > caps.maxImageCount)
         {
-            imageCount = support.capabilities.maxImageCount;
+            imageCount = caps.maxImageCount;
         }
     }
 
     // Clamp image count to supported range
-    if (imageCount < support.capabilities.minImageCount) {
-        imageCount = support.capabilities.minImageCount;
+    if (imageCount < caps.minImageCount) {
+        imageCount = caps.minImageCount;
     }
-    if (support.capabilities.maxImageCount > 0 and imageCount > support.capabilities.maxImageCount) {
-        imageCount = support.capabilities.maxImageCount;
+    if (caps.maxImageCount > 0 and imageCount > caps.maxImageCount) {
+        imageCount = caps.maxImageCount;
     }
 
     swapchain_log.info("Creating swapchain: {d}x{d}, {d} images, format {d}", .{ extent.width, extent.height, imageCount, surfaceFormat.format });
@@ -186,13 +134,13 @@ fn create_swapchain_internal(manager: *VulkanSwapchainManager, createInfo: *cons
     swapchainCreateInfo.imageSharingMode = c.VK_SHARING_MODE_EXCLUSIVE;
     swapchainCreateInfo.queueFamilyIndexCount = 0;
     swapchainCreateInfo.pQueueFamilyIndices = null;
-    swapchainCreateInfo.preTransform = support.capabilities.currentTransform;
+    swapchainCreateInfo.preTransform = caps.currentTransform;
     swapchainCreateInfo.compositeAlpha = c.VK_COMPOSITE_ALPHA_OPAQUE_BIT_KHR;
     swapchainCreateInfo.presentMode = presentMode;
     swapchainCreateInfo.clipped = c.VK_TRUE;
     swapchainCreateInfo.oldSwapchain = createInfo.oldSwapchain;
 
-    var result = c.vkCreateSwapchainKHR(manager.device, &swapchainCreateInfo, null, &manager.swapchain);
+    const result = c.vkCreateSwapchainKHR(manager.device, &swapchainCreateInfo, null, &manager.swapchain);
     if (result != c.VK_SUCCESS) {
         swapchain_log.err("Failed to create swapchain: {d}", .{result});
         return false;
@@ -204,51 +152,26 @@ fn create_swapchain_internal(manager: *VulkanSwapchainManager, createInfo: *cons
     manager.extent = extent;
     manager.presentMode = presentMode;
 
-    // Get swapchain images
-    result = c.vkGetSwapchainImagesKHR(manager.device, manager.swapchain, &manager.imageCount, null);
-    if (result != c.VK_SUCCESS) {
-        swapchain_log.err("Failed to get swapchain image count: {d}", .{result});
+    var images: []c.VkImage = &.{};
+    if (!swapchain_util.retrieve_swapchain_images(alloc, manager.device, manager.swapchain, &images)) {
+        swapchain_log.err("Failed to retrieve swapchain images", .{});
         c.vkDestroySwapchainKHR(manager.device, manager.swapchain, null);
         manager.swapchain = null;
         return false;
     }
+    manager.images = images.ptr;
+    manager.imageCount = @intCast(images.len);
 
-    if (manager.imageCount == 0) {
-        swapchain_log.err("Swapchain has no images", .{});
-        c.vkDestroySwapchainKHR(manager.device, manager.swapchain, null);
-        manager.swapchain = null;
-        return false;
-    }
-
-    // Allocate images array
-    const ptr = c.malloc(manager.imageCount * @sizeOf(c.VkImage));
-    if (ptr == null) {
-        swapchain_log.err("Failed to allocate memory for swapchain images", .{});
-        c.vkDestroySwapchainKHR(manager.device, manager.swapchain, null);
-        manager.swapchain = null;
-        return false;
-    }
-    manager.images = @as([*]c.VkImage, @ptrCast(@alignCast(ptr.?)));
-
-    // Get swapchain images
-    result = c.vkGetSwapchainImagesKHR(manager.device, manager.swapchain, &manager.imageCount, manager.images.?);
-    if (result != c.VK_SUCCESS) {
-        swapchain_log.err("Failed to retrieve swapchain images: {d}", .{result});
-        c.free(@ptrCast(manager.images));
+    var views: []c.VkImageView = &.{};
+    if (!swapchain_util.create_image_views(alloc, manager.device, images, manager.format, &views)) {
+        alloc.free(images);
         manager.images = null;
+        manager.imageCount = 0;
         c.vkDestroySwapchainKHR(manager.device, manager.swapchain, null);
         manager.swapchain = null;
         return false;
     }
-
-    // Create image views
-    if (!create_image_views(manager)) {
-        c.free(@ptrCast(manager.images));
-        manager.images = null;
-        c.vkDestroySwapchainKHR(manager.device, manager.swapchain, null);
-        manager.swapchain = null;
-        return false;
-    }
+    manager.imageViews = views.ptr;
 
     // Update recreation tracking
     manager.recreationPending = false;
@@ -259,7 +182,7 @@ fn create_swapchain_internal(manager: *VulkanSwapchainManager, createInfo: *cons
     return true;
 }
 
-// Exported functions
+/// C-ABI entrypoints for swapchain manager creation and lifecycle.
 pub export fn vk_swapchain_manager_create(manager: ?*VulkanSwapchainManager, createInfo: ?*const VulkanSwapchainCreateInfo) callconv(.c) bool {
     if (manager == null or createInfo == null) {
         swapchain_log.err("Invalid parameters for swapchain manager creation", .{});
@@ -300,7 +223,9 @@ pub export fn vk_swapchain_manager_destroy(manager: ?*VulkanSwapchainManager) ca
 
     // Free images array
     if (mgr.images != null) {
-        c.free(@ptrCast(mgr.images));
+        const alloc = std.heap.c_allocator;
+        const images: []c.VkImage = mgr.images.?[0..@as(usize, @intCast(mgr.imageCount))];
+        alloc.free(images);
         mgr.images = null;
     }
 
@@ -385,17 +310,21 @@ pub export fn vk_swapchain_manager_recreate(manager: ?*VulkanSwapchainManager, n
 
     // Clean up old resources
     if (oldImageViews != null) {
+        const alloc = std.heap.c_allocator;
+        const old_views: []c.VkImageView = oldImageViews.?[0..@as(usize, @intCast(oldImageCount))];
         var i: u32 = 0;
         while (i < oldImageCount) : (i += 1) {
             if (oldImageViews.?[i] != null) {
                 c.vkDestroyImageView(mgr.device, oldImageViews.?[i], null);
             }
         }
-        c.free(@ptrCast(oldImageViews));
+        alloc.free(old_views);
     }
 
     if (oldImages != null) {
-        c.free(@ptrCast(oldImages));
+        const alloc = std.heap.c_allocator;
+        const old_images: []c.VkImage = oldImages.?[0..@as(usize, @intCast(oldImageCount))];
+        alloc.free(old_images);
     }
 
     if (oldSwapchain != null) {
@@ -451,77 +380,35 @@ pub export fn vk_swapchain_query_surface_support(physicalDevice: c.VkPhysicalDev
 
     @memset(@as([*]u8, @ptrCast(supp))[0..@sizeOf(VulkanSurfaceSupport)], 0);
 
-    // Get surface capabilities
-    var result = c.vkGetPhysicalDeviceSurfaceCapabilitiesKHR(physicalDevice, surface, &supp.capabilities);
-    if (result != c.VK_SUCCESS) {
-        swapchain_log.err("Failed to get surface capabilities: {d}", .{result});
+    const alloc = std.heap.c_allocator;
+    var formats: []c.VkSurfaceFormatKHR = &.{};
+    var modes: []c.VkPresentModeKHR = &.{};
+    if (!swapchain_util.query_surface_support(alloc, physicalDevice, surface, &supp.capabilities, &formats, &modes)) {
+        if (formats.len != 0) alloc.free(formats);
+        if (modes.len != 0) alloc.free(modes);
         return false;
     }
-
-    // Get surface formats
-    result = c.vkGetPhysicalDeviceSurfaceFormatsKHR(physicalDevice, surface, &supp.formatCount, null);
-    if (result != c.VK_SUCCESS or supp.formatCount == 0) {
-        swapchain_log.err("Failed to get surface formats or no formats available: {d}", .{result});
-        return false;
-    }
-
-    const ptr = c.malloc(supp.formatCount * @sizeOf(c.VkSurfaceFormatKHR));
-    if (ptr == null) {
-        swapchain_log.err("Failed to allocate memory for surface formats", .{});
-        return false;
-    }
-    supp.formats = @as([*]c.VkSurfaceFormatKHR, @ptrCast(@alignCast(ptr.?)));
-
-    result = c.vkGetPhysicalDeviceSurfaceFormatsKHR(physicalDevice, surface, &supp.formatCount, supp.formats.?);
-    if (result != c.VK_SUCCESS) {
-        swapchain_log.err("Failed to retrieve surface formats: {d}", .{result});
-        c.free(@ptrCast(supp.formats));
-        supp.formats = null;
-        return false;
-    }
-
-    // Get present modes
-    result = c.vkGetPhysicalDeviceSurfacePresentModesKHR(physicalDevice, surface, &supp.presentModeCount, null);
-    if (result != c.VK_SUCCESS or supp.presentModeCount == 0) {
-        swapchain_log.err("Failed to get present modes or no modes available: {d}", .{result});
-        c.free(@ptrCast(supp.formats));
-        supp.formats = null;
-        return false;
-    }
-
-    const ptr2 = c.malloc(supp.presentModeCount * @sizeOf(c.VkPresentModeKHR));
-    if (ptr2 == null) {
-        swapchain_log.err("Failed to allocate memory for present modes", .{});
-        c.free(@ptrCast(supp.formats));
-        supp.formats = null;
-        return false;
-    }
-    supp.presentModes = @as([*]c.VkPresentModeKHR, @ptrCast(@alignCast(ptr2.?)));
-
-    result = c.vkGetPhysicalDeviceSurfacePresentModesKHR(physicalDevice, surface, &supp.presentModeCount, supp.presentModes.?);
-    if (result != c.VK_SUCCESS) {
-        swapchain_log.err("Failed to retrieve present modes: {d}", .{result});
-        c.free(@ptrCast(supp.presentModes));
-        supp.presentModes = null;
-        c.free(@ptrCast(supp.formats));
-        supp.formats = null;
-        return false;
-    }
-
+    supp.formats = formats.ptr;
+    supp.formatCount = @intCast(formats.len);
+    supp.presentModes = modes.ptr;
+    supp.presentModeCount = @intCast(modes.len);
     return true;
 }
 
 pub export fn vk_swapchain_free_surface_support(support: ?*VulkanSurfaceSupport) callconv(.c) void {
     if (support == null) return;
     const supp = support.?;
+    const alloc = std.heap.c_allocator;
 
     if (supp.formats != null) {
-        c.free(@ptrCast(supp.formats));
+        const formats: []c.VkSurfaceFormatKHR = supp.formats.?[0..@as(usize, @intCast(supp.formatCount))];
+        alloc.free(formats);
         supp.formats = null;
     }
 
     if (supp.presentModes != null) {
-        c.free(@ptrCast(supp.presentModes));
+        const modes: []c.VkPresentModeKHR = supp.presentModes.?[0..@as(usize, @intCast(supp.presentModeCount))];
+        alloc.free(modes);
         supp.presentModes = null;
     }
 
@@ -539,68 +426,14 @@ pub export fn vk_swapchain_choose_surface_format(availableFormats: ?[*]const c.V
     if (formatCount == 0) {
         return availableFormats.?[0];
     }
-    const formats = availableFormats.?;
-
-    // If preferred format is specified, look for it
-    if (preferredFormat != c.VK_FORMAT_UNDEFINED) {
-        var i: u32 = 0;
-        while (i < formatCount) : (i += 1) {
-            if (formats[i].format == preferredFormat and
-                formats[i].colorSpace == preferredColorSpace)
-            {
-                return formats[i];
-            }
-        }
-    }
-
-    // Look for preferred formats
-    const preferredFormats = [_]c.VkFormat{ c.VK_FORMAT_R8G8B8A8_UNORM, c.VK_FORMAT_B8G8R8A8_UNORM, c.VK_FORMAT_R8G8B8A8_SRGB, c.VK_FORMAT_B8G8R8A8_SRGB };
-
-    for (preferredFormats) |pf| {
-        var j: u32 = 0;
-        while (j < formatCount) : (j += 1) {
-            if (formats[j].format == pf and
-                formats[j].colorSpace == c.VK_COLOR_SPACE_SRGB_NONLINEAR_KHR)
-            {
-                return formats[j];
-            }
-        }
-    }
-
-    // Return the first available format as fallback
-    return formats[0];
+    return swapchain_policy.choose_surface_format_with_preference(availableFormats.?, formatCount, preferredFormat, preferredColorSpace, false);
 }
 
 pub export fn vk_swapchain_choose_present_mode(availableModes: ?[*]const c.VkPresentModeKHR, modeCount: u32, preferredMode: c.VkPresentModeKHR) callconv(.c) c.VkPresentModeKHR {
     if (availableModes == null or modeCount == 0) {
-        return c.VK_PRESENT_MODE_FIFO_KHR; // Always available
+        return c.VK_PRESENT_MODE_FIFO_KHR;
     }
-    const modes = availableModes.?;
-
-    // If preferred mode is specified, look for it
-    if (preferredMode != c.VK_PRESENT_MODE_MAX_ENUM_KHR) {
-        var i: u32 = 0;
-        while (i < modeCount) : (i += 1) {
-            if (modes[i] == preferredMode) {
-                return preferredMode;
-            }
-        }
-    }
-
-    // Look for preferred modes in order
-    const preferredModes = [_]c.VkPresentModeKHR{ c.VK_PRESENT_MODE_MAILBOX_KHR, c.VK_PRESENT_MODE_IMMEDIATE_KHR, c.VK_PRESENT_MODE_FIFO_RELAXED_KHR, c.VK_PRESENT_MODE_FIFO_KHR };
-
-    for (preferredModes) |pm| {
-        var j: u32 = 0;
-        while (j < modeCount) : (j += 1) {
-            if (modes[j] == pm) {
-                return pm;
-            }
-        }
-    }
-
-    // FIFO is guaranteed to be available
-    return c.VK_PRESENT_MODE_FIFO_KHR;
+    return swapchain_policy.choose_present_mode(availableModes.?, modeCount, preferredMode);
 }
 
 pub export fn vk_swapchain_choose_extent(capabilities: ?*const c.VkSurfaceCapabilitiesKHR, windowExtent: c.VkExtent2D) callconv(.c) c.VkExtent2D {

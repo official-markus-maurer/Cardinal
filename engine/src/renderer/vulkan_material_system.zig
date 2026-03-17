@@ -201,7 +201,7 @@ pub fn register_layout_from_json(self: *MaterialSystem, path: []const u8, descri
     try self.register_layout(name_copy, descriptor);
 }
 
-// Helper to set property values
+/// Sets a POD property value by name into an instance data buffer.
 pub fn set_property(instance: *MaterialInstance, name: []const u8, value: anytype) !void {
     const hash = hash_string(name);
     if (instance.layout.property_hashes) |hashes| {
@@ -266,7 +266,7 @@ pub fn set_texture(instance: *MaterialInstance, name: []const u8, texture: handl
     return error.PropertyNotFound;
 }
 
-// Helper to bind material for rendering
+/// Pushes material parameters for the instance into a command buffer.
 pub fn bind_material(cmd: c.VkCommandBuffer, instance: *MaterialInstance, stage_flags: c.VkShaderStageFlags) void {
     // Push constants
     if (instance.data.len > 0) {
@@ -277,8 +277,7 @@ pub fn bind_material(cmd: c.VkCommandBuffer, instance: *MaterialInstance, stage_
     // For now we assume bindless indices are passed via push constants
 }
 
-// --- C API Exports ---
-
+/// C-ABI entrypoints for material instance creation and property updates.
 pub export fn cardinal_material_system_create_instance(system: ?*anyopaque, layout_name: ?[*:0]const u8, pipeline: c.VkPipeline, pipeline_layout: c.VkPipelineLayout) callconv(.c) ?*MaterialInstance {
     if (system == null or layout_name == null) return null;
     const sys = @as(*MaterialSystem, @ptrCast(@alignCast(system)));

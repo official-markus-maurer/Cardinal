@@ -1,8 +1,6 @@
 //! Vulkan C imports and platform defines.
 //!
 //! Centralizes C headers and compile-time defines used by Vulkan, VMA, and GLFW interop.
-//!
-//! TODO: Deduplicate C import compatibility defines with `vulkan_timeline_types.zig`.
 const std = @import("std");
 const builtin = @import("builtin");
 

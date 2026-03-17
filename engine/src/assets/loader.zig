@@ -142,7 +142,7 @@ fn ecs_scene_loader_impl(file_path: ?[*:0]const u8) callconv(.c) ?*anyopaque {
     };
     const parsed = scene_serializer.SceneSerializer.loadSceneData(allocator, content, path_slice) catch |err| {
         loader_log.err("Failed to parse scene: {}", .{err});
-        allocator.free(content); // Free content if parsing fails
+        allocator.free(content);
         return null;
     };
 

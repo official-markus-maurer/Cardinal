@@ -1,3 +1,6 @@
+//! NIF schema definitions.
+//!
+//! Provides type definitions and parsing helpers for NIF/KF blocks used by the loader.
 const std = @import("std");
 const math = @import("../core/math.zig");
 
@@ -12,14 +15,13 @@ fn get_size(v: anytype) usize {
     }
 }
 
-// --- Basic Types & Helpers ---
-
+/// Basic NIF schema primitives.
 pub const NifString = struct {
     length: u32 = 0,
     data: []u8 = &.{},
     index: u32 = 0xffffffff,
     pub fn read(reader: anytype, alloc: std.mem.Allocator, header: Header) !NifString {
-        if (header.version >= 0x14010003) { // 20.1.0.3
+        if (header.version >= 0x14010003) {
             const idx = try reader.readInt(u32, .little);
             return NifString{ .index = idx };
         } else {

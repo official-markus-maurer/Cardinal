@@ -201,9 +201,7 @@ pub fn draw_asset_browser_panel(state: *EditorState, allocator: std.mem.Allocato
                 @memcpy(path_buf[0..current_path.len], current_path);
                 path_buf[current_path.len] = 0;
 
-                if (c.imgui_bridge_input_text_with_hint("Path", "Absolute path to assets", @ptrCast(&path_buf), 512)) {
-                    // Just input handling
-                }
+                if (c.imgui_bridge_input_text_with_hint("Path", "Absolute path to assets", @ptrCast(&path_buf), 512)) {}
 
                 if (c.imgui_bridge_button("Save & Reload")) {
                     const new_len = std.mem.indexOf(u8, &path_buf, &[_]u8{0}) orelse path_buf.len;
@@ -277,9 +275,7 @@ pub fn draw_asset_browser_panel(state: *EditorState, allocator: std.mem.Allocato
 
             c.imgui_bridge_text("Import Model");
             c.imgui_bridge_set_next_item_width(-1.0);
-            if (c.imgui_bridge_input_text_with_hint("##scene_path", "C:/path/to/model.gltf, .glb, .kfm", @ptrCast(&state.ui.scene_path), state.ui.scene_path.len)) {
-                // Input handling
-            }
+            if (c.imgui_bridge_input_text_with_hint("##scene_path", "C:/path/to/model.gltf, .glb, .kfm", @ptrCast(&state.ui.scene_path), state.ui.scene_path.len)) {}
             if (c.imgui_bridge_button("Import")) {
                 const path_len = std.mem.indexOf(u8, &state.ui.scene_path, &[_]u8{0}) orelse state.ui.scene_path.len;
                 if (path_len > 0) {
@@ -341,8 +337,4 @@ pub fn draw_asset_browser_panel(state: *EditorState, allocator: std.mem.Allocato
             c.imgui_bridge_end_child();
         }
     }
-
-    // Check for finished skybox load
-    // Async load is handled by renderer now
-
 }

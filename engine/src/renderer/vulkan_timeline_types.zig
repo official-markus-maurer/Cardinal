@@ -2,47 +2,22 @@
 //!
 //! Defines C-ABI-friendly structs shared by the timeline semaphore pool and debug recorder.
 //! This file keeps the public layout stable even when the implementation changes.
-//!
-//! TODO: Move C import compatibility defines into a shared `vulkan_c.zig` helper.
 const std = @import("std");
 const builtin = @import("builtin");
 
-pub const c = @cImport({
-    @cInclude("stdlib.h");
-    @cInclude("string.h");
-    @cInclude("stdint.h");
-    @cInclude("stdio.h");
-
-    // Skip stdatomic.h and define types manually to avoid C import errors
-    @cDefine("__STDATOMIC_H", "1");
-    @cDefine("_STDATOMIC_H", "1");
-    @cDefine("__CLANG_STDATOMIC_H", "1");
-    @cDefine("__zig_translate_c__", "1");
-    @cDefine("CARDINAL_ZIG_BUILD", "1");
-
-    @cDefine("memory_order", "int");
-    @cDefine("memory_order_relaxed", "0");
-    @cDefine("memory_order_consume", "1");
-    @cDefine("memory_order_acquire", "2");
-    @cDefine("memory_order_release", "3");
-    @cDefine("memory_order_acq_rel", "4");
-    @cDefine("memory_order_seq_cst", "5");
-
-    @cInclude("vulkan/vulkan.h");
-
-    if (builtin.os.tag == .windows) {
-        @cInclude("windows.h");
-        @cInclude("processthreadsapi.h");
-    } else {
-        @cInclude("pthread.h");
-        @cInclude("time.h");
-        @cInclude("unistd.h");
-        @cInclude("sys/syscall.h");
-    }
-});
+pub const c = @import("vulkan_c.zig").c;
 
 pub const VULKAN_TIMELINE_DEBUG_MAX_EVENTS = 1024;
 pub const VULKAN_TIMELINE_DEBUG_MAX_NAME_LENGTH = 64;
+
+pub const VulkanTimelineMutexStorageSize: usize = if (builtin.os.tag == .windows) @sizeOf(c.CRITICAL_SECTION) else @sizeOf(c.pthread_mutex_t);
+pub const VulkanTimelineMutexStorageAlign: usize = if (builtin.os.tag == .windows) @alignOf(c.CRITICAL_SECTION) else @alignOf(c.pthread_mutex_t);
+
+/// Platform mutex stored inline to avoid heap allocations.
+pub const VulkanTimelineMutex = extern struct {
+    storage: [VulkanTimelineMutexStorageSize]u8 align(VulkanTimelineMutexStorageAlign),
+    initialized: u32,
+};
 
 /// Type of recorded timeline event.
 pub const VulkanTimelineEventType = enum(c_int) {
@@ -106,7 +81,7 @@ pub const VulkanTimelineDebugEvent = extern struct {
 
 /// Debug recorder state and ring-buffer storage.
 pub const VulkanTimelineDebugContext = extern struct {
-    mutex: ?*anyopaque,
+    mutex: VulkanTimelineMutex,
     event_write_index: u32,
     event_count: u32,
     metrics: VulkanTimelinePerformanceMetrics,
@@ -142,7 +117,7 @@ pub const VulkanTimelinePool = extern struct {
     max_pool_size: u32,
     active_count: u32,
     entries: [*]VulkanTimelinePoolEntry,
-    mutex: ?*anyopaque,
+    mutex: VulkanTimelineMutex,
     allocations: u64,
     deallocations: u64,
     cache_hits: u64,

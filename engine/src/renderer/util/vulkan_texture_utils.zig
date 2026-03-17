@@ -379,7 +379,7 @@ pub fn shutdown_staging_buffer_cleanups(allocator: *types.VulkanAllocator) void 
 
 /// Creates a staging buffer and copies texture bytes into it.
 pub fn create_staging_buffer_with_data(allocator: ?*types.VulkanAllocator, device: c.VkDevice, texture: *const scene.CardinalTexture, outBuffer: *c.VkBuffer, outMemory: *c.VkDeviceMemory, outAllocation: *c.VmaAllocation) bool {
-    _ = device; // unused if using VMA
+    _ = device;
 
     var imageSize: c.VkDeviceSize = 0;
     if (texture.data_size > 0) {
@@ -402,7 +402,7 @@ pub fn create_staging_buffer_with_data(allocator: ?*types.VulkanAllocator, devic
     } else {
         if (texture.width > 4 and imageSize <= 4) {
             tex_utils_log.warn("Staging buffer size is extremely small ({d}) for {d}x{d} texture. Format: {d}. This might be a placeholder or corrupted data.", .{ imageSize, texture.width, texture.height, texture.format });
-            const safe_min = @as(c.VkDeviceSize, texture.width) * texture.height / 2; // Rough lower bound for high compression
+            const safe_min = @as(c.VkDeviceSize, texture.width) * texture.height / 2;
             if (imageSize < safe_min) {
                 tex_utils_log.warn("Adjusting buffer size to {d} to prevent crash.", .{safe_min});
                 imageSize = safe_min;

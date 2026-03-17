@@ -1,0 +1,23 @@
+//! Vulkan format numeric constants.
+//!
+//! Exposes a small set of `VkFormat` values as `u32` for C-ABI-facing asset/runtime structs.
+const c = @import("vulkan_c.zig").c;
+
+pub const VK_FORMAT_UNDEFINED: u32 = @intCast(c.VK_FORMAT_UNDEFINED);
+pub const VK_FORMAT_R8G8B8A8_UNORM: u32 = @intCast(c.VK_FORMAT_R8G8B8A8_UNORM);
+pub const VK_FORMAT_R8G8B8A8_SRGB: u32 = @intCast(c.VK_FORMAT_R8G8B8A8_SRGB);
+pub const VK_FORMAT_B8G8R8A8_UNORM: u32 = @intCast(c.VK_FORMAT_B8G8R8A8_UNORM);
+pub const VK_FORMAT_B8G8R8A8_SRGB: u32 = @intCast(c.VK_FORMAT_B8G8R8A8_SRGB);
+pub const VK_FORMAT_BC1_RGB_UNORM_BLOCK: u32 = @intCast(c.VK_FORMAT_BC1_RGB_UNORM_BLOCK);
+pub const VK_FORMAT_BC1_RGB_SRGB_BLOCK: u32 = @intCast(c.VK_FORMAT_BC1_RGB_SRGB_BLOCK);
+pub const VK_FORMAT_BC1_RGBA_UNORM_BLOCK: u32 = @intCast(c.VK_FORMAT_BC1_RGBA_UNORM_BLOCK);
+pub const VK_FORMAT_BC1_RGBA_SRGB_BLOCK: u32 = @intCast(c.VK_FORMAT_BC1_RGBA_SRGB_BLOCK);
+pub const VK_FORMAT_BC2_UNORM_BLOCK: u32 = @intCast(c.VK_FORMAT_BC2_UNORM_BLOCK);
+pub const VK_FORMAT_BC2_SRGB_BLOCK: u32 = @intCast(c.VK_FORMAT_BC2_SRGB_BLOCK);
+pub const VK_FORMAT_BC3_UNORM_BLOCK: u32 = @intCast(c.VK_FORMAT_BC3_UNORM_BLOCK);
+pub const VK_FORMAT_BC3_SRGB_BLOCK: u32 = @intCast(c.VK_FORMAT_BC3_SRGB_BLOCK);
+pub const VK_FORMAT_BC4_UNORM_BLOCK: u32 = @intCast(c.VK_FORMAT_BC4_UNORM_BLOCK);
+pub const VK_FORMAT_BC4_SNORM_BLOCK: u32 = @intCast(c.VK_FORMAT_BC4_SNORM_BLOCK);
+pub const VK_FORMAT_BC5_UNORM_BLOCK: u32 = @intCast(c.VK_FORMAT_BC5_UNORM_BLOCK);
+pub const VK_FORMAT_BC5_SNORM_BLOCK: u32 = @intCast(c.VK_FORMAT_BC5_SNORM_BLOCK);
+pub const VK_FORMAT_R32G32B32A32_SFLOAT: u32 = @intCast(c.VK_FORMAT_R32G32B32A32_SFLOAT);

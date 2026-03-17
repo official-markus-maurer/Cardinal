@@ -2,11 +2,10 @@
 //!
 //! Parses DDS headers and maps a subset of formats to Vulkan format constants. Some paths convert
 //! to RGBA8 when the source is 24-bit.
-//!
-//! TODO: Move Vulkan format constants to a shared renderer/types module to avoid duplication.
 const std = @import("std");
 const log = @import("../core/log.zig");
-const texture_loader = @import("texture_loader.zig");
+const texture_types = @import("texture_types.zig");
+const vk_formats = @import("../renderer/vulkan_format_constants.zig");
 
 const dds_log = log.ScopedLogger("DDS");
 
@@ -28,25 +27,6 @@ const DDPF_FOURCC: u32 = 0x00000004;
 const DDPF_RGB: u32 = 0x00000040;
 const DDPF_YUV: u32 = 0x00000200;
 const DDPF_LUMINANCE: u32 = 0x00020000;
-
-/// Vulkan format constants used by the DDS parser.
-const VK_FORMAT_UNDEFINED = 0;
-const VK_FORMAT_R8G8B8A8_UNORM = 37;
-const VK_FORMAT_R8G8B8A8_SRGB = 43;
-const VK_FORMAT_B8G8R8A8_UNORM = 44;
-const VK_FORMAT_B8G8R8A8_SRGB = 50;
-const VK_FORMAT_BC1_RGB_UNORM_BLOCK = 131;
-const VK_FORMAT_BC1_RGB_SRGB_BLOCK = 132;
-const VK_FORMAT_BC1_RGBA_UNORM_BLOCK = 133;
-const VK_FORMAT_BC1_RGBA_SRGB_BLOCK = 134;
-const VK_FORMAT_BC2_UNORM_BLOCK = 135;
-const VK_FORMAT_BC2_SRGB_BLOCK = 136;
-const VK_FORMAT_BC3_UNORM_BLOCK = 137;
-const VK_FORMAT_BC3_SRGB_BLOCK = 138;
-const VK_FORMAT_BC4_UNORM_BLOCK = 139;
-const VK_FORMAT_BC4_SNORM_BLOCK = 140;
-const VK_FORMAT_BC5_UNORM_BLOCK = 141;
-const VK_FORMAT_BC5_SNORM_BLOCK = 142;
 
 const DDS_PIXELFORMAT = extern struct {
     dwSize: u32,
@@ -83,7 +63,7 @@ fn makeFourCC(ch0: u8, ch1: u8, ch2: u8, ch3: u8) u32 {
 /// Loads DDS pixel data from a memory buffer into `out_data`.
 ///
 /// When the source is 24-bit RGB/BGR, this allocates a new RGBA8 buffer (alpha=255).
-pub fn load_dds_from_memory(buffer: []const u8, out_data: *texture_loader.TextureData) bool {
+pub fn load_dds_from_memory(buffer: []const u8, out_data: *texture_types.TextureData) bool {
     if (buffer.len < 4 + @sizeOf(DDS_HEADER)) {
         dds_log.err("Buffer too small for DDS header", .{});
         return false;
@@ -91,7 +71,7 @@ pub fn load_dds_from_memory(buffer: []const u8, out_data: *texture_loader.Textur
 
     const magic = std.mem.readInt(u32, buffer[0..4], .little);
     if (magic != DDS_MAGIC) {
-        return false; // Not a DDS file
+        return false;
     }
 
     const header = @as(*const DDS_HEADER, @ptrCast(@alignCast(buffer.ptr + 4)));
@@ -101,25 +81,25 @@ pub fn load_dds_from_memory(buffer: []const u8, out_data: *texture_loader.Textur
         return false;
     }
 
-    var format: u32 = VK_FORMAT_UNDEFINED;
+    var format: u32 = vk_formats.VK_FORMAT_UNDEFINED;
 
     if ((header.ddspf.dwFlags & DDPF_FOURCC) != 0) {
         const fourCC = header.ddspf.dwFourCC;
 
         if (fourCC == makeFourCC('D', 'X', 'T', '1')) {
-            format = VK_FORMAT_BC1_RGBA_SRGB_BLOCK;
+            format = vk_formats.VK_FORMAT_BC1_RGBA_SRGB_BLOCK;
         } else if (fourCC == makeFourCC('D', 'X', 'T', '3')) {
-            format = VK_FORMAT_BC2_SRGB_BLOCK;
+            format = vk_formats.VK_FORMAT_BC2_SRGB_BLOCK;
         } else if (fourCC == makeFourCC('D', 'X', 'T', '5')) {
-            format = VK_FORMAT_BC3_SRGB_BLOCK;
+            format = vk_formats.VK_FORMAT_BC3_SRGB_BLOCK;
         } else if (fourCC == makeFourCC('B', 'C', '4', 'U')) {
-            format = VK_FORMAT_BC4_UNORM_BLOCK;
+            format = vk_formats.VK_FORMAT_BC4_UNORM_BLOCK;
         } else if (fourCC == makeFourCC('B', 'C', '4', 'S')) {
-            format = VK_FORMAT_BC4_SNORM_BLOCK;
+            format = vk_formats.VK_FORMAT_BC4_SNORM_BLOCK;
         } else if (fourCC == makeFourCC('A', 'T', 'I', '2')) {
-            format = VK_FORMAT_BC5_UNORM_BLOCK;
+            format = vk_formats.VK_FORMAT_BC5_UNORM_BLOCK;
         } else if (fourCC == makeFourCC('B', 'C', '5', 'S')) {
-            format = VK_FORMAT_BC5_SNORM_BLOCK;
+            format = vk_formats.VK_FORMAT_BC5_SNORM_BLOCK;
         } else {
             return false;
         }
@@ -132,11 +112,11 @@ pub fn load_dds_from_memory(buffer: []const u8, out_data: *texture_loader.Textur
 
         if (bitCount == 32) {
             if (rMask == 0x00FF0000 and gMask == 0x0000FF00 and bMask == 0x000000FF and aMask == 0xFF000000) {
-                format = VK_FORMAT_B8G8R8A8_UNORM;
+                format = vk_formats.VK_FORMAT_B8G8R8A8_UNORM;
             } else if (rMask == 0x000000FF and gMask == 0x0000FF00 and bMask == 0x00FF0000 and aMask == 0xFF000000) {
-                format = VK_FORMAT_R8G8B8A8_UNORM;
+                format = vk_formats.VK_FORMAT_R8G8B8A8_UNORM;
             } else if (rMask == 0x00FF0000 and gMask == 0x0000FF00 and bMask == 0x000000FF and aMask == 0x00000000) {
-                format = VK_FORMAT_B8G8R8A8_UNORM;
+                format = vk_formats.VK_FORMAT_B8G8R8A8_UNORM;
             } else {
                 dds_log.err("Unsupported 32-bit RGB mask: R={x} G={x} B={x} A={x}", .{ rMask, gMask, bMask, aMask });
                 return false;
@@ -169,21 +149,21 @@ pub fn load_dds_from_memory(buffer: []const u8, out_data: *texture_loader.Textur
             if (is_bgr) {
                 var i: usize = 0;
                 while (i < pixel_count) : (i += 1) {
-                    dst[i * 4 + 0] = src[i * 3 + 2]; // R
-                    dst[i * 4 + 1] = src[i * 3 + 1]; // G
-                    dst[i * 4 + 2] = src[i * 3 + 0]; // B
-                    dst[i * 4 + 3] = 255; // A
+                    dst[i * 4 + 0] = src[i * 3 + 2];
+                    dst[i * 4 + 1] = src[i * 3 + 1];
+                    dst[i * 4 + 2] = src[i * 3 + 0];
+                    dst[i * 4 + 3] = 255;
                 }
-                format = VK_FORMAT_R8G8B8A8_UNORM;
+                format = vk_formats.VK_FORMAT_R8G8B8A8_UNORM;
             } else if (is_rgb) {
                 var i: usize = 0;
                 while (i < pixel_count) : (i += 1) {
-                    dst[i * 4 + 0] = src[i * 3 + 0]; // R
-                    dst[i * 4 + 1] = src[i * 3 + 1]; // G
-                    dst[i * 4 + 2] = src[i * 3 + 2]; // B
-                    dst[i * 4 + 3] = 255; // A
+                    dst[i * 4 + 0] = src[i * 3 + 0];
+                    dst[i * 4 + 1] = src[i * 3 + 1];
+                    dst[i * 4 + 2] = src[i * 3 + 2];
+                    dst[i * 4 + 3] = 255;
                 }
-                format = VK_FORMAT_R8G8B8A8_UNORM;
+                format = vk_formats.VK_FORMAT_R8G8B8A8_UNORM;
             } else {
                 dds_log.err("Unsupported 24-bit RGB mask: R={x} G={x} B={x}", .{ rMask, gMask, bMask });
                 std.c.free(ptr);
@@ -220,7 +200,7 @@ pub fn load_dds_from_memory(buffer: []const u8, out_data: *texture_loader.Textur
 
     out_data.width = header.dwWidth;
     out_data.height = header.dwHeight;
-    out_data.channels = 4; // Compressed textures effectively have alpha usually
+    out_data.channels = 4;
     out_data.is_hdr = 0;
     out_data.format = format;
     out_data.data = @ptrCast(ptr);

@@ -1,3 +1,6 @@
+//! Pipeline state object (PSO) helpers.
+//!
+//! Provides a small shader-module cache and strongly-typed enums/builders used by pipeline creation.
 const std = @import("std");
 const c = @import("vulkan_c.zig").c;
 const types = @import("vulkan_types.zig");
@@ -6,9 +9,11 @@ const pso_log = log.ScopedLogger("PSO");
 const shader_utils = @import("util/vulkan_shader_utils.zig");
 const wrappers = @import("vulkan_wrappers.zig");
 
-// Shader Cache
+/// Cached shader modules keyed by file path.
 var g_shader_cache: std.StringHashMap(c.VkShaderModule) = undefined;
+/// Protects access to the shader cache.
 var g_shader_cache_mutex: std.Thread.Mutex = .{};
+/// Tracks whether the shader cache map has been initialized.
 var g_shader_cache_initialized: bool = false;
 
 fn get_or_load_shader_module(device: c.VkDevice, path: []const u8) !c.VkShaderModule {
@@ -26,8 +31,6 @@ fn get_or_load_shader_module(device: c.VkDevice, path: []const u8) !c.VkShaderMo
         return module;
     }
 
-    // Not in cache, load it
-    // We need a null-terminated string for the C API
     const path_z = try allocator.dupeZ(u8, path);
     defer allocator.free(path_z);
 
@@ -37,7 +40,6 @@ fn get_or_load_shader_module(device: c.VkDevice, path: []const u8) !c.VkShaderMo
         return error.ShaderLoadFailed;
     }
 
-    // Store in cache (dup key for persistence)
     const key = try allocator.dupe(u8, path);
     errdefer allocator.free(key);
 
@@ -65,7 +67,7 @@ pub fn vk_pso_cleanup_shader_cache(device: c.VkDevice) void {
     g_shader_cache_initialized = false;
 }
 
-// Enums
+/// Render pipeline enum wrappers with Vulkan conversion helpers.
 pub const Topology = enum {
     point_list,
     line_list,

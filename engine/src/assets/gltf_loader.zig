@@ -659,7 +659,7 @@ fn load_texture_from_gltf(data: *const c.cgltf_data, img_idx: usize, base_path: 
     }
 }
 
-// Helper to propagate node transforms to meshes
+/// Propagates node world transforms into referenced mesh transforms.
 fn propagate_transforms_to_meshes(node: ?*scene.CardinalSceneNode, meshes: [*]scene.CardinalMesh) void {
     if (node == null) return;
     const n = node.?;
