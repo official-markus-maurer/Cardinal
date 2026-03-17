@@ -74,6 +74,12 @@ void imgui_bridge_create_context(void) {
 
 void imgui_bridge_destroy_context(void) { ImGui::DestroyContext(); }
 
+void *imgui_bridge_get_current_context(void) { return (void *)ImGui::GetCurrentContext(); }
+
+void imgui_bridge_set_current_context(void *ctx) {
+  ImGui::SetCurrentContext((ImGuiContext *)ctx);
+}
+
 void imgui_bridge_style_colors_dark(void) { ImGui::StyleColorsDark(); }
 
 void imgui_bridge_style_colors_cardinal(void) {

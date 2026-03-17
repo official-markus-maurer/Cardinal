@@ -12,6 +12,144 @@ const c = @cImport({
     @cInclude("math.h");
 });
 
+const OwnedControllerData = struct {
+    arena: std.heap.ArenaAllocator,
+    def: *AnimStateMachineDef,
+};
+
+var g_owned: std.AutoHashMapUnmanaged(*AnimController, OwnedControllerData) = .{};
+var g_owned_mutex: std.Thread.Mutex = .{};
+
+fn normalize_node(node: *AnimNode) void {
+    if (node.type != .Blend1D) return;
+    if (node.child_count == 0 or node.children == null or node.thresholds == null) return;
+
+    const count: usize = @intCast(node.child_count);
+    var thresholds = node.thresholds.?[0..count];
+    var children = node.children.?[0..count];
+
+    for (0..count) |i| {
+        if (std.math.isNan(thresholds[i])) thresholds[i] = 0.0;
+    }
+
+    var i: usize = 1;
+    while (i < count) : (i += 1) {
+        var j = i;
+        while (j > 0 and thresholds[j] < thresholds[j - 1]) : (j -= 1) {
+            std.mem.swap(f32, &thresholds[j], &thresholds[j - 1]);
+            std.mem.swap(AnimNode, &children[j], &children[j - 1]);
+        }
+    }
+
+    var prev = thresholds[0];
+    i = 1;
+    while (i < count) : (i += 1) {
+        if (thresholds[i] <= prev) thresholds[i] = prev + 0.0001;
+        prev = thresholds[i];
+    }
+
+    i = 0;
+    while (i < count) : (i += 1) {
+        normalize_node(&children[i]);
+    }
+}
+
+fn normalize_definition(def: *AnimStateMachineDef) void {
+    if (def.states == null or def.state_count == 0) return;
+    var i: u32 = 0;
+    while (i < def.state_count) : (i += 1) {
+        if (def.states.?[i].root_node) |root| {
+            normalize_node(root);
+        }
+    }
+}
+
+fn clone_node_into(a: std.mem.Allocator, dst: *AnimNode, src: *const AnimNode) !void {
+    dst.* = src.*;
+
+    if (src.child_count == 0 or src.children == null) {
+        dst.children = null;
+        dst.child_count = 0;
+        dst.thresholds = null;
+        return;
+    }
+
+    const count: usize = @intCast(src.child_count);
+    const children = try a.alloc(AnimNode, count);
+    dst.children = children.ptr;
+    dst.child_count = src.child_count;
+
+    if (src.thresholds != null) {
+        const thrs = try a.alloc(f32, count);
+        @memcpy(thrs[0..count], src.thresholds.?[0..count]);
+        dst.thresholds = thrs.ptr;
+    } else {
+        dst.thresholds = null;
+    }
+
+    const src_children = src.children.?[0..count];
+    for (0..count) |i| {
+        try clone_node_into(a, &children[i], &src_children[i]);
+    }
+}
+
+fn clone_definition(a: std.mem.Allocator, src: *const AnimStateMachineDef) !*AnimStateMachineDef {
+    const def = try a.create(AnimStateMachineDef);
+    def.* = src.*;
+
+    if (src.state_count == 0 or src.states == null) {
+        def.states = null;
+        def.state_count = 0;
+        return def;
+    }
+
+    const state_count: usize = @intCast(src.state_count);
+    const states = try a.alloc(AnimState, state_count);
+    def.states = states.ptr;
+
+    const src_states = src.states.?[0..state_count];
+    for (0..state_count) |i| {
+        const s_src = &src_states[i];
+        var s_dst = s_src.*;
+
+        if (s_src.transition_count > 0 and s_src.transitions != null) {
+            const t_count: usize = @intCast(s_src.transition_count);
+            const transitions = try a.alloc(AnimTransition, t_count);
+            @memcpy(transitions[0..t_count], s_src.transitions.?[0..t_count]);
+
+            for (0..t_count) |j| {
+                const t_src = &s_src.transitions.?[j];
+                if (t_src.condition_count > 0 and t_src.conditions != null) {
+                    const c_count: usize = @intCast(t_src.condition_count);
+                    const conditions = try a.alloc(AnimCondition, c_count);
+                    @memcpy(conditions[0..c_count], t_src.conditions.?[0..c_count]);
+                    transitions[j].conditions = conditions.ptr;
+                } else {
+                    transitions[j].conditions = null;
+                    transitions[j].condition_count = 0;
+                }
+            }
+
+            s_dst.transitions = transitions.ptr;
+        } else {
+            s_dst.transitions = null;
+            s_dst.transition_count = 0;
+        }
+
+        if (s_src.root_node) |root| {
+            const root_copy = try a.create(AnimNode);
+            try clone_node_into(a, root_copy, root);
+            s_dst.root_node = root_copy;
+        } else {
+            s_dst.root_node = null;
+        }
+
+        states[i] = s_dst;
+    }
+
+    return def;
+}
+
 /// Condition operator for transitions.
 pub const AnimConditionOp = enum(c_int) {
     Greater = 0,
@@ -135,12 +273,37 @@ pub export fn cardinal_anim_controller_create(def: ?*const AnimStateMachineDef, 
     if (ptr == null) return null;
 
     const controller: *AnimController = @ptrCast(@alignCast(ptr));
-    controller.definition = def;
     controller.system = system;
 
+    const zig_alloc = allocator.as_allocator();
+    var owned_data: ?OwnedControllerData = null;
+    {
+        var arena = std.heap.ArenaAllocator.init(zig_alloc);
+        const a = arena.allocator();
+        const copied = clone_definition(a, def.?) catch null;
+        if (copied) |d| {
+            normalize_definition(d);
+            owned_data = .{ .arena = arena, .def = d };
+            controller.definition = d;
+        } else {
+            arena.deinit();
+            controller.definition = def;
+        }
+    }
+
+    if (owned_data) |data| {
+        g_owned_mutex.lock();
+        defer g_owned_mutex.unlock();
+        _ = g_owned.put(zig_alloc, controller, data) catch {
+            data.arena.deinit();
+            controller.definition = def;
+        };
+    }
+
     var i: u32 = 0;
-    while (i < def.?.state_count) : (i += 1) {
-        if (def.?.states.?[i].name_hash == def.?.start_state_hash) {
+    const resolved_def = controller.definition.?;
+    while (i < resolved_def.state_count) : (i += 1) {
+        if (resolved_def.states.?[i].name_hash == resolved_def.start_state_hash) {
             controller.current_state_index = i;
             break;
         }
@@ -153,6 +316,13 @@ pub export fn cardinal_anim_controller_create(def: ?*const AnimStateMachineDef, 
 pub export fn cardinal_anim_controller_destroy(controller: ?*AnimController) callconv(.c) void {
     if (controller == null) return;
     const allocator = memory.cardinal_get_allocator_for_category(.ENGINE);
+    g_owned_mutex.lock();
+    if (g_owned.fetchRemove(controller.?)) |entry| {
+        g_owned_mutex.unlock();
+        entry.value.arena.deinit();
+    } else {
+        g_owned_mutex.unlock();
+    }
     memory.cardinal_free(allocator, controller);
 }
 
@@ -235,40 +405,55 @@ fn evaluate_node(ctrl: *AnimController, node: *const AnimNode, time: f32, weight
             }
         },
         .Blend1D => {
-            if (node.child_count == 0) return;
+            if (node.child_count == 0 or node.children == null or node.thresholds == null) return;
             const param_val = get_param_value(ctrl, node.param_hash);
-
-            // TODO: Validate/sort `thresholds` at load time for Blend1D nodes.
-            var idx_a: u32 = 0;
-            var idx_b: u32 = 0;
-            var t: f32 = 0.0;
 
             if (node.child_count == 1) {
                 evaluate_node(ctrl, &node.children.?[0], time, weight);
                 return;
             }
 
-            if (param_val <= node.thresholds.?[0]) {
-                evaluate_node(ctrl, &node.children.?[0], time, weight);
-                return;
-            }
-
-            if (param_val >= node.thresholds.?[node.child_count - 1]) {
-                evaluate_node(ctrl, &node.children.?[node.child_count - 1], time, weight);
-                return;
-            }
+            const count: u32 = node.child_count;
+            var low_idx: ?u32 = null;
+            var high_idx: ?u32 = null;
+            var low_thr: f32 = -std.math.inf(f32);
+            var high_thr: f32 = std.math.inf(f32);
 
             var i: u32 = 0;
-            while (i < node.child_count - 1) : (i += 1) {
-                const t1 = node.thresholds.?[i];
-                const t2 = node.thresholds.?[i + 1];
-                if (param_val >= t1 and param_val <= t2) {
-                    idx_a = i;
-                    idx_b = i + 1;
-                    if (t2 - t1 > 0.0001) {
-                        t = (param_val - t1) / (t2 - t1);
-                    }
-                    break;
+            while (i < count) : (i += 1) {
+                var thr = node.thresholds.?[i];
+                if (std.math.isNan(thr)) thr = 0.0;
+
+                if (thr <= param_val and thr > low_thr) {
+                    low_thr = thr;
+                    low_idx = i;
+                }
+                if (thr >= param_val and thr < high_thr) {
+                    high_thr = thr;
+                    high_idx = i;
+                }
+            }
+
+            if (low_idx == null and high_idx == null) return;
+
+            var idx_a: u32 = undefined;
+            var idx_b: u32 = undefined;
+            var t: f32 = 0.0;
+
+            if (low_idx == null) {
+                idx_a = high_idx.?;
+                idx_b = high_idx.?;
+            } else if (high_idx == null) {
+                idx_a = low_idx.?;
+                idx_b = low_idx.?;
+            } else {
+                idx_a = low_idx.?;
+                idx_b = high_idx.?;
+                const denom = high_thr - low_thr;
+                if (idx_a != idx_b and denom > 0.0001) {
+                    t = (param_val - low_thr) / denom;
+                    if (t < 0.0) t = 0.0;
+                    if (t > 1.0) t = 1.0;
                 }
             }
 

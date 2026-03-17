@@ -18,6 +18,7 @@ pub const RenderSystemDesc = system_pkg.System{
     .priority = -100, // Run late
     .reads = &.{
         registry_pkg.Registry.get_type_id(components.Camera),
+        registry_pkg.Registry.get_type_id(components.Name),
         registry_pkg.Registry.get_type_id(components.MeshRenderer),
         registry_pkg.Registry.get_type_id(components.Transform),
     },
@@ -65,15 +66,24 @@ pub const RenderSystem = struct {
         // 1. Find Camera
         var camera_view = registry.view(components.Camera);
         var active_camera: ?*components.Camera = null;
-        var camera_transform: ?*components.Transform = null;
+        var best_name_match = false;
 
         var cam_it = camera_view.iterator();
         while (cam_it.next()) |entry| {
-            // For now, just pick the first camera we find
-            // TODO: we might have a "main" tag or flag
-            active_camera = entry.component;
-            camera_transform = registry.get(components.Transform, entry.entity);
-            if (active_camera != null) break;
+            if (!best_name_match) {
+                if (registry.get(components.Name, entry.entity)) |n| {
+                    const s = n.slice();
+                    if (std.mem.eql(u8, s, "MainCamera") or std.mem.eql(u8, s, "Main Camera")) {
+                        active_camera = entry.component;
+                        best_name_match = true;
+                        continue;
+                    }
+                }
+            }
+
+            if (active_camera == null) {
+                active_camera = entry.component;
+            }
         }
 
         if (active_camera == null) {
@@ -82,24 +92,20 @@ pub const RenderSystem = struct {
         }
 
         // 2. Iterate Renderables
-        var mesh_view = registry.view(components.MeshRenderer);
+        var mesh_view = registry.multi_view(.{ components.MeshRenderer, components.Transform });
         var mesh_it = mesh_view.iterator();
 
         var draw_count: usize = 0;
-        // TODO: Batch/collect draw submissions to reduce per-entity overhead.
 
         while (mesh_it.next()) |entry| {
-            const entity = entry.entity;
-            const renderer = entry.component;
+            _ = entry.entity;
+            const renderer = entry.components[0];
+            const transform = entry.components[1];
 
             if (!renderer.visible) continue;
 
-            if (registry.get(components.Transform, entity)) |transform| {
-                // Here we would submit the draw call to the renderer
-                // renderer.submit(mesh, material, transform.get_matrix());
-                _ = transform;
-                draw_count += 1;
-            }
+            _ = transform.get_matrix();
+            draw_count += 1;
         }
 
         // sys_log.debug("RenderSystem processed {d} objects", .{draw_count});

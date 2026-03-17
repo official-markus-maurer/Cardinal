@@ -2,8 +2,6 @@
 //!
 //! Allocates per-frame command pools and primary buffers, provides helpers to record common
 //! rendering work (render graph passes, skybox, mesh shader prep), and coordinates with sync.
-//!
-//! TODO: Deduplicate per-queue command pool creation into one helper.
 const std = @import("std");
 const builtin = @import("builtin");
 const log = @import("../core/log.zig");
@@ -29,58 +27,41 @@ const cmd_log = log.ScopedLogger("COMMANDS");
 
 const c = @import("vulkan_c.zig").c;
 
-/// Creates per-frame graphics command pools.
-fn create_command_pools(s: *types.VulkanState) bool {
+fn create_command_pool_array(s: *types.VulkanState, out: *?[*]c.VkCommandPool, queue_family: u32, flags: c.VkCommandPoolCreateFlags, label: [*:0]const u8) bool {
     const mem_alloc = memory.cardinal_get_allocator_for_category(.RENDERER);
     const pools_ptr = memory.cardinal_alloc(mem_alloc, s.sync.max_frames_in_flight * @sizeOf(c.VkCommandPool));
     if (pools_ptr == null) return false;
 
-    s.commands.pools = @as([*]c.VkCommandPool, @ptrCast(@alignCast(pools_ptr)));
+    out.* = @as([*]c.VkCommandPool, @ptrCast(@alignCast(pools_ptr)));
 
     var i: u32 = 0;
     while (i < s.sync.max_frames_in_flight) : (i += 1) {
-        if (!vk_utils.vk_utils_create_command_pool(s.context.device, s.context.graphics_queue_family, c.VK_COMMAND_POOL_CREATE_RESET_COMMAND_BUFFER_BIT, &s.commands.pools.?[i], "graphics command pool")) {
+        if (!vk_utils.vk_utils_create_command_pool(s.context.device, queue_family, flags, &out.*.?[i], label)) {
             return false;
         }
     }
+    return true;
+}
+
+/// Creates per-frame graphics command pools.
+fn create_command_pools(s: *types.VulkanState) bool {
+    if (!create_command_pool_array(s, &s.commands.pools, s.context.graphics_queue_family, c.VK_COMMAND_POOL_CREATE_RESET_COMMAND_BUFFER_BIT, "graphics command pool")) return false;
     cmd_log.warn("Created {d} command pools", .{s.sync.max_frames_in_flight});
     return true;
 }
 
 /// Creates per-frame transient graphics command pools.
 fn create_transient_command_pools(s: *types.VulkanState) bool {
-    const mem_alloc = memory.cardinal_get_allocator_for_category(.RENDERER);
-    const pools_ptr = memory.cardinal_alloc(mem_alloc, s.sync.max_frames_in_flight * @sizeOf(c.VkCommandPool));
-    if (pools_ptr == null) return false;
-
-    s.commands.transient_pools = @as([*]c.VkCommandPool, @ptrCast(@alignCast(pools_ptr)));
-
-    var i: u32 = 0;
-    while (i < s.sync.max_frames_in_flight) : (i += 1) {
-        const flags: c.VkCommandPoolCreateFlags = c.VK_COMMAND_POOL_CREATE_RESET_COMMAND_BUFFER_BIT | c.VK_COMMAND_POOL_CREATE_TRANSIENT_BIT;
-        if (!vk_utils.vk_utils_create_command_pool(s.context.device, s.context.graphics_queue_family, flags, &s.commands.transient_pools.?[i], "transient command pool")) {
-            return false;
-        }
-    }
+    const flags: c.VkCommandPoolCreateFlags = c.VK_COMMAND_POOL_CREATE_RESET_COMMAND_BUFFER_BIT | c.VK_COMMAND_POOL_CREATE_TRANSIENT_BIT;
+    if (!create_command_pool_array(s, &s.commands.transient_pools, s.context.graphics_queue_family, flags, "transient command pool")) return false;
     cmd_log.warn("Created {d} transient command pools", .{s.sync.max_frames_in_flight});
     return true;
 }
 
 /// Creates per-frame transient compute command pools.
 fn create_compute_transient_command_pools(s: *types.VulkanState) bool {
-    const mem_alloc = memory.cardinal_get_allocator_for_category(.RENDERER);
-    const pools_ptr = memory.cardinal_alloc(mem_alloc, s.sync.max_frames_in_flight * @sizeOf(c.VkCommandPool));
-    if (pools_ptr == null) return false;
-
-    s.commands.compute_transient_pools = @as([*]c.VkCommandPool, @ptrCast(@alignCast(pools_ptr)));
-
-    var i: u32 = 0;
-    while (i < s.sync.max_frames_in_flight) : (i += 1) {
-        const flags: c.VkCommandPoolCreateFlags = c.VK_COMMAND_POOL_CREATE_RESET_COMMAND_BUFFER_BIT | c.VK_COMMAND_POOL_CREATE_TRANSIENT_BIT;
-        if (!vk_utils.vk_utils_create_command_pool(s.context.device, s.context.compute_queue_family, flags, &s.commands.compute_transient_pools.?[i], "compute transient command pool")) {
-            return false;
-        }
-    }
+    const flags: c.VkCommandPoolCreateFlags = c.VK_COMMAND_POOL_CREATE_RESET_COMMAND_BUFFER_BIT | c.VK_COMMAND_POOL_CREATE_TRANSIENT_BIT;
+    if (!create_command_pool_array(s, &s.commands.compute_transient_pools, s.context.compute_queue_family, flags, "compute transient command pool")) return false;
     cmd_log.warn("Created {d} compute transient command pools", .{s.sync.max_frames_in_flight});
     return true;
 }
@@ -88,8 +69,7 @@ fn create_compute_transient_command_pools(s: *types.VulkanState) bool {
 /// Allocates per-frame primary command buffers.
 fn allocate_command_buffers(s: *types.VulkanState) bool {
     const mem_alloc = memory.cardinal_get_allocator_for_category(.RENDERER);
-    // TODO: Validate command buffer storage sizing and remove +1 padding.
-    const buffers_ptr = memory.cardinal_alloc(mem_alloc, (s.sync.max_frames_in_flight + 1) * @sizeOf(c.VkCommandBuffer));
+    const buffers_ptr = memory.cardinal_alloc(mem_alloc, s.sync.max_frames_in_flight * @sizeOf(c.VkCommandBuffer));
     if (buffers_ptr == null) return false;
     s.commands.buffers = @as([*]c.VkCommandBuffer, @ptrCast(@alignCast(buffers_ptr)));
 
@@ -107,7 +87,7 @@ fn allocate_command_buffers(s: *types.VulkanState) bool {
     }
     cmd_log.warn("Allocated {d} primary command buffers", .{s.sync.max_frames_in_flight});
 
-    const sec_buffers_ptr = memory.cardinal_alloc(mem_alloc, (s.sync.max_frames_in_flight + 1) * @sizeOf(c.VkCommandBuffer));
+    const sec_buffers_ptr = memory.cardinal_alloc(mem_alloc, s.sync.max_frames_in_flight * @sizeOf(c.VkCommandBuffer));
     if (sec_buffers_ptr == null) return false;
     s.commands.alternate_primary_buffers = @as([*]c.VkCommandBuffer, @ptrCast(@alignCast(sec_buffers_ptr)));
 
@@ -125,7 +105,7 @@ fn allocate_command_buffers(s: *types.VulkanState) bool {
     }
     cmd_log.warn("Allocated {d} alternate primary command buffers", .{s.sync.max_frames_in_flight});
 
-    const comp_buffers_ptr = memory.cardinal_alloc(mem_alloc, (s.sync.max_frames_in_flight + 1) * @sizeOf(c.VkCommandBuffer));
+    const comp_buffers_ptr = memory.cardinal_alloc(mem_alloc, s.sync.max_frames_in_flight * @sizeOf(c.VkCommandBuffer));
     if (comp_buffers_ptr == null) return false;
     s.commands.compute_primary_buffers = @as([*]c.VkCommandBuffer, @ptrCast(@alignCast(comp_buffers_ptr)));
 
@@ -143,7 +123,7 @@ fn allocate_command_buffers(s: *types.VulkanState) bool {
     }
     cmd_log.warn("Allocated {d} compute primary command buffers", .{s.sync.max_frames_in_flight});
 
-    const scene_sec_ptr = memory.cardinal_alloc(mem_alloc, (s.sync.max_frames_in_flight + 1) * @sizeOf(c.VkCommandBuffer));
+    const scene_sec_ptr = memory.cardinal_alloc(mem_alloc, s.sync.max_frames_in_flight * @sizeOf(c.VkCommandBuffer));
     if (scene_sec_ptr == null) return false;
     s.commands.scene_secondary_buffers = @as([*]c.VkCommandBuffer, @ptrCast(@alignCast(scene_sec_ptr)));
 
@@ -247,7 +227,7 @@ fn validate_swapchain_image(s: *types.VulkanState, image_index: u32) bool {
 }
 
 fn begin_command_buffer(s: *types.VulkanState, cmd: c.VkCommandBuffer) bool {
-    cmd_log.info("Frame {d}: Resetting command buffer {any}", .{ s.sync.current_frame, cmd });
+    cmd_log.debug("Frame {d}: Resetting command buffer {any}", .{ s.sync.current_frame, cmd });
     const reset_result = c.vkResetCommandBuffer(cmd, 0);
     if (reset_result != c.VK_SUCCESS) {
         cmd_log.err("Frame {d}: Failed to reset command buffer: {d}", .{ s.sync.current_frame, reset_result });
@@ -258,7 +238,7 @@ fn begin_command_buffer(s: *types.VulkanState, cmd: c.VkCommandBuffer) bool {
     bi.sType = c.VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
     bi.flags = c.VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
 
-    cmd_log.info("Frame {d}: Beginning command buffer {any} with flags {d}", .{ s.sync.current_frame, cmd, bi.flags });
+    cmd_log.debug("Frame {d}: Beginning command buffer {any} with flags {d}", .{ s.sync.current_frame, cmd, bi.flags });
     const begin_result = c.vkBeginCommandBuffer(cmd, &bi);
     if (begin_result != c.VK_SUCCESS) {
         cmd_log.err("Frame {d}: Failed to begin command buffer: {d}", .{ s.sync.current_frame, begin_result });
@@ -312,21 +292,39 @@ fn transition_images(s: *types.VulkanState, cmd: c.VkCommandBuffer, image_index:
     barrier.srcQueueFamilyIndex = c.VK_QUEUE_FAMILY_IGNORED;
     barrier.dstQueueFamilyIndex = c.VK_QUEUE_FAMILY_IGNORED;
 
+    const wanted_layout = c.VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
+    const dst_stage = c.VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT;
+    const dst_access = c.VK_ACCESS_2_COLOR_ATTACHMENT_READ_BIT | c.VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT;
+
     if (!s.swapchain.image_layout_initialized.?[image_index]) {
         barrier.srcStageMask = c.VK_PIPELINE_STAGE_2_TOP_OF_PIPE_BIT;
         barrier.srcAccessMask = 0;
         barrier.oldLayout = c.VK_IMAGE_LAYOUT_UNDEFINED;
-        s.swapchain.image_layout_initialized.?[image_index] = true;
+    } else if (s.swapchain.image_layouts != null and s.swapchain.image_stage_masks != null and s.swapchain.image_access_masks != null) {
+        barrier.srcStageMask = s.swapchain.image_stage_masks.?[image_index];
+        barrier.srcAccessMask = s.swapchain.image_access_masks.?[image_index];
+        barrier.oldLayout = s.swapchain.image_layouts.?[image_index];
     } else {
-        // TODO: Track swapchain image layout across passes instead of assuming PRESENT_SRC_KHR.
-        barrier.srcStageMask = c.VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT;
+        barrier.srcStageMask = c.VK_PIPELINE_STAGE_2_BOTTOM_OF_PIPE_BIT;
         barrier.srcAccessMask = 0;
         barrier.oldLayout = c.VK_IMAGE_LAYOUT_PRESENT_SRC_KHR;
     }
 
-    barrier.dstStageMask = c.VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT;
-    barrier.dstAccessMask = c.VK_ACCESS_2_COLOR_ATTACHMENT_READ_BIT | c.VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT;
-    barrier.newLayout = c.VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
+    barrier.dstStageMask = dst_stage;
+    barrier.dstAccessMask = dst_access;
+    barrier.newLayout = wanted_layout;
+
+    if (barrier.oldLayout == wanted_layout) {
+        if (!s.swapchain.image_layout_initialized.?[image_index]) {
+            s.swapchain.image_layout_initialized.?[image_index] = true;
+        }
+        if (s.swapchain.image_layouts != null and s.swapchain.image_stage_masks != null and s.swapchain.image_access_masks != null) {
+            s.swapchain.image_layouts.?[image_index] = wanted_layout;
+            s.swapchain.image_stage_masks.?[image_index] = dst_stage;
+            s.swapchain.image_access_masks.?[image_index] = dst_access;
+        }
+        return;
+    }
 
     var dep = std.mem.zeroes(c.VkDependencyInfo);
     dep.sType = c.VK_STRUCTURE_TYPE_DEPENDENCY_INFO;
@@ -338,6 +336,13 @@ fn transition_images(s: *types.VulkanState, cmd: c.VkCommandBuffer, image_index:
     }
 
     s.context.vkCmdPipelineBarrier2.?(cmd, &dep);
+
+    s.swapchain.image_layout_initialized.?[image_index] = true;
+    if (s.swapchain.image_layouts != null and s.swapchain.image_stage_masks != null and s.swapchain.image_access_masks != null) {
+        s.swapchain.image_layouts.?[image_index] = wanted_layout;
+        s.swapchain.image_stage_masks.?[image_index] = dst_stage;
+        s.swapchain.image_access_masks.?[image_index] = dst_access;
+    }
 }
 
 pub fn vk_begin_rendering(s: *types.VulkanState, cmd: c.VkCommandBuffer, image_index: u32, use_depth: bool, depth_view: ?c.VkImageView, clears: [*]const c.VkClearValue, should_clear: bool, flags: c.VkRenderingFlags) bool {
@@ -441,9 +446,7 @@ fn end_recording(s: *types.VulkanState, cmd: c.VkCommandBuffer, image_index: u32
         s.context.vkCmdPipelineBarrier2.?(cmd, &dep);
     }
 
-    cmd_log.info("Frame {d}: Ending command buffer {any}", .{ s.sync.current_frame, cmd });
     const end_result = c.vkEndCommandBuffer(cmd);
-    cmd_log.info("Frame {d}: End result: {d}", .{ s.sync.current_frame, end_result });
 
     if (end_result != c.VK_SUCCESS) {
         cmd_log.err("Frame {d}: Failed to end command buffer: {d}", .{ s.sync.current_frame, end_result });
@@ -496,7 +499,7 @@ pub fn vk_record_scene_content(s: *types.VulkanState, cmd: c.VkCommandBuffer) vo
 }
 
 /// Records scene draw calls using per-frame secondary command buffers when available.
-pub fn vk_record_scene_with_secondary_buffers(s: *types.VulkanState, primary_cmd: c.VkCommandBuffer, image_index: u32, use_depth: bool, clears: [*]const c.VkClearValue) void {
+pub fn vk_record_scene_with_secondary_buffers(s: *types.VulkanState, primary_cmd: c.VkCommandBuffer, image_index: u32, use_depth: bool, clears: [*]const c.VkClearValue, color_format_in: c.VkFormat) void {
     _ = image_index;
     _ = clears;
     if (s.commands.scene_secondary_buffers == null) {
@@ -511,7 +514,7 @@ pub fn vk_record_scene_with_secondary_buffers(s: *types.VulkanState, primary_cmd
         return;
     }
 
-    const color_format: c.VkFormat = c.VK_FORMAT_R16G16B16A16_SFLOAT;
+    const color_format: c.VkFormat = color_format_in;
     const depth_format = s.swapchain.depth_format;
 
     var inheritance_rendering_info = std.mem.zeroes(c.VkCommandBufferInheritanceRenderingInfo);
@@ -539,7 +542,6 @@ pub fn vk_record_scene_with_secondary_buffers(s: *types.VulkanState, primary_cmd
         return;
     }
 
-    // TODO: Use dynamic-rendering inheritance once pipeline/rendering state is stable.
     var vp = std.mem.zeroes(c.VkViewport);
     vp.x = 0;
     vp.y = 0;
@@ -592,11 +594,44 @@ pub export fn vk_create_commands_sync(s: ?*types.VulkanState) callconv(.c) bool 
         memory.cardinal_free(mem_alloc, vs.swapchain.image_layout_initialized);
         vs.swapchain.image_layout_initialized = null;
     }
+    if (vs.swapchain.image_layouts != null) {
+        memory.cardinal_free(mem_alloc, vs.swapchain.image_layouts);
+        vs.swapchain.image_layouts = null;
+    }
+    if (vs.swapchain.image_stage_masks != null) {
+        memory.cardinal_free(mem_alloc, vs.swapchain.image_stage_masks);
+        vs.swapchain.image_stage_masks = null;
+    }
+    if (vs.swapchain.image_access_masks != null) {
+        memory.cardinal_free(mem_alloc, vs.swapchain.image_access_masks);
+        vs.swapchain.image_access_masks = null;
+    }
 
     const layout_ptr = memory.cardinal_alloc(mem_alloc, vs.swapchain.image_count * @sizeOf(bool));
     if (layout_ptr == null) return false;
     @memset(@as([*]u8, @ptrCast(layout_ptr))[0..(vs.swapchain.image_count * @sizeOf(bool))], 0);
     vs.swapchain.image_layout_initialized = @as([*]bool, @ptrCast(@alignCast(layout_ptr)));
+
+    const layouts_ptr = memory.cardinal_alloc(mem_alloc, vs.swapchain.image_count * @sizeOf(c.VkImageLayout));
+    const stages_ptr = memory.cardinal_alloc(mem_alloc, vs.swapchain.image_count * @sizeOf(c.VkPipelineStageFlags2));
+    const access_ptr = memory.cardinal_alloc(mem_alloc, vs.swapchain.image_count * @sizeOf(c.VkAccessFlags2));
+    if (layouts_ptr == null or stages_ptr == null or access_ptr == null) {
+        if (layouts_ptr) |p| memory.cardinal_free(mem_alloc, p);
+        if (stages_ptr) |p| memory.cardinal_free(mem_alloc, p);
+        if (access_ptr) |p| memory.cardinal_free(mem_alloc, p);
+        return false;
+    }
+
+    vs.swapchain.image_layouts = @as([*]c.VkImageLayout, @ptrCast(@alignCast(layouts_ptr)));
+    vs.swapchain.image_stage_masks = @as([*]c.VkPipelineStageFlags2, @ptrCast(@alignCast(stages_ptr)));
+    vs.swapchain.image_access_masks = @as([*]c.VkAccessFlags2, @ptrCast(@alignCast(access_ptr)));
+
+    var i: u32 = 0;
+    while (i < vs.swapchain.image_count) : (i += 1) {
+        vs.swapchain.image_layouts.?[i] = c.VK_IMAGE_LAYOUT_UNDEFINED;
+        vs.swapchain.image_stage_masks.?[i] = c.VK_PIPELINE_STAGE_2_TOP_OF_PIPE_BIT;
+        vs.swapchain.image_access_masks.?[i] = 0;
+    }
 
     if (!create_sync_objects(vs)) return false;
 
@@ -772,7 +807,7 @@ pub export fn vk_record_cmd(s: ?*types.VulkanState, image_index: u32) callconv(.
     const cmd = select_command_buffer(vs);
     if (cmd == null) return;
 
-    cmd_log.info("Frame {d}: Recording command buffer {any} (buffer {d}) for image {d}", .{ vs.sync.current_frame, cmd, vs.commands.current_buffer_index, image_index });
+    cmd_log.debug("Frame {d}: Recording command buffer {any} (buffer {d}) for image {d}", .{ vs.sync.current_frame, cmd, vs.commands.current_buffer_index, image_index });
 
     if (!validate_swapchain_image(vs, image_index)) return;
 

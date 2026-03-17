@@ -3,7 +3,6 @@
 //! Creates SSAO resources (noise texture, kernel, images) and the compute/graphics passes that
 //! write and blur the occlusion buffer.
 //!
-//! TODO: Make SSAO kernel generation deterministic for reproducible captures.
 const std = @import("std");
 const builtin = @import("builtin");
 const log = @import("../core/log.zig");
@@ -21,6 +20,54 @@ const c = @import("vulkan_c.zig").c;
 
 const ssao_log = log.ScopedLogger("SSAO");
 
+var cached_proj: [16]f32 = undefined;
+var cached_view: [16]f32 = undefined;
+var cached_matrices_valid: bool = false;
+
+fn prng_next_u32(state: *u64) u32 {
+    state.* = state.* *% 6364136223846793005 +% 1;
+    return @truncate(state.* >> 32);
+}
+
+fn prng_next_f32_01(state: *u64) f32 {
+    const v: u32 = prng_next_u32(state) >> 8;
+    return @as(f32, @floatFromInt(v)) / 16777216.0;
+}
+
+fn destroy_image_view(device: c.VkDevice, view: *c.VkImageView) void {
+    if (view.* != null) {
+        c.vkDestroyImageView(device, view.*, null);
+        view.* = null;
+    }
+}
+
+fn free_vma_image(allocator: *types.VulkanAllocator, image: *c.VkImage, memory_ptr: *c.VkDeviceMemory, allocation: *c.VmaAllocation) void {
+    if (image.* != null) {
+        vk_allocator.free_image(allocator, image.*, allocation.*);
+        image.* = null;
+        allocation.* = null;
+    }
+    memory_ptr.* = null;
+}
+
+fn free_vma_buffer(allocator: *types.VulkanAllocator, buffer: *c.VkBuffer, memory_ptr: *c.VkDeviceMemory, allocation: *c.VmaAllocation) void {
+    if (buffer.* != null) {
+        vk_allocator.free_buffer(allocator, buffer.*, allocation.*);
+        buffer.* = null;
+        allocation.* = null;
+    }
+    memory_ptr.* = null;
+}
+
+fn destroy_descriptor_manager_ptr(mgr_ptr: *?*types.VulkanDescriptorManager) void {
+    const mem_alloc = memory.cardinal_get_allocator_for_category(.RENDERER);
+    if (mgr_ptr.*) |mgr| {
+        vk_descriptor_manager.vk_descriptor_manager_destroy(mgr);
+        memory.cardinal_free(mem_alloc, mgr);
+        mgr_ptr.* = null;
+    }
+}
+
 /// Uniform buffer contents used by the SSAO shaders.
 const SSAOKernel = extern struct {
     projection: math.Mat4,
@@ -36,6 +83,7 @@ const SSAOKernel = extern struct {
 /// Initializes SSAO resources, descriptors, and pipelines.
 pub fn vk_ssao_init(s: *types.VulkanState) bool {
     s.pipelines.use_ssao = false;
+    cached_matrices_valid = false;
 
     if (!create_resources(s, s.swapchain.extent.width, s.swapchain.extent.height)) {
         ssao_log.err("Failed to create SSAO resources", .{});
@@ -78,46 +126,19 @@ pub fn vk_ssao_destroy(s: *types.VulkanState) void {
     const device = s.context.device;
     const allocator = &s.allocator;
 
-    // TODO: Consolidate SSAO resource teardown to avoid repeated per-field logic.
     var i: u32 = 0;
     while (i < types.MAX_FRAMES_IN_FLIGHT) : (i += 1) {
-        if (s.pipelines.ssao_pipeline.ssao_view[i] != null) {
-            c.vkDestroyImageView(device, s.pipelines.ssao_pipeline.ssao_view[i], null);
-            s.pipelines.ssao_pipeline.ssao_view[i] = null;
-        }
-        if (s.pipelines.ssao_pipeline.ssao_image[i] != null) {
-            vk_allocator.free_image(allocator, s.pipelines.ssao_pipeline.ssao_image[i], s.pipelines.ssao_pipeline.ssao_allocation[i]);
-            s.pipelines.ssao_pipeline.ssao_image[i] = null;
-            s.pipelines.ssao_pipeline.ssao_allocation[i] = null;
-        }
+        destroy_image_view(device, &s.pipelines.ssao_pipeline.ssao_view[i]);
+        free_vma_image(allocator, &s.pipelines.ssao_pipeline.ssao_image[i], &s.pipelines.ssao_pipeline.ssao_memory[i], &s.pipelines.ssao_pipeline.ssao_allocation[i]);
 
-        if (s.pipelines.ssao_pipeline.ssao_blur_view[i] != null) {
-            c.vkDestroyImageView(device, s.pipelines.ssao_pipeline.ssao_blur_view[i], null);
-            s.pipelines.ssao_pipeline.ssao_blur_view[i] = null;
-        }
-        if (s.pipelines.ssao_pipeline.ssao_blur_image[i] != null) {
-            vk_allocator.free_image(allocator, s.pipelines.ssao_pipeline.ssao_blur_image[i], s.pipelines.ssao_pipeline.ssao_blur_allocation[i]);
-            s.pipelines.ssao_pipeline.ssao_blur_image[i] = null;
-            s.pipelines.ssao_pipeline.ssao_blur_allocation[i] = null;
-        }
+        destroy_image_view(device, &s.pipelines.ssao_pipeline.ssao_blur_view[i]);
+        free_vma_image(allocator, &s.pipelines.ssao_pipeline.ssao_blur_image[i], &s.pipelines.ssao_pipeline.ssao_blur_memory[i], &s.pipelines.ssao_pipeline.ssao_blur_allocation[i]);
     }
 
-    const mem_alloc = memory.cardinal_get_allocator_for_category(.RENDERER);
-    if (s.pipelines.ssao_pipeline.descriptorManager) |mgr| {
-        vk_descriptor_manager.vk_descriptor_manager_destroy(mgr);
-        memory.cardinal_free(mem_alloc, mgr);
-        s.pipelines.ssao_pipeline.descriptorManager = null;
-    }
-    if (s.pipelines.ssao_pipeline.blurDescriptorManager) |mgr| {
-        vk_descriptor_manager.vk_descriptor_manager_destroy(mgr);
-        memory.cardinal_free(mem_alloc, mgr);
-        s.pipelines.ssao_pipeline.blurDescriptorManager = null;
-    }
+    destroy_descriptor_manager_ptr(&s.pipelines.ssao_pipeline.descriptorManager);
+    destroy_descriptor_manager_ptr(&s.pipelines.ssao_pipeline.blurDescriptorManager);
 
-    if (s.pipelines.ssao_pipeline.noise_texture.view != null) {
-        c.vkDestroyImageView(device, s.pipelines.ssao_pipeline.noise_texture.view, null);
-        s.pipelines.ssao_pipeline.noise_texture.view = null;
-    }
+    destroy_image_view(device, &s.pipelines.ssao_pipeline.noise_texture.view);
     if (s.pipelines.ssao_pipeline.noise_texture.sampler != null) {
         c.vkDestroySampler(device, s.pipelines.ssao_pipeline.noise_texture.sampler, null);
         s.pipelines.ssao_pipeline.noise_texture.sampler = null;
@@ -125,13 +146,11 @@ pub fn vk_ssao_destroy(s: *types.VulkanState) void {
     if (s.pipelines.ssao_pipeline.noise_texture.image != null) {
         vk_allocator.free_image(allocator, s.pipelines.ssao_pipeline.noise_texture.image, s.pipelines.ssao_pipeline.noise_texture.allocation);
         s.pipelines.ssao_pipeline.noise_texture.image = null;
+        s.pipelines.ssao_pipeline.noise_texture.memory = null;
         s.pipelines.ssao_pipeline.noise_texture.allocation = null;
     }
-    if (s.pipelines.ssao_pipeline.kernel_buffer != null) {
-        vk_allocator.free_buffer(allocator, s.pipelines.ssao_pipeline.kernel_buffer, s.pipelines.ssao_pipeline.kernel_allocation);
-        s.pipelines.ssao_pipeline.kernel_buffer = null;
-        s.pipelines.ssao_pipeline.kernel_allocation = null;
-    }
+
+    free_vma_buffer(allocator, &s.pipelines.ssao_pipeline.kernel_buffer, &s.pipelines.ssao_pipeline.kernel_memory, &s.pipelines.ssao_pipeline.kernel_allocation);
 
     if (s.pipelines.ssao_pipeline.pipeline.pipeline != null) {
         vk_compute.vk_compute_destroy_pipeline(s, &s.pipelines.ssao_pipeline.pipeline);
@@ -140,6 +159,7 @@ pub fn vk_ssao_destroy(s: *types.VulkanState) void {
         vk_compute.vk_compute_destroy_pipeline(s, &s.pipelines.ssao_pipeline.blur_pipeline);
     }
 
+    cached_matrices_valid = false;
     s.pipelines.ssao_pipeline.initialized = false;
     s.pipelines.use_ssao = false;
 }
@@ -152,11 +172,11 @@ pub fn vk_ssao_resize(s: *types.VulkanState, width: u32, height: u32) bool {
 
     var i: u32 = 0;
     while (i < types.MAX_FRAMES_IN_FLIGHT) : (i += 1) {
-        if (s.pipelines.ssao_pipeline.ssao_view[i] != null) c.vkDestroyImageView(device, s.pipelines.ssao_pipeline.ssao_view[i], null);
-        if (s.pipelines.ssao_pipeline.ssao_image[i] != null) vk_allocator.free_image(allocator, s.pipelines.ssao_pipeline.ssao_image[i], s.pipelines.ssao_pipeline.ssao_allocation[i]);
+        destroy_image_view(device, &s.pipelines.ssao_pipeline.ssao_view[i]);
+        free_vma_image(allocator, &s.pipelines.ssao_pipeline.ssao_image[i], &s.pipelines.ssao_pipeline.ssao_memory[i], &s.pipelines.ssao_pipeline.ssao_allocation[i]);
 
-        if (s.pipelines.ssao_pipeline.ssao_blur_view[i] != null) c.vkDestroyImageView(device, s.pipelines.ssao_pipeline.ssao_blur_view[i], null);
-        if (s.pipelines.ssao_pipeline.ssao_blur_image[i] != null) vk_allocator.free_image(allocator, s.pipelines.ssao_pipeline.ssao_blur_image[i], s.pipelines.ssao_pipeline.ssao_blur_allocation[i]);
+        destroy_image_view(device, &s.pipelines.ssao_pipeline.ssao_blur_view[i]);
+        free_vma_image(allocator, &s.pipelines.ssao_pipeline.ssao_blur_image[i], &s.pipelines.ssao_pipeline.ssao_blur_memory[i], &s.pipelines.ssao_pipeline.ssao_blur_allocation[i]);
     }
 
     if (!create_resources(s, width, height)) return false;
@@ -171,13 +191,15 @@ pub fn vk_ssao_compute(s: *types.VulkanState, cmd: c.VkCommandBuffer, frame_inde
     const width = s.swapchain.extent.width;
     const height = s.swapchain.extent.height;
 
-    // TODO: Only update matrices when the camera changes.
-    if (s.pipelines.ssao_pipeline.kernel_allocation != null) {
+    const pbr_ubo = s.pipelines.pbr_pipeline.current_ubo;
+    const matrices_changed = !cached_matrices_valid or
+        !std.mem.eql(f32, cached_proj[0..], pbr_ubo.proj[0..]) or
+        !std.mem.eql(f32, cached_view[0..], pbr_ubo.view[0..]);
+
+    if (matrices_changed and s.pipelines.ssao_pipeline.kernel_allocation != null) {
         var data: ?*anyopaque = null;
         if (vk_allocator.map_memory(&s.allocator, s.pipelines.ssao_pipeline.kernel_allocation, &data) == c.VK_SUCCESS) {
             const ptr = @as(*SSAOKernel, @ptrCast(@alignCast(data)));
-
-            const pbr_ubo = s.pipelines.pbr_pipeline.current_ubo;
 
             const proj = math.Mat4.fromArray(pbr_ubo.proj);
             const view = math.Mat4.fromArray(pbr_ubo.view);
@@ -190,8 +212,13 @@ pub fn vk_ssao_compute(s: *types.VulkanState, cmd: c.VkCommandBuffer, frame_inde
             ptr.radius = 0.5; // Default radius
             ptr.bias = 0.025;
             ptr.power = 1.0;
+            ptr.resolutionScale = 1.0;
 
             vk_allocator.unmap_memory(&s.allocator, s.pipelines.ssao_pipeline.kernel_allocation);
+
+            @memcpy(cached_proj[0..], pbr_ubo.proj[0..]);
+            @memcpy(cached_view[0..], pbr_ubo.view[0..]);
+            cached_matrices_valid = true;
         }
     }
 
@@ -271,12 +298,23 @@ fn create_resources(s: *types.VulkanState, width: u32, height: u32) bool {
 }
 
 fn create_noise_and_kernel(s: *types.VulkanState) bool {
-    var kernel: SSAOKernel = undefined;
-    var prng = std.Random.DefaultPrng.init(0);
-    const random = prng.random();
+    var kernel = std.mem.zeroes(SSAOKernel);
+    kernel.projection = math.Mat4.identity();
+    kernel.inverseProjection = math.Mat4.identity();
+    kernel.view = math.Mat4.identity();
+    kernel.radius = 0.5;
+    kernel.bias = 0.025;
+    kernel.power = 1.0;
+    kernel.resolutionScale = 1.0;
+
+    var rng_state: u64 = 0x4c6a9d1b3f8a2c15;
 
     for (0..64) |i| {
-        var sample_vec = math.Vec3{ .x = random.float(f32) * 2.0 - 1.0, .y = random.float(f32) * 2.0 - 1.0, .z = random.float(f32) };
+        var sample_vec = math.Vec3{
+            .x = prng_next_f32_01(&rng_state) * 2.0 - 1.0,
+            .y = prng_next_f32_01(&rng_state) * 2.0 - 1.0,
+            .z = prng_next_f32_01(&rng_state),
+        };
         sample_vec = sample_vec.normalize();
 
         var scale = @as(f32, @floatFromInt(i)) / 64.0;
@@ -311,7 +349,11 @@ fn create_noise_and_kernel(s: *types.VulkanState) bool {
 
     var noise_data: [16]math.Vec4 = undefined;
     for (0..16) |i| {
-        var noise_vec = math.Vec3{ .x = random.float(f32) * 2.0 - 1.0, .y = random.float(f32) * 2.0 - 1.0, .z = 0.0 };
+        var noise_vec = math.Vec3{
+            .x = prng_next_f32_01(&rng_state) * 2.0 - 1.0,
+            .y = prng_next_f32_01(&rng_state) * 2.0 - 1.0,
+            .z = 0.0,
+        };
         noise_vec = noise_vec.normalize();
         noise_data[i] = math.Vec4{ .x = noise_vec.x, .y = noise_vec.y, .z = noise_vec.z, .w = 0.0 };
     }

@@ -163,6 +163,17 @@ pub export fn vk_bindless_texture_pool_init(pool: ?*types.BindlessTexturePool, v
         desc_idx_log.err("Failed to create descriptor buffer for bindless pool", .{});
         return false;
     }
+    p.descriptor_buffer.size = bufferInfo.size;
+    p.descriptor_buffer.usage = bufferInfo.usage;
+    var allocation_props: c.VkMemoryPropertyFlags = 0;
+    c.vmaGetAllocationMemoryProperties(p.allocator.handle, p.descriptor_buffer.allocation, &allocation_props);
+    p.descriptor_buffer.properties = allocation_props;
+    if (p.descriptor_buffer.mapped == null) {
+        desc_idx_log.err("Failed to map descriptor buffer for bindless pool", .{});
+        vk_allocator.free_buffer(p.allocator, p.descriptor_buffer.handle, p.descriptor_buffer.allocation);
+        p.descriptor_buffer = std.mem.zeroes(types.VulkanBuffer);
+        return false;
+    }
 
     if (state.context.vkGetBufferDeviceAddress != null) {
         var addressInfo = std.mem.zeroes(c.VkBufferDeviceAddressInfo);
@@ -534,6 +545,9 @@ pub export fn vk_bindless_texture_flush_updates(pool: ?*types.BindlessTexturePoo
             return false;
         }
 
+        var min_offset: c.VkDeviceSize = std.math.maxInt(c.VkDeviceSize);
+        var max_end: c.VkDeviceSize = 0;
+
         var i: u32 = 0;
         while (i < p.pending_update_count) : (i += 1) {
             const texture_index = p.pending_updates.?[i];
@@ -559,9 +573,17 @@ pub export fn vk_bindless_texture_flush_updates(pool: ?*types.BindlessTexturePoo
             get_info.data.pCombinedImageSampler = &image_info;
 
             p.vkGetDescriptorEXT.?(p.device, &get_info, p.descriptor_size, dst_ptr);
+
+            if (offset < min_offset) min_offset = offset;
+            const end = offset + p.descriptor_size;
+            if (end > max_end) max_end = end;
         }
 
-        // TODO: Verify descriptor buffer coherency and flush when required.
+        if (p.descriptor_buffer.mapped != null and min_offset != std.math.maxInt(c.VkDeviceSize) and max_end > min_offset) {
+            if ((p.descriptor_buffer.properties & c.VK_MEMORY_PROPERTY_HOST_COHERENT_BIT) == 0) {
+                _ = c.vmaFlushAllocation(p.allocator.handle, p.descriptor_buffer.allocation, min_offset, max_end - min_offset);
+            }
+        }
 
         p.needs_descriptor_update = false;
         p.pending_update_count = 0;
@@ -587,7 +609,6 @@ pub export fn vk_descriptor_indexing_supported(vulkan_state: ?*const types.Vulka
 
 pub export fn vk_create_variable_descriptor_layout(device: c.VkDevice, binding_count: u32, bindings: [*c]const c.VkDescriptorSetLayoutBinding, variable_binding_index: u32, max_variable_count: u32, out_layout: ?*c.VkDescriptorSetLayout, use_descriptor_buffer: bool) callconv(.c) bool {
     _ = max_variable_count;
-    _ = use_descriptor_buffer;
     if (device == null or bindings == null or out_layout == null) {
         desc_idx_log.err("Invalid parameters for variable descriptor layout creation", .{});
         return false;
@@ -605,7 +626,9 @@ pub export fn vk_create_variable_descriptor_layout(device: c.VkDevice, binding_c
     binding_flags[variable_binding_index] = c.VK_DESCRIPTOR_BINDING_VARIABLE_DESCRIPTOR_COUNT_BIT |
         c.VK_DESCRIPTOR_BINDING_PARTIALLY_BOUND_BIT;
 
-    // TODO: Re-evaluate UPDATE_AFTER_BIND flags for descriptor buffers across drivers.
+    if (!use_descriptor_buffer) {
+        binding_flags[variable_binding_index] |= c.VK_DESCRIPTOR_BINDING_UPDATE_AFTER_BIND_BIT;
+    }
 
     var binding_flags_info = std.mem.zeroes(c.VkDescriptorSetLayoutBindingFlagsCreateInfo);
     binding_flags_info.sType = c.VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_BINDING_FLAGS_CREATE_INFO;
@@ -616,9 +639,11 @@ pub export fn vk_create_variable_descriptor_layout(device: c.VkDevice, binding_c
     layout_info.sType = c.VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO;
     layout_info.pNext = &binding_flags_info;
 
-    layout_info.flags = c.VK_DESCRIPTOR_SET_LAYOUT_CREATE_DESCRIPTOR_BUFFER_BIT_EXT;
-
-    // TODO: Ensure descriptor buffer writes are coherent or explicitly flushed.
+    if (use_descriptor_buffer) {
+        layout_info.flags |= c.VK_DESCRIPTOR_SET_LAYOUT_CREATE_DESCRIPTOR_BUFFER_BIT_EXT;
+    } else {
+        layout_info.flags |= c.VK_DESCRIPTOR_SET_LAYOUT_CREATE_UPDATE_AFTER_BIND_POOL_BIT;
+    }
 
     layout_info.bindingCount = binding_count;
     layout_info.pBindings = bindings;

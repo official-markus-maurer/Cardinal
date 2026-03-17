@@ -57,6 +57,7 @@ fn pbr_pass_callback(cmd: c.VkCommandBuffer, state: *types.VulkanState) void {
 
     var depth_view: ?c.VkImageView = null;
     var color_view: ?c.VkImageView = null;
+    var color_format: c.VkFormat = state.swapchain.format;
     var use_depth = false;
 
     if (state.render_graph) |rg_ptr| {
@@ -67,6 +68,12 @@ fn pbr_pass_callback(cmd: c.VkCommandBuffer, state: *types.VulkanState) void {
         }
         if (rg.resources.get(types.RESOURCE_ID_HDR_COLOR)) |res| {
             color_view = res.image_view;
+            if (res.desc) |d| {
+                switch (d) {
+                    .Image => |img| color_format = img.format,
+                    else => {},
+                }
+            }
         }
     }
 
@@ -79,11 +86,11 @@ fn pbr_pass_callback(cmd: c.VkCommandBuffer, state: *types.VulkanState) void {
 
     const should_clear_depth = (state.pipelines.depth_pipeline == null or state.current_rendering_mode != types.CardinalRenderingMode.NORMAL);
 
-    renderer_log.info("PBR pass frame {d}: use_depth={any}, depth_view={any}, color_view={any}, clear_depth={any}, mode={any}", .{ state.sync.current_frame, use_depth, depth_view, color_view, should_clear_depth, state.current_rendering_mode });
+    renderer_log.debug("PBR pass frame {d}: use_depth={any}, depth_view={any}, color_view={any}, clear_depth={any}, mode={any}", .{ state.sync.current_frame, use_depth, depth_view, color_view, should_clear_depth, state.current_rendering_mode });
 
     if (vk_commands.vk_begin_rendering_impl(state, cmd, state.current_image_index, use_depth, depth_view, color_view, &clears, true, should_clear_depth, flags, true)) {
         if (use_secondary) {
-            vk_commands.vk_record_scene_with_secondary_buffers(state, cmd, state.current_image_index, use_depth, &clears);
+            vk_commands.vk_record_scene_with_secondary_buffers(state, cmd, state.current_image_index, use_depth, &clears, color_format);
         } else {
             vk_commands.vk_record_scene_content(state, cmd);
         }
@@ -107,7 +114,7 @@ fn post_process_pass_callback(cmd: c.VkCommandBuffer, state: *types.VulkanState)
     clears[0].color.float32[2] = 0.0;
     clears[0].color.float32[3] = 1.0;
 
-    renderer_log.info("Post-process pass frame {d}: hdr_view={any}", .{ state.sync.current_frame, input_view });
+    renderer_log.debug("Post-process pass frame {d}: hdr_view={any}", .{ state.sync.current_frame, input_view });
 
     if (vk_commands.vk_begin_rendering_impl(state, cmd, state.current_image_index, false, null, null, &clears, true, false, 0, true)) {
         if (input_view) |view| {
@@ -370,7 +377,7 @@ fn depth_prepass_pass_callback(cmd: c.VkCommandBuffer, state: *types.VulkanState
         use_depth = state.swapchain.depth_image_view != null and state.swapchain.depth_image != null;
     }
 
-    renderer_log.info("Depth pre-pass frame {d}: use_depth={any}, depth_view={any}", .{ state.sync.current_frame, use_depth, depth_view });
+    renderer_log.debug("Depth pre-pass frame {d}: use_depth={any}, depth_view={any}", .{ state.sync.current_frame, use_depth, depth_view });
 
     if (vk_commands.vk_begin_rendering_impl(state, cmd, state.current_image_index, use_depth, depth_view, null, &clears, false, true, 0, false)) {
         if (state.pipelines.use_pbr_pipeline and state.pipelines.depth_pipeline != null) {
@@ -382,7 +389,7 @@ fn depth_prepass_pass_callback(cmd: c.VkCommandBuffer, state: *types.VulkanState
 
 fn ssao_pass_callback(cmd: c.VkCommandBuffer, state: *types.VulkanState) void {
     if (!state.pipelines.use_ssao or !state.pipelines.ssao_pipeline.initialized) return;
-    renderer_log.info("SSAO pass frame {d}: running", .{state.sync.current_frame});
+    renderer_log.debug("SSAO pass frame {d}: running", .{state.sync.current_frame});
     vk_ssao.vk_ssao_compute(state, cmd, state.sync.current_frame);
 }
 
@@ -817,6 +824,7 @@ pub export fn cardinal_renderer_create(out_renderer: ?*types.CardinalRenderer, w
     if (!vk_barrier_validation.cardinal_barrier_validation_init(1000, false)) {
         renderer_log.err("cardinal_barrier_validation_init failed", .{});
     } else {
+        vk_barrier_validation.cardinal_barrier_validation_set_enabled(false);
         renderer_log.info("renderer_create: barrier validation", .{});
     }
 
@@ -1582,7 +1590,14 @@ fn try_submit_secondary(s: *types.VulkanState, record: ?*const fn (c.VkCommandBu
 
     rendering_info.pColorAttachments = &color_attachment;
 
-    if (s.context.vkCmdPipelineBarrier2 != null and s.swapchain.images != null and s.swapchain.image_layout_initialized != null and s.swapchain.image_count != 0) {
+    if (s.context.vkCmdPipelineBarrier2 != null and
+        s.swapchain.images != null and
+        s.swapchain.image_layout_initialized != null and
+        s.swapchain.image_layouts != null and
+        s.swapchain.image_stage_masks != null and
+        s.swapchain.image_access_masks != null and
+        s.swapchain.image_count != 0)
+    {
         var barrier = std.mem.zeroes(c.VkImageMemoryBarrier2);
         barrier.sType = c.VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2;
         barrier.srcQueueFamilyIndex = c.VK_QUEUE_FAMILY_IGNORED;
@@ -1594,27 +1609,37 @@ fn try_submit_secondary(s: *types.VulkanState, record: ?*const fn (c.VkCommandBu
         barrier.subresourceRange.baseArrayLayer = 0;
         barrier.subresourceRange.layerCount = 1;
 
+        const wanted_layout = c.VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
+        const dst_stage = c.VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT;
+        const dst_access = c.VK_ACCESS_2_COLOR_ATTACHMENT_READ_BIT | c.VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT;
+
         if (!s.swapchain.image_layout_initialized.?[image_index]) {
             barrier.oldLayout = c.VK_IMAGE_LAYOUT_UNDEFINED;
             barrier.srcStageMask = c.VK_PIPELINE_STAGE_2_TOP_OF_PIPE_BIT;
             barrier.srcAccessMask = 0;
-            s.swapchain.image_layout_initialized.?[image_index] = true;
         } else {
-            barrier.oldLayout = c.VK_IMAGE_LAYOUT_PRESENT_SRC_KHR;
-            barrier.srcStageMask = c.VK_PIPELINE_STAGE_2_BOTTOM_OF_PIPE_BIT;
-            barrier.srcAccessMask = 0;
+            barrier.oldLayout = s.swapchain.image_layouts.?[image_index];
+            barrier.srcStageMask = s.swapchain.image_stage_masks.?[image_index];
+            barrier.srcAccessMask = s.swapchain.image_access_masks.?[image_index];
         }
 
-        barrier.newLayout = c.VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
-        barrier.dstStageMask = c.VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT;
-        barrier.dstAccessMask = c.VK_ACCESS_2_COLOR_ATTACHMENT_READ_BIT | c.VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT;
+        barrier.newLayout = wanted_layout;
+        barrier.dstStageMask = dst_stage;
+        barrier.dstAccessMask = dst_access;
 
         var dep = std.mem.zeroes(c.VkDependencyInfo);
         dep.sType = c.VK_STRUCTURE_TYPE_DEPENDENCY_INFO;
         dep.imageMemoryBarrierCount = 1;
         dep.pImageMemoryBarriers = &barrier;
 
-        s.context.vkCmdPipelineBarrier2.?(primary_cmd, &dep);
+        if (barrier.oldLayout != wanted_layout) {
+            s.context.vkCmdPipelineBarrier2.?(primary_cmd, &dep);
+        }
+
+        s.swapchain.image_layout_initialized.?[image_index] = true;
+        s.swapchain.image_layouts.?[image_index] = wanted_layout;
+        s.swapchain.image_stage_masks.?[image_index] = dst_stage;
+        s.swapchain.image_access_masks.?[image_index] = dst_access;
     }
 
     c.vkCmdBeginRendering(primary_cmd, &rendering_info);
@@ -1636,10 +1661,10 @@ fn try_submit_secondary(s: *types.VulkanState, record: ?*const fn (c.VkCommandBu
         barrier.subresourceRange.baseArrayLayer = 0;
         barrier.subresourceRange.layerCount = 1;
 
-        barrier.oldLayout = c.VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
+        barrier.oldLayout = s.swapchain.image_layouts.?[image_index];
         barrier.newLayout = c.VK_IMAGE_LAYOUT_PRESENT_SRC_KHR;
-        barrier.srcStageMask = c.VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT;
-        barrier.srcAccessMask = c.VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT;
+        barrier.srcStageMask = s.swapchain.image_stage_masks.?[image_index];
+        barrier.srcAccessMask = s.swapchain.image_access_masks.?[image_index];
         barrier.dstStageMask = c.VK_PIPELINE_STAGE_2_BOTTOM_OF_PIPE_BIT;
         barrier.dstAccessMask = 0;
 
@@ -1649,6 +1674,11 @@ fn try_submit_secondary(s: *types.VulkanState, record: ?*const fn (c.VkCommandBu
         dep.pImageMemoryBarriers = &barrier;
 
         s.context.vkCmdPipelineBarrier2.?(primary_cmd, &dep);
+
+        s.swapchain.image_layout_initialized.?[image_index] = true;
+        s.swapchain.image_layouts.?[image_index] = c.VK_IMAGE_LAYOUT_PRESENT_SRC_KHR;
+        s.swapchain.image_stage_masks.?[image_index] = c.VK_PIPELINE_STAGE_2_BOTTOM_OF_PIPE_BIT;
+        s.swapchain.image_access_masks.?[image_index] = 0;
     }
 
     _ = c.vkEndCommandBuffer(primary_cmd);

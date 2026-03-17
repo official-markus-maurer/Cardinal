@@ -147,42 +147,67 @@ fn mesh_cache_put(mesh_id: [:0]const u8, resource: *ref_counting.CardinalRefCoun
 
 /// Produces a stable identifier for a mesh based on a small content hash.
 fn generate_mesh_id(mesh: scene.CardinalMesh) ?[:0]const u8 {
-    var hash: u32 = 0;
-    hash ^= mesh.vertex_count;
-    hash ^= mesh.index_count << 16;
-    hash ^= mesh.material_index;
+    const prime: u64 = 1099511628211;
+    var hash: u64 = 14695981039346656037;
 
-    // TODO: Use a stronger/stable hash over the full vertex/index buffers when feasible.
+    const update = struct {
+        fn bytes(h: *u64, b: []const u8) void {
+            for (b) |v| {
+                h.* ^= v;
+                h.* *%= prime;
+            }
+        }
+    }.bytes;
+
+    update(&hash, std.mem.asBytes(&mesh.vertex_count));
+    update(&hash, std.mem.asBytes(&mesh.index_count));
+    update(&hash, std.mem.asBytes(&mesh.material_index));
+    update(&hash, std.mem.asBytes(&mesh.bounding_box_min));
+    update(&hash, std.mem.asBytes(&mesh.bounding_box_max));
+
+    const full_limit: usize = 4 * 1024 * 1024;
 
     if (mesh.vertices) |vertices| {
         if (mesh.vertex_count > 0) {
-            var i: u32 = 0;
-            while (i < mesh.vertex_count and i < 10) : (i += 1) {
-                const v = vertices[i];
-                const v_bytes = std.mem.asBytes(&v);
-                var h: u32 = 5381;
-                for (v_bytes) |b| {
-                    h = ((h << 5) + h) + b;
+            const verts = vertices[0..mesh.vertex_count];
+            const bytes_len: usize = @as(usize, mesh.vertex_count) * @sizeOf(scene.CardinalVertex);
+            const bytes = @as([*]const u8, @ptrCast(verts.ptr))[0..bytes_len];
+            if (bytes_len <= full_limit) {
+                update(&hash, bytes);
+            } else {
+                const head_len: usize = @min(bytes_len, 4096);
+                update(&hash, bytes[0..head_len]);
+                if (bytes_len > head_len) {
+                    const tail_len: usize = @min(bytes_len - head_len, 4096);
+                    update(&hash, bytes[bytes_len - tail_len .. bytes_len]);
                 }
-                hash ^= h;
             }
         }
     }
 
     if (mesh.indices) |indices| {
         if (mesh.index_count > 0) {
-            var i: u32 = 0;
-            while (i < mesh.index_count and i < 10) : (i += 1) {
-                hash ^= indices[i];
+            const idx = indices[0..mesh.index_count];
+            const bytes_len: usize = @as(usize, mesh.index_count) * @sizeOf(u32);
+            const bytes = @as([*]const u8, @ptrCast(idx.ptr))[0..bytes_len];
+            if (bytes_len <= full_limit) {
+                update(&hash, bytes);
+            } else {
+                const head_len: usize = @min(bytes_len, 4096);
+                update(&hash, bytes[0..head_len]);
+                if (bytes_len > head_len) {
+                    const tail_len: usize = @min(bytes_len - head_len, 4096);
+                    update(&hash, bytes[bytes_len - tail_len .. bytes_len]);
+                }
             }
         }
     }
 
     const allocator = memory.cardinal_get_allocator_for_category(.ASSETS);
-    const buf = memory.cardinal_alloc(allocator, 32);
+    const buf = memory.cardinal_alloc(allocator, 40);
     if (buf) |b| {
-        const slice = @as([*]u8, @ptrCast(b))[0..32];
-        const formatted = std.fmt.bufPrint(slice, "mesh_{x:0>8}\x00", .{hash}) catch {
+        const slice = @as([*]u8, @ptrCast(b))[0..40];
+        const formatted = std.fmt.bufPrint(slice, "mesh_{x:0>16}\x00", .{hash}) catch {
             memory.cardinal_free(allocator, b);
             return null;
         };

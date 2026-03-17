@@ -51,6 +51,12 @@ pub fn vulkan_sync_manager_submit_queue2(queue: c.VkQueue, submit_count: u32, pS
     return c.vkQueueSubmit2(queue, submit_count, pSubmits, fence);
 }
 
+pub fn vulkan_sync_manager_queue_wait_idle(queue: c.VkQueue) c.VkResult {
+    g_queue_lock.lock();
+    defer g_queue_lock.unlock();
+    return c.vkQueueWaitIdle(queue);
+}
+
 /// Initializes per-frame semaphores/fences and a shared timeline semaphore.
 pub fn vulkan_sync_manager_init(sync_manager: ?*types.VulkanSyncManager, device: c.VkDevice, graphics_queue: c.VkQueue, max_frames_in_flight: u32, max_ahead: u64) bool {
     if (sync_manager == null or device == null or max_frames_in_flight == 0) {
@@ -441,6 +447,71 @@ pub fn vulkan_sync_manager_get_next_timeline_value(sync_manager: ?*types.VulkanS
         } else {
             return target_val;
         }
+    }
+}
+
+pub fn vulkan_sync_manager_reserve_timeline_values(sync_manager: ?*types.VulkanSyncManager, out_values: []u64) bool {
+    if (sync_manager == null) return false;
+    if (out_values.len == 0) return false;
+    const mgr = sync_manager.?;
+    if (!mgr.initialized) return false;
+
+    g_sync_lock.lockShared();
+    defer g_sync_lock.unlockShared();
+
+    if (mgr.timeline_semaphore == null) {
+        return false;
+    }
+
+    var current_device_value: u64 = 0;
+    var result = c.vkGetSemaphoreCounterValue(mgr.device, mgr.timeline_semaphore, &current_device_value);
+    if (result != c.VK_SUCCESS) {
+        return false;
+    }
+
+    const atom_ptr = atomic(&mgr.global_timeline_counter);
+
+    while (true) {
+        const old_val = atom_ptr.load(.seq_cst);
+
+        var base_val = old_val;
+        if (current_device_value > base_val) {
+            base_val = current_device_value;
+        }
+
+        if (current_device_value > mgr.value_strategy.max_safe_value) {
+            return false;
+        }
+
+        if (base_val >= std.math.maxInt(u64) - 1000) {
+            g_sync_lock.unlockShared();
+            const reset_result = vulkan_sync_manager_reset_timeline_values(mgr);
+            g_sync_lock.lockShared();
+
+            if (reset_result) {
+                result = c.vkGetSemaphoreCounterValue(mgr.device, mgr.timeline_semaphore, &current_device_value);
+                if (result != c.VK_SUCCESS) {
+                    return false;
+                }
+                continue;
+            }
+
+            return false;
+        }
+
+        const count: u64 = @intCast(out_values.len);
+        const new_atomic = base_val + count;
+        const cas_res = atom_ptr.cmpxchgWeak(old_val, new_atomic, .seq_cst, .seq_cst);
+        if (cas_res) |_| {
+            continue;
+        }
+
+        var start = base_val + 1;
+        for (out_values) |*slot| {
+            slot.* = start;
+            start += 1;
+        }
+        return true;
     }
 }
 

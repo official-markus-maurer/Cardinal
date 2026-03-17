@@ -511,6 +511,9 @@ pub const VulkanSwapchain = extern struct {
     extent: c.VkExtent2D,
     format: c.VkFormat,
     image_layout_initialized: ?[*]bool,
+    image_layouts: ?[*]c.VkImageLayout,
+    image_stage_masks: ?[*]c.VkPipelineStageFlags2,
+    image_access_masks: ?[*]c.VkAccessFlags2,
 
     image_present_semaphores: ?[*]c.VkSemaphore,
 

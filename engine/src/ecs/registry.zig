@@ -5,6 +5,7 @@
 const std = @import("std");
 const entity_pkg = @import("entity.zig");
 const component_pkg = @import("component.zig");
+const archetype_pkg = @import("archetype.zig");
 
 /// ECS entity handle type.
 pub const Entity = entity_pkg.Entity;
@@ -14,6 +15,7 @@ pub const Registry = struct {
     entity_manager: entity_pkg.EntityManager,
     /// Maps component type IDs to a type-erased storage interface and its deinit function.
     storages: std.AutoHashMapUnmanaged(u64, StorageEntry),
+    archetypes: archetype_pkg.ArchetypeStorage,
 
     allocator: std.mem.Allocator,
 
@@ -27,6 +29,7 @@ pub const Registry = struct {
         return .{
             .entity_manager = entity_pkg.EntityManager.init(allocator),
             .storages = .{},
+            .archetypes = archetype_pkg.ArchetypeStorage.init(allocator),
             .allocator = allocator,
         };
     }
@@ -40,6 +43,7 @@ pub const Registry = struct {
         }
         self.storages.deinit(self.allocator);
         self.entity_manager.deinit();
+        self.archetypes.deinit();
     }
 
     /// Allocates a new entity.

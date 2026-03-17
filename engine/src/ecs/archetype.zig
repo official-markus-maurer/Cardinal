@@ -1,74 +1,102 @@
 //! Archetype-based ECS storage.
 //!
-//! Provides an experimental archetype/chunk storage model as an alternative to sparse sets.
-//! This is not currently integrated with `Registry` and is primarily a prototype.
-//!
-//! TODO: Either integrate this with `Registry` or move it into a separate experimental package.
+//! Provides an archetype/chunk storage model as an alternative to sparse sets.
 const std = @import("std");
 const entity_pkg = @import("entity.zig");
 
 const Entity = entity_pkg.Entity;
 
-/// Unique identifier for an archetype (hash of sorted component type IDs).
 pub const ArchetypeId = u64;
-
-/// Component type identifier used by the archetype storage.
 pub const ComponentTypeId = u64;
 
-/// Chunk of entities for a specific archetype, storing components in SoA form.
 pub const Chunk = struct {
-    /// Raw component storage keyed by component type ID.
     components: std.AutoHashMapUnmanaged(ComponentTypeId, []u8),
-    /// Number of live rows in the chunk.
     count: usize,
-    /// Maximum rows the chunk can store before growing/allocating another chunk.
     capacity: usize,
-
     allocator: std.mem.Allocator,
+    storage: []u8,
 
-    /// TODO: Consider a fixed byte-size chunk (e.g. 16KiB) for better locality.
-    pub fn init(allocator: std.mem.Allocator, capacity: usize) Chunk {
-        return .{
+    const default_chunk_bytes: usize = 16 * 1024;
+
+    pub fn init(allocator: std.mem.Allocator, types: []const ComponentTypeId, sizes: []const usize, alignments: []const u16) !Chunk {
+        const cap = compute_capacity(default_chunk_bytes, sizes, alignments);
+        const required = bytes_needed_for_capacity(cap, sizes, alignments);
+        const bytes = @max(default_chunk_bytes, required);
+
+        var storage = try allocator.alloc(u8, bytes);
+        @memset(storage, 0);
+
+        var chunk = Chunk{
             .components = .{},
             .count = 0,
-            .capacity = capacity,
+            .capacity = cap,
             .allocator = allocator,
+            .storage = storage,
         };
+
+        var offset: usize = 0;
+        for (types, sizes, alignments) |id, size, alignment_u16| {
+            const alignment: usize = if (alignment_u16 == 0) 1 else @as(usize, alignment_u16);
+            offset = std.mem.alignForward(usize, offset, alignment);
+            const slice_len = size * cap;
+            if (offset + slice_len > storage.len) return error.OutOfMemory;
+            const slice = storage[offset .. offset + slice_len];
+            offset += slice_len;
+
+            const entry = try chunk.components.getOrPut(allocator, id);
+            entry.value_ptr.* = slice;
+        }
+
+        return chunk;
     }
 
     pub fn deinit(self: *Chunk) void {
-        var it = self.components.iterator();
-        while (it.next()) |entry| {
-            self.allocator.free(entry.value_ptr.*);
-        }
         self.components.deinit(self.allocator);
+        self.allocator.free(self.storage);
     }
 
-    pub fn ensure_capacity(self: *Chunk, types: []const ComponentTypeId, sizes: []const usize) !void {
-        for (types, sizes) |id, size| {
-            const entry = try self.components.getOrPut(self.allocator, id);
-            if (!entry.found_existing) {
-                entry.value_ptr.* = try self.allocator.alloc(u8, size * self.capacity);
+    fn bytes_needed_for_capacity(capacity: usize, sizes: []const usize, alignments: []const u16) usize {
+        var offset: usize = 0;
+        for (sizes, alignments) |size, alignment_u16| {
+            const alignment: usize = if (alignment_u16 == 0) 1 else @as(usize, alignment_u16);
+            offset = std.mem.alignForward(usize, offset, alignment);
+            offset += size * capacity;
+        }
+        return offset;
+    }
+
+    fn compute_capacity(chunk_bytes: usize, sizes: []const usize, alignments: []const u16) usize {
+        if (sizes.len == 0) return 0;
+
+        if (bytes_needed_for_capacity(1, sizes, alignments) > chunk_bytes) return 1;
+
+        var bytes_per_entity: usize = 0;
+        for (sizes) |s| bytes_per_entity += s;
+        if (bytes_per_entity == 0) return 1;
+
+        var low: usize = 1;
+        var high: usize = @max(@as(usize, 1), chunk_bytes / bytes_per_entity);
+
+        while (low < high) {
+            const mid = (low + high + 1) / 2;
+            if (bytes_needed_for_capacity(mid, sizes, alignments) <= chunk_bytes) {
+                low = mid;
+            } else {
+                high = mid - 1;
             }
         }
+
+        return low;
     }
 };
 
-/// Archetype definition and its chunk list.
 pub const Archetype = struct {
     id: ArchetypeId,
-    /// Sorted component type IDs defining the archetype signature.
     types: []const ComponentTypeId,
-    /// Parallel array of component sizes (in bytes).
     type_sizes: []const usize,
-    /// Parallel array of component alignments (in bytes).
     type_alignments: []const u16,
-
     chunks: std.ArrayListUnmanaged(Chunk),
-
-    /// Transition edges for adding/removing a component: `ComponentTypeId -> ArchetypeId`.
     edges: std.AutoHashMapUnmanaged(ComponentTypeId, ArchetypeId),
-
     allocator: std.mem.Allocator,
 
     pub fn init(allocator: std.mem.Allocator, id: ArchetypeId, types: []const ComponentTypeId, sizes: []const usize, alignments: []const u16) !Archetype {
@@ -106,9 +134,7 @@ pub const Archetype = struct {
             }
         }
 
-        const default_chunk_capacity = 1024;
-        var new_chunk = Chunk.init(self.allocator, default_chunk_capacity);
-        try new_chunk.ensure_capacity(self.types, self.type_sizes);
+        const new_chunk = try Chunk.init(self.allocator, self.types, self.type_sizes, self.type_alignments);
         try self.chunks.append(self.allocator, new_chunk);
 
         const chunk_index = self.chunks.items.len - 1;
@@ -120,7 +146,6 @@ pub const Archetype = struct {
 pub const ArchetypeStorage = struct {
     archetypes: std.AutoHashMapUnmanaged(ArchetypeId, *Archetype),
     entity_index: std.AutoHashMapUnmanaged(Entity, EntityRecord),
-
     allocator: std.mem.Allocator,
 
     const EntityRecord = struct {
@@ -147,7 +172,6 @@ pub const ArchetypeStorage = struct {
         self.entity_index.deinit(self.allocator);
     }
 
-    /// Computes an `ArchetypeId` from an already-sorted list of component type IDs.
     pub fn calculate_id(types: []const ComponentTypeId) ArchetypeId {
         var hasher = std.hash.Wyhash.init(0);
         for (types) |t| {

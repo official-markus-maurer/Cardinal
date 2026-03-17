@@ -210,6 +210,12 @@ pub fn vk_texture_manager_init(manager: *types.VulkanTextureManager, config: *co
     manager.hasPlaceholder = false;
     manager.pending_updates = null;
     manager.bindless_pool = std.mem.zeroes(types.BindlessTexturePool);
+    manager.manager_mutex = null;
+
+    if (!vk_mt.cardinal_mt_mutex_init(&manager.manager_mutex)) {
+        tex_mgr_log.err("Failed to initialize texture manager mutex", .{});
+        return false;
+    }
 
     if (config.vulkan_state != null) {
         const vs = @as(*types.VulkanState, @ptrCast(@alignCast(config.vulkan_state.?)));
@@ -244,36 +250,36 @@ pub fn vk_texture_manager_init(manager: *types.VulkanTextureManager, config: *co
 
 /// Waits for all pending update tasks to finish.
 pub fn vk_texture_manager_wait_idle(manager: *types.VulkanTextureManager) void {
-    var curr_ptr = @as(?*AsyncTextureUpdateContext, @ptrCast(@alignCast(manager.pending_updates)));
-    while (curr_ptr) |ctx| {
-        while (!ctx.finished.load(.acquire)) {
-            if (builtin.os.tag == .windows) {
-                c.Sleep(1);
-            } else {
-                std.atomic.spinLoopHint();
-            }
+    while (true) {
+        vk_mt.cardinal_mt_mutex_lock(&manager.manager_mutex);
+        const head = @as(?*AsyncTextureUpdateContext, @ptrCast(@alignCast(manager.pending_updates)));
+        vk_mt.cardinal_mt_mutex_unlock(&manager.manager_mutex);
+
+        if (head == null) {
+            return;
         }
-        curr_ptr = ctx.next;
+
+        var curr_ptr = head;
+        while (curr_ptr) |ctx| {
+            while (!ctx.finished.load(.acquire)) {
+                if (builtin.os.tag == .windows) {
+                    c.Sleep(1);
+                } else {
+                    std.atomic.spinLoopHint();
+                }
+            }
+            curr_ptr = ctx.next;
+        }
     }
 }
 
 /// Destroys all textures and frees bindless pool state.
 pub fn vk_texture_manager_destroy(manager: *types.VulkanTextureManager) void {
-    vk_texture_manager_wait_idle(manager);
-
-    var curr_ptr = @as(?*AsyncTextureUpdateContext, @ptrCast(@alignCast(manager.pending_updates)));
-    while (curr_ptr) |ctx| {
-        if (ctx.new_view != null) c.vkDestroyImageView(manager.device, ctx.new_view, null);
-        if (ctx.new_image != null) vk_allocator.free_image(manager.allocator, ctx.new_image, ctx.new_allocation);
-        if (ctx.staging_buffer != null) vk_allocator.free_buffer(manager.allocator, ctx.staging_buffer, ctx.staging_allocation);
-
-        const next = ctx.next;
-        const mem_alloc = memory.cardinal_get_allocator_for_category(.RENDERER);
-        memory.cardinal_free(mem_alloc, ctx);
-
-        curr_ptr = next;
+    while (true) {
+        const head = take_pending_update_list(manager);
+        if (head == null) break;
+        free_pending_update_list(manager, head);
     }
-    manager.pending_updates = null;
 
     vk_texture_manager_clear_textures(manager);
 
@@ -304,6 +310,7 @@ pub fn vk_texture_manager_destroy(manager: *types.VulkanTextureManager) void {
         }
     }
 
+    vk_mt.cardinal_mt_mutex_destroy(&manager.manager_mutex);
     manager.textureCapacity = 0;
 }
 
@@ -404,49 +411,39 @@ pub fn vk_texture_manager_clear_textures(manager: *types.VulkanTextureManager) v
     }
 }
 
-/// Initializes per-scene texture slots and queues async updates for ready resources.
-pub fn vk_texture_manager_load_scene_textures(manager: *types.VulkanTextureManager, scene_data: ?*const scene.CardinalScene) bool {
-    if (scene_data == null) {
-        tex_mgr_log.err("Invalid parameters for scene texture loading", .{});
-        return false;
+fn take_pending_update_list(manager: *types.VulkanTextureManager) ?*AsyncTextureUpdateContext {
+    vk_mt.cardinal_mt_mutex_lock(&manager.manager_mutex);
+    defer vk_mt.cardinal_mt_mutex_unlock(&manager.manager_mutex);
+    const head = @as(?*AsyncTextureUpdateContext, @ptrCast(@alignCast(manager.pending_updates)));
+    manager.pending_updates = null;
+    return head;
+}
+
+fn push_pending_update(manager: *types.VulkanTextureManager, ctx: *AsyncTextureUpdateContext) void {
+    vk_mt.cardinal_mt_mutex_lock(&manager.manager_mutex);
+    defer vk_mt.cardinal_mt_mutex_unlock(&manager.manager_mutex);
+    ctx.next = @ptrCast(@alignCast(manager.pending_updates));
+    manager.pending_updates = ctx;
+}
+
+fn merge_pending_update_list(manager: *types.VulkanTextureManager, remaining: ?*AsyncTextureUpdateContext) void {
+    if (remaining == null) return;
+
+    vk_mt.cardinal_mt_mutex_lock(&manager.manager_mutex);
+    defer vk_mt.cardinal_mt_mutex_unlock(&manager.manager_mutex);
+
+    const existing = @as(?*AsyncTextureUpdateContext, @ptrCast(@alignCast(manager.pending_updates)));
+
+    var tail = remaining.?;
+    while (tail.next) |n| {
+        tail = n;
     }
+    tail.next = existing;
+    manager.pending_updates = remaining;
+}
 
-    // TODO: Split this function into smaller helpers.
-    vk_texture_manager_clear_textures(manager);
-
-    vk_descriptor_indexing.vk_bindless_texture_pool_reset(&manager.bindless_pool);
-
-    if (!manager.hasPlaceholder) {
-        var placeholder_index: u32 = 0;
-        if (!vk_texture_manager_create_placeholder(manager, &placeholder_index)) {
-            tex_mgr_log.err("Failed to create placeholder texture", .{});
-            return false;
-        }
-    } else {
-        if (manager.textureCount > 0 and manager.bindless_pool.textures != null) {
-            const tex = &manager.textures.?[0];
-            var bindless_idx: u32 = 0;
-            if (vk_descriptor_indexing.vk_bindless_texture_register_existing(&manager.bindless_pool, tex.image, tex.view, tex.sampler, &bindless_idx)) {
-                tex.bindless_index = bindless_idx;
-                _ = vk_descriptor_indexing.vk_bindless_texture_flush_updates(&manager.bindless_pool);
-            } else {
-                tex_mgr_log.err("Failed to re-register placeholder texture after pool reset", .{});
-            }
-        }
-    }
-
-    if (scene_data.?.texture_count == 0 or scene_data.?.textures == null) {
-        tex_mgr_log.info("No scene textures to load, using placeholder only", .{});
-        return true;
-    }
-
-    const required_capacity = 1 + scene_data.?.texture_count;
-    if (!ensure_capacity(manager, required_capacity)) {
-        tex_mgr_log.err("Failed to ensure capacity for {d} textures", .{required_capacity});
-        return false;
-    }
-
-    var curr_ptr = @as(?*AsyncTextureUpdateContext, @ptrCast(@alignCast(manager.pending_updates)));
+fn free_pending_update_list(manager: *types.VulkanTextureManager, head: ?*AsyncTextureUpdateContext) void {
+    var curr_ptr = head;
     while (curr_ptr) |ctx| {
         while (!ctx.finished.load(.acquire)) {
             if (builtin.os.tag == .windows) {
@@ -466,11 +463,77 @@ pub fn vk_texture_manager_load_scene_textures(manager: *types.VulkanTextureManag
 
         curr_ptr = next;
     }
-    manager.pending_updates = null;
+}
 
-    // TODO: Avoid vkDeviceWaitIdle here; synchronize per-task using fences or timeline waits.
-    _ = c.vkDeviceWaitIdle(manager.device);
+fn wait_for_uploads_idle(manager: *types.VulkanTextureManager) void {
+    if (manager.syncManager) |sync| {
+        var max_val: u64 = 0;
+        var i: u32 = 0;
+        while (i < types.MAX_FRAMES_IN_FLIGHT) : (i += 1) {
+            if (manager.upload_fence_values[i] > max_val) {
+                max_val = manager.upload_fence_values[i];
+            }
+        }
+        if (max_val > 0) {
+            _ = vk_sync_mgr.vulkan_sync_manager_wait_timeline(sync, max_val, 5000000000);
+        }
+        return;
+    }
+    _ = vk_sync_mgr.vulkan_sync_manager_queue_wait_idle(manager.graphicsQueue);
+}
+
+fn reset_bindless_pool_and_placeholder(manager: *types.VulkanTextureManager) bool {
+    vk_texture_manager_clear_textures(manager);
+    vk_descriptor_indexing.vk_bindless_texture_pool_reset(&manager.bindless_pool);
+
+    if (!manager.hasPlaceholder) {
+        var placeholder_index: u32 = 0;
+        if (!vk_texture_manager_create_placeholder(manager, &placeholder_index)) {
+            tex_mgr_log.err("Failed to create placeholder texture", .{});
+            return false;
+        }
+        return true;
+    }
+
+    if (manager.textureCount > 0 and manager.bindless_pool.textures != null) {
+        const tex = &manager.textures.?[0];
+        var bindless_idx: u32 = 0;
+        if (vk_descriptor_indexing.vk_bindless_texture_register_existing(&manager.bindless_pool, tex.image, tex.view, tex.sampler, &bindless_idx)) {
+            tex.bindless_index = bindless_idx;
+            _ = vk_descriptor_indexing.vk_bindless_texture_flush_updates(&manager.bindless_pool);
+        } else {
+            tex_mgr_log.err("Failed to re-register placeholder texture after pool reset", .{});
+        }
+    }
+    return true;
+}
+
+/// Initializes per-scene texture slots and queues async updates for ready resources.
+pub fn vk_texture_manager_load_scene_textures(manager: *types.VulkanTextureManager, scene_data: ?*const scene.CardinalScene) bool {
+    if (scene_data == null) {
+        tex_mgr_log.err("Invalid parameters for scene texture loading", .{});
+        return false;
+    }
+
+    const old_updates = take_pending_update_list(manager);
+    free_pending_update_list(manager, old_updates);
+    wait_for_uploads_idle(manager);
     vk_mt.cardinal_mt_reset_all_command_pools(&vk_mt.g_cardinal_mt_subsystem.command_manager);
+
+    if (!reset_bindless_pool_and_placeholder(manager)) {
+        return false;
+    }
+
+    if (scene_data.?.texture_count == 0 or scene_data.?.textures == null) {
+        tex_mgr_log.info("No scene textures to load, using placeholder only", .{});
+        return true;
+    }
+
+    const required_capacity = 1 + scene_data.?.texture_count;
+    if (!ensure_capacity(manager, required_capacity)) {
+        tex_mgr_log.err("Failed to ensure capacity for {d} textures", .{required_capacity});
+        return false;
+    }
 
     tex_mgr_log.info("Queueing {d} textures for async streaming...", .{scene_data.?.texture_count});
 
@@ -590,8 +653,7 @@ pub fn vk_texture_manager_load_scene_textures(manager: *types.VulkanTextureManag
 
                     if (vk_mt.cardinal_mt_submit_task(task)) {
                         tex.is_updating = true;
-                        ctx.next = @ptrCast(@alignCast(manager.pending_updates));
-                        manager.pending_updates = ctx;
+                        push_pending_update(manager, ctx);
                         tasks_submitted += 1;
                     } else {
                         tex_mgr_log.err("Failed to submit async texture task for texture {d}", .{i});
@@ -722,13 +784,20 @@ fn check_pending_loads(manager: *types.VulkanTextureManager) void {
 
                         if (vk_mt.cardinal_mt_submit_task(task)) {
                             tex.is_updating = true;
-                            ctx.next = @ptrCast(@alignCast(manager.pending_updates));
-                            manager.pending_updates = ctx;
+                            push_pending_update(manager, ctx);
                             tex_mgr_log.info("Triggered async upload for auto-loaded texture {d}", .{i});
                         } else {
                             tex_mgr_log.err("Failed to submit async task for texture {d}", .{i});
+                            tex.update_failed = true;
+                            memory.cardinal_free(allocator, tptr);
+                            memory.cardinal_free(allocator, ptr);
                         }
+                    } else {
+                        tex.update_failed = true;
+                        memory.cardinal_free(allocator, ptr);
                     }
+                } else {
+                    tex.update_failed = true;
                 }
             }
         }
@@ -736,7 +805,7 @@ fn check_pending_loads(manager: *types.VulkanTextureManager) void {
 }
 
 /// Advances async texture uploads/updates and returns the most recent timeline signal value.
-pub fn vk_texture_manager_update_textures(manager: *types.VulkanTextureManager) ?u64 {
+pub fn vk_texture_manager_update_textures(manager: *types.VulkanTextureManager, reserved_signal_value: ?u64) ?u64 {
     check_pending_loads(manager);
 
     if (manager.textures == null) return null;
@@ -744,7 +813,7 @@ pub fn vk_texture_manager_update_textures(manager: *types.VulkanTextureManager) 
     const mem_alloc = memory.cardinal_get_allocator_for_category(.RENDERER);
     var last_signal_value: ?u64 = null;
 
-    var curr_ptr: ?*AsyncTextureUpdateContext = @ptrCast(@alignCast(manager.pending_updates));
+    var curr_ptr: ?*AsyncTextureUpdateContext = take_pending_update_list(manager);
 
     var head = curr_ptr;
     var prev: ?*AsyncTextureUpdateContext = null;
@@ -772,7 +841,7 @@ pub fn vk_texture_manager_update_textures(manager: *types.VulkanTextureManager) 
             curr_ptr = next;
         }
     }
-    manager.pending_updates = @ptrCast(@alignCast(head));
+    merge_pending_update_list(manager, head);
 
     if (completed_count > 0) {
         tex_mgr_log.info("Processing {d} completed texture updates...", .{completed_count});
@@ -782,108 +851,112 @@ pub fn vk_texture_manager_update_textures(manager: *types.VulkanTextureManager) 
         var using_reusable = false;
         var reused_index: ?u32 = null;
 
-        const cmd_bufs_ptr = memory.cardinal_alloc(mem_alloc, @sizeOf(c.VkCommandBuffer) * completed_count);
+        var stack_bufs: [64]c.VkCommandBuffer = undefined;
+        const cmd_bufs_ptr = if (completed_count > stack_bufs.len) memory.cardinal_alloc(mem_alloc, @sizeOf(c.VkCommandBuffer) * completed_count) else null;
+        const bufs = if (completed_count > stack_bufs.len) @as([*]c.VkCommandBuffer, @ptrCast(@alignCast(cmd_bufs_ptr.?))) else &stack_bufs;
+        var valid_count: u32 = 0;
 
-        if (cmd_bufs_ptr) |ptr| {
-            const bufs = @as([*]c.VkCommandBuffer, @ptrCast(@alignCast(ptr)));
-            var valid_count: u32 = 0;
+        var iter = completed_list;
+        while (iter) |ctx| : (iter = ctx.next) {
+            if (ctx.success) {
+                bufs[valid_count] = ctx.secondary_context.command_buffer;
+                valid_count += 1;
+            }
+        }
 
-            var iter = completed_list;
-            while (iter) |ctx| : (iter = ctx.next) {
-                if (ctx.success) {
-                    bufs[valid_count] = ctx.secondary_context.command_buffer;
-                    valid_count += 1;
+        if (valid_count > 0) {
+            var reusable_cmd: c.VkCommandBuffer = null;
+
+            if (manager.syncManager) |sync| {
+                var gpu_val: u64 = 0;
+                _ = c.vkGetSemaphoreCounterValue(manager.device, sync.timeline_semaphore, &gpu_val);
+
+                var i: u32 = 0;
+                while (i < types.MAX_FRAMES_IN_FLIGHT) : (i += 1) {
+                    const idx = (manager.upload_buffer_index + i) % types.MAX_FRAMES_IN_FLIGHT;
+                    if (gpu_val >= manager.upload_fence_values[idx]) {
+                        reusable_cmd = manager.upload_command_buffers[idx];
+                        reused_index = idx;
+                        manager.upload_buffer_index = (idx + 1) % types.MAX_FRAMES_IN_FLIGHT;
+                        break;
+                    }
+                }
+            } else {
+                reusable_cmd = manager.upload_command_buffers[0];
+                reused_index = 0;
+            }
+
+            if (reusable_cmd != null) {
+                primary_cmd = reusable_cmd;
+                using_reusable = true;
+                _ = c.vkResetCommandBuffer(primary_cmd, 0);
+            } else {
+                var cmd_buf_info = std.mem.zeroes(c.VkCommandBufferAllocateInfo);
+                cmd_buf_info.sType = c.VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO;
+                cmd_buf_info.commandPool = manager.commandPool;
+                cmd_buf_info.level = c.VK_COMMAND_BUFFER_LEVEL_PRIMARY;
+                cmd_buf_info.commandBufferCount = 1;
+
+                if (c.vkAllocateCommandBuffers(manager.device, &cmd_buf_info, &primary_cmd) != c.VK_SUCCESS) {
+                    primary_cmd = null;
                 }
             }
 
-            if (valid_count > 0) {
-                var reusable_cmd: c.VkCommandBuffer = null;
+            if (primary_cmd != null) {
+                var begin_info = std.mem.zeroes(c.VkCommandBufferBeginInfo);
+                begin_info.sType = c.VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
+                begin_info.flags = c.VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
+
+                _ = c.vkBeginCommandBuffer(primary_cmd, &begin_info);
+                c.vkCmdExecuteCommands(primary_cmd, valid_count, bufs);
+                _ = c.vkEndCommandBuffer(primary_cmd);
+
+                var submit_info = std.mem.zeroes(c.VkSubmitInfo2);
+                submit_info.sType = c.VK_STRUCTURE_TYPE_SUBMIT_INFO_2;
+
+                var cmd_info = std.mem.zeroes(c.VkCommandBufferSubmitInfo);
+                cmd_info.sType = c.VK_STRUCTURE_TYPE_COMMAND_BUFFER_SUBMIT_INFO;
+                cmd_info.commandBuffer = primary_cmd;
+                submit_info.commandBufferInfoCount = 1;
+                submit_info.pCommandBufferInfos = &cmd_info;
+
+                var signal_info = std.mem.zeroes(c.VkSemaphoreSubmitInfo);
 
                 if (manager.syncManager) |sync| {
-                    var gpu_val: u64 = 0;
-                    _ = c.vkGetSemaphoreCounterValue(manager.device, sync.timeline_semaphore, &gpu_val);
-
-                    var i: u32 = 0;
-                    while (i < types.MAX_FRAMES_IN_FLIGHT) : (i += 1) {
-                        const idx = (manager.upload_buffer_index + i) % types.MAX_FRAMES_IN_FLIGHT;
-                        if (gpu_val >= manager.upload_fence_values[idx]) {
-                            reusable_cmd = manager.upload_command_buffers[idx];
-                            reused_index = idx;
-                            manager.upload_buffer_index = (idx + 1) % types.MAX_FRAMES_IN_FLIGHT;
-                            break;
-                        }
-                    }
-                } else {
-                    reusable_cmd = manager.upload_command_buffers[0];
-                    reused_index = 0;
-                }
-
-                if (reusable_cmd != null) {
-                    primary_cmd = reusable_cmd;
-                    using_reusable = true;
-                    _ = c.vkResetCommandBuffer(primary_cmd, 0);
-                } else {
-                    var cmd_buf_info = std.mem.zeroes(c.VkCommandBufferAllocateInfo);
-                    cmd_buf_info.sType = c.VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO;
-                    cmd_buf_info.commandPool = manager.commandPool;
-                    cmd_buf_info.level = c.VK_COMMAND_BUFFER_LEVEL_PRIMARY;
-                    cmd_buf_info.commandBufferCount = 1;
-
-                    if (c.vkAllocateCommandBuffers(manager.device, &cmd_buf_info, &primary_cmd) != c.VK_SUCCESS) {
-                        primary_cmd = null;
-                    }
-                }
-
-                if (primary_cmd != null) {
-                    var begin_info = std.mem.zeroes(c.VkCommandBufferBeginInfo);
-                    begin_info.sType = c.VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
-                    begin_info.flags = c.VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
-
-                    _ = c.vkBeginCommandBuffer(primary_cmd, &begin_info);
-                    c.vkCmdExecuteCommands(primary_cmd, valid_count, bufs);
-                    _ = c.vkEndCommandBuffer(primary_cmd);
-
-                    var submit_info = std.mem.zeroes(c.VkSubmitInfo2);
-                    submit_info.sType = c.VK_STRUCTURE_TYPE_SUBMIT_INFO_2;
-
-                    var cmd_info = std.mem.zeroes(c.VkCommandBufferSubmitInfo);
-                    cmd_info.sType = c.VK_STRUCTURE_TYPE_COMMAND_BUFFER_SUBMIT_INFO;
-                    cmd_info.commandBuffer = primary_cmd;
-                    submit_info.commandBufferInfoCount = 1;
-                    submit_info.pCommandBufferInfos = &cmd_info;
-
-                    var signal_info = std.mem.zeroes(c.VkSemaphoreSubmitInfo);
-
-                    if (manager.syncManager) |sync| {
-                        signal_val = vk_sync_mgr.vulkan_sync_manager_get_next_timeline_value(sync);
-                        signal_info.sType = c.VK_STRUCTURE_TYPE_SEMAPHORE_SUBMIT_INFO;
-                        signal_info.semaphore = sync.timeline_semaphore;
-                        signal_info.value = signal_val;
-                        signal_info.stageMask = c.VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT;
-                        submit_info.signalSemaphoreInfoCount = 1;
-                        submit_info.pSignalSemaphoreInfos = &signal_info;
-                    }
-
-                    if (vk_sync_mgr.vulkan_sync_manager_submit_queue2(manager.graphicsQueue, 1, @ptrCast(&submit_info), null, manager.vkQueueSubmit2) == c.VK_SUCCESS) {
-                        submit_success = true;
-                        last_signal_value = signal_val;
+                    if (reserved_signal_value) |v| {
+                        signal_val = v;
                     } else {
-                        tex_mgr_log.err("vkQueueSubmit2 failed", .{});
+                        signal_val = vk_sync_mgr.vulkan_sync_manager_get_next_timeline_value(sync);
                     }
-                } else {
-                    tex_mgr_log.err("Failed to allocate primary command buffer for async upload batch", .{});
+                    signal_info.sType = c.VK_STRUCTURE_TYPE_SEMAPHORE_SUBMIT_INFO;
+                    signal_info.semaphore = sync.timeline_semaphore;
+                    signal_info.value = signal_val;
+                    signal_info.stageMask = c.VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT;
+                    submit_info.signalSemaphoreInfoCount = 1;
+                    submit_info.pSignalSemaphoreInfos = &signal_info;
                 }
+
+                if (vk_sync_mgr.vulkan_sync_manager_submit_queue2(manager.graphicsQueue, 1, @ptrCast(&submit_info), null, manager.vkQueueSubmit2) == c.VK_SUCCESS) {
+                    submit_success = true;
+                    last_signal_value = signal_val;
+                } else {
+                    tex_mgr_log.err("vkQueueSubmit2 failed", .{});
+                }
+            } else {
+                tex_mgr_log.err("Failed to allocate primary command buffer for async upload batch", .{});
             }
+        }
+
+        if (cmd_bufs_ptr) |ptr| {
             memory.cardinal_free(mem_alloc, ptr);
         }
 
         if (submit_success and manager.syncManager == null) {
-            // TODO: Serialize queue wait/submit calls if multiple threads can touch graphicsQueue.
-            _ = c.vkQueueWaitIdle(manager.graphicsQueue);
+            _ = vk_sync_mgr.vulkan_sync_manager_queue_wait_idle(manager.graphicsQueue);
         }
 
-        var iter = completed_list;
-        while (iter) |ctx| {
+        var iter2 = completed_list;
+        while (iter2) |ctx| {
             const next = ctx.next;
 
             if (!ctx.success) {
@@ -898,7 +971,7 @@ pub fn vk_texture_manager_update_textures(manager: *types.VulkanTextureManager) 
                 }
 
                 const tex = ctx.managed_texture;
-                tex_mgr_log.info("Updating texture ptr: {*}, BindlessIndex: {d}", .{ tex, tex.bindless_index });
+                tex_mgr_log.debug("Updating texture ptr: {*}, BindlessIndex: {d}", .{ tex, tex.bindless_index });
 
                 if (tex.is_allocated) {
                     if (tex.view != null) c.vkDestroyImageView(manager.device, tex.view, null);
@@ -934,7 +1007,7 @@ pub fn vk_texture_manager_update_textures(manager: *types.VulkanTextureManager) 
                         if (vk_descriptor_indexing.vk_bindless_texture_update_at_index(&manager.bindless_pool, old_idx, tex.image, tex.view, tex.sampler)) {
                             bindless_idx = old_idx;
                             success = true;
-                            tex_mgr_log.info("Async texture upload complete. Updated existing bindless index: {d}", .{old_idx});
+                            tex_mgr_log.debug("Async texture upload complete. Updated existing bindless index: {d}", .{old_idx});
                         }
                     }
 
@@ -942,7 +1015,7 @@ pub fn vk_texture_manager_update_textures(manager: *types.VulkanTextureManager) 
                         if (tex.sampler != null and vk_descriptor_indexing.vk_bindless_texture_register_existing(&manager.bindless_pool, tex.image, tex.view, tex.sampler, &bindless_idx)) {
                             tex.bindless_index = bindless_idx;
                             success = true;
-                            tex_mgr_log.info("Async texture upload complete. Allocated new bindless index: {d} (Old: {d})", .{ bindless_idx, old_idx });
+                            tex_mgr_log.debug("Async texture upload complete. Allocated new bindless index: {d} (Old: {d})", .{ bindless_idx, old_idx });
                         } else if (tex.sampler == null) {
                             tex_mgr_log.err("Cannot register bindless texture: sampler is null", .{});
                         }
@@ -972,7 +1045,7 @@ pub fn vk_texture_manager_update_textures(manager: *types.VulkanTextureManager) 
 
             memory.cardinal_free(mem_alloc, ctx);
 
-            iter = next;
+            iter2 = next;
         }
 
         if (primary_cmd != null) {
@@ -983,6 +1056,9 @@ pub fn vk_texture_manager_update_textures(manager: *types.VulkanTextureManager) 
                             manager.upload_fence_values[idx] = signal_val;
                         }
                     } else {
+                        const idx = manager.upload_buffer_index;
+                        manager.upload_fence_values[idx] = signal_val;
+                        manager.upload_buffer_index = (idx + 1) % types.MAX_FRAMES_IN_FLIGHT;
                         vk_texture_utils.add_command_buffer_cleanup(primary_cmd, manager.commandPool, manager.device, signal_val);
                     }
                 } else {
@@ -1062,8 +1138,7 @@ pub fn vk_texture_manager_update_textures(manager: *types.VulkanTextureManager) 
 
                         if (vk_mt.cardinal_mt_submit_task(task)) {
                             tex.is_updating = true;
-                            ctx.next = @ptrCast(@alignCast(manager.pending_updates));
-                            manager.pending_updates = ctx;
+                            push_pending_update(manager, ctx);
                         } else {
                             tex_mgr_log.err("Failed to submit async texture task", .{});
                             tex.update_failed = true;

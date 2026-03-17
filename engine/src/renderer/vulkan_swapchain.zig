@@ -379,6 +379,9 @@ const SwapchainBackupState = struct {
     extent: c.VkExtent2D,
     format: c.VkFormat,
     layout_initialized: ?[*]bool,
+    layouts: ?[*]c.VkImageLayout,
+    stage_masks: ?[*]c.VkPipelineStageFlags2,
+    access_masks: ?[*]c.VkAccessFlags2,
     present_semaphores: ?[*]c.VkSemaphore,
 };
 
@@ -391,6 +394,9 @@ fn backup_swapchain_state(s: *types.VulkanState, backup: *SwapchainBackupState) 
     backup.extent = s.swapchain.extent;
     backup.format = s.swapchain.format;
     backup.layout_initialized = s.swapchain.image_layout_initialized;
+    backup.layouts = s.swapchain.image_layouts;
+    backup.stage_masks = s.swapchain.image_stage_masks;
+    backup.access_masks = s.swapchain.image_access_masks;
     backup.present_semaphores = s.swapchain.image_present_semaphores;
 
     s.swapchain.handle = null;
@@ -398,6 +404,9 @@ fn backup_swapchain_state(s: *types.VulkanState, backup: *SwapchainBackupState) 
     s.swapchain.image_views = null;
     s.swapchain.image_count = 0;
     s.swapchain.image_layout_initialized = null;
+    s.swapchain.image_layouts = null;
+    s.swapchain.image_stage_masks = null;
+    s.swapchain.image_access_masks = null;
     s.swapchain.image_present_semaphores = null;
 }
 
@@ -410,6 +419,9 @@ fn restore_swapchain_state(s: *types.VulkanState, backup: *const SwapchainBackup
     s.swapchain.extent = backup.extent;
     s.swapchain.format = backup.format;
     s.swapchain.image_layout_initialized = backup.layout_initialized;
+    s.swapchain.image_layouts = backup.layouts;
+    s.swapchain.image_stage_masks = backup.stage_masks;
+    s.swapchain.image_access_masks = backup.access_masks;
 }
 
 fn handle_recreation_failure(s: *types.VulkanState, old_state: *const SwapchainBackupState) bool {
@@ -423,6 +435,21 @@ fn handle_recreation_failure(s: *types.VulkanState, old_state: *const SwapchainB
         const mem_alloc = memory.cardinal_get_allocator_for_category(.RENDERER);
         memory.cardinal_free(mem_alloc, s.swapchain.image_layout_initialized);
         s.swapchain.image_layout_initialized = null;
+    }
+    if (s.swapchain.image_layouts != null) {
+        const mem_alloc = memory.cardinal_get_allocator_for_category(.RENDERER);
+        memory.cardinal_free(mem_alloc, s.swapchain.image_layouts);
+        s.swapchain.image_layouts = null;
+    }
+    if (s.swapchain.image_stage_masks != null) {
+        const mem_alloc = memory.cardinal_get_allocator_for_category(.RENDERER);
+        memory.cardinal_free(mem_alloc, s.swapchain.image_stage_masks);
+        s.swapchain.image_stage_masks = null;
+    }
+    if (s.swapchain.image_access_masks != null) {
+        const mem_alloc = memory.cardinal_get_allocator_for_category(.RENDERER);
+        memory.cardinal_free(mem_alloc, s.swapchain.image_access_masks);
+        s.swapchain.image_access_masks = null;
     }
 
     s.swapchain.extent = old_state.extent;
@@ -452,6 +479,15 @@ fn destroy_backup_resources(s: *types.VulkanState, backup: *const SwapchainBacku
         c.vkDestroySwapchainKHR(s.context.device, backup.handle, null);
     }
     if (backup.layout_initialized) |ptr| {
+        c.free(@as(?*anyopaque, @ptrCast(ptr)));
+    }
+    if (backup.layouts) |ptr| {
+        c.free(@as(?*anyopaque, @ptrCast(ptr)));
+    }
+    if (backup.stage_masks) |ptr| {
+        c.free(@as(?*anyopaque, @ptrCast(ptr)));
+    }
+    if (backup.access_masks) |ptr| {
         c.free(@as(?*anyopaque, @ptrCast(ptr)));
     }
     if (backup.present_semaphores) |sems| {
@@ -646,6 +682,27 @@ pub export fn vk_destroy_swapchain(s: ?*types.VulkanState) callconv(.c) void {
     if (vs.swapchain.handle != null) {
         c.vkDestroySwapchainKHR(vs.context.device, vs.swapchain.handle, null);
         vs.swapchain.handle = null;
+    }
+
+    if (vs.swapchain.image_layout_initialized != null) {
+        const mem_alloc = memory.cardinal_get_allocator_for_category(.RENDERER);
+        memory.cardinal_free(mem_alloc, vs.swapchain.image_layout_initialized);
+        vs.swapchain.image_layout_initialized = null;
+    }
+    if (vs.swapchain.image_layouts != null) {
+        const mem_alloc = memory.cardinal_get_allocator_for_category(.RENDERER);
+        memory.cardinal_free(mem_alloc, vs.swapchain.image_layouts);
+        vs.swapchain.image_layouts = null;
+    }
+    if (vs.swapchain.image_stage_masks != null) {
+        const mem_alloc = memory.cardinal_get_allocator_for_category(.RENDERER);
+        memory.cardinal_free(mem_alloc, vs.swapchain.image_stage_masks);
+        vs.swapchain.image_stage_masks = null;
+    }
+    if (vs.swapchain.image_access_masks != null) {
+        const mem_alloc = memory.cardinal_get_allocator_for_category(.RENDERER);
+        memory.cardinal_free(mem_alloc, vs.swapchain.image_access_masks);
+        vs.swapchain.image_access_masks = null;
     }
 }
 

@@ -12,6 +12,7 @@ const math = @import("../core/math.zig");
 const model_manager_pkg = @import("model_manager.zig");
 const scene_pkg = @import("scene.zig");
 const transform_math = @import("../core/transform.zig");
+const async_loader = @import("../core/async_loader.zig");
 
 const serializer_log = std.log.scoped(.scene_serializer);
 
@@ -195,8 +196,6 @@ pub const SceneSerializer = struct {
     }
 
     /// Instantiates models and ECS entities from an already-parsed scene payload.
-    ///
-    /// TODO: Allow async model loading and deferred entity creation for large scenes.
     pub fn instantiateScene(self: *SceneSerializer, data: *ParsedScene) !void {
         const root = data.parsed.value;
         const root_path = data.root_path;
@@ -214,6 +213,9 @@ pub const SceneSerializer = struct {
         var total_mesh_count: u32 = 0;
 
         if (self.model_manager) |mgr| {
+            var requested_models = std.ArrayListUnmanaged(u32){};
+            defer requested_models.deinit(self.allocator);
+
             if (root.object.get("models")) |models_val| {
                 if (models_val == .array) {
                     for (models_val.array.items) |model_val| {
@@ -242,7 +244,10 @@ pub const SceneSerializer = struct {
                                 const path_z = try self.allocator.dupeZ(u8, full_path);
                                 defer self.allocator.free(path_z);
 
-                                const model_id = model_manager_pkg.cardinal_model_manager_load_model(mgr, path_z.ptr, null);
+                                const model_id = model_manager_pkg.cardinal_model_manager_load_model_async(mgr, path_z.ptr, null, 2);
+                                if (model_id != 0) {
+                                    try requested_models.append(self.allocator, model_id);
+                                }
 
                                 if (model_id != 0) {
                                     const model_idx = model_manager_pkg.find_model_index(mgr, model_id);
@@ -261,6 +266,27 @@ pub const SceneSerializer = struct {
                                 }
                             }
                         }
+                    }
+                }
+            }
+
+            if (requested_models.items.len > 0) {
+                var all_done = false;
+                while (!all_done) {
+                    model_manager_pkg.cardinal_model_manager_update(mgr);
+                    _ = async_loader.cardinal_async_process_completed_tasks(0);
+
+                    all_done = true;
+                    for (requested_models.items) |id| {
+                        const m = model_manager_pkg.cardinal_model_manager_get_model(mgr, id) orelse continue;
+                        if (m.is_loading) {
+                            all_done = false;
+                            break;
+                        }
+                    }
+
+                    if (!all_done) {
+                        std.Thread.sleep(1_000_000);
                     }
                 }
             }

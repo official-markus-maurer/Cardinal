@@ -338,7 +338,7 @@ pub fn update_simple_uniforms(s: *types.VulkanState, model: *const [16]f32, view
         return;
     }
 
-    simple_log.info("update_simple_uniforms: Updating UBO. ViewPos: {d},{d},{d}", .{ viewPos[0], viewPos[1], viewPos[2] });
+    simple_log.debug("update_simple_uniforms: Updating UBO. ViewPos: {d},{d},{d}", .{ viewPos[0], viewPos[1], viewPos[2] });
 
     var ubo: SimpleUniformBufferObject = undefined;
     @memcpy(&ubo.model, model);
@@ -351,7 +351,7 @@ pub fn update_simple_uniforms(s: *types.VulkanState, model: *const [16]f32, view
 }
 
 pub fn render_simple(s: *types.VulkanState, commandBufferHandle: c.VkCommandBuffer, pipeline: c.VkPipeline, pipelineLayout: c.VkPipelineLayout) void {
-    simple_log.info("render_simple: Called", .{});
+    simple_log.debug("render_simple: Called", .{});
     if (s.current_scene == null) {
         simple_log.err("render_simple: No scene", .{});
         return;

@@ -2,8 +2,6 @@
 //!
 //! Initializes a VMA allocator instance by wiring Vulkan function pointers and selecting
 //! feature flags based on device capabilities.
-//!
-//! TODO: Centralize Vulkan function loading to avoid repeating `vkGet*ProcAddr` patterns.
 const std = @import("std");
 const builtin = @import("builtin");
 const log = @import("../core/log.zig");
@@ -14,6 +12,20 @@ const vma_log = log.ScopedLogger("VMA");
 
 /// Global storage for VMA's Vulkan function table.
 var g_vulkan_functions: c.VmaVulkanFunctions = undefined;
+
+fn load_instance_proc(instance: c.VkInstance, primary: [*:0]const u8, fallback: ?[*:0]const u8) c.PFN_vkVoidFunction {
+    const f1 = c.vkGetInstanceProcAddr(instance, primary);
+    if (f1 != null) return f1;
+    if (fallback) |fb| return c.vkGetInstanceProcAddr(instance, fb);
+    return null;
+}
+
+fn load_device_proc(device: c.VkDevice, primary: [*:0]const u8, fallback: ?[*:0]const u8) c.PFN_vkVoidFunction {
+    const f1 = c.vkGetDeviceProcAddr(device, primary);
+    if (f1 != null) return f1;
+    if (fallback) |fb| return c.vkGetDeviceProcAddr(device, fb);
+    return null;
+}
 
 /// Initializes `alloc` with a VMA allocator instance for the given Vulkan device.
 pub export fn init(alloc: ?*types.VulkanAllocator, instance: c.VkInstance, phys: c.VkPhysicalDevice, dev: c.VkDevice, bufReq: c.PFN_vkGetDeviceBufferMemoryRequirements, imgReq: c.PFN_vkGetDeviceImageMemoryRequirements, bufDevAddr: c.PFN_vkGetBufferDeviceAddress, bufReqKHR: c.PFN_vkGetDeviceBufferMemoryRequirementsKHR, imgReqKHR: c.PFN_vkGetDeviceImageMemoryRequirementsKHR, supports_maintenance8: bool) callconv(.c) bool {
@@ -31,51 +43,43 @@ pub export fn init(alloc: ?*types.VulkanAllocator, instance: c.VkInstance, phys:
 
     g_vulkan_functions = std.mem.zeroes(c.VmaVulkanFunctions);
 
-    g_vulkan_functions.vkGetPhysicalDeviceProperties = @ptrCast(c.vkGetInstanceProcAddr(instance, "vkGetPhysicalDeviceProperties"));
+    g_vulkan_functions.vkGetPhysicalDeviceProperties = @ptrCast(load_instance_proc(instance, "vkGetPhysicalDeviceProperties", null));
     if (g_vulkan_functions.vkGetPhysicalDeviceProperties == null) vma_log.err("Failed to load vkGetPhysicalDeviceProperties", .{});
 
-    g_vulkan_functions.vkGetPhysicalDeviceMemoryProperties = @ptrCast(c.vkGetInstanceProcAddr(instance, "vkGetPhysicalDeviceMemoryProperties"));
+    g_vulkan_functions.vkGetPhysicalDeviceMemoryProperties = @ptrCast(load_instance_proc(instance, "vkGetPhysicalDeviceMemoryProperties", null));
     if (g_vulkan_functions.vkGetPhysicalDeviceMemoryProperties == null) vma_log.err("Failed to load vkGetPhysicalDeviceMemoryProperties", .{});
 
-    g_vulkan_functions.vkGetPhysicalDeviceMemoryProperties2KHR = @ptrCast(c.vkGetInstanceProcAddr(instance, "vkGetPhysicalDeviceMemoryProperties2"));
-    if (g_vulkan_functions.vkGetPhysicalDeviceMemoryProperties2KHR == null) {
-        g_vulkan_functions.vkGetPhysicalDeviceMemoryProperties2KHR = @ptrCast(c.vkGetInstanceProcAddr(instance, "vkGetPhysicalDeviceMemoryProperties2KHR"));
-    }
+    g_vulkan_functions.vkGetPhysicalDeviceMemoryProperties2KHR = @ptrCast(load_instance_proc(instance, "vkGetPhysicalDeviceMemoryProperties2", "vkGetPhysicalDeviceMemoryProperties2KHR"));
     if (g_vulkan_functions.vkGetPhysicalDeviceMemoryProperties2KHR == null) vma_log.err("Failed to load vkGetPhysicalDeviceMemoryProperties2", .{});
 
-    g_vulkan_functions.vkAllocateMemory = @ptrCast(c.vkGetDeviceProcAddr(dev, "vkAllocateMemory"));
+    g_vulkan_functions.vkAllocateMemory = @ptrCast(load_device_proc(dev, "vkAllocateMemory", null));
 
-    g_vulkan_functions.vkFreeMemory = @ptrCast(c.vkGetDeviceProcAddr(dev, "vkFreeMemory"));
+    g_vulkan_functions.vkFreeMemory = @ptrCast(load_device_proc(dev, "vkFreeMemory", null));
 
-    g_vulkan_functions.vkMapMemory = @ptrCast(c.vkGetDeviceProcAddr(dev, "vkMapMemory"));
-    g_vulkan_functions.vkUnmapMemory = @ptrCast(c.vkGetDeviceProcAddr(dev, "vkUnmapMemory"));
-    g_vulkan_functions.vkFlushMappedMemoryRanges = @ptrCast(c.vkGetDeviceProcAddr(dev, "vkFlushMappedMemoryRanges"));
-    g_vulkan_functions.vkInvalidateMappedMemoryRanges = @ptrCast(c.vkGetDeviceProcAddr(dev, "vkInvalidateMappedMemoryRanges"));
+    g_vulkan_functions.vkMapMemory = @ptrCast(load_device_proc(dev, "vkMapMemory", null));
+    g_vulkan_functions.vkUnmapMemory = @ptrCast(load_device_proc(dev, "vkUnmapMemory", null));
+    g_vulkan_functions.vkFlushMappedMemoryRanges = @ptrCast(load_device_proc(dev, "vkFlushMappedMemoryRanges", null));
+    g_vulkan_functions.vkInvalidateMappedMemoryRanges = @ptrCast(load_device_proc(dev, "vkInvalidateMappedMemoryRanges", null));
 
-    g_vulkan_functions.vkBindBufferMemory = @ptrCast(c.vkGetDeviceProcAddr(dev, "vkBindBufferMemory"));
+    g_vulkan_functions.vkBindBufferMemory = @ptrCast(load_device_proc(dev, "vkBindBufferMemory", null));
 
-    // TODO: Ensure Memory2 bind entrypoints are always loaded when required by VMA.
-    g_vulkan_functions.vkBindBufferMemory2KHR = @ptrCast(c.vkGetDeviceProcAddr(dev, "vkBindBufferMemory2"));
-    if (g_vulkan_functions.vkBindBufferMemory2KHR == null) g_vulkan_functions.vkBindBufferMemory2KHR = @ptrCast(c.vkGetDeviceProcAddr(dev, "vkBindBufferMemory2KHR"));
+    g_vulkan_functions.vkBindBufferMemory2KHR = @ptrCast(load_device_proc(dev, "vkBindBufferMemory2", "vkBindBufferMemory2KHR"));
 
-    g_vulkan_functions.vkBindImageMemory = @ptrCast(c.vkGetDeviceProcAddr(dev, "vkBindImageMemory"));
-    g_vulkan_functions.vkBindImageMemory2KHR = @ptrCast(c.vkGetDeviceProcAddr(dev, "vkBindImageMemory2"));
-    if (g_vulkan_functions.vkBindImageMemory2KHR == null) g_vulkan_functions.vkBindImageMemory2KHR = @ptrCast(c.vkGetDeviceProcAddr(dev, "vkBindImageMemory2KHR"));
+    g_vulkan_functions.vkBindImageMemory = @ptrCast(load_device_proc(dev, "vkBindImageMemory", null));
+    g_vulkan_functions.vkBindImageMemory2KHR = @ptrCast(load_device_proc(dev, "vkBindImageMemory2", "vkBindImageMemory2KHR"));
 
-    g_vulkan_functions.vkGetBufferMemoryRequirements = @ptrCast(c.vkGetDeviceProcAddr(dev, "vkGetBufferMemoryRequirements"));
-    g_vulkan_functions.vkGetImageMemoryRequirements = @ptrCast(c.vkGetDeviceProcAddr(dev, "vkGetImageMemoryRequirements"));
-    g_vulkan_functions.vkCreateBuffer = @ptrCast(c.vkGetDeviceProcAddr(dev, "vkCreateBuffer"));
-    g_vulkan_functions.vkDestroyBuffer = @ptrCast(c.vkGetDeviceProcAddr(dev, "vkDestroyBuffer"));
-    g_vulkan_functions.vkCreateImage = @ptrCast(c.vkGetDeviceProcAddr(dev, "vkCreateImage"));
-    g_vulkan_functions.vkDestroyImage = @ptrCast(c.vkGetDeviceProcAddr(dev, "vkDestroyImage"));
-    g_vulkan_functions.vkCmdCopyBuffer = @ptrCast(c.vkGetDeviceProcAddr(dev, "vkCmdCopyBuffer"));
+    g_vulkan_functions.vkGetBufferMemoryRequirements = @ptrCast(load_device_proc(dev, "vkGetBufferMemoryRequirements", null));
+    g_vulkan_functions.vkGetImageMemoryRequirements = @ptrCast(load_device_proc(dev, "vkGetImageMemoryRequirements", null));
+    g_vulkan_functions.vkCreateBuffer = @ptrCast(load_device_proc(dev, "vkCreateBuffer", null));
+    g_vulkan_functions.vkDestroyBuffer = @ptrCast(load_device_proc(dev, "vkDestroyBuffer", null));
+    g_vulkan_functions.vkCreateImage = @ptrCast(load_device_proc(dev, "vkCreateImage", null));
+    g_vulkan_functions.vkDestroyImage = @ptrCast(load_device_proc(dev, "vkDestroyImage", null));
+    g_vulkan_functions.vkCmdCopyBuffer = @ptrCast(load_device_proc(dev, "vkCmdCopyBuffer", null));
 
-    g_vulkan_functions.vkGetBufferMemoryRequirements2KHR = @ptrCast(c.vkGetDeviceProcAddr(dev, "vkGetBufferMemoryRequirements2"));
-    if (g_vulkan_functions.vkGetBufferMemoryRequirements2KHR == null) g_vulkan_functions.vkGetBufferMemoryRequirements2KHR = @ptrCast(c.vkGetDeviceProcAddr(dev, "vkGetBufferMemoryRequirements2KHR"));
+    g_vulkan_functions.vkGetBufferMemoryRequirements2KHR = @ptrCast(load_device_proc(dev, "vkGetBufferMemoryRequirements2", "vkGetBufferMemoryRequirements2KHR"));
     if (g_vulkan_functions.vkGetBufferMemoryRequirements2KHR == null) vma_log.err("Failed to load vkGetBufferMemoryRequirements2", .{});
 
-    g_vulkan_functions.vkGetImageMemoryRequirements2KHR = @ptrCast(c.vkGetDeviceProcAddr(dev, "vkGetImageMemoryRequirements2"));
-    if (g_vulkan_functions.vkGetImageMemoryRequirements2KHR == null) g_vulkan_functions.vkGetImageMemoryRequirements2KHR = @ptrCast(c.vkGetDeviceProcAddr(dev, "vkGetImageMemoryRequirements2KHR"));
+    g_vulkan_functions.vkGetImageMemoryRequirements2KHR = @ptrCast(load_device_proc(dev, "vkGetImageMemoryRequirements2", "vkGetImageMemoryRequirements2KHR"));
     if (g_vulkan_functions.vkGetImageMemoryRequirements2KHR == null) vma_log.err("Failed to load vkGetImageMemoryRequirements2", .{});
 
     if (bufReq == null) {
@@ -115,6 +119,12 @@ pub export fn init(alloc: ?*types.VulkanAllocator, instance: c.VkInstance, phys:
 
     if (supports_maintenance8) {
         allocatorInfo.flags |= c.VMA_ALLOCATOR_CREATE_KHR_MAINTENANCE4_BIT;
+    }
+
+    if (g_vulkan_functions.vkBindBufferMemory2KHR != null and g_vulkan_functions.vkBindImageMemory2KHR != null) {
+        allocatorInfo.flags |= c.VMA_ALLOCATOR_CREATE_KHR_BIND_MEMORY2_BIT;
+    } else {
+        vma_log.warn("VMA bind-memory2 entrypoints missing; falling back to legacy bind calls", .{});
     }
 
     if (bufDevAddr != null) {

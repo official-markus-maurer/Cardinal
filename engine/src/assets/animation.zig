@@ -70,6 +70,19 @@ pub const CardinalAnimation = extern struct {
     channels: ?[*]CardinalAnimationChannel,
     channel_count: u32,
     duration: f32,
+    events: ?[*]CardinalAnimationEvent,
+    event_count: u32,
+};
+
+pub const CardinalAnimationEvent = extern struct {
+    time: f32,
+    name: ?[*:0]u8,
+};
+
+pub const CardinalAnimationFiredEvent = extern struct {
+    animation_index: u32,
+    time: f32,
+    name: ?[*:0]u8,
 };
 
 /// Bone definition for a skin.
@@ -95,10 +108,14 @@ pub const CardinalSkin = extern struct {
 pub const CardinalAnimationState = extern struct {
     animation_index: u32,
     current_time: f32,
+    previous_time: f32,
     playback_speed: f32,
     is_playing: bool,
     is_looping: bool,
     blend_weight: f32,
+    is_additive: bool,
+    mask_weights: ?[*]f32,
+    mask_count: u32,
 };
 
 /// Top-level animation system state (clips + skins + runtime states).
@@ -114,6 +131,10 @@ pub const CardinalAnimationSystem = extern struct {
     blend_states: ?[*]CardinalBlendState,
     blend_state_capacity: u32,
     blend_frame_id: u32,
+    fired_events: ?[*]CardinalAnimationFiredEvent,
+    fired_event_capacity: u32,
+    fired_event_head: u32,
+    fired_event_tail: u32,
 };
 
 const CardinalBlendState = extern struct {
@@ -123,6 +144,12 @@ const CardinalBlendState = extern struct {
     weight_t: f32,
     weight_r: f32,
     weight_s: f32,
+    translation_add: [3]f32,
+    rotation_add: [4]f32,
+    scale_add: [3]f32,
+    weight_t_add: f32,
+    weight_r_add: f32,
+    weight_s_add: f32,
     /// Frame stamp; equals `CardinalAnimationSystem.blend_frame_id` when touched this update.
     flags: u32,
 };
@@ -287,6 +314,23 @@ fn slerp_quaternion(a: [*]const f32, b: [*]const f32, t: f32, result: [*]f32) vo
     } else {
         lerp_vector(a, &b_sign, t, 4, result);
     }
+}
+
+fn quat_mul(a: *const [4]f32, b: *const [4]f32, out: *[4]f32) void {
+    const ax = a[0];
+    const ay = a[1];
+    const az = a[2];
+    const aw = a[3];
+
+    const bx = b[0];
+    const by = b[1];
+    const bz = b[2];
+    const bw = b[3];
+
+    out[0] = aw * bx + ax * bw + ay * bz - az * by;
+    out[1] = aw * by - ax * bz + ay * bw + az * bx;
+    out[2] = aw * bz + ax * by - ay * bx + az * bw;
+    out[3] = aw * bw - ax * bx - ay * by - az * bz;
 }
 
 /// Cubic-spline interpolation helper.
@@ -473,6 +517,17 @@ pub export fn cardinal_animation_system_create(max_animations: u32, max_skins: u
     system.blend_state_capacity = 0;
     system.blend_frame_id = 1;
 
+    system.fired_event_capacity = 256;
+    system.fired_event_head = 0;
+    system.fired_event_tail = 0;
+    const fired_ptr = memory.cardinal_calloc(allocator, system.fired_event_capacity, @sizeOf(CardinalAnimationFiredEvent));
+    if (fired_ptr) |ptr| {
+        system.fired_events = @ptrCast(@alignCast(ptr));
+    } else {
+        system.fired_events = null;
+        system.fired_event_capacity = 0;
+    }
+
     const bone_matrices_ptr = memory.cardinal_alloc(allocator, system.bone_matrix_count * 16 * @sizeOf(f32));
     if (bone_matrices_ptr) |ptr| {
         system.bone_matrices = @ptrCast(@alignCast(ptr));
@@ -504,6 +559,14 @@ pub export fn cardinal_animation_system_destroy(system: ?*CardinalAnimationSyste
         while (i < system.?.animation_count) : (i += 1) {
             const anim = &animations[i];
             if (anim.name) |ptr| memory.cardinal_free(allocator, ptr);
+
+            if (anim.events) |events| {
+                var e: u32 = 0;
+                while (e < anim.event_count) : (e += 1) {
+                    if (events[e].name) |ptr| memory.cardinal_free(allocator, ptr);
+                }
+                memory.cardinal_free(allocator, events);
+            }
 
             if (anim.samplers) |samplers| {
                 var j: u32 = 0;
@@ -538,7 +601,15 @@ pub export fn cardinal_animation_system_destroy(system: ?*CardinalAnimationSyste
         memory.cardinal_free(allocator, system.?.skins);
     }
 
-    if (system.?.states) |ptr| memory.cardinal_free(allocator, ptr);
+    if (system.?.states) |states| {
+        var i: u32 = 0;
+        while (i < system.?.state_count) : (i += 1) {
+            if (states[i].mask_weights) |ptr| memory.cardinal_free(allocator, ptr);
+        }
+        memory.cardinal_free(allocator, states);
+    }
+
+    if (system.?.fired_events) |ptr| memory.cardinal_free(allocator, ptr);
     if (system.?.bone_matrices) |ptr| memory.cardinal_free(allocator, ptr);
     memory.cardinal_free(allocator, system);
 
@@ -567,6 +638,8 @@ pub export fn cardinal_animation_system_add_animation(system: ?*CardinalAnimatio
     dest.duration = animation.?.duration;
     dest.sampler_count = animation.?.sampler_count;
     dest.channel_count = animation.?.channel_count;
+    dest.events = null;
+    dest.event_count = 0;
 
     if (animation.?.sampler_count > 0) {
         const samplers_ptr = memory.cardinal_calloc(allocator, animation.?.sampler_count, @sizeOf(CardinalAnimationSampler));
@@ -611,6 +684,92 @@ pub export fn cardinal_animation_system_add_animation(system: ?*CardinalAnimatio
     system.?.animation_count += 1;
     anim_log.debug("Added animation '{s}' at index {d}", .{ if (dest.name) |n| std.mem.span(n) else "Unnamed", index });
     return index;
+}
+
+fn push_fired_event(sys: *CardinalAnimationSystem, anim_index: u32, time: f32, name: ?[*:0]u8) void {
+    if (sys.fired_events == null or sys.fired_event_capacity == 0) return;
+    const next_tail = (sys.fired_event_tail + 1) % sys.fired_event_capacity;
+    if (next_tail == sys.fired_event_head) {
+        sys.fired_event_head = (sys.fired_event_head + 1) % sys.fired_event_capacity;
+    }
+    sys.fired_events.?[sys.fired_event_tail] = .{ .animation_index = anim_index, .time = time, .name = name };
+    sys.fired_event_tail = next_tail;
+}
+
+fn fire_animation_events(sys: *CardinalAnimationSystem, anim_index: u32, anim: *const CardinalAnimation, prev_time: f32, curr_time: f32, looped: bool) void {
+    if (anim.events == null or anim.event_count == 0) return;
+    if (prev_time == curr_time) return;
+
+    const events = anim.events.?[0..anim.event_count];
+    if (!looped) {
+        for (events) |e| {
+            if (e.time > prev_time and e.time <= curr_time) {
+                push_fired_event(sys, anim_index, e.time, e.name);
+            }
+        }
+        return;
+    }
+
+    for (events) |e| {
+        if ((e.time > prev_time and e.time <= anim.duration) or (e.time >= 0.0 and e.time <= curr_time)) {
+            push_fired_event(sys, anim_index, e.time, e.name);
+        }
+    }
+}
+
+pub export fn cardinal_animation_add_event(system: ?*CardinalAnimationSystem, animation_index: u32, time: f32, name: ?[*:0]const u8) callconv(.c) bool {
+    if (system == null or name == null) return false;
+    const sys = system.?;
+    if (animation_index >= sys.animation_count) return false;
+
+    const anim = &sys.animations.?[animation_index];
+    const allocator = memory.cardinal_get_allocator_for_category(.ENGINE);
+
+    const clamped_time = if (time < 0.0) 0.0 else if (time > anim.duration) anim.duration else time;
+
+    const name_len = c.strlen(name.?) + 1;
+    const name_ptr = memory.cardinal_alloc(allocator, name_len) orelse return false;
+    const name_z: [*:0]u8 = @ptrCast(name_ptr);
+    _ = c.strcpy(name_z, name.?);
+
+    const old_count = anim.event_count;
+    const new_count = old_count + 1;
+    const new_bytes = @as(usize, new_count) * @sizeOf(CardinalAnimationEvent);
+
+    const new_ptr = if (anim.events == null)
+        memory.cardinal_calloc(allocator, new_count, @sizeOf(CardinalAnimationEvent))
+    else
+        memory.cardinal_realloc(allocator, anim.events, new_bytes);
+
+    if (new_ptr == null) {
+        memory.cardinal_free(allocator, name_ptr);
+        return false;
+    }
+
+    anim.events = @ptrCast(@alignCast(new_ptr));
+
+    var insert_at: u32 = 0;
+    while (insert_at < old_count and anim.events.?[insert_at].time <= clamped_time) : (insert_at += 1) {}
+
+    var i: u32 = old_count;
+    while (i > insert_at) : (i -= 1) {
+        anim.events.?[i] = anim.events.?[i - 1];
+    }
+
+    anim.events.?[insert_at] = .{ .time = clamped_time, .name = name_z };
+    anim.event_count = new_count;
+    return true;
+}
+
+pub export fn cardinal_animation_poll_event(system: ?*CardinalAnimationSystem, out_event: ?*CardinalAnimationFiredEvent) callconv(.c) bool {
+    if (system == null or out_event == null) return false;
+    const sys = system.?;
+    if (sys.fired_events == null or sys.fired_event_capacity == 0) return false;
+    if (sys.fired_event_head == sys.fired_event_tail) return false;
+
+    out_event.?.* = sys.fired_events.?[sys.fired_event_head];
+    sys.fired_event_head = (sys.fired_event_head + 1) % sys.fired_event_capacity;
+    return true;
 }
 
 /// Adds a skin to the system (deep-copies name/bones/mesh indices).
@@ -696,7 +855,14 @@ pub export fn cardinal_animation_play(system: ?*CardinalAnimationSystem, animati
 
     if (state == null) {
         const allocator = memory.cardinal_get_allocator_for_category(.ENGINE);
-        const new_states_ptr = memory.cardinal_realloc(allocator, system.?.states, (system.?.state_count + 1) * @sizeOf(CardinalAnimationState));
+        const new_count = system.?.state_count + 1;
+        const new_bytes = new_count * @sizeOf(CardinalAnimationState);
+
+        const new_states_ptr = if (system.?.states == null)
+            memory.cardinal_calloc(allocator, new_count, @sizeOf(CardinalAnimationState))
+        else
+            memory.cardinal_realloc(allocator, system.?.states, new_bytes);
+
         if (new_states_ptr == null) return false;
         system.?.states = @ptrCast(@alignCast(new_states_ptr));
 
@@ -705,8 +871,13 @@ pub export fn cardinal_animation_play(system: ?*CardinalAnimationSystem, animati
 
         state.?.animation_index = animation_index;
         state.?.current_time = 0.0;
+        state.?.previous_time = 0.0;
+        state.?.mask_weights = null;
+        state.?.mask_count = 0;
+        state.?.is_additive = false;
     }
 
+    state.?.previous_time = state.?.current_time;
     state.?.is_playing = true;
     state.?.is_looping = loop;
     state.?.blend_weight = blend_weight;
@@ -741,6 +912,7 @@ pub export fn cardinal_animation_stop(system: ?*CardinalAnimationSystem, animati
         if (system.?.states.?[i].animation_index == animation_index) {
             system.?.states.?[i].is_playing = false;
             system.?.states.?[i].current_time = 0.0;
+            system.?.states.?[i].previous_time = 0.0;
             anim_log.debug("Stopped animation {d}", .{animation_index});
             return true;
         }
@@ -773,11 +945,60 @@ pub export fn cardinal_animation_set_time(system: ?*CardinalAnimationSystem, ani
     while (i < system.?.state_count) : (i += 1) {
         if (system.?.states.?[i].animation_index == animation_index) {
             system.?.states.?[i].current_time = time;
+            system.?.states.?[i].previous_time = time;
             return true;
         }
     }
 
     return false;
+}
+
+fn find_state(system: *CardinalAnimationSystem, animation_index: u32) ?*CardinalAnimationState {
+    var i: u32 = 0;
+    while (i < system.state_count) : (i += 1) {
+        if (system.states.?[i].animation_index == animation_index) {
+            return &system.states.?[i];
+        }
+    }
+    return null;
+}
+
+pub export fn cardinal_animation_set_additive(system: ?*CardinalAnimationSystem, animation_index: u32, additive: bool) callconv(.c) bool {
+    if (system == null) return false;
+    const s = system.?;
+    if (animation_index >= s.animation_count) return false;
+
+    const state = find_state(s, animation_index) orelse return false;
+    state.is_additive = additive;
+    return true;
+}
+
+pub export fn cardinal_animation_set_mask(system: ?*CardinalAnimationSystem, animation_index: u32, weights: ?[*]const f32, count: u32) callconv(.c) bool {
+    if (system == null) return false;
+    const s = system.?;
+    if (animation_index >= s.animation_count) return false;
+
+    const state = find_state(s, animation_index) orelse return false;
+    const allocator = memory.cardinal_get_allocator_for_category(.ENGINE);
+
+    if (state.mask_weights) |ptr| {
+        memory.cardinal_free(allocator, ptr);
+        state.mask_weights = null;
+        state.mask_count = 0;
+    }
+
+    if (weights == null or count == 0) {
+        return true;
+    }
+
+    const bytes = @as(usize, count) * @sizeOf(f32);
+    const ptr = memory.cardinal_alloc(allocator, bytes) orelse return false;
+    const dst = @as([*]f32, @ptrCast(@alignCast(ptr)));
+    @memcpy(dst[0..count], weights.?[0..count]);
+
+    state.mask_weights = dst;
+    state.mask_count = count;
+    return true;
 }
 
 /// Advances all active animation states and applies results to scene node transforms.
@@ -831,6 +1052,7 @@ pub export fn cardinal_animation_system_update(system: ?*CardinalAnimationSystem
 
         const animation = &sys.animations.?[state.animation_index];
 
+        const prev_time = state.current_time;
         state.current_time += delta_time * state.playback_speed;
 
         if (std.math.isNan(state.current_time)) {
@@ -849,6 +1071,10 @@ pub export fn cardinal_animation_system_update(system: ?*CardinalAnimationSystem
             }
         }
 
+        state.previous_time = prev_time;
+        const looped = state.is_looping and (state.current_time < prev_time) and (animation.duration > FLT_EPSILON);
+        fire_animation_events(sys, state.animation_index, animation, prev_time, state.current_time, looped);
+
         var c_idx: u32 = 0;
         while (c_idx < animation.channel_count) : (c_idx += 1) {
             const channel = &animation.channels.?[c_idx];
@@ -866,28 +1092,73 @@ pub export fn cardinal_animation_system_update(system: ?*CardinalAnimationSystem
                 component_count = 4;
             }
 
-            if (sampler_interpolate_cached(sampler, state.current_time, component_count, &result)) {
-                const weight = state.blend_weight;
+            if (!sampler_interpolate_cached(sampler, state.current_time, component_count, &result)) continue;
+
+            var weight = state.blend_weight;
+            if (weight <= 0.001) continue;
+
+            if (state.mask_weights != null and node_idx < state.mask_count) {
+                weight *= state.mask_weights.?[node_idx];
                 if (weight <= 0.001) continue;
+            }
 
-                if (blend_state.flags != sys.blend_frame_id) {
-                    blend_state.translation = .{ 0, 0, 0 };
-                    blend_state.rotation = .{ 0, 0, 0, 0 };
-                    blend_state.scale = .{ 0, 0, 0 };
-                    blend_state.weight_t = 0;
-                    blend_state.weight_r = 0;
-                    blend_state.weight_s = 0;
-                    blend_state.flags = sys.blend_frame_id;
-                }
+            if (blend_state.flags != sys.blend_frame_id) {
+                blend_state.translation = .{ 0, 0, 0 };
+                blend_state.rotation = .{ 0, 0, 0, 0 };
+                blend_state.scale = .{ 0, 0, 0 };
+                blend_state.weight_t = 0;
+                blend_state.weight_r = 0;
+                blend_state.weight_s = 0;
+                blend_state.translation_add = .{ 0, 0, 0 };
+                blend_state.rotation_add = .{ 0, 0, 0, 0 };
+                blend_state.scale_add = .{ 0, 0, 0 };
+                blend_state.weight_t_add = 0;
+                blend_state.weight_r_add = 0;
+                blend_state.weight_s_add = 0;
+                blend_state.flags = sys.blend_frame_id;
+            }
 
-                switch (channel.target.path) {
-                    .TRANSLATION => {
+            const additive = state.is_additive;
+            switch (channel.target.path) {
+                .TRANSLATION => {
+                    if (additive) {
+                        blend_state.weight_t_add += weight;
+                        blend_state.translation_add[0] += result[0] * weight;
+                        blend_state.translation_add[1] += result[1] * weight;
+                        blend_state.translation_add[2] += result[2] * weight;
+                    } else {
                         blend_state.weight_t += weight;
                         blend_state.translation[0] += result[0] * weight;
                         blend_state.translation[1] += result[1] * weight;
                         blend_state.translation[2] += result[2] * weight;
-                    },
-                    .ROTATION => {
+                    }
+                },
+                .ROTATION => {
+                    if (additive) {
+                        if (blend_state.weight_r_add > 0) {
+                            const dot = blend_state.rotation_add[0] * result[0] +
+                                blend_state.rotation_add[1] * result[1] +
+                                blend_state.rotation_add[2] * result[2] +
+                                blend_state.rotation_add[3] * result[3];
+                            if (dot < 0) {
+                                blend_state.rotation_add[0] -= result[0] * weight;
+                                blend_state.rotation_add[1] -= result[1] * weight;
+                                blend_state.rotation_add[2] -= result[2] * weight;
+                                blend_state.rotation_add[3] -= result[3] * weight;
+                            } else {
+                                blend_state.rotation_add[0] += result[0] * weight;
+                                blend_state.rotation_add[1] += result[1] * weight;
+                                blend_state.rotation_add[2] += result[2] * weight;
+                                blend_state.rotation_add[3] += result[3] * weight;
+                            }
+                        } else {
+                            blend_state.rotation_add[0] += result[0] * weight;
+                            blend_state.rotation_add[1] += result[1] * weight;
+                            blend_state.rotation_add[2] += result[2] * weight;
+                            blend_state.rotation_add[3] += result[3] * weight;
+                        }
+                        blend_state.weight_r_add += weight;
+                    } else {
                         if (blend_state.weight_r > 0) {
                             const dot = blend_state.rotation[0] * result[0] +
                                 blend_state.rotation[1] * result[1] +
@@ -911,15 +1182,22 @@ pub export fn cardinal_animation_system_update(system: ?*CardinalAnimationSystem
                             blend_state.rotation[3] += result[3] * weight;
                         }
                         blend_state.weight_r += weight;
-                    },
-                    .SCALE => {
+                    }
+                },
+                .SCALE => {
+                    if (additive) {
+                        blend_state.weight_s_add += weight;
+                        blend_state.scale_add[0] += (result[0] - 1.0) * weight;
+                        blend_state.scale_add[1] += (result[1] - 1.0) * weight;
+                        blend_state.scale_add[2] += (result[2] - 1.0) * weight;
+                    } else {
                         blend_state.weight_s += weight;
                         blend_state.scale[0] += result[0] * weight;
                         blend_state.scale[1] += result[1] * weight;
                         blend_state.scale[2] += result[2] * weight;
-                    },
-                    else => {},
-                }
+                    }
+                },
+                else => {},
             }
         }
     }
@@ -971,6 +1249,37 @@ pub export fn cardinal_animation_system_update(system: ?*CardinalAnimationSystem
                 r = current_r;
             }
             transform.cardinal_quaternion_normalize(&r);
+
+            if (blend_state.weight_t_add > FLT_EPSILON) {
+                const inv_weight = 1.0 / blend_state.weight_t_add;
+                t[0] += blend_state.translation_add[0] * inv_weight;
+                t[1] += blend_state.translation_add[1] * inv_weight;
+                t[2] += blend_state.translation_add[2] * inv_weight;
+            }
+
+            if (blend_state.weight_s_add > FLT_EPSILON) {
+                const inv_weight = 1.0 / blend_state.weight_s_add;
+                const dx = blend_state.scale_add[0] * inv_weight;
+                const dy = blend_state.scale_add[1] * inv_weight;
+                const dz = blend_state.scale_add[2] * inv_weight;
+                s[0] *= 1.0 + dx;
+                s[1] *= 1.0 + dy;
+                s[2] *= 1.0 + dz;
+            }
+
+            if (blend_state.weight_r_add > FLT_EPSILON) {
+                var delta: [4]f32 = .{
+                    blend_state.rotation_add[0],
+                    blend_state.rotation_add[1],
+                    blend_state.rotation_add[2],
+                    blend_state.rotation_add[3],
+                };
+                transform.cardinal_quaternion_normalize(&delta);
+                var out_r: [4]f32 = undefined;
+                quat_mul(&r, &delta, &out_r);
+                r = out_r;
+                transform.cardinal_quaternion_normalize(&r);
+            }
 
             var new_transform: [16]f32 = undefined;
             transform.cardinal_matrix_from_trs(&t, &r, &s, &new_transform);

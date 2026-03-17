@@ -43,6 +43,7 @@ const allocator = engine.memory.cardinal_get_allocator_for_category(.ENGINE).as_
 var state: EditorState = undefined;
 var initialized: bool = false;
 var device_recovery_failed: bool = false;
+var imgui_context: ?*anyopaque = null;
 var world_matrix_cache: std.AutoHashMapUnmanaged(u64, math.Mat4) = .{};
 var override_cache: std.AutoHashMapUnmanaged(u64, bool) = .{};
 
@@ -76,6 +77,7 @@ fn sync_mesh_transforms_from_ecs() void {
     var view = state.runtime.registry.view(engine.ecs_components.MeshRenderer);
     var it = view.iterator();
     while (it.next()) |entry| {
+        if (state.runtime.transform_overrides.get(entry.entity.id) == null) continue;
         const mr = entry.component;
         const mesh_index = mr.mesh.index;
         if (mesh_index >= state.runtime.combined_scene.mesh_count) continue;
@@ -403,13 +405,6 @@ fn combo_index_to_rendering_mode(combo_index: i32) types.CardinalRenderingMode {
     };
 }
 
-/// Clears ImGui backend state prior to initialization to avoid stale device-backed resources.
-///
-/// TODO: Remove this once backend init/shutdown is robust across device loss and reload.
-fn clear_imgui_backend_data_for_init() void {
-    c.imgui_bridge_force_clear_backend_data();
-}
-
 /// Initializes the editor layer and its UI backends.
 pub fn init(win_ptr: *window.CardinalWindow, rnd_ptr: *types.CardinalRenderer, registry: *engine.ecs_registry.Registry) bool {
     if (initialized) {
@@ -481,6 +476,10 @@ pub fn init(win_ptr: *window.CardinalWindow, rnd_ptr: *types.CardinalRenderer, r
     content_browser.scan_assets_dir(&state, allocator);
 
     c.imgui_bridge_create_context();
+    imgui_context = c.imgui_bridge_get_current_context();
+    if (imgui_context != null) {
+        c.imgui_bridge_set_current_context(imgui_context);
+    }
     c.imgui_bridge_enable_docking(true);
     c.imgui_bridge_enable_keyboard(true);
     c.imgui_bridge_style_colors_dark();
@@ -521,8 +520,6 @@ pub fn init(win_ptr: *window.CardinalWindow, rnd_ptr: *types.CardinalRenderer, r
 
     const device = @as(c.VkDevice, @ptrCast(renderer.cardinal_renderer_internal_device(rnd_ptr)));
     if (c.vkCreateDescriptorPool(device, &pool_info, null, &state.runtime.descriptor_pool) != c.VK_SUCCESS) return false;
-
-    clear_imgui_backend_data_for_init();
 
     var init_info = c.ImGuiBridgeVulkanInitInfo{
         .instance = @as(c.VkInstance, @ptrCast(renderer.cardinal_renderer_internal_instance(rnd_ptr))),
@@ -567,8 +564,14 @@ pub fn on_device_loss(_: ?*anyopaque) callconv(.c) void {
 
     device_recovery_failed = false;
 
+    if (imgui_context != null) {
+        c.imgui_bridge_set_current_context(imgui_context);
+        c.imgui_bridge_invalidate_device_objects();
+    }
+
     if (state.runtime.descriptor_pool != null or initialized) {
         c.imgui_bridge_impl_vulkan_shutdown();
+        c.imgui_bridge_impl_glfw_shutdown();
         state.runtime.descriptor_pool = null;
     }
 
@@ -586,6 +589,10 @@ pub fn on_device_restored(user_data: ?*anyopaque, success: bool) callconv(.c) vo
     }
 
     log.cardinal_log_info("[EDITOR_LAYER] Device restored, re-initializing ImGui", .{});
+
+    if (imgui_context != null) {
+        c.imgui_bridge_set_current_context(imgui_context);
+    }
 
     if (initialized or state.runtime.descriptor_pool != null) {
         log.cardinal_log_warn("[EDITOR_LAYER] Device restored but ImGui already initialized. Shutting down old instance.", .{});
@@ -645,8 +652,6 @@ pub fn on_device_restored(user_data: ?*anyopaque, success: bool) callconv(.c) vo
 
     c.imgui_bridge_invalidate_device_objects();
 
-    clear_imgui_backend_data_for_init();
-
     var init_info = c.ImGuiBridgeVulkanInitInfo{
         .instance = @as(c.VkInstance, @ptrCast(renderer.cardinal_renderer_internal_instance(rnd_ptr))),
         .physical_device = @as(c.VkPhysicalDevice, @ptrCast(renderer.cardinal_renderer_internal_physical_device(rnd_ptr))),
@@ -695,9 +700,13 @@ pub fn shutdown() void {
 
     renderer.cardinal_renderer_wait_for_texture_uploads(state.runtime.renderer);
 
+    if (imgui_context != null) {
+        c.imgui_bridge_set_current_context(imgui_context);
+    }
     c.imgui_bridge_impl_vulkan_shutdown();
     c.imgui_bridge_impl_glfw_shutdown();
     c.imgui_bridge_destroy_context();
+    imgui_context = null;
 
     if (state.runtime.descriptor_pool != null) {
         const device = @as(c.VkDevice, @ptrCast(renderer.cardinal_renderer_internal_device(state.runtime.renderer)));
@@ -739,6 +748,9 @@ pub fn shutdown() void {
 
 pub fn update() void {
     if (!initialized) return;
+    if (imgui_context != null) {
+        c.imgui_bridge_set_current_context(imgui_context);
+    }
 
     // Project Manager Modal (Blocking)
     if (!state.ui.project_loaded) {
@@ -875,51 +887,7 @@ pub fn update() void {
                 const mesh_index = skin.mesh_indices.?[0];
                 if (mesh_index >= state.runtime.combined_scene.mesh_count) continue;
 
-                var mesh_base: u32 = 0;
-                var node_base: u32 = 0;
-                var found_base = false;
-                var model_node_count: u32 = 0;
-
-                if (state.runtime.model_manager.models) |models| {
-                    var m_idx: u32 = 0;
-                    while (m_idx < state.runtime.model_manager.model_count) : (m_idx += 1) {
-                        const model = &models[m_idx];
-                        if (!model.visible or model.is_loading) continue;
-
-                        const mesh_end = mesh_base + model.scene.mesh_count;
-                        if (mesh_index < mesh_end) {
-                            found_base = true;
-                            model_node_count = model.scene.all_node_count;
-                            break;
-                        }
-
-                        mesh_base = mesh_end;
-                        node_base += model.scene.all_node_count;
-                    }
-                }
-
-                var base_world_ptr: *const [16]f32 = &meshes[mesh_index].transform;
-                if (found_base and state.runtime.combined_scene.all_nodes != null and model_node_count > 0) {
-                    const local_mesh_index = mesh_index - mesh_base;
-                    const all_nodes = state.runtime.combined_scene.all_nodes.?;
-                    const node_end = @min(state.runtime.combined_scene.all_node_count, node_base + model_node_count);
-                    var n: u32 = node_base;
-                    while (n < node_end) : (n += 1) {
-                        const node_opt = all_nodes[n];
-                        if (node_opt == null) continue;
-                        const node = node_opt.?;
-                        if (node.mesh_count == 0 or node.mesh_indices == null) continue;
-
-                        var mi: u32 = 0;
-                        while (mi < node.mesh_count) : (mi += 1) {
-                            if (node.mesh_indices.?[mi] == local_mesh_index) {
-                                base_world_ptr = &node.world_transform;
-                                n = node_end;
-                                break;
-                            }
-                        }
-                    }
-                }
+                const base_world_ptr: *const [16]f32 = &meshes[mesh_index].transform;
 
                 _ = animation.cardinal_skin_update_bone_matrices_bounded_mesh_local(
                     skin,
