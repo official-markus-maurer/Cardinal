@@ -2,17 +2,25 @@
 //!
 //! Writes engine state (models + ECS entities/components) to a stable JSON representation and can
 //! parse it back. Intended for editor save/load workflows.
-//!
-//! TODO: Split component serializers into per-component modules to reduce file size and rebuild time.
 const std = @import("std");
 const registry_pkg = @import("../ecs/registry.zig");
 const entity_pkg = @import("../ecs/entity.zig");
 const components = @import("../ecs/components.zig");
-const math = @import("../core/math.zig");
 const model_manager_pkg = @import("model_manager.zig");
 const scene_pkg = @import("scene.zig");
 const transform_math = @import("../core/transform.zig");
 const async_loader = @import("../core/async_loader.zig");
+
+const json = @import("scene_serializer_json.zig");
+const ser_name = @import("scene_serializer_components/name.zig");
+const ser_transform = @import("scene_serializer_components/transform.zig");
+const ser_hierarchy = @import("scene_serializer_components/hierarchy.zig");
+const ser_node = @import("scene_serializer_components/node.zig");
+const ser_mesh_renderer = @import("scene_serializer_components/mesh_renderer.zig");
+const ser_skybox = @import("scene_serializer_components/skybox.zig");
+const ser_light = @import("scene_serializer_components/light.zig");
+const ser_camera = @import("scene_serializer_components/camera.zig");
+const ser_script = @import("scene_serializer_components/script.zig");
 
 const serializer_log = std.log.scoped(.scene_serializer);
 
@@ -70,7 +78,7 @@ pub const SceneSerializer = struct {
                     try json_writer.write(model.visible);
 
                     try json_writer.objectField("transform");
-                    try serializeMat4(&json_writer, model.transform);
+                    try json.serializeMat4(&json_writer, model.transform);
 
                     try json_writer.endObject();
                 }
@@ -110,47 +118,47 @@ pub const SceneSerializer = struct {
 
                 if (self.registry.get(components.Name, entity)) |name| {
                     try json_writer.objectField("Name");
-                    try serializeName(&json_writer, name);
+                    try ser_name.serialize(&json_writer, name);
                 }
 
                 if (self.registry.get(components.Hierarchy, entity)) |hierarchy| {
                     try json_writer.objectField("Hierarchy");
-                    try serializeHierarchy(&json_writer, hierarchy);
+                    try ser_hierarchy.serialize(&json_writer, hierarchy);
                 }
 
                 if (self.registry.get(components.Transform, entity)) |transform| {
                     try json_writer.objectField("Transform");
-                    try serializeTransform(&json_writer, transform);
+                    try ser_transform.serialize(&json_writer, transform);
                 }
 
                 if (self.registry.get(components.Node, entity)) |node| {
                     try json_writer.objectField("Node");
-                    try serializeNode(&json_writer, node);
+                    try ser_node.serialize(&json_writer, node);
                 }
 
                 if (self.registry.get(components.MeshRenderer, entity)) |mesh_renderer| {
                     try json_writer.objectField("MeshRenderer");
-                    try serializeMeshRenderer(&json_writer, mesh_renderer);
+                    try ser_mesh_renderer.serialize(&json_writer, mesh_renderer);
                 }
 
                 if (self.registry.get(components.Skybox, entity)) |skybox| {
                     try json_writer.objectField("Skybox");
-                    try serializeSkybox(&json_writer, self.allocator, skybox, root_path);
+                    try ser_skybox.serialize(&json_writer, self.allocator, skybox, root_path);
                 }
 
                 if (self.registry.get(components.Light, entity)) |light| {
                     try json_writer.objectField("Light");
-                    try serializeLight(&json_writer, light);
+                    try ser_light.serialize(&json_writer, light);
                 }
 
                 if (self.registry.get(components.Camera, entity)) |camera| {
                     try json_writer.objectField("Camera");
-                    try serializeCamera(&json_writer, camera);
+                    try ser_camera.serialize(&json_writer, camera);
                 }
 
                 if (self.registry.get(components.Script, entity)) |script| {
                     try json_writer.objectField("Script");
-                    try serializeScript(&json_writer, script);
+                    try ser_script.serialize(&json_writer, script);
                 }
 
                 try json_writer.endObject();
@@ -256,7 +264,7 @@ pub const SceneSerializer = struct {
 
                                         if (model_val.object.get("visible")) |v| model.visible = v.bool;
                                         if (model_val.object.get("transform")) |t| {
-                                            model.transform = try deserializeMat4(t);
+                                            model.transform = try json.deserializeMat4(t);
                                         }
 
                                         mgr.scene_dirty = true;
@@ -347,7 +355,7 @@ pub const SceneSerializer = struct {
 
                     if (comps.object.get("Name")) |val| {
                         has_any = true;
-                        if (deserializeName(val)) |comp| {
+                        if (ser_name.deserialize(val)) |comp| {
                             self.registry.add(entity, comp) catch |e| serializer_log.err("Failed to add Name component to entity {d}: {}", .{ entity.index(), e });
                         } else |err| {
                             serializer_log.err("Failed to deserialize Name for entity {d}: {}", .{ entity.index(), err });
@@ -356,7 +364,7 @@ pub const SceneSerializer = struct {
 
                     if (comps.object.get("Transform")) |val| {
                         has_any = true;
-                        if (deserializeTransform(val)) |comp| {
+                        if (ser_transform.deserialize(val)) |comp| {
                             self.registry.add(entity, comp) catch |e| serializer_log.err("Failed to add Transform component to entity {d}: {}", .{ entity.index(), e });
                         } else |err| {
                             serializer_log.err("Failed to deserialize Transform for entity {d}: {}", .{ entity.index(), err });
@@ -365,7 +373,7 @@ pub const SceneSerializer = struct {
 
                     if (comps.object.get("Hierarchy")) |val| {
                         has_any = true;
-                        if (deserializeHierarchy(val, &id_map)) |comp| {
+                        if (ser_hierarchy.deserialize(val, &id_map)) |comp| {
                             self.registry.add(entity, comp) catch |e| serializer_log.err("Failed to add Hierarchy component to entity {d}: {}", .{ entity.index(), e });
                         } else |err| {
                             serializer_log.err("Failed to deserialize Hierarchy for entity {d}: {}", .{ entity.index(), err });
@@ -374,7 +382,7 @@ pub const SceneSerializer = struct {
 
                     if (comps.object.get("Node")) |val| {
                         has_any = true;
-                        if (deserializeNode(val)) |comp| {
+                        if (ser_node.deserialize(val)) |comp| {
                             self.registry.add(entity, comp) catch |e| serializer_log.err("Failed to add Node component to entity {d}: {}", .{ entity.index(), e });
                         } else |err| {
                             serializer_log.err("Failed to deserialize Node for entity {d}: {}", .{ entity.index(), err });
@@ -383,7 +391,7 @@ pub const SceneSerializer = struct {
 
                     if (comps.object.get("MeshRenderer")) |val| {
                         has_any = true;
-                        if (deserializeMeshRenderer(val)) |comp| {
+                        if (ser_mesh_renderer.deserialize(val)) |comp| {
                             if (comp.mesh.index < total_mesh_count) {
                                 self.registry.add(entity, comp) catch |e| serializer_log.err("Failed to add MeshRenderer component to entity {d}: {}", .{ entity.index(), e });
                             } else {
@@ -396,7 +404,7 @@ pub const SceneSerializer = struct {
 
                     if (comps.object.get("Skybox")) |val| {
                         has_any = true;
-                        if (deserializeSkybox(self.allocator, val, root_path)) |comp| {
+                        if (ser_skybox.deserialize(self.allocator, val, root_path)) |comp| {
                             self.registry.add(entity, comp) catch |e| serializer_log.err("Failed to add Skybox component to entity {d}: {}", .{ entity.index(), e });
                         } else |err| {
                             serializer_log.err("Failed to deserialize Skybox for entity {d}: {}", .{ entity.index(), err });
@@ -405,7 +413,7 @@ pub const SceneSerializer = struct {
 
                     if (comps.object.get("Light")) |val| {
                         has_any = true;
-                        if (deserializeLight(val)) |comp| {
+                        if (ser_light.deserialize(val)) |comp| {
                             self.registry.add(entity, comp) catch |e| serializer_log.err("Failed to add Light component to entity {d}: {}", .{ entity.index(), e });
                         } else |err| {
                             serializer_log.err("Failed to deserialize Light for entity {d}: {}", .{ entity.index(), err });
@@ -414,7 +422,7 @@ pub const SceneSerializer = struct {
 
                     if (comps.object.get("Camera")) |val| {
                         has_any = true;
-                        if (deserializeCamera(val)) |comp| {
+                        if (ser_camera.deserialize(val)) |comp| {
                             self.registry.add(entity, comp) catch |e| serializer_log.err("Failed to add Camera component to entity {d}: {}", .{ entity.index(), e });
                         } else |err| {
                             serializer_log.err("Failed to deserialize Camera for entity {d}: {}", .{ entity.index(), err });
@@ -423,7 +431,7 @@ pub const SceneSerializer = struct {
 
                     if (comps.object.get("Script")) |val| {
                         has_any = true;
-                        if (deserializeScript(val)) |comp| {
+                        if (ser_script.deserialize(val)) |comp| {
                             self.registry.add(entity, comp) catch |e| serializer_log.err("Failed to add Script component to entity {d}: {}", .{ entity.index(), e });
                         } else |err| {
                             serializer_log.err("Failed to deserialize Script for entity {d}: {}", .{ entity.index(), err });
@@ -471,261 +479,6 @@ pub const SceneSerializer = struct {
         defer data.deinit();
 
         try self.instantiateScene(&data);
-    }
-
-    /// Writes a Vec3 in JSON array form.
-    fn serializeVec3(writer: anytype, v: math.Vec3) !void {
-        var buf: [128]u8 = undefined;
-        const str = try std.fmt.bufPrint(&buf, "[{d}, {d}, {d}]", .{ v.x, v.y, v.z });
-        try writer.writeRaw(str);
-    }
-
-    /// Writes a Mat4 in JSON array form (16 scalars).
-    fn serializeMat4(writer: anytype, m: [16]f32) !void {
-        var buf: [512]u8 = undefined;
-        const str = try std.fmt.bufPrint(&buf, "[{d}, {d}, {d}, {d}, {d}, {d}, {d}, {d}, {d}, {d}, {d}, {d}, {d}, {d}, {d}, {d}]", .{ m[0], m[1], m[2], m[3], m[4], m[5], m[6], m[7], m[8], m[9], m[10], m[11], m[12], m[13], m[14], m[15] });
-        try writer.writeRaw(str);
-    }
-
-    fn deserializeVec3(val: std.json.Value) !math.Vec3 {
-        if (val != .array or val.array.items.len < 3) return error.InvalidFormat;
-        return math.Vec3{
-            .x = try jsonToF32(val.array.items[0]),
-            .y = try jsonToF32(val.array.items[1]),
-            .z = try jsonToF32(val.array.items[2]),
-        };
-    }
-
-    fn serializeQuat(writer: anytype, q: math.Quat) !void {
-        var buf: [128]u8 = undefined;
-        const str = try std.fmt.bufPrint(&buf, "[{d}, {d}, {d}, {d}]", .{ q.x, q.y, q.z, q.w });
-        try writer.writeRaw(str);
-    }
-
-    fn deserializeQuat(val: std.json.Value) !math.Quat {
-        if (val != .array or val.array.items.len < 4) return error.InvalidFormat;
-        return math.Quat{
-            .x = try jsonToF32(val.array.items[0]),
-            .y = try jsonToF32(val.array.items[1]),
-            .z = try jsonToF32(val.array.items[2]),
-            .w = try jsonToF32(val.array.items[3]),
-        };
-    }
-
-    fn deserializeMat4(val: std.json.Value) ![16]f32 {
-        if (val != .array or val.array.items.len < 16) return error.InvalidFormat;
-        var m: [16]f32 = undefined;
-        var i: usize = 0;
-        while (i < 16) : (i += 1) {
-            m[i] = try jsonToF32(val.array.items[i]);
-        }
-        return m;
-    }
-
-    fn serializeTransform(writer: anytype, t: *components.Transform) !void {
-        try writer.beginObject();
-        try writer.objectField("position");
-        try serializeVec3(writer, t.position);
-        try writer.objectField("rotation");
-        try serializeQuat(writer, t.rotation);
-        try writer.objectField("scale");
-        try serializeVec3(writer, t.scale);
-        try writer.endObject();
-    }
-
-    fn deserializeTransform(val: std.json.Value) !components.Transform {
-        var t = components.Transform{};
-        if (val.object.get("position")) |p| t.position = try deserializeVec3(p);
-        if (val.object.get("rotation")) |r| t.rotation = try deserializeQuat(r);
-        if (val.object.get("scale")) |s| t.scale = try deserializeVec3(s);
-        return t;
-    }
-
-    /// Serializes a MeshRenderer component.
-    ///
-    /// TODO: Serialize generation counters once handle lifetime rules are finalized.
-    fn serializeMeshRenderer(writer: anytype, mr: *components.MeshRenderer) !void {
-        try writer.beginObject();
-        try writer.objectField("mesh_id");
-        try writer.write(mr.mesh.index);
-        try writer.objectField("material_id");
-        try writer.write(mr.material.index);
-        try writer.objectField("visible");
-        try writer.write(mr.visible);
-        try writer.objectField("cast_shadows");
-        try writer.write(mr.cast_shadows);
-        try writer.objectField("receive_shadows");
-        try writer.write(mr.receive_shadows);
-        try writer.endObject();
-    }
-
-    /// Deserializes a MeshRenderer component.
-    fn deserializeMeshRenderer(val: std.json.Value) !components.MeshRenderer {
-        var mr = components.MeshRenderer{
-            .mesh = .{ .index = 0, .generation = 0 },
-            .material = .{ .index = 0, .generation = 0 },
-        };
-
-        if (val.object.get("mesh_id")) |id| mr.mesh.index = @intCast(id.integer);
-        if (val.object.get("material_id")) |id| mr.material.index = @intCast(id.integer);
-        if (val.object.get("visible")) |v| mr.visible = v.bool;
-        if (val.object.get("cast_shadows")) |v| mr.cast_shadows = v.bool;
-        if (val.object.get("receive_shadows")) |v| mr.receive_shadows = v.bool;
-        return mr;
-    }
-
-    fn serializeLight(writer: anytype, l: *components.Light) !void {
-        try writer.beginObject();
-        try writer.objectField("type");
-        try writer.write(@intFromEnum(l.type));
-        try writer.objectField("color");
-        try serializeVec3(writer, l.color);
-        try writer.objectField("intensity");
-        try writer.write(l.intensity);
-        try writer.objectField("range");
-        try writer.write(l.range);
-        try writer.objectField("inner_cone_angle");
-        try writer.write(l.inner_cone_angle);
-        try writer.objectField("outer_cone_angle");
-        try writer.write(l.outer_cone_angle);
-        try writer.objectField("cast_shadows");
-        try writer.write(l.cast_shadows);
-        try writer.endObject();
-    }
-
-    fn deserializeLight(val: std.json.Value) !components.Light {
-        var l = components.Light{ .type = .Directional };
-        if (val.object.get("type")) |t| l.type = @enumFromInt(t.integer);
-        if (val.object.get("color")) |c| l.color = try deserializeVec3(c);
-        if (val.object.get("intensity")) |i| l.intensity = try jsonToF32(i);
-        if (val.object.get("range")) |r| l.range = try jsonToF32(r);
-        if (val.object.get("inner_cone_angle")) |a| l.inner_cone_angle = try jsonToF32(a);
-        if (val.object.get("outer_cone_angle")) |a| l.outer_cone_angle = try jsonToF32(a);
-        if (val.object.get("cast_shadows")) |cs| l.cast_shadows = cs.bool;
-        return l;
-    }
-
-    fn jsonToF32(val: std.json.Value) !f32 {
-        return switch (val) {
-            .float => |v| @floatCast(v),
-            .integer => |v| @floatFromInt(v),
-            else => error.InvalidFormat,
-        };
-    }
-
-    fn serializeCamera(writer: anytype, c: *components.Camera) !void {
-        try writer.beginObject();
-        try writer.objectField("type");
-        try writer.write(@intFromEnum(c.type));
-        try writer.objectField("fov");
-        try writer.write(c.fov);
-        try writer.objectField("aspect_ratio");
-        try writer.write(c.aspect_ratio);
-        try writer.objectField("near_plane");
-        try writer.write(c.near_plane);
-        try writer.objectField("far_plane");
-        try writer.write(c.far_plane);
-        try writer.objectField("ortho_size");
-        try writer.write(c.ortho_size);
-        try writer.endObject();
-    }
-
-    fn deserializeCamera(val: std.json.Value) !components.Camera {
-        var c = components.Camera{ .type = .Perspective };
-        if (val.object.get("type")) |t| c.type = @enumFromInt(t.integer);
-        if (val.object.get("fov")) |v| c.fov = try jsonToF32(v);
-        if (val.object.get("aspect_ratio")) |v| c.aspect_ratio = try jsonToF32(v);
-        if (val.object.get("near_plane")) |v| c.near_plane = try jsonToF32(v);
-        if (val.object.get("far_plane")) |v| c.far_plane = try jsonToF32(v);
-        if (val.object.get("ortho_size")) |v| c.ortho_size = try jsonToF32(v);
-        return c;
-    }
-
-    /// Serializes script metadata only; runtime payloads are not persisted.
-    fn serializeScript(writer: anytype, s: *components.Script) !void {
-        try writer.beginObject();
-        try writer.objectField("script_id");
-        try writer.write(s.script_id);
-        try writer.endObject();
-    }
-
-    fn deserializeScript(val: std.json.Value) !components.Script {
-        var s = components.Script{};
-        if (val.object.get("script_id")) |id| s.script_id = @intCast(id.integer);
-        return s;
-    }
-
-    fn serializeName(writer: anytype, n: *components.Name) !void {
-        try writer.write(n.slice());
-    }
-
-    fn deserializeName(val: std.json.Value) !components.Name {
-        if (val != .string) return error.InvalidFormat;
-        return components.Name.init(val.string);
-    }
-
-    fn serializeNode(writer: anytype, n: *components.Node) !void {
-        try writer.beginObject();
-        try writer.objectField("type");
-        try writer.write(@tagName(n.type));
-        try writer.endObject();
-    }
-
-    fn deserializeNode(val: std.json.Value) !components.Node {
-        var n = components.Node{};
-        if (val != .object) return error.InvalidFormat;
-        if (val.object.get("type")) |t| {
-            switch (t) {
-                .string => |s| {
-                    if (std.meta.stringToEnum(components.NodeType, s)) |nt| {
-                        n.type = nt;
-                    } else {
-                        return error.InvalidFormat;
-                    }
-                },
-                .integer => |i| n.type = @enumFromInt(i),
-                else => return error.InvalidFormat,
-            }
-        }
-        return n;
-    }
-
-    fn serializeSkybox(writer: anytype, allocator: std.mem.Allocator, s: *components.Skybox, root_path: ?[]const u8) !void {
-        const path_slice = s.slice();
-        if (path_slice.len == 0) {
-            try writer.write("");
-            return;
-        }
-
-        if (root_path) |root| {
-            if (std.fs.path.isAbsolute(path_slice)) {
-                const rel = std.fs.path.relative(allocator, root, path_slice) catch {
-                    try writer.write(path_slice);
-                    return;
-                };
-                defer allocator.free(rel);
-                try writer.write(rel);
-                return;
-            }
-        }
-
-        try writer.write(path_slice);
-    }
-
-    fn deserializeSkybox(allocator: std.mem.Allocator, val: std.json.Value, root_path: ?[]const u8) !components.Skybox {
-        if (val != .string) return error.InvalidFormat;
-        const path_slice = val.string;
-        if (path_slice.len == 0) return components.Skybox{};
-
-        if (root_path) |root| {
-            if (!std.fs.path.isAbsolute(path_slice)) {
-                const full = try std.fs.path.join(allocator, &[_][]const u8{ root, path_slice });
-                defer allocator.free(full);
-                return components.Skybox.init(full);
-            }
-        }
-
-        return components.Skybox.init(path_slice);
     }
 
     fn postprocess_loaded_entities(self: *SceneSerializer, entities: []const entity_pkg.Entity) void {
@@ -836,6 +589,7 @@ pub const SceneSerializer = struct {
         for (entities) |ent| {
             if (self.registry.get(components.Hierarchy, ent)) |h_ptr| {
                 h_ptr.first_child = null;
+                h_ptr.last_child = null;
                 h_ptr.next_sibling = null;
                 h_ptr.prev_sibling = null;
                 h_ptr.child_count = 0;
@@ -875,6 +629,7 @@ pub const SceneSerializer = struct {
 
             const parent_h = self.registry.get(components.Hierarchy, parent_ent) orelse continue;
             parent_h.first_child = list.items[0];
+            parent_h.last_child = list.items[list.items.len - 1];
             parent_h.child_count = @intCast(list.items.len);
 
             var idx: usize = 0;
@@ -937,67 +692,6 @@ pub const SceneSerializer = struct {
         }
 
         return std.fmt.bufPrint(buf, "Node{d}", .{idx}) catch "Node";
-    }
-
-    fn serializeHierarchy(writer: anytype, h: *components.Hierarchy) !void {
-        try writer.beginObject();
-        try writer.objectField("parent");
-        if (h.parent) |p| try writer.write(p.id) else try writer.write(null);
-        try writer.objectField("first_child");
-        if (h.first_child) |c| try writer.write(c.id) else try writer.write(null);
-        try writer.objectField("next_sibling");
-        if (h.next_sibling) |s| try writer.write(s.id) else try writer.write(null);
-        try writer.objectField("prev_sibling");
-        if (h.prev_sibling) |s| try writer.write(s.id) else try writer.write(null);
-        try writer.objectField("child_count");
-        try writer.write(h.child_count);
-        try writer.endObject();
-    }
-
-    fn deserializeHierarchy(val: std.json.Value, id_map: *std.AutoHashMap(u64, entity_pkg.Entity)) !components.Hierarchy {
-        var h = components.Hierarchy{};
-        if (val.object.get("parent")) |p| {
-            if (p != .null) {
-                const old_id: u64 = @intCast(p.integer);
-                if (id_map.get(old_id)) |new_entity| {
-                    h.parent = new_entity;
-                } else {
-                    serializer_log.warn("Hierarchy: parent ID {d} not found in map", .{old_id});
-                }
-            }
-        }
-        if (val.object.get("first_child")) |c| {
-            if (c != .null) {
-                const old_id: u64 = @intCast(c.integer);
-                if (id_map.get(old_id)) |new_entity| {
-                    h.first_child = new_entity;
-                } else {
-                    serializer_log.warn("Hierarchy: first_child ID {d} not found in map", .{old_id});
-                }
-            }
-        }
-        if (val.object.get("next_sibling")) |s| {
-            if (s != .null) {
-                const old_id: u64 = @intCast(s.integer);
-                if (id_map.get(old_id)) |new_entity| {
-                    h.next_sibling = new_entity;
-                } else {
-                    serializer_log.warn("Hierarchy: next_sibling ID {d} not found in map", .{old_id});
-                }
-            }
-        }
-        if (val.object.get("prev_sibling")) |s| {
-            if (s != .null) {
-                const old_id: u64 = @intCast(s.integer);
-                if (id_map.get(old_id)) |new_entity| {
-                    h.prev_sibling = new_entity;
-                } else {
-                    serializer_log.warn("Hierarchy: prev_sibling ID {d} not found in map", .{old_id});
-                }
-            }
-        }
-        if (val.object.get("child_count")) |c| h.child_count = @intCast(c.integer);
-        return h;
     }
 };
 

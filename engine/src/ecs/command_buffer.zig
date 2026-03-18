@@ -19,7 +19,7 @@ pub const CommandType = enum {
 pub const CommandBuffer = struct {
     allocator: std.mem.Allocator,
 
-    // We use a simple byte buffer for payload data to handle generic components
+    /// Raw payload bytes for Add commands (component copies).
     payload: std.ArrayListUnmanaged(u8),
     commands: std.ArrayListUnmanaged(CommandHeader),
 
@@ -29,7 +29,7 @@ pub const CommandBuffer = struct {
         component_type_id: u64 = 0,
         payload_offset: usize = 0,
         payload_size: usize = 0,
-        // Function pointer to apply the operation
+        /// Applies the operation to a registry.
         apply_fn: ?*const fn (registry: *registry_pkg.Registry, entity: Entity, data: []const u8) anyerror!void = null,
     };
 

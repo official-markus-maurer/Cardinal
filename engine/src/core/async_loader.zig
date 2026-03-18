@@ -3,11 +3,11 @@
 //! The async loader provides a C-ABI-friendly task API backed by the engine job system.
 //! Tasks can represent built-in operations (textures/scenes/meshes/materials) or custom user jobs.
 //!
-//! TODO: Consider splitting task definitions from execution backend for faster incremental builds.
 const std = @import("std");
 const log = @import("log.zig");
 const memory = @import("memory.zig");
 const handles = @import("handles.zig");
+const types = @import("async_loader_types.zig");
 
 const async_log = log.ScopedLogger("ASYNC");
 
@@ -15,12 +15,7 @@ const ref_counting = @import("ref_counting.zig");
 const scene = @import("../assets/scene.zig");
 const job_system = @import("job_system.zig");
 
-/// Registered loader entrypoints used by task execution.
-pub const Loaders = struct {
-    pub var texture_load_fn: ?*const fn (file_path: ?[*]const u8, out_texture: ?*anyopaque) callconv(.c) ?*ref_counting.CardinalRefCountedResource = null;
-    pub var scene_load_fn: ?*const fn (file_path: ?[*:0]const u8, scene: ?*scene.CardinalScene) callconv(.c) bool = null;
-    pub var ecs_scene_load_fn: ?*const fn (file_path: ?[*:0]const u8) callconv(.c) ?*anyopaque = null;
-};
+pub const Loaders = types.Loaders;
 
 /// Registers the function used to perform texture loads for TEXTURE_LOAD tasks.
 pub export fn cardinal_async_register_texture_loader(load_fn: *const fn (?[*]const u8, ?*anyopaque) callconv(.c) ?*ref_counting.CardinalRefCountedResource) callconv(.c) void {
@@ -37,69 +32,13 @@ pub export fn cardinal_async_register_ecs_scene_loader(load_fn: *const fn (?[*:0
     Loaders.ecs_scene_load_fn = load_fn;
 }
 
-/// Scheduling priority for async tasks.
-pub const CardinalAsyncPriority = enum(c_int) {
-    LOW = 0,
-    NORMAL = 1,
-    HIGH = 2,
-    CRITICAL = 3,
-};
-
-/// Task lifecycle status.
-pub const CardinalAsyncStatus = enum(c_int) {
-    PENDING = 0,
-    RUNNING = 1,
-    COMPLETED = 2,
-    FAILED = 3,
-    CANCELLED = 4,
-};
-
-/// Built-in task types supported by the async loader.
-pub const CardinalAsyncTaskType = enum(c_int) {
-    TEXTURE_LOAD = 0,
-    SCENE_LOAD = 1,
-    BUFFER_UPLOAD = 2,
-    MATERIAL_LOAD = 3,
-    MESH_LOAD = 4,
-    CUSTOM = 5,
-    ECS_SCENE_LOAD = 6,
-};
-
-/// Task execution callback used for CUSTOM tasks.
-pub const CardinalAsyncTaskFunc = ?*const fn (task: ?*CardinalAsyncTask, user_data: ?*anyopaque) callconv(.c) bool;
-/// Completion callback invoked after a task finishes (typically on the main thread).
-pub const CardinalAsyncCallback = ?*const fn (task: ?*CardinalAsyncTask, user_data: ?*anyopaque) callconv(.c) void;
-
-/// C-ABI-friendly task record owned by the async loader.
-pub const CardinalAsyncTask = extern struct {
-    id: u32,
-    type: CardinalAsyncTaskType,
-    priority: CardinalAsyncPriority,
-    status: CardinalAsyncStatus,
-
-    file_path: ?[*:0]u8,
-    result_data: ?*anyopaque,
-    result_size: usize,
-
-    custom_func: CardinalAsyncTaskFunc,
-    custom_data: ?*anyopaque,
-
-    callback: CardinalAsyncCallback,
-    callback_data: ?*anyopaque,
-
-    error_message: ?[*:0]u8,
-
-    /// Stores a pointer to the underlying job (type-punned).
-    next: ?*CardinalAsyncTask,
-    submit_time: u64,
-};
-
-/// Configuration for the async loader and backing job system.
-pub const CardinalAsyncLoaderConfig = extern struct {
-    worker_thread_count: u32,
-    max_queue_size: u32,
-    enable_priority_queue: bool,
-};
+pub const CardinalAsyncPriority = types.CardinalAsyncPriority;
+pub const CardinalAsyncStatus = types.CardinalAsyncStatus;
+pub const CardinalAsyncTaskType = types.CardinalAsyncTaskType;
+pub const CardinalAsyncTaskFunc = types.CardinalAsyncTaskFunc;
+pub const CardinalAsyncCallback = types.CardinalAsyncCallback;
+pub const CardinalAsyncTask = types.CardinalAsyncTask;
+pub const CardinalAsyncLoaderConfig = types.CardinalAsyncLoaderConfig;
 
 /// Slot in the task table, using a generation counter for stale-handle detection.
 const TaskSlot = struct {
@@ -484,7 +423,6 @@ pub export fn cardinal_async_add_dependency(dependent: ?*CardinalAsyncTask, depe
     const job_dependency = @as(*job_system.Job, @ptrCast(t_dependency.next));
 
     if (job_system.add_dependency(job_dependent, job_dependency)) {
-        // Legacy tracking removed
         return true;
     }
 
@@ -630,7 +568,6 @@ pub export fn cardinal_async_load_mesh(mesh_data: ?*const anyopaque, priority: C
     const src = @as(*const scene.CardinalMesh, @ptrCast(@alignCast(mesh_data)));
     copy.* = src.*;
 
-    // Deep copy vertex data
     if (src.vertex_count > 0 and src.vertices != null) {
         const vertex_size = src.vertex_count * @sizeOf(scene.CardinalVertex);
         const vertices_ptr = memory.cardinal_alloc(allocator, vertex_size);
@@ -645,7 +582,6 @@ pub export fn cardinal_async_load_mesh(mesh_data: ?*const anyopaque, priority: C
         copy.vertices = null;
     }
 
-    // Deep copy index data
     if (src.index_count > 0 and src.indices != null) {
         const index_size = src.index_count * @sizeOf(u32);
         const indices_ptr = memory.cardinal_alloc(allocator, index_size);
@@ -714,12 +650,10 @@ pub export fn cardinal_async_cancel_task(task: ?*CardinalAsyncTask) callconv(.c)
     if (task) |t| {
         if (t.status == .PENDING) {
             const job = @as(*job_system.Job, @ptrCast(t.next));
-            // We need to mark job as cancelled too, but JobSystem API for cancel is implicit via status?
-            // JobSystem worker checks job.status == .CANCELLED
-            job_system.set_status(job, .CANCELLED);
-
-            t.status = .CANCELLED;
-            return true;
+            if (job_system.cancel_job(job)) {
+                t.status = .CANCELLED;
+                return true;
+            }
         }
     }
     return false;
@@ -739,26 +673,24 @@ pub export fn cardinal_async_wait_for_task(task: ?*CardinalAsyncTask, timeout_ms
         if (timeout_ms > 0) {
             const elapsed = get_timestamp_ms() - start_time;
             if (elapsed >= timeout_ms) {
-                // If we time out, check if the underlying job actually finished but we missed the update
-                // This shouldn't happen with correct synchronization but is a failsafe
-                if (t.next) |job_ptr| {
-                    const job = @as(*job_system.Job, @ptrCast(job_ptr));
-                    const status = job_system.get_status(job);
-                    if (status == .COMPLETED or status == .FAILED) {
-                        // Sync status
-                        // Note: This is racy without locks, but we are just reading
-                        // t.status update happens in callback usually or job completion
-                        // If callback hasn't run, status might still be running
-                        // But job system updates job status before callback
+                _ = cardinal_async_process_completed_tasks(0);
+                if (t.status == .PENDING or t.status == .RUNNING) {
+                    if (t.next) |job_ptr| {
+                        const job = @as(*job_system.Job, @ptrCast(job_ptr));
+                        const status = job_system.get_status(job);
+                        switch (status) {
+                            .COMPLETED => t.status = .COMPLETED,
+                            .FAILED => t.status = .FAILED,
+                            .CANCELLED => t.status = .CANCELLED,
+                            else => {},
+                        }
                     }
                 }
-                return false;
+                return t.status == .COMPLETED;
             }
         }
         if (g_async_loader.shutting_down) return false;
 
-        // Process completed tasks to ensure callbacks run and status updates propagate
-        // This is critical if we are waiting on the main thread and callbacks run on main thread
         _ = cardinal_async_process_completed_tasks(0);
 
         Sleep(1);
@@ -773,25 +705,16 @@ pub export fn cardinal_async_free_task(task: ?*CardinalAsyncTask) callconv(.c) v
     if (task) |t| {
         const allocator = memory.cardinal_get_allocator_for_category(.ENGINE);
 
-        // Only free the job if the loader is initialized.
-        // If we are shutting down (or already shut down), the job system pool is likely destroyed,
-        // so the job pointer is invalid or the pool is gone.
         if (g_async_loader.initialized) {
             g_async_loader.state_mutex.lock();
             if (t.next) |job_ptr| {
                 const job = @as(*job_system.Job, @ptrCast(job_ptr));
 
-                // If running, we cannot free safely without waiting/race
                 if (job_system.get_status(job) == .RUNNING) {
-                    // Log error and leak to prevent crash/freeze
-                    // async_log.err("Attempted to free running task {d}. Leaking to prevent crash.", .{t.id});
                     g_async_loader.state_mutex.unlock();
                     return;
                 }
 
-                // Detach task from job to signal it's orphaned.
-                // We do NOT free the job here because it might be in the completed queue (or running).
-                // process_completed_tasks handles freeing jobs with null data.
                 job.data = null;
                 t.next = null;
             }
@@ -853,8 +776,6 @@ pub export fn cardinal_async_get_scene_result(task: ?*CardinalAsyncTask, out_sce
     const scene_res = @as(?*scene.CardinalScene, @ptrCast(@alignCast(task.?.result_data)));
     if (scene_res) |s| {
         out_scene.?.* = s.*;
-        // Zero out the source to transfer ownership (move semantics)
-        // This prevents double-free when free_task calls scene_destroy
         s.* = std.mem.zeroes(scene.CardinalScene);
         return true;
     }
@@ -874,7 +795,6 @@ pub export fn cardinal_async_get_material_result(task: ?*CardinalAsyncTask, out_
         return null;
     }
 
-    // Modern system: result_data is *CardinalMaterial (POD), not RefCountedResource
     const material_ptr = @as(?*scene.CardinalMaterial, @ptrCast(@alignCast(task.?.result_data)));
     if (material_ptr) |mat| {
         out_material.?.* = mat.*;
@@ -924,18 +844,12 @@ pub export fn cardinal_async_process_completed_tasks(max_tasks: u32) callconv(.c
         if (job_opt == null) break;
         const job = job_opt.?;
 
-        // Safety check: ensure this job belongs to async_loader
         if (job.func != execute_task_job) {
-            // Foreign job - skip processing but do NOT free it as we don't own it.
-            // Note: This leaks the job if the owner expected it to be in the queue (which they shouldn't if they handle cleanup).
-            // Ideally we would push it back, but that changes order.
-            // Given the fix in JobSystem to allow opting out of completed queue, this should be rare.
             continue;
         }
 
         g_async_loader.state_mutex.lock();
 
-        // If job data is null, the task was cancelled/freed already
         if (job.data == null) {
             g_async_loader.state_mutex.unlock();
             job_system.free_job(job);

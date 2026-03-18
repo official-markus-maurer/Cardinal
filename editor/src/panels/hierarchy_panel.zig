@@ -104,7 +104,10 @@ fn capture_append_hierarchy(state: *EditorState, parent: entity_module.Entity) s
     count += 1;
 
     const parent_h = ensure_hierarchy(state, parent);
-    if (parent_h.first_child) |fc| {
+    if (parent_h.last_child) |lc| {
+        ids[count] = lc.id;
+        count += 1;
+    } else if (parent_h.first_child) |fc| {
         var last = fc;
         var guard: u32 = 0;
         while (guard < 100000) : (guard += 1) {
@@ -243,7 +246,9 @@ fn capture_reparent_before(state: *EditorState, child: entity_module.Entity, new
     push_unique_entity(&ids, &count, new_parent.id);
 
     const new_parent_h = ensure_hierarchy(state, new_parent);
-    if (new_parent_h.first_child) |fc| {
+    if (new_parent_h.last_child) |lc| {
+        push_unique_entity(&ids, &count, lc.id);
+    } else if (new_parent_h.first_child) |fc| {
         var last = fc;
         var guard: u32 = 0;
         while (guard < 100000) : (guard += 1) {

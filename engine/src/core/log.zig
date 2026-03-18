@@ -40,6 +40,7 @@ const MAX_SINKS = 8;
 var g_sinks: [MAX_SINKS]?*CardinalLogSink = .{null} ** MAX_SINKS;
 var g_sinks_mutex: std.Thread.Mutex = .{};
 var g_initialized: bool = false;
+var g_file_sink_override: ?[:0]u8 = null;
 
 /// Buffered log entry used by the async dispatcher.
 const LogEntry = struct {
@@ -192,7 +193,18 @@ pub export fn cardinal_log_create_file_sink(filename: ?[*:0]const u8) ?*Cardinal
     if (filename == null) return null;
 
     const span = std.mem.span(filename.?);
-    const f = std.fs.cwd().createFile(span, .{}) catch return null;
+    if (!std.fs.path.isAbsolute(span)) {
+        if (std.fs.path.dirname(span)) |dir| {
+            if (dir.len > 0) {
+                std.fs.cwd().makePath(dir) catch {};
+            }
+        }
+    }
+
+    const f = if (std.fs.path.isAbsolute(span))
+        std.fs.createFileAbsolute(span, .{}) catch return null
+    else
+        std.fs.cwd().createFile(span, .{}) catch return null;
 
     const allocator = memory.cardinal_get_allocator_for_category(.LOGGING).as_allocator();
     const data_ptr = allocator.create(FileSinkData) catch {
@@ -246,10 +258,12 @@ pub export fn cardinal_log_init_with_level(level: CardinalLogLevel) void {
 
     g_sinks[0] = &g_console_sink;
 
-    var file_sink = cardinal_log_create_file_sink("build/cardinal_debug.log");
-    if (file_sink == null) {
-        file_sink = cardinal_log_create_file_sink("cardinal_debug.log");
+    var file_sink: ?*CardinalLogSink = null;
+    if (g_file_sink_override) |override_path| {
+        file_sink = cardinal_log_create_file_sink(override_path.ptr);
     }
+    if (file_sink == null) file_sink = cardinal_log_create_file_sink("build/cardinal_debug.log");
+    if (file_sink == null) file_sink = cardinal_log_create_file_sink("cardinal_debug.log");
     if (file_sink) |sink| {
         g_sinks[1] = sink;
     }
@@ -264,6 +278,17 @@ pub export fn cardinal_log_init_with_level(level: CardinalLogLevel) void {
             if (sink.flush_func) |flush| flush(sink.user_data);
         }
     }
+}
+
+pub export fn cardinal_log_set_file_sink_path(path: ?[*:0]const u8) void {
+    const allocator = memory.cardinal_get_allocator_for_category(.LOGGING).as_allocator();
+    if (g_file_sink_override) |p| {
+        allocator.free(p);
+        g_file_sink_override = null;
+    }
+    if (path == null) return;
+    const span = std.mem.span(path.?);
+    g_file_sink_override = allocator.dupeZ(u8, span) catch null;
 }
 
 /// Flushes and destroys sinks, then shuts down async dispatch if enabled.
@@ -308,6 +333,12 @@ pub export fn cardinal_log_shutdown() void {
             }
             g_sinks[i] = null;
         }
+    }
+
+    if (g_file_sink_override) |p| {
+        const allocator = memory.cardinal_get_allocator_for_category(.LOGGING).as_allocator();
+        allocator.free(p);
+        g_file_sink_override = null;
     }
     g_initialized = false;
 }

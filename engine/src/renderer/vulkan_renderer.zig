@@ -1250,6 +1250,17 @@ pub export fn cardinal_renderer_update_bone_matrices(renderer: ?*types.CardinalR
     }
 }
 
+pub export fn cardinal_renderer_update_mesh_transform(renderer: ?*types.CardinalRenderer, mesh_index: u32, model_matrix: ?[*]const f32) callconv(.c) bool {
+    const s = get_state(renderer) orelse return false;
+    if (model_matrix == null) return false;
+    if (s.current_scene == null or s.current_scene.?.meshes == null) return false;
+    if (mesh_index >= s.current_scene.?.mesh_count) return false;
+
+    const mesh = &s.current_scene.?.meshes.?[mesh_index];
+    @memcpy(mesh.transform[0..16], model_matrix.?[0..16]);
+    return true;
+}
+
 pub export fn cardinal_renderer_set_skybox_from_data(renderer: ?*types.CardinalRenderer, data: ?*texture_loader.TextureData) callconv(.c) bool {
     if (renderer == null or data == null) return false;
     const s = get_state(renderer) orelse return false;

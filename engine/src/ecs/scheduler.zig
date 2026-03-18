@@ -122,7 +122,6 @@ pub const Scheduler = struct {
             job.push_to_completed_queue = false;
             try self.frame_jobs.append(self.allocator, job);
 
-            // Reads
             for (sys.reads) |type_id| {
                 if (self.last_writer.get(type_id)) |writer| {
                     _ = job_system.add_dependency(job, writer);
@@ -135,7 +134,6 @@ pub const Scheduler = struct {
                 try result.value_ptr.append(self.allocator, job);
             }
 
-            // Writes
             for (sys.writes) |type_id| {
                 if (self.last_writer.get(type_id)) |writer| {
                     _ = job_system.add_dependency(job, writer);
@@ -177,15 +175,13 @@ pub const Scheduler = struct {
     }
 };
 
-test "Scheduler Dependency Graph" {
+test "Scheduler Dependency Graph (writer before reader)" {
     const allocator = std.testing.allocator;
 
-    // Initialize Memory System (Required for JobSystem)
     const memory = @import("../core/memory.zig");
-    memory.cardinal_memory_init(1024 * 1024); // 1MB
+    memory.cardinal_memory_init(1024 * 1024);
     defer memory.cardinal_memory_shutdown();
 
-    // Initialize Job System
     const job_config = job_system.JobSystemConfig{
         .worker_thread_count = 2,
         .max_queue_size = 100,
@@ -194,24 +190,21 @@ test "Scheduler Dependency Graph" {
     if (!job_system.init(&job_config)) return error.JobSystemInitFailed;
     defer job_system.shutdown();
 
-    // Initialize Registry
     var registry = registry_pkg.Registry.init(allocator);
     defer registry.deinit();
 
     var scheduler = Scheduler.init(allocator, &registry);
     defer scheduler.deinit();
 
-    // Define dummy systems
     const CompA = struct { val: u32 };
     const CompB = struct { val: u32 };
-    _ = CompB; // Fix unused
+    _ = CompB;
 
     const SysA = struct {
         fn update(reg: *registry_pkg.Registry, ecb: *command_buffer_pkg.CommandBuffer, dt: f32) void {
             _ = reg;
             _ = ecb;
             _ = dt;
-            // std.debug.print("SysA\n", .{});
         }
     };
     const SysB = struct {
@@ -219,13 +212,8 @@ test "Scheduler Dependency Graph" {
             _ = reg;
             _ = ecb;
             _ = dt;
-            // std.debug.print("SysB\n", .{});
         }
     };
-
-    // SysA writes CompA
-    // SysB reads CompA
-    // Expect dependency A -> B
 
     try scheduler.add(system_pkg.System{
         .name = "SysA",

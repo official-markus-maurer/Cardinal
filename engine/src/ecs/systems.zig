@@ -42,7 +42,7 @@ pub const PhysicsSystemDesc = system_pkg.System{
     .name = "PhysicsSystem",
     .update = PhysicsSystem.update,
     .reads = &.{
-        registry_pkg.Registry.get_type_id(components.Transform), // Actually reads and writes, but simplified
+        registry_pkg.Registry.get_type_id(components.Transform),
     },
     .writes = &.{
         registry_pkg.Registry.get_type_id(components.Transform),
@@ -60,10 +60,10 @@ pub const ScriptSystemDesc = system_pkg.System{
 
 /// Walks renderable entities and submits draw work (placeholder).
 pub const RenderSystem = struct {
+    /// Selects a camera and walks visible mesh renderables (placeholder submission).
     pub fn update(registry: *registry_pkg.Registry, ecb: *command_buffer_pkg.CommandBuffer, delta_time: f32) void {
         _ = delta_time;
         _ = ecb;
-        // 1. Find Camera
         var camera_view = registry.view(components.Camera);
         var active_camera: ?*components.Camera = null;
         var best_name_match = false;
@@ -87,11 +87,9 @@ pub const RenderSystem = struct {
         }
 
         if (active_camera == null) {
-            // sys_log.warn("No active camera found for rendering", .{});
             return;
         }
 
-        // 2. Iterate Renderables
         var mesh_view = registry.multi_view(.{ components.MeshRenderer, components.Transform });
         var mesh_it = mesh_view.iterator();
 
@@ -107,19 +105,16 @@ pub const RenderSystem = struct {
             _ = transform.get_matrix();
             draw_count += 1;
         }
-
-        // sys_log.debug("RenderSystem processed {d} objects", .{draw_count});
     }
 };
 
-/// Placeholder physics system.
+/// Integrates physics state into transforms (currently unimplemented).
 pub const PhysicsSystem = struct {
     pub fn update(registry: *registry_pkg.Registry, ecb: *command_buffer_pkg.CommandBuffer, delta_time: f32) void {
-        // Placeholder for physics integration
-        // Iterate RigidBody components, update Transforms based on velocity/forces
         _ = registry;
         _ = ecb;
         _ = delta_time;
+        // TODO: Implement physics integration (RigidBody, forces, collision).
     }
 };
 

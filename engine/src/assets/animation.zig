@@ -1286,6 +1286,15 @@ pub export fn cardinal_animation_system_update(system: ?*CardinalAnimationSystem
             scene.cardinal_scene_node_set_local_transform(node, &new_transform);
         }
     }
+
+    if (all_nodes != null and all_node_count > 0) {
+        var root_i: u32 = 0;
+        while (root_i < all_node_count) : (root_i += 1) {
+            const n = all_nodes.?[root_i] orelse continue;
+            if (n.parent != null) continue;
+            scene.cardinal_scene_node_update_transforms(n, null);
+        }
+    }
 }
 
 /// Writes skin bone matrices using `scene_nodes` for lookup (assumes indices are valid).

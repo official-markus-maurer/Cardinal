@@ -955,6 +955,11 @@ pub export fn vk_mesh_shader_record_frame(s: ?*types.VulkanState, cmd: c.VkComma
                         @memcpy(meshUbo.model[0..16], mesh.transform[0..16]);
                         @memcpy(meshUbo.view[0..16], pbrUbo.view[0..16]);
                         @memcpy(meshUbo.proj[0..16], pbrUbo.proj[0..16]);
+                        const model_m = math.Mat4.fromArray(mesh.transform);
+                        const view_m = math.Mat4.fromArray(pbrUbo.view);
+                        const proj_m = math.Mat4.fromArray(pbrUbo.proj);
+                        const mvp_m = proj_m.mul(view_m).mul(model_m);
+                        @memcpy(meshUbo.mvp[0..16], mvp_m.data[0..16]);
                         meshUbo.materialIndex = mesh.material_index;
                         @memcpy(meshUbo.viewPos[0..3], pbrUbo.viewPos[0..3]);
                         @memcpy(meshUbo.ambientColor[0..4], pbrUbo.ambientColor[0..4]);

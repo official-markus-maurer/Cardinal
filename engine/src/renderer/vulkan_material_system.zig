@@ -1,3 +1,7 @@
+//! Material layout and instance helpers.
+//!
+//! Provides a lightweight material system with JSON-driven layouts, per-instance parameter
+//! storage (push constants), and a small C-ABI surface for tooling.
 const std = @import("std");
 const c = @import("vulkan_c.zig").c;
 const types = @import("vulkan_types.zig");
@@ -16,6 +20,7 @@ fn hash_string(str: []const u8) u32 {
     return hash;
 }
 
+/// Material parameter value kinds supported by the runtime.
 pub const MaterialPropertyType = enum {
     Float,
     Vec2,
@@ -29,36 +34,47 @@ pub const MaterialPropertyType = enum {
     TextureCube,
 };
 
+/// Describes a single named property in a material layout.
 pub const MaterialPropertyDescriptor = struct {
     name: []const u8,
     type: MaterialPropertyType,
-    offset: u32, // Byte offset in push constants or UBO
-    binding: u32 = 0, // Descriptor binding for textures
-    size: u32, // Size in bytes
+    /// Byte offset inside the instance data buffer.
+    offset: u32,
+    /// Descriptor binding for textures (if bound via descriptor sets).
+    binding: u32 = 0,
+    /// Size in bytes for validation when setting values.
+    size: u32,
 };
 
+/// Declares the set of properties and binding metadata for a material.
 pub const MaterialLayoutDescriptor = struct {
     name: []const u8,
     properties: []const MaterialPropertyDescriptor,
     push_constant_size: u32,
-    descriptor_set_layout: c.VkDescriptorSetLayout, // Optional: if using descriptor sets for material data
+    /// Optional descriptor-set layout for texture/material bindings.
+    descriptor_set_layout: c.VkDescriptorSetLayout,
     property_hashes: ?[]u32 = null,
 };
 
+/// One material instance bound to a pipeline and layout.
 pub const MaterialInstance = struct {
     layout: *const MaterialLayoutDescriptor,
-    data: []u8, // CPU-side storage for uniform data (push constants)
+    /// CPU-side storage for push constants or small uniform blocks.
+    data: []u8,
     textures: std.AutoHashMap(u32, handles.TextureHandle),
 
-    // Runtime data
+    /// Vulkan pipeline used by the instance (owned externally).
     pipeline: c.VkPipeline,
+    /// Pipeline layout used for push constants and bindings (owned externally).
     pipeline_layout: c.VkPipelineLayout,
 };
 
+/// Stores registered layouts and creates/destroys material instances.
 pub const MaterialSystem = struct {
     allocator: std.mem.Allocator,
     layouts: std.StringHashMap(MaterialLayoutDescriptor),
 
+    /// Initializes an empty material system.
     pub fn init(allocator: std.mem.Allocator) MaterialSystem {
         return .{
             .allocator = allocator,
@@ -66,11 +82,11 @@ pub const MaterialSystem = struct {
         };
     }
 
+    /// Releases registered layout storage.
     pub fn deinit(self: *MaterialSystem) void {
         var it = self.layouts.iterator();
         while (it.next()) |entry| {
-            // Free property arrays if we owned them
-            // In a real system we'd manage memory ownership more carefully
+            // TODO: Track ownership for layout names, property arrays, and hash buffers.
             self.allocator.free(entry.value_ptr.properties);
             if (entry.value_ptr.property_hashes) |hashes| {
                 self.allocator.free(hashes);
@@ -79,6 +95,7 @@ pub const MaterialSystem = struct {
         self.layouts.deinit();
     }
 
+    /// Registers a layout and precomputes property hashes for faster lookups.
     pub fn register_layout(self: *MaterialSystem, name: []const u8, descriptor: MaterialLayoutDescriptor) !void {
         const props_copy = try self.allocator.alloc(MaterialPropertyDescriptor, descriptor.properties.len);
         @memcpy(props_copy, descriptor.properties);
@@ -100,6 +117,7 @@ pub const MaterialSystem = struct {
         material_log.info("Registered material layout '{s}' with {d} properties", .{ name, descriptor.properties.len });
     }
 
+    /// Allocates a new instance using a registered layout name.
     pub fn create_material_instance(self: *MaterialSystem, layout_name: []const u8, pipeline: c.VkPipeline, pipeline_layout: c.VkPipelineLayout) !*MaterialInstance {
         const layout = self.layouts.getPtr(layout_name) orelse {
             material_log.err("Layout '{s}' not found", .{layout_name});
@@ -122,6 +140,7 @@ pub const MaterialSystem = struct {
         return instance;
     }
 
+    /// Destroys an instance and its CPU-side storage.
     pub fn destroy_material_instance(self: *MaterialSystem, instance: *MaterialInstance) void {
         if (instance.data.len > 0) {
             self.allocator.free(instance.data);
@@ -145,6 +164,23 @@ const MaterialLayoutJson = struct {
     push_constant_size: u32,
 };
 
+fn find_property_index(layout: *const MaterialLayoutDescriptor, name: []const u8) ?usize {
+    const hash = hash_string(name);
+    if (layout.property_hashes) |hashes| {
+        var i: usize = 0;
+        while (i < hashes.len) : (i += 1) {
+            if (hashes[i] == hash and std.mem.eql(u8, layout.properties[i].name, name)) {
+                return i;
+            }
+        }
+        return null;
+    }
+    for (layout.properties, 0..) |prop, i| {
+        if (std.mem.eql(u8, prop.name, name)) return i;
+    }
+    return null;
+}
+
 fn parse_property_type(name: []const u8) !MaterialPropertyType {
     if (std.mem.eql(u8, name, "Float")) return .Float;
     if (std.mem.eql(u8, name, "Vec2")) return .Vec2;
@@ -159,6 +195,7 @@ fn parse_property_type(name: []const u8) !MaterialPropertyType {
     return error.InvalidPropertyType;
 }
 
+/// Loads a layout from a JSON file and registers it under its declared name.
 pub fn register_layout_from_json(self: *MaterialSystem, path: []const u8, descriptor_set_layout: c.VkDescriptorSetLayout) !void {
     const allocator = self.allocator;
     const file = try std.fs.cwd().openFile(path, .{});
@@ -203,78 +240,57 @@ pub fn register_layout_from_json(self: *MaterialSystem, path: []const u8, descri
 
 /// Sets a POD property value by name into an instance data buffer.
 pub fn set_property(instance: *MaterialInstance, name: []const u8, value: anytype) !void {
-    const hash = hash_string(name);
-    if (instance.layout.property_hashes) |hashes| {
-        var i: usize = 0;
-        while (i < hashes.len) : (i += 1) {
-            if (hashes[i] == hash and std.mem.eql(u8, instance.layout.properties[i].name, name)) {
-                const prop = instance.layout.properties[i];
-                const value_size = @sizeOf(@TypeOf(value));
-                if (value_size > prop.size) {
-                    material_log.err("Value size {d} exceeds property '{s}' size {d}", .{ value_size, name, prop.size });
-                    return error.InvalidSize;
-                }
-                const dest = instance.data[prop.offset .. prop.offset + value_size];
-                const src = std.mem.asBytes(&value);
-                @memcpy(dest, src);
-                return;
-            }
-        }
-    } else {
-        for (instance.layout.properties) |prop| {
-            if (std.mem.eql(u8, prop.name, name)) {
-                const value_size = @sizeOf(@TypeOf(value));
-                if (value_size > prop.size) {
-                    material_log.err("Value size {d} exceeds property '{s}' size {d}", .{ value_size, name, prop.size });
-                    return error.InvalidSize;
-                }
-                const dest = instance.data[prop.offset .. prop.offset + value_size];
-                const src = std.mem.asBytes(&value);
-                @memcpy(dest, src);
-                return;
-            }
-        }
+    const index = find_property_index(instance.layout, name) orelse return error.PropertyNotFound;
+    const prop = instance.layout.properties[index];
+
+    const value_size = @sizeOf(@TypeOf(value));
+    if (value_size > prop.size) {
+        material_log.err("Value size {d} exceeds property '{s}' size {d}", .{ value_size, name, prop.size });
+        return error.InvalidSize;
     }
-    return error.PropertyNotFound;
+
+    const start: usize = @intCast(prop.offset);
+    const end = start + value_size;
+    if (end > instance.data.len) return error.InvalidOffset;
+
+    const dest = instance.data[start..end];
+    const src = std.mem.asBytes(&value);
+    @memcpy(dest, src);
 }
 
+/// Sets a texture handle property by name.
 pub fn set_texture(instance: *MaterialInstance, name: []const u8, texture: handles.TextureHandle) !void {
     const hash = hash_string(name);
-    if (instance.layout.property_hashes) |hashes| {
-        var i: usize = 0;
-        while (i < hashes.len) : (i += 1) {
-            if (hashes[i] == hash and std.mem.eql(u8, instance.layout.properties[i].name, name)) {
-                const prop = instance.layout.properties[i];
-                if (prop.type != .Texture2D and prop.type != .TextureCube) {
-                    return error.InvalidType;
-                }
-                try instance.textures.put(hash, texture);
-                return;
-            }
-        }
-    } else {
-        for (instance.layout.properties) |prop| {
-            if (std.mem.eql(u8, prop.name, name)) {
-                if (prop.type != .Texture2D and prop.type != .TextureCube) {
-                    return error.InvalidType;
-                }
-                try instance.textures.put(hash, texture);
-                return;
-            }
-        }
+    const index = find_property_index(instance.layout, name) orelse return error.PropertyNotFound;
+    const prop = instance.layout.properties[index];
+    if (prop.type != .Texture2D and prop.type != .TextureCube) {
+        return error.InvalidType;
     }
-    return error.PropertyNotFound;
+
+    try instance.textures.put(hash, texture);
+
+    const start: usize = @intCast(prop.offset);
+    if (start >= instance.data.len) return error.InvalidOffset;
+    if (prop.size < 4) return error.InvalidSize;
+
+    if (prop.size >= 8) {
+        const encoded: u64 = (@as(u64, texture.generation) << 32) | @as(u64, texture.index);
+        const end = start + 8;
+        if (end > instance.data.len) return error.InvalidOffset;
+        @memcpy(instance.data[start..end], std.mem.asBytes(&encoded));
+    } else {
+        const encoded: u32 = texture.index;
+        const end = start + 4;
+        if (end > instance.data.len) return error.InvalidOffset;
+        @memcpy(instance.data[start..end], std.mem.asBytes(&encoded));
+    }
 }
 
 /// Pushes material parameters for the instance into a command buffer.
 pub fn bind_material(cmd: c.VkCommandBuffer, instance: *MaterialInstance, stage_flags: c.VkShaderStageFlags) void {
-    // Push constants
     if (instance.data.len > 0) {
         c.vkCmdPushConstants(cmd, instance.pipeline_layout, stage_flags, 0, @intCast(instance.data.len), instance.data.ptr);
     }
-
-    // Descriptor sets for textures would be handled here or via bindless system
-    // For now we assume bindless indices are passed via push constants
 }
 
 /// C-ABI entrypoints for material instance creation and property updates.

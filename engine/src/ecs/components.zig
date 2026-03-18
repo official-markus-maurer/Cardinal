@@ -132,6 +132,8 @@ pub const Name = struct {
 pub const Hierarchy = struct {
     parent: ?entity_pkg.Entity = null,
     first_child: ?entity_pkg.Entity = null,
+    /// Cached tail pointer for O(1) appends.
+    last_child: ?entity_pkg.Entity = null,
     next_sibling: ?entity_pkg.Entity = null,
     prev_sibling: ?entity_pkg.Entity = null,
     child_count: u32 = 0,

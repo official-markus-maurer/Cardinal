@@ -165,32 +165,32 @@ pub export fn vk_buffer_create(buffer_ptr: ?*VulkanBuffer, device: c.VkDevice, a
 /// Waits for buffer-related GPU work to complete before destroying resources.
 fn wait_for_buffer_idle(buffer: *VulkanBuffer, device: c.VkDevice, vulkan_state: ?*types.VulkanState) void {
     if (vulkan_state) |state| {
-        if (!state.sync.initialized) {
-            buf_log.info("SYNC_SKIP: Sync manager not initialized, using device wait idle for buffer={any}", .{buffer.handle});
-            _ = c.vkDeviceWaitIdle(device);
+        if (state.recovery.device_lost) {
+            buf_log.warn("SYNC_SKIP: Device is lost, skipping waits for buffer={any}", .{buffer.handle});
             return;
         }
 
-        var current_value: u64 = 0;
-        const result = vk_sync_manager.vulkan_sync_manager_get_timeline_value(&state.sync, &current_value);
-
-        buf_log.info("SYNC_VALUE: buffer={any} semaphore_value={d} result={d}", .{ buffer.handle, current_value, result });
-
-        if (result == c.VK_SUCCESS and current_value > 0) {
-            const wait_result = vk_sync_manager.vulkan_sync_manager_wait_timeline(&state.sync, current_value, 5000000000); // 5s
-
-            if (wait_result != c.VK_SUCCESS) {
-                buf_log.err("SYNC_FAILED: Timeline semaphore wait failed for buffer={any}: {d}, falling back to device wait idle", .{ buffer.handle, wait_result });
-                const idle_result = c.vkDeviceWaitIdle(device);
-                buf_log.info("DEVICE_WAIT_IDLE: result={d} for buffer={any}", .{ idle_result, buffer.handle });
-            } else {
-                buf_log.info("SYNC_SUCCESS: Timeline semaphore wait completed for buffer={any}", .{buffer.handle});
+        if (state.sync.in_flight_fences != null and state.sync.max_frames_in_flight > 0) {
+            var fences: [types.MAX_FRAMES_IN_FLIGHT]c.VkFence = undefined;
+            var count: u32 = 0;
+            var i: u32 = 0;
+            while (i < state.sync.max_frames_in_flight and i < types.MAX_FRAMES_IN_FLIGHT) : (i += 1) {
+                const f = state.sync.in_flight_fences.?[i];
+                if (f != null) {
+                    fences[count] = f;
+                    count += 1;
+                }
             }
-        } else {
-            buf_log.warn("SYNC_FALLBACK: Failed to get timeline semaphore value (result={d}, value={d}), using device wait idle for buffer={any}", .{ result, current_value, buffer.handle });
-            const idle_result = c.vkDeviceWaitIdle(device);
-            buf_log.info("DEVICE_WAIT_IDLE: result={d} for buffer={any}", .{ idle_result, buffer.handle });
+
+            if (count > 0) {
+                const wait_res = c.vkWaitForFences(device, count, &fences, c.VK_TRUE, 5_000_000_000);
+                if (wait_res == c.VK_SUCCESS) return;
+                buf_log.warn("SYNC_FALLBACK: Fence wait failed ({d}), using vkDeviceWaitIdle for buffer={any}", .{ wait_res, buffer.handle });
+            }
         }
+
+        const idle_result = c.vkDeviceWaitIdle(device);
+        buf_log.info("DEVICE_WAIT_IDLE: result={d} for buffer={any}", .{ idle_result, buffer.handle });
     } else {
         buf_log.warn("NO_VULKAN_STATE: Using device wait idle for buffer={any}", .{buffer.handle});
         const idle_result = c.vkDeviceWaitIdle(device);

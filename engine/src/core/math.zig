@@ -397,6 +397,32 @@ pub const Mat4 = extern struct {
         return .{ .data = arr };
     }
 
+    pub fn fromRowMajor3x3RTS(rotation: [9]f32, translation: Vec3, scale: f32) Mat4 {
+        var m = Mat4{ .data = undefined };
+
+        m.data[0] = rotation[0] * scale;
+        m.data[1] = rotation[3] * scale;
+        m.data[2] = rotation[6] * scale;
+        m.data[3] = 0.0;
+
+        m.data[4] = rotation[1] * scale;
+        m.data[5] = rotation[4] * scale;
+        m.data[6] = rotation[7] * scale;
+        m.data[7] = 0.0;
+
+        m.data[8] = rotation[2] * scale;
+        m.data[9] = rotation[5] * scale;
+        m.data[10] = rotation[8] * scale;
+        m.data[11] = 0.0;
+
+        m.data[12] = translation.x;
+        m.data[13] = translation.y;
+        m.data[14] = translation.z;
+        m.data[15] = 1.0;
+
+        return m;
+    }
+
     pub fn fromTRS(t: Vec3, r: Quat, s: Vec3) Mat4 {
         var m = Mat4{ .data = undefined };
 

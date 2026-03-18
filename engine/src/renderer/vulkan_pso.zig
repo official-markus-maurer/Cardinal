@@ -49,6 +49,7 @@ fn get_or_load_shader_module(device: c.VkDevice, path: []const u8) !c.VkShaderMo
     return module;
 }
 
+/// Destroys cached shader modules and releases cached path keys.
 pub fn vk_pso_cleanup_shader_cache(device: c.VkDevice) void {
     g_shader_cache_mutex.lock();
     defer g_shader_cache_mutex.unlock();
@@ -88,6 +89,7 @@ pub const Topology = enum {
     }
 };
 
+/// Rasterizer polygon mode wrapper.
 pub const PolygonMode = enum {
     fill,
     line,
@@ -102,6 +104,7 @@ pub const PolygonMode = enum {
     }
 };
 
+/// Face culling mode wrapper.
 pub const CullMode = enum {
     none,
     front,
@@ -118,6 +121,7 @@ pub const CullMode = enum {
     }
 };
 
+/// Vertex winding used as the front face.
 pub const FrontFace = enum {
     counter_clockwise,
     clockwise,
@@ -130,6 +134,7 @@ pub const FrontFace = enum {
     }
 };
 
+/// Depth/stencil compare operator wrapper.
 pub const CompareOp = enum {
     never,
     less,
@@ -154,6 +159,7 @@ pub const CompareOp = enum {
     }
 };
 
+/// Blend factor wrapper.
 pub const BlendFactor = enum {
     zero,
     one,
@@ -182,6 +188,7 @@ pub const BlendFactor = enum {
     }
 };
 
+/// Blend operation wrapper.
 pub const BlendOp = enum {
     add,
     subtract,
@@ -200,6 +207,7 @@ pub const BlendOp = enum {
     }
 };
 
+/// Logic op wrapper for color blending.
 pub const LogicOp = enum {
     clear,
     and_op,
@@ -240,21 +248,26 @@ pub const LogicOp = enum {
     }
 };
 
-// PSO Descriptor Structures
+/// Shader stage declaration used by JSON-defined pipelines.
 pub const ShaderStageDescriptor = struct {
+    /// Path to a SPIR-V module on disk (or an internal identifier).
     path: []const u8,
+    /// Vulkan shader stage.
     stage: c.VkShaderStageFlagBits = c.VK_SHADER_STAGE_ALL,
+    /// Entry point function name.
     entry_point: []const u8 = "main",
-    // Store handle as u64 to avoid std.json issues with opaque pointers
+    /// Optional pre-created shader module handle encoded as u64.
     module_handle: ?u64 = null,
 };
 
+/// Vertex buffer binding description.
 pub const VertexInputBindingDescriptor = struct {
     binding: u32,
     stride: u32,
     input_rate: c.VkVertexInputRate = c.VK_VERTEX_INPUT_RATE_VERTEX,
 };
 
+/// Vertex attribute location description.
 pub const VertexInputAttributeDescriptor = struct {
     location: u32,
     binding: u32,
@@ -262,22 +275,26 @@ pub const VertexInputAttributeDescriptor = struct {
     offset: u32,
 };
 
+/// Vertex input declaration used by the pipeline builder.
 pub const VertexInputDescriptor = struct {
+    /// When true, uses a built-in engine vertex layout.
     use_standard_layout: bool = true,
-    // If using standard layout, how many attributes to use (starting from 0)
-    // 0 = Px, 1 = Nx, 2 = UV, 3 = Weights, 4 = Indices, 5 = U1, 6 = Color
+    /// Attribute count for the built-in layout (starting at location 0).
     standard_layout_attribute_count: u32 = 7,
 
-    // Custom layout (used if use_standard_layout is false)
+    /// Custom bindings used when `use_standard_layout` is false.
     bindings: []const VertexInputBindingDescriptor = &.{},
+    /// Custom attributes used when `use_standard_layout` is false.
     attributes: []const VertexInputAttributeDescriptor = &.{},
 };
 
+/// Input assembly state for graphics pipelines.
 pub const InputAssemblyDescriptor = struct {
     topology: Topology = .triangle_list,
     primitive_restart_enable: bool = false,
 };
 
+/// Rasterization state for graphics pipelines.
 pub const RasterizationDescriptor = struct {
     depth_clamp_enable: bool = false,
     rasterizer_discard_enable: bool = false,
@@ -291,6 +308,7 @@ pub const RasterizationDescriptor = struct {
     line_width: f32 = 1.0,
 };
 
+/// Multisampling state for graphics pipelines.
 pub const MultisampleDescriptor = struct {
     rasterization_samples: c.VkSampleCountFlagBits = c.VK_SAMPLE_COUNT_1_BIT,
     sample_shading_enable: bool = false,
@@ -299,6 +317,7 @@ pub const MultisampleDescriptor = struct {
     alpha_to_one_enable: bool = false,
 };
 
+/// Depth/stencil state for graphics pipelines.
 pub const DepthStencilDescriptor = struct {
     depth_test_enable: bool = true,
     depth_write_enable: bool = true,
@@ -309,6 +328,7 @@ pub const DepthStencilDescriptor = struct {
     max_depth_bounds: f32 = 1.0,
 };
 
+/// Per-attachment blend state.
 pub const ColorBlendAttachmentDescriptor = struct {
     blend_enable: bool = false,
     src_color_blend_factor: BlendFactor = .src_alpha,
@@ -320,6 +340,7 @@ pub const ColorBlendAttachmentDescriptor = struct {
     color_write_mask: c.VkColorComponentFlags = c.VK_COLOR_COMPONENT_R_BIT | c.VK_COLOR_COMPONENT_G_BIT | c.VK_COLOR_COMPONENT_B_BIT | c.VK_COLOR_COMPONENT_A_BIT,
 };
 
+/// Color blending state for graphics pipelines.
 pub const ColorBlendDescriptor = struct {
     logic_op_enable: bool = false,
     logic_op: LogicOp = .copy,
@@ -327,12 +348,14 @@ pub const ColorBlendDescriptor = struct {
     blend_constants: [4]f32 = .{ 0.0, 0.0, 0.0, 0.0 },
 };
 
+/// Dynamic rendering formats used for pipeline creation.
 pub const RenderingDescriptor = struct {
     color_formats: []const c.VkFormat,
     depth_format: c.VkFormat = c.VK_FORMAT_UNDEFINED,
     stencil_format: c.VkFormat = c.VK_FORMAT_UNDEFINED,
 };
 
+/// Full pipeline description consumed by `PipelineBuilder`.
 pub const PipelineDescriptor = struct {
     name: []const u8,
     vertex_shader: ?ShaderStageDescriptor = null,
@@ -353,7 +376,19 @@ pub const PipelineDescriptor = struct {
     flags: c.VkPipelineCreateFlags = 0,
 };
 
-// Builder
+pub const ParsedPipelineDescriptor = struct {
+    parsed: std.json.Parsed(PipelineDescriptor),
+    content: []u8,
+    allocator: std.mem.Allocator,
+    value: PipelineDescriptor,
+
+    pub fn deinit(self: *ParsedPipelineDescriptor) void {
+        self.parsed.deinit();
+        self.allocator.free(self.content);
+    }
+};
+
+/// Builds Vulkan graphics pipelines from a `PipelineDescriptor`.
 pub const PipelineBuilder = struct {
     allocator: std.mem.Allocator,
     device: c.VkDevice,
@@ -367,31 +402,34 @@ pub const PipelineBuilder = struct {
         };
     }
 
-    pub fn load_from_json(allocator: std.mem.Allocator, path: []const u8) !std.json.Parsed(PipelineDescriptor) {
+    pub fn load_from_json(allocator: std.mem.Allocator, path: []const u8) !ParsedPipelineDescriptor {
         const file = try std.fs.cwd().openFile(path, .{});
         defer file.close();
 
         const content = try file.readToEndAlloc(allocator, 1024 * 1024);
-        // defer allocator.free(content); // Keep content alive in case strings point to it
+        errdefer allocator.free(content);
 
-        return std.json.parseFromSlice(PipelineDescriptor, allocator, content, .{ .ignore_unknown_fields = true });
+        const parsed = try std.json.parseFromSlice(PipelineDescriptor, allocator, content, .{ .ignore_unknown_fields = true });
+        return .{
+            .parsed = parsed,
+            .content = content,
+            .allocator = allocator,
+            .value = parsed.value,
+        };
     }
 
     pub fn build(self: *PipelineBuilder, descriptor: PipelineDescriptor, pipeline_layout: c.VkPipelineLayout, out_pipeline: *c.VkPipeline) !void {
-        // 1. Shaders
         pso_log.info("Building pipeline '{s}'", .{descriptor.name});
 
         var shader_stages = std.ArrayListUnmanaged(c.VkPipelineShaderStageCreateInfo){};
         defer shader_stages.deinit(self.allocator);
 
-        // Helper to load shader
         const load_shader = struct {
             fn load(b: *PipelineBuilder, stage_desc: ShaderStageDescriptor, stage_bit: c.VkShaderStageFlagBits, stages: *std.ArrayListUnmanaged(c.VkPipelineShaderStageCreateInfo)) !void {
                 var module: c.VkShaderModule = undefined;
                 if (stage_desc.module_handle) |h| {
                     module = @ptrFromInt(h);
                 } else {
-                    // Use cached shader module
                     module = get_or_load_shader_module(b.device, stage_desc.path) catch |err| {
                         pso_log.err("Failed to load shader module from path: '{s}' (err={any})", .{ stage_desc.path, err });
                         return error.ShaderLoadFailed;
@@ -426,15 +464,12 @@ pub const PipelineBuilder = struct {
             try load_shader(self, fs, c.VK_SHADER_STAGE_FRAGMENT_BIT, &shader_stages);
         }
 
-        // 2. Vertex Input
         var vertex_input_info = std.mem.zeroes(c.VkPipelineVertexInputStateCreateInfo);
         vertex_input_info.sType = c.VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO;
 
-        // Keep these alive during the function scope
         var binding_desc: c.VkVertexInputBindingDescription = undefined;
         var attribute_descs: [7]c.VkVertexInputAttributeDescription = undefined;
 
-        // For custom layout
         var custom_bindings: []c.VkVertexInputBindingDescription = &.{};
         var custom_attributes: []c.VkVertexInputAttributeDescription = &.{};
         defer if (!descriptor.vertex_input.use_standard_layout) {
@@ -465,7 +500,6 @@ pub const PipelineBuilder = struct {
             vertex_input_info.vertexAttributeDescriptionCount = descriptor.vertex_input.standard_layout_attribute_count;
             vertex_input_info.pVertexAttributeDescriptions = &attribute_descs;
         } else {
-            // Custom layout
             custom_bindings = try self.allocator.alloc(c.VkVertexInputBindingDescription, descriptor.vertex_input.bindings.len);
             for (descriptor.vertex_input.bindings, 0..) |b, i| {
                 custom_bindings[i] = .{
@@ -491,7 +525,6 @@ pub const PipelineBuilder = struct {
             vertex_input_info.pVertexAttributeDescriptions = custom_attributes.ptr;
         }
 
-        // 3. Input Assembly
         var input_assembly = c.VkPipelineInputAssemblyStateCreateInfo{
             .sType = c.VK_STRUCTURE_TYPE_PIPELINE_INPUT_ASSEMBLY_STATE_CREATE_INFO,
             .topology = descriptor.input_assembly.topology.to_vk(),
@@ -500,7 +533,6 @@ pub const PipelineBuilder = struct {
             .flags = 0,
         };
 
-        // 4. Viewport State (Dynamic)
         var viewport_state = c.VkPipelineViewportStateCreateInfo{
             .sType = c.VK_STRUCTURE_TYPE_PIPELINE_VIEWPORT_STATE_CREATE_INFO,
             .viewportCount = 1,
@@ -509,7 +541,6 @@ pub const PipelineBuilder = struct {
             .flags = 0,
         };
 
-        // 5. Rasterization
         var rasterizer = c.VkPipelineRasterizationStateCreateInfo{
             .sType = c.VK_STRUCTURE_TYPE_PIPELINE_RASTERIZATION_STATE_CREATE_INFO,
             .depthClampEnable = if (descriptor.rasterization.depth_clamp_enable) c.VK_TRUE else c.VK_FALSE,
@@ -526,7 +557,6 @@ pub const PipelineBuilder = struct {
             .flags = 0,
         };
 
-        // 6. Multisampling
         var multisampling = c.VkPipelineMultisampleStateCreateInfo{
             .sType = c.VK_STRUCTURE_TYPE_PIPELINE_MULTISAMPLE_STATE_CREATE_INFO,
             .sampleShadingEnable = if (descriptor.multisampling.sample_shading_enable) c.VK_TRUE else c.VK_FALSE,
@@ -539,7 +569,6 @@ pub const PipelineBuilder = struct {
             .flags = 0,
         };
 
-        // 7. Depth Stencil
         var depth_stencil = c.VkPipelineDepthStencilStateCreateInfo{
             .sType = c.VK_STRUCTURE_TYPE_PIPELINE_DEPTH_STENCIL_STATE_CREATE_INFO,
             .depthTestEnable = if (descriptor.depth_stencil.depth_test_enable) c.VK_TRUE else c.VK_FALSE,
@@ -553,7 +582,6 @@ pub const PipelineBuilder = struct {
             .flags = 0,
         };
 
-        // 8. Color Blending
         if (descriptor.color_blend.attachments.len != descriptor.rendering.color_formats.len) {
             pso_log.err("Color blend attachment count ({d}) does not match rendering color format count ({d}) for pipeline '{s}'", .{
                 descriptor.color_blend.attachments.len,
@@ -590,7 +618,6 @@ pub const PipelineBuilder = struct {
             .flags = 0,
         };
 
-        // 9. Dynamic State
         var dynamic_state = c.VkPipelineDynamicStateCreateInfo{
             .sType = c.VK_STRUCTURE_TYPE_PIPELINE_DYNAMIC_STATE_CREATE_INFO,
             .dynamicStateCount = @intCast(descriptor.dynamic_states.len),
@@ -599,7 +626,6 @@ pub const PipelineBuilder = struct {
             .flags = 0,
         };
 
-        // 10. Dynamic Rendering Info
         var rendering_info = c.VkPipelineRenderingCreateInfo{
             .sType = c.VK_STRUCTURE_TYPE_PIPELINE_RENDERING_CREATE_INFO,
             .viewMask = 0,
@@ -610,7 +636,6 @@ pub const PipelineBuilder = struct {
             .pNext = null,
         };
 
-        // Combine into Graphics Pipeline
         var pipeline_info = c.VkGraphicsPipelineCreateInfo{
             .sType = c.VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO,
             .stageCount = @intCast(shader_stages.items.len),

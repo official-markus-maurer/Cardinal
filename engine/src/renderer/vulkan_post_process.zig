@@ -2,51 +2,57 @@
 //!
 //! Creates a post-processing pass (tone mapping, bloom composition) and a bloom compute pipeline.
 //! Resources are allocated once and updated per-frame via descriptor sets/buffers.
-//!
-//! TODO: Extract descriptor/buffer creation into small helpers to reduce `vk_post_process_init`.
 const std = @import("std");
 const c = @import("vulkan_c.zig").c;
 const types = @import("vulkan_types.zig");
 const log = @import("../core/log.zig");
 const memory = @import("../core/memory.zig");
 const descriptor_mgr = @import("vulkan_descriptor_manager.zig");
-const vk_pso = @import("vulkan_pso.zig");
 const vk_compute = @import("vulkan_compute.zig");
 const vk_allocator = @import("vulkan_allocator.zig");
+const descriptor_init = @import("util/vulkan_descriptor_init.zig");
+const pipeline_json = @import("util/vulkan_pipeline_json.zig");
 
 const pp_log = log.ScopedLogger("POST_PROCESS");
 
-/// Initializes post-process descriptors, bloom resources, and pipelines.
-pub fn vk_post_process_init(s: *types.VulkanState) bool {
-    s.pipelines.post_process_pipeline.initialized = false;
-    s.pipelines.use_post_process = true;
+fn init_post_process_descriptor_manager(s: *types.VulkanState) bool {
+    const renderer_allocator = memory.cardinal_get_allocator_for_category(.RENDERER).as_allocator();
+    const bindings = [_]c.VkDescriptorSetLayoutBinding{
+        .{
+            .binding = 0,
+            .descriptorType = c.VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
+            .descriptorCount = 1,
+            .stageFlags = c.VK_SHADER_STAGE_FRAGMENT_BIT,
+            .pImmutableSamplers = null,
+        },
+        .{
+            .binding = 1,
+            .descriptorType = c.VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
+            .descriptorCount = 1,
+            .stageFlags = c.VK_SHADER_STAGE_FRAGMENT_BIT,
+            .pImmutableSamplers = null,
+        },
+        .{
+            .binding = 2,
+            .descriptorType = c.VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER,
+            .descriptorCount = 1,
+            .stageFlags = c.VK_SHADER_STAGE_FRAGMENT_BIT,
+            .pImmutableSamplers = null,
+        },
+    };
 
-    const mem_alloc = memory.cardinal_get_allocator_for_category(.RENDERER);
-    const ptr = memory.cardinal_alloc(mem_alloc, @sizeOf(types.VulkanDescriptorManager));
-    if (ptr == null) {
-        pp_log.err("Failed to allocate memory for descriptor manager", .{});
+    if (!descriptor_init.create_descriptor_manager_from_bindings(renderer_allocator, &s.pipelines.post_process_pipeline.descriptorManager, s.context.device, @as(*types.VulkanAllocator, @ptrCast(&s.allocator)), s, &bindings, types.MAX_FRAMES_IN_FLIGHT, true)) {
         return false;
     }
-    s.pipelines.post_process_pipeline.descriptorManager = @as(*types.VulkanDescriptorManager, @ptrCast(@alignCast(ptr)));
 
-    var desc_builder = descriptor_mgr.DescriptorBuilder.init(std.heap.page_allocator);
-    defer desc_builder.deinit();
+    return descriptor_mgr.vk_descriptor_manager_allocate_sets(
+        s.pipelines.post_process_pipeline.descriptorManager,
+        types.MAX_FRAMES_IN_FLIGHT,
+        @as([*]c.VkDescriptorSet, @ptrCast(&s.pipelines.post_process_pipeline.descriptorSets)),
+    );
+}
 
-    desc_builder.add_binding(0, c.VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1, c.VK_SHADER_STAGE_FRAGMENT_BIT) catch return false;
-    desc_builder.add_binding(1, c.VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1, c.VK_SHADER_STAGE_FRAGMENT_BIT) catch return false;
-    desc_builder.add_binding(2, c.VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, 1, c.VK_SHADER_STAGE_FRAGMENT_BIT) catch return false;
-
-    const renderer_allocator = mem_alloc.as_allocator();
-    if (!desc_builder.build(s.pipelines.post_process_pipeline.descriptorManager.?, s.context.device, @as(*types.VulkanAllocator, @ptrCast(&s.allocator)), s, types.MAX_FRAMES_IN_FLIGHT, true)) {
-        pp_log.err("Failed to build descriptor manager", .{});
-        return false;
-    }
-
-    if (!descriptor_mgr.vk_descriptor_manager_allocate_sets(s.pipelines.post_process_pipeline.descriptorManager, types.MAX_FRAMES_IN_FLIGHT, @as([*]c.VkDescriptorSet, @ptrCast(&s.pipelines.post_process_pipeline.descriptorSets)))) {
-        pp_log.err("Failed to allocate descriptor sets", .{});
-        return false;
-    }
-
+fn create_post_process_sampler(s: *types.VulkanState) bool {
     var samplerInfo = std.mem.zeroes(c.VkSamplerCreateInfo);
     samplerInfo.sType = c.VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO;
     samplerInfo.magFilter = c.VK_FILTER_LINEAR;
@@ -60,11 +66,10 @@ pub fn vk_post_process_init(s: *types.VulkanState) bool {
     samplerInfo.compareEnable = c.VK_FALSE;
     samplerInfo.mipmapMode = c.VK_SAMPLER_MIPMAP_MODE_LINEAR;
 
-    if (c.vkCreateSampler(s.context.device, &samplerInfo, null, &s.pipelines.post_process_pipeline.sampler) != c.VK_SUCCESS) {
-        pp_log.err("Failed to create sampler", .{});
-        return false;
-    }
+    return c.vkCreateSampler(s.context.device, &samplerInfo, null, &s.pipelines.post_process_pipeline.sampler) == c.VK_SUCCESS;
+}
 
+fn create_bloom_image_and_view(s: *types.VulkanState) bool {
     const bloom_extent = c.VkExtent3D{ .width = s.swapchain.extent.width / 2, .height = s.swapchain.extent.height / 2, .depth = 1 };
     var imageInfo = std.mem.zeroes(c.VkImageCreateInfo);
     imageInfo.sType = c.VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO;
@@ -80,7 +85,6 @@ pub fn vk_post_process_init(s: *types.VulkanState) bool {
     imageInfo.samples = c.VK_SAMPLE_COUNT_1_BIT;
 
     if (!vk_allocator.allocate_image(&s.allocator, &imageInfo, &s.pipelines.post_process_pipeline.bloom_image, &s.pipelines.post_process_pipeline.bloom_memory, &s.pipelines.post_process_pipeline.bloom_allocation, c.VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT)) {
-        pp_log.err("Failed to allocate bloom image", .{});
         return false;
     }
 
@@ -95,11 +99,10 @@ pub fn vk_post_process_init(s: *types.VulkanState) bool {
     viewInfo.subresourceRange.baseArrayLayer = 0;
     viewInfo.subresourceRange.layerCount = 1;
 
-    if (c.vkCreateImageView(s.context.device, &viewInfo, null, &s.pipelines.post_process_pipeline.bloom_view) != c.VK_SUCCESS) {
-        pp_log.err("Failed to create bloom image view", .{});
-        return false;
-    }
+    return c.vkCreateImageView(s.context.device, &viewInfo, null, &s.pipelines.post_process_pipeline.bloom_view) == c.VK_SUCCESS;
+}
 
+fn create_post_process_params_buffers(s: *types.VulkanState) bool {
     var i: u32 = 0;
     while (i < types.MAX_FRAMES_IN_FLIGHT) : (i += 1) {
         var usage: c.VkBufferUsageFlags = c.VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT;
@@ -114,7 +117,6 @@ pub fn vk_post_process_init(s: *types.VulkanState) bool {
         bufferInfo.sharingMode = c.VK_SHARING_MODE_EXCLUSIVE;
 
         if (!vk_allocator.allocate_buffer(&s.allocator, &bufferInfo, &s.pipelines.post_process_pipeline.params_buffer[i], &s.pipelines.post_process_pipeline.params_memory[i], &s.pipelines.post_process_pipeline.params_allocation[i], c.VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | c.VK_MEMORY_PROPERTY_HOST_COHERENT_BIT, true, &s.pipelines.post_process_pipeline.params_mapped[i])) {
-            pp_log.err("Failed to allocate params buffer for frame {d}", .{i});
             return false;
         }
 
@@ -137,36 +139,76 @@ pub fn vk_post_process_init(s: *types.VulkanState) bool {
         .padding = .{ 0.0, 0.0 },
     };
 
-    const bloom_mem_alloc = memory.cardinal_get_allocator_for_category(.RENDERER);
-    const bloom_ptr = memory.cardinal_alloc(bloom_mem_alloc, @sizeOf(types.VulkanDescriptorManager));
-    if (bloom_ptr == null) {
-        pp_log.err("Failed to allocate memory for bloom descriptor manager", .{});
+    return true;
+}
+
+fn init_bloom_descriptor_manager(s: *types.VulkanState) bool {
+    const renderer_allocator = memory.cardinal_get_allocator_for_category(.RENDERER).as_allocator();
+    const bindings = [_]c.VkDescriptorSetLayoutBinding{
+        .{
+            .binding = 0,
+            .descriptorType = c.VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
+            .descriptorCount = 1,
+            .stageFlags = c.VK_SHADER_STAGE_COMPUTE_BIT,
+            .pImmutableSamplers = null,
+        },
+        .{
+            .binding = 1,
+            .descriptorType = c.VK_DESCRIPTOR_TYPE_STORAGE_IMAGE,
+            .descriptorCount = 1,
+            .stageFlags = c.VK_SHADER_STAGE_COMPUTE_BIT,
+            .pImmutableSamplers = null,
+        },
+    };
+
+    if (!descriptor_init.create_descriptor_manager_from_bindings(renderer_allocator, &s.pipelines.post_process_pipeline.bloomDescriptorManager, s.context.device, @as(*types.VulkanAllocator, @ptrCast(&s.allocator)), s, &bindings, types.MAX_FRAMES_IN_FLIGHT, true)) {
         return false;
     }
-    s.pipelines.post_process_pipeline.bloomDescriptorManager = @as(*types.VulkanDescriptorManager, @ptrCast(@alignCast(bloom_ptr)));
 
-    var bloom_builder = descriptor_mgr.DescriptorBuilder.init(std.heap.page_allocator);
-    defer bloom_builder.deinit();
+    if (!descriptor_mgr.vk_descriptor_manager_allocate_sets(
+        s.pipelines.post_process_pipeline.bloomDescriptorManager,
+        types.MAX_FRAMES_IN_FLIGHT,
+        @as([*]c.VkDescriptorSet, @ptrCast(&s.pipelines.post_process_pipeline.bloomDescriptorSets)),
+    )) return false;
 
-    bloom_builder.add_binding(0, c.VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1, c.VK_SHADER_STAGE_COMPUTE_BIT) catch return false;
-    bloom_builder.add_binding(1, c.VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, 1, c.VK_SHADER_STAGE_COMPUTE_BIT) catch return false;
-
-    if (!bloom_builder.build(s.pipelines.post_process_pipeline.bloomDescriptorManager.?, s.context.device, @as(*types.VulkanAllocator, @ptrCast(&s.allocator)), s, types.MAX_FRAMES_IN_FLIGHT, true)) {
-        pp_log.err("Failed to build bloom descriptor manager", .{});
-        return false;
-    }
-
-    if (!descriptor_mgr.vk_descriptor_manager_allocate_sets(s.pipelines.post_process_pipeline.bloomDescriptorManager, types.MAX_FRAMES_IN_FLIGHT, @as([*]c.VkDescriptorSet, @ptrCast(&s.pipelines.post_process_pipeline.bloomDescriptorSets)))) {
-        pp_log.err("Failed to allocate bloom descriptor sets", .{});
-        return false;
-    }
-
-    i = 0;
+    var i: u32 = 0;
     while (i < types.MAX_FRAMES_IN_FLIGHT) : (i += 1) {
         if (!descriptor_mgr.vk_descriptor_manager_update_image(s.pipelines.post_process_pipeline.bloomDescriptorManager, s.pipelines.post_process_pipeline.bloomDescriptorSets[i], 1, s.pipelines.post_process_pipeline.bloom_view, null, c.VK_IMAGE_LAYOUT_GENERAL)) {
-            pp_log.err("Failed to update bloom output descriptor", .{});
             return false;
         }
+    }
+
+    return true;
+}
+
+/// Initializes post-process descriptors, bloom resources, and pipelines.
+pub fn vk_post_process_init(s: *types.VulkanState) bool {
+    s.pipelines.post_process_pipeline.initialized = false;
+    s.pipelines.use_post_process = true;
+
+    if (!init_post_process_descriptor_manager(s)) {
+        pp_log.err("Failed to allocate descriptor sets", .{});
+        return false;
+    }
+
+    if (!create_post_process_sampler(s)) {
+        pp_log.err("Failed to create sampler", .{});
+        return false;
+    }
+
+    if (!create_bloom_image_and_view(s)) {
+        pp_log.err("Failed to create bloom image view", .{});
+        return false;
+    }
+
+    if (!create_post_process_params_buffers(s)) {
+        pp_log.err("Failed to allocate post-process params buffers", .{});
+        return false;
+    }
+
+    if (!init_bloom_descriptor_manager(s)) {
+        pp_log.err("Failed to initialize bloom descriptor manager", .{});
+        return false;
     }
 
     var bloom_config = std.mem.zeroes(types.ComputePipelineConfig);
@@ -174,7 +216,7 @@ pub fn vk_post_process_init(s: *types.VulkanState) bool {
     bloom_config.local_size_x = 16;
     bloom_config.local_size_y = 16;
     bloom_config.local_size_z = 1;
-    bloom_config.push_constant_size = 16; // vec4
+    bloom_config.push_constant_size = @sizeOf([4]f32);
     bloom_config.push_constant_stages = c.VK_SHADER_STAGE_COMPUTE_BIT;
 
     var bloom_layout = [_]c.VkDescriptorSetLayout{descriptor_mgr.vk_descriptor_manager_get_layout(s.pipelines.post_process_pipeline.bloomDescriptorManager)};
@@ -198,39 +240,34 @@ pub fn vk_post_process_init(s: *types.VulkanState) bool {
     }
 
     const pipeline_dir = std.mem.span(@as([*:0]const u8, @ptrCast(&s.config.pipeline_dir)));
+    const renderer_allocator = memory.cardinal_get_allocator_for_category(.RENDERER).as_allocator();
     const pipeline_path = std.fmt.allocPrint(renderer_allocator, "{s}/postprocess.json", .{pipeline_dir}) catch return false;
     defer renderer_allocator.free(pipeline_path);
-
-    var builder = vk_pso.PipelineBuilder.init(renderer_allocator, s.context.device, null);
-
-    var parsed = vk_pso.PipelineBuilder.load_from_json(renderer_allocator, pipeline_path) catch |err| {
-        pp_log.err("Failed to load pipeline JSON: {s}", .{@errorName(err)});
-        return false;
-    };
-    defer parsed.deinit();
-
-    var descriptor = parsed.value;
 
     if (s.swapchain.format == c.VK_FORMAT_UNDEFINED) {
         pp_log.err("Swapchain format is UNDEFINED during pipeline creation!", .{});
         return false;
     }
 
-    const formats = renderer_allocator.alloc(c.VkFormat, 1) catch return false;
-    formats[0] = s.swapchain.format;
-    descriptor.rendering.color_formats = formats;
-    defer renderer_allocator.free(formats);
-
+    var extra_flags: c.VkPipelineCreateFlags = 0;
     if (s.pipelines.post_process_pipeline.descriptorManager) |mgr| {
-        if (mgr.useDescriptorBuffers) {
-            descriptor.flags |= c.VK_PIPELINE_CREATE_DESCRIPTOR_BUFFER_BIT_EXT;
-        }
+        if (mgr.useDescriptorBuffers) extra_flags |= c.VK_PIPELINE_CREATE_DESCRIPTOR_BUFFER_BIT_EXT;
     }
 
-    builder.build(descriptor, s.pipelines.post_process_pipeline.pipelineLayout, &s.pipelines.post_process_pipeline.pipeline) catch |err| {
-        pp_log.err("Failed to build pipeline: {s}", .{@errorName(err)});
+    const formats = [_]c.VkFormat{s.swapchain.format};
+    if (!pipeline_json.build_graphics_pipeline_from_json(
+        renderer_allocator,
+        s.context.device,
+        null,
+        s.pipelines.post_process_pipeline.pipelineLayout,
+        &s.pipelines.post_process_pipeline.pipeline,
+        pipeline_path,
+        &formats,
+        c.VK_FORMAT_UNDEFINED,
+        extra_flags,
+    )) {
         return false;
-    };
+    }
 
     s.pipelines.post_process_pipeline.initialized = true;
     pp_log.info("Post Process Pipeline Initialized with format {d}", .{s.swapchain.format});

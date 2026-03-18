@@ -1,8 +1,6 @@
 //! Editor-side raycast selection helpers.
 //!
 //! Provides picking against the combined scene plus some view utilities (frame selection, xray AABBs).
-//!
-//! TODO: Consider caching subtree mesh sets to avoid scanning all meshes per call.
 const std = @import("std");
 const engine = @import("cardinal_engine");
 const math = engine.math;
@@ -12,34 +10,52 @@ const components = engine.ecs_components;
 const EditorState = @import("../editor_state.zig").EditorState;
 const c = @import("../c.zig").c;
 
-fn collect_subtree_entities(state: *EditorState, root: engine.ecs_entity.Entity, out: *std.AutoHashMapUnmanaged(u64, void)) void {
-    const alloc = engine.memory.cardinal_get_allocator_for_category(.ENGINE).as_allocator();
+fn compute_entity_world_matrix_cached(
+    state: *EditorState,
+    allocator: std.mem.Allocator,
+    cache: *std.AutoHashMapUnmanaged(u64, math.Mat4),
+    entity: engine.ecs_entity.Entity,
+    depth: u32,
+) math.Mat4 {
+    if (cache.get(entity.id)) |m| return m;
+    if (depth > 2048) return math.Mat4.identity();
 
-    var stack: std.ArrayListUnmanaged(engine.ecs_entity.Entity) = .{};
-    defer stack.deinit(alloc);
-
-    stack.append(alloc, root) catch return;
-
-    while (stack.items.len > 0) {
-        const last = stack.items.len - 1;
-        const e = stack.items[last];
-        stack.items.len = last;
-
-        out.put(alloc, e.id, {}) catch {};
-
-        const h = state.runtime.registry.get(components.Hierarchy, e) orelse continue;
-        var child = h.first_child;
-        var guard: u32 = 0;
-        while (child) |c_ent| {
-            if (guard > 100000) break;
-            guard += 1;
-
-            stack.append(alloc, c_ent) catch return;
-
-            const ch = state.runtime.registry.get(components.Hierarchy, c_ent) orelse break;
-            child = ch.next_sibling;
+    var parent_world = math.Mat4.identity();
+    if (state.runtime.registry.get(components.Hierarchy, entity)) |h| {
+        if (h.parent) |p| {
+            if (state.runtime.registry.entity_manager.is_alive(p)) {
+                parent_world = compute_entity_world_matrix_cached(state, allocator, cache, p, depth + 1);
+            }
         }
     }
+
+    const local = if (state.runtime.registry.get(components.Transform, entity)) |t|
+        math.Mat4.fromTRS(t.position, t.rotation, t.scale)
+    else
+        math.Mat4.identity();
+
+    const world = parent_world.mul(local);
+    cache.put(allocator, entity.id, world) catch {};
+    return world;
+}
+
+fn compute_entity_world_matrix(
+    state: *EditorState,
+    allocator: std.mem.Allocator,
+    cache: *std.AutoHashMapUnmanaged(u64, math.Mat4),
+    entity: engine.ecs_entity.Entity,
+) math.Mat4 {
+    return compute_entity_world_matrix_cached(state, allocator, cache, entity, 0);
+}
+
+fn mesh_world_matrix(state: *EditorState, allocator: std.mem.Allocator, cache: *std.AutoHashMapUnmanaged(u64, math.Mat4), mesh_index: u32, mesh: *const scene.CardinalMesh) math.Mat4 {
+    if (mesh_index_to_entity(state, mesh_index, false)) |e| {
+        return compute_entity_world_matrix(state, allocator, cache, e);
+    }
+    if (mesh_index_to_entity(state, mesh_index, true)) |e| {
+        return compute_entity_world_matrix(state, allocator, cache, e);
+    }
+    return math.Mat4.fromArray(mesh.transform);
 }
 
 /// Computes a world-space bounds for `root` by scanning meshes belonging to its subtree.
@@ -47,41 +63,54 @@ fn compute_selection_world_aabb(state: *EditorState, root: engine.ecs_entity.Ent
     if (state.runtime.combined_scene.meshes == null or state.runtime.combined_scene.mesh_count == 0) return null;
 
     const alloc = engine.memory.cardinal_get_allocator_for_category(.ENGINE).as_allocator();
-    var subtree: std.AutoHashMapUnmanaged(u64, void) = .{};
-    defer subtree.deinit(alloc);
-    collect_subtree_entities(state, root, &subtree);
+    var world_cache: std.AutoHashMapUnmanaged(u64, math.Mat4) = .{};
+    defer world_cache.deinit(alloc);
 
     var found_any = false;
     var out = math.AABB{ .min = math.Vec3.zero(), .max = math.Vec3.zero() };
 
-    const meshes = state.runtime.combined_scene.meshes.?;
-    var i: u32 = 0;
-    while (i < state.runtime.combined_scene.mesh_count) : (i += 1) {
-        const owner = state.runtime.mesh_owner_by_mesh_index.get(i);
-        const ent = state.runtime.mesh_entity_by_mesh_index.get(i);
-        const in_subtree = (owner != null and subtree.contains(owner.?)) or (ent != null and subtree.contains(ent.?));
-        if (!in_subtree) continue;
+    var stack: std.ArrayListUnmanaged(engine.ecs_entity.Entity) = .{};
+    defer stack.deinit(alloc);
 
-        const mesh = &meshes[i];
-        const min_arr = mesh.bounding_box_min;
-        const max_arr = mesh.bounding_box_max;
-        const min = math.Vec3{ .x = min_arr[0], .y = min_arr[1], .z = min_arr[2] };
-        const max = math.Vec3{ .x = max_arr[0], .y = max_arr[1], .z = max_arr[2] };
+    stack.append(alloc, root) catch return null;
 
-        const aabb = math.AABB{ .min = min, .max = max };
-        const world_mat = math.Mat4.fromArray(mesh.transform);
-        const world_aabb = aabb.transform(world_mat);
+    while (stack.items.len > 0) {
+        const last = stack.items.len - 1;
+        const e = stack.items[last];
+        stack.items.len = last;
 
-        if (!found_any) {
-            out = world_aabb;
-            found_any = true;
-        } else {
-            out.min.x = @min(out.min.x, world_aabb.min.x);
-            out.min.y = @min(out.min.y, world_aabb.min.y);
-            out.min.z = @min(out.min.z, world_aabb.min.z);
-            out.max.x = @max(out.max.x, world_aabb.max.x);
-            out.max.y = @max(out.max.y, world_aabb.max.y);
-            out.max.z = @max(out.max.z, world_aabb.max.z);
+        if (state.runtime.registry.get(components.MeshRenderer, e)) |mr| {
+            const mesh_index = mr.mesh.index;
+            if (mesh_index < state.runtime.combined_scene.mesh_count and state.runtime.combined_scene.meshes != null) {
+                const mesh = &state.runtime.combined_scene.meshes.?[mesh_index];
+                const min = math.Vec3.fromArray(mesh.bounding_box_min);
+                const max = math.Vec3.fromArray(mesh.bounding_box_max);
+                const aabb = math.AABB{ .min = min, .max = max };
+                const world_mat = compute_entity_world_matrix(state, alloc, &world_cache, e);
+                const world_aabb = aabb.transform(world_mat);
+                if (!found_any) {
+                    out = world_aabb;
+                    found_any = true;
+                } else {
+                    out.min.x = @min(out.min.x, world_aabb.min.x);
+                    out.min.y = @min(out.min.y, world_aabb.min.y);
+                    out.min.z = @min(out.min.z, world_aabb.min.z);
+                    out.max.x = @max(out.max.x, world_aabb.max.x);
+                    out.max.y = @max(out.max.y, world_aabb.max.y);
+                    out.max.z = @max(out.max.z, world_aabb.max.z);
+                }
+            }
+        }
+
+        const h = state.runtime.registry.get(components.Hierarchy, e) orelse continue;
+        var child = h.first_child;
+        var guard: u32 = 0;
+        while (child) |c_ent| {
+            if (guard > 100000) break;
+            guard += 1;
+            stack.append(alloc, c_ent) catch break;
+            const ch = state.runtime.registry.get(components.Hierarchy, c_ent) orelse break;
+            child = ch.next_sibling;
         }
     }
 
@@ -208,33 +237,49 @@ pub fn draw_selection_xray(state: *EditorState, root: engine.ecs_entity.Entity) 
     if (state.runtime.combined_scene.meshes == null or state.runtime.combined_scene.mesh_count == 0) return;
 
     const alloc = engine.memory.cardinal_get_allocator_for_category(.ENGINE).as_allocator();
-    var subtree: std.AutoHashMapUnmanaged(u64, void) = .{};
-    defer subtree.deinit(alloc);
-    collect_subtree_entities(state, root, &subtree);
+    var world_cache: std.AutoHashMapUnmanaged(u64, math.Mat4) = .{};
+    defer world_cache.deinit(alloc);
 
     const view = math.Mat4.lookAt(state.runtime.camera.position, state.runtime.camera.target, state.runtime.camera.up);
     const proj = math.Mat4.perspective(math.toRadians(state.runtime.camera.fov), state.runtime.camera.aspect, state.runtime.camera.near_plane, state.runtime.camera.far_plane);
     const view_proj = proj.mul(view);
 
-    const meshes = state.runtime.combined_scene.meshes.?;
-    var i: u32 = 0;
-    while (i < state.runtime.combined_scene.mesh_count) : (i += 1) {
-        const owner_id = state.runtime.mesh_owner_by_mesh_index.get(i);
-        const ent_id = state.runtime.mesh_entity_by_mesh_index.get(i);
-        const in_subtree = (owner_id != null and subtree.contains(owner_id.?)) or (ent_id != null and subtree.contains(ent_id.?));
-        if (!in_subtree) continue;
+    var stack: std.ArrayListUnmanaged(engine.ecs_entity.Entity) = .{};
+    defer stack.deinit(alloc);
+    stack.append(alloc, root) catch return;
 
-        const mesh = &meshes[i];
-        const min_arr = mesh.bounding_box_min;
-        const max_arr = mesh.bounding_box_max;
-        const min = math.Vec3{ .x = min_arr[0], .y = min_arr[1], .z = min_arr[2] };
-        const max = math.Vec3{ .x = max_arr[0], .y = max_arr[1], .z = max_arr[2] };
+    while (stack.items.len > 0) {
+        const last = stack.items.len - 1;
+        const e = stack.items[last];
+        stack.items.len = last;
 
-        const aabb = math.AABB{ .min = min, .max = max };
-        const world_mat = math.Mat4.fromArray(mesh.transform);
+        if (state.runtime.registry.get(components.MeshRenderer, e)) |mr| {
+            const mesh_index = mr.mesh.index;
+            if (mesh_index < state.runtime.combined_scene.mesh_count and state.runtime.combined_scene.meshes != null) {
+                const mesh = &state.runtime.combined_scene.meshes.?[mesh_index];
+                const min_arr = mesh.bounding_box_min;
+                const max_arr = mesh.bounding_box_max;
+                const min = math.Vec3{ .x = min_arr[0], .y = min_arr[1], .z = min_arr[2] };
+                const max = math.Vec3{ .x = max_arr[0], .y = max_arr[1], .z = max_arr[2] };
 
-        const is_root = (ent_id != null and ent_id.? == root.id) or (owner_id != null and owner_id.? == root.id);
-        draw_obb_xray(state, view_proj, aabb, world_mat, if (is_root) 0x8000FFFF else 0x4000FFFF, if (is_root) 2.0 else 1.0);
+                const aabb = math.AABB{ .min = min, .max = max };
+                const world_mat = compute_entity_world_matrix(state, alloc, &world_cache, e);
+
+                const is_root = e.id == root.id;
+                draw_obb_xray(state, view_proj, aabb, world_mat, if (is_root) 0x8000FFFF else 0x4000FFFF, if (is_root) 2.0 else 1.0);
+            }
+        }
+
+        const h = state.runtime.registry.get(components.Hierarchy, e) orelse continue;
+        var child = h.first_child;
+        var guard: u32 = 0;
+        while (child) |c_ent| {
+            if (guard > 100000) break;
+            guard += 1;
+            stack.append(alloc, c_ent) catch break;
+            const ch = state.runtime.registry.get(components.Hierarchy, c_ent) orelse break;
+            child = ch.next_sibling;
+        }
     }
 }
 
@@ -505,6 +550,10 @@ fn pick_combined_mesh(state: *EditorState, ray: math.Ray) ?u32 {
     var closest_t_any: f32 = std.math.floatMax(f32);
     var hit_mesh_any: ?u32 = null;
 
+    const alloc = engine.memory.cardinal_get_allocator_for_category(.ENGINE).as_allocator();
+    var world_cache: std.AutoHashMapUnmanaged(u64, math.Mat4) = .{};
+    defer world_cache.deinit(alloc);
+
     const t_min: f32 = 0.001;
     const t_max: f32 = 10000.0;
 
@@ -520,7 +569,7 @@ fn pick_combined_mesh(state: *EditorState, ray: math.Ray) ?u32 {
         const max = math.Vec3{ .x = max_arr[0], .y = max_arr[1], .z = max_arr[2] };
 
         const aabb = math.AABB{ .min = min, .max = max };
-        const world_mat = math.Mat4.fromArray(mesh.transform);
+        const world_mat = mesh_world_matrix(state, alloc, &world_cache, i, mesh);
         const world_aabb = aabb.transform(world_mat);
 
         const aabb_t = math.intersectRayAABB(ray, world_aabb, t_min, t_max) orelse continue;

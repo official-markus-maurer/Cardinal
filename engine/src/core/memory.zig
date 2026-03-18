@@ -37,19 +37,26 @@ const ArenaBlock = extern struct {
 };
 
 pub const CardinalMemoryStats = extern struct {
+    /// Total bytes allocated over the lifetime of the allocator.
     total_allocated: usize,
+    /// Current outstanding allocated bytes.
     current_usage: usize,
+    /// Peak outstanding allocated bytes.
     peak_usage: usize,
+    /// Total number of allocation calls.
     allocation_count: usize,
+    /// Total number of free calls.
     free_count: usize,
 };
 
+/// Aggregated memory statistics across all categories.
 pub const CardinalGlobalMemoryStats = extern struct {
     /// Per-category memory statistics.
     categories: [CATEGORY_SLOT_COUNT]CardinalMemoryStats,
     total: CardinalMemoryStats,
 };
 
+/// C-ABI allocator interface used across the engine.
 pub const CardinalAllocator = extern struct {
     type: CardinalAllocatorType,
     name: [*:0]const u8,
@@ -60,6 +67,7 @@ pub const CardinalAllocator = extern struct {
     free: *const fn (*CardinalAllocator, ?*anyopaque) callconv(.c) void,
     reset: ?*const fn (*CardinalAllocator) callconv(.c) void,
 
+    /// Adapts this allocator to a `std.mem.Allocator`.
     pub fn as_allocator(self: *CardinalAllocator) std.mem.Allocator {
         return .{
             .ptr = self,
@@ -95,13 +103,9 @@ pub const CardinalAllocator = extern struct {
                         if (info.is_aligned) return false;
 
                         if (platform.expand(buf.ptr, new_len)) |_| {
-                            // TODO: Update allocation size in-place instead of untrack/track.
-                            var old_size: usize = 0;
-                            var is_aligned: bool = false;
-                            if (untrack_alloc(buf.ptr, &old_size, &is_aligned)) {
-                                track_alloc(buf.ptr, new_len, is_aligned);
-                                stats_on_free(self.category, old_size);
-                                stats_on_alloc(self.category, new_len);
+                            const old_size = info.size;
+                            if (update_tracked_alloc_size(buf.ptr, new_len)) {
+                                stats_on_resize(self.category, old_size, new_len);
                             }
                             return true;
                         }
@@ -237,6 +241,42 @@ fn stats_on_free(cat: CardinalMemoryCategory, size: usize) void {
     g_stats.total.free_count += 1;
 }
 
+fn stats_on_resize(cat: CardinalMemoryCategory, old_size: usize, new_size: usize) void {
+    var category = cat;
+    if (@intFromEnum(category) >= @intFromEnum(CardinalMemoryCategory.MAX)) {
+        category = .UNKNOWN;
+    }
+
+    const cat_idx = @as(usize, @intCast(@intFromEnum(category)));
+
+    if (new_size > old_size) {
+        const diff = new_size - old_size;
+        g_stats.categories[cat_idx].total_allocated += diff;
+        g_stats.categories[cat_idx].current_usage += diff;
+        if (g_stats.categories[cat_idx].current_usage > g_stats.categories[cat_idx].peak_usage) {
+            g_stats.categories[cat_idx].peak_usage = g_stats.categories[cat_idx].current_usage;
+        }
+
+        g_stats.total.total_allocated += diff;
+        g_stats.total.current_usage += diff;
+        if (g_stats.total.current_usage > g_stats.total.peak_usage) {
+            g_stats.total.peak_usage = g_stats.total.current_usage;
+        }
+    } else if (old_size > new_size) {
+        const diff = old_size - new_size;
+        if (g_stats.categories[cat_idx].current_usage >= diff) {
+            g_stats.categories[cat_idx].current_usage -= diff;
+        } else {
+            g_stats.categories[cat_idx].current_usage = 0;
+        }
+        if (g_stats.total.current_usage >= diff) {
+            g_stats.total.current_usage -= diff;
+        } else {
+            g_stats.total.current_usage = 0;
+        }
+    }
+}
+
 /// Copies current memory statistics into `out_stats` (no-op if null).
 pub export fn cardinal_memory_get_stats(out_stats: ?*CardinalGlobalMemoryStats) void {
     if (out_stats) |s| {
@@ -339,6 +379,20 @@ fn untrack_alloc(ptr: ?*anyopaque, out_size: ?*usize, out_is_aligned: ?*bool) bo
         return true;
     }
     return false;
+}
+
+fn update_tracked_alloc_size(ptr: ?*anyopaque, new_size: usize) bool {
+    if (ptr == null) return false;
+
+    g_alloc_map_lock.lock();
+    defer g_alloc_map_lock.unlock();
+
+    if (!g_alloc_map_init) return false;
+
+    const addr = @intFromPtr(ptr);
+    const info = g_alloc_map.getPtr(addr) orelse return false;
+    info.size = new_size;
+    return true;
 }
 
 /// Dynamic allocator implementation.
@@ -472,37 +526,36 @@ fn arena_create_block(backing: *CardinalAllocator, capacity: usize) ?*ArenaBlock
     return block;
 }
 
+fn arena_alloc_from_block(block: *ArenaBlock, size: usize, align_val: usize) ?*anyopaque {
+    const ptr_int = @intFromPtr(block.data) + block.offset;
+    const aligned_ptr = std.mem.alignForward(usize, ptr_int, align_val);
+    const pad = aligned_ptr - ptr_int;
+
+    if (block.offset + pad + size > block.capacity) return null;
+
+    block.offset += pad + size;
+    return @ptrFromInt(aligned_ptr);
+}
+
 /// Allocates from the current arena block, creating a new block when needed.
 fn arena_alloc(self: *CardinalAllocator, size: usize, alignment: usize) callconv(.c) ?*anyopaque {
     const st: *ArenaState = @ptrCast(@alignCast(self.state));
     const align_val = if (alignment > 0) alignment else @sizeOf(?*anyopaque);
 
     if (st.current_block) |block| {
-        const ptr_int = @intFromPtr(block.data) + block.offset;
-        const mis = ptr_int % align_val;
-        const pad = if (mis > 0) align_val - mis else 0;
-
-        if (block.offset + pad + size <= block.capacity) {
-            block.offset += pad + size;
-            return @ptrFromInt(ptr_int + pad);
-        }
+        if (arena_alloc_from_block(block, size, align_val)) |p| return p;
     }
 
-    const block_size = if (size > st.default_block_size) size else st.default_block_size;
+    const min_block_size = size + (align_val - 1);
+    const block_size = if (min_block_size > st.default_block_size) min_block_size else st.default_block_size;
     const new_block = arena_create_block(st.backing, block_size);
     if (new_block == null) return null;
 
     new_block.?.next = st.current_block;
     st.current_block = new_block;
 
-    // TODO: Simplify arena block alignment logic.
     const block = new_block.?;
-    const ptr_int = @intFromPtr(block.data);
-    const mis = ptr_int % align_val;
-    const pad = if (mis > 0) align_val - mis else 0;
-
-    block.offset = pad + size;
-    return @ptrFromInt(ptr_int + pad);
+    return arena_alloc_from_block(block, size, align_val);
 }
 
 /// Attempts an in-place arena realloc when `ptr` is the most recent allocation.

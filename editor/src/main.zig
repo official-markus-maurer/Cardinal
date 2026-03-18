@@ -19,6 +19,7 @@ fn print_usage(program_name: []const u8) void {
     std.debug.print("Usage: {s} [options]\n", .{program_name});
     std.debug.print("Options:\n", .{});
     std.debug.print("  --log-level <level>  Set log level (TRACE, DEBUG, INFO, WARN, ERROR, FATAL)\n", .{});
+    std.debug.print("  --log-file <path>    Write logs to this file path\n", .{});
     std.debug.print("  --help               Show this help message\n", .{});
 }
 
@@ -31,6 +32,7 @@ pub fn main() !u8 {
 
     var log_level: log.CardinalLogLevel = .WARN;
     var test_minidump = false;
+    var log_file: ?[]const u8 = null;
 
     const args = try std.process.argsAlloc(allocator);
     defer std.process.argsFree(allocator, args);
@@ -41,6 +43,9 @@ pub fn main() !u8 {
         if (std.mem.eql(u8, arg, "--log-level") and i + 1 < args.len) {
             log_level = log.cardinal_log_parse_level(args[i + 1].ptr);
             i += 1;
+        } else if (std.mem.eql(u8, arg, "--log-file") and i + 1 < args.len) {
+            log_file = args[i + 1];
+            i += 1;
         } else if (std.mem.eql(u8, arg, "--help")) {
             print_usage(args[0]);
             return 0;
@@ -49,6 +54,11 @@ pub fn main() !u8 {
         }
     }
 
+    if (log_file) |p| {
+        const z = allocator.dupeZ(u8, p) catch return 1;
+        defer allocator.free(z);
+        log.cardinal_log_set_file_sink_path(z.ptr);
+    }
     log.cardinal_log_init_with_level(log_level);
     log.cardinal_log_init_async(true);
     defer log.cardinal_log_shutdown();

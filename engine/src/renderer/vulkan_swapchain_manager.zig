@@ -11,6 +11,7 @@ const swapchain_log = log.ScopedLogger("SWAPCHAIN");
 
 const c = @import("vulkan_c.zig").c;
 
+/// Tracks swapchain state and recreation bookkeeping.
 pub const VulkanSwapchainManager = extern struct {
     device: c.VkDevice,
     physicalDevice: c.VkPhysicalDevice,
@@ -26,13 +27,17 @@ pub const VulkanSwapchainManager = extern struct {
     imageViews: ?[*]c.VkImageView,
     imageCount: u32,
 
+    /// True when the swapchain should be recreated on the next safe opportunity.
     recreationPending: bool,
+    /// Timestamp in ms of the last recreation attempt.
     lastRecreationTime: u64,
+    /// Total number of recreations performed.
     recreationCount: u32,
 
     initialized: bool,
 };
 
+/// Parameters used to create or recreate a swapchain.
 pub const VulkanSwapchainCreateInfo = extern struct {
     device: c.VkDevice,
     physicalDevice: c.VkPhysicalDevice,
@@ -47,6 +52,7 @@ pub const VulkanSwapchainCreateInfo = extern struct {
     oldSwapchain: c.VkSwapchainKHR,
 };
 
+/// Cached surface capability query results used during selection.
 pub const VulkanSurfaceSupport = extern struct {
     capabilities: c.VkSurfaceCapabilitiesKHR,
     formats: ?[*]c.VkSurfaceFormatKHR,
@@ -75,6 +81,24 @@ fn destroy_image_views(manager: *VulkanSwapchainManager) void {
     }
 }
 
+/// Destroys swapchain-owned resources stored in `mgr` and clears handles.
+fn destroy_swapchain_resources(mgr: *VulkanSwapchainManager) void {
+    destroy_image_views(mgr);
+
+    if (mgr.images != null) {
+        const alloc = std.heap.c_allocator;
+        const images: []c.VkImage = mgr.images.?[0..@as(usize, @intCast(mgr.imageCount))];
+        alloc.free(images);
+        mgr.images = null;
+    }
+
+    if (mgr.swapchain != null) {
+        c.vkDestroySwapchainKHR(mgr.device, mgr.swapchain, null);
+        mgr.swapchain = null;
+    }
+}
+
+/// Creates a swapchain and its image views, storing results in `manager`.
 fn create_swapchain_internal(manager: *VulkanSwapchainManager, createInfo: *const VulkanSwapchainCreateInfo) bool {
     const alloc = std.heap.c_allocator;
     var caps = std.mem.zeroes(c.VkSurfaceCapabilitiesKHR);
@@ -111,7 +135,6 @@ fn create_swapchain_internal(manager: *VulkanSwapchainManager, createInfo: *cons
         }
     }
 
-    // Clamp image count to supported range
     if (imageCount < caps.minImageCount) {
         imageCount = caps.minImageCount;
     }
@@ -121,7 +144,6 @@ fn create_swapchain_internal(manager: *VulkanSwapchainManager, createInfo: *cons
 
     swapchain_log.info("Creating swapchain: {d}x{d}, {d} images, format {d}", .{ extent.width, extent.height, imageCount, surfaceFormat.format });
 
-    // Create swapchain
     var swapchainCreateInfo = std.mem.zeroes(c.VkSwapchainCreateInfoKHR);
     swapchainCreateInfo.sType = c.VK_STRUCTURE_TYPE_SWAPCHAIN_CREATE_INFO_KHR;
     swapchainCreateInfo.surface = manager.surface;
@@ -146,7 +168,6 @@ fn create_swapchain_internal(manager: *VulkanSwapchainManager, createInfo: *cons
         return false;
     }
 
-    // Store swapchain properties
     manager.format = surfaceFormat.format;
     manager.colorSpace = surfaceFormat.colorSpace;
     manager.extent = extent;
@@ -173,7 +194,6 @@ fn create_swapchain_internal(manager: *VulkanSwapchainManager, createInfo: *cons
     }
     manager.imageViews = views.ptr;
 
-    // Update recreation tracking
     manager.recreationPending = false;
     manager.lastRecreationTime = get_current_time_ms();
     manager.recreationCount += 1;
@@ -202,7 +222,6 @@ pub export fn vk_swapchain_manager_create(manager: ?*VulkanSwapchainManager, cre
     mgr.physicalDevice = info.physicalDevice;
     mgr.surface = info.surface;
 
-    // Create the swapchain
     if (!create_swapchain_internal(mgr, info)) {
         return false;
     }
@@ -218,22 +237,7 @@ pub export fn vk_swapchain_manager_destroy(manager: ?*VulkanSwapchainManager) ca
     const mgr = manager.?;
     if (!mgr.initialized) return;
 
-    // Destroy image views
-    destroy_image_views(mgr);
-
-    // Free images array
-    if (mgr.images != null) {
-        const alloc = std.heap.c_allocator;
-        const images: []c.VkImage = mgr.images.?[0..@as(usize, @intCast(mgr.imageCount))];
-        alloc.free(images);
-        mgr.images = null;
-    }
-
-    // Destroy swapchain
-    if (mgr.swapchain != null) {
-        c.vkDestroySwapchainKHR(mgr.device, mgr.swapchain, null);
-        mgr.swapchain = null;
-    }
+    destroy_swapchain_resources(mgr);
 
     @memset(@as([*]u8, @ptrCast(mgr))[0..@sizeOf(VulkanSwapchainManager)], 0);
 
@@ -258,7 +262,6 @@ pub export fn vk_swapchain_manager_recreate(manager: ?*VulkanSwapchainManager, n
 
     swapchain_log.info("Starting swapchain recreation", .{});
 
-    // Wait for device to be idle
     const idleResult = c.vkDeviceWaitIdle(mgr.device);
     if (idleResult == c.VK_ERROR_DEVICE_LOST) {
         swapchain_log.err("Device lost during recreation wait", .{});
@@ -269,7 +272,6 @@ pub export fn vk_swapchain_manager_recreate(manager: ?*VulkanSwapchainManager, n
         return false;
     }
 
-    // Store old swapchain for recreation
     const oldSwapchain = mgr.swapchain;
     const oldImages = mgr.images;
     const oldImageViews = mgr.imageViews;
@@ -277,13 +279,11 @@ pub export fn vk_swapchain_manager_recreate(manager: ?*VulkanSwapchainManager, n
     const oldExtent = mgr.extent;
     const oldFormat = mgr.format;
 
-    // Clear current state
     mgr.swapchain = null;
     mgr.images = null;
     mgr.imageViews = null;
     mgr.imageCount = 0;
 
-    // Create new swapchain
     var createInfo = std.mem.zeroes(VulkanSwapchainCreateInfo);
     createInfo.device = mgr.device;
     createInfo.physicalDevice = mgr.physicalDevice;
@@ -298,7 +298,6 @@ pub export fn vk_swapchain_manager_recreate(manager: ?*VulkanSwapchainManager, n
     if (!create_swapchain_internal(mgr, &createInfo)) {
         swapchain_log.err("Failed to recreate swapchain", .{});
 
-        // Restore old state
         mgr.swapchain = oldSwapchain;
         mgr.images = oldImages;
         mgr.imageViews = oldImageViews;
@@ -308,7 +307,6 @@ pub export fn vk_swapchain_manager_recreate(manager: ?*VulkanSwapchainManager, n
         return false;
     }
 
-    // Clean up old resources
     if (oldImageViews != null) {
         const alloc = std.heap.c_allocator;
         const old_views: []c.VkImageView = oldImageViews.?[0..@as(usize, @intCast(oldImageCount))];
@@ -448,7 +446,6 @@ pub export fn vk_swapchain_choose_extent(capabilities: ?*const c.VkSurfaceCapabi
 
     var actualExtent = windowExtent;
 
-    // Clamp to supported range
     if (actualExtent.width < caps.minImageExtent.width) {
         actualExtent.width = caps.minImageExtent.width;
     }

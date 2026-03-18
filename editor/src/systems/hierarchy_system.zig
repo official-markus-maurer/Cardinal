@@ -34,6 +34,12 @@ pub fn unlink_entity_from_parent(state: *EditorState, entity: engine.ecs_entity.
         }
     }
 
+    if (parent_h.last_child) |lc| {
+        if (lc.id == entity.id) {
+            parent_h.last_child = hierarchy.prev_sibling;
+        }
+    }
+
     if (hierarchy.prev_sibling) |prev| {
         if (state.runtime.registry.get(components.Hierarchy, prev)) |prev_h_ptr| {
             var prev_h = prev_h_ptr.*;
@@ -51,6 +57,12 @@ pub fn unlink_entity_from_parent(state: *EditorState, entity: engine.ecs_entity.
     }
 
     if (parent_h.child_count > 0) parent_h.child_count -= 1;
+    if (parent_h.child_count == 0) {
+        parent_h.first_child = null;
+        parent_h.last_child = null;
+    } else if (parent_h.first_child == null) {
+        parent_h.last_child = null;
+    }
     state.runtime.registry.add(parent, parent_h) catch {};
 
     hierarchy.parent = null;

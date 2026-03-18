@@ -252,7 +252,6 @@ pub export fn vulkan_timeline_debug_update_wait_metrics(debug_ctx: *types.Vulkan
         }
         current_max = @atomicLoad(u64, &debug_ctx.metrics.max_wait_time_ns, .seq_cst);
     }
-    // Using Max is safer and easier
     _ = @atomicRmw(u64, &debug_ctx.metrics.max_wait_time_ns, .Max, duration_ns, .seq_cst);
 }
 
@@ -408,7 +407,6 @@ pub export fn vulkan_timeline_debug_print_event_summary(debug_ctx: *types.Vulkan
 
     var type_counts: [9]u32 = std.mem.zeroes([9]u32);
 
-    // Allocate temp buffer
     const allocator = memory.cardinal_get_allocator_for_category(.RENDERER).as_allocator();
     const events = allocator.alloc(types.VulkanTimelineDebugEvent, event_count) catch return;
     defer allocator.free(events);

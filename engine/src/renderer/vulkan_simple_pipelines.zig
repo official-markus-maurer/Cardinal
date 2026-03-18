@@ -1,3 +1,7 @@
+//! Simple debug pipelines and helpers.
+//!
+//! Creates a small set of pipelines used for debug visualization (UVs, wireframe, grid) and
+//! provides simple draw routines that reuse the PBR vertex/index buffers.
 const std = @import("std");
 const builtin = @import("builtin");
 const memory = @import("../core/memory.zig");
@@ -10,13 +14,15 @@ const vk_allocator = @import("vulkan_allocator.zig");
 const scene = @import("../assets/scene.zig");
 const shader_utils = @import("util/vulkan_shader_utils.zig");
 const material_utils = @import("util/vulkan_material_utils.zig");
+const descriptor_init = @import("util/vulkan_descriptor_init.zig");
+const pipeline_json = @import("util/vulkan_pipeline_json.zig");
 const wrappers = @import("vulkan_wrappers.zig");
-const vk_pso = @import("vulkan_pso.zig");
 
 const simple_log = log.ScopedLogger("SIMPLE_PIPE");
 
 const c = @import("vulkan_c.zig").c;
 
+/// Uniform payload shared by the simple debug pipelines.
 const SimpleUniformBufferObject = extern struct {
     model: [16]f32,
     view: [16]f32,
@@ -25,6 +31,7 @@ const SimpleUniformBufferObject = extern struct {
     debugFlags: f32,
 };
 
+/// Builds a line-grid vertex buffer used by `render_grid`.
 fn create_grid_vertex_buffer(s: *types.VulkanState) bool {
     const steps: i32 = 20;
     const spacing: f32 = 1.0;
@@ -101,44 +108,36 @@ fn create_grid_vertex_buffer(s: *types.VulkanState) bool {
     return true;
 }
 
+/// Creates the shared descriptor manager and descriptor set used by simple pipelines.
 fn create_simple_descriptor_resources(s: *types.VulkanState) bool {
-    // Create Descriptor Manager
-    const mem_alloc = memory.cardinal_get_allocator_for_category(.RENDERER);
-    const ptr = memory.cardinal_alloc(mem_alloc, @sizeOf(types.VulkanDescriptorManager));
-    if (ptr == null) {
-        simple_log.err("Failed to allocate memory for simple descriptor manager", .{});
-        return false;
-    }
-    s.pipelines.simple_descriptor_manager = @as(*types.VulkanDescriptorManager, @ptrCast(@alignCast(ptr)));
-
     const renderer_allocator = memory.cardinal_get_allocator_for_category(.RENDERER).as_allocator();
-    var desc_builder = descriptor_mgr.DescriptorBuilder.init(renderer_allocator);
-    defer desc_builder.deinit();
+    const bindings = [_]c.VkDescriptorSetLayoutBinding{
+        .{
+            .binding = 0,
+            .descriptorType = c.VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER,
+            .descriptorCount = 1,
+            .stageFlags = c.VK_SHADER_STAGE_VERTEX_BIT,
+            .pImmutableSamplers = null,
+        },
+    };
 
-    // Binding 0: Uniform Buffer
-    desc_builder.add_binding(0, c.VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, 1, c.VK_SHADER_STAGE_VERTEX_BIT) catch return false;
-
-    if (!desc_builder.build(s.pipelines.simple_descriptor_manager.?, s.context.device, @constCast(&s.allocator), s, 1, true)) {
+    if (!descriptor_init.create_descriptor_manager_from_bindings(renderer_allocator, &s.pipelines.simple_descriptor_manager, s.context.device, @constCast(&s.allocator), s, &bindings, 1, true)) {
         simple_log.err("Failed to build simple descriptor manager", .{});
         return false;
     }
 
-    // Allocate Set
     if (!descriptor_mgr.vk_descriptor_manager_allocate_sets(s.pipelines.simple_descriptor_manager, 1, @as([*]c.VkDescriptorSet, @ptrCast(&s.pipelines.simple_descriptor_set)))) {
         simple_log.err("Failed to allocate simple descriptor set", .{});
         return false;
     }
 
-    // Safety check: verify allocation succeeded
     if (s.pipelines.simple_descriptor_set == null) {
         simple_log.err("Simple descriptor set allocation returned null handle", .{});
         return false;
     }
 
-    // Debug log the handle
     simple_log.info("Allocated simple_descriptor_set handle: {any}", .{s.pipelines.simple_descriptor_set});
 
-    // Update Set
     if (!descriptor_mgr.vk_descriptor_manager_update_buffer(s.pipelines.simple_descriptor_manager, s.pipelines.simple_descriptor_set, 0, s.pipelines.simple_uniform_buffer.handle, 0, @sizeOf(SimpleUniformBufferObject))) {
         simple_log.err("Failed to update simple UBO descriptor", .{});
         return false;
@@ -147,6 +146,7 @@ fn create_simple_descriptor_resources(s: *types.VulkanState) bool {
     return true;
 }
 
+/// Allocates a persistently-mapped uniform buffer used by the debug pipelines.
 fn create_simple_uniform_buffer(s: *types.VulkanState) bool {
     const bufferSize = @sizeOf(SimpleUniformBufferObject);
 
@@ -171,37 +171,14 @@ fn create_simple_uniform_buffer(s: *types.VulkanState) bool {
     return true;
 }
 
+/// Loads a pipeline JSON and builds a pipeline and matching pipeline layout.
 fn create_simple_pipeline_from_json(s: *types.VulkanState, json_path: []const u8, pipeline: *c.VkPipeline, pipelineLayout: *c.VkPipelineLayout, pipelineCache: c.VkPipelineCache) bool {
     const renderer_allocator = memory.cardinal_get_allocator_for_category(.RENDERER).as_allocator();
-    var builder = vk_pso.PipelineBuilder.init(renderer_allocator, s.context.device, pipelineCache);
 
-    var parsed = vk_pso.PipelineBuilder.load_from_json(renderer_allocator, json_path) catch |err| {
-        simple_log.err("Failed to load pipeline JSON '{s}': {s}", .{ json_path, @errorName(err) });
-        return false;
-    };
-    defer parsed.deinit();
-
-    var descriptor = parsed.value;
-
-    // Override rendering formats
-    const colorFormat: c.VkFormat = c.VK_FORMAT_R16G16B16A16_SFLOAT;
-
-    // Allocate formats array on heap to be safe
-    const formats = renderer_allocator.alloc(c.VkFormat, 1) catch return false;
-    formats[0] = colorFormat;
-    descriptor.rendering.color_formats = formats;
-    defer renderer_allocator.free(formats);
-
-    descriptor.rendering.depth_format = s.swapchain.depth_format;
-
-    // Create pipeline layout with push constants
     var pushConstantRange = std.mem.zeroes(c.VkPushConstantRange);
     pushConstantRange.stageFlags = c.VK_SHADER_STAGE_VERTEX_BIT | c.VK_SHADER_STAGE_FRAGMENT_BIT;
     pushConstantRange.offset = 0;
     pushConstantRange.size = @sizeOf(types.PBRPushConstants);
-
-    // Ensure size is valid (should be 256)
-    if (pushConstantRange.size < 256) pushConstantRange.size = 256;
 
     var pipelineLayoutInfo = std.mem.zeroes(c.VkPipelineLayoutCreateInfo);
     pipelineLayoutInfo.sType = c.VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO;
@@ -216,32 +193,35 @@ fn create_simple_pipeline_from_json(s: *types.VulkanState, json_path: []const u8
         return false;
     }
 
+    var extra_flags: c.VkPipelineCreateFlags = 0;
     if (s.pipelines.simple_descriptor_manager) |mgr| {
-        if (mgr.useDescriptorBuffers) {
-            descriptor.flags |= c.VK_PIPELINE_CREATE_DESCRIPTOR_BUFFER_BIT_EXT;
-        }
+        if (mgr.useDescriptorBuffers) extra_flags |= c.VK_PIPELINE_CREATE_DESCRIPTOR_BUFFER_BIT_EXT;
     }
 
-    builder.build(descriptor, pipelineLayout.*, pipeline) catch |err| {
-        simple_log.err("Failed to build simple pipeline: {s}", .{@errorName(err)});
-        return false;
-    };
-
-    return true;
+    const color_formats = [_]c.VkFormat{c.VK_FORMAT_R16G16B16A16_SFLOAT};
+    return pipeline_json.build_graphics_pipeline_from_json(
+        renderer_allocator,
+        s.context.device,
+        pipelineCache,
+        pipelineLayout.*,
+        pipeline,
+        json_path,
+        &color_formats,
+        s.swapchain.depth_format,
+        extra_flags,
+    );
 }
 
+/// Creates the simple debug pipelines and shared resources.
 pub fn vk_create_simple_pipelines(s: *types.VulkanState, pipelineCache: c.VkPipelineCache) bool {
-    // Create shared uniform buffer
     if (!create_simple_uniform_buffer(s)) {
         return false;
     }
 
-    // Create shared descriptor layout and update descriptors
     if (!create_simple_descriptor_resources(s)) {
         return false;
     }
 
-    // Create UV pipeline
     const pipeline_dir_span = std.mem.span(@as([*:0]const u8, @ptrCast(&s.config.pipeline_dir)));
     const renderer_allocator = memory.cardinal_get_allocator_for_category(.RENDERER).as_allocator();
 
@@ -254,7 +234,6 @@ pub fn vk_create_simple_pipelines(s: *types.VulkanState, pipelineCache: c.VkPipe
     }
     simple_log.info("Created UV pipeline handle: {any}", .{s.pipelines.uv_pipeline});
 
-    // Create wireframe pipeline
     const wireframe_path = std.fmt.allocPrint(renderer_allocator, "{s}/debug_wireframe.json", .{pipeline_dir_span}) catch return false;
     defer renderer_allocator.free(wireframe_path);
 
@@ -264,7 +243,6 @@ pub fn vk_create_simple_pipelines(s: *types.VulkanState, pipelineCache: c.VkPipe
     }
     simple_log.info("Created Wireframe pipeline handle: {any}", .{s.pipelines.wireframe_pipeline});
 
-    // Create grid pipeline (reuses wireframe shaders but with different depth settings)
     const grid_path = std.fmt.allocPrint(renderer_allocator, "{s}/debug_grid.json", .{pipeline_dir_span}) catch return false;
     defer renderer_allocator.free(grid_path);
 
@@ -283,6 +261,7 @@ pub fn vk_create_simple_pipelines(s: *types.VulkanState, pipelineCache: c.VkPipe
     return true;
 }
 
+/// Destroys pipelines and releases shared descriptor and buffer resources.
 pub fn vk_destroy_simple_pipelines(s: *types.VulkanState) void {
     if (s.pipelines.simple_uniform_buffer.handle != null) {
         buffer_mgr.vk_buffer_destroy(&s.pipelines.simple_uniform_buffer, s.context.device, @ptrCast(&s.allocator), s);
@@ -294,7 +273,6 @@ pub fn vk_destroy_simple_pipelines(s: *types.VulkanState) void {
     }
 
     if (s.pipelines.simple_descriptor_manager != null) {
-        // memory is already imported at file scope
         const mem_alloc = memory.cardinal_get_allocator_for_category(.RENDERER);
         descriptor_mgr.vk_descriptor_manager_destroy(@ptrCast(s.pipelines.simple_descriptor_manager));
         memory.cardinal_free(mem_alloc, s.pipelines.simple_descriptor_manager);
@@ -332,6 +310,7 @@ pub fn vk_destroy_simple_pipelines(s: *types.VulkanState) void {
     }
 }
 
+/// Writes the simple UBO into the persistently mapped uniform buffer.
 pub fn update_simple_uniforms(s: *types.VulkanState, model: *const [16]f32, view: *const [16]f32, proj: *const [16]f32, viewPos: *const [3]f32) void {
     if (s.pipelines.simple_uniform_buffer.mapped == null) {
         simple_log.err("update_simple_uniforms: Buffer not mapped!", .{});
@@ -350,6 +329,7 @@ pub fn update_simple_uniforms(s: *types.VulkanState, model: *const [16]f32, view
     @memcpy(@as([*]u8, @ptrCast(s.pipelines.simple_uniform_buffer.mapped))[0..@sizeOf(SimpleUniformBufferObject)], @as([*]const u8, @ptrCast(&ubo))[0..@sizeOf(SimpleUniformBufferObject)]);
 }
 
+/// Renders the current scene meshes using the provided pipeline.
 pub fn render_simple(s: *types.VulkanState, commandBufferHandle: c.VkCommandBuffer, pipeline: c.VkPipeline, pipelineLayout: c.VkPipelineLayout) void {
     simple_log.debug("render_simple: Called", .{});
     if (s.current_scene == null) {
@@ -358,7 +338,6 @@ pub fn render_simple(s: *types.VulkanState, commandBufferHandle: c.VkCommandBuff
     }
     const scn = s.current_scene.?;
 
-    // Use PBR buffers if available
     if (!s.pipelines.use_pbr_pipeline or !s.pipelines.pbr_pipeline.initialized) {
         simple_log.err("render_simple: PBR pipeline not initialized", .{});
         return;
@@ -381,7 +360,6 @@ pub fn render_simple(s: *types.VulkanState, commandBufferHandle: c.VkCommandBuff
     var descriptorSets = [_]c.VkDescriptorSet{s.pipelines.simple_descriptor_set};
     descriptor_mgr.vk_descriptor_manager_bind_sets(s.pipelines.simple_descriptor_manager, commandBufferHandle, c.VK_PIPELINE_BIND_POINT_GRAPHICS, pipelineLayout, 0, 1, &descriptorSets, 0, null);
 
-    // Dynamic State: Viewport and Scissor
     var vp = std.mem.zeroes(c.VkViewport);
     vp.x = 0;
     vp.y = 0;
@@ -403,7 +381,6 @@ pub fn render_simple(s: *types.VulkanState, commandBufferHandle: c.VkCommandBuff
 
     cmd.bindIndexBuffer(pipe.indexBuffer, 0, c.VK_INDEX_TYPE_UINT32);
 
-    // Render each mesh using offsets
     var indexOffset: u32 = 0;
     var i: u32 = 0;
     while (i < scn.mesh_count) : (i += 1) {
@@ -415,7 +392,6 @@ pub fn render_simple(s: *types.VulkanState, commandBufferHandle: c.VkCommandBuff
                 continue;
             }
 
-            // Prepare push constants
             var pushConstants = std.mem.zeroes(types.PBRPushConstants);
             material_utils.vk_material_setup_push_constants(@ptrCast(&pushConstants), @ptrCast(mesh), @ptrCast(scn), @ptrCast(s.pipelines.pbr_pipeline.textureManager));
 

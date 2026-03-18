@@ -333,6 +333,7 @@ pub fn vk_shadow_render(s: *types.VulkanState, cmd: c.VkCommandBuffer) void {
         shadows_log.debug("Cascade {d}: Starting Pass 1 (Opaque)", .{j_layer});
         var m_i: u32 = 0;
         var drawn_count: u32 = 0;
+        var candidate_count: u32 = 0;
         while (m_i < scn.mesh_count) : (m_i += 1) {
             shadows_log.debug("Pass 1: Mesh {d}", .{m_i});
             if (scn.meshes == null) {
@@ -357,6 +358,9 @@ pub fn vk_shadow_render(s: *types.VulkanState, cmd: c.VkCommandBuffer) void {
             }
 
             if (is_alpha_tested) {
+                if (pipe.shadowAlphaPipeline != null and mesh.vertex_count > 0 and mesh.visible) {
+                    candidate_count += 1;
+                }
                 const next_offset: u64 = @as(u64, indexOffset) + @as(u64, mesh.index_count);
                 if (next_offset > @as(u64, pipe.totalIndexCount)) break;
                 indexOffset = @intCast(next_offset);
@@ -370,6 +374,7 @@ pub fn vk_shadow_render(s: *types.VulkanState, cmd: c.VkCommandBuffer) void {
                 continue;
             }
 
+            candidate_count += 1;
             drawn_count += 1;
 
             var packedInfo: u32 = 0;
@@ -465,20 +470,23 @@ pub fn vk_shadow_render(s: *types.VulkanState, cmd: c.VkCommandBuffer) void {
 
                 var packedInfo: u32 = 0;
                 if (scn.animation_system != null and scn.skin_count > 0) {
-                    const skins = @as([*]animation.CardinalSkin, @ptrCast(@alignCast(scn.skins.?)));
-                    var skin_idx: u32 = 0;
-                    while (skin_idx < scn.skin_count) : (skin_idx += 1) {
-                        const skin = &skins[skin_idx];
-                        if (skin.mesh_indices) |indices| {
-                            var mesh_idx: u32 = 0;
-                            while (mesh_idx < skin.mesh_count) : (mesh_idx += 1) {
-                                if (indices[mesh_idx] == m_i) {
-                                    packedInfo |= (4 << 16);
-                                    break;
+                    if (scn.skin_count < 100 and scn.skins != null) {
+                        const skins = @as([*]animation.CardinalSkin, @ptrCast(@alignCast(scn.skins.?)));
+                        var skin_idx: u32 = 0;
+                        while (skin_idx < scn.skin_count) : (skin_idx += 1) {
+                            const skin = &skins[skin_idx];
+                            if (skin.mesh_count > 1000) break;
+                            if (skin.mesh_indices) |indices| {
+                                var mesh_idx: u32 = 0;
+                                while (mesh_idx < skin.mesh_count) : (mesh_idx += 1) {
+                                    if (indices[mesh_idx] == m_i) {
+                                        packedInfo |= (4 << 16);
+                                        break;
+                                    }
                                 }
                             }
+                            if ((packedInfo & (4 << 16)) != 0) break;
                         }
-                        if ((packedInfo & (4 << 16)) != 0) break;
                     }
                 }
 
@@ -505,7 +513,9 @@ pub fn vk_shadow_render(s: *types.VulkanState, cmd: c.VkCommandBuffer) void {
         }
 
         if (scn.mesh_count > 0 and j_layer == 0 and drawn_count == 0) {
-            shadows_log.warn("No meshes drawn for cascade 0! Total meshes: {d}", .{scn.mesh_count});
+            if (candidate_count > 0) {
+                shadows_log.warn("No meshes drawn for cascade 0! Total meshes: {d}", .{scn.mesh_count});
+            }
         }
 
         if (s.context.vkCmdEndRendering) |func| {

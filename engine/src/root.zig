@@ -2,6 +2,8 @@
 //!
 //! This file re-exports engine subsystems so dependents can import `cardinal_engine` and use
 //! `engine.<subsystem>` without reaching into internal paths.
+//!
+//! TODO: Deduplicate keep-alive references between `comptime` and `test`.
 
 pub const tracy = @import("core/tracy.zig");
 /// Logging API and sink infrastructure.
@@ -80,7 +82,6 @@ pub const ecs_command_buffer = @import("ecs/command_buffer.zig");
 pub const ecs_node_factory = @import("ecs/node_factory.zig");
 
 comptime {
-    // TODO: Deduplicate these keep-alive references between `comptime` and `test`.
     _ = log;
     _ = memory;
     _ = window;

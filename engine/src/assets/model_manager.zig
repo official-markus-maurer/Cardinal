@@ -827,7 +827,14 @@ fn rebuild_combined_scene(manager: *CardinalModelManager) void {
                 }
 
                 manager.combined_scene.skins = @ptrCast(dst_skins);
+                manager.combined_scene.skin_count = sys.skin_count;
+            } else {
+                manager.combined_scene.skins = null;
+                manager.combined_scene.skin_count = 0;
             }
+        } else {
+            manager.combined_scene.skins = null;
+            manager.combined_scene.skin_count = 0;
         }
     }
 

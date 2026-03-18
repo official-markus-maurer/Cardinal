@@ -1683,15 +1683,16 @@ pub export fn vk_pbr_render(pipeline: ?*types.VulkanPBRPipeline, commandBuffer: 
             });
         }
 
-        if (scn.animation_system != null and scn.skin_count > 0 and scn.skins != null) {
+        if (scn.animation_system != null and scn.skin_count > 0 and scn.skins != null and scn.skin_count < 100) {
             const skins = @as([*]animation.CardinalSkin, @ptrCast(@alignCast(scn.skins.?)));
 
             var skin_idx: u32 = 0;
             while (skin_idx < scn.skin_count) : (skin_idx += 1) {
                 const skin = &skins[skin_idx];
-                var mesh_idx: u32 = 0;
-                while (mesh_idx < skin.mesh_count) : (mesh_idx += 1) {
-                    if (skin.mesh_indices) |indices| {
+                if (skin.mesh_count > 1000) break;
+                if (skin.mesh_indices) |indices| {
+                    var mesh_idx: u32 = 0;
+                    while (mesh_idx < skin.mesh_count) : (mesh_idx += 1) {
                         if (indices[mesh_idx] == i) {
                             pushConstants.packedInfo |= (4 << 16);
                             break;
@@ -1850,15 +1851,16 @@ pub export fn vk_pbr_render(pipeline: ?*types.VulkanPBRPipeline, commandBuffer: 
         const tm_opaque: ?*const anyopaque = if (pipe.textureManager) |tm| @ptrCast(tm) else null;
         material_utils.vk_material_setup_push_constants(@ptrCast(&pushConstants), @ptrCast(mesh), @ptrCast(scn), @ptrCast(@alignCast(tm_opaque)));
 
-        if (scn.animation_system != null and scn.skin_count > 0 and scn.skins != null) {
+        if (scn.animation_system != null and scn.skin_count > 0 and scn.skins != null and scn.skin_count < 100) {
             const skins = @as([*]animation.CardinalSkin, @ptrCast(@alignCast(scn.skins.?)));
 
             var skin_idx: u32 = 0;
             while (skin_idx < scn.skin_count) : (skin_idx += 1) {
                 const skin = &skins[skin_idx];
-                var mesh_idx: u32 = 0;
-                while (mesh_idx < skin.mesh_count) : (mesh_idx += 1) {
-                    if (skin.mesh_indices) |indices| {
+                if (skin.mesh_count > 1000) break;
+                if (skin.mesh_indices) |indices| {
+                    var mesh_idx: u32 = 0;
+                    while (mesh_idx < skin.mesh_count) : (mesh_idx += 1) {
                         if (indices[mesh_idx] == item.index) {
                             pushConstants.packedInfo |= (4 << 16);
                             break;

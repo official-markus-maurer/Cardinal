@@ -2,8 +2,6 @@
 //!
 //! Jobs are allocated from pools and scheduled on worker threads. The API is C-ABI-friendly
 //! and exposes optional dependency tracking.
-//!
-//! TODO: Replace linear queues with a true priority queue when `enable_priority_queue` is enabled.
 const std = @import("std");
 const log = @import("log.zig");
 const memory = @import("memory.zig");
@@ -18,6 +16,7 @@ pub const JobPriority = enum(c_int) {
     CRITICAL = 3,
 };
 
+/// Job lifecycle state.
 pub const JobStatus = enum(c_int) {
     PENDING = 0,
     RUNNING = 1,
@@ -26,9 +25,12 @@ pub const JobStatus = enum(c_int) {
     CANCELLED = 4,
 };
 
+/// Job entrypoint invoked by a worker thread.
 pub const JobFunc = ?*const fn (data: ?*anyopaque) callconv(.c) i32;
+/// Optional error callback invoked when a job returns a non-zero error code.
 pub const JobErrorFunc = ?*const fn (data: ?*anyopaque, error_code: i32) callconv(.c) void;
 
+/// Intrusive linked list node for dependency fan-out.
 pub const DependencyNode = struct {
     job: *Job,
     next: ?*DependencyNode,
@@ -67,10 +69,21 @@ pub inline fn set_status(job: *Job, status: JobStatus) void {
     @atomicStore(JobStatus, &job.status, status, .release);
 }
 
+/// Lock ordering:
+/// - When both a queue mutex and `state_mutex` are needed, lock the queue mutex first.
+/// - Worker threads pop under a queue mutex, then take `state_mutex` for dependency release.
+/// - Cancellation follows the same ordering to avoid deadlocks.
+const JobQueueMode = enum {
+    fifo,
+    priority,
+};
+
 /// Internal queue type used by the scheduler.
 const JobQueue = struct {
+    mode: JobQueueMode,
     head: ?*Job,
     tail: ?*Job,
+    heap: std.ArrayListUnmanaged(*Job),
     count: u32,
     max_size: u32,
     mutex: std.Thread.Mutex,
@@ -104,13 +117,38 @@ const JobSystemState = struct {
 
 pub var g_job_system: JobSystemState = undefined;
 
-fn job_queue_init(queue: *JobQueue, max_size: u32) void {
+fn job_queue_init(queue: *JobQueue, mode: JobQueueMode, max_size: u32) void {
+    queue.mode = mode;
     queue.head = null;
     queue.tail = null;
+    queue.heap = .{};
     queue.count = 0;
     queue.max_size = max_size;
     queue.mutex = .{};
     queue.condition = .{};
+}
+
+fn job_queue_deinit(queue: *JobQueue) void {
+    if (queue.mode == .priority) {
+        queue.heap.deinit(g_job_system.allocator);
+    }
+}
+
+fn job_is_higher_priority(a: *const Job, b: *const Job) bool {
+    const ap: u32 = switch (a.priority) {
+        .LOW => 0,
+        .NORMAL => 1,
+        .HIGH => 2,
+        .CRITICAL => 3,
+    };
+    const bp: u32 = switch (b.priority) {
+        .LOW => 0,
+        .NORMAL => 1,
+        .HIGH => 2,
+        .CRITICAL => 3,
+    };
+    if (ap != bp) return ap > bp;
+    return a.id < b.id;
 }
 
 fn job_queue_push(queue: *JobQueue, job: *Job) bool {
@@ -121,14 +159,35 @@ fn job_queue_push(queue: *JobQueue, job: *Job) bool {
         return false;
     }
 
-    job.next = null;
-    if (queue.tail) |tail| {
-        tail.next = job;
-    } else {
-        queue.head = job;
+    switch (queue.mode) {
+        .fifo => {
+            job.next = null;
+            if (queue.tail) |tail| {
+                tail.next = job;
+            } else {
+                queue.head = job;
+            }
+            queue.tail = job;
+            queue.count += 1;
+        },
+        .priority => {
+            queue.heap.append(g_job_system.allocator, job) catch return false;
+            queue.count += 1;
+
+            var idx: usize = queue.heap.items.len - 1;
+            while (idx > 0) {
+                const parent = (idx - 1) / 2;
+                if (job_is_higher_priority(queue.heap.items[idx], queue.heap.items[parent])) {
+                    const tmp = queue.heap.items[parent];
+                    queue.heap.items[parent] = queue.heap.items[idx];
+                    queue.heap.items[idx] = tmp;
+                    idx = parent;
+                } else {
+                    break;
+                }
+            }
+        },
     }
-    queue.tail = job;
-    queue.count += 1;
 
     queue.condition.signal();
     return true;
@@ -138,28 +197,111 @@ fn job_queue_pop(queue: *JobQueue, wait: bool) ?*Job {
     queue.mutex.lock();
     defer queue.mutex.unlock();
 
-    while (queue.head == null and wait and !g_job_system.shutting_down) {
+    while (queue.count == 0 and wait and !g_job_system.shutting_down) {
         queue.condition.wait(&queue.mutex);
     }
 
-    if (queue.head) |job| {
-        queue.head = job.next;
-        if (queue.head == null) {
-            queue.tail = null;
-        }
-        queue.count -= 1;
-        job.next = null;
-        return job;
-    }
+    switch (queue.mode) {
+        .fifo => {
+            if (queue.head) |job| {
+                queue.head = job.next;
+                if (queue.head == null) {
+                    queue.tail = null;
+                }
+                queue.count -= 1;
+                job.next = null;
+                return job;
+            }
+            return null;
+        },
+        .priority => {
+            if (queue.heap.items.len == 0) return null;
+            const job = queue.heap.items[0];
+            const last = queue.heap.pop().?;
+            queue.count -= 1;
+            if (queue.heap.items.len > 0) {
+                queue.heap.items[0] = last;
 
-    return null;
+                var idx: usize = 0;
+                while (true) {
+                    const left = idx * 2 + 1;
+                    const right = idx * 2 + 2;
+                    var best = idx;
+
+                    if (left < queue.heap.items.len and job_is_higher_priority(queue.heap.items[left], queue.heap.items[best])) {
+                        best = left;
+                    }
+                    if (right < queue.heap.items.len and job_is_higher_priority(queue.heap.items[right], queue.heap.items[best])) {
+                        best = right;
+                    }
+
+                    if (best == idx) break;
+                    const tmp = queue.heap.items[idx];
+                    queue.heap.items[idx] = queue.heap.items[best];
+                    queue.heap.items[best] = tmp;
+                    idx = best;
+                }
+            }
+            job.next = null;
+            return job;
+        },
+    }
 }
 
 fn job_queue_remove(queue: *JobQueue, job: *Job) bool {
     queue.mutex.lock();
     defer queue.mutex.unlock();
 
-    if (queue.head == null) return false;
+    if (queue.count == 0) return false;
+
+    if (queue.mode == .priority) {
+        var i: usize = 0;
+        while (i < queue.heap.items.len) : (i += 1) {
+            if (queue.heap.items[i] == job) break;
+        }
+        if (i >= queue.heap.items.len) return false;
+
+        const last = queue.heap.pop().?;
+        queue.count -= 1;
+        if (i < queue.heap.items.len) {
+            queue.heap.items[i] = last;
+
+            var idx = i;
+            while (idx > 0) {
+                const parent = (idx - 1) / 2;
+                if (job_is_higher_priority(queue.heap.items[idx], queue.heap.items[parent])) {
+                    const tmp = queue.heap.items[parent];
+                    queue.heap.items[parent] = queue.heap.items[idx];
+                    queue.heap.items[idx] = tmp;
+                    idx = parent;
+                } else {
+                    break;
+                }
+            }
+
+            while (true) {
+                const left = idx * 2 + 1;
+                const right = idx * 2 + 2;
+                var best = idx;
+
+                if (left < queue.heap.items.len and job_is_higher_priority(queue.heap.items[left], queue.heap.items[best])) {
+                    best = left;
+                }
+                if (right < queue.heap.items.len and job_is_higher_priority(queue.heap.items[right], queue.heap.items[best])) {
+                    best = right;
+                }
+
+                if (best == idx) break;
+                const tmp = queue.heap.items[idx];
+                queue.heap.items[idx] = queue.heap.items[best];
+                queue.heap.items[best] = tmp;
+                idx = best;
+            }
+        }
+
+        job.next = null;
+        return true;
+    }
 
     if (queue.head == job) {
         queue.head = job.next;
@@ -189,8 +331,6 @@ fn job_queue_remove(queue: *JobQueue, job: *Job) bool {
 }
 
 /// Worker thread entrypoint: executes jobs and releases dependent jobs.
-///
-/// TODO: Document lock ordering between `state_mutex` and queue locks in one place.
 fn worker_thread_func(worker: *WorkerThread) void {
     while (!worker.should_exit and !g_job_system.shutting_down) {
         const job_opt = job_queue_pop(&g_job_system.pending_queue, true);
@@ -286,10 +426,6 @@ pub fn init(config: ?*const JobSystemConfig) bool {
         g_job_system.config.worker_thread_count = 4;
     }
 
-    job_queue_init(&g_job_system.pending_queue, g_job_system.config.max_queue_size);
-    job_queue_init(&g_job_system.waiting_queue, g_job_system.config.max_queue_size);
-    job_queue_init(&g_job_system.completed_queue, g_job_system.config.max_queue_size);
-
     g_job_system.state_mutex = .{};
     g_job_system.next_job_id = 0;
 
@@ -297,6 +433,11 @@ pub fn init(config: ?*const JobSystemConfig) bool {
     g_job_system.allocator = allocator.as_allocator();
     g_job_system.job_pool = pool_allocator.PoolAllocator(Job).init(g_job_system.allocator);
     g_job_system.dependency_pool = pool_allocator.PoolAllocator(DependencyNode).init(g_job_system.allocator);
+
+    const pending_mode: JobQueueMode = if (g_job_system.config.enable_priority_queue) .priority else .fifo;
+    job_queue_init(&g_job_system.pending_queue, pending_mode, g_job_system.config.max_queue_size);
+    job_queue_init(&g_job_system.waiting_queue, .fifo, g_job_system.config.max_queue_size);
+    job_queue_init(&g_job_system.completed_queue, .fifo, g_job_system.config.max_queue_size);
 
     const workers = memory.cardinal_alloc(allocator, @sizeOf(WorkerThread) * g_job_system.config.worker_thread_count);
     if (workers == null) return false;
@@ -344,6 +485,10 @@ pub fn shutdown() void {
         memory.cardinal_free(allocator, workers.ptr);
     }
 
+    job_queue_deinit(&g_job_system.pending_queue);
+    job_queue_deinit(&g_job_system.waiting_queue);
+    job_queue_deinit(&g_job_system.completed_queue);
+
     g_job_system.job_pool.deinit();
     g_job_system.dependency_pool.deinit();
 
@@ -389,6 +534,24 @@ pub fn submit_job(job: *Job) bool {
     }
 
     return job_queue_push(&g_job_system.pending_queue, job);
+}
+
+/// Attempts to cancel a job that has not started running yet.
+pub fn cancel_job(job: *Job) bool {
+    if (!g_job_system.initialized) return false;
+    if (get_status(job) != .PENDING) return false;
+
+    const removed = job_queue_remove(&g_job_system.pending_queue, job) or job_queue_remove(&g_job_system.waiting_queue, job);
+    if (!removed) return false;
+
+    set_status(job, .CANCELLED);
+    _ = job_queue_push(&g_job_system.completed_queue, job);
+
+    g_job_system.state_mutex.lock();
+    g_job_system.completion_condition.broadcast();
+    g_job_system.state_mutex.unlock();
+
+    return true;
 }
 
 /// Frees a job and any remaining dependent-node bookkeeping.

@@ -322,10 +322,15 @@ pub fn vulkan_sync_manager_wait_timeline(sync_manager: ?*types.VulkanSyncManager
     const mgr = sync_manager.?;
     if (!mgr.initialized) return c.VK_ERROR_INITIALIZATION_FAILED;
 
+    if (value == std.math.maxInt(u64)) {
+        sync_log.err("wait_timeline: received UINT64_MAX (invalid).", .{});
+        return c.VK_TIMEOUT;
+    }
+
     const current_atomic = atomic(&mgr.global_timeline_counter).load(.seq_cst);
     if (value > current_atomic + mgr.max_ahead_value) {
         sync_log.warn("wait_timeline: value {d} is too far ahead of current {d}, ignoring wait", .{ value, current_atomic });
-        return c.VK_SUCCESS;
+        return c.VK_TIMEOUT;
     }
 
     var wait_val = value;

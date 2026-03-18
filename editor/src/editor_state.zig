@@ -17,6 +17,7 @@ const animation = engine.animation;
 const c = @import("c.zig").c;
 const undo = @import("undo.zig");
 
+/// Asset browser UI state (directory, filters, and cached entries).
 pub const AssetState = struct {
     entries: std.ArrayListUnmanaged(AssetEntry) = .{},
     filtered_entries: std.ArrayListUnmanaged(AssetEntry) = .{},
@@ -52,12 +53,14 @@ pub const AssetState = struct {
     };
 };
 
+/// Tracks an async scene load and its eventual ECS import target.
 pub const LoadingTaskInfo = struct {
     task: *async_loader.CardinalAsyncTask,
     path: [:0]u8,
     target_entity: ?engine.ecs_entity.Entity = null,
 };
 
+/// Cached terrain editing buffers and GPU handles.
 pub const TerrainData = struct {
     dims: u32,
     height: []f32,
@@ -72,6 +75,7 @@ pub const TerrainData = struct {
     },
 };
 
+/// Per-frame runtime state shared across editor panels and systems.
 pub const EditorRuntimeState = struct {
     renderer: *types.CardinalRenderer = undefined,
     window: *window.CardinalWindow = undefined,
@@ -170,6 +174,7 @@ pub const EditorRuntimeState = struct {
     }
 };
 
+/// UI state for all editor panels and popups.
 pub const EditorUiState = struct {
     status_msg: [256]u8 = [_]u8{0} ** 256,
     scene_path: [512]u8 = [_]u8{0} ** 512,
@@ -246,6 +251,7 @@ pub const EditorUiState = struct {
     project_loaded: bool = false,
 };
 
+/// Top-level editor state passed to editor systems each frame.
 pub const EditorState = struct {
     runtime: EditorRuntimeState = .{},
     ui: EditorUiState = .{},

@@ -15,6 +15,13 @@ const node_factory = engine.ecs_node_factory;
 const async_loader = engine.async_loader;
 const hierarchy_system = @import("hierarchy_system.zig");
 
+fn name_stem(name: []const u8) []const u8 {
+    if (std.mem.lastIndexOfScalar(u8, name, '.')) |idx| {
+        if (idx > 0) return name[0..idx];
+    }
+    return name;
+}
+
 /// Imports the currently loaded `state.combined_scene` into the ECS registry.
 pub fn import_scene_graph(state: *EditorState) void {
     const scene = &state.runtime.combined_scene;
@@ -28,8 +35,10 @@ pub fn import_scene_graph(state: *EditorState) void {
 
     var node_base_offsets = state.runtime.arena_allocator.alloc(u32, scene.all_node_count) catch return;
     var node_mesh_offsets = state.runtime.arena_allocator.alloc(u32, scene.all_node_count) catch return;
+    var node_model_indices = state.runtime.arena_allocator.alloc(u32, scene.all_node_count) catch return;
     @memset(node_base_offsets, 0);
     @memset(node_mesh_offsets, 0);
+    @memset(node_model_indices, 0xFFFFFFFF);
 
     if (state.runtime.model_manager.models) |models| {
         var node_cursor: u32 = 0;
@@ -43,6 +52,7 @@ pub fn import_scene_graph(state: *EditorState) void {
             while (n_i < model.scene.all_node_count and node_cursor + n_i < scene.all_node_count) : (n_i += 1) {
                 node_base_offsets[node_cursor + n_i] = node_cursor;
                 node_mesh_offsets[node_cursor + n_i] = mesh_cursor;
+                node_model_indices[node_cursor + n_i] = m_i;
             }
 
             node_cursor += model.scene.all_node_count;
@@ -52,6 +62,7 @@ pub fn import_scene_graph(state: *EditorState) void {
         if (node_cursor != scene.all_node_count or mesh_cursor != scene.mesh_count) {
             @memset(node_base_offsets, 0);
             @memset(node_mesh_offsets, 0);
+            @memset(node_model_indices, 0xFFFFFFFF);
         }
     }
 
@@ -65,8 +76,20 @@ pub fn import_scene_graph(state: *EditorState) void {
             node_to_entity[i] = entity.id;
 
             if (node.name) |name| {
-                const name_comp = components.Name.init(std.mem.span(name));
-                state.runtime.registry.add(entity, name_comp) catch {};
+                var label: []const u8 = std.mem.span(name);
+                if (std.mem.eql(u8, label, "Scene Root") and node.parent == null and node.parent_index < 0) {
+                    if (state.runtime.model_manager.models) |models| {
+                        const m_i = node_model_indices[i];
+                        if (m_i != 0xFFFFFFFF and m_i < state.runtime.model_manager.model_count) {
+                            const model = &models[m_i];
+                            if (model.name) |n| {
+                                const stem = name_stem(std.mem.span(n));
+                                if (stem.len > 0) label = stem;
+                            }
+                        }
+                    }
+                }
+                state.runtime.registry.add(entity, components.Name.init(label)) catch {};
             }
             state.runtime.registry.add(entity, components.Node{ .type = .Node3D }) catch {};
 
@@ -273,9 +296,7 @@ pub fn instantiate_model(state: *EditorState, model_id: u32, parent_entity: engi
 
     const root_entity = state.runtime.registry.create() catch return;
     const root_name = if (model.name) |n| std.mem.span(n) else "Model";
-    var root_name_buf: [320]u8 = undefined;
-    const root_name_full = std.fmt.bufPrint(&root_name_buf, "Model: {s}", .{root_name}) catch root_name;
-    state.runtime.registry.add(root_entity, components.Name.init(root_name_full)) catch {};
+    state.runtime.registry.add(root_entity, components.Name.init(name_stem(root_name))) catch {};
     state.runtime.registry.add(root_entity, components.Node{ .type = .Node3D }) catch {};
     state.runtime.registry.add(root_entity, components.Transform{}) catch {};
     state.runtime.registry.add(root_entity, components.Hierarchy{}) catch {};

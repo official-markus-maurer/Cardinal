@@ -1,11 +1,10 @@
 //! Skybox pipeline and texture management.
 //!
 //! Loads an equirectangular skybox texture, uploads it to the GPU, and renders a background pass.
-//!
-//! TODO: Deduplicate descriptor manager + PSO setup with other simple pipelines.
 const std = @import("std");
 const memory = @import("../core/memory.zig");
 const descriptor_mgr = @import("vulkan_descriptor_manager.zig");
+const descriptor_init = @import("util/vulkan_descriptor_init.zig");
 const c = @import("vulkan_c.zig").c;
 const types = @import("vulkan_types.zig");
 const log = @import("../core/log.zig");
@@ -18,7 +17,7 @@ const math = @import("../core/math.zig");
 const scene = @import("../assets/scene.zig");
 const ref_counting = @import("../core/ref_counting.zig");
 const resource_state = @import("../core/resource_state.zig");
-const vk_pso = @import("vulkan_pso.zig");
+const pipeline_json = @import("util/vulkan_pipeline_json.zig");
 
 const skybox_log = log.ScopedLogger("SKYBOX");
 
@@ -33,20 +32,17 @@ pub fn vk_skybox_pipeline_init(pipeline: *types.SkyboxPipeline, device: c.VkDevi
     pipeline.initialized = false;
     pipeline.descriptorSets = std.mem.zeroes([types.MAX_FRAMES_IN_FLIGHT]c.VkDescriptorSet);
 
-    const mem_alloc = memory.cardinal_get_allocator_for_category(.RENDERER);
-    const ptr = memory.cardinal_alloc(mem_alloc, @sizeOf(types.VulkanDescriptorManager));
-    if (ptr == null) {
-        skybox_log.err("Failed to allocate memory for skybox descriptor manager", .{});
-        return false;
-    }
-    pipeline.descriptorManager = @as(*types.VulkanDescriptorManager, @ptrCast(@alignCast(ptr)));
-
-    var desc_builder = descriptor_mgr.DescriptorBuilder.init(std.heap.page_allocator);
-    defer desc_builder.deinit();
-
-    desc_builder.add_binding(0, c.VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1, c.VK_SHADER_STAGE_FRAGMENT_BIT) catch return false;
-
-    if (!desc_builder.build(pipeline.descriptorManager.?, device, allocator, vulkan_state, types.MAX_FRAMES_IN_FLIGHT, true)) {
+    const renderer_allocator = memory.cardinal_get_allocator_for_category(.RENDERER).as_allocator();
+    const bindings = [_]c.VkDescriptorSetLayoutBinding{
+        .{
+            .binding = 0,
+            .descriptorType = c.VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
+            .descriptorCount = 1,
+            .stageFlags = c.VK_SHADER_STAGE_FRAGMENT_BIT,
+            .pImmutableSamplers = null,
+        },
+    };
+    if (!descriptor_init.create_descriptor_manager_from_bindings(renderer_allocator, &pipeline.descriptorManager, device, allocator, vulkan_state, &bindings, types.MAX_FRAMES_IN_FLIGHT, true)) {
         skybox_log.err("Failed to build skybox descriptor manager", .{});
         return false;
     }
@@ -74,34 +70,19 @@ pub fn vk_skybox_pipeline_init(pipeline: *types.SkyboxPipeline, device: c.VkDevi
         return false;
     }
 
-    const renderer_allocator = mem_alloc.as_allocator();
-    var builder = vk_pso.PipelineBuilder.init(renderer_allocator, device, null);
-
     const pipeline_dir = if (vulkan_state) |vs| std.mem.span(@as([*:0]const u8, @ptrCast(&vs.config.pipeline_dir))) else "assets/pipelines";
     const skybox_path = std.fmt.allocPrint(renderer_allocator, "{s}/skybox.json", .{pipeline_dir}) catch return false;
     defer renderer_allocator.free(skybox_path);
 
-    var parsed = vk_pso.PipelineBuilder.load_from_json(renderer_allocator, skybox_path) catch |err| {
-        skybox_log.err("Failed to load skybox pipeline JSON: {s}", .{@errorName(err)});
-        return false;
-    };
-    defer parsed.deinit();
-
-    var descriptor = parsed.value;
-
-    descriptor.rendering.color_formats = &.{format};
-    descriptor.rendering.depth_format = depthFormat;
-
+    var extra_flags: c.VkPipelineCreateFlags = 0;
     if (pipeline.descriptorManager) |mgr| {
-        if (mgr.useDescriptorBuffers) {
-            descriptor.flags |= c.VK_PIPELINE_CREATE_DESCRIPTOR_BUFFER_BIT_EXT;
-        }
+        if (mgr.useDescriptorBuffers) extra_flags |= c.VK_PIPELINE_CREATE_DESCRIPTOR_BUFFER_BIT_EXT;
     }
 
-    builder.build(descriptor, pipeline.pipelineLayout, &pipeline.pipeline) catch |err| {
-        skybox_log.err("Failed to build skybox pipeline: {s}", .{@errorName(err)});
+    const formats = [_]c.VkFormat{format};
+    if (!pipeline_json.build_graphics_pipeline_from_json(renderer_allocator, device, null, pipeline.pipelineLayout, &pipeline.pipeline, skybox_path, &formats, depthFormat, extra_flags)) {
         return false;
-    };
+    }
 
     pipeline.initialized = true;
     return true;
@@ -171,8 +152,8 @@ pub fn vk_skybox_load_from_data(pipeline: *types.SkyboxPipeline, device: c.VkDev
     samplerInfo.sType = c.VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO;
     samplerInfo.magFilter = c.VK_FILTER_LINEAR;
     samplerInfo.minFilter = c.VK_FILTER_LINEAR;
-    samplerInfo.addressModeU = c.VK_SAMPLER_ADDRESS_MODE_REPEAT; // Equirectangular wraps horizontally
-    samplerInfo.addressModeV = c.VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE; // Clamps vertically
+    samplerInfo.addressModeU = c.VK_SAMPLER_ADDRESS_MODE_REPEAT;
+    samplerInfo.addressModeV = c.VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
     samplerInfo.addressModeW = c.VK_SAMPLER_ADDRESS_MODE_REPEAT;
     samplerInfo.anisotropyEnable = c.VK_TRUE;
     samplerInfo.maxAnisotropy = 16.0;
@@ -287,13 +268,11 @@ pub fn render(pipeline: *types.SkyboxPipeline, cmd: c.VkCommandBuffer, view: mat
         c.vkCmdBindDescriptorSets(cmd, c.VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline.pipelineLayout, 0, 1, &sets, 0, null);
     }
 
-    // Push Constants
     var pc: SkyboxPushConstants = undefined;
     pc.view = view;
     pc.proj = proj;
 
     c.vkCmdPushConstants(cmd, pipeline.pipelineLayout, c.VK_SHADER_STAGE_VERTEX_BIT, 0, @sizeOf(SkyboxPushConstants), &pc);
 
-    // Draw cube (36 vertices)
     c.vkCmdDraw(cmd, 36, 1, 0, 0);
 }

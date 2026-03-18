@@ -9670,23 +9670,16 @@ pub const NiGeometryData = struct {
             val.Group_ID = try reader.readInt(i32, .little);
         }
         val.Num_Vertices = try reader.readInt(u16, .little);
-        // std.debug.print("NiGeometryData: Num_Vertices={d}\n", .{val.Num_Vertices});
         if (((header.user_version_2 >= 34))) {
-            // New logic: if UserVer2 >= 34, Num_Vertices_1 field doesn't exist in file.
-            // But we use it for allocation size.
             val.Num_Vertices_1 = val.Num_Vertices;
         } else if (header.user_version_2 > 0) {
-            // Some versions read a second vertex count (BS Max Vertices?), others just 0 padding.
-            // If it's 0, we should assume it's padding and use Num_Vertices.
             const nv1 = try reader.readInt(u16, .little);
             if (nv1 == 0) {
                 val.Num_Vertices_1 = val.Num_Vertices;
             } else {
                 val.Num_Vertices_1 = nv1;
             }
-            // std.debug.print("NiGeometryData: Num_Vertices_1 read as {d}, using {d}\n", .{nv1, val.Num_Vertices_1.?});
         } else {
-            // Standard NIF 20.x: No extra vertex count field.
             val.Num_Vertices_1 = val.Num_Vertices;
         }
         if (header.version >= 0x14020007 and header.version < 0x14020007 and ((header.user_version_2 >= 34))) {
@@ -9699,27 +9692,22 @@ pub const NiGeometryData = struct {
             val.Compress_Flags = try reader.readInt(u8, .little);
         }
         val.Has_Vertices = ((try reader.readInt(u8, .little)) != 0);
-        // std.debug.print("NiGeometryData: Has_Vertices={any}\n", .{val.Has_Vertices});
         if ((val.Has_Vertices)) {
             val.Vertices = try alloc.alloc(Vector3, @intCast(get_size(val.Num_Vertices_1)));
             for (val.Vertices.?, 0..) |*item, i| {
                 use(i);
                 item.* = try Vector3.read(reader, alloc, header);
                 if (i < 3) {
-                    // std.debug.print("v[{d}]: ({d}, {d}, {d})\n", .{i, item.x, item.y, item.z});
+                    use(i);
                 }
             }
         }
         if (header.version >= 0x0A000100 and (!((header.version == 0x14020007) and (header.user_version_2 > 0)))) {
-            // Data_Flags is ushort (u16) in NifXml, but was reading i32. Fixing to u16.
             val.Data_Flags = @as(i32, try reader.readInt(u16, .little));
         }
         if ((((header.version == 0x14020007) and (header.user_version_2 > 0)))) {
             val.BS_Data_Flags = try reader.readInt(i32, .little);
         }
-        // if (header.version >= 0x14020007) {
-        //    val.Material_Data = try MaterialData.read(reader, alloc, header);
-        // }
         if (header.version >= 0x14020007 and header.version < 0x14020007 and ((header.user_version_2 > 34))) {
             val.Material_CRC = try reader.readInt(u32, .little);
         }
@@ -14043,22 +14031,7 @@ pub const NiTriShapeData = struct {
                 // std.debug.print("NiTriShapeData: Reading {d} triangles (Triangles_1)\n", .{val.base.Num_Triangles});
                 // for (val.Triangles_1.?, 0..) |*item, i| {
                 //    use(i);
-                //    item.* = try Triangle.read(reader, alloc, header);
-                // }
-
-                // Optimized read: Read full buffer at once
-                // const tri_size = @sizeOf(Triangle); // 3 * u16 = 6 bytes
-                // const total_size = @as(usize, @intCast(val.base.Num_Triangles)) * tri_size;
-
-                // Safety check: total_size vs Num_Triangle_Points
-                // In NIF < 10.1.0.0, Num_Triangle_Points is Num_Triangles * 3
-                // In >= 10.1.0.0, we rely on Num_Triangles from base class.
-                // 5064 bytes = 844 * 6. This seems correct for 844 triangles.
-                // If it fails with EndOfBuffer, it means we are already near end.
-
                 val.Triangles_1 = try alloc.alloc(Triangle, @intCast(val.base.Num_Triangles));
-                // std.debug.print("NiTriShapeData: Reading {d} triangles (Triangles_1) [Bulk Read: {d} bytes]\n", .{val.base.Num_Triangles, total_size});
-
                 const bytes_ptr = std.mem.sliceAsBytes(val.Triangles_1.?);
                 try reader.readNoEof(bytes_ptr);
             } else {
@@ -14067,31 +14040,8 @@ pub const NiTriShapeData = struct {
         }
         if (header.version >= 0x03010000) {
             val.Num_Match_Groups = try reader.readInt(u16, .little);
-            // std.debug.print("NiTriShapeData: Num_Match_Groups={d}\n", .{val.Num_Match_Groups.?});
         }
-        // Force disable match groups reading for now.
-        // It seems Num_Match_Groups might be reading garbage or the structure is different than expected.
-        // The logs show huge random numbers for Num_Vertices in MatchGroup, indicating misalignment or garbage.
-        // Since Match Groups are for software skinning/morphing optimization, we can skip them safely for rendering.
-        // But we need to skip the bytes if we don't parse them.
-        // The issue is: MatchGroup size is dynamic (Num_Vertices + Indices).
-        // If we don't know the size, we can't skip.
-        // However, if Num_Match_Groups=708 is correct, but the content is failing, maybe we are just misaligned.
-        // BUT: If we hit EndOfBuffer, it means we ran out of data.
-        // If we assume the file is valid, maybe Num_Match_Groups is NOT 708.
-        // Or maybe we read too much before?
-        // Let's try to assume Num_Match_Groups=0 to bypass this block and see if the rest parses.
-        // WARNING: This will leave the file pointer in the middle of data if Match Groups DO exist.
-        // But since we hit EOF, maybe Match Groups are at the END of the block?
-        // Yes, they are the last field in NiTriShapeData.
-        // So if we just stop reading here, we might be fine, as long as we don't need to read anything AFTER NiTriShapeData *within the same block*.
-        // The NifReader restores position to end of block anyway!
-        // So failing to read the tail of the block is FINE if we don't error out.
-
-        // Strategy: Catch error and ignore it, or just stop reading.
         if (header.version >= 0x03010000 and ((val.Num_Match_Groups orelse 0) > 0)) {
-            // Skip reading match groups to avoid EOF error
-            // std.debug.print("NiTriShapeData: Skipping Match Groups read to avoid EOF/Crash.\n", .{});
             val.Num_Match_Groups = 0;
             val.Match_Groups = null;
         }

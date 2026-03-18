@@ -210,7 +210,6 @@ pub export fn vulkan_timeline_pool_cleanup_idle(pool: *types.VulkanTimelinePool,
 
     var cleaned_up: u32 = 0;
 
-    // Only cleanup if auto-cleanup is enabled
     if (pool.auto_cleanup_enabled) {
         var i: u32 = 0;
         while (i < pool.pool_size) : (i += 1) {

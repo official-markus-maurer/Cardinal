@@ -2,8 +2,6 @@
 //!
 //! Provides a synchronous `cardinal_scene_load` API and an async wrapper that delegates work to
 //! the async loader. Supported formats are routed by extension (glTF, NIF/KF, KFM).
-//!
-//! TODO: Deduplicate extension normalization between sync and async paths.
 const std = @import("std");
 const scene = @import("scene.zig");
 const async_loader = @import("../core/async_loader.zig");
@@ -18,6 +16,26 @@ const loader_log = log.ScopedLogger("LOADER");
 
 /// glTF scene loader implemented in the C translation unit.
 extern fn cardinal_gltf_load_scene(path: [*:0]const u8, scene: *scene.CardinalScene) callconv(.c) bool;
+
+fn normalize_extension(ext: [*:0]const u8, buf: []u8) ?[]const u8 {
+    const ext_len = std.mem.len(ext);
+    if (ext_len + 1 > buf.len) return null;
+
+    @memcpy(buf[0..ext_len], std.mem.span(ext));
+    buf[ext_len] = 0;
+
+    for (buf[0..ext_len]) |*c| {
+        c.* = std.ascii.toLower(c.*);
+    }
+
+    return buf[0..ext_len];
+}
+
+fn is_supported_scene_extension(ext: []const u8) bool {
+    return std.mem.eql(u8, ext, "gltf") or std.mem.eql(u8, ext, "glb") or
+        std.mem.eql(u8, ext, "kfm") or std.mem.eql(u8, ext, "nif") or
+        std.mem.eql(u8, ext, "kf");
+}
 
 /// Loads a scene synchronously, routing to the loader implied by file extension.
 pub export fn cardinal_scene_load(path: ?[*:0]const u8, out_scene: ?*scene.CardinalScene) callconv(.c) bool {
@@ -37,19 +55,10 @@ pub export fn cardinal_scene_load(path: ?[*:0]const u8, out_scene: ?*scene.Cardi
     loader_log.debug("Detected file extension: {s}", .{ext.?});
 
     var ext_buf: [16]u8 = undefined;
-    const ext_len = std.mem.len(ext.?);
-    if (ext_len >= 16) {
+    const ext_slice = normalize_extension(ext.?, &ext_buf) orelse {
         loader_log.err("Extension too long", .{});
         return false;
-    }
-
-    @memcpy(ext_buf[0..ext_len], std.mem.span(ext.?));
-    ext_buf[ext_len] = 0;
-    const ext_slice = ext_buf[0..ext_len :0];
-
-    for (ext_slice) |*c| {
-        c.* = std.ascii.toLower(c.*);
-    }
+    };
 
     loader_log.debug("Normalized extension: {s}", .{ext_slice});
 
@@ -98,24 +107,12 @@ pub export fn cardinal_scene_load_async(path: ?[*:0]const u8, priority: async_lo
     }
 
     var ext_buf: [16]u8 = undefined;
-    const ext_len = std.mem.len(ext.?);
-    if (ext_len >= 16) {
+    const ext_slice = normalize_extension(ext.?, &ext_buf) orelse {
         loader_log.err("Extension too long", .{});
         return null;
-    }
+    };
 
-    @memcpy(ext_buf[0..ext_len], std.mem.span(ext.?));
-    ext_buf[ext_len] = 0;
-    const ext_slice = ext_buf[0..ext_len :0];
-
-    for (ext_slice) |*c| {
-        c.* = std.ascii.toLower(c.*);
-    }
-
-    if (!std.mem.eql(u8, ext_slice, "gltf") and !std.mem.eql(u8, ext_slice, "glb") and
-        !std.mem.eql(u8, ext_slice, "kfm") and !std.mem.eql(u8, ext_slice, "nif") and
-        !std.mem.eql(u8, ext_slice, "kf"))
-    {
+    if (!is_supported_scene_extension(ext_slice)) {
         loader_log.err("Unsupported file format for async loading: {s} (extension: {s})", .{ path.?, ext_slice });
         return null;
     }

@@ -463,11 +463,11 @@ pub fn on_device_loss(_: ?*anyopaque) callconv(.c) void {
         c.imgui_bridge_invalidate_device_objects();
     }
 
-    if (state.runtime.descriptor_pool != null or initialized) {
+    if (initialized) {
         c.imgui_bridge_impl_vulkan_shutdown();
         c.imgui_bridge_impl_glfw_shutdown();
-        state.runtime.descriptor_pool = null;
     }
+    state.runtime.descriptor_pool = null;
 
     initialized = false;
 }
@@ -488,7 +488,7 @@ pub fn on_device_restored(user_data: ?*anyopaque, success: bool) callconv(.c) vo
         c.imgui_bridge_set_current_context(imgui_context);
     }
 
-    if (initialized or state.runtime.descriptor_pool != null) {
+    if (initialized) {
         log.cardinal_log_warn("[EDITOR_LAYER] Device restored but ImGui already initialized. Shutting down old instance.", .{});
         c.imgui_bridge_impl_vulkan_shutdown();
         c.imgui_bridge_impl_glfw_shutdown();
@@ -617,14 +617,17 @@ pub fn shutdown() void {
     if (imgui_context != null) {
         c.imgui_bridge_set_current_context(imgui_context);
     }
-    c.imgui_bridge_impl_vulkan_shutdown();
-    c.imgui_bridge_impl_glfw_shutdown();
+    if (initialized) {
+        c.imgui_bridge_impl_vulkan_shutdown();
+        c.imgui_bridge_impl_glfw_shutdown();
+    }
     c.imgui_bridge_destroy_context();
     imgui_context = null;
 
     if (state.runtime.descriptor_pool != null) {
         const device = @as(c.VkDevice, @ptrCast(renderer.cardinal_renderer_internal_device(state.runtime.renderer)));
         c.vkDestroyDescriptorPool(device, state.runtime.descriptor_pool, null);
+        state.runtime.descriptor_pool = null;
     }
 
     model_manager.cardinal_model_manager_destroy(&state.runtime.model_manager);
@@ -812,43 +815,6 @@ pub fn update() void {
         }
     }
 
-    scene_sync.sync_mesh_visibility_from_ecs(&state);
-    scene_sync.sync_mesh_transforms_from_ecs(&state, allocator, &world_matrix_cache);
-
-    if (state.runtime.scene_loaded and state.runtime.combined_scene.animation_system != null) {
-        const anim_sys_opaque = state.runtime.combined_scene.animation_system.?;
-        const anim_sys = @as(*animation.CardinalAnimationSystem, @ptrCast(@alignCast(anim_sys_opaque)));
-
-        if (anim_sys.skin_count > 0 and anim_sys.skins != null and anim_sys.bone_matrices != null and state.runtime.combined_scene.meshes != null) {
-            const nodes_ptr = @as(?[*]?*const scene.CardinalSceneNode, @ptrCast(state.runtime.combined_scene.all_nodes));
-            const meshes = state.runtime.combined_scene.meshes.?;
-
-            var s_idx: u32 = 0;
-            while (s_idx < anim_sys.skin_count) : (s_idx += 1) {
-                const skin = &anim_sys.skins.?[s_idx];
-                if (skin.mesh_indices == null or skin.mesh_count == 0) continue;
-                const mesh_index = skin.mesh_indices.?[0];
-                if (mesh_index >= state.runtime.combined_scene.mesh_count) continue;
-
-                const base_world_ptr: *const [16]f32 = &meshes[mesh_index].transform;
-
-                _ = animation.cardinal_skin_update_bone_matrices_bounded_mesh_local(
-                    skin,
-                    nodes_ptr,
-                    state.runtime.combined_scene.all_node_count,
-                    base_world_ptr,
-                    anim_sys.bone_matrices,
-                );
-            }
-
-            if (anim_sys.bone_matrix_count > 0) {
-                const matrices = anim_sys.bone_matrices.?;
-                renderer.cardinal_renderer_update_bone_matrices(state.runtime.renderer, matrices, anim_sys.bone_matrix_count * 16);
-            }
-        }
-    }
-    scene_sync.sync_mesh_index_maps_from_ecs(&state, allocator);
-
     input_system.update(&state);
     camera_controller.update(&state, dt);
 
@@ -1013,6 +979,43 @@ pub fn update() void {
                 }
             }
         }
+
+        scene_sync.sync_mesh_visibility_from_ecs(&state);
+        scene_sync.sync_mesh_transforms_from_ecs(&state, allocator, &world_matrix_cache);
+
+        if (state.runtime.scene_loaded and state.runtime.combined_scene.animation_system != null) {
+            const anim_sys_opaque = state.runtime.combined_scene.animation_system.?;
+            const anim_sys = @as(*animation.CardinalAnimationSystem, @ptrCast(@alignCast(anim_sys_opaque)));
+
+            if (anim_sys.skin_count > 0 and anim_sys.skins != null and anim_sys.bone_matrices != null and state.runtime.combined_scene.meshes != null) {
+                const nodes_ptr = @as(?[*]?*const scene.CardinalSceneNode, @ptrCast(state.runtime.combined_scene.all_nodes));
+                const meshes = state.runtime.combined_scene.meshes.?;
+
+                var s_idx: u32 = 0;
+                while (s_idx < anim_sys.skin_count) : (s_idx += 1) {
+                    const skin = &anim_sys.skins.?[s_idx];
+                    if (skin.mesh_indices == null or skin.mesh_count == 0) continue;
+                    const mesh_index = skin.mesh_indices.?[0];
+                    if (mesh_index >= state.runtime.combined_scene.mesh_count) continue;
+
+                    const base_world_ptr: *const [16]f32 = &meshes[mesh_index].transform;
+
+                    _ = animation.cardinal_skin_update_bone_matrices_bounded_mesh_local(
+                        skin,
+                        nodes_ptr,
+                        state.runtime.combined_scene.all_node_count,
+                        base_world_ptr,
+                        anim_sys.bone_matrices,
+                    );
+                }
+
+                if (anim_sys.bone_matrix_count > 0) {
+                    const matrices = anim_sys.bone_matrices.?;
+                    renderer.cardinal_renderer_update_bone_matrices(state.runtime.renderer, matrices, anim_sys.bone_matrix_count * 16);
+                }
+            }
+        }
+        scene_sync.sync_mesh_index_maps_from_ecs(&state, allocator);
 
         const status_open = c.imgui_bridge_begin("Status", null, 0);
         defer c.imgui_bridge_end();

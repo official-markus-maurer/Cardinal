@@ -523,6 +523,10 @@ pub fn vk_texture_manager_load_scene_textures(manager: *types.VulkanTextureManag
     const old_updates = take_pending_update_list(manager);
     free_pending_update_list(manager, old_updates);
     wait_for_uploads_idle(manager);
+    const idle_res = c.vkDeviceWaitIdle(manager.device);
+    if (idle_res != c.VK_SUCCESS) {
+        tex_mgr_log.warn("vkDeviceWaitIdle failed before MT pool reset: {d}", .{idle_res});
+    }
     vk_mt.cardinal_mt_reset_all_command_pools(&vk_mt.g_cardinal_mt_subsystem.command_manager);
 
     if (!reset_bindless_pool_and_placeholder(manager)) {
@@ -937,7 +941,6 @@ pub fn vk_texture_manager_update_textures(manager: *types.VulkanTextureManager, 
             }
 
             if (primary_cmd != null) {
-
                 var submit_info = std.mem.zeroes(c.VkSubmitInfo2);
                 submit_info.sType = c.VK_STRUCTURE_TYPE_SUBMIT_INFO_2;
 

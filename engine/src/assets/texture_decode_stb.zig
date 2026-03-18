@@ -1,4 +1,7 @@
-//! stb_image-backed decoding.
+//! stb_image-backed texture decoding.
+//!
+//! Decodes common LDR/HDR image formats from an in-memory buffer into RGBA8 or RGBA32F.
+//! The returned pixel pointer is owned by stb and must be released with `free_pixels`.
 const std = @import("std");
 const log = @import("../core/log.zig");
 const types = @import("texture_types.zig");
@@ -12,10 +15,14 @@ extern fn stbi_is_hdr_from_memory(buffer: [*]const u8, len: c_int) c_int;
 extern fn stbi_load_from_memory(buffer: [*]const u8, len: c_int, x: *c_int, y: *c_int, channels_in_file: *c_int, desired_channels: c_int) ?[*]u8;
 extern fn stbi_loadf_from_memory(buffer: [*]const u8, len: c_int, x: *c_int, y: *c_int, channels_in_file: *c_int, desired_channels: c_int) ?[*]f32;
 
+/// Frees a pixel buffer returned by `decode_from_memory`.
 pub fn free_pixels(pixels: ?*anyopaque) void {
     stbi_image_free(pixels);
 }
 
+/// Decodes an image blob into `out_texture`.
+///
+/// The returned `out_texture.data` is stb-owned and must be freed with `free_pixels`.
 pub fn decode_from_memory(data: [*]const u8, size: usize, out_texture: *types.TextureData) bool {
     var w: c_int = 0;
     var h: c_int = 0;
@@ -56,4 +63,3 @@ pub fn decode_from_memory(data: [*]const u8, size: usize, out_texture: *types.Te
     out_texture.data_size = @as(u64, out_texture.width) * out_texture.height * pixel_size;
     return true;
 }
-

@@ -1,8 +1,6 @@
 //! C-ABI transform helpers for matrices/quaternions/vectors.
 //!
 //! Wraps math types to expose stable exported functions for engine consumers (C/C++ and tooling).
-//!
-//! TODO: Consolidate row-major/column-major conversion helpers in one place for loaders/render code.
 const std = @import("std");
 const math = @import("math.zig");
 const Vec3 = math.Vec3;
@@ -53,25 +51,21 @@ pub export fn cardinal_matrix_from_rt_s(rotation: *const [9]f32, translation: *c
     const t = translation.*;
     const s = scale;
 
-    // Col 0
     result[0] = r[0] * s;
     result[1] = r[3] * s;
     result[2] = r[6] * s;
     result[3] = 0.0;
 
-    // Col 1
     result[4] = r[1] * s;
     result[5] = r[4] * s;
     result[6] = r[7] * s;
     result[7] = 0.0;
 
-    // Col 2
     result[8] = r[2] * s;
     result[9] = r[5] * s;
     result[10] = r[8] * s;
     result[11] = 0.0;
 
-    // Col 3
     result[12] = t[0];
     result[13] = t[1];
     result[14] = t[2];
@@ -124,6 +118,7 @@ pub export fn cardinal_transform_point(matrix: *const [16]f32, point: *const [3]
     result.* = res.toArray();
 }
 
+/// Transforms a direction vector by a matrix (assumes w=0).
 pub export fn cardinal_transform_vector(matrix: *const [16]f32, vector: *const [3]f32, result: *[3]f32) callconv(.c) void {
     const m = Mat4.fromArray(matrix.*);
     const v = Vec3.fromArray(vector.*);
@@ -132,20 +127,18 @@ pub export fn cardinal_transform_vector(matrix: *const [16]f32, vector: *const [
     result.* = res.toArray();
 }
 
+/// Transforms a normal by the inverse-transpose of the upper-left 3x3, then normalizes.
 pub export fn cardinal_transform_normal(matrix: *const [16]f32, normal: *const [3]f32, result: *[3]f32) callconv(.c) void {
     var inv_transpose: [9]f32 = undefined;
     const m = matrix.*;
 
-    // Extract 3x3 upper-left matrix
     const mat3 = [9]f32{ m[0], m[1], m[2], m[4], m[5], m[6], m[8], m[9], m[10] };
 
-    // Calculate determinant
     const det = mat3[0] * (mat3[4] * mat3[8] - mat3[5] * mat3[7]) -
         mat3[1] * (mat3[3] * mat3[8] - mat3[5] * mat3[6]) +
         mat3[2] * (mat3[3] * mat3[7] - mat3[4] * mat3[6]);
 
     if (@abs(det) < FLT_EPSILON) {
-        // Fallback: just normalize
         result.* = normal.*;
         return;
     }
@@ -172,6 +165,7 @@ pub export fn cardinal_transform_normal(matrix: *const [16]f32, normal: *const [
     result.* = res.normalize().toArray();
 }
 
+/// Normalizes a quaternion in-place.
 pub export fn cardinal_quaternion_normalize(rotation: *[4]f32) callconv(.c) void {
     const q = Quat.fromArray(rotation.*);
     const n = q.normalize();

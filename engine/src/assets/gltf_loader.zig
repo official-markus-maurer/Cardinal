@@ -180,6 +180,7 @@ fn fallback_texture_data_destructor(resource: ?*anyopaque) callconv(.c) void {
     }
 }
 
+/// Creates or acquires a small placeholder texture and writes it into `out_texture`.
 fn create_fallback_texture(out_texture: *scene.CardinalTexture) bool {
     gltf_log.debug("create_fallback_texture (out_texture: {*})", .{out_texture});
     out_texture.width = 2;
@@ -196,12 +197,10 @@ fn create_fallback_texture(out_texture: *scene.CardinalTexture) bool {
     } else {
         const allocator = memory.cardinal_get_allocator_for_category(.ASSETS);
 
-        // Allocate TextureData
         const td_ptr = memory.cardinal_alloc(allocator, @sizeOf(texture_loader.TextureData));
         if (td_ptr == null) return false;
         const tex_data: *texture_loader.TextureData = @ptrCast(@alignCast(td_ptr));
 
-        // Allocate pixels
         const pixels_ptr = memory.cardinal_alloc(allocator, 16);
         if (pixels_ptr == null) {
             memory.cardinal_free(allocator, td_ptr);
@@ -230,7 +229,6 @@ fn create_fallback_texture(out_texture: *scene.CardinalTexture) bool {
             out_texture.ref_resource = ref;
             gltf_log.debug("Created new fallback texture (ref: {*})", .{ref});
         } else {
-            // Failed to create ref, clean up manually
             memory.cardinal_free(allocator, pixels_ptr);
             memory.cardinal_free(allocator, td_ptr);
             out_texture.data = null;
@@ -252,6 +250,7 @@ fn create_fallback_texture(out_texture: *scene.CardinalTexture) bool {
     return true;
 }
 
+/// Loads a texture URI using cached or fallback path resolution.
 fn load_texture_with_fallback(original_uri: [*:0]const u8, base_path: [*:0]const u8, out_texture: *scene.CardinalTexture) bool {
     const uri = std.mem.span(original_uri);
     const base = std.mem.span(base_path);
@@ -266,7 +265,6 @@ fn load_texture_with_fallback(original_uri: [*:0]const u8, base_path: [*:0]const
     if (lookup_cached_path(base, uri)) |cached_path| {
         gltf_log.debug("Found cached path '{s}'", .{cached_path});
         var tex_data: texture_loader.TextureData = undefined;
-        // Need null terminated cached_path
         var cached_path_z: [512]u8 = undefined;
         @memcpy(cached_path_z[0..cached_path.len], cached_path);
         cached_path_z[cached_path.len] = 0;
@@ -1068,7 +1066,6 @@ fn contains_ignore_case(haystack: []const u8, needle: []const u8) bool {
 }
 
 pub export fn cardinal_gltf_load_scene(path: [*:0]const u8, out_scene: *scene.CardinalScene) callconv(.c) bool {
-    // Validate path (basic check)
     if (path[0] == 0) {
         gltf_log.err("Empty path passed to GLTF loader", .{});
         return false;
@@ -1076,10 +1073,6 @@ pub export fn cardinal_gltf_load_scene(path: [*:0]const u8, out_scene: *scene.Ca
 
     gltf_log.info("GLTF Loader: Processing path '{s}' (ptr: {*})", .{ path, path });
 
-    // Make a local copy of the path to avoid potential memory corruption issues
-    // and ensure stability across C calls.
-    // NOTE: We use .ENGINE (Dynamic) allocator because .TEMPORARY (Linear) is NOT thread-safe
-    // and this function runs on worker threads.
     const allocator = memory.cardinal_get_allocator_for_category(.ENGINE).as_allocator();
     const path_len = std.mem.len(path);
     const local_path = allocator.allocSentinel(u8, path_len, 0) catch {
@@ -1113,7 +1106,6 @@ pub export fn cardinal_gltf_load_scene(path: [*:0]const u8, out_scene: *scene.Ca
     }
     gltf_log.debug("[GLTF] Buffers loaded. Textures: {d}, Meshes: {d}, Materials: {d}\n", .{ d.textures_count, d.meshes_count, d.materials_count });
 
-    // Fix for GLB: Ensure buffers point to the BIN chunk if cgltf didn't set them
     if (d.file_type == c.cgltf_file_type_glb and d.bin != null and d.buffers_count > 0) {
         var i: usize = 0;
         while (i < d.buffers_count) : (i += 1) {
@@ -1127,7 +1119,6 @@ pub export fn cardinal_gltf_load_scene(path: [*:0]const u8, out_scene: *scene.Ca
         }
     }
 
-    // Load textures
     const num_textures = if (d.textures_count > 0) d.textures_count else d.images_count;
     var textures: ?[*]scene.CardinalTexture = null;
     var texture_count: u32 = 0;
