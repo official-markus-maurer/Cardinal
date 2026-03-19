@@ -86,7 +86,16 @@ pub const MaterialSystem = struct {
     pub fn deinit(self: *MaterialSystem) void {
         var it = self.layouts.iterator();
         while (it.next()) |entry| {
-            // TODO: Track ownership for layout names, property arrays, and hash buffers.
+            const key = entry.key_ptr.*;
+            if (key.len > 0) {
+                self.allocator.free(@constCast(key));
+            }
+
+            for (entry.value_ptr.properties) |p| {
+                if (p.name.len > 0) {
+                    self.allocator.free(@constCast(p.name));
+                }
+            }
             self.allocator.free(entry.value_ptr.properties);
             if (entry.value_ptr.property_hashes) |hashes| {
                 self.allocator.free(hashes);
@@ -97,23 +106,40 @@ pub const MaterialSystem = struct {
 
     /// Registers a layout and precomputes property hashes for faster lookups.
     pub fn register_layout(self: *MaterialSystem, name: []const u8, descriptor: MaterialLayoutDescriptor) !void {
+        const name_copy = try self.allocator.dupe(u8, name);
+        errdefer self.allocator.free(name_copy);
+
         const props_copy = try self.allocator.alloc(MaterialPropertyDescriptor, descriptor.properties.len);
-        @memcpy(props_copy, descriptor.properties);
+        errdefer self.allocator.free(props_copy);
+
+        var i: usize = 0;
+        errdefer {
+            var j: usize = 0;
+            while (j < i) : (j += 1) {
+                self.allocator.free(@constCast(props_copy[j].name));
+            }
+        }
+        while (i < descriptor.properties.len) : (i += 1) {
+            props_copy[i] = descriptor.properties[i];
+            props_copy[i].name = try self.allocator.dupe(u8, descriptor.properties[i].name);
+        }
 
         var new_desc = descriptor;
+        new_desc.name = name_copy;
         new_desc.properties = props_copy;
         if (descriptor.properties.len > 0) {
             const hashes = try self.allocator.alloc(u32, descriptor.properties.len);
-            var i: usize = 0;
-            while (i < descriptor.properties.len) : (i += 1) {
-                hashes[i] = hash_string(descriptor.properties[i].name);
+            errdefer self.allocator.free(hashes);
+            var k: usize = 0;
+            while (k < descriptor.properties.len) : (k += 1) {
+                hashes[k] = hash_string(props_copy[k].name);
             }
             new_desc.property_hashes = hashes;
         } else {
             new_desc.property_hashes = null;
         }
 
-        try self.layouts.put(name, new_desc);
+        try self.layouts.put(name_copy, new_desc);
         material_log.info("Registered material layout '{s}' with {d} properties", .{ name, descriptor.properties.len });
     }
 

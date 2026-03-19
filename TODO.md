@@ -31,62 +31,13 @@ This document outlines the roadmap for the Cardinal Engine, focusing on robustne
 #### Terrain System (Scene Graph + Editor Tooling)
 
 **Implementation Checklist**
-- [x] Add `Terrain3D` node type and `Terrain` ECS component.
-- [x] Add Terrain editor panel and Create Terrain action.
-- [x] Add sculpt MVP (vertex displacement + upload on stroke end).
-- [x] Optimize sculpt/paint brushes to edit only affected vertices.
-- [x] Add sculpt brush modes (raise/lower/flatten/smooth).
-- [x] Add paint tool MVP (vertex color / splat preview).
-- [x] Add stroke-based undo/redo for terrain edits.
-- [x] Switch terrain edits to CPU heightmap + splatmap source-of-truth.
-- [x] Upload heightmap + splatmap as GPU textures with sub-updates.
-- [x] Add terrain material blending (multi-layer PBR via splatmap).
+- [ ] Add depth-tested brush preview (ring/decal) rendered in 3D.
+- [ ] Add sculpt “predicted delta” preview surface/patch in 3D.
+- [ ] Make all brushes seam-aware across adjacent chunks.
 - [ ] Add chunked terrain + LOD (CDLOD/clipmaps).
 
-**Data Model**
-- **Scene graph/ECS**
-  - Add `NodeType.Terrain3D` and a `components.Terrain` component attached to an entity.
-  - `components.Terrain` stores high-level parameters (world size, resolution) and links to render backing resources (height/splat/normal textures, mesh range or model id).
-- **Terrain representation**
-  - Render as a regular grid mesh (static topology) displaced by a height texture.
-  - Use a splat/alphamap texture for blending surface layers (up to 4 channels per map).
-  - Optional derived normal map for correct lighting.
-
-**Rendering Integration**
-- **Phase 1 (MVP)**
-  - Generate a grid mesh and render it using existing PBR pipeline/materials.
-  - Feed the terrain mesh into the existing `combined_scene` flow so picking/selection works.
-- **Phase 2 (Terrain shader)**
-  - Add a terrain-specific material layout that binds height/splat/normal textures and blends up to 4 PBR layers.
-- **Phase 3 (LOD)**
-  - Implement CDLOD or Geometry Clipmaps and render terrain in chunks/patches.
-  - Consider compute/mesh-shader driven traversal/culling.
-
-**Editor Tooling (Terrain Panel)**
-- **Creation**
-  - Create terrain at selection or at root with configurable size/resolution.
-  - Automatically adds required ECS components and render backing assets/resources.
-- **Sculpting tools**
-  - Raise/Lower/Flatten/Smooth brushes with radius/strength and falloff.
-  - Efficient updates via region updates to the height texture (avoid full scene reupload).
-- **Texture painting tools**
-  - Paint splatmap channels per layer with optional normalization.
-  - Layer assignment UI (Grass/Dirt/Rock/etc) and brush preview.
-
-**Picking + Brush Placement**
-- Use camera ray casting to position the brush on terrain (world hit point -> terrain-local UV -> texel coords).
-- Keep brush interactions single-step undoable (stroke-based).
-
-**Undo/Redo + Persistence**
-- Undo stores only affected texel regions (height/splat rectangles) per stroke, not full maps.
-- Scene serialization stores terrain parameters + external asset references; large textures live as separate files.
-
-**Performance Targets**
-- Interactive edits should update only dirty tiles/regions per frame.
-- Avoid rebuilding/reuploading the entire scene for every brush tick; prefer texture sub-updates or compute edits.
-
 ### Asset System
-- [ ] **Asset Database**: Implement a metadata system (`.meta` files) to store import settings and GUIDs for assets, decoupling file paths from asset identity.
+- [x] **Asset Database**: Implement a metadata system (`.meta` files) to store import settings and GUIDs for assets, decoupling file paths from asset identity.
 - [ ] **Binary Asset Format**: Implement offline conversion of textures/meshes to binary formats (e.g., KTX2, custom mesh format) for faster loading.
 - [ ] **Asset Streaming**: Implement a streaming system for large assets (textures/meshes) to load chunks on demand.
 - [ ] **Texture Loading**: Support HDR texture loading directly from memory in `texture_loader.zig`.
@@ -135,25 +86,21 @@ This document outlines the roadmap for the Cardinal Engine, focusing on robustne
 ## 5. Editor & Tools
 
 ### Editor Features
-- [ ] **Scene State Serialization**: Save/Restore full editor state (camera position, selected entity, open panels) to `editor.ini` or similar.
-- [ ] **Game View**: Separate "Game" view from "Scene" view to preview the camera's perspective.
+- [x] **Scene State Serialization**: Save/Restore full editor state (camera position, selected entity, open panels) to `editor.ini` or similar.
+- [x] **Game View**: Separate "Game" view from "Scene" view to preview the camera's perspective.
 - [ ] **Console Panel**: Interactive console for logging and executing commands/scripts.
-- [x] **File Dialogs**: Implement file dialogs for Save/Open scene
 
 ### Editor Core
-- [x] **Project Management**: Implement "Project" concept (folder-based) to allow switching between different projects with isolated assets/configs.
 - [ ] **Command Pattern**: Implement Undo/Redo system for all editor actions.
 
 ### UI/UX
-- [ ] **Asset Browser**: Thumbnail generation and drag-and-drop support.
-- [ ] **Inspector**: Generic reflection-based property editing for components.
-- [x] **Transform Editing**: Support full TRS (Translate, Rotate, Scale) editing in `inspector.zig`.
+- [x] **Asset Browser**: Thumbnail generation and drag-and-drop support.
+- [x] **Inspector**: Generic reflection-based property editing for components.
 - [ ] **Multiple Windows**: Support for detaching editor panels (ImGui Viewports).
 - [ ] **Grid & Axes**: Visual reference guides.
 
-### Scene Graph & Inspector (Next)
+### Scene Graph & Inspector
 - [ ] **Undo/Redo (Hierarchy)**: Add undoable Create/Rename/Delete/Reparent operations in Scene Graph.
-- [ ] **Drag-Drop Reparenting**: Reparent entities by dragging onto another entity in Scene Graph.
 - [ ] **Sibling Reordering**: Support drag reorder among siblings + stable ordering persistence.
 - [ ] **Multi-Select**: Support multi-select and batch operations (delete, visibility, component add/remove).
 - [ ] **Search & Filter**: Add fast search (name/type) with filter chips (Meshes/Lights/Cameras/etc).
@@ -163,11 +110,6 @@ This document outlines the roadmap for the Cardinal Engine, focusing on robustne
 - [ ] **Component Grouping**: Reorder components, pin favorites, and collapse/expand all.
 - [ ] **Transform UX**: Local/world toggle, reset buttons, numeric input + copy/paste TRS fields.
 - [ ] **Hierarchy Integrity**: Prevent cycles and enforce invariants (child_count, sibling links) on edits.
-- [x] **Deletion Cleanup**: Clear mesh ownership maps + transform overrides when entities are destroyed.
-- [x] **Large Scene Performance**: Virtualize Scene Graph rendering (ImGui clipper) for thousands of nodes.
-- [x] **Focus & Selection Polish**: Keep selection visible across filters; add “Frame in Scene View”.
-- [x] **Selection X-Ray Highlight**: Render selected entity subtree visible through geometry (overlay/outline).
-- [x] **Scene Serialization IDs**: Move hierarchy serialization from entity index to stable IDs/UUIDs.
 
 ## 7. Quality Assurance
 
@@ -191,6 +133,5 @@ This document outlines the roadmap for the Cardinal Engine, focusing on robustne
 - [ ] **Gamepad Support**: Full gamepad polling and vibration support.
 
 ### OS Integration
-- [x] **Cross-Platform Build**: Abstract platform-specific linking (Windows/Linux/macOS) in `build.zig`.
 - [ ] **Virtual File System (VFS)**: Abstract file system operations to support archives (Zip/Pak) and virtual paths (`asset://`).
 - [ ] **Crash Reporting**: Implement a crash handler to save stack traces and minidumps on failure.

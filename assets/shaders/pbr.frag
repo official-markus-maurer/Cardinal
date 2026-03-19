@@ -14,6 +14,8 @@ layout(binding = 0) uniform UniformBufferObject {
     mat4 proj;
     vec4 viewPosAndDebug; // xyz = viewPos, w = debugFlags
     vec4 ambientColor;
+    vec4 terrainBrushPosRadius;
+    vec4 terrainBrushParams;
 } ubo;
 
 // Output color
@@ -580,6 +582,35 @@ void main() {
     
     // Combine lighting components
     vec3 color = ambient + Lo + emissive;
+
+    if (isTerrain && ubo.terrainBrushParams.w > 0.5) {
+        float radius = max(ubo.terrainBrushPosRadius.w, 0.0001);
+        vec2 d2 = fragWorldPos.xz - ubo.terrainBrushPosRadius.xz;
+        float d = length(d2);
+        if (d <= radius) {
+            float t = clamp(1.0 - (d / radius), 0.0, 1.0);
+            float w = t * t;
+            float intensity = clamp(ubo.terrainBrushParams.x * w, 0.0, 1.0);
+            int tool = int(ubo.terrainBrushParams.y + 0.5);
+            int mode = int(ubo.terrainBrushParams.z + 0.5);
+
+            vec3 overlay = vec3(1.0);
+            if (tool == 0) {
+                if (mode == 0) overlay = vec3(0.15, 1.0, 0.15);
+                else if (mode == 1) overlay = vec3(1.0, 0.2, 0.2);
+                else if (mode == 2) overlay = vec3(1.0, 0.9, 0.2);
+                else overlay = vec3(0.2, 0.8, 1.0);
+            } else if (tool == 1) {
+                overlay = vec3(1.0, 1.0, 1.0);
+            } else {
+                overlay = (mode == 0) ? vec3(1.0, 0.3, 1.0) : vec3(0.3, 1.0, 1.0);
+            }
+
+            float outline = 1.0 - smoothstep(radius * 0.98, radius, d);
+            float overlayAlpha = max(intensity * 0.35, outline * 0.75);
+            color = mix(color, overlay, overlayAlpha);
+        }
+    }
     
     // Output Linear HDR color
     // Tone mapping and gamma correction are handled in post-process pass

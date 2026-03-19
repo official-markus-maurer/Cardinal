@@ -1,35 +1,27 @@
 //! Cross-platform threading primitives for C-ABI consumers.
 //!
-//! Provides mutex/condition wrappers and a small worker/task system used by legacy async paths.
-//!
-//! TODO: Consider routing all async work through core/job_system.zig to reduce duplication.
+//! Provides mutex/condition wrappers and a small worker/task system for renderer background work.
 const std = @import("std");
 const builtin = @import("builtin");
 const memory = @import("../core/memory.zig");
 const log = @import("../core/log.zig");
 const types = @import("vulkan_types.zig");
 const c = @import("vulkan_c.zig").c;
-const texture_loader = @import("../assets/texture_loader.zig");
-const gltf_loader = @import("../assets/gltf_loader.zig");
-const scene = @import("../assets/scene.zig");
-const ref_counting = @import("../core/ref_counting.zig");
 
 const mt_log = log.ScopedLogger("MT");
+
+var g_secondary_record_mutex = std.Thread.Mutex{};
 
 /// Global subsystem instance.
 pub var g_cardinal_mt_subsystem: types.CardinalMTSubsystem = std.mem.zeroes(types.CardinalMTSubsystem);
 
-/// Task context for texture loads.
-const TextureLoadContext = struct {
-    file_path: [:0]u8,
-    result_resource: ?*ref_counting.CardinalRefCountedResource,
-};
+pub fn cardinal_mt_lock_secondary_recording() void {
+    g_secondary_record_mutex.lock();
+}
 
-/// Task context for mesh/scene loads.
-const MeshLoadContext = struct {
-    file_path: [:0]u8,
-    result_scene: ?*scene.CardinalScene,
-};
+pub fn cardinal_mt_unlock_secondary_recording() void {
+    g_secondary_record_mutex.unlock();
+}
 
 /// Initializes a mutex compatible with the public C API.
 pub fn cardinal_mt_mutex_init(mutex: *types.cardinal_mutex_t) bool {
@@ -206,24 +198,6 @@ fn cardinal_mt_task_queue_shutdown(queue: *types.CardinalMTTaskQueue) void {
         const curr = current;
         const next = curr.?.*.next;
 
-        if (curr.?.*.data) |data| {
-            if (curr.?.*.type == types.CardinalMTTaskType.CARDINAL_MT_TASK_TEXTURE_LOAD) {
-                const ctx: *TextureLoadContext = @ptrCast(@alignCast(data));
-                memory.cardinal_free(allocator, ctx.file_path.ptr);
-                if (ctx.result_resource) |res| {
-                    ref_counting.cardinal_ref_release(res);
-                }
-                memory.cardinal_free(allocator, ctx);
-            } else if (curr.?.*.type == types.CardinalMTTaskType.CARDINAL_MT_TASK_MESH_LOAD) {
-                const ctx: *MeshLoadContext = @ptrCast(@alignCast(data));
-                memory.cardinal_free(allocator, ctx.file_path.ptr);
-                if (ctx.result_scene) |s| {
-                    scene.cardinal_scene_destroy(s);
-                    memory.cardinal_free(allocator, s);
-                }
-                memory.cardinal_free(allocator, ctx);
-            }
-        }
         memory.cardinal_free(allocator, curr);
         current = next;
     }
@@ -497,6 +471,8 @@ pub fn cardinal_mt_allocate_secondary_command_buffer(pool: *types.CardinalThread
 }
 
 pub fn cardinal_mt_begin_secondary_command_buffer(context: *types.CardinalSecondaryCommandContext, inheritance_info: *const c.VkCommandBufferInheritanceInfo) bool {
+    cardinal_mt_lock_secondary_recording();
+
     var begin_info = c.VkCommandBufferBeginInfo{
         .sType = c.VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO,
         .pNext = null,
@@ -506,6 +482,7 @@ pub fn cardinal_mt_begin_secondary_command_buffer(context: *types.CardinalSecond
 
     if (c.vkBeginCommandBuffer(context.command_buffer, &begin_info) != c.VK_SUCCESS) {
         mt_log.err("Failed to begin secondary command buffer", .{});
+        cardinal_mt_unlock_secondary_recording();
         return false;
     }
 
@@ -523,10 +500,12 @@ pub fn cardinal_mt_end_secondary_command_buffer(context: *types.CardinalSecondar
     if (c.vkEndCommandBuffer(context.command_buffer) != c.VK_SUCCESS) {
         mt_log.err("Failed to end secondary command buffer", .{});
         context.is_recording = false;
+        cardinal_mt_unlock_secondary_recording();
         return false;
     }
 
     context.is_recording = false;
+    cardinal_mt_unlock_secondary_recording();
     return true;
 }
 
@@ -564,6 +543,9 @@ pub fn cardinal_mt_execute_secondary_command_buffers(primary_cmd: c.VkCommandBuf
 
 pub fn cardinal_mt_reset_all_command_pools(manager: *types.CardinalMTCommandManager) void {
     if (!manager.is_initialized) return;
+
+    cardinal_mt_lock_secondary_recording();
+    defer cardinal_mt_unlock_secondary_recording();
 
     cardinal_mt_mutex_lock(&manager.pool_mutex);
     defer cardinal_mt_mutex_unlock(&manager.pool_mutex);
@@ -749,154 +731,9 @@ pub fn cardinal_mt_process_completed_tasks(max_tasks: u32) void {
             cb(t.data, t.success);
         }
 
-        if (t.data != null) {
-            if (t.type == types.CardinalMTTaskType.CARDINAL_MT_TASK_TEXTURE_LOAD) {
-                const ctx: *TextureLoadContext = @ptrCast(@alignCast(t.data));
-                memory.cardinal_free(allocator, ctx.file_path.ptr);
-                if (ctx.result_resource) |res| {
-                    ref_counting.cardinal_ref_release(res);
-                }
-                memory.cardinal_free(allocator, ctx);
-            } else if (t.type == types.CardinalMTTaskType.CARDINAL_MT_TASK_MESH_LOAD) {
-                const ctx: *MeshLoadContext = @ptrCast(@alignCast(t.data));
-                memory.cardinal_free(allocator, ctx.file_path.ptr);
-                if (ctx.result_scene) |s| {
-                    scene.cardinal_scene_destroy(s);
-                    memory.cardinal_free(allocator, s);
-                }
-                memory.cardinal_free(allocator, ctx);
-            }
-        }
-
         memory.cardinal_free(allocator, t);
         processed += 1;
     }
-}
-
-fn execute_texture_load(data: ?*anyopaque) void {
-    if (data == null) return;
-    const ctx: *TextureLoadContext = @ptrCast(@alignCast(data));
-
-    var tex_data: texture_loader.TextureData = undefined;
-    const ref_res = texture_loader.texture_load_with_ref_counting(ctx.file_path.ptr, &tex_data);
-
-    if (ref_res) |res| {
-        ctx.result_resource = res;
-    } else {
-        mt_log.err("Failed to load texture: {s}", .{ctx.file_path});
-        ctx.result_resource = null;
-    }
-}
-
-pub fn cardinal_mt_create_texture_load_task(file_path: []const u8, callback: ?*const fn (?*anyopaque, bool) void) ?*types.CardinalMTTask {
-    if (file_path.len == 0) {
-        mt_log.err("Invalid file path for texture load task", .{});
-        return null;
-    }
-
-    const allocator = memory.cardinal_get_allocator_for_category(.RENDERER);
-    const task_ptr = memory.cardinal_alloc(allocator, @sizeOf(types.CardinalMTTask));
-    if (task_ptr == null) {
-        mt_log.err("Failed to allocate memory for texture load task", .{});
-        return null;
-    }
-    const task: *types.CardinalMTTask = @ptrCast(@alignCast(task_ptr));
-
-    const ctx_ptr = memory.cardinal_alloc(allocator, @sizeOf(TextureLoadContext));
-    if (ctx_ptr == null) {
-        memory.cardinal_free(allocator, task_ptr);
-        return null;
-    }
-    const ctx: *TextureLoadContext = @ptrCast(@alignCast(ctx_ptr));
-
-    const path_copy_ptr = memory.cardinal_alloc(allocator, file_path.len + 1);
-    if (path_copy_ptr == null) {
-        memory.cardinal_free(allocator, ctx_ptr);
-        memory.cardinal_free(allocator, task_ptr);
-        return null;
-    }
-
-    const path_slice = @as([*]u8, @ptrCast(path_copy_ptr))[0..file_path.len];
-    @memcpy(path_slice, file_path);
-    @as([*]u8, @ptrCast(path_copy_ptr))[file_path.len] = 0;
-
-    ctx.file_path = @as([*:0]u8, @ptrCast(path_copy_ptr))[0..file_path.len :0];
-    ctx.result_resource = null;
-
-    task.type = types.CardinalMTTaskType.CARDINAL_MT_TASK_TEXTURE_LOAD;
-    task.data = ctx;
-    task.execute_func = execute_texture_load;
-    task.callback_func = callback;
-    task.is_completed = false;
-    task.success = false;
-    task.next = null;
-
-    return task;
-}
-
-fn execute_mesh_load(data: ?*anyopaque) void {
-    if (data == null) return;
-    const ctx: *MeshLoadContext = @ptrCast(@alignCast(data));
-
-    const allocator = memory.cardinal_get_allocator_for_category(.RENDERER);
-    const scene_ptr = memory.cardinal_alloc(allocator, @sizeOf(scene.CardinalScene));
-    if (scene_ptr == null) return;
-
-    const s: *scene.CardinalScene = @ptrCast(@alignCast(scene_ptr));
-
-    if (gltf_loader.cardinal_gltf_load_scene(ctx.file_path.ptr, s)) {
-        ctx.result_scene = s;
-    } else {
-        mt_log.err("Failed to load mesh/scene: {s}", .{ctx.file_path});
-        memory.cardinal_free(allocator, scene_ptr);
-        ctx.result_scene = null;
-    }
-}
-
-pub fn cardinal_mt_create_mesh_load_task(file_path: []const u8, callback: ?*const fn (?*anyopaque, bool) void) ?*types.CardinalMTTask {
-    if (file_path.len == 0) {
-        mt_log.err("Invalid file path for mesh load task", .{});
-        return null;
-    }
-
-    const allocator = memory.cardinal_get_allocator_for_category(.RENDERER);
-    const task_ptr = memory.cardinal_alloc(allocator, @sizeOf(types.CardinalMTTask));
-    if (task_ptr == null) {
-        mt_log.err("Failed to allocate memory for mesh load task", .{});
-        return null;
-    }
-    const task: *types.CardinalMTTask = @ptrCast(@alignCast(task_ptr));
-
-    const ctx_ptr = memory.cardinal_alloc(allocator, @sizeOf(MeshLoadContext));
-    if (ctx_ptr == null) {
-        memory.cardinal_free(allocator, task_ptr);
-        return null;
-    }
-    const ctx: *MeshLoadContext = @ptrCast(@alignCast(ctx_ptr));
-
-    const path_copy_ptr = memory.cardinal_alloc(allocator, file_path.len + 1);
-    if (path_copy_ptr == null) {
-        memory.cardinal_free(allocator, ctx_ptr);
-        memory.cardinal_free(allocator, task_ptr);
-        return null;
-    }
-
-    const path_slice = @as([*]u8, @ptrCast(path_copy_ptr))[0..file_path.len];
-    @memcpy(path_slice, file_path);
-    @as([*]u8, @ptrCast(path_copy_ptr))[file_path.len] = 0;
-
-    ctx.file_path = @as([*:0]u8, @ptrCast(path_copy_ptr))[0..file_path.len :0];
-    ctx.result_scene = null;
-
-    task.type = types.CardinalMTTaskType.CARDINAL_MT_TASK_MESH_LOAD;
-    task.data = ctx;
-    task.execute_func = execute_mesh_load;
-    task.callback_func = callback;
-    task.is_completed = false;
-    task.success = false;
-    task.next = null;
-
-    return task;
 }
 
 pub fn cardinal_mt_create_command_record_task(record_func: ?*const fn (?*anyopaque) void, user_data: ?*anyopaque, callback: ?*const fn (?*anyopaque, bool) void) ?*types.CardinalMTTask {

@@ -8,6 +8,7 @@ const std = @import("std");
 const builtin = @import("builtin");
 const log = @import("log.zig");
 const memory = @import("memory.zig");
+const name_hash = @import("name_hash.zig");
 
 const ref_log = log.ScopedLogger("REF_COUNT");
 
@@ -44,7 +45,7 @@ var g_registry_initialized: bool = false;
 /// Hashes a null-terminated identifier string for bucket selection.
 fn hash_string(str: [*:0]const u8) u32 {
     const slice = std.mem.span(str);
-    return @truncate(std.hash.Wyhash.hash(0, slice));
+    return name_hash.hash_u32_wyhash(slice);
 }
 
 /// Finds a resource in the registry by identifier (caller holds `g_registry_mutex`).

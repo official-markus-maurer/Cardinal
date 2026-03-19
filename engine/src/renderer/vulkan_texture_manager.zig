@@ -3,7 +3,6 @@
 //! Owns GPU texture lifetime, placeholder creation, and async upload/update tasks used by the
 //! renderer to stream textures into the bindless pool.
 //!
-//! TODO: Deduplicate upload/update task setup into shared helpers.
 const std = @import("std");
 const builtin = @import("builtin");
 const log = @import("../core/log.zig");
@@ -67,6 +66,35 @@ const AsyncTextureUpdateContext = struct {
     next: ?*AsyncTextureUpdateContext,
 };
 
+fn record_copy_secondary(pool: *types.CardinalThreadCommandPool, secondary_context: *types.CardinalSecondaryCommandContext, staging_buffer: c.VkBuffer, dst_image: c.VkImage, width: u32, height: u32) bool {
+    vk_mt.cardinal_mt_lock_secondary_recording();
+    defer vk_mt.cardinal_mt_unlock_secondary_recording();
+
+    if (!vk_mt.cardinal_mt_allocate_secondary_command_buffer(pool, secondary_context)) {
+        return false;
+    }
+
+    var begin_info = std.mem.zeroes(c.VkCommandBufferBeginInfo);
+    begin_info.sType = c.VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
+    begin_info.flags = c.VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
+
+    var inheritance = std.mem.zeroes(c.VkCommandBufferInheritanceInfo);
+    inheritance.sType = c.VK_STRUCTURE_TYPE_COMMAND_BUFFER_INHERITANCE_INFO;
+    begin_info.pInheritanceInfo = &inheritance;
+
+    if (c.vkBeginCommandBuffer(secondary_context.command_buffer, &begin_info) != c.VK_SUCCESS) {
+        return false;
+    }
+
+    vk_texture_utils.record_texture_copy_commands(secondary_context.command_buffer, staging_buffer, dst_image, width, height);
+
+    if (c.vkEndCommandBuffer(secondary_context.command_buffer) != c.VK_SUCCESS) {
+        return false;
+    }
+
+    return true;
+}
+
 /// Records staging + copy commands and prepares a new GPU image for a texture update.
 fn update_texture_task(data: ?*anyopaque) callconv(.c) void {
     if (data == null) return;
@@ -76,12 +104,6 @@ fn update_texture_task(data: ?*anyopaque) callconv(.c) void {
     const pool = vk_mt.cardinal_mt_get_thread_command_pool(&vk_mt.g_cardinal_mt_subsystem.command_manager);
     if (pool == null) {
         tex_mgr_log.err("Failed to get thread command pool for update task", .{});
-        ctx.finished.store(true, .release);
-        return;
-    }
-
-    if (!vk_mt.cardinal_mt_allocate_secondary_command_buffer(pool.?, &ctx.secondary_context)) {
-        tex_mgr_log.err("Failed to allocate secondary command buffer for update task", .{});
         ctx.finished.store(true, .release);
         return;
     }
@@ -111,24 +133,8 @@ fn update_texture_task(data: ?*anyopaque) callconv(.c) void {
         return;
     }
 
-    var begin_info = std.mem.zeroes(c.VkCommandBufferBeginInfo);
-    begin_info.sType = c.VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
-    begin_info.flags = c.VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
-
-    var inheritance = std.mem.zeroes(c.VkCommandBufferInheritanceInfo);
-    inheritance.sType = c.VK_STRUCTURE_TYPE_COMMAND_BUFFER_INHERITANCE_INFO;
-    begin_info.pInheritanceInfo = &inheritance;
-
-    if (c.vkBeginCommandBuffer(ctx.secondary_context.command_buffer, &begin_info) != c.VK_SUCCESS) {
-        tex_mgr_log.err("Failed to begin secondary command buffer for update", .{});
-        ctx.finished.store(true, .release);
-        return;
-    }
-
-    vk_texture_utils.record_texture_copy_commands(ctx.secondary_context.command_buffer, ctx.staging_buffer, ctx.new_image, ctx.texture_data.width, ctx.texture_data.height);
-
-    if (c.vkEndCommandBuffer(ctx.secondary_context.command_buffer) != c.VK_SUCCESS) {
-        tex_mgr_log.err("Failed to end secondary command buffer for update", .{});
+    if (!record_copy_secondary(pool.?, &ctx.secondary_context, ctx.staging_buffer, ctx.new_image, ctx.texture_data.width, ctx.texture_data.height)) {
+        tex_mgr_log.err("Failed to record secondary command buffer for update", .{});
         ctx.finished.store(true, .release);
         return;
     }
@@ -150,36 +156,14 @@ fn upload_texture_task(data: ?*anyopaque) callconv(.c) void {
         return;
     }
 
-    if (!vk_mt.cardinal_mt_allocate_secondary_command_buffer(pool.?, &ctx.secondary_context)) {
-        tex_mgr_log.err("Failed to allocate secondary command buffer", .{});
-        ctx.finished.store(true, .release);
-        return;
-    }
-
     if (!vk_texture_utils.create_staging_buffer_with_data(ctx.allocator, ctx.device, ctx.texture, &ctx.staging_buffer, &ctx.staging_memory, &ctx.staging_allocation)) {
         tex_mgr_log.err("Failed to create staging buffer", .{});
         ctx.finished.store(true, .release);
         return;
     }
 
-    var begin_info = std.mem.zeroes(c.VkCommandBufferBeginInfo);
-    begin_info.sType = c.VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
-    begin_info.flags = c.VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
-
-    var inheritance = std.mem.zeroes(c.VkCommandBufferInheritanceInfo);
-    inheritance.sType = c.VK_STRUCTURE_TYPE_COMMAND_BUFFER_INHERITANCE_INFO;
-    begin_info.pInheritanceInfo = &inheritance;
-
-    if (c.vkBeginCommandBuffer(ctx.secondary_context.command_buffer, &begin_info) != c.VK_SUCCESS) {
-        tex_mgr_log.err("Failed to begin secondary command buffer", .{});
-        ctx.finished.store(true, .release);
-        return;
-    }
-
-    vk_texture_utils.record_texture_copy_commands(ctx.secondary_context.command_buffer, ctx.staging_buffer, ctx.managed_texture.image, ctx.texture.width, ctx.texture.height);
-
-    if (c.vkEndCommandBuffer(ctx.secondary_context.command_buffer) != c.VK_SUCCESS) {
-        tex_mgr_log.err("Failed to end secondary command buffer", .{});
+    if (!record_copy_secondary(pool.?, &ctx.secondary_context, ctx.staging_buffer, ctx.managed_texture.image, ctx.texture.width, ctx.texture.height)) {
+        tex_mgr_log.err("Failed to record secondary command buffer", .{});
         ctx.finished.store(true, .release);
         return;
     }
@@ -382,6 +366,7 @@ pub fn vk_texture_manager_create_placeholder(manager: *types.VulkanTextureManage
             tex.bindless_index = bindless_idx;
             _ = vk_descriptor_indexing.vk_bindless_texture_set_extent(&manager.bindless_pool, bindless_idx, tex.width, tex.height);
             _ = vk_descriptor_indexing.vk_bindless_texture_flush_updates(&manager.bindless_pool);
+            _ = vk_descriptor_indexing.vk_bindless_texture_fill_all_descriptors(&manager.bindless_pool, tex.view, tex.sampler);
         }
     }
 
@@ -506,6 +491,7 @@ fn reset_bindless_pool_and_placeholder(manager: *types.VulkanTextureManager) boo
         if (vk_descriptor_indexing.vk_bindless_texture_register_existing(&manager.bindless_pool, tex.image, tex.view, tex.sampler, &bindless_idx)) {
             tex.bindless_index = bindless_idx;
             _ = vk_descriptor_indexing.vk_bindless_texture_flush_updates(&manager.bindless_pool);
+            _ = vk_descriptor_indexing.vk_bindless_texture_fill_all_descriptors(&manager.bindless_pool, tex.view, tex.sampler);
         } else {
             tex_mgr_log.err("Failed to re-register placeholder texture after pool reset", .{});
         }
@@ -1006,23 +992,31 @@ pub fn vk_texture_manager_update_textures(manager: *types.VulkanTextureManager, 
                 const tex = ctx.managed_texture;
                 tex_mgr_log.debug("Updating texture ptr: {*}, BindlessIndex: {d}", .{ tex, tex.bindless_index });
 
-                if (tex.is_allocated) {
-                    if (tex.view != null) c.vkDestroyImageView(manager.device, tex.view, null);
-                    if (tex.image != null) {
-                        if (manager.syncManager != null) {
-                            vk_texture_utils.add_image_cleanup(manager.allocator, tex.image, tex.allocation, signal_val);
-                        } else {
-                            vk_allocator.free_image(manager.allocator, tex.image, tex.allocation);
-                        }
+                const old_view = tex.view;
+                const old_image = tex.image;
+                const old_allocation = tex.allocation;
+                const old_sampler = tex.sampler;
+                const new_sampler = ctx.new_sampler;
+
+                if (manager.syncManager != null) {
+                    if (old_view != null) vk_texture_utils.add_image_view_cleanup(manager.device, old_view, signal_val);
+                    if (new_sampler != null and old_sampler != null and old_sampler != new_sampler) {
+                        vk_texture_utils.add_sampler_cleanup(manager.device, old_sampler, signal_val);
                     }
+                    if (old_image != null) vk_texture_utils.add_image_cleanup(manager.allocator, old_image, old_allocation, signal_val);
                 } else {
-                    if (tex.view != null) c.vkDestroyImageView(manager.device, tex.view, null);
+                    if (old_view != null) c.vkDestroyImageView(manager.device, old_view, null);
+                    if (new_sampler != null and old_sampler != null and old_sampler != new_sampler) {
+                        c.vkDestroySampler(manager.device, old_sampler, null);
+                    }
+                    if (old_image != null) vk_allocator.free_image(manager.allocator, old_image, old_allocation);
                 }
 
                 tex.image = ctx.new_image;
                 tex.memory = ctx.new_memory;
                 tex.view = ctx.new_view;
                 tex.allocation = ctx.new_allocation;
+                if (new_sampler != null) tex.sampler = new_sampler;
                 tex.width = ctx.texture_data.width;
                 tex.height = ctx.texture_data.height;
                 tex.channels = ctx.texture_data.channels;
@@ -1070,6 +1064,7 @@ pub fn vk_texture_manager_update_textures(manager: *types.VulkanTextureManager, 
                 }
 
                 c.vkDestroyImageView(manager.device, ctx.new_view, null);
+                if (ctx.new_sampler != null) c.vkDestroySampler(manager.device, ctx.new_sampler, null);
                 vk_allocator.free_image(manager.allocator, ctx.new_image, ctx.new_allocation);
                 vk_allocator.free_buffer(manager.allocator, ctx.staging_buffer, ctx.staging_allocation);
 

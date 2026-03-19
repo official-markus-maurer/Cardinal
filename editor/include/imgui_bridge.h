@@ -21,6 +21,9 @@ typedef struct VkQueue_T *VkQueue;
 typedef struct VkCommandBuffer_T *VkCommandBuffer;
 typedef struct VkDescriptorPool_T *VkDescriptorPool;
 typedef struct VkRenderPass_T *VkRenderPass;
+typedef struct VkSampler_T *VkSampler;
+typedef struct VkImageView_T *VkImageView;
+typedef struct VkDescriptorSet_T *VkDescriptorSet;
 #ifndef __cplusplus
 typedef struct ImGuiPayload ImGuiPayload;
 #endif
@@ -293,6 +296,10 @@ void imgui_bridge_pop_style_var(int count);
 unsigned int imgui_bridge_get_id(const char *str_id);
 float imgui_bridge_get_framerate(void);
 
+uint64_t imgui_bridge_vk_add_texture(VkSampler sampler, VkImageView view, int image_layout);
+void imgui_bridge_vk_remove_texture(uint64_t texture_id);
+void imgui_bridge_image_u64(uint64_t texture_id, float width, float height);
+
 // Bridge API
 void imgui_bridge_create_context(void);
 void imgui_bridge_destroy_context(void);
@@ -303,6 +310,7 @@ void imgui_bridge_style_colors_cardinal(void);
 void imgui_bridge_set_display_scale(float scale);
 void imgui_bridge_enable_docking(bool enable);
 void imgui_bridge_enable_keyboard(bool enable);
+void imgui_bridge_enable_viewports(bool enable);
 
 bool imgui_bridge_impl_glfw_init_for_vulkan(GLFWwindow *window,
                                             bool install_callbacks);
@@ -438,9 +446,15 @@ bool imgui_bridge_is_window_focused(int flags);
 bool imgui_bridge_drag_float(const char *label, float *v, float v_speed,
                              float v_min, float v_max, const char *format,
                              int flags);
+bool imgui_bridge_drag_float2(const char *label, float v[2], float v_speed,
+                              float v_min, float v_max, const char *format,
+                              int flags);
 bool imgui_bridge_drag_float3(const char *label, float v[3], float v_speed,
                               float v_min, float v_max, const char *format,
                               int flags);
+bool imgui_bridge_drag_int(const char *label, int *v, float v_speed,
+                           int v_min, int v_max, const char *format,
+                           int flags);
 bool imgui_bridge_color_edit3(const char *label, float col[3], int flags);
 bool imgui_bridge_combo(const char *label, int *current_item,
                         const char *const items[], int items_count,

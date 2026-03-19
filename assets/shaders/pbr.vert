@@ -15,6 +15,8 @@ layout(binding = 0) uniform UniformBufferObject {
     mat4 proj;
     vec4 viewPosAndDebug; // xyz = viewPos, w = debugFlags
     vec4 ambientColor;
+    vec4 terrainBrushPosRadius;
+    vec4 terrainBrushParams;
 } ubo;
 
 // Bone matrices uniform buffer for skeletal animation

@@ -195,6 +195,8 @@ pub const PBRUniformBufferObject = extern struct {
     viewPos: [3]f32,
     debugFlags: f32,
     ambientColor: [4]f32,
+    terrainBrushPosRadius: [4]f32,
+    terrainBrushParams: [4]f32,
 };
 
 pub const PBRLightType = enum(c_int) {
@@ -342,6 +344,8 @@ pub const MeshShaderUniformBuffer = extern struct {
     viewPos: [4]f32,
     /// xyz = color, w = range/unused.
     ambientColor: [4]f32,
+    terrainBrushPosRadius: [4]f32,
+    terrainBrushParams: [4]f32,
 };
 
 pub const VkQueueFamilyOwnershipTransferInfo = extern struct {
@@ -1107,6 +1111,8 @@ pub const VulkanState = extern struct {
     frame_allocator: ?*anyopaque,
 
     debug_grid_enabled: bool,
+
+    current_scene_owned: bool,
 };
 
 /// Secondary command context used by multi-threaded command recording helpers.

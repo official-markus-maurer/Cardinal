@@ -60,7 +60,9 @@ pub const LoadingTaskInfo = struct {
     target_entity: ?engine.ecs_entity.Entity = null,
 };
 
-/// Cached terrain editing buffers and GPU handles.
+/// Cached terrain editing buffers and GPU texture indices.
+///
+/// `*_handle` fields store bindless texture indices owned by the renderer.
 pub const TerrainData = struct {
     dims: u32,
     height: []f32,
@@ -73,6 +75,21 @@ pub const TerrainData = struct {
         std.math.maxInt(u32),
         std.math.maxInt(u32),
     },
+    layer_imgui_ids: [4]u64 = .{ 0, 0, 0, 0 },
+};
+
+pub const TerrainDirtyRect = struct {
+    min_x: u32,
+    min_y: u32,
+    max_x: u32,
+    max_y: u32,
+};
+
+pub const AssetThumbnail = struct {
+    handle: u32 = std.math.maxInt(u32),
+    imgui_id: u64 = 0,
+    width: u32 = 0,
+    height: u32 = 0,
 };
 
 /// Per-frame runtime state shared across editor panels and systems.
@@ -109,6 +126,8 @@ pub const EditorRuntimeState = struct {
     mesh_entity_by_mesh_index: std.AutoHashMapUnmanaged(u32, u64) = .{},
     model_root_by_id: std.AutoHashMapUnmanaged(u32, u64) = .{},
     terrain_data_by_entity: std.AutoHashMapUnmanaged(u64, TerrainData) = .{},
+    terrain_dirty_rects: std.AutoHashMapUnmanaged(u64, TerrainDirtyRect) = .{},
+    asset_thumbnails: std.StringHashMapUnmanaged(AssetThumbnail) = .{},
 
     /// Camera state passed to the renderer.
     camera: types.CardinalCamera = undefined,
@@ -138,6 +157,9 @@ pub const EditorRuntimeState = struct {
     /// Create-node popup state.
     create_node_parent: ?engine.ecs_entity.Entity = null,
     create_node_search: [128]u8 = [_]u8{0} ** 128,
+
+    globals_entity: engine.ecs_entity.Entity = .{ .id = std.math.maxInt(u64) },
+    preview_game_camera: bool = false,
 
     /// Marks `root` and all descendants so their render meshes will be driven by ECS transforms.
     ///
@@ -185,6 +207,8 @@ pub const EditorUiState = struct {
     open_rename_popup: bool = false,
     open_delete_popup: bool = false,
 
+    enable_viewports: bool = false,
+
     selected_model_id: u32 = 0,
     selected_entity: engine.ecs_entity.Entity = .{ .id = std.math.maxInt(u64) },
     scene_graph_focus_target_id: u64 = std.math.maxInt(u64),
@@ -208,6 +232,7 @@ pub const EditorUiState = struct {
 
     show_scene_graph: bool = true,
     show_scene_view: bool = true,
+    show_game_view: bool = false,
     show_assets: bool = true,
     show_model_manager: bool = true,
     show_entity_inspector: bool = true,
@@ -241,9 +266,23 @@ pub const EditorUiState = struct {
     terrain_tool: i32 = 0,
     terrain_sculpt_mode: i32 = 0,
     terrain_paint_color: [3]f32 = .{ 0.8, 0.2, 0.2 },
+    terrain_paint_layer: i32 = 0,
+    terrain_carve_mode: i32 = 0,
     terrain_brush_radius: f32 = 2.0,
     terrain_brush_strength: f32 = 0.5,
     terrain_brush_last_mouse_down: bool = false,
+    terrain_create_resolution: f32 = 128.0,
+    terrain_create_size: f32 = 64.0,
+    terrain_create_thickness: f32 = 8.0,
+    terrain_create_volume: bool = true,
+    terrain_default_texture_path: [512]u8 = [_]u8{0} ** 512,
+    terrain_texture_tiling: f32 = 8.0,
+    terrain_brush_outline_enabled: bool = false,
+    terrain_brush_outline_pos: [3]f32 = .{ 0.0, 0.0, 0.0 },
+    terrain_brush_outline_radius: f32 = 0.0,
+    terrain_brush_outline_strength: f32 = 0.0,
+    terrain_brush_outline_tool: i32 = 0,
+    terrain_brush_outline_mode: i32 = 0,
 
     undo: undo.UndoState = .{},
 

@@ -10,6 +10,7 @@ const model_manager_pkg = @import("model_manager.zig");
 const scene_pkg = @import("scene.zig");
 const transform_math = @import("../core/transform.zig");
 const async_loader = @import("../core/async_loader.zig");
+const asset_database = @import("asset_database.zig");
 
 const json = @import("scene_serializer_json.zig");
 const ser_name = @import("scene_serializer_components/name.zig");
@@ -17,10 +18,12 @@ const ser_transform = @import("scene_serializer_components/transform.zig");
 const ser_hierarchy = @import("scene_serializer_components/hierarchy.zig");
 const ser_node = @import("scene_serializer_components/node.zig");
 const ser_mesh_renderer = @import("scene_serializer_components/mesh_renderer.zig");
+const ser_terrain = @import("scene_serializer_components/terrain.zig");
 const ser_skybox = @import("scene_serializer_components/skybox.zig");
 const ser_light = @import("scene_serializer_components/light.zig");
 const ser_camera = @import("scene_serializer_components/camera.zig");
 const ser_script = @import("scene_serializer_components/script.zig");
+const ser_editor_globals = @import("scene_serializer_components/editor_globals.zig");
 
 const serializer_log = std.log.scoped(.scene_serializer);
 
@@ -52,6 +55,15 @@ pub const SceneSerializer = struct {
         try json_writer.write(4);
 
         if (self.model_manager) |mgr| {
+            var meta_db: asset_database.AssetDatabase = undefined;
+            var meta_db_ready = false;
+            defer if (meta_db_ready) meta_db.deinit();
+
+            if (asset_database.AssetDatabase.init(self.allocator, root_path orelse "")) |db| {
+                meta_db = db;
+                meta_db_ready = true;
+            } else |_| {}
+
             try json_writer.objectField("models");
             try json_writer.beginArray();
             if (mgr.models) |models| {
@@ -69,6 +81,24 @@ pub const SceneSerializer = struct {
                             try json_writer.write(rel_path);
                         } else {
                             try json_writer.write(path_slice);
+                        }
+                    } else {
+                        try json_writer.write(null);
+                    }
+
+                    try json_writer.objectField("guid");
+                    if (model.file_path) |path| {
+                        const path_slice = std.mem.span(path);
+                        if (meta_db_ready) {
+                            if (meta_db.getOrCreateGuidForAsset(path_slice)) |g| {
+                                var buf: [32]u8 = undefined;
+                                asset_database.guidToHex(g, &buf);
+                                try json_writer.write(buf[0..]);
+                            } else |_| {
+                                try json_writer.write(null);
+                            }
+                        } else {
+                            try json_writer.write(null);
                         }
                     } else {
                         try json_writer.write(null);
@@ -141,6 +171,11 @@ pub const SceneSerializer = struct {
                     try ser_mesh_renderer.serialize(&json_writer, mesh_renderer);
                 }
 
+                if (self.registry.get(components.Terrain, entity)) |terrain| {
+                    try json_writer.objectField("Terrain");
+                    try ser_terrain.serialize(&json_writer, terrain);
+                }
+
                 if (self.registry.get(components.Skybox, entity)) |skybox| {
                     try json_writer.objectField("Skybox");
                     try ser_skybox.serialize(&json_writer, self.allocator, skybox, root_path);
@@ -159,6 +194,11 @@ pub const SceneSerializer = struct {
                 if (self.registry.get(components.Script, entity)) |script| {
                     try json_writer.objectField("Script");
                     try ser_script.serialize(&json_writer, script);
+                }
+
+                if (self.registry.get(components.EditorGlobals, entity)) |g| {
+                    try json_writer.objectField("EditorGlobals");
+                    try ser_editor_globals.serialize(&json_writer, g);
                 }
 
                 try json_writer.endObject();
@@ -221,19 +261,60 @@ pub const SceneSerializer = struct {
         var total_mesh_count: u32 = 0;
 
         if (self.model_manager) |mgr| {
+            var meta_db: asset_database.AssetDatabase = undefined;
+            var meta_db_ready = false;
+            defer if (meta_db_ready) meta_db.deinit();
+
             var requested_models = std.ArrayListUnmanaged(u32){};
             defer requested_models.deinit(self.allocator);
 
             if (root.object.get("models")) |models_val| {
                 if (models_val == .array) {
+                    if (root_path) |root_dir| {
+                        var needs_meta_scan = false;
+                        for (models_val.array.items) |model_val| {
+                            if (model_val != .object) continue;
+                            if (model_val.object.get("guid")) |guid_val| {
+                                if (guid_val == .string) {
+                                    needs_meta_scan = true;
+                                    break;
+                                }
+                            }
+                        }
+
+                        if (needs_meta_scan) {
+                            meta_db = try asset_database.AssetDatabase.init(self.allocator, root_dir);
+                            meta_db_ready = true;
+                            meta_db.refresh() catch {
+                                meta_db_ready = false;
+                                meta_db.deinit();
+                            };
+                        }
+                    }
+
                     for (models_val.array.items) |model_val| {
                         if (model_val != .object) continue;
 
-                        if (model_val.object.get("file_path")) |path_val| {
+                        var resolved_path: ?[]const u8 = null;
+                        if (meta_db_ready) {
+                            if (model_val.object.get("guid")) |guid_val| {
+                                if (guid_val == .string) {
+                                    if (asset_database.parseGuidHex(guid_val.string)) |guid| {
+                                        resolved_path = meta_db.resolvePathByGuid(guid);
+                                    } else |_| {}
+                                }
+                            }
+                        }
+
+                        var full_path: []u8 = undefined;
+                        var needs_free = false;
+
+                        if (resolved_path) |rp| {
+                            full_path = try self.allocator.dupe(u8, rp);
+                            needs_free = true;
+                        } else if (model_val.object.get("file_path")) |path_val| {
                             if (path_val == .string) {
                                 const path_slice = path_val.string;
-                                var full_path: []u8 = undefined;
-                                var needs_free = false;
 
                                 if (root_path) |root_dir| {
                                     if (!std.fs.path.isAbsolute(path_slice)) {
@@ -247,31 +328,37 @@ pub const SceneSerializer = struct {
                                     full_path = try self.allocator.dupe(u8, path_slice);
                                     needs_free = true;
                                 }
-                                defer if (needs_free) self.allocator.free(full_path);
+                            } else {
+                                continue;
+                            }
+                        } else {
+                            continue;
+                        }
+                        defer if (needs_free) self.allocator.free(full_path);
 
-                                const path_z = try self.allocator.dupeZ(u8, full_path);
-                                defer self.allocator.free(path_z);
+                        const path_z = try self.allocator.dupeZ(u8, full_path);
+                        defer self.allocator.free(path_z);
 
-                                const model_id = model_manager_pkg.cardinal_model_manager_load_model_async(mgr, path_z.ptr, null, 2);
-                                if (model_id != 0) {
-                                    try requested_models.append(self.allocator, model_id);
+                        const model_id = model_manager_pkg.cardinal_model_manager_load_model_async(mgr, path_z.ptr, null, 2);
+                        if (model_id != 0) {
+                            try requested_models.append(self.allocator, model_id);
+                        }
+
+                        if (model_id != 0) {
+                            const model_idx = model_manager_pkg.find_model_index(mgr, model_id);
+                            if (model_idx >= 0 and mgr.models != null) {
+                                var model = &mgr.models.?[@intCast(model_idx)];
+
+                                if (model_val.object.get("visible")) |v| model.visible = v.bool;
+                                if (model_val.object.get("transform")) |t| {
+                                    model.transform = try json.deserializeMat4(t);
                                 }
 
-                                if (model_id != 0) {
-                                    const model_idx = model_manager_pkg.find_model_index(mgr, model_id);
-                                    if (model_idx >= 0 and mgr.models != null) {
-                                        var model = &mgr.models.?[@intCast(model_idx)];
-
-                                        if (model_val.object.get("visible")) |v| model.visible = v.bool;
-                                        if (model_val.object.get("transform")) |t| {
-                                            model.transform = try json.deserializeMat4(t);
-                                        }
-
-                                        mgr.scene_dirty = true;
-                                    }
-                                } else {
-                                    serializer_log.err("Failed to load model: {s}", .{path_slice});
-                                }
+                                mgr.scene_dirty = true;
+                            }
+                        } else {
+                            if (model_val.object.get("file_path")) |path_val| {
+                                if (path_val == .string) serializer_log.err("Failed to load model: {s}", .{path_val.string});
                             }
                         }
                     }
@@ -402,6 +489,15 @@ pub const SceneSerializer = struct {
                         }
                     }
 
+                    if (comps.object.get("Terrain")) |val| {
+                        has_any = true;
+                        if (ser_terrain.deserialize(val)) |comp| {
+                            self.registry.add(entity, comp) catch |e| serializer_log.err("Failed to add Terrain component to entity {d}: {}", .{ entity.index(), e });
+                        } else |err| {
+                            serializer_log.err("Failed to deserialize Terrain for entity {d}: {}", .{ entity.index(), err });
+                        }
+                    }
+
                     if (comps.object.get("Skybox")) |val| {
                         has_any = true;
                         if (ser_skybox.deserialize(self.allocator, val, root_path)) |comp| {
@@ -438,7 +534,38 @@ pub const SceneSerializer = struct {
                         }
                     }
 
+                    if (comps.object.get("EditorGlobals")) |val| {
+                        has_any = true;
+                        if (ser_editor_globals.deserialize(val)) |comp| {
+                            self.registry.add(entity, comp) catch |e| serializer_log.err("Failed to add EditorGlobals component to entity {d}: {}", .{ entity.index(), e });
+                        } else |err| {
+                            serializer_log.err("Failed to deserialize EditorGlobals for entity {d}: {}", .{ entity.index(), err });
+                        }
+                    }
+
                     entity_has_components.items[idx] = has_any;
+                }
+            }
+
+            {
+                var view = self.registry.view(components.EditorGlobals);
+                var it = view.iterator();
+                while (it.next()) |entry| {
+                    const old_id = entry.component.selected_entity_id;
+                    if (id_map.get(old_id)) |mapped| {
+                        entry.component.selected_entity_id = mapped.id;
+                    } else {
+                        entry.component.selected_entity_id = std.math.maxInt(u64);
+                    }
+
+                    const old_cam = entry.component.game_camera_entity_id;
+                    if (old_cam != std.math.maxInt(u64)) {
+                        if (id_map.get(old_cam)) |mapped_cam| {
+                            entry.component.game_camera_entity_id = mapped_cam.id;
+                        } else {
+                            entry.component.game_camera_entity_id = std.math.maxInt(u64);
+                        }
+                    }
                 }
             }
 

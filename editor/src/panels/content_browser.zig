@@ -10,11 +10,98 @@ const log = engine.log;
 const loader = engine.loader;
 const async_loader = engine.async_loader;
 const vulkan_renderer = engine.vulkan_renderer;
+const texture_loader = engine.texture_loader;
 const c = @import("../c.zig").c;
 const editor_state_module = @import("../editor_state.zig");
 const EditorState = editor_state_module.EditorState;
 const LoadingTaskInfo = editor_state_module.LoadingTaskInfo;
 const AssetState = editor_state_module.AssetState;
+
+fn ensure_texture_thumbnail(state: *EditorState, allocator: std.mem.Allocator, path: []const u8) u64 {
+    if (state.runtime.asset_thumbnails.getPtr(path)) |existing| {
+        return existing.imgui_id;
+    }
+
+    var tex = std.mem.zeroes(texture_loader.TextureData);
+    const path_z = allocator.dupeZ(u8, path) catch return 0;
+    defer allocator.free(path_z);
+
+    if (!texture_loader.texture_load_from_disk(@ptrCast(path_z.ptr), &tex)) {
+        return 0;
+    }
+    defer texture_loader.texture_data_free(&tex);
+
+    if (tex.data == null or tex.width == 0 or tex.height == 0) return 0;
+    if (tex.is_hdr != 0) return 0;
+    if (tex.channels != 3 and tex.channels != 4) return 0;
+
+    const thumb_size: u32 = 64;
+    var thumb_buf = allocator.alloc(u8, @as(usize, thumb_size) * @as(usize, thumb_size) * 4) catch return 0;
+    defer allocator.free(thumb_buf);
+
+    const src = tex.data.?;
+    const src_w: u32 = tex.width;
+    const src_h: u32 = tex.height;
+    const src_ch: u32 = tex.channels;
+
+    var y: u32 = 0;
+    while (y < thumb_size) : (y += 1) {
+        var x: u32 = 0;
+        const sy: u32 = @min((y * src_h) / thumb_size, src_h - 1);
+        while (x < thumb_size) : (x += 1) {
+            const sx: u32 = @min((x * src_w) / thumb_size, src_w - 1);
+            const src_idx: usize = (@as(usize, sy) * @as(usize, src_w) + @as(usize, sx)) * @as(usize, src_ch);
+            const dst_idx: usize = (@as(usize, y) * @as(usize, thumb_size) + @as(usize, x)) * 4;
+
+            thumb_buf[dst_idx + 0] = src[src_idx + 0];
+            thumb_buf[dst_idx + 1] = if (src_ch > 1) src[src_idx + 1] else src[src_idx + 0];
+            thumb_buf[dst_idx + 2] = if (src_ch > 2) src[src_idx + 2] else src[src_idx + 0];
+            thumb_buf[dst_idx + 3] = if (src_ch > 3) src[src_idx + 3] else 255;
+        }
+    }
+
+    var handle: u32 = 0;
+    if (!vulkan_renderer.cardinal_renderer_runtime_texture_allocate(state.runtime.renderer, thumb_size, thumb_size, c.VK_FORMAT_R8G8B8A8_UNORM, &handle)) {
+        return 0;
+    }
+
+    if (!vulkan_renderer.cardinal_renderer_runtime_texture_upload_full(state.runtime.renderer, handle, @ptrCast(thumb_buf.ptr), thumb_buf.len)) {
+        vulkan_renderer.cardinal_renderer_runtime_texture_free(state.runtime.renderer, handle);
+        return 0;
+    }
+
+    var sampler_raw: ?*anyopaque = null;
+    var view_raw: ?*anyopaque = null;
+    if (!vulkan_renderer.cardinal_renderer_runtime_texture_get_vk_handles(state.runtime.renderer, handle, @ptrCast(@alignCast(&sampler_raw)), @ptrCast(@alignCast(&view_raw)))) {
+        vulkan_renderer.cardinal_renderer_runtime_texture_free(state.runtime.renderer, handle);
+        return 0;
+    }
+
+    const imgui_id = c.imgui_bridge_vk_add_texture(@ptrCast(sampler_raw), @ptrCast(view_raw), c.VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
+    if (imgui_id == 0) {
+        vulkan_renderer.cardinal_renderer_runtime_texture_free(state.runtime.renderer, handle);
+        return 0;
+    }
+
+    const key_copy = allocator.dupe(u8, path) catch {
+        c.imgui_bridge_vk_remove_texture(imgui_id);
+        vulkan_renderer.cardinal_renderer_runtime_texture_free(state.runtime.renderer, handle);
+        return 0;
+    };
+    state.runtime.asset_thumbnails.put(allocator, key_copy, .{
+        .handle = handle,
+        .imgui_id = imgui_id,
+        .width = thumb_size,
+        .height = thumb_size,
+    }) catch {
+        allocator.free(key_copy);
+        c.imgui_bridge_vk_remove_texture(imgui_id);
+        vulkan_renderer.cardinal_renderer_runtime_texture_free(state.runtime.renderer, handle);
+        return 0;
+    };
+
+    return imgui_id;
+}
 
 /// Returns the inferred asset type based on file extension.
 fn get_asset_type(path: []const u8) AssetState.AssetType {
@@ -73,6 +160,15 @@ pub fn scan_assets_dir(state: *EditorState, allocator: std.mem.Allocator) void {
     };
     defer dir.close();
 
+    var meta_db: engine.asset_database.AssetDatabase = undefined;
+    var meta_db_ready = false;
+    defer if (meta_db_ready) meta_db.deinit();
+
+    if (engine.asset_database.AssetDatabase.init(allocator, state.ui.assets.assets_dir)) |db| {
+        meta_db = db;
+        meta_db_ready = true;
+    } else |_| {}
+
     const parent_path = std.fs.path.dirname(state.ui.assets.current_dir);
     if (parent_path) |parent| {
         if (!std.mem.eql(u8, state.ui.assets.current_dir, state.ui.assets.assets_dir)) {
@@ -88,6 +184,8 @@ pub fn scan_assets_dir(state: *EditorState, allocator: std.mem.Allocator) void {
 
     var iterator = dir.iterate();
     while (iterator.next() catch return) |entry| {
+        if (entry.kind != .directory and std.mem.endsWith(u8, entry.name, ".meta")) continue;
+
         const full_path = std.fs.path.join(allocator, &[_][]const u8{ state.ui.assets.current_dir, entry.name }) catch continue;
         const relative = std.fs.path.relative(allocator, state.ui.assets.assets_dir, full_path) catch full_path;
 
@@ -99,6 +197,10 @@ pub fn scan_assets_dir(state: *EditorState, allocator: std.mem.Allocator) void {
             is_dir = true;
         } else {
             asset_type = get_asset_type(entry.name);
+        }
+
+        if (!is_dir and meta_db_ready) {
+            _ = meta_db.getOrCreateGuidForAsset(full_path) catch {};
         }
 
         const full_path_z = allocator.dupeZ(u8, full_path) catch continue;
@@ -295,13 +397,21 @@ pub fn draw_asset_browser_panel(state: *EditorState, allocator: std.mem.Allocato
                     c.imgui_bridge_text_disabled("No assets found in '%s'", state.ui.assets.current_dir.ptr);
                 } else {
                     for (state.ui.assets.filtered_entries.items) |entry| {
-                        const icon = switch (entry.type) {
-                            .FOLDER => "[D]",
-                            .GLTF, .GLB, .KFM, .NIF => "[M]",
-                            .TEXTURE => "[T]",
-                            else => "[F]",
-                        };
-                        c.imgui_bridge_text("%s", icon);
+                        if (entry.type == .TEXTURE and !entry.is_directory) {
+                            const id = ensure_texture_thumbnail(state, allocator, entry.full_path);
+                            if (id != 0) {
+                                c.imgui_bridge_image_u64(id, 18.0, 18.0);
+                            } else {
+                                c.imgui_bridge_text("%s", "[T]");
+                            }
+                        } else {
+                            const icon = switch (entry.type) {
+                                .FOLDER => "[D]",
+                                .GLTF, .GLB, .KFM, .NIF => "[M]",
+                                else => "[F]",
+                            };
+                            c.imgui_bridge_text("%s", icon);
+                        }
                         c.imgui_bridge_same_line(0, -1);
 
                         if (c.imgui_bridge_selectable(@as([*:0]const u8, @ptrCast(entry.display.ptr)), false, 0)) {
@@ -322,6 +432,12 @@ pub fn draw_asset_browser_panel(state: *EditorState, allocator: std.mem.Allocato
                             } else if (entry.type == .TEXTURE) {
                                 load_skybox(state, allocator, entry.full_path);
                             }
+                        }
+
+                        if (!entry.is_directory and c.imgui_bridge_begin_drag_drop_source(0)) {
+                            _ = c.imgui_bridge_set_drag_drop_payload("ASSET_PATH", entry.full_path.ptr, entry.full_path.len + 1, c.ImGuiCond_Once);
+                            c.imgui_bridge_text("%s", entry.display.ptr);
+                            c.imgui_bridge_end_drag_drop_source();
                         }
 
                         if (!entry.is_directory and c.imgui_bridge_is_item_hovered(0) and c.imgui_bridge_is_mouse_double_clicked(0)) {

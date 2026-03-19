@@ -12,27 +12,36 @@ const scene = engine.scene;
 const math = engine.math;
 const memory = engine.memory;
 const renderer = engine.vulkan_renderer;
+const platform = engine.platform;
+const texture_loader = engine.texture_loader;
 const c = @import("../c.zig").c;
 const editor_state = @import("../editor_state.zig");
 const EditorState = editor_state.EditorState;
+const mesh_generators = @import("../systems/mesh_generators.zig");
+const terrain_volume = @import("../systems/terrain_volume.zig");
 const selection_raycast = @import("../systems/selection_raycast.zig");
 const undo = @import("../undo.zig");
 
-/// Per-stroke capture state used to build a single undo command.
 const StrokeCapture = struct {
+    entity_id: u64,
     model_id: u32,
     combined_mesh_index: u32,
-    tool: i32,
-    flatten_target_y: f32 = 0.0,
-    flatten_has_target: bool = false,
     touched: std.AutoHashMapUnmanaged(u32, u32) = .{},
     indices: std.ArrayListUnmanaged(u32) = .{},
     before_y: std.ArrayListUnmanaged(f32) = .{},
     before_color: std.ArrayListUnmanaged([4]f32) = .{},
+    before_splat: std.ArrayListUnmanaged(u32) = .{},
 };
 
-/// Currently active terrain stroke, or null when idle.
-var active_stroke: ?StrokeCapture = null;
+const StrokeState = struct {
+    tool: i32,
+    flatten_target_y: f32 = 0.0,
+    flatten_has_target: bool = false,
+    capture_by_entity: std.AutoHashMapUnmanaged(u64, u32) = .{},
+    captures: std.ArrayListUnmanaged(StrokeCapture) = .{},
+};
+
+var active_stroke: ?StrokeState = null;
 
 /// Resolves the mesh index range for a model inside the combined scene.
 fn get_model_combined_mesh_range(state: *EditorState, model_id: u32) ?struct { start: u32, count: u32 } {
@@ -50,153 +59,8 @@ fn get_model_combined_mesh_range(state: *EditorState, model_id: u32) ?struct { s
     return null;
 }
 
-/// Builds a one-mesh terrain scene used when creating new terrain assets.
-///
-/// TODO: Share primitive-scene construction with other editor mesh generators.
-fn build_flat_terrain_scene(grid_resolution: u32, world_size: f32) ?scene.CardinalScene {
-    const assets_alloc = memory.cardinal_get_allocator_for_category(.ASSETS);
-
-    var out = std.mem.zeroes(scene.CardinalScene);
-
-    const grid = if (grid_resolution < 2) 2 else grid_resolution;
-    const verts_per_side: u32 = grid + 1;
-    const vertex_count: u32 = verts_per_side * verts_per_side;
-    const index_count: u32 = grid * grid * 6;
-
-    const meshes_ptr = memory.cardinal_calloc(assets_alloc, 1, @sizeOf(scene.CardinalMesh)) orelse return null;
-    const materials_ptr = memory.cardinal_calloc(assets_alloc, 1, @sizeOf(scene.CardinalMaterial)) orelse {
-        memory.cardinal_free(assets_alloc, meshes_ptr);
-        return null;
-    };
-    const vertices_ptr = memory.cardinal_alloc(assets_alloc, @as(usize, vertex_count) * @sizeOf(scene.CardinalVertex)) orelse {
-        memory.cardinal_free(assets_alloc, materials_ptr);
-        memory.cardinal_free(assets_alloc, meshes_ptr);
-        return null;
-    };
-    const indices_ptr = memory.cardinal_alloc(assets_alloc, @as(usize, index_count) * @sizeOf(u32)) orelse {
-        memory.cardinal_free(assets_alloc, vertices_ptr);
-        memory.cardinal_free(assets_alloc, materials_ptr);
-        memory.cardinal_free(assets_alloc, meshes_ptr);
-        return null;
-    };
-
-    const meshes = @as([*]scene.CardinalMesh, @ptrCast(@alignCast(meshes_ptr)));
-    const materials = @as([*]scene.CardinalMaterial, @ptrCast(@alignCast(materials_ptr)));
-    const vertices = @as([*]scene.CardinalVertex, @ptrCast(@alignCast(vertices_ptr)));
-    const indices = @as([*]u32, @ptrCast(@alignCast(indices_ptr)));
-
-    const half: f32 = world_size * 0.5;
-
-    const min_y: f32 = 0.0;
-    const max_y: f32 = 0.0;
-
-    var v: u32 = 0;
-    while (v < vertex_count) : (v += 1) {
-        vertices[v] = std.mem.zeroes(scene.CardinalVertex);
-        vertices[v].nx = 0.0;
-        vertices[v].ny = 1.0;
-        vertices[v].nz = 0.0;
-        vertices[v].u1 = 0.0;
-        vertices[v].v1 = 0.0;
-        vertices[v].color = .{ 1.0, 1.0, 1.0, 1.0 };
-    }
-
-    var z: u32 = 0;
-    while (z < verts_per_side) : (z += 1) {
-        var x: u32 = 0;
-        while (x < verts_per_side) : (x += 1) {
-            const idx: u32 = z * verts_per_side + x;
-            const fx: f32 = @as(f32, @floatFromInt(x)) / @as(f32, @floatFromInt(grid));
-            const fz: f32 = @as(f32, @floatFromInt(z)) / @as(f32, @floatFromInt(grid));
-
-            const px = fx * world_size - half;
-            const pz = fz * world_size - half;
-
-            vertices[idx].px = px;
-            vertices[idx].py = 0.0;
-            vertices[idx].pz = pz;
-            vertices[idx].u = fx;
-            vertices[idx].v = fz;
-            vertices[idx].u1 = fx;
-            vertices[idx].v1 = fz;
-        }
-    }
-
-    var ii: u32 = 0;
-    z = 0;
-    while (z < grid) : (z += 1) {
-        var x: u32 = 0;
-        while (x < grid) : (x += 1) {
-            const idx0: u32 = z * verts_per_side + x;
-            const idx1: u32 = idx0 + 1;
-            const idx2: u32 = idx0 + verts_per_side;
-            const idx3: u32 = idx2 + 1;
-
-            indices[ii + 0] = idx0;
-            indices[ii + 1] = idx2;
-            indices[ii + 2] = idx1;
-            indices[ii + 3] = idx1;
-            indices[ii + 4] = idx2;
-            indices[ii + 5] = idx3;
-            ii += 6;
-        }
-    }
-
-    materials[0] = std.mem.zeroes(scene.CardinalMaterial);
-    const TextureHandle = @TypeOf(materials[0].albedo_texture);
-    const invalid_tex: TextureHandle = .{ .index = std.math.maxInt(u32), .generation = 0 };
-    materials[0].albedo_texture = invalid_tex;
-    materials[0].normal_texture = invalid_tex;
-    materials[0].metallic_roughness_texture = invalid_tex;
-    materials[0].ao_texture = invalid_tex;
-    materials[0].emissive_texture = invalid_tex;
-    materials[0].albedo_factor = .{ 0.35, 0.6, 0.35, 1.0 };
-    materials[0].metallic_factor = 0.0;
-    materials[0].roughness_factor = 0.95;
-    materials[0].emissive_factor = .{ 0.0, 0.0, 0.0 };
-    materials[0].emissive_strength = 0.0;
-    materials[0].normal_scale = 1.0;
-    materials[0].ao_strength = 1.0;
-    materials[0].alpha_mode = scene.CardinalAlphaMode.OPAQUE;
-    materials[0].alpha_cutoff = 0.5;
-    materials[0].double_sided = true;
-    materials[0].uv_indices = .{ 0, 0, 0, 0, 0 };
-    materials[0].albedo_transform = std.mem.zeroes(scene.CardinalTextureTransform);
-    materials[0].normal_transform = std.mem.zeroes(scene.CardinalTextureTransform);
-    materials[0].metallic_roughness_transform = std.mem.zeroes(scene.CardinalTextureTransform);
-    materials[0].ao_transform = std.mem.zeroes(scene.CardinalTextureTransform);
-    materials[0].emissive_transform = std.mem.zeroes(scene.CardinalTextureTransform);
-
-    meshes[0] = std.mem.zeroes(scene.CardinalMesh);
-    meshes[0].vertices = @ptrCast(vertices);
-    meshes[0].vertex_count = vertex_count;
-    meshes[0].indices = @ptrCast(indices);
-    meshes[0].index_count = index_count;
-    meshes[0].material_index = 0;
-    meshes[0].visible = true;
-    meshes[0].bounding_box_min = .{ -half, min_y, -half };
-    meshes[0].bounding_box_max = .{ half, max_y, half };
-
-    const identity = [16]f32{ 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1 };
-    @memcpy(&meshes[0].transform, &identity);
-
-    out.meshes = @ptrCast(meshes);
-    out.mesh_count = 1;
-    out.materials = @ptrCast(materials);
-    out.material_count = 1;
-    out.textures = null;
-    out.texture_count = 0;
-    out.lights = null;
-    out.light_count = 0;
-    out.root_nodes = null;
-    out.root_node_count = 0;
-    out.all_nodes = null;
-    out.all_node_count = 0;
-    out.animation_system = null;
-    out.skins = null;
-    out.skin_count = 0;
-
-    return out;
+fn build_flat_terrain_scene(grid_resolution: u32, world_size: f32, thickness: f32) ?scene.CardinalScene {
+    return mesh_generators.build_flat_terrain_scene(grid_resolution, world_size, thickness);
 }
 
 /// Refreshes `state.runtime.combined_scene` from the model manager and schedules a GPU upload.
@@ -231,6 +95,116 @@ fn float_to_u8(v: f32) u8 {
     return @intFromFloat(clamp01(v) * 255.0 + 0.5);
 }
 
+fn pack_splat(td: *editor_state.TerrainData, vi: u32) u32 {
+    const base: usize = @as(usize, vi) * 4;
+    if (base + 3 >= td.splat.len) return 0;
+    return @as(u32, td.splat[base + 0]) |
+        (@as(u32, td.splat[base + 1]) << 8) |
+        (@as(u32, td.splat[base + 2]) << 16) |
+        (@as(u32, td.splat[base + 3]) << 24);
+}
+
+fn lerp(a: f32, b: f32, t: f32) f32 {
+    return a + (b - a) * t;
+}
+
+fn sample_height_bilinear(td: *editor_state.TerrainData, verts_per_side: u32, terr: *components.Terrain, local_x: f32, local_z: f32) f32 {
+    if (verts_per_side < 2) return 0.0;
+    const grid: u32 = verts_per_side - 1;
+    const half_x = terr.size.x * 0.5;
+    const half_z = terr.size.y * 0.5;
+
+    const fx = std.math.clamp((local_x + half_x) / terr.size.x, 0.0, 1.0);
+    const fz = std.math.clamp((local_z + half_z) / terr.size.y, 0.0, 1.0);
+
+    const x_f = fx * @as(f32, @floatFromInt(grid));
+    const z_f = fz * @as(f32, @floatFromInt(grid));
+
+    const x0_u32: u32 = @intFromFloat(@floor(x_f));
+    const z0_u32: u32 = @intFromFloat(@floor(z_f));
+    const x1_u32: u32 = @min(x0_u32 + 1, grid);
+    const z1_u32: u32 = @min(z0_u32 + 1, grid);
+
+    const tx = x_f - @as(f32, @floatFromInt(x0_u32));
+    const tz = z_f - @as(f32, @floatFromInt(z0_u32));
+
+    const idx00: usize = @as(usize, z0_u32) * @as(usize, verts_per_side) + @as(usize, x0_u32);
+    const idx10: usize = @as(usize, z0_u32) * @as(usize, verts_per_side) + @as(usize, x1_u32);
+    const idx01: usize = @as(usize, z1_u32) * @as(usize, verts_per_side) + @as(usize, x0_u32);
+    const idx11: usize = @as(usize, z1_u32) * @as(usize, verts_per_side) + @as(usize, x1_u32);
+
+    if (idx11 >= td.height.len) return 0.0;
+    const h00 = td.height[idx00];
+    const h10 = td.height[idx10];
+    const h01 = td.height[idx01];
+    const h11 = td.height[idx11];
+
+    return lerp(lerp(h00, h10, tx), lerp(h01, h11, tx), tz);
+}
+
+fn brush_falloff(radius: f32, dx: f32, dz: f32) f32 {
+    const d2 = dx * dx + dz * dz;
+    if (d2 > radius * radius) return 0.0;
+    const d = @sqrt(@max(0.0, d2));
+    var w = 1.0 - (d / radius);
+    w = w * w;
+    return w;
+}
+
+fn predicted_height_at_point(
+    terr: *components.Terrain,
+    t: *components.Transform,
+    td: *editor_state.TerrainData,
+    verts_per_side: u32,
+    world_center: math.Vec3,
+    local_x: f32,
+    local_z: f32,
+    tool: i32,
+    mode: i32,
+    radius: f32,
+    strength_in: f32,
+) f32 {
+    const base = sample_height_bilinear(td, verts_per_side, terr, local_x, local_z);
+
+    const center_local_x = world_center.x - t.position.x;
+    const center_local_z = world_center.z - t.position.z;
+    const dx = local_x - center_local_x;
+    const dz = local_z - center_local_z;
+    const w = brush_falloff(radius, dx, dz);
+    if (w <= 0.0) return base;
+
+    if (tool != 0) return base;
+
+    const raw_strength = strength_in;
+    const strength = if (mode == 0 or mode == 1) @max(0.0, raw_strength) else @min(1.0, @max(0.0, raw_strength));
+
+    if (mode == 0) return base + strength * w;
+    if (mode == 1) return base - strength * w;
+    if (mode == 2) {
+        var target = base;
+        if (active_stroke) |s| {
+            if (s.flatten_has_target) target = s.flatten_target_y;
+        } else {
+            target = sample_height_bilinear(td, verts_per_side, terr, center_local_x, center_local_z);
+        }
+        return base + (target - base) * (strength * w);
+    }
+    if (mode == 3) {
+        const grid: u32 = verts_per_side - 1;
+        const step_x = terr.size.x / @as(f32, @floatFromInt(grid));
+        const step_z = terr.size.y / @as(f32, @floatFromInt(grid));
+        const h0 = base;
+        const h1 = sample_height_bilinear(td, verts_per_side, terr, local_x - step_x, local_z);
+        const h2 = sample_height_bilinear(td, verts_per_side, terr, local_x + step_x, local_z);
+        const h3 = sample_height_bilinear(td, verts_per_side, terr, local_x, local_z - step_z);
+        const h4 = sample_height_bilinear(td, verts_per_side, terr, local_x, local_z + step_z);
+        const avg = (h0 + h1 + h2 + h3 + h4) / 5.0;
+        return h0 + (avg - h0) * (strength * w);
+    }
+
+    return base;
+}
+
 fn recompute_y_bounds(verts: [*]scene.CardinalVertex, vertex_count: u32) struct { min_y: f32, max_y: f32 } {
     var min_y: f32 = std.math.floatMax(f32);
     var max_y: f32 = -std.math.floatMax(f32);
@@ -253,6 +227,98 @@ fn update_terrain_bounds(terr: *components.Terrain, model_mesh: *scene.CardinalM
     model_mesh.bounding_box_max = .{ half_x, b.max_y, half_z };
     combined_mesh.bounding_box_min = model_mesh.bounding_box_min;
     combined_mesh.bounding_box_max = model_mesh.bounding_box_max;
+}
+
+fn rewrite_indices_from_alpha(model_mesh: *scene.CardinalMesh, verts_per_side: u32) void {
+    if (model_mesh.vertices == null or model_mesh.indices == null) return;
+    if (verts_per_side < 2) return;
+    const grid: u32 = verts_per_side - 1;
+    const need: u32 = grid * grid * 6;
+    if (model_mesh.index_count < need) return;
+
+    const verts = @as([*]scene.CardinalVertex, @ptrCast(model_mesh.vertices.?));
+    const indices = @as([*]u32, @ptrCast(model_mesh.indices.?));
+
+    var quad: u32 = 0;
+    var z: u32 = 0;
+    while (z < grid) : (z += 1) {
+        var x: u32 = 0;
+        while (x < grid) : (x += 1) {
+            const idx0: u32 = z * verts_per_side + x;
+            const idx1: u32 = idx0 + 1;
+            const idx2: u32 = idx0 + verts_per_side;
+            const idx3: u32 = idx2 + 1;
+
+            const a = (verts[idx0].color[3] + verts[idx1].color[3] + verts[idx2].color[3] + verts[idx3].color[3]) * 0.25;
+            const base: usize = @as(usize, quad) * 6;
+            if (a > 0.5) {
+                indices[base + 0] = idx0;
+                indices[base + 1] = idx2;
+                indices[base + 2] = idx1;
+                indices[base + 3] = idx1;
+                indices[base + 4] = idx2;
+                indices[base + 5] = idx3;
+            } else {
+                indices[base + 0] = 0;
+                indices[base + 1] = 0;
+                indices[base + 2] = 0;
+                indices[base + 3] = 0;
+                indices[base + 4] = 0;
+                indices[base + 5] = 0;
+            }
+            quad += 1;
+        }
+    }
+}
+
+fn emit_wall_quad(wall_verts: [*]scene.CardinalVertex, wall_indices: [*]u32, wall_v: *u32, wall_i: *u32, v0: scene.CardinalVertex, v1: scene.CardinalVertex, nx: f32, nz: f32, flip: bool, thickness: f32) void {
+    const top0 = v0;
+    const top1 = v1;
+    var bot0 = v0;
+    var bot1 = v1;
+    bot0.py = v0.py - thickness;
+    bot1.py = v1.py - thickness;
+
+    var t0 = top0;
+    var t1 = top1;
+    t0.nx = nx;
+    t0.ny = 0.0;
+    t0.nz = nz;
+    t1.nx = nx;
+    t1.ny = 0.0;
+    t1.nz = nz;
+    bot0.nx = nx;
+    bot0.ny = 0.0;
+    bot0.nz = nz;
+    bot1.nx = nx;
+    bot1.ny = 0.0;
+    bot1.nz = nz;
+
+    const base_v = wall_v.*;
+    wall_verts[base_v + 0] = t0;
+    wall_verts[base_v + 1] = t1;
+    wall_verts[base_v + 2] = bot1;
+    wall_verts[base_v + 3] = bot0;
+
+    const base_i = wall_i.*;
+    if (!flip) {
+        wall_indices[base_i + 0] = base_v + 0;
+        wall_indices[base_i + 1] = base_v + 1;
+        wall_indices[base_i + 2] = base_v + 2;
+        wall_indices[base_i + 3] = base_v + 0;
+        wall_indices[base_i + 4] = base_v + 2;
+        wall_indices[base_i + 5] = base_v + 3;
+    } else {
+        wall_indices[base_i + 0] = base_v + 0;
+        wall_indices[base_i + 1] = base_v + 2;
+        wall_indices[base_i + 2] = base_v + 1;
+        wall_indices[base_i + 3] = base_v + 0;
+        wall_indices[base_i + 4] = base_v + 3;
+        wall_indices[base_i + 5] = base_v + 2;
+    }
+
+    wall_v.* += 4;
+    wall_i.* += 6;
 }
 
 fn derive_grid_from_mesh(terr: *components.Terrain, mesh: *scene.CardinalMesh) ?struct { grid: u32, verts_per_side: u32 } {
@@ -282,6 +348,11 @@ fn ensure_terrain_data(state: *EditorState, entity_id: u64, model_mesh: *scene.C
     if (state.runtime.terrain_data_by_entity.getPtr(entity_id)) |existing| {
         if (existing.dims == dims and existing.height.len == want_height_len and existing.splat.len == want_splat_len) {
             return existing;
+        }
+        for (existing.layer_imgui_ids) |id| {
+            if (id != 0) {
+                c.imgui_bridge_vk_remove_texture(id);
+            }
         }
         if (existing.height_handle != std.math.maxInt(u32)) {
             renderer.cardinal_renderer_runtime_texture_free(state.runtime.renderer, existing.height_handle);
@@ -314,10 +385,28 @@ fn ensure_terrain_data(state: *EditorState, entity_id: u64, model_mesh: *scene.C
         height[i] = verts[@as(u32, @intCast(i))].py;
         const c4 = verts[@as(u32, @intCast(i))].color;
         const base = i * 4;
-        splat[base + 0] = float_to_u8(c4[0]);
-        splat[base + 1] = float_to_u8(c4[1]);
-        splat[base + 2] = float_to_u8(c4[2]);
-        splat[base + 3] = 255;
+        const r = clamp01(c4[0]);
+        const g = clamp01(c4[1]);
+        const b = clamp01(c4[2]);
+        if (r > 0.999 and g > 0.999 and b > 0.999) {
+            splat[base + 0] = 255;
+            splat[base + 1] = 0;
+            splat[base + 2] = 0;
+            splat[base + 3] = 0;
+            continue;
+        }
+        const sum = r + g + b;
+        if (sum > 0.0001) {
+            splat[base + 0] = float_to_u8(r / sum);
+            splat[base + 1] = float_to_u8(g / sum);
+            splat[base + 2] = float_to_u8(b / sum);
+            splat[base + 3] = 0;
+        } else {
+            splat[base + 0] = 255;
+            splat[base + 1] = 0;
+            splat[base + 2] = 0;
+            splat[base + 3] = 0;
+        }
     }
 
     state.runtime.terrain_data_by_entity.put(alloc, entity_id, .{
@@ -381,12 +470,25 @@ fn ensure_terrain_material_bound(state: *EditorState, terr: *components.Terrain,
     var mat = &model.scene.materials.?[0];
 
     const TextureHandle = @TypeOf(mat.albedo_texture);
+    const tiling = @max(0.001, state.ui.terrain_texture_tiling);
+    const identity_tf = scene.CardinalTextureTransform{
+        .offset = .{ 0.0, 0.0 },
+        .scale = .{ 1.0, 1.0 },
+        .rotation = 0.0,
+    };
+    const tile_tf = scene.CardinalTextureTransform{
+        .offset = .{ 0.0, 0.0 },
+        .scale = .{ tiling, tiling },
+        .rotation = 0.0,
+    };
     if (mat.emissive_strength < 0.0 and
         mat.emissive_texture.index == td.splat_handle and
         mat.albedo_texture.index == td.layer_handles[0] and
         mat.normal_texture.index == td.layer_handles[1] and
         mat.metallic_roughness_texture.index == td.layer_handles[2] and
-        mat.ao_texture.index == td.layer_handles[3])
+        mat.ao_texture.index == td.layer_handles[3] and
+        mat.albedo_transform.scale[0] == tile_tf.scale[0] and
+        mat.albedo_transform.scale[1] == tile_tf.scale[1])
     {
         return;
     }
@@ -401,6 +503,12 @@ fn ensure_terrain_material_bound(state: *EditorState, terr: *components.Terrain,
     mat.roughness_factor = 1.0;
     mat.emissive_factor = .{ 0.0, 0.0, 0.0 };
     mat.emissive_strength = -1.0;
+    mat.uv_indices = .{ 0, 0, 0, 0, 0 };
+    mat.albedo_transform = tile_tf;
+    mat.normal_transform = tile_tf;
+    mat.metallic_roughness_transform = tile_tf;
+    mat.ao_transform = tile_tf;
+    mat.emissive_transform = identity_tf;
 
     if (get_terrain_meshes(state, terr)) |meshes| {
         const combined_mesh = meshes.combined_mesh;
@@ -422,7 +530,12 @@ fn ensure_terrain_material_bound(state: *EditorState, terr: *components.Terrain,
             cmb.alpha_mode = mat.alpha_mode;
             cmb.normal_scale = mat.normal_scale;
             cmb.ao_strength = mat.ao_strength;
-            cmb.uv_indices = mat.uv_indices;
+            cmb.uv_indices = .{ 0, 0, 0, 0, 0 };
+            cmb.albedo_transform = tile_tf;
+            cmb.normal_transform = tile_tf;
+            cmb.metallic_roughness_transform = tile_tf;
+            cmb.ao_transform = tile_tf;
+            cmb.emissive_transform = identity_tf;
         }
     }
 
@@ -431,162 +544,475 @@ fn ensure_terrain_material_bound(state: *EditorState, terr: *components.Terrain,
     state.runtime.scene_loaded = (state.runtime.combined_scene.mesh_count > 0);
 }
 
+pub fn ensure_terrain_data_for_entity(state: *EditorState, entity: engine.ecs_entity.Entity) ?*editor_state.TerrainData {
+    if (!state.runtime.registry.entity_manager.is_alive(entity)) return null;
+    const terr = state.runtime.registry.get(components.Terrain, entity) orelse return null;
+    const meshes = get_terrain_meshes(state, terr) orelse return null;
+    const grid_ctx = derive_grid_from_mesh(terr, meshes.model_mesh) orelse return null;
+    const td = ensure_terrain_data(state, entity.id, meshes.model_mesh, grid_ctx.verts_per_side) orelse return null;
+    ensure_terrain_material_bound(state, terr, td);
+    return td;
+}
+
+pub fn bind_terrain_material(state: *EditorState, terr: *components.Terrain, td: *editor_state.TerrainData) void {
+    ensure_terrain_material_bound(state, terr, td);
+}
+
+pub fn rewrite_indices_from_carve_alpha(model_mesh: *scene.CardinalMesh, verts_per_side: u32) void {
+    rewrite_indices_from_alpha(model_mesh, verts_per_side);
+}
+
 /// Uploads a rectangular CPU height/splat region into the terrain GPU textures.
-fn upload_terrain_dirty_rect(state: *EditorState, td: *editor_state.TerrainData, min_x: u32, min_y: u32, max_x: u32, max_y: u32) void {
+fn upload_terrain_dirty_rect(state: *EditorState, entity_id: u64, td: *editor_state.TerrainData, min_x: u32, min_y: u32, max_x: u32, max_y: u32) void {
     ensure_terrain_gpu_textures(state, td);
     if (td.height_handle == std.math.maxInt(u32) or td.splat_handle == std.math.maxInt(u32)) return;
 
     if (min_x > max_x or min_y > max_y) return;
     if (max_x >= td.dims or max_y >= td.dims) return;
 
-    const w: u32 = max_x - min_x + 1;
-    const h: u32 = max_y - min_y + 1;
-    const w_usize: usize = @intCast(w);
-    const h_usize: usize = @intCast(h);
+    const alloc = memory.cardinal_get_allocator_for_category(.ENGINE).as_allocator();
+    if (state.runtime.terrain_dirty_rects.getPtr(entity_id)) |r| {
+        r.min_x = @min(r.min_x, min_x);
+        r.min_y = @min(r.min_y, min_y);
+        r.max_x = @max(r.max_x, max_x);
+        r.max_y = @max(r.max_y, max_y);
+    } else {
+        state.runtime.terrain_dirty_rects.put(alloc, entity_id, .{ .min_x = min_x, .min_y = min_y, .max_x = max_x, .max_y = max_y }) catch {};
+    }
+}
 
-    const tmp_height = state.runtime.arena_allocator.alloc(f32, w_usize * h_usize) catch return;
-    const tmp_splat = state.runtime.arena_allocator.alloc(u8, (w_usize * h_usize) * 4) catch return;
+fn stroke_begin(tool: i32) void {
+    if (active_stroke != null) return;
+    active_stroke = .{ .tool = tool };
+    const alloc = memory.cardinal_get_allocator_for_category(.ENGINE).as_allocator();
+    active_stroke.?.capture_by_entity.ensureTotalCapacity(alloc, 16) catch {};
+    active_stroke.?.captures.ensureTotalCapacity(alloc, 16) catch {};
+}
 
-    var row: u32 = 0;
-    while (row < h) : (row += 1) {
-        const src_y: usize = @as(usize, min_y + row);
-        const src_base: usize = src_y * @as(usize, td.dims) + @as(usize, min_x);
-        const dst_base: usize = @as(usize, row) * w_usize;
+fn stroke_get_capture(entity_id: u64, terr: *components.Terrain) ?*StrokeCapture {
+    if (active_stroke == null) return null;
+    const alloc = memory.cardinal_get_allocator_for_category(.ENGINE).as_allocator();
 
-        @memcpy(tmp_height[dst_base .. dst_base + w_usize], td.height[src_base .. src_base + w_usize]);
-
-        const src_s_base: usize = src_base * 4;
-        const dst_s_base: usize = dst_base * 4;
-        @memcpy(tmp_splat[dst_s_base .. dst_s_base + w_usize * 4], td.splat[src_s_base .. src_s_base + w_usize * 4]);
+    const s = &active_stroke.?;
+    if (s.capture_by_entity.get(entity_id)) |idx| {
+        if (idx < s.captures.items.len) return &s.captures.items[idx];
     }
 
-    _ = renderer.cardinal_renderer_runtime_texture_update_subregion(state.runtime.renderer, td.height_handle, min_x, min_y, w, h, @ptrCast(tmp_height.ptr), tmp_height.len * @sizeOf(f32));
-    _ = renderer.cardinal_renderer_runtime_texture_update_subregion(state.runtime.renderer, td.splat_handle, min_x, min_y, w, h, @ptrCast(tmp_splat.ptr), tmp_splat.len);
-}
-
-/// Begins a new stroke capture if one is not already active.
-fn stroke_begin(state: *EditorState, terr: *components.Terrain, tool: i32) void {
-    if (active_stroke != null) return;
-    active_stroke = .{
+    const idx_u32: u32 = @intCast(s.captures.items.len);
+    s.capture_by_entity.put(alloc, entity_id, idx_u32) catch return null;
+    s.captures.append(alloc, .{
+        .entity_id = entity_id,
         .model_id = terr.model_id,
         .combined_mesh_index = terr.mesh_index,
-        .tool = tool,
+    }) catch {
+        _ = s.capture_by_entity.remove(entity_id);
+        return null;
     };
-    const alloc = memory.cardinal_get_allocator_for_category(.ENGINE).as_allocator();
-    active_stroke.?.touched.ensureTotalCapacity(alloc, 256) catch {};
-    active_stroke.?.indices.ensureTotalCapacity(alloc, 256) catch {};
-    active_stroke.?.before_y.ensureTotalCapacity(alloc, 256) catch {};
-    active_stroke.?.before_color.ensureTotalCapacity(alloc, 256) catch {};
-    _ = state;
+
+    const cap = &s.captures.items[idx_u32];
+    cap.touched.ensureTotalCapacity(alloc, 256) catch {};
+    cap.indices.ensureTotalCapacity(alloc, 256) catch {};
+    cap.before_y.ensureTotalCapacity(alloc, 256) catch {};
+    cap.before_color.ensureTotalCapacity(alloc, 256) catch {};
+    cap.before_splat.ensureTotalCapacity(alloc, 256) catch {};
+    return cap;
 }
 
-/// Adds a vertex to the active stroke capture if it was not seen before.
-fn stroke_record_vertex(index: u32, before_y: f32, before_color: [4]f32) void {
+fn stroke_record_vertex(entity_id: u64, terr: *components.Terrain, index: u32, before_y: f32, before_color: [4]f32, before_splat: u32) void {
+    const cap = stroke_get_capture(entity_id, terr) orelse return;
+    const alloc = memory.cardinal_get_allocator_for_category(.ENGINE).as_allocator();
+    if (cap.touched.get(index) != null) return;
+    const pos: u32 = @intCast(cap.indices.items.len);
+    cap.touched.put(alloc, index, pos) catch return;
+    cap.indices.append(alloc, index) catch return;
+    cap.before_y.append(alloc, before_y) catch return;
+    cap.before_color.append(alloc, before_color) catch return;
+    cap.before_splat.append(alloc, before_splat) catch return;
+}
+
+const StitchDir = enum { neg_x, pos_x, neg_z, pos_z };
+
+fn stitch_pair(state: *EditorState, a_ent: engine.ecs_entity.Entity, b_ent: engine.ecs_entity.Entity, dir: StitchDir, tool: i32) void {
+    if (!state.runtime.registry.entity_manager.is_alive(a_ent) or !state.runtime.registry.entity_manager.is_alive(b_ent)) return;
+
+    const terr_a = state.runtime.registry.get(components.Terrain, a_ent) orelse return;
+    const terr_b = state.runtime.registry.get(components.Terrain, b_ent) orelse return;
+    const tr_a = state.runtime.registry.get(components.Transform, a_ent) orelse return;
+    const tr_b = state.runtime.registry.get(components.Transform, b_ent) orelse return;
+    const td_a = state.runtime.terrain_data_by_entity.getPtr(a_ent.id) orelse return;
+    const td_b = state.runtime.terrain_data_by_entity.getPtr(b_ent.id) orelse return;
+
+    if (td_a.dims < 2 or td_b.dims < 2) return;
+    if (td_a.dims != td_b.dims) return;
+    if (@abs(terr_a.size.x - terr_b.size.x) > 0.001) return;
+    if (@abs(terr_a.size.y - terr_b.size.y) > 0.001) return;
+    if (@abs(tr_a.position.y - tr_b.position.y) > 0.01) return;
+
+    const meshes_a = get_terrain_meshes(state, terr_a) orelse return;
+    const meshes_b = get_terrain_meshes(state, terr_b) orelse return;
+    const model_mesh_a = meshes_a.model_mesh;
+    const model_mesh_b = meshes_b.model_mesh;
+    if (model_mesh_a.vertices == null or model_mesh_a.vertex_count == 0) return;
+    if (model_mesh_b.vertices == null or model_mesh_b.vertex_count == 0) return;
+    const verts_a = @as([*]scene.CardinalVertex, @ptrCast(model_mesh_a.vertices.?));
+    const verts_b = @as([*]scene.CardinalVertex, @ptrCast(model_mesh_b.vertices.?));
+
+    const vps: u32 = td_a.dims;
+    const grid: u32 = vps - 1;
+
+    const do_height = (tool == 0);
+    const do_paint = (tool == 1);
+    const do_carve = (tool == 2);
+
+    switch (dir) {
+        .pos_x => {
+            var z: u32 = 0;
+            while (z <= grid) : (z += 1) {
+                const vi_a: u32 = z * vps + grid;
+                const vi_b: u32 = z * vps + 0;
+                if (vi_a >= model_mesh_a.vertex_count or vi_b >= model_mesh_b.vertex_count) continue;
+                stroke_record_vertex(a_ent.id, terr_a, vi_a, verts_a[vi_a].py, verts_a[vi_a].color, pack_splat(td_a, vi_a));
+                stroke_record_vertex(b_ent.id, terr_b, vi_b, verts_b[vi_b].py, verts_b[vi_b].color, pack_splat(td_b, vi_b));
+
+                if (do_height) {
+                    const avg: f32 = (td_a.height[vi_a] + td_b.height[vi_b]) * 0.5;
+                    td_a.height[vi_a] = avg;
+                    td_b.height[vi_b] = avg;
+                    verts_a[vi_a].py = avg;
+                    verts_b[vi_b].py = avg;
+                } else if (do_paint) {
+                    const base_a: usize = @as(usize, vi_a) * 4;
+                    const base_b: usize = @as(usize, vi_b) * 4;
+                    if (base_a + 3 < td_a.splat.len and base_b + 3 < td_b.splat.len) {
+                        var chan: usize = 0;
+                        while (chan < 4) : (chan += 1) {
+                            const a_u: u16 = td_a.splat[base_a + chan];
+                            const b_u: u16 = td_b.splat[base_b + chan];
+                            const avg_u: u8 = @intCast((a_u + b_u + 1) / 2);
+                            td_a.splat[base_a + chan] = avg_u;
+                            td_b.splat[base_b + chan] = avg_u;
+                        }
+                        const a0 = @as(f32, @floatFromInt(td_a.splat[base_a + 0])) / 255.0;
+                        const a1 = @as(f32, @floatFromInt(td_a.splat[base_a + 1])) / 255.0;
+                        const a2 = @as(f32, @floatFromInt(td_a.splat[base_a + 2])) / 255.0;
+                        const b0 = @as(f32, @floatFromInt(td_b.splat[base_b + 0])) / 255.0;
+                        const b1 = @as(f32, @floatFromInt(td_b.splat[base_b + 1])) / 255.0;
+                        const b2 = @as(f32, @floatFromInt(td_b.splat[base_b + 2])) / 255.0;
+                        verts_a[vi_a].color = .{ a0, a1, a2, verts_a[vi_a].color[3] };
+                        verts_b[vi_b].color = .{ b0, b1, b2, verts_b[vi_b].color[3] };
+                    }
+                } else if (do_carve) {
+                    const avg_a: f32 = (clamp01(verts_a[vi_a].color[3]) + clamp01(verts_b[vi_b].color[3])) * 0.5;
+                    verts_a[vi_a].color[3] = avg_a;
+                    verts_b[vi_b].color[3] = avg_a;
+                }
+            }
+            if (!do_carve) {
+                upload_terrain_dirty_rect(state, a_ent.id, td_a, grid, 0, grid, grid);
+                upload_terrain_dirty_rect(state, b_ent.id, td_b, 0, 0, 0, grid);
+            } else {
+                rewrite_indices_from_alpha(model_mesh_a, vps);
+                rewrite_indices_from_alpha(model_mesh_b, vps);
+            }
+        },
+        .neg_x => {
+            var z: u32 = 0;
+            while (z <= grid) : (z += 1) {
+                const vi_a: u32 = z * vps + 0;
+                const vi_b: u32 = z * vps + grid;
+                if (vi_a >= model_mesh_a.vertex_count or vi_b >= model_mesh_b.vertex_count) continue;
+                stroke_record_vertex(a_ent.id, terr_a, vi_a, verts_a[vi_a].py, verts_a[vi_a].color, pack_splat(td_a, vi_a));
+                stroke_record_vertex(b_ent.id, terr_b, vi_b, verts_b[vi_b].py, verts_b[vi_b].color, pack_splat(td_b, vi_b));
+
+                if (do_height) {
+                    const avg: f32 = (td_a.height[vi_a] + td_b.height[vi_b]) * 0.5;
+                    td_a.height[vi_a] = avg;
+                    td_b.height[vi_b] = avg;
+                    verts_a[vi_a].py = avg;
+                    verts_b[vi_b].py = avg;
+                } else if (do_paint) {
+                    const base_a: usize = @as(usize, vi_a) * 4;
+                    const base_b: usize = @as(usize, vi_b) * 4;
+                    if (base_a + 3 < td_a.splat.len and base_b + 3 < td_b.splat.len) {
+                        var chan: usize = 0;
+                        while (chan < 4) : (chan += 1) {
+                            const a_u: u16 = td_a.splat[base_a + chan];
+                            const b_u: u16 = td_b.splat[base_b + chan];
+                            const avg_u: u8 = @intCast((a_u + b_u + 1) / 2);
+                            td_a.splat[base_a + chan] = avg_u;
+                            td_b.splat[base_b + chan] = avg_u;
+                        }
+                        const a0 = @as(f32, @floatFromInt(td_a.splat[base_a + 0])) / 255.0;
+                        const a1 = @as(f32, @floatFromInt(td_a.splat[base_a + 1])) / 255.0;
+                        const a2 = @as(f32, @floatFromInt(td_a.splat[base_a + 2])) / 255.0;
+                        const b0 = @as(f32, @floatFromInt(td_b.splat[base_b + 0])) / 255.0;
+                        const b1 = @as(f32, @floatFromInt(td_b.splat[base_b + 1])) / 255.0;
+                        const b2 = @as(f32, @floatFromInt(td_b.splat[base_b + 2])) / 255.0;
+                        verts_a[vi_a].color = .{ a0, a1, a2, verts_a[vi_a].color[3] };
+                        verts_b[vi_b].color = .{ b0, b1, b2, verts_b[vi_b].color[3] };
+                    }
+                } else if (do_carve) {
+                    const avg_a: f32 = (clamp01(verts_a[vi_a].color[3]) + clamp01(verts_b[vi_b].color[3])) * 0.5;
+                    verts_a[vi_a].color[3] = avg_a;
+                    verts_b[vi_b].color[3] = avg_a;
+                }
+            }
+            if (!do_carve) {
+                upload_terrain_dirty_rect(state, a_ent.id, td_a, 0, 0, 0, grid);
+                upload_terrain_dirty_rect(state, b_ent.id, td_b, grid, 0, grid, grid);
+            } else {
+                rewrite_indices_from_alpha(model_mesh_a, vps);
+                rewrite_indices_from_alpha(model_mesh_b, vps);
+            }
+        },
+        .pos_z => {
+            var x: u32 = 0;
+            while (x <= grid) : (x += 1) {
+                const vi_a: u32 = grid * vps + x;
+                const vi_b: u32 = 0 * vps + x;
+                if (vi_a >= model_mesh_a.vertex_count or vi_b >= model_mesh_b.vertex_count) continue;
+                stroke_record_vertex(a_ent.id, terr_a, vi_a, verts_a[vi_a].py, verts_a[vi_a].color, pack_splat(td_a, vi_a));
+                stroke_record_vertex(b_ent.id, terr_b, vi_b, verts_b[vi_b].py, verts_b[vi_b].color, pack_splat(td_b, vi_b));
+
+                if (do_height) {
+                    const avg: f32 = (td_a.height[vi_a] + td_b.height[vi_b]) * 0.5;
+                    td_a.height[vi_a] = avg;
+                    td_b.height[vi_b] = avg;
+                    verts_a[vi_a].py = avg;
+                    verts_b[vi_b].py = avg;
+                } else if (do_paint) {
+                    const base_a: usize = @as(usize, vi_a) * 4;
+                    const base_b: usize = @as(usize, vi_b) * 4;
+                    if (base_a + 3 < td_a.splat.len and base_b + 3 < td_b.splat.len) {
+                        var chan: usize = 0;
+                        while (chan < 4) : (chan += 1) {
+                            const a_u: u16 = td_a.splat[base_a + chan];
+                            const b_u: u16 = td_b.splat[base_b + chan];
+                            const avg_u: u8 = @intCast((a_u + b_u + 1) / 2);
+                            td_a.splat[base_a + chan] = avg_u;
+                            td_b.splat[base_b + chan] = avg_u;
+                        }
+                        const a0 = @as(f32, @floatFromInt(td_a.splat[base_a + 0])) / 255.0;
+                        const a1 = @as(f32, @floatFromInt(td_a.splat[base_a + 1])) / 255.0;
+                        const a2 = @as(f32, @floatFromInt(td_a.splat[base_a + 2])) / 255.0;
+                        const b0 = @as(f32, @floatFromInt(td_b.splat[base_b + 0])) / 255.0;
+                        const b1 = @as(f32, @floatFromInt(td_b.splat[base_b + 1])) / 255.0;
+                        const b2 = @as(f32, @floatFromInt(td_b.splat[base_b + 2])) / 255.0;
+                        verts_a[vi_a].color = .{ a0, a1, a2, verts_a[vi_a].color[3] };
+                        verts_b[vi_b].color = .{ b0, b1, b2, verts_b[vi_b].color[3] };
+                    }
+                } else if (do_carve) {
+                    const avg_a: f32 = (clamp01(verts_a[vi_a].color[3]) + clamp01(verts_b[vi_b].color[3])) * 0.5;
+                    verts_a[vi_a].color[3] = avg_a;
+                    verts_b[vi_b].color[3] = avg_a;
+                }
+            }
+            if (!do_carve) {
+                upload_terrain_dirty_rect(state, a_ent.id, td_a, 0, grid, grid, grid);
+                upload_terrain_dirty_rect(state, b_ent.id, td_b, 0, 0, grid, 0);
+            } else {
+                rewrite_indices_from_alpha(model_mesh_a, vps);
+                rewrite_indices_from_alpha(model_mesh_b, vps);
+            }
+        },
+        .neg_z => {
+            var x: u32 = 0;
+            while (x <= grid) : (x += 1) {
+                const vi_a: u32 = 0 * vps + x;
+                const vi_b: u32 = grid * vps + x;
+                if (vi_a >= model_mesh_a.vertex_count or vi_b >= model_mesh_b.vertex_count) continue;
+                stroke_record_vertex(a_ent.id, terr_a, vi_a, verts_a[vi_a].py, verts_a[vi_a].color, pack_splat(td_a, vi_a));
+                stroke_record_vertex(b_ent.id, terr_b, vi_b, verts_b[vi_b].py, verts_b[vi_b].color, pack_splat(td_b, vi_b));
+
+                if (do_height) {
+                    const avg: f32 = (td_a.height[vi_a] + td_b.height[vi_b]) * 0.5;
+                    td_a.height[vi_a] = avg;
+                    td_b.height[vi_b] = avg;
+                    verts_a[vi_a].py = avg;
+                    verts_b[vi_b].py = avg;
+                } else if (do_paint) {
+                    const base_a: usize = @as(usize, vi_a) * 4;
+                    const base_b: usize = @as(usize, vi_b) * 4;
+                    if (base_a + 3 < td_a.splat.len and base_b + 3 < td_b.splat.len) {
+                        var chan: usize = 0;
+                        while (chan < 4) : (chan += 1) {
+                            const a_u: u16 = td_a.splat[base_a + chan];
+                            const b_u: u16 = td_b.splat[base_b + chan];
+                            const avg_u: u8 = @intCast((a_u + b_u + 1) / 2);
+                            td_a.splat[base_a + chan] = avg_u;
+                            td_b.splat[base_b + chan] = avg_u;
+                        }
+                        const a0 = @as(f32, @floatFromInt(td_a.splat[base_a + 0])) / 255.0;
+                        const a1 = @as(f32, @floatFromInt(td_a.splat[base_a + 1])) / 255.0;
+                        const a2 = @as(f32, @floatFromInt(td_a.splat[base_a + 2])) / 255.0;
+                        const b0 = @as(f32, @floatFromInt(td_b.splat[base_b + 0])) / 255.0;
+                        const b1 = @as(f32, @floatFromInt(td_b.splat[base_b + 1])) / 255.0;
+                        const b2 = @as(f32, @floatFromInt(td_b.splat[base_b + 2])) / 255.0;
+                        verts_a[vi_a].color = .{ a0, a1, a2, verts_a[vi_a].color[3] };
+                        verts_b[vi_b].color = .{ b0, b1, b2, verts_b[vi_b].color[3] };
+                    }
+                } else if (do_carve) {
+                    const avg_a: f32 = (clamp01(verts_a[vi_a].color[3]) + clamp01(verts_b[vi_b].color[3])) * 0.5;
+                    verts_a[vi_a].color[3] = avg_a;
+                    verts_b[vi_b].color[3] = avg_a;
+                }
+            }
+            if (!do_carve) {
+                upload_terrain_dirty_rect(state, a_ent.id, td_a, 0, 0, grid, 0);
+                upload_terrain_dirty_rect(state, b_ent.id, td_b, 0, grid, grid, grid);
+            } else {
+                rewrite_indices_from_alpha(model_mesh_a, vps);
+                rewrite_indices_from_alpha(model_mesh_b, vps);
+            }
+        },
+    }
+
+    if (!do_paint) {
+        update_terrain_volume_meshes(state, a_ent.id);
+        update_terrain_volume_meshes(state, b_ent.id);
+    }
+}
+
+fn stitch_seams_for_active_stroke(state: *EditorState) void {
     if (active_stroke == null) return;
+    const tool = active_stroke.?.tool;
+    if (tool != 0 and tool != 1 and tool != 2) return;
+
     const alloc = memory.cardinal_get_allocator_for_category(.ENGINE).as_allocator();
-    if (active_stroke.?.touched.get(index) != null) return;
-    const pos: u32 = @intCast(active_stroke.?.indices.items.len);
-    active_stroke.?.touched.put(alloc, index, pos) catch return;
-    active_stroke.?.indices.append(alloc, index) catch return;
-    active_stroke.?.before_y.append(alloc, before_y) catch return;
-    active_stroke.?.before_color.append(alloc, before_color) catch return;
+    var visited: std.AutoHashMapUnmanaged(u128, void) = .{};
+    defer visited.deinit(alloc);
+
+    var i: usize = 0;
+    while (i < active_stroke.?.captures.items.len) : (i += 1) {
+        const cap = &active_stroke.?.captures.items[i];
+        if (cap.indices.items.len == 0) continue;
+
+        const ent = engine.ecs_entity.Entity{ .id = cap.entity_id };
+        if (!state.runtime.registry.entity_manager.is_alive(ent)) continue;
+        const terr = state.runtime.registry.get(components.Terrain, ent) orelse continue;
+        const tr = state.runtime.registry.get(components.Transform, ent) orelse continue;
+        const td = state.runtime.terrain_data_by_entity.getPtr(cap.entity_id) orelse continue;
+        if (td.dims < 2) continue;
+        const vps: u32 = td.dims;
+        const grid: u32 = vps - 1;
+
+        var touch_neg_x = false;
+        var touch_pos_x = false;
+        var touch_neg_z = false;
+        var touch_pos_z = false;
+
+        var j: usize = 0;
+        while (j < cap.indices.items.len) : (j += 1) {
+            const vi: u32 = cap.indices.items[j];
+            const x: u32 = vi % vps;
+            const z: u32 = vi / vps;
+            if (x == 0) touch_neg_x = true;
+            if (x == grid) touch_pos_x = true;
+            if (z == 0) touch_neg_z = true;
+            if (z == grid) touch_pos_z = true;
+            if (touch_neg_x and touch_pos_x and touch_neg_z and touch_pos_z) break;
+        }
+
+        const want_left = math.Vec3{ .x = tr.position.x - terr.size.x, .y = tr.position.y, .z = tr.position.z };
+        const want_right = math.Vec3{ .x = tr.position.x + terr.size.x, .y = tr.position.y, .z = tr.position.z };
+        const want_up = math.Vec3{ .x = tr.position.x, .y = tr.position.y, .z = tr.position.z - terr.size.y };
+        const want_down = math.Vec3{ .x = tr.position.x, .y = tr.position.y, .z = tr.position.z + terr.size.y };
+
+        if (touch_neg_x) {
+            if (terrain_volume.find_adjacent_terrain(&state.runtime, ent, want_left)) |n| {
+                const lo: u64 = @min(ent.id, n.id);
+                const hi: u64 = @max(ent.id, n.id);
+                const key: u128 = (@as(u128, lo) << 64) | @as(u128, hi);
+                if (!visited.contains(key)) {
+                    visited.put(alloc, key, {}) catch {};
+                    stitch_pair(state, ent, n, .neg_x, tool);
+                }
+            }
+        }
+        if (touch_pos_x) {
+            if (terrain_volume.find_adjacent_terrain(&state.runtime, ent, want_right)) |n| {
+                const lo: u64 = @min(ent.id, n.id);
+                const hi: u64 = @max(ent.id, n.id);
+                const key: u128 = (@as(u128, lo) << 64) | @as(u128, hi);
+                if (!visited.contains(key)) {
+                    visited.put(alloc, key, {}) catch {};
+                    stitch_pair(state, ent, n, .pos_x, tool);
+                }
+            }
+        }
+        if (touch_neg_z) {
+            if (terrain_volume.find_adjacent_terrain(&state.runtime, ent, want_up)) |n| {
+                const lo: u64 = @min(ent.id, n.id);
+                const hi: u64 = @max(ent.id, n.id);
+                const key: u128 = (@as(u128, lo) << 64) | @as(u128, hi);
+                if (!visited.contains(key)) {
+                    visited.put(alloc, key, {}) catch {};
+                    stitch_pair(state, ent, n, .neg_z, tool);
+                }
+            }
+        }
+        if (touch_pos_z) {
+            if (terrain_volume.find_adjacent_terrain(&state.runtime, ent, want_down)) |n| {
+                const lo: u64 = @min(ent.id, n.id);
+                const hi: u64 = @max(ent.id, n.id);
+                const key: u128 = (@as(u128, lo) << 64) | @as(u128, hi);
+                if (!visited.contains(key)) {
+                    visited.put(alloc, key, {}) catch {};
+                    stitch_pair(state, ent, n, .pos_z, tool);
+                }
+            }
+        }
+    }
 }
 
-/// Ends the active stroke and pushes a single undo command for the edited vertices.
-fn stroke_end_and_push_undo(state: *EditorState, entity_id: u64, terr: *components.Terrain) void {
+fn stroke_end_and_push_undo(state: *EditorState) void {
     if (active_stroke == null) return;
     defer {
         const alloc = memory.cardinal_get_allocator_for_category(.ENGINE).as_allocator();
-        active_stroke.?.touched.deinit(alloc);
-        active_stroke.?.indices.deinit(alloc);
-        active_stroke.?.before_y.deinit(alloc);
-        active_stroke.?.before_color.deinit(alloc);
+        for (active_stroke.?.captures.items) |*cap| {
+            cap.touched.deinit(alloc);
+            cap.indices.deinit(alloc);
+            cap.before_y.deinit(alloc);
+            cap.before_color.deinit(alloc);
+            cap.before_splat.deinit(alloc);
+        }
+        active_stroke.?.captures.deinit(alloc);
+        active_stroke.?.capture_by_entity.deinit(alloc);
         active_stroke = null;
     }
 
-    if (active_stroke.?.indices.items.len == 0) return;
-    if (active_stroke.?.model_id != terr.model_id or active_stroke.?.combined_mesh_index != terr.mesh_index) return;
-
-    const meshes = get_terrain_meshes(state, terr) orelse return;
-    const model_mesh = meshes.model_mesh;
-    const combined_mesh = meshes.combined_mesh;
-    if (model_mesh.vertices == null or model_mesh.vertex_count == 0) return;
-    const verts = @as([*]scene.CardinalVertex, @ptrCast(model_mesh.vertices.?));
-
     const alloc = memory.cardinal_get_allocator_for_category(.ENGINE).as_allocator();
+    var cmds: std.ArrayListUnmanaged(*undo.TerrainTexRectEditCommand) = .{};
+    defer cmds.deinit(alloc);
 
-    const count: usize = active_stroke.?.indices.items.len;
-    const indices_mem = alloc.alloc(u32, count) catch return;
-    const before_y_mem = alloc.alloc(f32, count) catch {
-        alloc.free(indices_mem);
-        return;
-    };
-    const after_y_mem = alloc.alloc(f32, count) catch {
-        alloc.free(before_y_mem);
-        alloc.free(indices_mem);
-        return;
-    };
-    const before_c_mem = alloc.alloc([4]f32, count) catch {
-        alloc.free(after_y_mem);
-        alloc.free(before_y_mem);
-        alloc.free(indices_mem);
-        return;
-    };
-    const after_c_mem = alloc.alloc([4]f32, count) catch {
-        alloc.free(before_c_mem);
-        alloc.free(after_y_mem);
-        alloc.free(before_y_mem);
-        alloc.free(indices_mem);
-        return;
-    };
+    stitch_seams_for_active_stroke(state);
 
-    @memcpy(indices_mem, active_stroke.?.indices.items);
-    @memcpy(before_y_mem, active_stroke.?.before_y.items);
-    @memcpy(before_c_mem, active_stroke.?.before_color.items);
+    for (active_stroke.?.captures.items) |*cap| {
+        if (cap.indices.items.len == 0) continue;
 
-    var i: usize = 0;
-    while (i < count) : (i += 1) {
-        const vi = indices_mem[i];
-        if (vi >= model_mesh.vertex_count) {
-            after_y_mem[i] = before_y_mem[i];
-            after_c_mem[i] = before_c_mem[i];
-            continue;
-        }
-        after_y_mem[i] = verts[vi].py;
-        after_c_mem[i] = verts[vi].color;
-    }
+        const ent = engine.ecs_entity.Entity{ .id = cap.entity_id };
+        if (!state.runtime.registry.entity_manager.is_alive(ent)) continue;
+        const terr = state.runtime.registry.get(components.Terrain, ent) orelse continue;
 
-    const cmd_ptr = alloc.create(undo.TerrainMeshEditCommand) catch {
-        alloc.free(after_c_mem);
-        alloc.free(before_c_mem);
-        alloc.free(after_y_mem);
-        alloc.free(before_y_mem);
-        alloc.free(indices_mem);
-        return;
-    };
-    cmd_ptr.* = .{
-        .model_id = terr.model_id,
-        .combined_mesh_index = terr.mesh_index,
-        .vertex_indices = indices_mem,
-        .before_y = before_y_mem,
-        .after_y = after_y_mem,
-        .before_color = before_c_mem,
-        .after_color = after_c_mem,
-    };
+        if (terr.model_id != cap.model_id or terr.mesh_index != cap.combined_mesh_index) continue;
 
-    update_terrain_bounds(terr, model_mesh, combined_mesh);
+        const meshes = get_terrain_meshes(state, terr) orelse continue;
+        const model_mesh = meshes.model_mesh;
+        const combined_mesh = meshes.combined_mesh;
+        if (model_mesh.vertices == null or model_mesh.vertex_count == 0) continue;
+        const verts = @as([*]scene.CardinalVertex, @ptrCast(model_mesh.vertices.?));
 
-    state.ui.undo.push(.{ .TerrainMeshEdit = cmd_ptr });
+        const td = state.runtime.terrain_data_by_entity.getPtr(cap.entity_id) orelse continue;
+        if (td.dims < 2) continue;
 
-    if (state.runtime.terrain_data_by_entity.getPtr(entity_id)) |td| {
         var min_x: u32 = std.math.maxInt(u32);
         var min_y: u32 = std.math.maxInt(u32);
         var max_x: u32 = 0;
         var max_y: u32 = 0;
 
-        var j: usize = 0;
-        while (j < active_stroke.?.indices.items.len) : (j += 1) {
-            const vi: u32 = active_stroke.?.indices.items[j];
+        var j0: usize = 0;
+        while (j0 < cap.indices.items.len) : (j0 += 1) {
+            const vi: u32 = cap.indices.items[j0];
             const x: u32 = vi % td.dims;
             const y: u32 = vi / td.dims;
             min_x = @min(min_x, x);
@@ -594,33 +1020,168 @@ fn stroke_end_and_push_undo(state: *EditorState, entity_id: u64, terr: *componen
             max_x = @max(max_x, x);
             max_y = @max(max_y, y);
         }
+        if (min_x == std.math.maxInt(u32) or min_y == std.math.maxInt(u32)) continue;
+        if (max_x >= td.dims or max_y >= td.dims) continue;
 
-        if (min_x != std.math.maxInt(u32) and min_y != std.math.maxInt(u32)) {
-            upload_terrain_dirty_rect(state, td, min_x, min_y, max_x, max_y);
+        const w: u32 = max_x - min_x + 1;
+        const h: u32 = max_y - min_y + 1;
+        const count_rect: usize = @as(usize, @intCast(w)) * @as(usize, @intCast(h));
+
+        const before_y_mem = alloc.alloc(f32, count_rect) catch continue;
+        const after_y_mem = alloc.alloc(f32, count_rect) catch {
+            alloc.free(before_y_mem);
+            continue;
+        };
+        const before_c_mem = alloc.alloc([4]f32, count_rect) catch {
+            alloc.free(after_y_mem);
+            alloc.free(before_y_mem);
+            continue;
+        };
+        const after_c_mem = alloc.alloc([4]f32, count_rect) catch {
+            alloc.free(before_c_mem);
+            alloc.free(after_y_mem);
+            alloc.free(before_y_mem);
+            continue;
+        };
+        const before_splat_mem = alloc.alloc(u32, count_rect) catch {
+            alloc.free(after_c_mem);
+            alloc.free(before_c_mem);
+            alloc.free(after_y_mem);
+            alloc.free(before_y_mem);
+            continue;
+        };
+        const after_splat_mem = alloc.alloc(u32, count_rect) catch {
+            alloc.free(before_splat_mem);
+            alloc.free(after_c_mem);
+            alloc.free(before_c_mem);
+            alloc.free(after_y_mem);
+            alloc.free(before_y_mem);
+            continue;
+        };
+
+        var idx: usize = 0;
+        var row: u32 = 0;
+        while (row < h) : (row += 1) {
+            const y: u32 = min_y + row;
+            var col: u32 = 0;
+            while (col < w) : (col += 1) {
+                const x: u32 = min_x + col;
+                const vi: u32 = y * td.dims + x;
+                const vi_usize: usize = @intCast(vi);
+
+                const after_y_val: f32 = if (vi < model_mesh.vertex_count) verts[vi].py else td.height[vi_usize];
+                const after_c_val: [4]f32 = if (vi < model_mesh.vertex_count) verts[vi].color else .{ 0.0, 0.0, 0.0, 0.0 };
+                const after_s_val: u32 = pack_splat(td, vi);
+
+                after_y_mem[idx] = after_y_val;
+                after_c_mem[idx] = after_c_val;
+                after_splat_mem[idx] = after_s_val;
+
+                if (cap.touched.get(vi)) |pos_u32| {
+                    const pos: usize = @intCast(pos_u32);
+                    if (pos < cap.before_y.items.len and pos < cap.before_color.items.len and pos < cap.before_splat.items.len) {
+                        before_y_mem[idx] = cap.before_y.items[pos];
+                        before_c_mem[idx] = cap.before_color.items[pos];
+                        before_splat_mem[idx] = cap.before_splat.items[pos];
+                    } else {
+                        before_y_mem[idx] = after_y_val;
+                        before_c_mem[idx] = after_c_val;
+                        before_splat_mem[idx] = after_s_val;
+                    }
+                } else {
+                    before_y_mem[idx] = after_y_val;
+                    before_c_mem[idx] = after_c_val;
+                    before_splat_mem[idx] = after_s_val;
+                }
+
+                idx += 1;
+            }
         }
+
+        const cmd_ptr = alloc.create(undo.TerrainTexRectEditCommand) catch {
+            alloc.free(after_splat_mem);
+            alloc.free(before_splat_mem);
+            alloc.free(after_c_mem);
+            alloc.free(before_c_mem);
+            alloc.free(after_y_mem);
+            alloc.free(before_y_mem);
+            continue;
+        };
+        cmd_ptr.* = .{
+            .model_id = terr.model_id,
+            .combined_mesh_index = terr.mesh_index,
+            .min_x = min_x,
+            .min_y = min_y,
+            .max_x = max_x,
+            .max_y = max_y,
+            .before_y = before_y_mem,
+            .after_y = after_y_mem,
+            .before_color = before_c_mem,
+            .after_color = after_c_mem,
+            .before_splat = before_splat_mem,
+            .after_splat = after_splat_mem,
+        };
+
+        update_terrain_bounds(terr, model_mesh, combined_mesh);
+        update_terrain_volume_meshes(state, cap.entity_id);
+
+        upload_terrain_dirty_rect(state, cap.entity_id, td, min_x, min_y, max_x, max_y);
+
+        cmds.append(alloc, cmd_ptr) catch {
+            alloc.free(cmd_ptr.before_y);
+            alloc.free(cmd_ptr.after_y);
+            alloc.free(cmd_ptr.before_color);
+            alloc.free(cmd_ptr.after_color);
+            alloc.free(cmd_ptr.before_splat);
+            alloc.free(cmd_ptr.after_splat);
+            alloc.destroy(cmd_ptr);
+        };
     }
+
+    if (cmds.items.len == 0) return;
+    if (cmds.items.len == 1) {
+        state.ui.undo.push(.{ .TerrainTexRectEdit = cmds.items[0] });
+        return;
+    }
+
+    const edits = alloc.alloc(*undo.TerrainTexRectEditCommand, cmds.items.len) catch {
+        for (cmds.items) |p| {
+            alloc.free(p.before_y);
+            alloc.free(p.after_y);
+            alloc.free(p.before_color);
+            alloc.free(p.after_color);
+            alloc.free(p.before_splat);
+            alloc.free(p.after_splat);
+            alloc.destroy(p);
+        }
+        return;
+    };
+    @memcpy(edits, cmds.items);
+    state.ui.undo.push(.{ .TerrainTexRectEditGroup = .{ .edits = edits } });
 }
 
-fn create_terrain(state: *EditorState, grid_resolution: u32, world_size: f32) void {
-    var scn = build_flat_terrain_scene(grid_resolution, world_size) orelse return;
+fn create_terrain_at(state: *EditorState, grid_resolution: u32, world_size: f32, thickness: f32, parent: ?engine.ecs_entity.Entity, position: math.Vec3) ?engine.ecs_entity.Entity {
+    var scn = build_flat_terrain_scene(grid_resolution, world_size, thickness) orelse return null;
 
     var name_buf: [64]u8 = undefined;
     const name_z = std.fmt.bufPrintZ(&name_buf, "Terrain", .{}) catch "Terrain";
     const model_id = model_manager.cardinal_model_manager_add_scene(&state.runtime.model_manager, &scn, null, name_z.ptr);
     if (model_id == 0) {
         scene.cardinal_scene_destroy(&scn);
-        return;
+        return null;
     }
 
     rebuild_scene_and_schedule_upload(state);
     state.runtime.picking_cache_dirty = true;
 
-    const parent = if (state.runtime.registry.entity_manager.is_alive(state.ui.selected_entity)) state.ui.selected_entity else null;
-    const created = node_factory.create_node(state.runtime.registry, parent, .Terrain3D, "Terrain", .{}) catch return;
+    const created = node_factory.create_node(state.runtime.registry, parent, .Terrain3D, "Terrain", .{}) catch return null;
+    if (state.runtime.registry.get(components.Transform, created)) |tr| {
+        tr.position = position;
+    }
 
-    const range = get_model_combined_mesh_range(state, model_id) orelse return;
-    if (range.count == 0) return;
-    if (state.runtime.combined_scene.meshes == null or range.start >= state.runtime.combined_scene.mesh_count) return;
+    const range = get_model_combined_mesh_range(state, model_id) orelse return null;
+    if (range.count == 0) return null;
+    if (state.runtime.combined_scene.meshes == null or range.start >= state.runtime.combined_scene.mesh_count) return null;
 
     const mesh = &state.runtime.combined_scene.meshes.?[range.start];
     const mr = components.MeshRenderer{
@@ -635,10 +1196,51 @@ fn create_terrain(state: *EditorState, grid_resolution: u32, world_size: f32) vo
     const terr = components.Terrain{
         .size = .{ .x = world_size, .y = world_size },
         .resolution = if (grid_resolution < 2) 2 else grid_resolution,
+        .thickness = thickness,
         .model_id = model_id,
         .mesh_index = range.start,
+        .data_id = std.crypto.random.int(u64),
     };
     state.runtime.registry.add(created, terr) catch {};
+
+    if (state.runtime.registry.get(components.Terrain, created)) |_| {
+        update_terrain_volume_meshes(state, created.id);
+        state.runtime.pending_scene = state.runtime.combined_scene;
+        state.runtime.scene_upload_pending = true;
+    }
+
+    if (thickness > 0.01 and range.count >= 3 and state.runtime.combined_scene.meshes != null) {
+        const bottom_idx: u32 = range.start + 1;
+        const walls_idx: u32 = range.start + 2;
+        if (bottom_idx < state.runtime.combined_scene.mesh_count) {
+            const m = &state.runtime.combined_scene.meshes.?[bottom_idx];
+            const child = node_factory.create_node(state.runtime.registry, created, .MeshInstance3D, "Terrain Bottom", .{}) catch null;
+            if (child) |e| {
+                const cmr = components.MeshRenderer{
+                    .mesh = .{ .index = bottom_idx, .generation = 0 },
+                    .material = .{ .index = m.material_index, .generation = 0 },
+                    .visible = true,
+                    .cast_shadows = true,
+                    .receive_shadows = true,
+                };
+                state.runtime.registry.add(e, cmr) catch {};
+            }
+        }
+        if (walls_idx < state.runtime.combined_scene.mesh_count) {
+            const m = &state.runtime.combined_scene.meshes.?[walls_idx];
+            const child = node_factory.create_node(state.runtime.registry, created, .MeshInstance3D, "Terrain Walls", .{}) catch null;
+            if (child) |e| {
+                const cmr = components.MeshRenderer{
+                    .mesh = .{ .index = walls_idx, .generation = 0 },
+                    .material = .{ .index = m.material_index, .generation = 0 },
+                    .visible = true,
+                    .cast_shadows = true,
+                    .receive_shadows = true,
+                };
+                state.runtime.registry.add(e, cmr) catch {};
+            }
+        }
+    }
 
     const alloc = memory.cardinal_get_allocator_for_category(.ENGINE).as_allocator();
     const dims: u32 = (if (grid_resolution < 2) 2 else grid_resolution) + 1;
@@ -650,7 +1252,13 @@ fn create_terrain(state: *EditorState, grid_resolution: u32, world_size: f32) vo
         const height = height_opt.?;
         const splat = splat_opt.?;
         @memset(height, 0.0);
-        @memset(splat, 255);
+        var i: usize = 0;
+        while (i < s_len) : (i += 4) {
+            splat[i + 0] = 255;
+            splat[i + 1] = 0;
+            splat[i + 2] = 0;
+            splat[i + 3] = 0;
+        }
         if (state.runtime.terrain_data_by_entity.getPtr(created.id)) |existing| {
             if (existing.height_handle != std.math.maxInt(u32)) {
                 renderer.cardinal_renderer_runtime_texture_free(state.runtime.renderer, existing.height_handle);
@@ -675,6 +1283,10 @@ fn create_terrain(state: *EditorState, grid_resolution: u32, world_size: f32) vo
             ensure_terrain_gpu_textures(state, td);
             if (state.runtime.registry.get(components.Terrain, created)) |terr_ptr| {
                 ensure_terrain_material_bound(state, terr_ptr, td);
+                const default_path_len = std.mem.indexOfScalar(u8, &state.ui.terrain_default_texture_path, 0) orelse state.ui.terrain_default_texture_path.len;
+                if (default_path_len > 0) {
+                    set_terrain_layer_texture_from_path(state, terr_ptr, td, 0, state.ui.terrain_default_texture_path[0..default_path_len]);
+                }
             }
         }
     } else {
@@ -688,6 +1300,13 @@ fn create_terrain(state: *EditorState, grid_resolution: u32, world_size: f32) vo
     state.ui.selected_model_id = 0;
     state.ui.scene_graph_focus_target_id = created.id;
     state.ui.scene_graph_focus_pending = true;
+    return created;
+}
+
+fn create_terrain(state: *EditorState, grid_resolution: u32, world_size: f32) void {
+    const parent = if (state.runtime.registry.entity_manager.is_alive(state.ui.selected_entity)) state.ui.selected_entity else null;
+    const thickness: f32 = if (state.ui.terrain_create_volume) state.ui.terrain_create_thickness else 0.0;
+    _ = create_terrain_at(state, grid_resolution, world_size, thickness, parent, .{ .x = 0.0, .y = 0.0, .z = 0.0 });
 }
 
 /// Applies the sculpt brush to the terrain heightmap and combined mesh.
@@ -706,10 +1325,9 @@ fn apply_sculpt_to_selected(state: *EditorState, entity_id: u64, terr: *componen
 
     const half_x = terr.size.x * 0.5;
     const half_z = terr.size.y * 0.5;
-    if (local_x < -half_x or local_x > half_x) return false;
-    if (local_z < -half_z or local_z > half_z) return false;
-
     const radius = @max(0.001, state.ui.terrain_brush_radius);
+    if (local_x < -half_x - radius or local_x > half_x + radius) return false;
+    if (local_z < -half_z - radius or local_z > half_z + radius) return false;
     const mode = state.ui.terrain_sculpt_mode;
     const raw_strength = state.ui.terrain_brush_strength;
     const strength = if (mode == 0 or mode == 1) @max(0.0, raw_strength) else @min(1.0, @max(0.0, raw_strength));
@@ -733,6 +1351,33 @@ fn apply_sculpt_to_selected(state: *EditorState, entity_id: u64, terr: *componen
     const max_z = clamp_i32(@intFromFloat(@ceil(cz_f + radius_z)), 0, @as(i32, @intCast(grid)));
 
     if (mode == 3) {
+        const self_ent = engine.ecs_entity.Entity{ .id = entity_id };
+        const want_left = math.Vec3{ .x = t.position.x - terr.size.x, .y = t.position.y, .z = t.position.z };
+        const want_right = math.Vec3{ .x = t.position.x + terr.size.x, .y = t.position.y, .z = t.position.z };
+        const want_up = math.Vec3{ .x = t.position.x, .y = t.position.y, .z = t.position.z - terr.size.y };
+        const want_down = math.Vec3{ .x = t.position.x, .y = t.position.y, .z = t.position.z + terr.size.y };
+
+        var left_td: ?*editor_state.TerrainData = null;
+        var right_td: ?*editor_state.TerrainData = null;
+        var up_td: ?*editor_state.TerrainData = null;
+        var down_td: ?*editor_state.TerrainData = null;
+
+        const wants = [_]struct { pos: math.Vec3, out: *?*editor_state.TerrainData }{
+            .{ .pos = want_left, .out = &left_td },
+            .{ .pos = want_right, .out = &right_td },
+            .{ .pos = want_up, .out = &up_td },
+            .{ .pos = want_down, .out = &down_td },
+        };
+        for (wants) |w| {
+            if (terrain_volume.find_adjacent_terrain(&state.runtime, self_ent, w.pos)) |n_ent| {
+                const n_terr = state.runtime.registry.get(components.Terrain, n_ent) orelse continue;
+                const meshes_n = get_terrain_meshes(state, n_terr) orelse continue;
+                const grid_n = derive_grid_from_mesh(n_terr, meshes_n.model_mesh) orelse continue;
+                if (grid_n.verts_per_side != verts_per_side) continue;
+                w.out.* = ensure_terrain_data(state, n_ent.id, meshes_n.model_mesh, grid_n.verts_per_side);
+            }
+        }
+
         const alloc = state.runtime.arena_allocator;
         const x_count: usize = @intCast(max_x - min_x + 1);
         const z_count: usize = @intCast(max_z - min_z + 1);
@@ -756,7 +1401,32 @@ fn apply_sculpt_to_selected(state: *EditorState, entity_id: u64, terr: *componen
                 const right = if (x < @as(i32, @intCast(grid))) vi + 1 else vi;
                 const down = if (z > 0) vi - verts_per_side else vi;
                 const up = if (z < @as(i32, @intCast(grid))) vi + verts_per_side else vi;
-                tmp[ti] = (data.height[vi] + data.height[left] + data.height[right] + data.height[down] + data.height[up]) / 5.0;
+                const z_u32: u32 = @intCast(z);
+                const left_h = if (x > 0)
+                    data.height[left]
+                else if (left_td) |td|
+                    td.height[@as(usize, z_u32) * @as(usize, verts_per_side) + @as(usize, grid)]
+                else
+                    data.height[vi];
+                const right_h = if (x < @as(i32, @intCast(grid)))
+                    data.height[right]
+                else if (right_td) |td|
+                    td.height[@as(usize, z_u32) * @as(usize, verts_per_side)]
+                else
+                    data.height[vi];
+                const up_h = if (z > 0)
+                    data.height[down]
+                else if (up_td) |td|
+                    td.height[@as(usize, grid) * @as(usize, verts_per_side) + @as(usize, @intCast(x))]
+                else
+                    data.height[vi];
+                const down_h = if (z < @as(i32, @intCast(grid)))
+                    data.height[up]
+                else if (down_td) |td|
+                    td.height[@as(usize, @intCast(x))]
+                else
+                    data.height[vi];
+                tmp[ti] = (data.height[vi] + left_h + right_h + up_h + down_h) / 5.0;
                 ti += 1;
             }
         }
@@ -782,7 +1452,7 @@ fn apply_sculpt_to_selected(state: *EditorState, entity_id: u64, terr: *componen
                     w = w * w;
                     const a = strength * w;
                     if (a > 0.0) {
-                        stroke_record_vertex(vi, verts[vi].py, verts[vi].color);
+                        stroke_record_vertex(entity_id, terr, vi, verts[vi].py, verts[vi].color, pack_splat(data, vi));
                         data.height[vi] += (tmp[ti] - data.height[vi]) * a;
                         verts[vi].py = data.height[vi];
                         changed = true;
@@ -819,7 +1489,7 @@ fn apply_sculpt_to_selected(state: *EditorState, entity_id: u64, terr: *componen
                 var w = 1.0 - (d / radius);
                 w = w * w;
 
-                stroke_record_vertex(vi, verts[vi].py, verts[vi].color);
+                stroke_record_vertex(entity_id, terr, vi, verts[vi].py, verts[vi].color, pack_splat(data, vi));
                 switch (mode) {
                     0 => data.height[vi] += strength * w,
                     1 => data.height[vi] -= strength * w,
@@ -836,6 +1506,11 @@ fn apply_sculpt_to_selected(state: *EditorState, entity_id: u64, terr: *componen
     }
 
     if (!changed) return false;
+
+    upload_terrain_dirty_rect(state, entity_id, data, @intCast(min_x), @intCast(min_z), @intCast(max_x), @intCast(max_z));
+    update_terrain_volume_meshes(state, entity_id);
+    state.runtime.pending_scene = state.runtime.combined_scene;
+    state.runtime.scene_upload_pending = true;
     return true;
 }
 
@@ -849,22 +1524,20 @@ fn apply_paint_to_selected(state: *EditorState, entity_id: u64, terr: *component
     const grid = grid_ctx.grid;
     const verts_per_side = grid_ctx.verts_per_side;
     const data = ensure_terrain_data(state, entity_id, model_mesh, verts_per_side) orelse return false;
+    ensure_terrain_material_bound(state, terr, data);
 
     const local_x = world_hit.x - t.position.x;
     const local_z = world_hit.z - t.position.z;
 
     const half_x = terr.size.x * 0.5;
     const half_z = terr.size.y * 0.5;
-    if (local_x < -half_x or local_x > half_x) return false;
-    if (local_z < -half_z or local_z > half_z) return false;
-
     const radius = @max(0.001, state.ui.terrain_brush_radius);
+    if (local_x < -half_x - radius or local_x > half_x + radius) return false;
+    if (local_z < -half_z - radius or local_z > half_z + radius) return false;
     const strength = @min(1.0, @max(0.0, state.ui.terrain_brush_strength));
 
-    const target = state.ui.terrain_paint_color;
-    const tr: f32 = clamp01(target[0]);
-    const tg: f32 = clamp01(target[1]);
-    const tb: f32 = clamp01(target[2]);
+    const layer_i32 = clamp_i32(state.ui.terrain_paint_layer, 0, 3);
+    const layer: u32 = @intCast(layer_i32);
     var changed = false;
 
     const fx = (local_x + half_x) / terr.size.x;
@@ -897,26 +1570,192 @@ fn apply_paint_to_selected(state: *EditorState, entity_id: u64, terr: *component
             const a = strength * w;
             if (a <= 0.0) continue;
 
-            stroke_record_vertex(vi, verts[vi].py, verts[vi].color);
-            verts[vi].color[0] = verts[vi].color[0] + (tr - verts[vi].color[0]) * a;
-            verts[vi].color[1] = verts[vi].color[1] + (tg - verts[vi].color[1]) * a;
-            verts[vi].color[2] = verts[vi].color[2] + (tb - verts[vi].color[2]) * a;
-            verts[vi].color[3] = 1.0;
-
             const base = @as(usize, vi) * 4;
-            data.splat[base + 0] = float_to_u8(verts[vi].color[0]);
-            data.splat[base + 1] = float_to_u8(verts[vi].color[1]);
-            data.splat[base + 2] = float_to_u8(verts[vi].color[2]);
-            data.splat[base + 3] = 255;
+            if (base + 3 >= data.splat.len) continue;
+
+            stroke_record_vertex(entity_id, terr, vi, verts[vi].py, verts[vi].color, pack_splat(data, vi));
+
+            var ws = [4]f32{
+                @as(f32, @floatFromInt(data.splat[base + 0])) / 255.0,
+                @as(f32, @floatFromInt(data.splat[base + 1])) / 255.0,
+                @as(f32, @floatFromInt(data.splat[base + 2])) / 255.0,
+                @as(f32, @floatFromInt(data.splat[base + 3])) / 255.0,
+            };
+            const prev_t = ws[@intCast(layer)];
+            const next_t = prev_t + (1.0 - prev_t) * a;
+
+            var other_sum: f32 = 0.0;
+            var k: usize = 0;
+            while (k < 4) : (k += 1) {
+                if (k == layer) continue;
+                other_sum += ws[k];
+            }
+
+            if (other_sum > 0.000001) {
+                const scale = (1.0 - next_t) / other_sum;
+                k = 0;
+                while (k < 4) : (k += 1) {
+                    if (k == layer) continue;
+                    ws[k] = ws[k] * scale;
+                }
+            } else {
+                k = 0;
+                while (k < 4) : (k += 1) {
+                    if (k == layer) continue;
+                    ws[k] = 0.0;
+                }
+            }
+            ws[@intCast(layer)] = next_t;
+
+            data.splat[base + 0] = float_to_u8(ws[0]);
+            data.splat[base + 1] = float_to_u8(ws[1]);
+            data.splat[base + 2] = float_to_u8(ws[2]);
+            data.splat[base + 3] = float_to_u8(ws[3]);
+            const carve_alpha = verts[vi].color[3];
+            verts[vi].color = .{ ws[0], ws[1], ws[2], carve_alpha };
             changed = true;
         }
     }
 
     if (changed) {
-        upload_terrain_dirty_rect(state, data, @intCast(min_x), @intCast(min_z), @intCast(max_x), @intCast(max_z));
+        upload_terrain_dirty_rect(state, entity_id, data, @intCast(min_x), @intCast(min_z), @intCast(max_x), @intCast(max_z));
     }
 
     return changed;
+}
+
+fn apply_carve_to_selected(state: *EditorState, entity_id: u64, terr: *components.Terrain, t: *components.Transform, world_hit: math.Vec3) bool {
+    const meshes = get_terrain_meshes(state, terr) orelse return false;
+    const model_mesh = meshes.model_mesh;
+    if (model_mesh.vertices == null or model_mesh.vertex_count == 0 or model_mesh.indices == null or model_mesh.index_count == 0) return false;
+    const verts = @as([*]scene.CardinalVertex, @ptrCast(model_mesh.vertices.?));
+    const grid_ctx = derive_grid_from_mesh(terr, model_mesh) orelse return false;
+    const grid = grid_ctx.grid;
+    const verts_per_side = grid_ctx.verts_per_side;
+    const data = ensure_terrain_data(state, entity_id, model_mesh, verts_per_side) orelse return false;
+
+    const local_x = world_hit.x - t.position.x;
+    const local_z = world_hit.z - t.position.z;
+
+    const half_x = terr.size.x * 0.5;
+    const half_z = terr.size.y * 0.5;
+    const radius = @max(0.001, state.ui.terrain_brush_radius);
+    if (local_x < -half_x - radius or local_x > half_x + radius) return false;
+    if (local_z < -half_z - radius or local_z > half_z + radius) return false;
+    const strength = @min(1.0, @max(0.0, state.ui.terrain_brush_strength));
+
+    const fx = (local_x + half_x) / terr.size.x;
+    const fz = (local_z + half_z) / terr.size.y;
+    const cx_f = fx * @as(f32, @floatFromInt(grid));
+    const cz_f = fz * @as(f32, @floatFromInt(grid));
+
+    const radius_x = radius / terr.size.x * @as(f32, @floatFromInt(grid));
+    const radius_z = radius / terr.size.y * @as(f32, @floatFromInt(grid));
+
+    const min_x = clamp_i32(@intFromFloat(@floor(cx_f - radius_x)), 0, @as(i32, @intCast(grid)));
+    const max_x = clamp_i32(@intFromFloat(@ceil(cx_f + radius_x)), 0, @as(i32, @intCast(grid)));
+    const min_z = clamp_i32(@intFromFloat(@floor(cz_f - radius_z)), 0, @as(i32, @intCast(grid)));
+    const max_z = clamp_i32(@intFromFloat(@ceil(cz_f + radius_z)), 0, @as(i32, @intCast(grid)));
+
+    const remove_mode = (state.ui.terrain_carve_mode == 0);
+    var changed = false;
+
+    var z: i32 = min_z;
+    while (z <= max_z) : (z += 1) {
+        var x: i32 = min_x;
+        while (x <= max_x) : (x += 1) {
+            const vi: u32 = @intCast(@as(u32, @intCast(z)) * verts_per_side + @as(u32, @intCast(x)));
+            if (vi >= model_mesh.vertex_count) continue;
+            const dx = verts[vi].px - local_x;
+            const dz = verts[vi].pz - local_z;
+            const d2 = dx * dx + dz * dz;
+            if (d2 > radius * radius) continue;
+
+            const d = @sqrt(d2);
+            var w = 1.0 - (d / radius);
+            w = w * w;
+            const a = strength * w;
+            if (a <= 0.0) continue;
+
+            stroke_record_vertex(entity_id, terr, vi, verts[vi].py, verts[vi].color, pack_splat(data, vi));
+
+            const prev = clamp01(verts[vi].color[3]);
+            const next = if (remove_mode) prev * (1.0 - a) else prev + (1.0 - prev) * a;
+            verts[vi].color[3] = next;
+            changed = true;
+        }
+    }
+
+    if (!changed) return false;
+
+    rewrite_indices_from_alpha(model_mesh, verts_per_side);
+    update_terrain_volume_meshes(state, entity_id);
+    state.runtime.pending_scene = state.runtime.combined_scene;
+    state.runtime.scene_upload_pending = true;
+    return true;
+}
+
+fn update_terrain_volume_meshes(state: *EditorState, entity_id: u64) void {
+    terrain_volume.update_terrain_volume_meshes(&state.runtime, entity_id);
+}
+
+/// Loads an image from disk and uploads it into a terrain layer runtime texture.
+///
+/// If the layer already has a runtime texture, it is replaced.
+/// TODO: Add user-visible error reporting when the loader rejects a file.
+fn set_terrain_layer_texture_from_path(state: *EditorState, terr: *components.Terrain, td: *editor_state.TerrainData, layer_index: usize, path: []const u8) void {
+    if (layer_index >= 4) return;
+    if (path.len == 0) return;
+
+    const alloc = memory.cardinal_get_allocator_for_category(.ENGINE).as_allocator();
+    const path_z = alloc.dupeZ(u8, path) catch return;
+    defer alloc.free(path_z);
+
+    var tex = std.mem.zeroes(texture_loader.TextureData);
+    if (!texture_loader.texture_load_from_disk(@ptrCast(path_z.ptr), &tex)) {
+        return;
+    }
+    defer texture_loader.texture_data_free(&tex);
+
+    if (tex.data == null or tex.data_size == 0 or tex.width == 0 or tex.height == 0) return;
+
+    if (td.layer_handles[layer_index] != std.math.maxInt(u32)) {
+        if (td.layer_imgui_ids[layer_index] != 0) {
+            c.imgui_bridge_vk_remove_texture(td.layer_imgui_ids[layer_index]);
+            td.layer_imgui_ids[layer_index] = 0;
+        }
+        renderer.cardinal_renderer_runtime_texture_free(state.runtime.renderer, td.layer_handles[layer_index]);
+        td.layer_handles[layer_index] = std.math.maxInt(u32);
+    }
+
+    var handle: u32 = 0;
+    const fmt: c.VkFormat = @intCast(tex.format);
+    if (!renderer.cardinal_renderer_runtime_texture_allocate(state.runtime.renderer, tex.width, tex.height, fmt, &handle)) {
+        return;
+    }
+
+    const size_usize: usize = @intCast(tex.data_size);
+    if (!renderer.cardinal_renderer_runtime_texture_upload_full(state.runtime.renderer, handle, @ptrCast(tex.data.?), size_usize)) {
+        renderer.cardinal_renderer_runtime_texture_free(state.runtime.renderer, handle);
+        return;
+    }
+
+    td.layer_handles[layer_index] = handle;
+    ensure_terrain_material_bound(state, terr, td);
+}
+
+fn ensure_imgui_texture_id_for_layer(state: *EditorState, td: *editor_state.TerrainData, layer_index: usize) u64 {
+    if (layer_index >= 4) return 0;
+    if (td.layer_imgui_ids[layer_index] != 0) return td.layer_imgui_ids[layer_index];
+    const handle = td.layer_handles[layer_index];
+    if (handle == std.math.maxInt(u32)) return 0;
+
+    var sampler_raw: ?*anyopaque = null;
+    var view_raw: ?*anyopaque = null;
+    if (!renderer.cardinal_renderer_runtime_texture_get_vk_handles(state.runtime.renderer, handle, @ptrCast(@alignCast(&sampler_raw)), @ptrCast(@alignCast(&view_raw)))) return 0;
+    const id = c.imgui_bridge_vk_add_texture(@ptrCast(sampler_raw), @ptrCast(view_raw), c.VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
+    td.layer_imgui_ids[layer_index] = id;
+    return id;
 }
 
 pub fn draw_terrain_panel(state: *EditorState) void {
@@ -925,8 +1764,50 @@ pub fn draw_terrain_panel(state: *EditorState) void {
     defer c.imgui_bridge_end();
     if (!open) return;
 
+    _ = c.imgui_bridge_drag_float("Create Size", &state.ui.terrain_create_size, 0.5, 1.0, 4096.0, "%.1f", 0);
+    _ = c.imgui_bridge_drag_float("Create Resolution", &state.ui.terrain_create_resolution, 1.0, 2.0, 1024.0, "%.0f", 0);
+    _ = c.imgui_bridge_checkbox("Create Volume", &state.ui.terrain_create_volume);
+    if (state.ui.terrain_create_volume) {
+        _ = c.imgui_bridge_drag_float("Create Thickness", &state.ui.terrain_create_thickness, 0.1, 0.01, 200.0, "%.2f", 0);
+    }
+
+    const default_path_len = std.mem.indexOfScalar(u8, &state.ui.terrain_default_texture_path, 0) orelse state.ui.terrain_default_texture_path.len;
+    if (default_path_len > 0) {
+        c.imgui_bridge_text_wrapped("Default Texture: %s", @as([*:0]const u8, @ptrCast(&state.ui.terrain_default_texture_path)));
+    } else {
+        c.imgui_bridge_text_wrapped("Default Texture: (none)");
+    }
+    if (c.imgui_bridge_begin_drag_drop_target()) {
+        if (c.imgui_bridge_accept_drag_drop_payload("ASSET_PATH", 0)) |payload| {
+            const data_ptr = c.imgui_bridge_payload_get_data(payload);
+            if (data_ptr != null) {
+                const path_c: [*:0]const u8 = @ptrCast(@alignCast(data_ptr));
+                const path = std.mem.span(path_c);
+                const len = @min(path.len, state.ui.terrain_default_texture_path.len - 1);
+                @memcpy(state.ui.terrain_default_texture_path[0..len], path[0..len]);
+                state.ui.terrain_default_texture_path[len] = 0;
+            }
+        }
+        c.imgui_bridge_end_drag_drop_target();
+    }
+    if (c.imgui_bridge_button("Set Default Texture...")) {
+        const filter = "Textures\x00*.png;*.jpg;*.jpeg;*.tga;*.bmp;*.dds;*.hdr;*.exr\x00All Files\x00*.*\x00";
+        if (platform.open_file_dialog(memory.cardinal_get_allocator_for_category(.ENGINE).as_allocator(), filter, null)) |picked| {
+            defer memory.cardinal_get_allocator_for_category(.ENGINE).as_allocator().free(picked);
+            const len = @min(picked.len, state.ui.terrain_default_texture_path.len - 1);
+            @memcpy(state.ui.terrain_default_texture_path[0..len], picked[0..len]);
+            state.ui.terrain_default_texture_path[len] = 0;
+        }
+    }
+    c.imgui_bridge_same_line(0, -1);
+    if (c.imgui_bridge_button("Clear Default")) {
+        @memset(&state.ui.terrain_default_texture_path, 0);
+    }
+
     if (c.imgui_bridge_button("Create Terrain")) {
-        create_terrain(state, 128, 64.0);
+        const res: u32 = @intFromFloat(std.math.clamp(state.ui.terrain_create_resolution, 2.0, 1024.0));
+        const size: f32 = std.math.clamp(state.ui.terrain_create_size, 1.0, 4096.0);
+        create_terrain(state, res, size);
     }
 
     c.imgui_bridge_separator();
@@ -942,7 +1823,57 @@ pub fn draw_terrain_panel(state: *EditorState) void {
         if (derive_grid_from_mesh(terr_ptr.?, meshes.model_mesh)) |grid_ctx| {
             if (ensure_terrain_data(state, selected.id, meshes.model_mesh, grid_ctx.verts_per_side)) |td| {
                 ensure_terrain_material_bound(state, terr_ptr.?, td);
+                if (default_path_len > 0) {
+                    if (c.imgui_bridge_button("Apply Default Texture to Layer 0")) {
+                        const path = state.ui.terrain_default_texture_path[0..default_path_len];
+                        set_terrain_layer_texture_from_path(state, terr_ptr.?, td, 0, path);
+                    }
+                }
             }
+        }
+    }
+
+    if (state.runtime.registry.get(components.Transform, selected)) |tr| {
+        c.imgui_bridge_separator();
+        c.imgui_bridge_text_wrapped("Extend terrain by adding adjacent chunks.");
+
+        const hier = state.runtime.registry.get(components.Hierarchy, selected);
+        const parent = if (hier) |h| if (h.parent) |p| p else null else null;
+
+        const res: u32 = terr_ptr.?.resolution;
+        const size_x: f32 = terr_ptr.?.size.x;
+        const size_z: f32 = terr_ptr.?.size.y;
+
+        var pos_px = tr.position;
+        pos_px.x += size_x;
+        if (c.imgui_bridge_button("+X Chunk")) {
+            _ = create_terrain_at(state, res, size_x, terr_ptr.?.thickness, parent, pos_px);
+        }
+        c.imgui_bridge_same_line(0, -1);
+        var pos_nx = tr.position;
+        pos_nx.x -= size_x;
+        if (c.imgui_bridge_button("-X Chunk")) {
+            _ = create_terrain_at(state, res, size_x, terr_ptr.?.thickness, parent, pos_nx);
+        }
+
+        var pos_pz = tr.position;
+        pos_pz.z += size_z;
+        if (c.imgui_bridge_button("+Z Chunk")) {
+            _ = create_terrain_at(state, res, size_x, terr_ptr.?.thickness, parent, pos_pz);
+        }
+        c.imgui_bridge_same_line(0, -1);
+        var pos_nz = tr.position;
+        pos_nz.z -= size_z;
+        if (c.imgui_bridge_button("-Z Chunk")) {
+            _ = create_terrain_at(state, res, size_x, terr_ptr.?.thickness, parent, pos_nz);
+        }
+
+        var th = terr_ptr.?.thickness;
+        if (c.imgui_bridge_drag_float("Thickness", &th, 0.1, 0.01, 200.0, "%.2f", 0)) {
+            terr_ptr.?.thickness = th;
+            update_terrain_volume_meshes(state, selected.id);
+            state.runtime.pending_scene = state.runtime.combined_scene;
+            state.runtime.scene_upload_pending = true;
         }
     }
 
@@ -950,7 +1881,8 @@ pub fn draw_terrain_panel(state: *EditorState) void {
 
     const tool_items = [_][*:0]const u8{
         "Sculpt Height",
-        "Paint Color",
+        "Paint Texture",
+        "Carve",
     };
     var tool_ptr: i32 = state.ui.terrain_tool;
     _ = c.imgui_bridge_combo("Tool", &tool_ptr, &tool_items[0], @intCast(tool_items.len), 10);
@@ -973,38 +1905,240 @@ pub fn draw_terrain_panel(state: *EditorState) void {
         } else {
             _ = c.imgui_bridge_drag_float("Brush Strength", &state.ui.terrain_brush_strength, 0.01, 0.0, 1.0, "%.3f", 0);
         }
-    } else {
+    } else if (state.ui.terrain_tool == 1) {
         _ = c.imgui_bridge_drag_float("Brush Strength", &state.ui.terrain_brush_strength, 0.01, 0.0, 1.0, "%.3f", 0);
-        _ = c.imgui_bridge_color_edit3("Paint Color", &state.ui.terrain_paint_color, 0);
-    }
+        if (c.imgui_bridge_drag_float("Texture Tiling", &state.ui.terrain_texture_tiling, 0.1, 0.1, 128.0, "%.2f", 0)) {
+            if (state.runtime.terrain_data_by_entity.getPtr(selected.id)) |td| {
+                ensure_terrain_material_bound(state, terr_ptr.?, td);
+            }
+        }
+        c.imgui_bridge_separator();
+        c.imgui_bridge_text_wrapped("Layer Textures:");
 
-    const mouse_down = state.ui.terrain_sculpt_enabled and c.imgui_bridge_is_shift_down() and c.imgui_bridge_is_mouse_down(0) and !state.runtime.mouse_captured;
+        const layer_names = [_][*:0]const u8{
+            "Layer 0",
+            "Layer 1",
+            "Layer 2",
+            "Layer 3",
+        };
 
-    if (mouse_down) {
-        stroke_begin(state, terr_ptr.?, state.ui.terrain_tool);
-        if (state.runtime.registry.get(components.Transform, selected)) |t| {
-            if (selection_raycast.get_ray_from_mouse(state)) |ray| {
-                if (@abs(ray.direction.y) > 0.00001) {
-                    const plane_y = t.position.y;
-                    const hit_t = (plane_y - ray.origin.y) / ray.direction.y;
-                    if (hit_t > 0.0) {
-                        const hit = ray.origin.add(ray.direction.mul(hit_t));
-                        if (state.ui.terrain_tool == 0) {
-                            _ = apply_sculpt_to_selected(state, selected.id, terr_ptr.?, t, hit);
-                        } else {
-                            _ = apply_paint_to_selected(state, selected.id, terr_ptr.?, t, hit);
-                        }
-                        state.ui.terrain_brush_last_mouse_down = true;
-                        state.runtime.picking_cache_dirty = true;
+        if (state.runtime.terrain_data_by_entity.getPtr(selected.id)) |td| {
+            const set_labels = [_][*:0]const u8{
+                "Set...##Layer0",
+                "Set...##Layer1",
+                "Set...##Layer2",
+                "Set...##Layer3",
+            };
+            var li: usize = 0;
+            while (li < 4) : (li += 1) {
+                c.imgui_bridge_text("%s", layer_names[li]);
+                c.imgui_bridge_same_line(0, -1);
+                const tex_id = ensure_imgui_texture_id_for_layer(state, td, li);
+                if (tex_id != 0) {
+                    c.imgui_bridge_image_u64(tex_id, 64.0, 64.0);
+                    c.imgui_bridge_same_line(0, -1);
+                }
+                if (c.imgui_bridge_button(set_labels[li])) {
+                    const filter = "Textures\x00*.png;*.jpg;*.jpeg;*.tga;*.bmp;*.dds;*.hdr;*.exr\x00All Files\x00*.*\x00";
+                    if (platform.open_file_dialog(memory.cardinal_get_allocator_for_category(.ENGINE).as_allocator(), filter, null)) |picked| {
+                        defer memory.cardinal_get_allocator_for_category(.ENGINE).as_allocator().free(picked);
+                        set_terrain_layer_texture_from_path(state, terr_ptr.?, td, li, picked);
                     }
                 }
             }
         }
+        const layer_items = [_][*:0]const u8{
+            "Layer 0",
+            "Layer 1",
+            "Layer 2",
+            "Layer 3",
+        };
+        var layer_ptr: i32 = state.ui.terrain_paint_layer;
+        _ = c.imgui_bridge_combo("Paint Layer", &layer_ptr, &layer_items[0], @intCast(layer_items.len), 10);
+        state.ui.terrain_paint_layer = layer_ptr;
+    } else {
+        _ = c.imgui_bridge_drag_float("Brush Strength", &state.ui.terrain_brush_strength, 0.01, 0.0, 1.0, "%.3f", 0);
+        const mode_items = [_][*:0]const u8{
+            "Remove",
+            "Add",
+        };
+        var mode_ptr: i32 = state.ui.terrain_carve_mode;
+        _ = c.imgui_bridge_combo("Carve Mode", &mode_ptr, &mode_items[0], @intCast(mode_items.len), 10);
+        state.ui.terrain_carve_mode = mode_ptr;
+    }
+
+    const mouse_down = state.ui.terrain_sculpt_enabled and c.imgui_bridge_is_shift_down() and c.imgui_bridge_is_mouse_down(0) and !state.runtime.mouse_captured;
+
+    var terrain_group: std.ArrayListUnmanaged(engine.ecs_entity.Entity) = .{};
+    defer terrain_group.deinit(state.runtime.arena_allocator);
+    terrain_volume.collect_connected_terrain(&state.runtime, selected, state.runtime.arena_allocator, &terrain_group);
+    if (terrain_group.items.len == 0) {
+        terrain_group.append(state.runtime.arena_allocator, selected) catch {};
+    }
+
+    var preview_hit = math.Vec3{ .x = 0.0, .y = 0.0, .z = 0.0 };
+    var preview_enabled = false;
+    if (state.ui.terrain_sculpt_enabled and c.imgui_bridge_is_shift_down() and !state.runtime.mouse_captured) {
+        if (selection_raycast.get_ray_from_mouse(state)) |ray| {
+            var best_t: f32 = std.math.floatMax(f32);
+            var best_hit: ?math.Vec3 = null;
+            for (terrain_group.items) |e| {
+                const terr = state.runtime.registry.get(components.Terrain, e) orelse continue;
+                const hits = [_]u32{
+                    terr.mesh_index,
+                    if (terr.thickness > 0.01) terr.mesh_index + 2 else std.math.maxInt(u32),
+                };
+                for (hits) |mesh_index| {
+                    if (mesh_index == std.math.maxInt(u32)) continue;
+                    if (mesh_index >= state.runtime.combined_scene.mesh_count) continue;
+                    if (selection_raycast.raycast_combined_mesh_point(state, mesh_index, ray)) |hit| {
+                        const t_hit = hit.sub(ray.origin).dot(ray.direction);
+                        if (t_hit > 0.0 and t_hit < best_t) {
+                            best_t = t_hit;
+                            best_hit = hit;
+                        }
+                    }
+                }
+            }
+            if (best_hit) |hit| {
+                preview_hit = hit;
+                preview_enabled = true;
+            }
+        }
+    }
+
+    state.ui.terrain_brush_outline_enabled = preview_enabled;
+    if (preview_enabled) {
+        state.ui.terrain_brush_outline_pos = .{ preview_hit.x, preview_hit.y, preview_hit.z };
+        state.ui.terrain_brush_outline_radius = state.ui.terrain_brush_radius;
+        state.ui.terrain_brush_outline_strength = state.ui.terrain_brush_strength;
+        state.ui.terrain_brush_outline_tool = state.ui.terrain_tool;
+        state.ui.terrain_brush_outline_mode = if (state.ui.terrain_tool == 0) state.ui.terrain_sculpt_mode else if (state.ui.terrain_tool == 1) state.ui.terrain_paint_layer else state.ui.terrain_carve_mode;
+    }
+
+    const preview_mode: u32 = if (state.ui.terrain_tool == 0) @intCast(state.ui.terrain_sculpt_mode) else if (state.ui.terrain_tool == 1) @intCast(state.ui.terrain_paint_layer) else @intCast(state.ui.terrain_carve_mode);
+    renderer.cardinal_renderer_set_terrain_brush_preview(
+        state.runtime.renderer,
+        preview_enabled,
+        preview_hit.x,
+        preview_hit.y,
+        preview_hit.z,
+        state.ui.terrain_brush_radius,
+        state.ui.terrain_brush_strength,
+        @intCast(state.ui.terrain_tool),
+        preview_mode,
+    );
+
+    if (mouse_down) {
+        stroke_begin(state.ui.terrain_tool);
+        if (selection_raycast.get_ray_from_mouse(state)) |ray| {
+            var best_t: f32 = std.math.floatMax(f32);
+            var best_hit: ?math.Vec3 = null;
+            var best_ent: ?engine.ecs_entity.Entity = null;
+            for (terrain_group.items) |e| {
+                const terr = state.runtime.registry.get(components.Terrain, e) orelse continue;
+                const hits = [_]u32{
+                    terr.mesh_index,
+                    if (terr.thickness > 0.01) terr.mesh_index + 2 else std.math.maxInt(u32),
+                };
+                for (hits) |mesh_index| {
+                    if (mesh_index == std.math.maxInt(u32)) continue;
+                    if (mesh_index >= state.runtime.combined_scene.mesh_count) continue;
+                    if (selection_raycast.raycast_combined_mesh_point(state, mesh_index, ray)) |hit| {
+                        const t_hit = hit.sub(ray.origin).dot(ray.direction);
+                        if (t_hit > 0.0 and t_hit < best_t) {
+                            best_t = t_hit;
+                            best_hit = hit;
+                            best_ent = e;
+                        }
+                    }
+                }
+            }
+
+            if (best_hit) |hit| {
+                if (best_ent) |e_hit| {
+                    if (state.runtime.registry.get(components.Terrain, e_hit)) |terr| {
+                        if (state.runtime.registry.get(components.Transform, e_hit)) |tr| {
+                            if (state.ui.terrain_tool == 0) {
+                                _ = apply_sculpt_to_selected(state, e_hit.id, terr, tr, hit);
+                            } else if (state.ui.terrain_tool == 1) {
+                                _ = apply_paint_to_selected(state, e_hit.id, terr, tr, hit);
+                            } else {
+                                _ = apply_carve_to_selected(state, e_hit.id, terr, tr, hit);
+                            }
+                        }
+                    }
+                }
+                for (terrain_group.items) |e| {
+                    if (best_ent) |be| {
+                        if (e.id == be.id) continue;
+                    }
+                    const terr = state.runtime.registry.get(components.Terrain, e) orelse continue;
+                    const t = state.runtime.registry.get(components.Transform, e) orelse continue;
+                    if (state.ui.terrain_tool == 0) {
+                        _ = apply_sculpt_to_selected(state, e.id, terr, t, hit);
+                    } else if (state.ui.terrain_tool == 1) {
+                        _ = apply_paint_to_selected(state, e.id, terr, t, hit);
+                    } else {
+                        _ = apply_carve_to_selected(state, e.id, terr, t, hit);
+                    }
+                }
+                state.ui.terrain_brush_last_mouse_down = true;
+                state.runtime.picking_cache_dirty = true;
+            }
+        }
     } else if (state.ui.terrain_brush_last_mouse_down) {
-        stroke_end_and_push_undo(state, selected.id, terr_ptr.?);
+        stroke_end_and_push_undo(state);
         state.runtime.pending_scene = state.runtime.combined_scene;
         state.runtime.scene_upload_pending = true;
         state.runtime.picking_cache_dirty = true;
         state.ui.terrain_brush_last_mouse_down = false;
     }
+}
+
+pub fn flush_terrain_pending_uploads(state: *EditorState) void {
+    if (state.runtime.terrain_dirty_rects.count() == 0) return;
+
+    const alloc = memory.cardinal_get_allocator_for_category(.ENGINE).as_allocator();
+
+    var it = state.runtime.terrain_dirty_rects.iterator();
+    while (it.next()) |entry| {
+        const entity_id = entry.key_ptr.*;
+        const rect = entry.value_ptr.*;
+
+        const td = state.runtime.terrain_data_by_entity.getPtr(entity_id) orelse continue;
+        ensure_terrain_gpu_textures(state, td);
+        if (td.height_handle == std.math.maxInt(u32) or td.splat_handle == std.math.maxInt(u32)) continue;
+
+        if (rect.min_x > rect.max_x or rect.min_y > rect.max_y) continue;
+        if (rect.max_x >= td.dims or rect.max_y >= td.dims) continue;
+
+        const w: u32 = rect.max_x - rect.min_x + 1;
+        const h: u32 = rect.max_y - rect.min_y + 1;
+        const w_usize: usize = @intCast(w);
+        const h_usize: usize = @intCast(h);
+
+        const tmp_height = alloc.alloc(f32, w_usize * h_usize) catch continue;
+        defer alloc.free(tmp_height);
+        const tmp_splat = alloc.alloc(u8, (w_usize * h_usize) * 4) catch continue;
+        defer alloc.free(tmp_splat);
+
+        var row: u32 = 0;
+        while (row < h) : (row += 1) {
+            const src_y: usize = @as(usize, rect.min_y + row);
+            const src_base: usize = src_y * @as(usize, td.dims) + @as(usize, rect.min_x);
+            const dst_base: usize = @as(usize, row) * w_usize;
+
+            @memcpy(tmp_height[dst_base .. dst_base + w_usize], td.height[src_base .. src_base + w_usize]);
+
+            const src_s_base: usize = src_base * 4;
+            const dst_s_base: usize = dst_base * 4;
+            @memcpy(tmp_splat[dst_s_base .. dst_s_base + w_usize * 4], td.splat[src_s_base .. src_s_base + w_usize * 4]);
+        }
+
+        _ = renderer.cardinal_renderer_runtime_texture_update_subregion(state.runtime.renderer, td.height_handle, rect.min_x, rect.min_y, w, h, @ptrCast(tmp_height.ptr), tmp_height.len * @sizeOf(f32));
+        _ = renderer.cardinal_renderer_runtime_texture_update_subregion(state.runtime.renderer, td.splat_handle, rect.min_x, rect.min_y, w, h, @ptrCast(tmp_splat.ptr), tmp_splat.len);
+    }
+
+    state.runtime.terrain_dirty_rects.clearRetainingCapacity();
 }

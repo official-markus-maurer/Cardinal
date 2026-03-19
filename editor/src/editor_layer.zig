@@ -10,6 +10,8 @@ const platform = engine.platform;
 const window = engine.window;
 const renderer = engine.vulkan_renderer;
 const types = engine.vulkan_types;
+const components = engine.ecs_components;
+const node_factory = engine.ecs_node_factory;
 const model_manager = engine.model_manager;
 const scene = engine.scene;
 const loader = engine.loader;
@@ -45,6 +47,322 @@ var initialized: bool = false;
 var device_recovery_failed: bool = false;
 var imgui_context: ?*anyopaque = null;
 var world_matrix_cache: std.AutoHashMapUnmanaged(u64, math.Mat4) = .{};
+
+fn ensure_globals_entity() void {
+    const invalid_id = std.math.maxInt(u64);
+    if (state.runtime.globals_entity.id != invalid_id) {
+        if (state.runtime.registry.entity_manager.is_alive(state.runtime.globals_entity) and state.runtime.registry.get(components.EditorGlobals, state.runtime.globals_entity) != null) {
+            return;
+        }
+    }
+
+    var view = state.runtime.registry.view(components.EditorGlobals);
+    var it = view.iterator();
+    if (it.next()) |entry| {
+        state.runtime.globals_entity = entry.entity;
+        return;
+    }
+
+    const created = node_factory.create_node(state.runtime.registry, null, components.NodeType.Node, "Globals", .{}) catch return;
+
+    var g = components.EditorGlobals{};
+    g.camera_position = state.runtime.camera.position;
+    g.camera_target = state.runtime.camera.target;
+    g.camera_up = state.runtime.camera.up;
+    g.camera_fov = state.runtime.camera.fov;
+    g.camera_aspect = state.runtime.camera.aspect;
+    g.camera_near = state.runtime.camera.near_plane;
+    g.camera_far = state.runtime.camera.far_plane;
+
+    g.selected_entity_id = state.ui.selected_entity.id;
+
+    g.show_scene_graph = state.ui.show_scene_graph;
+    g.show_scene_view = state.ui.show_scene_view;
+    g.show_game_view = state.ui.show_game_view;
+    g.show_assets = state.ui.show_assets;
+    g.show_model_manager = state.ui.show_model_manager;
+    g.show_entity_inspector = state.ui.show_entity_inspector;
+    g.show_scene_manager = state.ui.show_scene_manager;
+    g.show_pbr_settings = state.ui.show_pbr_settings;
+    g.show_animation = state.ui.show_animation;
+    g.show_terrain_panel = state.ui.show_terrain_panel;
+    g.show_grid_axes = state.ui.show_grid_axes;
+    g.show_performance_panel = state.ui.show_performance_panel;
+    g.enable_viewports = false;
+
+    g.game_camera_entity_id = std.math.maxInt(u64);
+
+    g.pbr_enabled = state.runtime.pbr_enabled;
+    g.rendering_mode = @as(u32, @intCast(@intFromEnum(renderer.cardinal_renderer_get_rendering_mode(state.runtime.renderer))));
+
+    g.post_exposure = state.runtime.post_process.exposure;
+    g.post_contrast = state.runtime.post_process.contrast;
+    g.post_saturation = state.runtime.post_process.saturation;
+    g.post_bloom_intensity = state.runtime.post_process.bloomIntensity;
+    g.post_bloom_threshold = state.runtime.post_process.bloomThreshold;
+    g.post_bloom_knee = state.runtime.post_process.bloomKnee;
+
+    state.runtime.registry.add(created, g) catch {};
+    state.runtime.globals_entity = created;
+}
+
+fn apply_globals_to_state() void {
+    ensure_globals_entity();
+    const g = state.runtime.registry.get(components.EditorGlobals, state.runtime.globals_entity) orelse return;
+
+    state.runtime.camera.position = g.camera_position;
+    state.runtime.camera.target = g.camera_target;
+    state.runtime.camera.up = g.camera_up;
+    state.runtime.camera.fov = g.camera_fov;
+    state.runtime.camera.aspect = g.camera_aspect;
+    state.runtime.camera.near_plane = g.camera_near;
+    state.runtime.camera.far_plane = g.camera_far;
+
+    state.ui.show_scene_graph = g.show_scene_graph;
+    state.ui.show_scene_view = g.show_scene_view;
+    state.ui.show_game_view = false;
+    state.ui.show_assets = g.show_assets;
+    state.ui.show_model_manager = g.show_model_manager;
+    state.ui.show_entity_inspector = g.show_entity_inspector;
+    state.ui.show_scene_manager = g.show_scene_manager;
+    state.ui.show_pbr_settings = g.show_pbr_settings;
+    state.ui.show_animation = g.show_animation;
+    state.ui.show_terrain_panel = g.show_terrain_panel;
+    state.ui.show_performance_panel = g.show_performance_panel;
+
+    if (state.ui.show_grid_axes != g.show_grid_axes) {
+        state.ui.show_grid_axes = g.show_grid_axes;
+        renderer.cardinal_renderer_set_debug_grid(state.runtime.renderer, state.ui.show_grid_axes);
+    }
+
+    if (state.ui.enable_viewports != g.enable_viewports) {
+        state.ui.enable_viewports = false;
+        c.imgui_bridge_enable_viewports(false);
+    }
+
+    const desired_pbr = g.pbr_enabled;
+    if (state.runtime.pbr_enabled != desired_pbr) {
+        state.runtime.pbr_enabled = desired_pbr;
+        renderer.cardinal_renderer_enable_pbr(state.runtime.renderer, state.runtime.pbr_enabled);
+        if (state.runtime.pbr_enabled) {
+            renderer.cardinal_renderer_set_camera(state.runtime.renderer, &state.runtime.camera);
+            renderer.cardinal_renderer_set_lighting(state.runtime.renderer, &state.runtime.light);
+        }
+    }
+
+    const desired_mode: types.CardinalRenderingMode = combo_index_to_rendering_mode(@intCast(@min(g.rendering_mode, 3)));
+    const current_mode = renderer.cardinal_renderer_get_rendering_mode(state.runtime.renderer);
+    if (current_mode != desired_mode) {
+        renderer.cardinal_renderer_set_rendering_mode(state.runtime.renderer, desired_mode);
+    }
+
+    var pp_changed = false;
+    if (state.runtime.post_process.exposure != g.post_exposure) {
+        state.runtime.post_process.exposure = g.post_exposure;
+        pp_changed = true;
+    }
+    if (state.runtime.post_process.contrast != g.post_contrast) {
+        state.runtime.post_process.contrast = g.post_contrast;
+        pp_changed = true;
+    }
+    if (state.runtime.post_process.saturation != g.post_saturation) {
+        state.runtime.post_process.saturation = g.post_saturation;
+        pp_changed = true;
+    }
+    if (state.runtime.post_process.bloomIntensity != g.post_bloom_intensity) {
+        state.runtime.post_process.bloomIntensity = g.post_bloom_intensity;
+        pp_changed = true;
+    }
+    if (state.runtime.post_process.bloomThreshold != g.post_bloom_threshold) {
+        state.runtime.post_process.bloomThreshold = g.post_bloom_threshold;
+        pp_changed = true;
+    }
+    if (state.runtime.post_process.bloomKnee != g.post_bloom_knee) {
+        state.runtime.post_process.bloomKnee = g.post_bloom_knee;
+        pp_changed = true;
+    }
+    if (pp_changed) {
+        renderer.cardinal_renderer_set_post_process_params(state.runtime.renderer, &state.runtime.post_process);
+    }
+
+    if (g.selected_entity_id != std.math.maxInt(u64)) {
+        const ent = engine.ecs_entity.Entity{ .id = g.selected_entity_id };
+        if (state.runtime.registry.entity_manager.is_alive(ent)) {
+            state.ui.selected_entity = ent;
+        }
+    }
+}
+
+fn persist_state_to_globals() void {
+    const g = state.runtime.registry.get(components.EditorGlobals, state.runtime.globals_entity) orelse return;
+
+    g.camera_position = state.runtime.camera.position;
+    g.camera_target = state.runtime.camera.target;
+    g.camera_up = state.runtime.camera.up;
+    g.camera_fov = state.runtime.camera.fov;
+    g.camera_aspect = state.runtime.camera.aspect;
+    g.camera_near = state.runtime.camera.near_plane;
+    g.camera_far = state.runtime.camera.far_plane;
+
+    g.selected_entity_id = state.ui.selected_entity.id;
+
+    g.show_scene_graph = state.ui.show_scene_graph;
+    g.show_scene_view = state.ui.show_scene_view;
+    g.show_game_view = false;
+    g.show_assets = state.ui.show_assets;
+    g.show_model_manager = state.ui.show_model_manager;
+    g.show_entity_inspector = state.ui.show_entity_inspector;
+    g.show_scene_manager = state.ui.show_scene_manager;
+    g.show_pbr_settings = state.ui.show_pbr_settings;
+    g.show_animation = state.ui.show_animation;
+    g.show_terrain_panel = state.ui.show_terrain_panel;
+    g.show_grid_axes = state.ui.show_grid_axes;
+    g.show_performance_panel = state.ui.show_performance_panel;
+    g.enable_viewports = false;
+
+    g.pbr_enabled = state.runtime.pbr_enabled;
+    g.rendering_mode = @as(u32, @intCast(@intFromEnum(renderer.cardinal_renderer_get_rendering_mode(state.runtime.renderer))));
+
+    g.post_exposure = state.runtime.post_process.exposure;
+    g.post_contrast = state.runtime.post_process.contrast;
+    g.post_saturation = state.runtime.post_process.saturation;
+    g.post_bloom_intensity = state.runtime.post_process.bloomIntensity;
+    g.post_bloom_threshold = state.runtime.post_process.bloomThreshold;
+    g.post_bloom_knee = state.runtime.post_process.bloomKnee;
+}
+
+fn compute_entity_world_matrix(entity: engine.ecs_entity.Entity, depth: u32) math.Mat4 {
+    if (depth > 2048) return math.Mat4.identity();
+
+    var parent_world = math.Mat4.identity();
+    if (state.runtime.registry.get(components.Hierarchy, entity)) |h| {
+        if (h.parent) |p| {
+            if (state.runtime.registry.entity_manager.is_alive(p)) {
+                parent_world = compute_entity_world_matrix(p, depth + 1);
+            }
+        }
+    }
+
+    const local = if (state.runtime.registry.get(components.Transform, entity)) |t|
+        math.Mat4.fromTRS(t.position, t.rotation, t.scale)
+    else
+        math.Mat4.identity();
+
+    return parent_world.mul(local);
+}
+
+fn resolve_game_camera_entity() ?engine.ecs_entity.Entity {
+    ensure_globals_entity();
+    const g = state.runtime.registry.get(components.EditorGlobals, state.runtime.globals_entity) orelse return null;
+
+    if (g.game_camera_entity_id != std.math.maxInt(u64)) {
+        const ent = engine.ecs_entity.Entity{ .id = g.game_camera_entity_id };
+        if (state.runtime.registry.entity_manager.is_alive(ent) and state.runtime.registry.get(components.Camera, ent) != null) {
+            return ent;
+        }
+    }
+
+    var fallback: ?engine.ecs_entity.Entity = null;
+    var view = state.runtime.registry.view(components.Camera);
+    var it = view.iterator();
+    while (it.next()) |entry| {
+        const ent = entry.entity;
+        if (!state.runtime.registry.entity_manager.is_alive(ent)) continue;
+        if (state.runtime.registry.get(components.Name, ent)) |n| {
+            const s = n.slice();
+            if (std.mem.eql(u8, s, "MainCamera") or std.mem.eql(u8, s, "Main Camera")) return ent;
+        }
+        if (fallback == null) fallback = ent;
+    }
+    return fallback;
+}
+
+fn resolve_game_view_camera() ?types.CardinalCamera {
+    const ent = resolve_game_camera_entity() orelse return null;
+    const cam_comp = state.runtime.registry.get(components.Camera, ent) orelse return null;
+
+    const world = compute_entity_world_matrix(ent, 0);
+    const pos = math.Vec3{ .x = world.data[12], .y = world.data[13], .z = world.data[14] };
+
+    var forward = math.Vec3{ .x = -world.data[8], .y = -world.data[9], .z = -world.data[10] };
+    const f_len = forward.length();
+    forward = if (f_len > 0.0001) forward.mul(1.0 / f_len) else math.Vec3{ .x = 0, .y = 0, .z = -1 };
+
+    var up = math.Vec3{ .x = world.data[4], .y = world.data[5], .z = world.data[6] };
+    const u_len = up.length();
+    up = if (u_len > 0.0001) up.mul(1.0 / u_len) else math.Vec3{ .x = 0, .y = 1, .z = 0 };
+
+    var out = state.runtime.camera;
+    out.position = pos;
+    out.target = pos.add(forward);
+    out.up = up;
+    if (cam_comp.type == .Perspective) {
+        out.fov = cam_comp.fov;
+    }
+    const w = state.runtime.window.width;
+    const h = state.runtime.window.height;
+    const window_aspect: f32 = if (h != 0) @as(f32, @floatFromInt(w)) / @as(f32, @floatFromInt(h)) else out.aspect;
+
+    out.aspect = if (cam_comp.aspect_ratio > 0.001) cam_comp.aspect_ratio else window_aspect;
+    out.near_plane = if (cam_comp.near_plane > 0.00001) cam_comp.near_plane else 0.1;
+    const desired_far = if (cam_comp.far_plane > out.near_plane + 0.001) cam_comp.far_plane else out.near_plane + 1000.0;
+    out.far_plane = desired_far;
+
+    return out;
+}
+
+fn free_terrain_runtime_data(entry: *editor_state.TerrainData) void {
+    if (entry.height_handle != std.math.maxInt(u32)) {
+        renderer.cardinal_renderer_runtime_texture_free(state.runtime.renderer, entry.height_handle);
+        entry.height_handle = std.math.maxInt(u32);
+    }
+    if (entry.splat_handle != std.math.maxInt(u32)) {
+        renderer.cardinal_renderer_runtime_texture_free(state.runtime.renderer, entry.splat_handle);
+        entry.splat_handle = std.math.maxInt(u32);
+    }
+    for (entry.layer_handles, 0..) |h, i| {
+        if (h != std.math.maxInt(u32)) {
+            renderer.cardinal_renderer_runtime_texture_free(state.runtime.renderer, h);
+            entry.layer_handles[i] = std.math.maxInt(u32);
+        }
+    }
+    allocator.free(entry.height);
+    allocator.free(entry.splat);
+}
+
+fn prune_terrain_runtime_data() void {
+    var dead_ids = std.ArrayListUnmanaged(u64){};
+    defer dead_ids.deinit(allocator);
+
+    var it = state.runtime.terrain_data_by_entity.iterator();
+    while (it.next()) |entry| {
+        const entity_id = entry.key_ptr.*;
+        const ent = engine.ecs_entity.Entity{ .id = entity_id };
+        const alive = state.runtime.registry.entity_manager.is_alive(ent);
+        if (!alive) {
+            free_terrain_runtime_data(entry.value_ptr);
+            dead_ids.append(allocator, entity_id) catch {};
+            continue;
+        }
+
+        const terr = state.runtime.registry.get(components.Terrain, ent);
+        if (terr == null) {
+            free_terrain_runtime_data(entry.value_ptr);
+            dead_ids.append(allocator, entity_id) catch {};
+            continue;
+        }
+
+        if (model_manager.cardinal_model_manager_get_model(&state.runtime.model_manager, terr.?.model_id) == null) {
+            free_terrain_runtime_data(entry.value_ptr);
+            dead_ids.append(allocator, entity_id) catch {};
+            continue;
+        }
+    }
+
+    for (dead_ids.items) |id| {
+        _ = state.runtime.terrain_data_by_entity.remove(id);
+    }
+}
 
 fn check_loading_status() void {
     if (state.runtime.loading_tasks.items.len == 0) {
@@ -84,13 +402,15 @@ fn check_loading_status() void {
                                 state.runtime.scene_upload_pending = true;
                             }
                         } else {
-                            state.runtime.transform_overrides.clearRetainingCapacity();
                             selection_system.reset_picking_cache();
-                            state.runtime.mesh_owner_by_mesh_index.clearRetainingCapacity();
-                            state.runtime.mesh_entity_by_mesh_index.clearRetainingCapacity();
-                            state.runtime.registry.deinit();
-                            state.runtime.registry.* = engine.ecs_registry.Registry.init(allocator);
-                            scene_io.import_scene_graph(&state);
+                            const parent = if (state.runtime.registry.entity_manager.is_alive(state.ui.selected_entity)) state.ui.selected_entity else blk: {
+                                const root = node_factory.create_node(state.runtime.registry, null, .Node3D, "Scene Root", .{}) catch break :blk engine.ecs_entity.Entity{ .id = std.math.maxInt(u64) };
+                                break :blk root;
+                            };
+
+                            if (parent.id != std.math.maxInt(u64)) {
+                                scene_io.instantiate_model(&state, model_id, parent);
+                            }
 
                             if (initialized) {
                                 state.runtime.pending_scene = state.runtime.combined_scene;
@@ -153,47 +473,6 @@ fn draw_pbr_settings_panel() void {
         defer c.imgui_bridge_end();
 
         if (open) {
-            if (c.imgui_bridge_checkbox("Enable PBR Rendering", &state.runtime.pbr_enabled)) {
-                renderer.cardinal_renderer_enable_pbr(state.runtime.renderer, state.runtime.pbr_enabled);
-                if (state.runtime.pbr_enabled) {
-                    renderer.cardinal_renderer_set_camera(state.runtime.renderer, &state.runtime.camera);
-                    renderer.cardinal_renderer_set_lighting(state.runtime.renderer, &state.runtime.light);
-                }
-            }
-
-            c.imgui_bridge_separator();
-
-            if (c.imgui_bridge_collapsing_header("Camera", c.ImGuiTreeNodeFlags_DefaultOpen)) {
-                var cam_changed = false;
-                if (c.imgui_bridge_drag_float3("Position", @ptrCast(&state.runtime.camera.position), 0.1, 0.0, 0.0, "%.3f", 0)) cam_changed = true;
-                if (c.imgui_bridge_drag_float3("Target", @ptrCast(&state.runtime.camera.target), 0.1, 0.0, 0.0, "%.3f", 0)) cam_changed = true;
-                if (c.imgui_bridge_slider_float("FOV", &state.runtime.camera.fov, 10.0, 120.0, "%.1f")) cam_changed = true;
-
-                if (cam_changed and state.runtime.pbr_enabled) {
-                    renderer.cardinal_renderer_set_camera(state.runtime.renderer, &state.runtime.camera);
-                }
-            }
-
-            c.imgui_bridge_separator();
-
-            if (c.imgui_bridge_collapsing_header("Lighting", c.ImGuiTreeNodeFlags_DefaultOpen)) {
-                var light_changed = false;
-
-                state.runtime.enable_directional_light = true;
-                state.runtime.light.type = 0;
-
-                c.imgui_bridge_text("Directional Light (Sun)");
-                if (c.imgui_bridge_drag_float3("Direction", @ptrCast(&state.runtime.light.direction), 0.01, -1.0, 1.0, "%.3f", 0)) light_changed = true;
-
-                if (c.imgui_bridge_color_edit3("Color", @ptrCast(&state.runtime.light.color), 0)) light_changed = true;
-                if (c.imgui_bridge_slider_float("Intensity##DirectionalLight", &state.runtime.light.intensity, 0.0, 20.0, "%.2f")) light_changed = true;
-                if (c.imgui_bridge_color_edit3("Ambient", @ptrCast(&state.runtime.light.ambient), 0)) light_changed = true;
-
-                if (light_changed and state.runtime.pbr_enabled) {
-                    renderer.cardinal_renderer_set_lighting(state.runtime.renderer, &state.runtime.light);
-                }
-            }
-
             c.imgui_bridge_separator();
 
             if (c.imgui_bridge_collapsing_header("Material Override", c.ImGuiTreeNodeFlags_DefaultOpen)) {
@@ -231,40 +510,6 @@ fn draw_pbr_settings_panel() void {
                             _ = std.fmt.bufPrintZ(&state.ui.status_msg, "No scene loaded or no materials to modify", .{}) catch {};
                         }
                     }
-                }
-            }
-
-            c.imgui_bridge_separator();
-
-            if (c.imgui_bridge_collapsing_header("Post Process", c.ImGuiTreeNodeFlags_DefaultOpen)) {
-                var pp_changed = false;
-                if (c.imgui_bridge_slider_float("Exposure", &state.runtime.post_process.exposure, 0.1, 10.0, "%.2f")) pp_changed = true;
-                if (c.imgui_bridge_slider_float("Contrast", &state.runtime.post_process.contrast, 0.1, 3.0, "%.2f")) pp_changed = true;
-                if (c.imgui_bridge_slider_float("Saturation", &state.runtime.post_process.saturation, 0.0, 3.0, "%.2f")) pp_changed = true;
-
-                c.imgui_bridge_separator();
-                c.imgui_bridge_text("Bloom");
-                if (c.imgui_bridge_slider_float("Bloom Intensity", &state.runtime.post_process.bloomIntensity, 0.0, 1.0, "%.3f")) pp_changed = true;
-                if (c.imgui_bridge_slider_float("Threshold", &state.runtime.post_process.bloomThreshold, 0.0, 5.0, "%.2f")) pp_changed = true;
-                if (c.imgui_bridge_slider_float("Knee", &state.runtime.post_process.bloomKnee, 0.0, 1.0, "%.2f")) pp_changed = true;
-
-                if (pp_changed) {
-                    renderer.cardinal_renderer_set_post_process_params(state.runtime.renderer, &state.runtime.post_process);
-                }
-            }
-
-            c.imgui_bridge_separator();
-
-            if (c.imgui_bridge_collapsing_header("Rendering Mode", c.ImGuiTreeNodeFlags_DefaultOpen)) {
-                const current_mode = renderer.cardinal_renderer_get_rendering_mode(state.runtime.renderer);
-
-                var current_item: i32 = rendering_mode_to_combo_index(current_mode);
-
-                const items = [_][*:0]const u8{ "Normal", "UV Visualization", "Wireframe", "Mesh Shader" };
-
-                if (c.imgui_bridge_combo("Mode", &current_item, &items[0], @intCast(items.len), -1)) {
-                    const new_mode: types.CardinalRenderingMode = combo_index_to_rendering_mode(current_item);
-                    renderer.cardinal_renderer_set_rendering_mode(state.runtime.renderer, new_mode);
                 }
             }
         }
@@ -376,6 +621,7 @@ pub fn init(win_ptr: *window.CardinalWindow, rnd_ptr: *types.CardinalRenderer, r
     }
     c.imgui_bridge_enable_docking(true);
     c.imgui_bridge_enable_keyboard(true);
+    c.imgui_bridge_enable_viewports(state.ui.enable_viewports);
     c.imgui_bridge_style_colors_dark();
 
     var x_scale: f32 = 1.0;
@@ -597,6 +843,7 @@ fn close_project() void {
         }
         state.runtime.terrain_data_by_entity.clearRetainingCapacity();
     }
+    state.runtime.terrain_dirty_rects.clearRetainingCapacity();
 
     engine.window.cardinal_window_restore(state.runtime.window);
     engine.window.cardinal_window_set_size(state.runtime.window, 600, 400);
@@ -637,6 +884,7 @@ pub fn shutdown() void {
     state.runtime.mesh_owner_by_mesh_index.deinit(allocator);
     state.runtime.mesh_entity_by_mesh_index.deinit(allocator);
     state.runtime.model_root_by_id.deinit(allocator);
+    state.runtime.terrain_dirty_rects.deinit(allocator);
     {
         var it = state.runtime.terrain_data_by_entity.iterator();
         while (it.next()) |entry| {
@@ -655,6 +903,22 @@ pub fn shutdown() void {
             allocator.free(entry.value_ptr.splat);
         }
         state.runtime.terrain_data_by_entity.deinit(allocator);
+    }
+
+    {
+        var it = state.runtime.asset_thumbnails.iterator();
+        while (it.next()) |entry| {
+            if (entry.value_ptr.imgui_id != 0) {
+                c.imgui_bridge_vk_remove_texture(entry.value_ptr.imgui_id);
+                entry.value_ptr.imgui_id = 0;
+            }
+            if (entry.value_ptr.handle != std.math.maxInt(u32)) {
+                renderer.cardinal_renderer_runtime_texture_free(state.runtime.renderer, entry.value_ptr.handle);
+                entry.value_ptr.handle = std.math.maxInt(u32);
+            }
+            allocator.free(entry.key_ptr.*);
+        }
+        state.runtime.asset_thumbnails.deinit(allocator);
     }
 
     for (state.runtime.loading_tasks.items) |info| {
@@ -711,25 +975,7 @@ pub fn update() void {
             state.runtime.transform_overrides.clearRetainingCapacity();
             selection_system.reset_picking_cache();
             state.ui.undo.clear();
-            {
-                var it = state.runtime.terrain_data_by_entity.iterator();
-                while (it.next()) |entry| {
-                    if (entry.value_ptr.height_handle != std.math.maxInt(u32)) {
-                        renderer.cardinal_renderer_runtime_texture_free(state.runtime.renderer, entry.value_ptr.height_handle);
-                    }
-                    if (entry.value_ptr.splat_handle != std.math.maxInt(u32)) {
-                        renderer.cardinal_renderer_runtime_texture_free(state.runtime.renderer, entry.value_ptr.splat_handle);
-                    }
-                    for (entry.value_ptr.layer_handles) |h| {
-                        if (h != std.math.maxInt(u32)) {
-                            renderer.cardinal_renderer_runtime_texture_free(state.runtime.renderer, h);
-                        }
-                    }
-                    allocator.free(entry.value_ptr.height);
-                    allocator.free(entry.value_ptr.splat);
-                }
-                state.runtime.terrain_data_by_entity.clearRetainingCapacity();
-            }
+            prune_terrain_runtime_data();
         } else {
             state.runtime.scene_loaded = false;
         }
@@ -753,6 +999,7 @@ pub fn update() void {
     c.imgui_bridge_new_frame();
 
     const dt = c.imgui_bridge_get_io_delta_time();
+    apply_globals_to_state();
 
     if (state.runtime.scene_loaded and state.runtime.combined_scene.animation_system != null) {
         const anim_sys_opaque = state.runtime.combined_scene.animation_system.?;
@@ -885,8 +1132,27 @@ pub fn update() void {
                 }
                 c.imgui_bridge_end_menu();
             }
+            c.imgui_bridge_same_line(0, -1);
+            if (!state.runtime.preview_game_camera) {
+                if (c.imgui_bridge_button("Play")) {
+                    if (state.runtime.registry.get(components.EditorGlobals, state.runtime.globals_entity)) |g| {
+                        g.pbr_enabled = true;
+                    }
+                    state.runtime.pbr_enabled = true;
+                    renderer.cardinal_renderer_enable_pbr(state.runtime.renderer, true);
+                    state.runtime.preview_game_camera = true;
+                    state.ui.show_scene_view = true;
+                }
+            } else {
+                if (c.imgui_bridge_button("Stop")) {
+                    state.runtime.preview_game_camera = false;
+                    state.ui.show_scene_view = true;
+                }
+            }
             c.imgui_bridge_end_menu_bar();
         }
+
+        renderer.cardinal_renderer_set_terrain_brush_preview(state.runtime.renderer, false, 0.0, 0.0, 0.0, 0.0, 0.0, 0, 0);
 
         hierarchy_panel.draw_hierarchy_panel(&state);
         content_browser.draw_asset_browser_panel(&state, allocator);
@@ -896,12 +1162,34 @@ pub fn update() void {
         terrain_panel.draw_terrain_panel(&state);
         performance_panel.draw_performance_panel(&state);
         scene_manager_panel.draw_scene_manager_panel(&state, allocator);
+        terrain_panel.flush_terrain_pending_uploads(&state);
+
+        const view_flags = c.ImGuiWindowFlags_NoScrollbar | c.ImGuiWindowFlags_NoScrollWithMouse | c.ImGuiWindowFlags_NoBackground;
 
         if (state.ui.show_scene_view) {
-            const open_scene = c.imgui_bridge_begin("Scene", &state.ui.show_scene_view, 0);
+            const open_scene = c.imgui_bridge_begin("Scene", &state.ui.show_scene_view, view_flags);
             defer c.imgui_bridge_end();
 
             if (open_scene) {
+                if (!renderer.cardinal_renderer_is_pbr_enabled(state.runtime.renderer)) {
+                    c.imgui_bridge_text("Rendering disabled (PBR off)");
+                    if (c.imgui_bridge_button("Enable Rendering")) {
+                        if (state.runtime.registry.get(components.EditorGlobals, state.runtime.globals_entity)) |g| {
+                            g.pbr_enabled = true;
+                        }
+                        state.runtime.pbr_enabled = true;
+                        renderer.cardinal_renderer_enable_pbr(state.runtime.renderer, true);
+                    }
+                }
+                if (!state.runtime.scene_loaded) {
+                    c.imgui_bridge_text("No scene loaded");
+                    if (c.imgui_bridge_button("Load Default Scene")) {
+                        scene_io.load_scene(&state, allocator, "assets/scenes/sponza_scene.json");
+                    }
+                }
+                if (state.runtime.preview_game_camera) {
+                    c.imgui_bridge_text("Play Mode");
+                }
                 var win_pos: c.ImVec2 = undefined;
                 var win_size: c.ImVec2 = undefined;
                 c.imgui_bridge_get_window_pos(&win_pos);
@@ -1024,6 +1312,8 @@ pub fn update() void {
             c.imgui_bridge_text("Status: %s", &state.ui.status_msg);
         }
     }
+
+    persist_state_to_globals();
 }
 
 pub fn render() void {
@@ -1058,7 +1348,16 @@ pub fn process_pending_uploads() void {
     }
 
     if (state.runtime.pbr_enabled) {
-        renderer.cardinal_renderer_set_camera(state.runtime.renderer, &state.runtime.camera);
+        if (state.runtime.preview_game_camera) {
+            if (resolve_game_view_camera()) |cam| {
+                var tmp = cam;
+                renderer.cardinal_renderer_set_camera(state.runtime.renderer, &tmp);
+            } else {
+                renderer.cardinal_renderer_set_camera(state.runtime.renderer, &state.runtime.camera);
+            }
+        } else {
+            renderer.cardinal_renderer_set_camera(state.runtime.renderer, &state.runtime.camera);
+        }
 
         var pbr_lights: [types.MAX_LIGHTS]types.PBRLight = undefined;
         var light_count: u32 = 0;

@@ -283,6 +283,78 @@ pub fn draw_selection_xray(state: *EditorState, root: engine.ecs_entity.Entity) 
     }
 }
 
+fn draw_selection_xray_subtree(state: *EditorState, root: engine.ecs_entity.Entity, view_proj: math.Mat4, color: u32, thickness: f32) void {
+    if (state.runtime.combined_scene.meshes == null or state.runtime.combined_scene.mesh_count == 0) return;
+
+    const alloc = engine.memory.cardinal_get_allocator_for_category(.ENGINE).as_allocator();
+    var world_cache: std.AutoHashMapUnmanaged(u64, math.Mat4) = .{};
+    defer world_cache.deinit(alloc);
+
+    var stack: std.ArrayListUnmanaged(engine.ecs_entity.Entity) = .{};
+    defer stack.deinit(alloc);
+    stack.append(alloc, root) catch return;
+
+    while (stack.items.len > 0) {
+        const last = stack.items.len - 1;
+        const e = stack.items[last];
+        stack.items.len = last;
+
+        if (state.runtime.registry.get(components.MeshRenderer, e)) |mr| {
+            const mesh_index = mr.mesh.index;
+            if (mesh_index < state.runtime.combined_scene.mesh_count and state.runtime.combined_scene.meshes != null) {
+                const mesh = &state.runtime.combined_scene.meshes.?[mesh_index];
+                const aabb = math.AABB{ .min = math.Vec3.fromArray(mesh.bounding_box_min), .max = math.Vec3.fromArray(mesh.bounding_box_max) };
+                const world_mat = compute_entity_world_matrix(state, alloc, &world_cache, e);
+                draw_obb_xray(state, view_proj, aabb, world_mat, color, thickness);
+            }
+        }
+
+        const h = state.runtime.registry.get(components.Hierarchy, e) orelse continue;
+        var child = h.first_child;
+        var guard: u32 = 0;
+        while (child) |c_ent| {
+            if (guard > 100000) break;
+            guard += 1;
+            stack.append(alloc, c_ent) catch break;
+            const ch = state.runtime.registry.get(components.Hierarchy, c_ent) orelse break;
+            child = ch.next_sibling;
+        }
+    }
+}
+
+pub fn draw_selection_xray_group(state: *EditorState, roots: []const engine.ecs_entity.Entity) void {
+    if (roots.len == 0) return;
+
+    const view = math.Mat4.lookAt(state.runtime.camera.position, state.runtime.camera.target, state.runtime.camera.up);
+    const proj = math.Mat4.perspective(math.toRadians(state.runtime.camera.fov), state.runtime.camera.aspect, state.runtime.camera.near_plane, state.runtime.camera.far_plane);
+    const view_proj = proj.mul(view);
+
+    var found_any = false;
+    var union_aabb = math.AABB{ .min = math.Vec3.zero(), .max = math.Vec3.zero() };
+    for (roots) |r| {
+        const aabb = compute_selection_world_aabb(state, r) orelse continue;
+        if (!found_any) {
+            union_aabb = aabb;
+            found_any = true;
+        } else {
+            union_aabb.min.x = @min(union_aabb.min.x, aabb.min.x);
+            union_aabb.min.y = @min(union_aabb.min.y, aabb.min.y);
+            union_aabb.min.z = @min(union_aabb.min.z, aabb.min.z);
+            union_aabb.max.x = @max(union_aabb.max.x, aabb.max.x);
+            union_aabb.max.y = @max(union_aabb.max.y, aabb.max.y);
+            union_aabb.max.z = @max(union_aabb.max.z, aabb.max.z);
+        }
+    }
+
+    if (found_any) {
+        draw_aabb_xray(state, view_proj, union_aabb, 0x8000FFFF, 2.0);
+    }
+
+    for (roots) |r| {
+        draw_selection_xray_subtree(state, r, view_proj, 0x4000FFFF, 1.0);
+    }
+}
+
 const BVHNode = struct {
     aabb: math.AABB,
     left: u32,
@@ -539,6 +611,99 @@ fn get_mesh_bvh(mesh_index: u32, mesh: *const scene.CardinalMesh) ?*const MeshPi
         return null;
     };
     return pick_bvh_cache.getPtr(mesh_index);
+}
+
+/// Raycasts against a combined-scene mesh and returns the closest hit point in world space.
+///
+/// Uses the per-mesh BVH cache for performance. Intended for editor tools that need
+/// accurate surface hits (e.g. terrain sculpting from the side).
+pub fn raycast_combined_mesh_point(state: *EditorState, mesh_index: u32, ray: math.Ray) ?math.Vec3 {
+    if (state.runtime.combined_scene.meshes == null or state.runtime.combined_scene.mesh_count == 0) return null;
+    if (mesh_index >= state.runtime.combined_scene.mesh_count) return null;
+
+    const mesh = &state.runtime.combined_scene.meshes.?[mesh_index];
+    if (!mesh.visible) return null;
+    if (mesh.vertices == null or mesh.indices == null or mesh.index_count < 3) return null;
+
+    const alloc = engine.memory.cardinal_get_allocator_for_category(.ENGINE).as_allocator();
+    var world_cache: std.AutoHashMapUnmanaged(u64, math.Mat4) = .{};
+    defer world_cache.deinit(alloc);
+
+    const min_arr = mesh.bounding_box_min;
+    const max_arr = mesh.bounding_box_max;
+    const min = math.Vec3{ .x = min_arr[0], .y = min_arr[1], .z = min_arr[2] };
+    const max = math.Vec3{ .x = max_arr[0], .y = max_arr[1], .z = max_arr[2] };
+    const aabb = math.AABB{ .min = min, .max = max };
+
+    const world_mat = mesh_world_matrix(state, alloc, &world_cache, mesh_index, mesh);
+    const world_aabb = aabb.transform(world_mat);
+    _ = math.intersectRayAABB(ray, world_aabb, 0.001, 10000.0) orelse return null;
+
+    const inv_world = world_mat.invert() orelse return null;
+    const local_origin = inv_world.transformPoint(ray.origin);
+    const local_dir = inv_world.transformVector(ray.direction);
+    const local_ray = math.Ray{ .origin = local_origin, .direction = local_dir };
+
+    const bvh = get_mesh_bvh(mesh_index, mesh) orelse return null;
+    const verts: [*]const scene.CardinalVertex = @ptrCast(mesh.vertices.?);
+    const idxs: [*]const u32 = @ptrCast(mesh.indices.?);
+
+    var closest_t: f32 = std.math.floatMax(f32);
+    var closest_world: ?math.Vec3 = null;
+
+    var stack: [128]u32 = undefined;
+    var sp: usize = 0;
+    stack[sp] = bvh.root;
+    sp += 1;
+
+    while (sp > 0) {
+        sp -= 1;
+        const node_index = stack[sp];
+        const node = bvh.nodes[node_index];
+
+        const t_local = math.intersectRayAABB(local_ray, node.aabb, 0.0, std.math.floatMax(f32)) orelse continue;
+        const local_p = local_ray.origin.add(local_ray.direction.mul(t_local));
+        const world_p = world_mat.transformPoint(local_p);
+        const t_world = world_p.sub(ray.origin).dot(ray.direction);
+        if (t_world <= 0.0 or t_world >= closest_t) continue;
+
+        if (node.count == 0) {
+            if (sp + 2 <= stack.len) {
+                stack[sp] = node.left;
+                stack[sp + 1] = node.right;
+                sp += 2;
+            }
+            continue;
+        }
+
+        var j: u32 = 0;
+        while (j < node.count) : (j += 1) {
+            const tri_off = bvh.tri_offsets[node.first + j];
+            if (tri_off + 2 >= mesh.index_count) continue;
+
+            const idx0 = idxs[tri_off + 0];
+            const idx1 = idxs[tri_off + 1];
+            const idx2 = idxs[tri_off + 2];
+            if (idx0 >= mesh.vertex_count or idx1 >= mesh.vertex_count or idx2 >= mesh.vertex_count) continue;
+            if (idx0 == idx1 or idx1 == idx2 or idx0 == idx2) continue;
+
+            const p0 = math.Vec3{ .x = verts[idx0].px, .y = verts[idx0].py, .z = verts[idx0].pz };
+            const p1 = math.Vec3{ .x = verts[idx1].px, .y = verts[idx1].py, .z = verts[idx1].pz };
+            const p2 = math.Vec3{ .x = verts[idx2].px, .y = verts[idx2].py, .z = verts[idx2].pz };
+
+            if (intersect_ray_triangle(local_ray, p0, p1, p2, 0.0, std.math.floatMax(f32))) |hit| {
+                const local_hit = local_ray.origin.add(local_ray.direction.mul(hit.t));
+                const world_hit = world_mat.transformPoint(local_hit);
+                const hit_t_world = world_hit.sub(ray.origin).dot(ray.direction);
+                if (hit_t_world <= 0.0 or hit_t_world >= closest_t) continue;
+
+                closest_t = hit_t_world;
+                closest_world = world_hit;
+            }
+        }
+    }
+
+    return closest_world;
 }
 
 fn pick_combined_mesh(state: *EditorState, ray: math.Ray) ?u32 {

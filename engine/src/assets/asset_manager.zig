@@ -3,8 +3,6 @@
 //! Stores assets in typed arenas addressed by stable handles (index + generation). This module
 //! complements the ref-counting registry by providing lightweight handle-based lookup for engine
 //! systems that prefer POD handles over string keys.
-//!
-//! TODO: Unify ownership/ref-counting strategy between handle-based assets and ref_counting resources.
 const std = @import("std");
 const handles = @import("../core/handles.zig");
 const handle_manager = @import("../core/handle_manager.zig");
@@ -28,11 +26,19 @@ pub const AssetType = enum {
 fn AssetStorage(comptime T: type, comptime Handle: type) type {
     return struct {
         const Self = @This();
-        const Entry = struct {
-            data: T,
-            ref_count: u32,
-            path: ?[]const u8,
-        };
+        const uses_ref_resource = @hasField(T, "ref_resource");
+        const Entry = if (uses_ref_resource)
+            struct {
+                data: T,
+                local_ref_count: u32,
+                path: ?[]const u8,
+            }
+        else
+            struct {
+                data: T,
+                ref_count: u32,
+                path: ?[]const u8,
+            };
 
         entries: std.ArrayListUnmanaged(Entry),
         handle_manager: handle_manager.HandleManager,
@@ -73,18 +79,15 @@ fn AssetStorage(comptime T: type, comptime Handle: type) type {
             const index = allocation.index;
             const generation = allocation.generation;
 
+            const new_entry: Entry = if (uses_ref_resource)
+                .{ .data = data, .local_ref_count = 1, .path = stored_path }
+            else
+                .{ .data = data, .ref_count = 1, .path = stored_path };
+
             if (index < self.entries.items.len) {
-                self.entries.items[index] = .{
-                    .data = data,
-                    .ref_count = 1,
-                    .path = stored_path,
-                };
+                self.entries.items[index] = new_entry;
             } else {
-                try self.entries.append(self.allocator, .{
-                    .data = data,
-                    .ref_count = 1,
-                    .path = stored_path,
-                });
+                try self.entries.append(self.allocator, new_entry);
             }
 
             return AddResult{
@@ -110,27 +113,62 @@ fn AssetStorage(comptime T: type, comptime Handle: type) type {
             if (handle.index >= self.entries.items.len) return .{ .destroyed = false, .path = null, .data = null };
 
             var entry = &self.entries.items[handle.index];
+            if (uses_ref_resource) {
+                if (entry.data.ref_resource) |ref| {
+                    const count = ref_counting.cardinal_ref_get_count(ref);
+                    if (count <= 1) {
+                        const p = entry.path;
+                        var d = entry.data;
+                        entry.path = null;
+                        _ = self.handle_manager.free(handle.index, handle.generation);
+                        ref_counting.cardinal_ref_release(ref);
+                        d.ref_resource = null;
+                        return .{ .destroyed = true, .path = p, .data = d };
+                    }
+                    ref_counting.cardinal_ref_release(ref);
+                    return .{ .destroyed = false, .path = null, .data = null };
+                }
 
-            if (entry.ref_count > 0) {
-                entry.ref_count -= 1;
+                if (entry.local_ref_count > 0) {
+                    entry.local_ref_count -= 1;
+                }
+                if (entry.local_ref_count == 0) {
+                    const p = entry.path;
+                    const d = entry.data;
+                    entry.path = null;
+                    _ = self.handle_manager.free(handle.index, handle.generation);
+                    return .{ .destroyed = true, .path = p, .data = d };
+                }
+                return .{ .destroyed = false, .path = null, .data = null };
+            } else {
+                if (entry.ref_count > 0) {
+                    entry.ref_count -= 1;
+                }
+                if (entry.ref_count == 0) {
+                    const p = entry.path;
+                    const d = entry.data;
+                    entry.path = null;
+
+                    _ = self.handle_manager.free(handle.index, handle.generation);
+                    return .{ .destroyed = true, .path = p, .data = d };
+                }
+                return .{ .destroyed = false, .path = null, .data = null };
             }
-
-            if (entry.ref_count == 0) {
-                const p = entry.path;
-                const d = entry.data;
-                entry.path = null;
-
-                _ = self.handle_manager.free(handle.index, handle.generation);
-                return .{ .destroyed = true, .path = p, .data = d };
-            }
-            return .{ .destroyed = false, .path = null, .data = null };
         }
 
         pub fn acquire(self: *Self, handle: Handle) void {
             if (!self.handle_manager.is_valid(handle.index, handle.generation)) return;
             if (handle.index >= self.entries.items.len) return;
             var entry = &self.entries.items[handle.index];
-            entry.ref_count += 1;
+            if (uses_ref_resource) {
+                if (entry.data.ref_resource) |ref| {
+                    _ = @atomicRmw(u32, &ref.ref_count, .Add, 1, .seq_cst);
+                } else {
+                    entry.local_ref_count += 1;
+                }
+            } else {
+                entry.ref_count += 1;
+            }
         }
     };
 }
@@ -215,10 +253,6 @@ pub const AssetManager = struct {
             if (res.data) |tex| {
                 if (tex.path) |p| {
                     self.allocator.free(std.mem.span(p));
-                }
-                if (tex.ref_resource) |ref| {
-                    const r: *ref_counting.CardinalRefCountedResource = @ptrCast(@alignCast(ref));
-                    _ = ref_counting.cardinal_ref_release(r);
                 }
             }
 

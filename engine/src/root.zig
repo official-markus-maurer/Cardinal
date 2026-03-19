@@ -32,6 +32,7 @@ pub const job_system = @import("core/job_system.zig");
 pub const async_loader = @import("core/async_loader.zig");
 pub const texture_loader = @import("assets/texture_loader.zig");
 pub const material_loader = @import("assets/material_loader.zig");
+pub const asset_database = @import("assets/asset_database.zig");
 pub const asset_manager = @import("assets/asset_manager.zig");
 pub const loader = @import("assets/loader.zig");
 pub const mesh_loader = @import("assets/mesh_loader.zig");
@@ -93,6 +94,7 @@ comptime {
     _ = async_loader;
     _ = texture_loader;
     _ = material_loader;
+    _ = asset_database;
     _ = asset_manager;
     _ = loader;
     _ = mesh_loader;
@@ -154,6 +156,7 @@ test {
     _ = async_loader;
     _ = texture_loader;
     _ = material_loader;
+    _ = asset_database;
     _ = loader;
     _ = mesh_loader;
     _ = model_manager;

@@ -1,5 +1,22 @@
 # Changelog
 
+## 2026.03
+
+### Terrain (Editor + Runtime)
+- **Terrain3D**: Add `Terrain3D` node type and `Terrain` ECS component.
+- **Terrain Panel**: Create/extend terrain chunks and edit terrain from the editor.
+- **Sculpting**: Raise/Lower/Flatten/Smooth tools with efficient dirty-region updates.
+- **Texture Painting**: Paint splatmap channels per layer and preview brush placement.
+- **Seam Stitching**: Post-stroke border stitching for adjacent terrain chunks to prevent cracks (height, paint, carve).
+- **GPU Uploads**: Merge terrain dirty-rect updates per frame (height/splat subregion uploads).
+- **Undo/Redo**: Store terrain edits as height/splat rectangles (texel regions) with grouped stroke undo across chunks.
+- **Persistence**: Persist terrain height/splat and carve alpha as sidecar files and load them with scenes.
+- **Paint UX**: Show loaded layer textures in the Terrain panel and fix layer painting/blending behavior.
+
+### Editor
+- **Scene Graph**: Drag-and-drop reparenting in the hierarchy view.
+- **Deletion**: Deleting entities that own meshes now reliably updates rendered visibility immediately.
+
 ## 2026.02
 
 ### Core Systems & Animation

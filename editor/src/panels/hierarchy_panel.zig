@@ -6,6 +6,7 @@ const engine = @import("cardinal_engine");
 const math = engine.math;
 const scene = engine.scene;
 const animation = engine.animation;
+const renderer = engine.vulkan_renderer;
 const components = engine.ecs_components;
 const entity_module = engine.ecs_entity;
 const node_factory = engine.ecs_node_factory;
@@ -13,6 +14,7 @@ const c = @import("../c.zig").c;
 const EditorState = @import("../editor_state.zig").EditorState;
 const scene_io = @import("../systems/scene_io.zig");
 const hierarchy_system = @import("../systems/hierarchy_system.zig");
+const scene_sync = @import("../systems/editor_scene_sync.zig");
 const selection_system = @import("../systems/selection_system.zig");
 
 const NodeEntry = struct {
@@ -285,18 +287,64 @@ fn reparent_entity(state: *EditorState, child: entity_module.Entity, new_parent:
     if (child.id == new_parent.id) return;
     if (is_descendant_of(state, new_parent, child)) return;
 
-    const before_pack = capture_reparent_before(state, child, new_parent);
+    const alloc = engine.memory.cardinal_get_allocator_for_category(.ENGINE).as_allocator();
+    var ids: std.ArrayListUnmanaged(u64) = .{};
+    defer ids.deinit(alloc);
+
+    const child_h = ensure_hierarchy(state, child);
+    if (child_h.parent) |p| ids.append(alloc, p.id) catch {};
+    if (child_h.prev_sibling) |p| ids.append(alloc, p.id) catch {};
+    if (child_h.next_sibling) |n| ids.append(alloc, n.id) catch {};
+
+    const new_parent_h = ensure_hierarchy(state, new_parent);
+    ids.append(alloc, new_parent.id) catch {};
+    if (new_parent_h.first_child) |fc| {
+        var last = fc;
+        var guard: u32 = 0;
+        while (guard < 100000) : (guard += 1) {
+            const lh = state.runtime.registry.get(components.Hierarchy, last) orelse break;
+            if (lh.next_sibling) |nx| {
+                last = nx;
+            } else {
+                break;
+            }
+        }
+        ids.append(alloc, last.id) catch {};
+    }
+    ids.append(alloc, child.id) catch {};
+
+    var unique_ids: std.ArrayListUnmanaged(u64) = .{};
+    defer unique_ids.deinit(alloc);
+    unique_ids.ensureTotalCapacity(alloc, ids.items.len) catch {};
+    for (ids.items) |id| {
+        var seen = false;
+        for (unique_ids.items) |u| {
+            if (u == id) {
+                seen = true;
+                break;
+            }
+        }
+        if (!seen) unique_ids.append(alloc, id) catch {};
+    }
+
+    var before: std.ArrayListUnmanaged(components.Hierarchy) = .{};
+    defer before.deinit(alloc);
+    before.ensureTotalCapacity(alloc, unique_ids.items.len) catch {};
+    for (unique_ids.items) |id| {
+        before.append(alloc, ensure_hierarchy(state, .{ .id = id })) catch {};
+    }
 
     hierarchy_system.unlink_entity_from_parent(state, child);
     node_factory.append_child(state.runtime.registry, new_parent, child);
 
-    const after = capture_reparent_after(state, before_pack.ids, before_pack.count);
-    state.ui.undo.push(.{ .EntityReparent = .{
-        .entity_ids = before_pack.ids,
-        .before = before_pack.before,
-        .after = after,
-        .count = before_pack.count,
-    } });
+    var after: std.ArrayListUnmanaged(components.Hierarchy) = .{};
+    defer after.deinit(alloc);
+    after.ensureTotalCapacity(alloc, unique_ids.items.len) catch {};
+    for (unique_ids.items) |id| {
+        after.append(alloc, ensure_hierarchy(state, .{ .id = id })) catch {};
+    }
+
+    state.ui.undo.push_entity_reparent(unique_ids.items, before.items, after.items);
 }
 
 fn strip_entities_for_delete(state: *EditorState, snaps: anytype) void {
@@ -324,8 +372,35 @@ fn strip_entities_for_delete(state: *EditorState, snaps: anytype) void {
         state.runtime.registry.remove(components.Light, ent);
         state.runtime.registry.remove(components.Camera, ent);
         state.runtime.registry.remove(components.Skybox, ent);
+        state.runtime.registry.remove(components.Terrain, ent);
         state.runtime.registry.remove(components.Hierarchy, ent);
+
+        if (state.runtime.terrain_data_by_entity.fetchRemove(ent.id)) |kv| {
+            const td = kv.value;
+            for (td.layer_imgui_ids) |id| {
+                if (id != 0) {
+                    c.imgui_bridge_vk_remove_texture(id);
+                }
+            }
+            if (td.height_handle != std.math.maxInt(u32)) {
+                renderer.cardinal_renderer_runtime_texture_free(state.runtime.renderer, td.height_handle);
+            }
+            if (td.splat_handle != std.math.maxInt(u32)) {
+                renderer.cardinal_renderer_runtime_texture_free(state.runtime.renderer, td.splat_handle);
+            }
+            for (td.layer_handles) |h| {
+                if (h != std.math.maxInt(u32)) {
+                    renderer.cardinal_renderer_runtime_texture_free(state.runtime.renderer, h);
+                }
+            }
+        }
+        _ = state.runtime.terrain_dirty_rects.remove(ent.id);
     }
+
+    scene_sync.sync_mesh_visibility_from_ecs(state);
+    state.runtime.pending_scene = state.runtime.combined_scene;
+    state.runtime.scene_upload_pending = true;
+    state.runtime.picking_cache_dirty = true;
 }
 
 fn build_focus_open_chain(state: *EditorState, entity: entity_module.Entity) void {
@@ -389,6 +464,7 @@ fn draw_flat_node(state: *EditorState, node: FlatNode, indent_spacing: f32, rebu
     if (!state.runtime.registry.entity_manager.is_alive(node.entity)) return;
 
     const hierarchy = state.runtime.registry.get(components.Hierarchy, node.entity) orelse return;
+    const is_globals = state.runtime.registry.get(components.EditorGlobals, node.entity) != null;
 
     const has_children = hierarchy.first_child != null;
     const open_before = if (has_children) (state.ui.scene_graph_open_state.get(node.entity.id) orelse false) else false;
@@ -477,7 +553,7 @@ fn draw_flat_node(state: *EditorState, node: FlatNode, indent_spacing: f32, rebu
         }
     }
 
-    if (state.ui.renaming_entity.id != node.entity.id) {
+    if (!is_globals and state.ui.renaming_entity.id != node.entity.id) {
         if (c.imgui_bridge_begin_drag_drop_source(0)) {
             const id_copy: u64 = node.entity.id;
             _ = c.imgui_bridge_set_drag_drop_payload("SCENE_ENTITY", &id_copy, @sizeOf(u64), 0);
@@ -496,15 +572,17 @@ fn draw_flat_node(state: *EditorState, node: FlatNode, indent_spacing: f32, rebu
     }
 
     if (c.imgui_bridge_begin_popup_context_item()) {
-        if (c.imgui_bridge_menu_item("Create...", null, false, true)) {
-            open_create_node_popup(state, node.entity);
-        }
+        if (!is_globals) {
+            if (c.imgui_bridge_menu_item("Create...", null, false, true)) {
+                open_create_node_popup(state, node.entity);
+            }
 
-        if (c.imgui_bridge_menu_item("Rename", null, false, true)) {
-            state.ui.renaming_entity = node.entity;
-            @memset(&state.ui.rename_buffer, 0);
-            const len = @min(name.len, 255);
-            @memcpy(state.ui.rename_buffer[0..len], name[0..len]);
+            if (c.imgui_bridge_menu_item("Rename", null, false, true)) {
+                state.ui.renaming_entity = node.entity;
+                @memset(&state.ui.rename_buffer, 0);
+                const len = @min(name.len, 255);
+                @memcpy(state.ui.rename_buffer[0..len], name[0..len]);
+            }
         }
 
         if (c.imgui_bridge_menu_item("Frame in Scene View", null, false, true)) {
@@ -512,7 +590,7 @@ fn draw_flat_node(state: *EditorState, node: FlatNode, indent_spacing: f32, rebu
             selection_system.frame_entity_in_scene_view(state, node.entity);
         }
 
-        if (c.imgui_bridge_menu_item("Delete", null, false, true)) {
+        if (!is_globals and c.imgui_bridge_menu_item("Delete", null, false, true)) {
             var ids: [6]u64 = [_]u64{0} ** 6;
             var before: [6]components.Hierarchy = undefined;
             var count: u8 = 0;
@@ -548,7 +626,7 @@ fn draw_flat_node(state: *EditorState, node: FlatNode, indent_spacing: f32, rebu
         c.imgui_bridge_end_popup();
     }
 
-    if (c.imgui_bridge_begin_drag_drop_target()) {
+    if (!is_globals and c.imgui_bridge_begin_drag_drop_target()) {
         if (c.imgui_bridge_accept_drag_drop_payload("ASSET_MODEL", 0)) |payload| {
             const data_ptr = c.imgui_bridge_payload_get_data(payload);
             const data_size = c.imgui_bridge_payload_get_data_size(payload);

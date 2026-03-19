@@ -935,6 +935,7 @@ pub export fn vk_mesh_shader_record_frame(s: ?*types.VulkanState, cmd: c.VkComma
         while (i < current_scene.mesh_count) : (i += 1) {
             const mesh = &current_scene.meshes.?[i];
             if (!mesh.visible) continue;
+            if (mesh.vertices == null or mesh.indices == null or mesh.vertex_count == 0 or mesh.index_count == 0) continue;
 
             var meshlets: ?[*]types.GpuMeshlet = null;
             var meshlet_count: u32 = 0;
@@ -963,6 +964,8 @@ pub export fn vk_mesh_shader_record_frame(s: ?*types.VulkanState, cmd: c.VkComma
                         meshUbo.materialIndex = mesh.material_index;
                         @memcpy(meshUbo.viewPos[0..3], pbrUbo.viewPos[0..3]);
                         @memcpy(meshUbo.ambientColor[0..4], pbrUbo.ambientColor[0..4]);
+                        @memcpy(meshUbo.terrainBrushPosRadius[0..4], pbrUbo.terrainBrushPosRadius[0..4]);
+                        @memcpy(meshUbo.terrainBrushParams[0..4], pbrUbo.terrainBrushParams[0..4]);
 
                         if (draw_data.uniform_mapped != null) {
                             @memcpy(@as([*]u8, @ptrCast(draw_data.uniform_mapped))[0..@sizeOf(types.MeshShaderUniformBuffer)], @as([*]const u8, @ptrCast(&meshUbo))[0..@sizeOf(types.MeshShaderUniformBuffer)]);

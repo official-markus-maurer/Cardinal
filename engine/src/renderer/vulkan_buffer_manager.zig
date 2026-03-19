@@ -68,8 +68,8 @@ fn end_single_time_commands(device: c.VkDevice, commandPool: c.VkCommandPool, qu
     }
 
     {
-        vk_sync_manager.vulkan_sync_manager_lock_shared();
-        defer vk_sync_manager.vulkan_sync_manager_unlock_shared();
+        vk_sync_manager.vulkan_sync_manager_lock_shared(device);
+        defer vk_sync_manager.vulkan_sync_manager_unlock_shared(device);
 
         if (vulkan_state.sync.timeline_semaphore == null) {
             buf_log.err("[BUFFER_MANAGER] Timeline semaphore is NULL!", .{});

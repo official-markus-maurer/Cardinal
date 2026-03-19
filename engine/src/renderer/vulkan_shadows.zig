@@ -342,7 +342,7 @@ pub fn vk_shadow_render(s: *types.VulkanState, cmd: c.VkCommandBuffer) void {
             }
             const mesh = &scn.meshes.?[m_i];
 
-            if (mesh.index_count == 0 or mesh.indices == null) {
+            if (mesh.index_count == 0) {
                 continue;
             }
 
@@ -435,7 +435,7 @@ pub fn vk_shadow_render(s: *types.VulkanState, cmd: c.VkCommandBuffer) void {
                 if (scn.meshes == null) break;
                 const mesh = &scn.meshes.?[m_i];
 
-                if (mesh.index_count == 0 or mesh.indices == null) {
+                if (mesh.index_count == 0) {
                     continue;
                 }
 

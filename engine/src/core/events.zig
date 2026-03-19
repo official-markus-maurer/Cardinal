@@ -6,6 +6,7 @@
 //! TODO: Add optional per-event lock-free queues for hot event streams.
 const std = @import("std");
 const log = @import("log.zig");
+const name_hash = @import("name_hash.zig");
 const evt_log = log.ScopedLogger("EVENTS");
 
 /// Opaque event identifier (typically `makeEventId` of a string).
@@ -48,7 +49,7 @@ pub fn shutdown() void {
 
 /// Computes a stable event id from a human-readable name.
 pub fn makeEventId(name: []const u8) EventId {
-    return std.hash.Wyhash.hash(0, name);
+    return name_hash.hash_u64_wyhash(name);
 }
 
 /// Registers a handler for `event_id`.

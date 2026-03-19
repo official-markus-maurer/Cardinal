@@ -5,6 +5,7 @@
 const std = @import("std");
 const window = @import("window.zig");
 const builtin = @import("builtin");
+const name_hash = @import("name_hash.zig");
 
 const c = @cImport({
     @cDefine("GLFW_INCLUDE_NONE", {});
@@ -78,7 +79,7 @@ pub fn shutdown() void {
 
 /// Pushes a layer on top of the stack.
 pub fn pushLayer(name: []const u8, blocking: bool) void {
-    const id = std.hash.Wyhash.hash(0, name);
+    const id = name_hash.hash_u64_wyhash(name);
     g_layer_stack.append(g_allocator, .{ .id = id, .blocking = blocking }) catch return;
 }
 
@@ -96,8 +97,8 @@ pub fn registerAction(name: []const u8, default_keys: []const c_int) void {
 
 /// Registers an action in a specific layer.
 pub fn registerActionWithLayer(name: []const u8, default_keys: []const c_int, layer_name: []const u8) void {
-    const id = std.hash.Wyhash.hash(0, name);
-    const layer_id = std.hash.Wyhash.hash(0, layer_name);
+    const id = name_hash.hash_u64_wyhash(name);
+    const layer_id = name_hash.hash_u64_wyhash(layer_name);
 
     var result = g_action_map.getOrPut(g_allocator, id) catch return;
     if (!result.found_existing) {
@@ -118,8 +119,8 @@ pub fn registerActionMouseButton(name: []const u8, button: c_int) void {
 
 /// Adds a mouse button binding in a specific layer.
 pub fn registerActionMouseButtonWithLayer(name: []const u8, button: c_int, layer_name: []const u8) void {
-    const id = std.hash.Wyhash.hash(0, name);
-    const layer_id = std.hash.Wyhash.hash(0, layer_name);
+    const id = name_hash.hash_u64_wyhash(name);
+    const layer_id = name_hash.hash_u64_wyhash(layer_name);
 
     var result = g_action_map.getOrPut(g_allocator, id) catch return;
     if (!result.found_existing) {
@@ -144,25 +145,25 @@ fn isActionDownWithBinding(win: *const window.CardinalWindow, binding: *const Ac
 
 /// Returns true if any binding for `name` is currently active (respecting layer stack).
 pub fn isActionPressed(win: *const window.CardinalWindow, name: []const u8) bool {
-    const id = std.hash.Wyhash.hash(0, name);
+    const id = name_hash.hash_u64_wyhash(name);
     const binding = g_action_map.getPtr(id) orelse return false;
     return isActionDownWithBinding(win, binding);
 }
 
 pub fn isActionJustPressed(name: []const u8) bool {
-    const id = std.hash.Wyhash.hash(0, name);
+    const id = name_hash.hash_u64_wyhash(name);
     const st = g_action_state_map.get(id) orelse return false;
     return st.pressed;
 }
 
 pub fn isActionJustReleased(name: []const u8) bool {
-    const id = std.hash.Wyhash.hash(0, name);
+    const id = name_hash.hash_u64_wyhash(name);
     const st = g_action_state_map.get(id) orelse return false;
     return st.released;
 }
 
 pub fn isActionRepeat(name: []const u8) bool {
-    const id = std.hash.Wyhash.hash(0, name);
+    const id = name_hash.hash_u64_wyhash(name);
     const st = g_action_state_map.get(id) orelse return false;
     return st.repeated;
 }

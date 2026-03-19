@@ -56,6 +56,18 @@ const DDS_HEADER = extern struct {
     dwReserved2: u32,
 };
 
+/// Optional DX10 header present when the pixel format FourCC is "DX10".
+///
+/// Only a minimal subset of DXGI formats is supported.
+/// TODO: Expand DXGI format mapping (BC6H/BC7 variants, RG formats, arrays/cubemaps).
+const DDS_HEADER_DXT10 = extern struct {
+    dxgiFormat: u32,
+    resourceDimension: u32,
+    miscFlag: u32,
+    arraySize: u32,
+    miscFlags2: u32,
+};
+
 fn makeFourCC(ch0: u8, ch1: u8, ch2: u8, ch3: u8) u32 {
     return @as(u32, ch0) | (@as(u32, ch1) << 8) | (@as(u32, ch2) << 16) | (@as(u32, ch3) << 24);
 }
@@ -82,11 +94,30 @@ pub fn load_dds_from_memory(buffer: []const u8, out_data: *texture_types.Texture
     }
 
     var format: u32 = vk_formats.VK_FORMAT_UNDEFINED;
+    var data_offset: usize = 4 + header.dwSize;
 
     if ((header.ddspf.dwFlags & DDPF_FOURCC) != 0) {
         const fourCC = header.ddspf.dwFourCC;
 
-        if (fourCC == makeFourCC('D', 'X', 'T', '1')) {
+        if (fourCC == makeFourCC('D', 'X', '1', '0')) {
+            if (buffer.len < data_offset + @sizeOf(DDS_HEADER_DXT10)) return false;
+            const dx10 = @as(*const DDS_HEADER_DXT10, @ptrCast(@alignCast(buffer.ptr + data_offset)));
+            data_offset += @sizeOf(DDS_HEADER_DXT10);
+
+            switch (dx10.dxgiFormat) {
+                98 => format = vk_formats.VK_FORMAT_BC7_UNORM_BLOCK,
+                99 => format = vk_formats.VK_FORMAT_BC7_SRGB_BLOCK,
+                71 => format = vk_formats.VK_FORMAT_BC1_RGBA_UNORM_BLOCK,
+                72 => format = vk_formats.VK_FORMAT_BC1_RGBA_SRGB_BLOCK,
+                74 => format = vk_formats.VK_FORMAT_BC2_UNORM_BLOCK,
+                75 => format = vk_formats.VK_FORMAT_BC2_SRGB_BLOCK,
+                77 => format = vk_formats.VK_FORMAT_BC3_UNORM_BLOCK,
+                78 => format = vk_formats.VK_FORMAT_BC3_SRGB_BLOCK,
+                80 => format = vk_formats.VK_FORMAT_BC4_UNORM_BLOCK,
+                83 => format = vk_formats.VK_FORMAT_BC5_UNORM_BLOCK,
+                else => return false,
+            }
+        } else if (fourCC == makeFourCC('D', 'X', 'T', '1')) {
             format = vk_formats.VK_FORMAT_BC1_RGBA_SRGB_BLOCK;
         } else if (fourCC == makeFourCC('D', 'X', 'T', '3')) {
             format = vk_formats.VK_FORMAT_BC2_SRGB_BLOCK;
@@ -122,13 +153,13 @@ pub fn load_dds_from_memory(buffer: []const u8, out_data: *texture_types.Texture
                 return false;
             }
         } else if (bitCount == 24) {
-            const data_offset = 4 + header.dwSize;
+            const rgb_data_offset = 4 + header.dwSize;
             const width = header.dwWidth;
             const height = header.dwHeight;
             const pixel_count = width * height;
             const src_data_size = pixel_count * 3;
 
-            if (data_offset + src_data_size > buffer.len) {
+            if (rgb_data_offset + src_data_size > buffer.len) {
                 dds_log.err("Buffer too small for 24-bit DDS data", .{});
                 return false;
             }
@@ -140,7 +171,7 @@ pub fn load_dds_from_memory(buffer: []const u8, out_data: *texture_types.Texture
                 return false;
             }
 
-            const src = buffer[data_offset..];
+            const src = buffer[rgb_data_offset..];
             const dst = @as([*]u8, @ptrCast(ptr))[0..new_data_size];
 
             const is_bgr = (rMask == 0xFF0000 and gMask == 0xFF00 and bMask == 0xFF);
@@ -187,7 +218,7 @@ pub fn load_dds_from_memory(buffer: []const u8, out_data: *texture_types.Texture
         return false;
     }
 
-    const data_offset = 4 + header.dwSize;
+    if (data_offset > buffer.len) return false;
     const data_size = buffer.len - data_offset;
 
     const ptr = std.c.malloc(data_size);

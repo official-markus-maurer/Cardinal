@@ -3,10 +3,10 @@
 //! Evaluates a simple animation graph (clips and 1D blends) with transitions driven by named
 //! float parameters hashed to u32.
 //!
-//! TODO: Deduplicate name hashing with other systems (events/input) using a shared helper.
 const std = @import("std");
 const memory = @import("../core/memory.zig");
 const animation = @import("animation.zig");
+const name_hash = @import("../core/name_hash.zig");
 const c = @cImport({
     @cInclude("string.h");
     @cInclude("math.h");
@@ -240,23 +240,18 @@ pub const AnimController = extern struct {
 
 /// Hashes a string to u32 for parameter and animation name lookup.
 fn hash_string(str: []const u8) u32 {
-    var hash: u32 = 2166136261;
-    for (str) |byte| {
-        hash ^= byte;
-        hash *%= 16777619;
-    }
-    return hash;
+    return name_hash.hash_u32_fnv1a(str);
 }
 
 /// Finds an animation index by hashed name.
-fn find_animation_index(system: *animation.CardinalAnimationSystem, name_hash: u32) ?u32 {
+fn find_animation_index(system: *animation.CardinalAnimationSystem, name_hash_value: u32) ?u32 {
     var i: u32 = 0;
     while (i < system.animation_count) : (i += 1) {
         const anim = &system.animations.?[i];
         if (anim.name) |name_ptr| {
             const len = c.strlen(name_ptr);
             const name = name_ptr[0..len];
-            if (hash_string(name) == name_hash) {
+            if (hash_string(name) == name_hash_value) {
                 return i;
             }
         }

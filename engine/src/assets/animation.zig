@@ -3,13 +3,13 @@
 //! Provides a minimal animation system supporting playback, blending, and skinning matrix updates.
 //! The API is C-ABI-friendly (`pub export fn`) and designed to be populated by asset loaders.
 //!
-//! TODO: Consider separating sampling/interpolation from system state to reduce rebuild time.
 const std = @import("std");
 const builtin = @import("builtin");
 const transform = @import("../core/transform.zig");
 const scene = @import("scene.zig");
 const memory = @import("../core/memory.zig");
 const log = @import("../core/log.zig");
+const sampling = @import("animation_sampling.zig");
 
 const anim_log = log.ScopedLogger("ANIMATION");
 
@@ -154,168 +154,6 @@ const CardinalBlendState = extern struct {
     flags: u32,
 };
 
-/// Computes the keyframe interval and interpolation factor for `time`.
-fn find_keyframe_indices(input: [*]const f32, input_count: u32, time: f32, prev_index: *u32, next_index: *u32, factor: *f32) bool {
-    if (input_count == 0) return false;
-
-    if (time <= input[0]) {
-        prev_index.* = 0;
-        next_index.* = 0;
-        factor.* = 0.0;
-        return true;
-    }
-
-    if (time >= input[input_count - 1]) {
-        prev_index.* = input_count - 1;
-        next_index.* = input_count - 1;
-        factor.* = 0.0;
-        return true;
-    }
-
-    var left: u32 = 0;
-    var right: u32 = input_count - 1;
-
-    while (left < right - 1) {
-        const mid = (left + right) / 2;
-        if (input[mid] <= time) {
-            left = mid;
-        } else {
-            right = mid;
-        }
-    }
-
-    prev_index.* = left;
-    next_index.* = right;
-
-    const time_diff = input[right] - input[left];
-    if (time_diff > 0.0) {
-        factor.* = (time - input[left]) / time_diff;
-    } else {
-        factor.* = 0.0;
-    }
-
-    return true;
-}
-
-fn find_keyframe_indices_with_hint(input: [*]const f32, input_count: u32, time: f32, last_index: *u32, prev_index: *u32, next_index: *u32, factor: *f32) bool {
-    if (input_count == 0) return false;
-
-    if (time <= input[0]) {
-        prev_index.* = 0;
-        next_index.* = 0;
-        factor.* = 0.0;
-        last_index.* = 0;
-        return true;
-    }
-
-    if (time >= input[input_count - 1]) {
-        const last = input_count - 1;
-        prev_index.* = last;
-        next_index.* = last;
-        factor.* = 0.0;
-        last_index.* = last;
-        return true;
-    }
-
-    var idx = last_index.*;
-    if (idx >= input_count) {
-        idx = 0;
-    }
-
-    while (idx + 1 < input_count and time > input[idx + 1]) {
-        idx += 1;
-    }
-
-    while (idx > 0 and time < input[idx]) {
-        idx -= 1;
-    }
-
-    if (idx + 1 < input_count and input[idx] <= time and time <= input[idx + 1]) {
-        prev_index.* = idx;
-        next_index.* = idx + 1;
-    } else {
-        var left: u32 = 0;
-        var right: u32 = input_count - 1;
-
-        while (left < right - 1) {
-            const mid = (left + right) / 2;
-            if (input[mid] <= time) {
-                left = mid;
-            } else {
-                right = mid;
-            }
-        }
-
-        prev_index.* = left;
-        next_index.* = right;
-    }
-
-    last_index.* = prev_index.*;
-
-    const time_diff = input[next_index.*] - input[prev_index.*];
-    if (time_diff > 0.0) {
-        factor.* = (time - input[prev_index.*]) / time_diff;
-    } else {
-        factor.* = 0.0;
-    }
-
-    return true;
-}
-
-/// Linearly interpolates `component_count` floats from `a` to `b`.
-fn lerp_vector(a: [*]const f32, b: [*]const f32, t: f32, component_count: u32, result: [*]f32) void {
-    var i: u32 = 0;
-    while (i < component_count) : (i += 1) {
-        result[i] = a[i] + t * (b[i] - a[i]);
-    }
-}
-
-/// Spherically interpolates between quaternions, flipping sign for the short arc.
-fn slerp_quaternion(a: [*]const f32, b: [*]const f32, t: f32, result: [*]f32) void {
-    var dot = a[0] * b[0] + a[1] * b[1] + a[2] * b[2] + a[3] * b[3];
-
-    var b_sign: [4]f32 = undefined;
-    if (dot < 0.0) {
-        dot = -dot;
-        b_sign[0] = -b[0];
-        b_sign[1] = -b[1];
-        b_sign[2] = -b[2];
-        b_sign[3] = -b[3];
-    } else {
-        b_sign[0] = b[0];
-        b_sign[1] = b[1];
-        b_sign[2] = b[2];
-        b_sign[3] = b[3];
-    }
-
-    if (dot > 0.9995) {
-        lerp_vector(a, &b_sign, t, 4, result);
-        const length = std.math.sqrt(result[0] * result[0] + result[1] * result[1] + result[2] * result[2] + result[3] * result[3]);
-        if (length > 0.0) {
-            result[0] /= length;
-            result[1] /= length;
-            result[2] /= length;
-            result[3] /= length;
-        }
-        return;
-    }
-
-    const theta = std.math.acos(dot);
-    const sin_theta = std.math.sin(theta);
-
-    if (sin_theta > 0.0) {
-        const factor_a = std.math.sin((1.0 - t) * theta) / sin_theta;
-        const factor_b = std.math.sin(t * theta) / sin_theta;
-
-        result[0] = factor_a * a[0] + factor_b * b_sign[0];
-        result[1] = factor_a * a[1] + factor_b * b_sign[1];
-        result[2] = factor_a * a[2] + factor_b * b_sign[2];
-        result[3] = factor_a * a[3] + factor_b * b_sign[3];
-    } else {
-        lerp_vector(a, &b_sign, t, 4, result);
-    }
-}
-
 fn quat_mul(a: *const [4]f32, b: *const [4]f32, out: *[4]f32) void {
     const ax = a[0];
     const ay = a[1];
@@ -333,148 +171,20 @@ fn quat_mul(a: *const [4]f32, b: *const [4]f32, out: *[4]f32) void {
     out[3] = aw * bw - ax * bx - ay * by - az * bz;
 }
 
-/// Cubic-spline interpolation helper.
-fn cubic_spline_interpolate(values: [*]const f32, prev_index: u32, next_index: u32, factor: f32, time_diff: f32, component_count: u32, result: [*]f32) void {
-    const prev_base = prev_index * component_count * 3;
-    const prev_value = values + prev_base + component_count;
-
-    if (prev_index == next_index or time_diff <= 0.0) {
-        const src_slice = prev_value[0..component_count];
-        const dst_slice = result[0..component_count];
-        @memcpy(dst_slice, src_slice);
-        return;
-    }
-
-    const next_base = next_index * component_count * 3;
-    const next_in_tangent = values + next_base;
-    const next_value = values + next_base + component_count;
-    const prev_out_tangent = values + prev_base + component_count * 2;
-
-    const t = factor;
-    const t2 = t * t;
-    const t3 = t2 * t;
-
-    const h00 = 2.0 * t3 - 3.0 * t2 + 1.0;
-    const h10 = t3 - 2.0 * t2 + t;
-    const h01 = -2.0 * t3 + 3.0 * t2;
-    const h11 = t3 - t2;
-
-    const tangent_scale = time_diff;
-
-    var p1_sign: f32 = 1.0;
-    if (component_count == 4) {
-        const dot = prev_value[0] * next_value[0] +
-            prev_value[1] * next_value[1] +
-            prev_value[2] * next_value[2] +
-            prev_value[3] * next_value[3];
-        if (dot < 0.0) p1_sign = -1.0;
-    }
-
-    var i: u32 = 0;
-    while (i < component_count) : (i += 1) {
-        const p0 = prev_value[i];
-        const m0 = prev_out_tangent[i] * tangent_scale;
-        const p1 = next_value[i] * p1_sign;
-        const m1 = next_in_tangent[i] * (tangent_scale * p1_sign);
-
-        result[i] = h00 * p0 + h10 * m0 + h01 * p1 + h11 * m1;
-    }
-
-    if (component_count == 4) {
-        const len = std.math.sqrt(result[0] * result[0] + result[1] * result[1] + result[2] * result[2] + result[3] * result[3]);
-        if (len > 0.0) {
-            result[0] /= len;
-            result[1] /= len;
-            result[2] /= len;
-            result[3] /= len;
-        }
-    }
-}
-
-/// Samples an animation curve at `time` given keyframe `input` times and `output` values.
-///
-/// When `component_count` is 4, interpolation uses quaternion slerp.
 pub export fn cardinal_animation_interpolate(interpolation: CardinalAnimationInterpolation, time: f32, input: ?[*]const f32, output: ?[*]const f32, input_count: u32, component_count: u32, result: ?[*]f32) callconv(.c) bool {
     if (input == null or output == null or result == null or input_count == 0 or component_count == 0) {
         return false;
     }
-
-    var prev_index: u32 = 0;
-    var next_index: u32 = 0;
-    var factor: f32 = 0.0;
-
-    if (!find_keyframe_indices(input.?, input_count, time, &prev_index, &next_index, &factor)) {
-        return false;
-    }
-
-    const prev_offset = prev_index * component_count;
-    const next_offset = next_index * component_count;
-    const prev_ptr = output.? + prev_offset;
-    const next_ptr = output.? + next_offset;
-
-    switch (interpolation) {
-        .STEP => {
-            const src_slice = output.?[prev_offset .. prev_offset + component_count];
-            const dst_slice = result.?[0..component_count];
-            @memcpy(dst_slice, src_slice);
-        },
-        .LINEAR => {
-            if (component_count == 4) {
-                slerp_quaternion(prev_ptr, next_ptr, factor, result.?);
-            } else {
-                lerp_vector(prev_ptr, next_ptr, factor, component_count, result.?);
-            }
-        },
-        .CUBICSPLINE => {
-            const time_diff = input.?[next_index] - input.?[prev_index];
-            cubic_spline_interpolate(output.?, prev_index, next_index, factor, time_diff, component_count, result.?);
-        },
-    }
-
-    return true;
+    const interp: u32 = @intCast(@intFromEnum(interpolation));
+    return sampling.interpolate(interp, time, input.?, output.?, input_count, component_count, result.?);
 }
 
 fn sampler_interpolate_cached(sampler: *CardinalAnimationSampler, time: f32, component_count: u32, result: ?[*]f32) bool {
     if (sampler.input == null or sampler.output == null or result == null or sampler.input_count == 0 or component_count == 0) {
         return false;
     }
-
-    var prev_index: u32 = 0;
-    var next_index: u32 = 0;
-    var factor: f32 = 0.0;
-    var last_index = sampler.last_index;
-
-    if (!find_keyframe_indices_with_hint(sampler.input.?, sampler.input_count, time, &last_index, &prev_index, &next_index, &factor)) {
-        return false;
-    }
-
-    sampler.last_index = last_index;
-
-    const prev_offset = prev_index * component_count;
-    const next_offset = next_index * component_count;
-    const prev_ptr = sampler.output.? + prev_offset;
-    const next_ptr = sampler.output.? + next_offset;
-
-    switch (sampler.interpolation) {
-        .STEP => {
-            const src_slice = sampler.output.?[prev_offset .. prev_offset + component_count];
-            const dst_slice = result.?[0..component_count];
-            @memcpy(dst_slice, src_slice);
-        },
-        .LINEAR => {
-            if (component_count == 4) {
-                slerp_quaternion(prev_ptr, next_ptr, factor, result.?);
-            } else {
-                lerp_vector(prev_ptr, next_ptr, factor, component_count, result.?);
-            }
-        },
-        .CUBICSPLINE => {
-            const time_diff = sampler.input.?[next_index] - sampler.input.?[prev_index];
-            cubic_spline_interpolate(sampler.output.?, prev_index, next_index, factor, time_diff, component_count, result.?);
-        },
-    }
-
-    return true;
+    const interp: u32 = @intCast(@intFromEnum(sampler.interpolation));
+    return sampling.interpolate_cached(interp, time, sampler.input.?, sampler.output.?, sampler.input_count, component_count, &sampler.last_index, result.?);
 }
 
 /// Allocates a new animation system with preallocated animation/skin capacity.

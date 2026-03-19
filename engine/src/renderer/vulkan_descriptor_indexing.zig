@@ -722,6 +722,41 @@ pub export fn vk_bindless_texture_get_layout(pool: ?*const types.BindlessTexture
     return pool.?.descriptor_layout;
 }
 
+pub export fn vk_bindless_texture_fill_all_descriptors(pool: ?*types.BindlessTexturePool, image_view: c.VkImageView, sampler: c.VkSampler) callconv(.c) bool {
+    if (pool == null) return false;
+    const p = pool.?;
+    if (!p.use_descriptor_buffer) return false;
+    if (p.vkGetDescriptorEXT == null) return false;
+    if (p.descriptor_buffer.mapped == null) return false;
+    if (image_view == null or sampler == null) return false;
+
+    var image_info = c.VkDescriptorImageInfo{
+        .sampler = sampler,
+        .imageView = image_view,
+        .imageLayout = c.VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+    };
+
+    var get_info = std.mem.zeroes(c.VkDescriptorGetInfoEXT);
+    get_info.sType = c.VK_STRUCTURE_TYPE_DESCRIPTOR_GET_INFO_EXT;
+    get_info.type = c.VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+    get_info.data.pCombinedImageSampler = &image_info;
+
+    var i: u32 = 0;
+    while (i < p.max_textures) : (i += 1) {
+        const offset = p.descriptor_offset + @as(c.VkDeviceSize, i) * p.descriptor_size;
+        const dst_ptr = @as([*]u8, @ptrCast(p.descriptor_buffer.mapped)) + @as(usize, @intCast(offset));
+        p.vkGetDescriptorEXT.?(p.device, &get_info, p.descriptor_size, dst_ptr);
+    }
+
+    if ((p.descriptor_buffer.properties & c.VK_MEMORY_PROPERTY_HOST_COHERENT_BIT) == 0) {
+        const start = p.descriptor_offset;
+        const end = p.descriptor_offset + @as(c.VkDeviceSize, p.max_textures) * p.descriptor_size;
+        _ = c.vmaFlushAllocation(p.allocator.handle, p.descriptor_buffer.allocation, start, end - start);
+    }
+
+    return true;
+}
+
 pub export fn vk_bindless_texture_flush_updates(pool: ?*types.BindlessTexturePool) callconv(.c) bool {
     if (pool == null or !pool.?.needs_descriptor_update or pool.?.pending_update_count == 0) {
         return true;

@@ -3,12 +3,11 @@
 //! Tracks staging buffers, images, and transient command buffers that must stay alive until a
 //! timeline semaphore value is reached. Intended to be called once per frame to free completed
 //! uploads without stalling the GPU.
-//!
-//! TODO: Deduplicate repeated memory imports by storing allocator utilities in a shared module.
 const std = @import("std");
 const builtin = @import("builtin");
 const log = @import("../../core/log.zig");
 const platform = @import("../../core/platform.zig");
+const mem_utils = @import("../../core/memory.zig");
 const types = @import("../vulkan_types.zig");
 
 const tex_utils_log = log.ScopedLogger("TEX_UTILS");
@@ -77,8 +76,7 @@ pub fn add_staging_buffer_cleanup(allocator: ?*types.VulkanAllocator, buffer: c.
         return;
     }
 
-    const mem_alloc = @import("../../core/memory.zig").cardinal_get_allocator_for_category(.RENDERER);
-    const mem_utils = @import("../../core/memory.zig");
+    const mem_alloc = mem_utils.cardinal_get_allocator_for_category(.RENDERER);
     const cleanup = mem_utils.cardinal_alloc(mem_alloc, @sizeOf(StagingBufferCleanup));
     if (cleanup == null) {
         tex_utils_log.err("Failed to allocate cleanup tracking, immediate cleanup", .{});
@@ -106,8 +104,7 @@ pub fn add_image_cleanup(allocator: ?*types.VulkanAllocator, image: c.VkImage, a
         return;
     }
 
-    const mem_alloc = @import("../../core/memory.zig").cardinal_get_allocator_for_category(.RENDERER);
-    const mem_utils = @import("../../core/memory.zig");
+    const mem_alloc = mem_utils.cardinal_get_allocator_for_category(.RENDERER);
     const cleanup = mem_utils.cardinal_alloc(mem_alloc, @sizeOf(ImageCleanup));
     if (cleanup == null) {
         tex_utils_log.err("Failed to allocate image cleanup tracking, immediate cleanup might leak if used", .{});
@@ -132,8 +129,7 @@ pub fn add_image_view_cleanup(device: c.VkDevice, view: c.VkImageView, timeline_
         return;
     }
 
-    const mem_alloc = @import("../../core/memory.zig").cardinal_get_allocator_for_category(.RENDERER);
-    const mem_utils = @import("../../core/memory.zig");
+    const mem_alloc = mem_utils.cardinal_get_allocator_for_category(.RENDERER);
     const cleanup = mem_utils.cardinal_alloc(mem_alloc, @sizeOf(ImageViewCleanup));
     if (cleanup == null) {
         tex_utils_log.err("Failed to allocate image view cleanup tracking", .{});
@@ -156,8 +152,7 @@ pub fn add_sampler_cleanup(device: c.VkDevice, sampler: c.VkSampler, timeline_va
         return;
     }
 
-    const mem_alloc = @import("../../core/memory.zig").cardinal_get_allocator_for_category(.RENDERER);
-    const mem_utils = @import("../../core/memory.zig");
+    const mem_alloc = mem_utils.cardinal_get_allocator_for_category(.RENDERER);
     const cleanup = mem_utils.cardinal_alloc(mem_alloc, @sizeOf(SamplerCleanup));
     if (cleanup == null) {
         tex_utils_log.err("Failed to allocate sampler cleanup tracking", .{});
@@ -187,8 +182,7 @@ pub fn process_staging_buffer_cleanups(sync_manager: ?*types.VulkanSyncManager, 
 
             current.* = cleanup.next;
 
-            const mem_alloc = @import("../../core/memory.zig").cardinal_get_allocator_for_category(.RENDERER);
-            const mem_utils = @import("../../core/memory.zig");
+            const mem_alloc = mem_utils.cardinal_get_allocator_for_category(.RENDERER);
             mem_utils.cardinal_free(mem_alloc, cleanup);
         } else {
             current = &cleanup.next;
@@ -206,8 +200,7 @@ pub fn process_staging_buffer_cleanups(sync_manager: ?*types.VulkanSyncManager, 
 
             current_cmd.* = cleanup.next;
 
-            const mem_alloc = @import("../../core/memory.zig").cardinal_get_allocator_for_category(.RENDERER);
-            const mem_utils = @import("../../core/memory.zig");
+            const mem_alloc = mem_utils.cardinal_get_allocator_for_category(.RENDERER);
             mem_utils.cardinal_free(mem_alloc, cleanup);
         } else {
             current_cmd = &cleanup.next;
@@ -224,8 +217,7 @@ pub fn process_staging_buffer_cleanups(sync_manager: ?*types.VulkanSyncManager, 
 
             current_view.* = cleanup.next;
 
-            const mem_alloc = @import("../../core/memory.zig").cardinal_get_allocator_for_category(.RENDERER);
-            const mem_utils = @import("../../core/memory.zig");
+            const mem_alloc = mem_utils.cardinal_get_allocator_for_category(.RENDERER);
             mem_utils.cardinal_free(mem_alloc, cleanup);
         } else {
             current_view = &cleanup.next;
@@ -242,8 +234,7 @@ pub fn process_staging_buffer_cleanups(sync_manager: ?*types.VulkanSyncManager, 
 
             current_sampler.* = cleanup.next;
 
-            const mem_alloc = @import("../../core/memory.zig").cardinal_get_allocator_for_category(.RENDERER);
-            const mem_utils = @import("../../core/memory.zig");
+            const mem_alloc = mem_utils.cardinal_get_allocator_for_category(.RENDERER);
             mem_utils.cardinal_free(mem_alloc, cleanup);
         } else {
             current_sampler = &cleanup.next;
@@ -260,8 +251,7 @@ pub fn process_staging_buffer_cleanups(sync_manager: ?*types.VulkanSyncManager, 
 
             current_img.* = cleanup.next;
 
-            const mem_alloc = @import("../../core/memory.zig").cardinal_get_allocator_for_category(.RENDERER);
-            const mem_utils = @import("../../core/memory.zig");
+            const mem_alloc = mem_utils.cardinal_get_allocator_for_category(.RENDERER);
             mem_utils.cardinal_free(mem_alloc, cleanup);
         } else {
             current_img = &cleanup.next;
@@ -278,8 +268,7 @@ pub fn add_command_buffer_cleanup(commandBuffer: c.VkCommandBuffer, commandPool:
         return;
     }
 
-    const mem_alloc = @import("../../core/memory.zig").cardinal_get_allocator_for_category(.RENDERER);
-    const mem_utils = @import("../../core/memory.zig");
+    const mem_alloc = mem_utils.cardinal_get_allocator_for_category(.RENDERER);
     const cleanup = mem_utils.cardinal_alloc(mem_alloc, @sizeOf(CommandBufferCleanup));
     if (cleanup == null) {
         tex_utils_log.err("Failed to allocate command buffer cleanup tracking, immediate cleanup might leak if used", .{});
@@ -309,8 +298,7 @@ pub fn shutdown_staging_buffer_cleanups(allocator: *types.VulkanAllocator) void 
         tex_utils_log.debug("Force cleaning up staging buffer {any} on shutdown", .{cleanup.buffer});
         vk_allocator.free_buffer(allocator, cleanup.buffer, cleanup.allocation);
 
-        const mem_alloc = @import("../../core/memory.zig").cardinal_get_allocator_for_category(.RENDERER);
-        const mem_utils = @import("../../core/memory.zig");
+        const mem_alloc = mem_utils.cardinal_get_allocator_for_category(.RENDERER);
         mem_utils.cardinal_free(mem_alloc, cleanup);
 
         current = next;
@@ -323,8 +311,7 @@ pub fn shutdown_staging_buffer_cleanups(allocator: *types.VulkanAllocator) void 
         tex_utils_log.debug("Force cleaning up image view {any} on shutdown", .{cleanup.view});
         c.vkDestroyImageView(cleanup.device, cleanup.view, null);
 
-        const mem_alloc = @import("../../core/memory.zig").cardinal_get_allocator_for_category(.RENDERER);
-        const mem_utils = @import("../../core/memory.zig");
+        const mem_alloc = mem_utils.cardinal_get_allocator_for_category(.RENDERER);
         mem_utils.cardinal_free(mem_alloc, cleanup);
 
         current_view = next;
@@ -337,8 +324,7 @@ pub fn shutdown_staging_buffer_cleanups(allocator: *types.VulkanAllocator) void 
         tex_utils_log.debug("Force cleaning up sampler {any} on shutdown", .{cleanup.sampler});
         c.vkDestroySampler(cleanup.device, cleanup.sampler, null);
 
-        const mem_alloc = @import("../../core/memory.zig").cardinal_get_allocator_for_category(.RENDERER);
-        const mem_utils = @import("../../core/memory.zig");
+        const mem_alloc = mem_utils.cardinal_get_allocator_for_category(.RENDERER);
         mem_utils.cardinal_free(mem_alloc, cleanup);
 
         current_sampler = next;
@@ -351,8 +337,7 @@ pub fn shutdown_staging_buffer_cleanups(allocator: *types.VulkanAllocator) void 
         tex_utils_log.debug("Force cleaning up image {any} on shutdown", .{cleanup.image});
         vk_allocator.free_image(allocator, cleanup.image, cleanup.allocation);
 
-        const mem_alloc = @import("../../core/memory.zig").cardinal_get_allocator_for_category(.RENDERER);
-        const mem_utils = @import("../../core/memory.zig");
+        const mem_alloc = mem_utils.cardinal_get_allocator_for_category(.RENDERER);
         mem_utils.cardinal_free(mem_alloc, cleanup);
 
         current_img = next;
@@ -366,8 +351,7 @@ pub fn shutdown_staging_buffer_cleanups(allocator: *types.VulkanAllocator) void 
         var cmd_buf = cleanup.commandBuffer;
         c.vkFreeCommandBuffers(cleanup.device, cleanup.commandPool, 1, &cmd_buf);
 
-        const mem_alloc = @import("../../core/memory.zig").cardinal_get_allocator_for_category(.RENDERER);
-        const mem_utils = @import("../../core/memory.zig");
+        const mem_alloc = mem_utils.cardinal_get_allocator_for_category(.RENDERER);
         mem_utils.cardinal_free(mem_alloc, cleanup);
 
         current_cmd = next;
@@ -381,34 +365,12 @@ pub fn shutdown_staging_buffer_cleanups(allocator: *types.VulkanAllocator) void 
 pub fn create_staging_buffer_with_data(allocator: ?*types.VulkanAllocator, device: c.VkDevice, texture: *const scene.CardinalTexture, outBuffer: *c.VkBuffer, outMemory: *c.VkDeviceMemory, outAllocation: *c.VmaAllocation) bool {
     _ = device;
 
-    var imageSize: c.VkDeviceSize = 0;
-    if (texture.data_size > 0) {
-        imageSize = texture.data_size;
-    } else {
-        const pixel_size: u64 = if (texture.is_hdr != 0) 16 else 4;
-        imageSize = @as(c.VkDeviceSize, texture.width) * texture.height * pixel_size;
-    }
+    if (texture.data == null) return false;
 
-    if (imageSize < 4) imageSize = 4;
-
-    // TODO: Revisit staging size heuristics for compressed formats and placeholder textures.
-    if (texture.data_size == 0) {
-        const pixel_size_check: u64 = if (texture.is_hdr != 0) 16 else 4;
-        const required_size = @as(c.VkDeviceSize, texture.width) * texture.height * pixel_size_check;
-        if (imageSize < required_size) {
-            tex_utils_log.warn("Staging buffer size {d} is smaller than required {d} for {d}x{d} texture. Adjusting.", .{ imageSize, required_size, texture.width, texture.height });
-            imageSize = required_size;
-        }
-    } else {
-        if (texture.width > 4 and imageSize <= 4) {
-            tex_utils_log.warn("Staging buffer size is extremely small ({d}) for {d}x{d} texture. Format: {d}. This might be a placeholder or corrupted data.", .{ imageSize, texture.width, texture.height, texture.format });
-            const safe_min = @as(c.VkDeviceSize, texture.width) * texture.height / 2;
-            if (imageSize < safe_min) {
-                tex_utils_log.warn("Adjusting buffer size to {d} to prevent crash.", .{safe_min});
-                imageSize = safe_min;
-            }
-        }
-    }
+    const pixel_size: u64 = if (texture.is_hdr != 0) 16 else 4;
+    const copy_size_vk: c.VkDeviceSize = if (texture.data_size > 0) texture.data_size else @as(c.VkDeviceSize, texture.width) * texture.height * pixel_size;
+    const imageSize: c.VkDeviceSize = @max(copy_size_vk, 4);
+    const copy_size: usize = @intCast(copy_size_vk);
 
     var bufferInfo = std.mem.zeroes(c.VkBufferCreateInfo);
     bufferInfo.sType = c.VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO;
@@ -429,7 +391,9 @@ pub fn create_staging_buffer_with_data(allocator: ?*types.VulkanAllocator, devic
     }
 
     const src_data = @as([*]const u8, @ptrCast(texture.data));
-    @memcpy(@as([*]u8, @ptrCast(data.?))[0..imageSize], src_data[0..imageSize]);
+    const dst = @as([*]u8, @ptrCast(data.?))[0..@as(usize, @intCast(imageSize))];
+    @memset(dst, 0);
+    @memcpy(dst[0..copy_size], src_data[0..copy_size]);
 
     vk_allocator.unmap_memory(allocator, outAllocation.*);
     return true;
@@ -447,11 +411,7 @@ pub fn create_image_and_memory(allocator: ?*types.VulkanAllocator, device: c.VkD
     imageInfo.mipLevels = 1;
     imageInfo.arrayLayers = 1;
     imageInfo.format = format;
-    if (imageInfo.format == c.VK_FORMAT_UNDEFINED) {
-        // TODO: Require callers to pass an explicit image format.
-        tex_utils_log.warn("create_image_and_memory received VK_FORMAT_UNDEFINED", .{});
-        imageInfo.format = c.VK_FORMAT_R8G8B8A8_SRGB;
-    }
+    if (imageInfo.format == c.VK_FORMAT_UNDEFINED) return false;
     imageInfo.tiling = c.VK_IMAGE_TILING_OPTIMAL;
     imageInfo.initialLayout = c.VK_IMAGE_LAYOUT_UNDEFINED;
     imageInfo.usage = c.VK_IMAGE_USAGE_TRANSFER_DST_BIT | c.VK_IMAGE_USAGE_SAMPLED_BIT;
@@ -683,17 +643,9 @@ pub export fn vk_texture_create_from_data(allocator: ?*types.VulkanAllocator, de
     return true;
 }
 
-/// Submits a one-shot command buffer and synchronously waits for the queue to idle.
-/// TODO: Prefer timeline-semaphore waits when a sync manager is available.
-fn submit_one_shot_and_wait_idle(queue: c.VkQueue, cmd: c.VkCommandBuffer) bool {
-    if (queue == null or cmd == null) return false;
-    var submitInfo = std.mem.zeroes(c.VkSubmitInfo);
-    submitInfo.sType = c.VK_STRUCTURE_TYPE_SUBMIT_INFO;
-    submitInfo.commandBufferCount = 1;
-    submitInfo.pCommandBuffers = &cmd;
-    if (vk_sync_manager.vulkan_sync_manager_submit_queue(queue, 1, @ptrCast(&submitInfo), null) != c.VK_SUCCESS) return false;
-    if (vk_sync_manager.vulkan_sync_manager_queue_wait_idle(queue) != c.VK_SUCCESS) return false;
-    return true;
+fn submit_one_shot(device: c.VkDevice, queue: c.VkQueue, cmd: c.VkCommandBuffer, sync_manager: ?*types.VulkanSyncManager) bool {
+    if (device == null or queue == null or cmd == null) return false;
+    return submit_texture_upload(device, queue, cmd, sync_manager, null);
 }
 
 pub fn transition_image_layout(device: c.VkDevice, graphicsQueue: c.VkQueue, commandPool: c.VkCommandPool, image: c.VkImage, format: c.VkFormat, oldLayout: c.VkImageLayout, newLayout: c.VkImageLayout) void {
@@ -773,7 +725,7 @@ pub fn transition_image_layout(device: c.VkDevice, graphicsQueue: c.VkQueue, com
         return;
     }
 
-    if (!submit_one_shot_and_wait_idle(graphicsQueue, commandBuffer)) {
+    if (!submit_one_shot(device, graphicsQueue, commandBuffer, null)) {
         c.vkFreeCommandBuffers(device, commandPool, 1, &commandBuffer);
         return;
     }
@@ -840,7 +792,7 @@ pub fn copy_buffer_to_image(device: c.VkDevice, graphicsQueue: c.VkQueue, comman
         return;
     }
 
-    if (!submit_one_shot_and_wait_idle(graphicsQueue, commandBuffer)) {
+    if (!submit_one_shot(device, graphicsQueue, commandBuffer, null)) {
         c.vkFreeCommandBuffers(device, commandPool, 1, &commandBuffer);
         return;
     }

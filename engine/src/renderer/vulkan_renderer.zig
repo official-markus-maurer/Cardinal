@@ -1,8 +1,6 @@
 //! Vulkan renderer entrypoints.
 //!
 //! Implements the renderer's C-facing API and orchestrates per-frame work across renderer modules.
-//!
-//! TODO: Move per-pass callbacks into dedicated modules to reduce coupling.
 const std = @import("std");
 const builtin = @import("builtin");
 const log = @import("../core/log.zig");
@@ -27,6 +25,8 @@ const vk_skybox = @import("vulkan_skybox.zig");
 const vk_mesh_shader = @import("vulkan_mesh_shader.zig");
 const vk_compute = @import("vulkan_compute.zig");
 const texture_loader = @import("../assets/texture_loader.zig");
+const assets_scene = @import("../assets/scene.zig");
+const animation = @import("../assets/animation.zig");
 const vk_simple_pipelines = @import("vulkan_simple_pipelines.zig");
 const vk_allocator = @import("vulkan_allocator.zig");
 const buffer_mgr = @import("vulkan_buffer_manager.zig");
@@ -40,6 +40,7 @@ const vk_post_process = @import("vulkan_post_process.zig");
 const vk_texture_manager = @import("vulkan_texture_manager.zig");
 const vk_descriptor_indexing = @import("vulkan_descriptor_indexing.zig");
 const vk_shadows = @import("vulkan_shadows.zig");
+const pass_callbacks = @import("vulkan_render_pass_callbacks.zig");
 
 /// Casts an opaque renderer handle into the backing `VulkanState`.
 fn get_state(renderer: ?*types.CardinalRenderer) ?*types.VulkanState {
@@ -47,155 +48,126 @@ fn get_state(renderer: ?*types.CardinalRenderer) ?*types.VulkanState {
     return @ptrCast(@alignCast(renderer.?._opaque));
 }
 
-fn pbr_pass_callback(cmd: c.VkCommandBuffer, state: *types.VulkanState) void {
-    var clears: [2]c.VkClearValue = undefined;
-    clears[0].color.float32[0] = state.config.pbr_clear_color[0];
-    clears[0].color.float32[1] = state.config.pbr_clear_color[1];
-    clears[0].color.float32[2] = state.config.pbr_clear_color[2];
-    clears[0].color.float32[3] = state.config.pbr_clear_color[3];
-    clears[1].depthStencil.depth = 1.0;
-    clears[1].depthStencil.stencil = 0;
+fn free_current_scene_copy(s: *types.VulkanState) void {
+    if (s.current_scene == null) return;
+    const mem_alloc = memory.cardinal_get_allocator_for_category(.RENDERER);
 
-    var depth_view: ?c.VkImageView = null;
-    var color_view: ?c.VkImageView = null;
-    var color_format: c.VkFormat = state.swapchain.format;
-    var use_depth = false;
+    if (s.current_scene_owned) {
+        const scn = s.current_scene.?;
 
-    if (state.render_graph) |rg_ptr| {
-        const rg = @as(*render_graph.RenderGraph, @ptrCast(@alignCast(rg_ptr)));
-        if (rg.resources.get(types.RESOURCE_ID_DEPTHBUFFER)) |res| {
-            depth_view = res.image_view;
-            use_depth = (depth_view != null);
-        }
-        if (rg.resources.get(types.RESOURCE_ID_HDR_COLOR)) |res| {
-            color_view = res.image_view;
-            if (res.desc) |d| {
-                switch (d) {
-                    .Image => |img| color_format = img.format,
-                    else => {},
+        if (scn.skins != null and scn.skin_count > 0) {
+            const skins = @as([*]animation.CardinalSkin, @ptrCast(@alignCast(scn.skins.?)));
+            var i: u32 = 0;
+            while (i < scn.skin_count) : (i += 1) {
+                if (skins[i].mesh_indices) |indices| {
+                    memory.cardinal_free(mem_alloc, @ptrCast(indices));
                 }
             }
+            memory.cardinal_free(mem_alloc, scn.skins.?);
+        }
+
+        if (scn.materials) |mats| {
+            memory.cardinal_free(mem_alloc, @ptrCast(mats));
+        }
+        if (scn.meshes) |meshes| {
+            memory.cardinal_free(mem_alloc, @ptrCast(meshes));
         }
     }
 
-    if (!use_depth) {
-        use_depth = state.swapchain.depth_image_view != null and state.swapchain.depth_image != null;
-    }
-
-    const use_secondary = (state.commands.scene_secondary_buffers != null);
-    const flags: c.VkRenderingFlags = if (use_secondary) c.VK_RENDERING_CONTENTS_SECONDARY_COMMAND_BUFFERS_BIT else 0;
-
-    const should_clear_depth = (state.pipelines.depth_pipeline == null or state.current_rendering_mode != types.CardinalRenderingMode.NORMAL);
-
-    renderer_log.debug("PBR pass frame {d}: use_depth={any}, depth_view={any}, color_view={any}, clear_depth={any}, mode={any}", .{ state.sync.current_frame, use_depth, depth_view, color_view, should_clear_depth, state.current_rendering_mode });
-
-    if (vk_commands.vk_begin_rendering_impl(state, cmd, state.current_image_index, use_depth, depth_view, color_view, &clears, true, should_clear_depth, flags, true)) {
-        if (use_secondary) {
-            vk_commands.vk_record_scene_with_secondary_buffers(state, cmd, state.current_image_index, use_depth, &clears, color_format);
-        } else {
-            vk_commands.vk_record_scene_content(state, cmd);
-        }
-
-        vk_commands.vk_end_rendering(state, cmd);
-    }
+    memory.cardinal_free(mem_alloc, s.current_scene.?);
+    s.current_scene = null;
+    s.current_scene_owned = false;
 }
 
-fn post_process_pass_callback(cmd: c.VkCommandBuffer, state: *types.VulkanState) void {
-    var input_view: ?c.VkImageView = null;
-    if (state.render_graph) |rg_ptr| {
-        const rg = @as(*render_graph.RenderGraph, @ptrCast(@alignCast(rg_ptr)));
-        if (rg.resources.get(types.RESOURCE_ID_HDR_COLOR)) |res| {
-            input_view = res.image_view;
+fn set_renderer_scene_copy(s: *types.VulkanState, src: *const types.CardinalScene) void {
+    free_current_scene_copy(s);
+
+    const mem_alloc = memory.cardinal_get_allocator_for_category(.RENDERER);
+    const new_scene_ptr = memory.cardinal_alloc(mem_alloc, @sizeOf(types.CardinalScene)) orelse {
+        renderer_log.err("Failed to allocate memory for scene copy", .{});
+        s.current_scene = null;
+        s.current_scene_owned = false;
+        return;
+    };
+    const dst = @as(*types.CardinalScene, @ptrCast(@alignCast(new_scene_ptr)));
+    dst.* = std.mem.zeroes(types.CardinalScene);
+
+    if (src.mesh_count > 0 and src.meshes != null) {
+        const mesh_bytes = @as(usize, @intCast(src.mesh_count)) * @sizeOf(assets_scene.CardinalMesh);
+        const meshes_ptr = memory.cardinal_alloc(mem_alloc, mesh_bytes) orelse {
+            memory.cardinal_free(mem_alloc, new_scene_ptr);
+            renderer_log.err("Failed to allocate meshes for scene copy", .{});
+            return;
+        };
+        const dst_meshes = @as([*]assets_scene.CardinalMesh, @ptrCast(@alignCast(meshes_ptr)));
+        @memcpy(dst_meshes[0..src.mesh_count], src.meshes.?[0..src.mesh_count]);
+        var i: u32 = 0;
+        while (i < src.mesh_count) : (i += 1) {
+            dst_meshes[i].vertices = null;
+            dst_meshes[i].indices = null;
         }
+        dst.meshes = dst_meshes;
+        dst.mesh_count = src.mesh_count;
     }
 
-    var clears: [1]c.VkClearValue = undefined;
-    clears[0].color.float32[0] = 0.0;
-    clears[0].color.float32[1] = 0.0;
-    clears[0].color.float32[2] = 0.0;
-    clears[0].color.float32[3] = 1.0;
-
-    renderer_log.debug("Post-process pass frame {d}: hdr_view={any}", .{ state.sync.current_frame, input_view });
-
-    if (vk_commands.vk_begin_rendering_impl(state, cmd, state.current_image_index, false, null, null, &clears, true, false, 0, true)) {
-        if (input_view) |view| {
-            vk_post_process.draw(state, cmd, state.sync.current_frame, view);
-        }
-        vk_commands.vk_end_rendering(state, cmd);
-    }
-}
-
-fn bloom_compute_pass_callback(cmd: c.VkCommandBuffer, state: *types.VulkanState) void {
-    var input_view: ?c.VkImageView = null;
-    if (state.render_graph) |rg_ptr| {
-        const rg = @as(*render_graph.RenderGraph, @ptrCast(@alignCast(rg_ptr)));
-        if (rg.resources.get(types.RESOURCE_ID_HDR_COLOR)) |res| {
-            input_view = res.image_view;
-        }
+    if (src.material_count > 0 and src.materials != null) {
+        const mat_bytes = @as(usize, @intCast(src.material_count)) * @sizeOf(assets_scene.CardinalMaterial);
+        const mats_ptr = memory.cardinal_alloc(mem_alloc, mat_bytes) orelse {
+            if (dst.meshes) |m| memory.cardinal_free(mem_alloc, @ptrCast(m));
+            memory.cardinal_free(mem_alloc, new_scene_ptr);
+            renderer_log.err("Failed to allocate materials for scene copy", .{});
+            return;
+        };
+        const dst_mats = @as([*]assets_scene.CardinalMaterial, @ptrCast(@alignCast(mats_ptr)));
+        @memcpy(dst_mats[0..src.material_count], src.materials.?[0..src.material_count]);
+        dst.materials = dst_mats;
+        dst.material_count = src.material_count;
     }
 
-    if (input_view) |view| {
-        vk_post_process.compute_bloom(state, cmd, state.sync.current_frame, view);
-    }
-}
+    if (src.skin_count > 0 and src.skins != null) {
+        const skin_bytes = @as(usize, @intCast(src.skin_count)) * @sizeOf(animation.CardinalSkin);
+        const skins_ptr = memory.cardinal_calloc(mem_alloc, 1, skin_bytes) orelse {
+            if (dst.materials) |m| memory.cardinal_free(mem_alloc, @ptrCast(m));
+            if (dst.meshes) |m| memory.cardinal_free(mem_alloc, @ptrCast(m));
+            memory.cardinal_free(mem_alloc, new_scene_ptr);
+            renderer_log.err("Failed to allocate skins for scene copy", .{});
+            return;
+        };
+        const dst_skins = @as([*]animation.CardinalSkin, @ptrCast(@alignCast(skins_ptr)));
+        const src_skins = @as([*]animation.CardinalSkin, @ptrCast(@alignCast(src.skins.?)));
+        var i: u32 = 0;
+        while (i < src.skin_count) : (i += 1) {
+            dst_skins[i] = std.mem.zeroes(animation.CardinalSkin);
+            dst_skins[i].mesh_count = src_skins[i].mesh_count;
+            dst_skins[i].root_bone_index = src_skins[i].root_bone_index;
 
-fn skybox_pass_callback(cmd: c.VkCommandBuffer, state: *types.VulkanState) void {
-    var clears: [1]c.VkClearValue = undefined;
-    clears[0].color.float32[0] = 0.0;
-    clears[0].color.float32[1] = 0.0;
-    clears[0].color.float32[2] = 0.0;
-    clears[0].color.float32[3] = 1.0;
-
-    var use_depth = false;
-    if (state.render_graph) |rg_ptr| {
-        const rg = @as(*render_graph.RenderGraph, @ptrCast(@alignCast(rg_ptr)));
-        use_depth = rg.resources.get(types.RESOURCE_ID_DEPTHBUFFER) != null;
-    }
-    if (!use_depth) {
-        use_depth = state.swapchain.depth_image_view != null and state.swapchain.depth_image != null;
-    }
-
-    if (state.pipelines.use_skybox_pipeline and state.pipelines.skybox_pipeline.initialized and state.pipelines.skybox_pipeline.texture.is_allocated) {
-        if (state.pipelines.use_pbr_pipeline and state.pipelines.pbr_pipeline.uniformBuffersMapped[state.sync.current_frame] != null) {
-            const ubo = @as(*types.PBRUniformBufferObject, @ptrCast(@alignCast(state.pipelines.pbr_pipeline.uniformBuffersMapped[state.sync.current_frame])));
-            if (vk_commands.vk_begin_rendering_impl(state, cmd, state.current_image_index, use_depth, null, null, &clears, false, false, 0, true)) {
-                var view: math.Mat4 = undefined;
-                var proj: math.Mat4 = undefined;
-                view.data = ubo.view;
-                proj.data = ubo.proj;
-                vk_skybox.render(&state.pipelines.skybox_pipeline, cmd, view, proj, state.sync.current_frame);
-                vk_commands.vk_end_rendering(state, cmd);
+            if (src_skins[i].mesh_count > 0 and src_skins[i].mesh_indices != null) {
+                const idx_bytes = @as(usize, @intCast(src_skins[i].mesh_count)) * @sizeOf(u32);
+                const idx_ptr = memory.cardinal_alloc(mem_alloc, idx_bytes) orelse {
+                    var j: u32 = 0;
+                    while (j < i) : (j += 1) {
+                        if (dst_skins[j].mesh_indices) |p| memory.cardinal_free(mem_alloc, @ptrCast(p));
+                    }
+                    memory.cardinal_free(mem_alloc, skins_ptr);
+                    if (dst.materials) |m| memory.cardinal_free(mem_alloc, @ptrCast(m));
+                    if (dst.meshes) |m| memory.cardinal_free(mem_alloc, @ptrCast(m));
+                    memory.cardinal_free(mem_alloc, new_scene_ptr);
+                    renderer_log.err("Failed to allocate mesh indices for skin copy", .{});
+                    return;
+                };
+                const dst_indices = @as([*]u32, @ptrCast(@alignCast(idx_ptr)));
+                @memcpy(dst_indices[0..src_skins[i].mesh_count], src_skins[i].mesh_indices.?[0..src_skins[i].mesh_count]);
+                dst_skins[i].mesh_indices = dst_indices;
             }
         }
-    }
-}
 
-fn ui_pass_callback(cmd: c.VkCommandBuffer, state: *types.VulkanState) void {
-    if (state.ui_record_callback == null) return;
-    var clears: [1]c.VkClearValue = undefined;
-    clears[0].color.float32[0] = 0.0;
-    clears[0].color.float32[1] = 0.0;
-    clears[0].color.float32[2] = 0.0;
-    clears[0].color.float32[3] = 1.0;
-
-    var use_depth = false;
-    if (state.render_graph) |rg_ptr| {
-        const rg = @as(*render_graph.RenderGraph, @ptrCast(@alignCast(rg_ptr)));
-        use_depth = rg.resources.get(types.RESOURCE_ID_DEPTHBUFFER) != null;
-    }
-    if (!use_depth) {
-        use_depth = state.swapchain.depth_image_view != null and state.swapchain.depth_image != null;
+        dst.skins = skins_ptr;
+        dst.skin_count = src.skin_count;
+        dst.animation_system = @ptrFromInt(1);
     }
 
-    if (vk_commands.vk_begin_rendering_impl(state, cmd, state.current_image_index, use_depth, null, null, &clears, false, false, 0, true)) {
-        state.ui_record_callback.?(cmd);
-        vk_commands.vk_end_rendering(state, cmd);
-    }
-}
-
-fn present_pass_callback(cmd: c.VkCommandBuffer, state: *types.VulkanState) void {
-    _ = cmd;
-    _ = state;
+    s.current_scene = dst;
+    s.current_scene_owned = true;
 }
 
 /// Records a pending swapchain resize request.
@@ -354,46 +326,6 @@ fn init_pbr_pipeline_helper(s: *types.VulkanState) void {
     log_pipeline_init_result(depth_created, "renderer_create: Depth Pre-pass pipeline", "vk_pbr_create_depth_prepass failed");
 }
 
-fn shadow_pass_callback(cmd: c.VkCommandBuffer, state: *types.VulkanState) void {
-    vk_shadows.vk_shadow_render(state, cmd);
-}
-
-fn depth_prepass_pass_callback(cmd: c.VkCommandBuffer, state: *types.VulkanState) void {
-    var clears: [2]c.VkClearValue = undefined;
-    clears[1].depthStencil.depth = 1.0;
-    clears[1].depthStencil.stencil = 0;
-
-    var depth_view: ?c.VkImageView = null;
-    var use_depth = false;
-
-    if (state.render_graph) |rg_ptr| {
-        const rg = @as(*render_graph.RenderGraph, @ptrCast(@alignCast(rg_ptr)));
-        if (rg.resources.get(types.RESOURCE_ID_DEPTHBUFFER)) |res| {
-            depth_view = res.image_view;
-            use_depth = (depth_view != null);
-        }
-    }
-
-    if (!use_depth) {
-        use_depth = state.swapchain.depth_image_view != null and state.swapchain.depth_image != null;
-    }
-
-    renderer_log.debug("Depth pre-pass frame {d}: use_depth={any}, depth_view={any}", .{ state.sync.current_frame, use_depth, depth_view });
-
-    if (vk_commands.vk_begin_rendering_impl(state, cmd, state.current_image_index, use_depth, depth_view, null, &clears, false, true, 0, false)) {
-        if (state.pipelines.use_pbr_pipeline and state.pipelines.depth_pipeline != null) {
-            vk_pbr.vk_pbr_render_depth_prepass(state, cmd, state.current_scene, state.sync.current_frame);
-        }
-        vk_commands.vk_end_rendering(state, cmd);
-    }
-}
-
-fn ssao_pass_callback(cmd: c.VkCommandBuffer, state: *types.VulkanState) void {
-    if (!state.pipelines.use_ssao or !state.pipelines.ssao_pipeline.initialized) return;
-    renderer_log.debug("SSAO pass frame {d}: running", .{state.sync.current_frame});
-    vk_ssao.vk_ssao_compute(state, cmd, state.sync.current_frame);
-}
-
 fn init_mesh_shader_paths(s: *types.VulkanState, mesh_path: *[512]u8, task_path: *[512]u8, frag_path: *[512]u8) void {
     var shaders_dir: []const u8 = std.mem.span(@as([*:0]const u8, @ptrCast(&s.config.shader_dir)));
 
@@ -537,7 +469,7 @@ pub export fn cardinal_renderer_create(out_renderer: ?*types.CardinalRenderer, w
         }).cb);
         rg.add_pass(mesh_prep_pass) catch {};
 
-        var shadow_pass = render_graph.RenderPass.init(renderer_alloc, "Shadow Pass", shadow_pass_callback);
+        var shadow_pass = render_graph.RenderPass.init(renderer_alloc, "Shadow Pass", pass_callbacks.shadow_pass_callback);
         shadow_pass.use_graphics_queue(s);
         shadow_pass.can_be_culled = false;
         shadow_pass.add_output(renderer_alloc, .{
@@ -551,7 +483,7 @@ pub export fn cardinal_renderer_create(out_renderer: ?*types.CardinalRenderer, w
         }) catch {};
         rg.add_pass(shadow_pass) catch {};
 
-        var depth_pass = render_graph.RenderPass.init(renderer_alloc, "Depth Pre-pass", depth_prepass_pass_callback);
+        var depth_pass = render_graph.RenderPass.init(renderer_alloc, "Depth Pre-pass", pass_callbacks.depth_prepass_pass_callback);
         depth_pass.add_output(renderer_alloc, .{
             .id = types.RESOURCE_ID_DEPTHBUFFER,
             .type = .Image,
@@ -562,7 +494,7 @@ pub export fn cardinal_renderer_create(out_renderer: ?*types.CardinalRenderer, w
         }) catch {};
         rg.add_pass(depth_pass) catch {};
 
-        var ssao_pass = render_graph.RenderPass.init(renderer_alloc, "SSAO Pass", ssao_pass_callback);
+        var ssao_pass = render_graph.RenderPass.init(renderer_alloc, "SSAO Pass", pass_callbacks.ssao_pass_callback);
         ssao_pass.add_input(renderer_alloc, .{
             .id = types.RESOURCE_ID_DEPTHBUFFER,
             .type = .Image,
@@ -581,7 +513,7 @@ pub export fn cardinal_renderer_create(out_renderer: ?*types.CardinalRenderer, w
         }) catch {};
         rg.add_pass(ssao_pass) catch {};
 
-        var pass = render_graph.RenderPass.init(renderer_alloc, "PBR Pass", pbr_pass_callback);
+        var pass = render_graph.RenderPass.init(renderer_alloc, "PBR Pass", pass_callbacks.pbr_pass_callback);
 
         pass.add_output(renderer_alloc, .{
             .id = types.RESOURCE_ID_HDR_COLOR,
@@ -629,7 +561,7 @@ pub export fn cardinal_renderer_create(out_renderer: ?*types.CardinalRenderer, w
             renderer_log.err("Failed to add PBR pass", .{});
         };
 
-        var bloom_pass = render_graph.RenderPass.init(renderer_alloc, "Bloom Compute Pass", bloom_compute_pass_callback);
+        var bloom_pass = render_graph.RenderPass.init(renderer_alloc, "Bloom Compute Pass", pass_callbacks.bloom_compute_pass_callback);
         bloom_pass.add_input(renderer_alloc, .{
             .id = types.RESOURCE_ID_HDR_COLOR,
             .type = .Image,
@@ -648,7 +580,7 @@ pub export fn cardinal_renderer_create(out_renderer: ?*types.CardinalRenderer, w
         }) catch {};
         rg.add_pass(bloom_pass) catch {};
 
-        var pp_pass = render_graph.RenderPass.init(renderer_alloc, "PostProcess Pass", post_process_pass_callback);
+        var pp_pass = render_graph.RenderPass.init(renderer_alloc, "PostProcess Pass", pass_callbacks.post_process_pass_callback);
 
         pp_pass.add_input(renderer_alloc, .{
             .id = types.RESOURCE_ID_HDR_COLOR,
@@ -687,7 +619,7 @@ pub export fn cardinal_renderer_create(out_renderer: ?*types.CardinalRenderer, w
             renderer_log.err("Failed to add PostProcess pass", .{});
         };
 
-        var skybox_pass = render_graph.RenderPass.init(renderer_alloc, "Skybox Pass", skybox_pass_callback);
+        var skybox_pass = render_graph.RenderPass.init(renderer_alloc, "Skybox Pass", pass_callbacks.skybox_pass_callback);
         skybox_pass.add_input(renderer_alloc, .{
             .id = types.RESOURCE_ID_BACKBUFFER,
             .type = .Image,
@@ -707,7 +639,7 @@ pub export fn cardinal_renderer_create(out_renderer: ?*types.CardinalRenderer, w
         skybox_pass.use_graphics_queue(s);
         rg.add_pass(skybox_pass) catch {};
 
-        var ui_pass = render_graph.RenderPass.init(renderer_alloc, "UI Pass", ui_pass_callback);
+        var ui_pass = render_graph.RenderPass.init(renderer_alloc, "UI Pass", pass_callbacks.ui_pass_callback);
         ui_pass.add_input(renderer_alloc, .{
             .id = types.RESOURCE_ID_BACKBUFFER,
             .type = .Image,
@@ -727,7 +659,7 @@ pub export fn cardinal_renderer_create(out_renderer: ?*types.CardinalRenderer, w
         ui_pass.use_graphics_queue(s);
         rg.add_pass(ui_pass) catch {};
 
-        var present_pass = render_graph.RenderPass.init(renderer_alloc, "Present Pass", present_pass_callback);
+        var present_pass = render_graph.RenderPass.init(renderer_alloc, "Present Pass", pass_callbacks.present_pass_callback);
         present_pass.add_input(renderer_alloc, .{
             .id = types.RESOURCE_ID_BACKBUFFER,
             .type = .Image,
@@ -859,7 +791,7 @@ pub export fn cardinal_renderer_create_headless(out_renderer: ?*types.CardinalRe
         const renderer_alloc = memory.cardinal_get_allocator_for_category(.RENDERER).as_allocator();
         rg.* = render_graph.RenderGraph.init(renderer_alloc);
 
-        var pass = render_graph.RenderPass.init(renderer_alloc, "PBR Pass", pbr_pass_callback);
+        var pass = render_graph.RenderPass.init(renderer_alloc, "PBR Pass", pass_callbacks.pbr_pass_callback);
 
         pass.add_output(renderer_alloc, .{
             .id = types.RESOURCE_ID_BACKBUFFER,
@@ -1164,6 +1096,7 @@ pub export fn cardinal_renderer_set_camera(renderer: ?*types.CardinalRenderer, c
 
     if (!s.pipelines.use_pbr_pipeline) return;
 
+    const prev = s.pipelines.pbr_pipeline.current_ubo;
     var ubo = std.mem.zeroes(types.PBRUniformBufferObject);
     create_view_matrix(@ptrCast(&cam.position), @ptrCast(&cam.target), @ptrCast(&cam.up), &ubo.view);
     create_perspective_matrix(cam.fov, cam.aspect, cam.near_plane, cam.far_plane, &ubo.proj);
@@ -1172,6 +1105,8 @@ pub export fn cardinal_renderer_set_camera(renderer: ?*types.CardinalRenderer, c
     ubo.viewPos[2] = cam.position.z;
     ubo.debugFlags = s.pipelines.pbr_pipeline.debug_flags;
     ubo.ambientColor = s.config.pbr_ambient_color;
+    ubo.terrainBrushPosRadius = prev.terrainBrushPosRadius;
+    ubo.terrainBrushParams = prev.terrainBrushParams;
 
     s.pipelines.pbr_pipeline.current_ubo = ubo;
 }
@@ -1185,6 +1120,26 @@ pub export fn cardinal_renderer_set_debug_flags(renderer: ?*types.CardinalRender
 
     s.pipelines.pbr_pipeline.debug_flags = flags;
     s.pipelines.pbr_pipeline.current_ubo.debugFlags = flags;
+}
+
+pub export fn cardinal_renderer_set_terrain_brush_preview(
+    renderer: ?*types.CardinalRenderer,
+    enabled: bool,
+    x: f32,
+    y: f32,
+    z: f32,
+    radius: f32,
+    strength: f32,
+    tool: u32,
+    mode: u32,
+) callconv(.c) void {
+    if (renderer == null) return;
+    const s = get_state(renderer) orelse return;
+
+    if (!s.pipelines.use_pbr_pipeline) return;
+
+    s.pipelines.pbr_pipeline.current_ubo.terrainBrushPosRadius = .{ x, y, z, radius };
+    s.pipelines.pbr_pipeline.current_ubo.terrainBrushParams = .{ strength, @floatFromInt(tool), @floatFromInt(mode), if (enabled) 1.0 else 0.0 };
 }
 
 /// Replaces the current PBR light buffer with a list of lights.
@@ -1843,6 +1798,17 @@ pub export fn cardinal_renderer_runtime_texture_free(renderer: ?*types.CardinalR
     tex.isPlaceholder = true;
 }
 
+pub export fn cardinal_renderer_runtime_texture_get_vk_handles(renderer: ?*types.CardinalRenderer, handle_index: u32, out_sampler: ?*c.VkSampler, out_view: ?*c.VkImageView) callconv(.c) bool {
+    if (renderer == null or out_sampler == null or out_view == null) return false;
+    const s = get_state(renderer) orelse return false;
+    const mgr = s.pipelines.pbr_pipeline.textureManager orelse return false;
+    const tex = resolve_runtime_texture_slot(mgr, handle_index) orelse return false;
+    if (tex.sampler == null or tex.view == null) return false;
+    out_sampler.?.* = tex.sampler;
+    out_view.?.* = tex.view;
+    return true;
+}
+
 /// Uploads a full texture image for a runtime-managed texture handle.
 pub export fn cardinal_renderer_runtime_texture_upload_full(renderer: ?*types.CardinalRenderer, handle_index: u32, data: ?*const anyopaque, data_size: usize) callconv(.c) bool {
     if (renderer == null or data == null or data_size == 0) return false;
@@ -1955,6 +1921,9 @@ fn try_submit_secondary(s: *types.VulkanState, record: ?*const fn (c.VkCommandBu
     }
 
     var secondary_context: types.CardinalSecondaryCommandContext = undefined;
+    vk_commands.vulkan_mt.cardinal_mt_lock_secondary_recording();
+    defer vk_commands.vulkan_mt.cardinal_mt_unlock_secondary_recording();
+
     if (!vk_commands.vulkan_mt.cardinal_mt_allocate_secondary_command_buffer(&mt_manager.thread_pools.?[0], &secondary_context)) {
         _ = c.vkEndCommandBuffer(primary_cmd);
         const free_pool: c.VkCommandPool = if (s.commands.transient_pools != null) s.commands.transient_pools.?[s.sync.current_frame] else s.commands.pools.?[s.sync.current_frame];
@@ -1980,23 +1949,32 @@ fn try_submit_secondary(s: *types.VulkanState, record: ?*const fn (c.VkCommandBu
     inheritance_info.queryFlags = 0;
     inheritance_info.pipelineStatistics = 0;
 
-    if (!vk_commands.vulkan_mt.cardinal_mt_begin_secondary_command_buffer(&secondary_context, &inheritance_info)) {
+    var secondary_begin_info = std.mem.zeroes(c.VkCommandBufferBeginInfo);
+    secondary_begin_info.sType = c.VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
+    secondary_begin_info.flags = c.VK_COMMAND_BUFFER_USAGE_RENDER_PASS_CONTINUE_BIT | c.VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
+    secondary_begin_info.pInheritanceInfo = &inheritance_info;
+
+    if (c.vkBeginCommandBuffer(secondary_context.command_buffer, &secondary_begin_info) != c.VK_SUCCESS) {
         _ = c.vkEndCommandBuffer(primary_cmd);
         const free_pool: c.VkCommandPool = if (s.commands.transient_pools != null) s.commands.transient_pools.?[s.sync.current_frame] else s.commands.pools.?[s.sync.current_frame];
         c.vkFreeCommandBuffers(s.context.device, free_pool, 1, &primary_cmd);
         return false;
     }
+    secondary_context.inheritance = inheritance_info;
+    secondary_context.is_recording = true;
 
     if (record) |rec| {
         rec(secondary_context.command_buffer);
     }
 
-    if (!vk_commands.vulkan_mt.cardinal_mt_end_secondary_command_buffer(&secondary_context)) {
+    if (c.vkEndCommandBuffer(secondary_context.command_buffer) != c.VK_SUCCESS) {
+        secondary_context.is_recording = false;
         _ = c.vkEndCommandBuffer(primary_cmd);
         const free_pool: c.VkCommandPool = if (s.commands.transient_pools != null) s.commands.transient_pools.?[s.sync.current_frame] else s.commands.pools.?[s.sync.current_frame];
         c.vkFreeCommandBuffers(s.context.device, free_pool, 1, &primary_cmd);
         return false;
     }
+    secondary_context.is_recording = false;
 
     var rendering_info = std.mem.zeroes(c.VkRenderingInfo);
     rendering_info.sType = c.VK_STRUCTURE_TYPE_RENDERING_INFO;
@@ -2168,7 +2146,7 @@ pub export fn cardinal_renderer_upload_scene(renderer: ?*types.CardinalRenderer,
 
     if (scene == null or scene.?.mesh_count == 0) {
         renderer_log.info("Scene cleared (no meshes)", .{});
-        s.current_scene = null;
+        free_current_scene_copy(s);
 
         if (s.pipelines.use_pbr_pipeline) {
             if (!vk_pbr.vk_pbr_load_scene(@ptrCast(&s.pipelines.pbr_pipeline), s.context.device, s.context.physical_device, s.commands.pools.?[0], s.context.graphics_queue, @ptrCast(scene), @ptrCast(&s.allocator), @ptrCast(s))) {
@@ -2185,31 +2163,16 @@ pub export fn cardinal_renderer_upload_scene(renderer: ?*types.CardinalRenderer,
         renderer_log.info("Loading scene into PBR pipeline", .{});
         if (!vk_pbr.vk_pbr_load_scene(@ptrCast(&s.pipelines.pbr_pipeline), s.context.device, s.context.physical_device, s.commands.pools.?[0], s.context.graphics_queue, @ptrCast(scene), @ptrCast(&s.allocator), @ptrCast(s))) {
             renderer_log.err("Failed to load scene into PBR pipeline", .{});
-            s.current_scene = null;
+            free_current_scene_copy(s);
             return;
         }
     }
 
-    if (s.current_scene) |old_scene| {
-        const mem_alloc = memory.cardinal_get_allocator_for_category(.RENDERER);
-        memory.cardinal_free(mem_alloc, old_scene);
-    }
-
     if (scene == null) {
-        s.current_scene = null;
+        free_current_scene_copy(s);
         return;
     }
-
-    const mem_alloc = memory.cardinal_get_allocator_for_category(.RENDERER);
-    const new_scene_ptr = memory.cardinal_alloc(mem_alloc, @sizeOf(types.CardinalScene));
-    if (new_scene_ptr) |ptr| {
-        const new_scene = @as(*types.CardinalScene, @ptrCast(@alignCast(ptr)));
-        new_scene.* = scene.?.*;
-        s.current_scene = new_scene;
-    } else {
-        renderer_log.err("Failed to allocate memory for scene copy", .{});
-        s.current_scene = null;
-    }
+    set_renderer_scene_copy(s, scene.?);
 
     renderer_log.info("Scene upload completed successfully with {d} meshes", .{scene.?.mesh_count});
 }
@@ -2220,7 +2183,7 @@ pub export fn cardinal_renderer_clear_scene(renderer: ?*types.CardinalRenderer) 
     _ = c.vkDeviceWaitIdle(s.context.device);
 
     destroy_scene_buffers(s);
-    s.current_scene = null;
+    free_current_scene_copy(s);
 
     if (s.pipelines.use_pbr_pipeline) {
         if (!vk_pbr.vk_pbr_load_scene(@ptrCast(&s.pipelines.pbr_pipeline), s.context.device, s.context.physical_device, s.commands.pools.?[0], s.context.graphics_queue, null, @ptrCast(&s.allocator), @ptrCast(s))) {

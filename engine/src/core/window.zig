@@ -147,6 +147,7 @@ fn framebuffer_resize_callback(window: ?*c.GLFWwindow, width: c_int, height: c_i
 
 /// Tracks minimize/restore and triggers a resize callback on restore.
 fn window_iconify_callback(window: ?*c.GLFWwindow, iconified: c_int) callconv(.c) void {
+    if (window == null) return;
     const win = @as(?*CardinalWindow, @ptrCast(@alignCast(c.glfwGetWindowUserPointer(window))));
     if (win) |w| {
         w.was_minimized = w.is_minimized;

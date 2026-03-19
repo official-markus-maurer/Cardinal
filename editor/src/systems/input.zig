@@ -2,7 +2,8 @@
 //!
 //! Handles editor-level input actions like cursor capture toggling and manual minidump triggers.
 //!
-//! TODO: Add separate input layers for UI vs viewport interaction.
+//! Uses the engine input layer stack to keep viewport bindings ("Game") from firing while the UI
+//! is actively consuming the mouse.
 const std = @import("std");
 const engine = @import("cardinal_engine");
 const EditorState = @import("../editor_state.zig").EditorState;
@@ -11,6 +12,18 @@ const c = @import("../c.zig").c;
 var prev_undo_down: bool = false;
 var prev_redo_down: bool = false;
 var swap_zy: ?bool = null;
+var game_layer_pushed: bool = false;
+
+fn set_game_layer_enabled(enabled: bool) void {
+    if (enabled == game_layer_pushed) return;
+    if (enabled) {
+        engine.input.pushLayer("Game", false);
+        game_layer_pushed = true;
+    } else {
+        engine.input.popLayer();
+        game_layer_pushed = false;
+    }
+}
 
 fn resolve_swap_zy() bool {
     if (swap_zy) |v| return v;
@@ -61,16 +74,13 @@ pub fn update(state: *EditorState) void {
         state.runtime.mouse_captured = !state.runtime.mouse_captured;
 
         engine.input.setCursorMode(win, state.runtime.mouse_captured);
-
-        if (state.runtime.mouse_captured) {
-            engine.input.pushLayer("Game", false);
-        } else {
-            engine.input.popLayer();
-        }
     }
 
     if (engine.input.isActionJustPressed("CreateMinidump")) {
         const ok = engine.platform.write_minidump();
         std.debug.print("CreateMinidump action: {s}\n", .{if (ok) "OK" else "FAILED"});
     }
+
+    const ui_wants_mouse = c.imgui_bridge_want_capture_mouse() or c.imgui_bridge_is_any_item_active();
+    set_game_layer_enabled(state.runtime.mouse_captured and !ui_wants_mouse);
 }

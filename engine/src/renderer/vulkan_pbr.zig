@@ -375,8 +375,16 @@ fn create_pbr_mesh_buffers(pipeline: *types.VulkanPBRPipeline, device: c.VkDevic
             v_src += vc;
             v_dst += vc;
         }
-        if (v_regions_count > 0) {
-            c.vkCmdCopyBuffer(commandBuffer, stagingBuffer.handle, vertexBufferObj.handle, @intCast(v_regions_count), regs.ptr);
+        var valid: u32 = 0;
+        var k: usize = 0;
+        while (k < v_regions_count) : (k += 1) {
+            if (regs[k].size != 0) {
+                regs[valid] = regs[k];
+                valid += 1;
+            }
+        }
+        if (valid > 0) {
+            c.vkCmdCopyBuffer(commandBuffer, stagingBuffer.handle, vertexBufferObj.handle, valid, regs.ptr);
         }
         renderer_alloc.free(regs);
     } else {
@@ -404,21 +412,15 @@ fn create_pbr_mesh_buffers(pipeline: *types.VulkanPBRPipeline, device: c.VkDevic
                 dst_off += ic;
             }
             var valid: u32 = 0;
-            const tmp = renderer_alloc.alloc(c.VkBufferCopy, i_regions_count) catch null;
-            if (tmp) |tmpregs| {
-                var k: usize = 0;
-                while (k < i_regions_count) : (k += 1) {
-                    if (iregs[k].size != 0) {
-                        tmpregs[valid] = iregs[k];
-                        valid += 1;
-                    }
+            var k: usize = 0;
+            while (k < i_regions_count) : (k += 1) {
+                if (iregs[k].size != 0) {
+                    iregs[valid] = iregs[k];
+                    valid += 1;
                 }
-                if (valid > 0) {
-                    c.vkCmdCopyBuffer(commandBuffer, stagingBuffer.handle, indexBufferObj.handle, valid, tmpregs.ptr);
-                }
-                renderer_alloc.free(tmpregs);
-            } else {
-                c.vkCmdCopyBuffer(commandBuffer, stagingBuffer.handle, indexBufferObj.handle, @intCast(i_regions_count), iregs.ptr);
+            }
+            if (valid > 0) {
+                c.vkCmdCopyBuffer(commandBuffer, stagingBuffer.handle, indexBufferObj.handle, valid, iregs.ptr);
             }
             renderer_alloc.free(iregs);
         } else {
@@ -1457,11 +1459,8 @@ pub export fn vk_pbr_render_depth_prepass(vulkan_state: ?*types.VulkanState, com
             }
         }
 
-        if (mesh.vertices == null or mesh.vertex_count == 0 or mesh.indices == null or mesh.index_count == 0) {
-            // Even if we skip rendering (e.g. no vertices), we MUST increment indexOffset if indices were added to the buffer
-            if (mesh.index_count > 0 and mesh.indices != null) {
-                indexOffset +%= mesh.index_count;
-            }
+        if (mesh.vertex_count == 0 or mesh.index_count == 0) {
+            indexOffset +%= mesh.index_count;
             continue;
         }
         if (!mesh.visible) {
@@ -1637,9 +1636,7 @@ pub export fn vk_pbr_render(pipeline: ?*types.VulkanPBRPipeline, commandBuffer: 
         }
 
         if (is_blend) {
-            if (mesh.index_count > 0 and mesh.indices != null) {
-                indexOffset +%= mesh.index_count;
-            }
+            indexOffset +%= mesh.index_count;
             continue;
         }
 
@@ -1650,12 +1647,8 @@ pub export fn vk_pbr_render(pipeline: ?*types.VulkanPBRPipeline, commandBuffer: 
             c.vkCmdSetDepthBias(commandBuffer, 0.0, 0.0, 0.0);
         }
 
-        if (mesh.vertices == null or mesh.vertex_count == 0 or mesh.indices == null or mesh.index_count == 0 or mesh.index_count > 1000000000) {
-            // Even if we skip rendering (e.g. no vertices), we MUST increment indexOffset if indices were added to the buffer
-            // to keep alignment with the buffer layout created in create_pbr_mesh_buffers.
-            if (mesh.index_count > 0 and mesh.indices != null) {
-                indexOffset +%= mesh.index_count;
-            }
+        if (mesh.vertex_count == 0 or mesh.index_count == 0 or mesh.index_count > 1000000000) {
+            indexOffset +%= mesh.index_count;
             continue;
         }
         if (!mesh.visible) {

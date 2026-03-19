@@ -24,6 +24,22 @@ float imgui_bridge_get_framerate(void) {
   return ImGui::GetIO().Framerate;
 }
 
+uint64_t imgui_bridge_vk_add_texture(VkSampler sampler, VkImageView view, int image_layout) {
+  if (sampler == VK_NULL_HANDLE || view == VK_NULL_HANDLE) return 0;
+  VkDescriptorSet set = ImGui_ImplVulkan_AddTexture(sampler, view, (VkImageLayout)image_layout);
+  return (uint64_t)set;
+}
+
+void imgui_bridge_vk_remove_texture(uint64_t texture_id) {
+  if (texture_id == 0) return;
+  ImGui_ImplVulkan_RemoveTexture((VkDescriptorSet)texture_id);
+}
+
+void imgui_bridge_image_u64(uint64_t texture_id, float width, float height) {
+  if (texture_id == 0) return;
+  ImGui::Image((ImTextureID)(VkDescriptorSet)texture_id, ImVec2(width, height));
+}
+
 void imgui_bridge_viewport_get_work_pos(const ImGuiViewport *viewport,
                                         ImVec2 *out_pos) {
   *out_pos = viewport->WorkPos;
@@ -211,6 +227,18 @@ void imgui_bridge_enable_keyboard(bool enable) {
     io.ConfigFlags &= ~ImGuiConfigFlags_NavEnableKeyboard;
 }
 
+void imgui_bridge_enable_viewports(bool enable) {
+  ImGuiIO &io = ImGui::GetIO();
+  ImGuiStyle &style = ImGui::GetStyle();
+  if (enable) {
+    io.ConfigFlags |= ImGuiConfigFlags_ViewportsEnable;
+    style.WindowRounding = 0.0f;
+    style.Colors[ImGuiCol_WindowBg].w = 1.0f;
+  } else {
+    io.ConfigFlags &= ~ImGuiConfigFlags_ViewportsEnable;
+  }
+}
+
 bool imgui_bridge_impl_glfw_init_for_vulkan(GLFWwindow *window,
                                             bool install_callbacks) {
   return ImGui_ImplGlfw_InitForVulkan(window, install_callbacks);
@@ -306,7 +334,14 @@ void imgui_bridge_impl_vulkan_render_draw_data(VkCommandBuffer command_buffer) {
 
 void imgui_bridge_new_frame(void) { ImGui::NewFrame(); }
 
-void imgui_bridge_render(void) { ImGui::Render(); }
+void imgui_bridge_render(void) {
+  ImGui::Render();
+  ImGuiIO &io = ImGui::GetIO();
+  if (io.ConfigFlags & ImGuiConfigFlags_ViewportsEnable) {
+    ImGui::UpdatePlatformWindows();
+    ImGui::RenderPlatformWindowsDefault();
+  }
+}
 
 bool imgui_bridge_begin(const char *name, bool *p_open, int flags) {
   return ImGui::Begin(name, p_open, flags);
@@ -576,10 +611,21 @@ bool imgui_bridge_drag_float(const char *label, float *v, float v_speed,
   return ImGui::DragFloat(label, v, v_speed, v_min, v_max, format, flags);
 }
 
+bool imgui_bridge_drag_float2(const char *label, float v[2], float v_speed,
+                              float v_min, float v_max, const char *format,
+                              int flags) {
+  return ImGui::DragFloat2(label, v, v_speed, v_min, v_max, format, flags);
+}
+
 bool imgui_bridge_drag_float3(const char *label, float v[3], float v_speed,
                               float v_min, float v_max, const char *format,
                               int flags) {
   return ImGui::DragFloat3(label, v, v_speed, v_min, v_max, format, flags);
+}
+
+bool imgui_bridge_drag_int(const char *label, int *v, float v_speed, int v_min,
+                           int v_max, const char *format, int flags) {
+  return ImGui::DragInt(label, v, v_speed, v_min, v_max, format, flags);
 }
 
 bool imgui_bridge_color_edit3(const char *label, float col[3], int flags) {

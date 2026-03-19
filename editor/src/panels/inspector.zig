@@ -5,6 +5,8 @@ const std = @import("std");
 const engine = @import("cardinal_engine");
 const math = engine.math;
 const components = engine.ecs_components;
+const renderer = engine.vulkan_renderer;
+const types = engine.vulkan_types;
 const c = @import("../c.zig").c;
 const EditorState = @import("../editor_state.zig").EditorState;
 
@@ -119,6 +121,264 @@ fn buffer_slice(buf: []const u8) []const u8 {
     return buf[0..len];
 }
 
+fn enum_item_array(comptime E: type) [std.meta.tags(E).len][*:0]const u8 {
+    const tags = std.meta.tags(E);
+    comptime var items: [tags.len][*:0]const u8 = undefined;
+    inline for (tags, 0..) |t, i| {
+        items[i] = (@tagName(t) ++ "\x00").ptr;
+    }
+    return items;
+}
+
+fn reflect_edit_component_fields(comptime T: type, value: *T, out_any_item_active: ?*bool) bool {
+    var changed = false;
+    const info = @typeInfo(T);
+    if (info != .@"struct") return false;
+
+    inline for (info.@"struct".fields) |field| {
+        const FieldType = field.type;
+        if (@typeInfo(FieldType) == .pointer) continue;
+        if (@typeInfo(FieldType) == .@"fn") continue;
+
+        if (comptime T == components.Terrain) {
+            if (comptime (std.mem.eql(u8, field.name, "model_id") or std.mem.eql(u8, field.name, "mesh_index") or std.mem.eql(u8, field.name, "data_id"))) continue;
+        }
+        if (comptime T == components.MeshRenderer) {
+            if (comptime (std.mem.eql(u8, field.name, "mesh") or std.mem.eql(u8, field.name, "material"))) continue;
+        }
+
+        const label = comptime field.name ++ "\x00";
+
+        if (FieldType == bool) {
+            var v: bool = @field(value.*, field.name);
+            if (c.imgui_bridge_checkbox(label.ptr, &v)) {
+                @field(value.*, field.name) = v;
+                changed = true;
+            }
+            if (out_any_item_active) |p| {
+                if (c.imgui_bridge_is_item_active()) p.* = true;
+            }
+            continue;
+        }
+
+        if (FieldType == f32) {
+            var v: f32 = @field(value.*, field.name);
+            if (c.imgui_bridge_drag_float(label.ptr, &v, 0.05, 0.0, 0.0, "%.3f", 0)) {
+                @field(value.*, field.name) = v;
+                changed = true;
+            }
+            if (out_any_item_active) |p| {
+                if (c.imgui_bridge_is_item_active()) p.* = true;
+            }
+            continue;
+        }
+
+        if (FieldType == u32) {
+            var tmp: c_int = @intCast(@field(value.*, field.name));
+            if (c.imgui_bridge_drag_int(label.ptr, &tmp, 0.5, 0, std.math.maxInt(c_int), "%d", 0)) {
+                @field(value.*, field.name) = @intCast(@max(0, tmp));
+                changed = true;
+            }
+            if (out_any_item_active) |p| {
+                if (c.imgui_bridge_is_item_active()) p.* = true;
+            }
+            continue;
+        }
+
+        if (FieldType == math.Vec2) {
+            var v: [2]f32 = .{ @field(value.*, field.name).x, @field(value.*, field.name).y };
+            if (c.imgui_bridge_drag_float2(label.ptr, &v, 0.05, 0.0, 0.0, "%.3f", 0)) {
+                @field(value.*, field.name) = .{ .x = v[0], .y = v[1] };
+                changed = true;
+            }
+            if (out_any_item_active) |p| {
+                if (c.imgui_bridge_is_item_active()) p.* = true;
+            }
+            continue;
+        }
+
+        if (FieldType == math.Vec3) {
+            var v: [3]f32 = .{ @field(value.*, field.name).x, @field(value.*, field.name).y, @field(value.*, field.name).z };
+            if (comptime std.mem.indexOf(u8, field.name, "color") != null) {
+                if (c.imgui_bridge_color_edit3(label.ptr, &v, 0)) {
+                    @field(value.*, field.name) = .{ .x = v[0], .y = v[1], .z = v[2] };
+                    changed = true;
+                }
+            } else {
+                if (c.imgui_bridge_drag_float3(label.ptr, &v, 0.05, 0.0, 0.0, "%.3f", 0)) {
+                    @field(value.*, field.name) = .{ .x = v[0], .y = v[1], .z = v[2] };
+                    changed = true;
+                }
+            }
+            if (out_any_item_active) |p| {
+                if (c.imgui_bridge_is_item_active()) p.* = true;
+            }
+            continue;
+        }
+
+        if (@typeInfo(FieldType) == .@"enum") {
+            const items = comptime enum_item_array(FieldType);
+            const tags = std.meta.tags(FieldType);
+            const current_tag = @field(value.*, field.name);
+            var idx: c_int = 0;
+            inline for (tags, 0..) |t, i| {
+                if (t == current_tag) idx = @intCast(i);
+            }
+            if (c.imgui_bridge_combo(label.ptr, &idx, &items, @intCast(items.len), @intCast(items.len))) {
+                @field(value.*, field.name) = tags[@intCast(std.math.clamp(idx, 0, @as(c_int, @intCast(tags.len - 1))))];
+                changed = true;
+            }
+            if (out_any_item_active) |p| {
+                if (c.imgui_bridge_is_item_active()) p.* = true;
+            }
+            continue;
+        }
+    }
+
+    return changed;
+}
+
+fn draw_editor_globals(state: *EditorState, g: *components.EditorGlobals) void {
+    if (!c.imgui_bridge_collapsing_header("Globals", c.ImGuiTreeNodeFlags_DefaultOpen)) return;
+
+    if (c.imgui_bridge_collapsing_header("Camera", c.ImGuiTreeNodeFlags_DefaultOpen)) {
+        var pos = [3]f32{ g.camera_position.x, g.camera_position.y, g.camera_position.z };
+        if (c.imgui_bridge_drag_float3("Position##Globals", &pos, 0.1, 0.0, 0.0, "%.3f", 0)) {
+            g.camera_position = .{ .x = pos[0], .y = pos[1], .z = pos[2] };
+        }
+
+        var tgt = [3]f32{ g.camera_target.x, g.camera_target.y, g.camera_target.z };
+        if (c.imgui_bridge_drag_float3("Target##Globals", &tgt, 0.1, 0.0, 0.0, "%.3f", 0)) {
+            g.camera_target = .{ .x = tgt[0], .y = tgt[1], .z = tgt[2] };
+        }
+
+        var up = [3]f32{ g.camera_up.x, g.camera_up.y, g.camera_up.z };
+        if (c.imgui_bridge_drag_float3("Up##Globals", &up, 0.05, 0.0, 0.0, "%.3f", 0)) {
+            g.camera_up = .{ .x = up[0], .y = up[1], .z = up[2] };
+        }
+
+        _ = c.imgui_bridge_slider_float("FOV##Globals", &g.camera_fov, 10.0, 120.0, "%.1f");
+        _ = c.imgui_bridge_drag_float("Aspect##Globals", &g.camera_aspect, 0.01, 0.1, 10.0, "%.3f", 0);
+        _ = c.imgui_bridge_drag_float("Near##Globals", &g.camera_near, 0.01, 0.001, 1000.0, "%.3f", 0);
+        _ = c.imgui_bridge_drag_float("Far##Globals", &g.camera_far, 1.0, 0.01, 100000.0, "%.3f", 0);
+    }
+
+    if (c.imgui_bridge_collapsing_header("Panels", 0)) {
+        _ = c.imgui_bridge_checkbox("Scene View", &g.show_scene_view);
+        _ = c.imgui_bridge_checkbox("Scene Graph", &g.show_scene_graph);
+        _ = c.imgui_bridge_checkbox("Assets", &g.show_assets);
+        _ = c.imgui_bridge_checkbox("Model Manager", &g.show_model_manager);
+        _ = c.imgui_bridge_checkbox("Inspector", &g.show_entity_inspector);
+        _ = c.imgui_bridge_checkbox("Scene Manager", &g.show_scene_manager);
+        _ = c.imgui_bridge_checkbox("PBR Settings", &g.show_pbr_settings);
+        _ = c.imgui_bridge_checkbox("Animation", &g.show_animation);
+        _ = c.imgui_bridge_checkbox("Terrain", &g.show_terrain_panel);
+        _ = c.imgui_bridge_checkbox("Performance", &g.show_performance_panel);
+        if (c.imgui_bridge_checkbox("Grid & Axes", &g.show_grid_axes)) {
+            renderer.cardinal_renderer_set_debug_grid(state.runtime.renderer, g.show_grid_axes);
+        }
+    }
+
+    if (c.imgui_bridge_collapsing_header("Game Camera", 0)) {
+        if (g.game_camera_entity_id != std.math.maxInt(u64)) {
+            const ent = engine.ecs_entity.Entity{ .id = g.game_camera_entity_id };
+            if (state.runtime.registry.entity_manager.is_alive(ent)) {
+                if (state.runtime.registry.get(components.Name, ent)) |n| {
+                    c.imgui_bridge_text("Camera: %s", @as([*:0]const u8, @ptrCast(&n.value)));
+                } else {
+                    c.imgui_bridge_text("Camera Entity: %d", ent.index());
+                }
+            } else {
+                c.imgui_bridge_text("Camera: (missing)");
+            }
+        } else {
+            c.imgui_bridge_text("Camera: (auto)");
+        }
+
+        if (c.imgui_bridge_button("Use Selected Camera")) {
+            const ent = state.ui.selected_entity;
+            if (state.runtime.registry.entity_manager.is_alive(ent) and state.runtime.registry.get(components.Camera, ent) != null) {
+                g.game_camera_entity_id = ent.id;
+            }
+        }
+        c.imgui_bridge_same_line(0, -1);
+        if (c.imgui_bridge_button("Clear")) {
+            g.game_camera_entity_id = std.math.maxInt(u64);
+        }
+    }
+
+    if (c.imgui_bridge_collapsing_header("Rendering", c.ImGuiTreeNodeFlags_DefaultOpen)) {
+        if (c.imgui_bridge_checkbox("Enable PBR Rendering", &g.pbr_enabled)) {
+            state.runtime.pbr_enabled = g.pbr_enabled;
+            renderer.cardinal_renderer_enable_pbr(state.runtime.renderer, state.runtime.pbr_enabled);
+            if (state.runtime.pbr_enabled) {
+                renderer.cardinal_renderer_set_camera(state.runtime.renderer, &state.runtime.camera);
+                renderer.cardinal_renderer_set_lighting(state.runtime.renderer, &state.runtime.light);
+            }
+        }
+
+        const items = [_][*:0]const u8{ "Normal", "UV Visualization", "Wireframe", "Mesh Shader" };
+        var current_item: i32 = @intCast(@min(g.rendering_mode, 3));
+        if (c.imgui_bridge_combo("Mode", &current_item, &items[0], @intCast(items.len), -1)) {
+            g.rendering_mode = @intCast(@max(0, current_item));
+            const mode: types.CardinalRenderingMode = switch (current_item) {
+                0 => .NORMAL,
+                1 => .UV,
+                2 => .WIREFRAME,
+                3 => .MESH_SHADER,
+                else => .NORMAL,
+            };
+            renderer.cardinal_renderer_set_rendering_mode(state.runtime.renderer, mode);
+        }
+    }
+
+    if (c.imgui_bridge_collapsing_header("Post Process", c.ImGuiTreeNodeFlags_DefaultOpen)) {
+        var pp_changed = false;
+        if (c.imgui_bridge_slider_float("Exposure", &g.post_exposure, 0.1, 10.0, "%.2f")) pp_changed = true;
+        if (c.imgui_bridge_slider_float("Contrast", &g.post_contrast, 0.1, 3.0, "%.2f")) pp_changed = true;
+        if (c.imgui_bridge_slider_float("Saturation", &g.post_saturation, 0.0, 3.0, "%.2f")) pp_changed = true;
+        c.imgui_bridge_separator();
+        c.imgui_bridge_text("Bloom");
+        if (c.imgui_bridge_slider_float("Bloom Intensity", &g.post_bloom_intensity, 0.0, 1.0, "%.3f")) pp_changed = true;
+        if (c.imgui_bridge_slider_float("Threshold", &g.post_bloom_threshold, 0.0, 5.0, "%.2f")) pp_changed = true;
+        if (c.imgui_bridge_slider_float("Knee", &g.post_bloom_knee, 0.0, 1.0, "%.2f")) pp_changed = true;
+
+        if (pp_changed) {
+            state.runtime.post_process.exposure = g.post_exposure;
+            state.runtime.post_process.contrast = g.post_contrast;
+            state.runtime.post_process.saturation = g.post_saturation;
+            state.runtime.post_process.bloomIntensity = g.post_bloom_intensity;
+            state.runtime.post_process.bloomThreshold = g.post_bloom_threshold;
+            state.runtime.post_process.bloomKnee = g.post_bloom_knee;
+            renderer.cardinal_renderer_set_post_process_params(state.runtime.renderer, &state.runtime.post_process);
+        }
+    }
+
+    state.runtime.camera.position = g.camera_position;
+    state.runtime.camera.target = g.camera_target;
+    state.runtime.camera.up = g.camera_up;
+    state.runtime.camera.fov = g.camera_fov;
+    state.runtime.camera.aspect = g.camera_aspect;
+    state.runtime.camera.near_plane = g.camera_near;
+    state.runtime.camera.far_plane = g.camera_far;
+
+    state.ui.show_scene_view = g.show_scene_view;
+    g.show_game_view = false;
+    state.ui.show_game_view = false;
+    state.ui.show_scene_graph = g.show_scene_graph;
+    state.ui.show_assets = g.show_assets;
+    state.ui.show_model_manager = g.show_model_manager;
+    state.ui.show_entity_inspector = g.show_entity_inspector;
+    state.ui.show_scene_manager = g.show_scene_manager;
+    state.ui.show_pbr_settings = g.show_pbr_settings;
+    state.ui.show_animation = g.show_animation;
+    state.ui.show_terrain_panel = g.show_terrain_panel;
+    state.ui.show_grid_axes = g.show_grid_axes;
+    state.ui.show_performance_panel = g.show_performance_panel;
+    g.enable_viewports = false;
+    state.ui.enable_viewports = false;
+}
+
 fn draw_entity_inspector_panel(state: *EditorState) void {
     if (!state.ui.show_entity_inspector) return;
     const open = c.imgui_bridge_begin("Inspector", &state.ui.show_entity_inspector, 0);
@@ -135,6 +395,10 @@ fn draw_entity_inspector_panel(state: *EditorState) void {
     sync_entity_buffers(state, entity);
 
     c.imgui_bridge_text("Entity: %d", entity.index());
+
+    if (state.runtime.registry.get(components.EditorGlobals, entity)) |g| {
+        draw_editor_globals(state, g);
+    }
 
     if (c.imgui_bridge_collapsing_header("Components", 0)) {
         if (c.imgui_bridge_button("Add Component...")) {
@@ -364,10 +628,10 @@ fn draw_entity_inspector_panel(state: *EditorState) void {
             }
             c.imgui_bridge_text("Mesh Index: %d", mr.mesh.index);
             c.imgui_bridge_text("Material Index: %d", mr.material.index);
-            var visible = mr.visible;
-            if (c.imgui_bridge_checkbox("Visible", &visible)) {
-                const before = mr.*;
-                mr.visible = visible;
+
+            const before = mr.*;
+            var any_item_active = false;
+            if (reflect_edit_component_fields(components.MeshRenderer, mr, &any_item_active)) {
                 state.ui.undo.push(.{ .EntityMeshRenderer = .{
                     .entity_id = entity.id,
                     .before_present = true,
@@ -376,29 +640,71 @@ fn draw_entity_inspector_panel(state: *EditorState) void {
                     .after = mr.*,
                 } });
             }
-            var cast_shadows = mr.cast_shadows;
-            if (c.imgui_bridge_checkbox("Cast Shadows", &cast_shadows)) {
-                const before = mr.*;
-                mr.cast_shadows = cast_shadows;
-                state.ui.undo.push(.{ .EntityMeshRenderer = .{
+        }
+    }
+
+    if (state.runtime.registry.get(components.Node, entity)) |node| {
+        if (c.imgui_bridge_collapsing_header("Node", 0)) {
+            c.imgui_bridge_same_line(0, -1);
+            if (c.imgui_bridge_button("Remove##Node")) {
+                const before = node.*;
+                state.ui.undo.push(.{ .EntityNode = .{
                     .entity_id = entity.id,
                     .before_present = true,
-                    .after_present = true,
+                    .after_present = false,
                     .before = before,
-                    .after = mr.*,
+                    .after = std.mem.zeroes(components.Node),
                 } });
+                state.runtime.registry.remove(components.Node, entity);
+                return;
             }
-            var receive_shadows = mr.receive_shadows;
-            if (c.imgui_bridge_checkbox("Receive Shadows", &receive_shadows)) {
-                const before = mr.*;
-                mr.receive_shadows = receive_shadows;
-                state.ui.undo.push(.{ .EntityMeshRenderer = .{
+
+            const before = node.*;
+            var any_item_active = false;
+            if (reflect_edit_component_fields(components.Node, node, &any_item_active)) {
+                state.ui.undo.push(.{ .EntityNode = .{
                     .entity_id = entity.id,
                     .before_present = true,
                     .after_present = true,
                     .before = before,
-                    .after = mr.*,
+                    .after = node.*,
                 } });
+                state.runtime.pending_scene = state.runtime.combined_scene;
+                state.runtime.scene_upload_pending = true;
+                state.runtime.picking_cache_dirty = true;
+            }
+        }
+    }
+
+    if (state.runtime.registry.get(components.Terrain, entity)) |terr| {
+        if (c.imgui_bridge_collapsing_header("Terrain", 0)) {
+            c.imgui_bridge_same_line(0, -1);
+            if (c.imgui_bridge_button("Remove##Terrain")) {
+                const before = terr.*;
+                state.ui.undo.push(.{ .EntityTerrain = .{
+                    .entity_id = entity.id,
+                    .before_present = true,
+                    .after_present = false,
+                    .before = before,
+                    .after = std.mem.zeroes(components.Terrain),
+                } });
+                state.runtime.registry.remove(components.Terrain, entity);
+                return;
+            }
+
+            const before = terr.*;
+            var any_item_active = false;
+            if (reflect_edit_component_fields(components.Terrain, terr, &any_item_active)) {
+                state.ui.undo.push(.{ .EntityTerrain = .{
+                    .entity_id = entity.id,
+                    .before_present = true,
+                    .after_present = true,
+                    .before = before,
+                    .after = terr.*,
+                } });
+                state.runtime.pending_scene = state.runtime.combined_scene;
+                state.runtime.scene_upload_pending = true;
+                state.runtime.picking_cache_dirty = true;
             }
         }
     }
@@ -421,22 +727,14 @@ fn draw_entity_inspector_panel(state: *EditorState) void {
                 }
                 return;
             }
-
             const any_active = c.imgui_bridge_is_any_item_active();
-
-            const items = [_][*:0]const u8{ "Directional", "Point", "Spot" };
-            var current: c_int = switch (l.type) {
-                .Directional => 0,
-                .Point => 1,
-                .Spot => 2,
-            };
-            if (c.imgui_bridge_combo("Type", &current, &items, items.len, items.len)) {
-                const before = l.*;
-                l.type = switch (current) {
-                    0 => .Directional,
-                    1 => .Point,
-                    else => .Spot,
-                };
+            const before = l.*;
+            var any_item_active = false;
+            const changed = reflect_edit_component_fields(components.Light, l, &any_item_active);
+            if (any_item_active) {
+                state.ui.undo.begin_entity_light(entity.id, before);
+            }
+            if (changed and !any_item_active and !c.imgui_bridge_is_any_item_active()) {
                 state.ui.undo.push(.{ .EntityLight = .{
                     .entity_id = entity.id,
                     .before_present = true,
@@ -445,50 +743,6 @@ fn draw_entity_inspector_panel(state: *EditorState) void {
                     .after = l.*,
                 } });
             }
-
-            var color = [3]f32{ l.color.x, l.color.y, l.color.z };
-            if (c.imgui_bridge_color_edit3("Color", &color, 0)) {
-                const before = l.*;
-                l.color = .{ .x = color[0], .y = color[1], .z = color[2] };
-                if (c.imgui_bridge_is_item_active()) {
-                    state.ui.undo.begin_entity_light(entity.id, before);
-                }
-            }
-
-            {
-                const before = l.*;
-                _ = c.imgui_bridge_drag_float("Intensity", &l.intensity, 0.01, 0.0, 1000.0, "%.3f", 0);
-                if (c.imgui_bridge_is_item_active()) state.ui.undo.begin_entity_light(entity.id, before);
-            }
-            {
-                const before = l.*;
-                _ = c.imgui_bridge_drag_float("Range", &l.range, 0.1, 0.0, 10000.0, "%.3f", 0);
-                if (c.imgui_bridge_is_item_active()) state.ui.undo.begin_entity_light(entity.id, before);
-            }
-            {
-                const before = l.*;
-                _ = c.imgui_bridge_drag_float("Inner Cone", &l.inner_cone_angle, 0.01, 0.0, 3.14, "%.3f", 0);
-                if (c.imgui_bridge_is_item_active()) state.ui.undo.begin_entity_light(entity.id, before);
-            }
-            {
-                const before = l.*;
-                _ = c.imgui_bridge_drag_float("Outer Cone", &l.outer_cone_angle, 0.01, 0.0, 3.14, "%.3f", 0);
-                if (c.imgui_bridge_is_item_active()) state.ui.undo.begin_entity_light(entity.id, before);
-            }
-
-            var cast_shadows = l.cast_shadows;
-            if (c.imgui_bridge_checkbox("Cast Shadows", &cast_shadows)) {
-                const before = l.*;
-                l.cast_shadows = cast_shadows;
-                state.ui.undo.push(.{ .EntityLight = .{
-                    .entity_id = entity.id,
-                    .before_present = true,
-                    .after_present = true,
-                    .before = before,
-                    .after = l.*,
-                } });
-            }
-
             if (!any_active and !c.imgui_bridge_is_any_item_active()) {
                 state.ui.undo.end_entity_light(entity.id, l.*);
             }
@@ -514,14 +768,13 @@ fn draw_entity_inspector_panel(state: *EditorState) void {
                 return;
             }
             const any_active = c.imgui_bridge_is_any_item_active();
-            const items = [_][*:0]const u8{ "Perspective", "Orthographic" };
-            var current: c_int = switch (cam.type) {
-                .Perspective => 0,
-                .Orthographic => 1,
-            };
-            if (c.imgui_bridge_combo("Type", &current, &items, items.len, items.len)) {
-                const before = cam.*;
-                cam.type = if (current == 0) .Perspective else .Orthographic;
+            const before = cam.*;
+            var any_item_active = false;
+            const changed = reflect_edit_component_fields(components.Camera, cam, &any_item_active);
+            if (any_item_active) {
+                state.ui.undo.begin_entity_camera(entity.id, before);
+            }
+            if (changed and !any_item_active and !c.imgui_bridge_is_any_item_active()) {
                 state.ui.undo.push(.{ .EntityCamera = .{
                     .entity_id = entity.id,
                     .before_present = true,
@@ -530,33 +783,6 @@ fn draw_entity_inspector_panel(state: *EditorState) void {
                     .after = cam.*,
                 } });
             }
-
-            {
-                const before = cam.*;
-                _ = c.imgui_bridge_drag_float("FOV", &cam.fov, 0.1, 1.0, 179.0, "%.2f", 0);
-                if (c.imgui_bridge_is_item_active()) state.ui.undo.begin_entity_camera(entity.id, before);
-            }
-            {
-                const before = cam.*;
-                _ = c.imgui_bridge_drag_float("Aspect", &cam.aspect_ratio, 0.01, 0.1, 10.0, "%.3f", 0);
-                if (c.imgui_bridge_is_item_active()) state.ui.undo.begin_entity_camera(entity.id, before);
-            }
-            {
-                const before = cam.*;
-                _ = c.imgui_bridge_drag_float("Near", &cam.near_plane, 0.01, 0.001, 1000.0, "%.3f", 0);
-                if (c.imgui_bridge_is_item_active()) state.ui.undo.begin_entity_camera(entity.id, before);
-            }
-            {
-                const before = cam.*;
-                _ = c.imgui_bridge_drag_float("Far", &cam.far_plane, 1.0, 0.01, 100000.0, "%.3f", 0);
-                if (c.imgui_bridge_is_item_active()) state.ui.undo.begin_entity_camera(entity.id, before);
-            }
-            {
-                const before = cam.*;
-                _ = c.imgui_bridge_drag_float("Ortho Size", &cam.ortho_size, 0.1, 0.01, 100000.0, "%.3f", 0);
-                if (c.imgui_bridge_is_item_active()) state.ui.undo.begin_entity_camera(entity.id, before);
-            }
-
             if (!any_active and !c.imgui_bridge_is_any_item_active()) {
                 state.ui.undo.end_entity_camera(entity.id, cam.*);
             }
@@ -585,6 +811,23 @@ fn draw_entity_inspector_panel(state: *EditorState) void {
             const changed = c.imgui_bridge_input_text("Path", @ptrCast(&state.ui.inspector_skybox_buffer), state.ui.inspector_skybox_buffer.len, 0);
             if (c.imgui_bridge_is_item_active()) {
                 state.ui.undo.begin_entity_skybox(entity.id, before);
+            }
+            if (c.imgui_bridge_begin_drag_drop_target()) {
+                if (c.imgui_bridge_accept_drag_drop_payload("ASSET_PATH", 0)) |payload| {
+                    const data_ptr = c.imgui_bridge_payload_get_data(payload);
+                    if (data_ptr != null) {
+                        const path_c: [*:0]const u8 = @ptrCast(@alignCast(data_ptr));
+                        const path = std.mem.span(path_c);
+                        const ext = std.fs.path.extension(path);
+                        if (std.mem.eql(u8, ext, ".hdr") or std.mem.eql(u8, ext, ".exr")) {
+                            const len = @min(path.len, state.ui.inspector_skybox_buffer.len - 1);
+                            @memcpy(state.ui.inspector_skybox_buffer[0..len], path[0..len]);
+                            state.ui.inspector_skybox_buffer[len] = 0;
+                            state.runtime.registry.add(entity, components.Skybox.init(path)) catch {};
+                        }
+                    }
+                }
+                c.imgui_bridge_end_drag_drop_target();
             }
             if (changed) {
                 state.runtime.registry.add(entity, components.Skybox.init(buffer_slice(&state.ui.inspector_skybox_buffer))) catch {};

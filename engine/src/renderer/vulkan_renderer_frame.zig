@@ -19,6 +19,7 @@ const vk_ssao = @import("vulkan_ssao.zig");
 const vk_texture_manager = @import("vulkan_texture_manager.zig");
 const vk_texture_utils = @import("util/vulkan_texture_utils.zig");
 const vk_renderer = @import("vulkan_renderer.zig");
+const vk_mt = @import("vulkan_mt.zig");
 const window = @import("../core/window.zig");
 const vk_device_loss_recovery = @import("vulkan_device_loss_recovery.zig");
 
@@ -452,6 +453,8 @@ pub export fn cardinal_renderer_draw_frame(renderer: ?*types.CardinalRenderer) c
         frame_log.warn("Frame {d}: Fence wait failed or timed out", .{s.sync.current_frame});
         return;
     }
+
+    vk_mt.cardinal_mt_process_completed_tasks(128);
 
     vk_mesh_shader.vk_mesh_shader_process_pending_cleanup(s);
     vk_texture_utils.process_staging_buffer_cleanups(@ptrCast(s.sync_manager), @ptrCast(&s.allocator));

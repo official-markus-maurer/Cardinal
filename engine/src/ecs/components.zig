@@ -38,8 +38,10 @@ pub const MeshRenderer = struct {
 pub const Terrain = struct {
     size: math.Vec2 = .{ .x = 64.0, .y = 64.0 },
     resolution: u32 = 128,
+    thickness: f32 = 8.0,
     model_id: u32 = 0,
     mesh_index: u32 = 0,
+    data_id: u64 = 0,
 };
 
 /// Light category.
@@ -197,4 +199,42 @@ pub const NodeType = enum {
 /// Generic node marker component.
 pub const Node = struct {
     type: NodeType = .Node3D,
+};
+
+pub const EditorGlobals = struct {
+    camera_position: math.Vec3 = math.Vec3{ .x = 0.0, .y = 2.0, .z = 5.0 },
+    camera_target: math.Vec3 = math.Vec3{ .x = 0.0, .y = 0.0, .z = 0.0 },
+    camera_up: math.Vec3 = math.Vec3{ .x = 0.0, .y = 1.0, .z = 0.0 },
+    camera_fov: f32 = 65.0,
+    camera_aspect: f32 = 16.0 / 9.0,
+    camera_near: f32 = 0.1,
+    camera_far: f32 = 100.0,
+
+    selected_entity_id: u64 = std.math.maxInt(u64),
+
+    show_scene_graph: bool = true,
+    show_scene_view: bool = true,
+    show_game_view: bool = true,
+    show_assets: bool = true,
+    show_model_manager: bool = true,
+    show_entity_inspector: bool = true,
+    show_scene_manager: bool = true,
+    show_pbr_settings: bool = true,
+    show_animation: bool = true,
+    show_terrain_panel: bool = true,
+    show_grid_axes: bool = true,
+    show_performance_panel: bool = true,
+    enable_viewports: bool = true,
+
+    game_camera_entity_id: u64 = std.math.maxInt(u64),
+
+    pbr_enabled: bool = true,
+    rendering_mode: u32 = 0,
+
+    post_exposure: f32 = 1.0,
+    post_contrast: f32 = 1.0,
+    post_saturation: f32 = 1.0,
+    post_bloom_intensity: f32 = 0.04,
+    post_bloom_threshold: f32 = 1.0,
+    post_bloom_knee: f32 = 0.1,
 };

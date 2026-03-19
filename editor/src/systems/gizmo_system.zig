@@ -1,8 +1,6 @@
 //! Editor gizmo manipulation.
 //!
 //! Tracks the current gizmo mode and applies transform edits to the selected entity.
-//!
-//! TODO: Consider extracting drawing primitives into a reusable debug-draw module.
 const std = @import("std");
 const engine = @import("cardinal_engine");
 const math = engine.math;
@@ -10,6 +8,7 @@ const components = engine.ecs_components;
 const EditorState = @import("../editor_state.zig").EditorState;
 const c = @import("../c.zig").c;
 const selection_raycast = @import("selection_raycast.zig");
+const debug_draw = @import("debug_draw.zig");
 
 pub const GizmoMode = enum {
     Translate,
@@ -277,19 +276,18 @@ pub fn draw_entity_gizmo(state: *EditorState, t: *components.Transform) void {
                 const p_c3_v4 = view_proj.mulVec4(math.Vec4{ .x = c3.x, .y = c3.y, .z = c3.z, .w = 1.0 });
                 const p_c4_v4 = view_proj.mulVec4(math.Vec4{ .x = c4.x, .y = c4.y, .z = c4.z, .w = 1.0 });
 
-                if (p_tip_v4.w > 0 and p_c1_v4.w > 0 and p_c2_v4.w > 0 and p_c3_v4.w > 0 and p_c4_v4.w > 0) {
-                    const mk_pt = struct {
-                        fn call(v4: math.Vec4, w: f32, h: f32) c.ImVec2 {
-                            const n = math.Vec3{ .x = v4.x / v4.w, .y = v4.y / v4.w, .z = v4.z / v4.w };
-                            return c.ImVec2{ .x = (n.x + 1.0) * 0.5 * w, .y = (n.y + 1.0) * 0.5 * h };
-                        }
-                    }.call;
+                const p_tip_opt = debug_draw.project_vec4_to_screen(p_tip_v4, win_width, win_height);
+                const p_c1_opt = debug_draw.project_vec4_to_screen(p_c1_v4, win_width, win_height);
+                const p_c2_opt = debug_draw.project_vec4_to_screen(p_c2_v4, win_width, win_height);
+                const p_c3_opt = debug_draw.project_vec4_to_screen(p_c3_v4, win_width, win_height);
+                const p_c4_opt = debug_draw.project_vec4_to_screen(p_c4_v4, win_width, win_height);
 
-                    const p_tip = mk_pt(p_tip_v4, @floatFromInt(win_width), @floatFromInt(win_height));
-                    const p_c1 = mk_pt(p_c1_v4, @floatFromInt(win_width), @floatFromInt(win_height));
-                    const p_c2 = mk_pt(p_c2_v4, @floatFromInt(win_width), @floatFromInt(win_height));
-                    const p_c3 = mk_pt(p_c3_v4, @floatFromInt(win_width), @floatFromInt(win_height));
-                    const p_c4 = mk_pt(p_c4_v4, @floatFromInt(win_width), @floatFromInt(win_height));
+                if (p_tip_opt != null and p_c1_opt != null and p_c2_opt != null and p_c3_opt != null and p_c4_opt != null) {
+                    const p_tip = p_tip_opt.?;
+                    const p_c1 = p_c1_opt.?;
+                    const p_c2 = p_c2_opt.?;
+                    const p_c3 = p_c3_opt.?;
+                    const p_c4 = p_c4_opt.?;
 
                     c.imgui_bridge_draw_triangle_filled(&p_tip, &p_c1, &p_c2, color);
                     c.imgui_bridge_draw_triangle_filled(&p_tip, &p_c2, &p_c3, color);

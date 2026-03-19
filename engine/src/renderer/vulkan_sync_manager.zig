@@ -3,7 +3,6 @@
 //! Owns per-frame semaphores/fences and a shared timeline semaphore used across renderer subsystems.
 //! Also provides global locking helpers for thread-safe timeline operations.
 //!
-//! TODO: Reduce contention by moving from global locks to per-device/per-queue synchronization.
 const std = @import("std");
 const builtin = @import("builtin");
 const log = @import("../core/log.zig");
@@ -14,10 +13,23 @@ const sync_log = log.ScopedLogger("SYNC_MGR");
 
 const c = @import("vulkan_c.zig").c;
 
-/// Global lock protecting timeline semaphore operations (including overflow-reset handle swaps).
-var g_sync_lock = std.Thread.RwLock{};
-/// Serializes queue submission calls across threads.
-var g_queue_lock = std.Thread.Mutex{};
+const LOCK_STRIPES: usize = 64;
+var g_sync_locks: [LOCK_STRIPES]std.Thread.RwLock = [_]std.Thread.RwLock{.{}} ** LOCK_STRIPES;
+var g_queue_locks: [LOCK_STRIPES]std.Thread.Mutex = [_]std.Thread.Mutex{.{}} ** LOCK_STRIPES;
+
+fn lock_index(handle: anytype) usize {
+    if (handle == null) return 0;
+    const v: usize = @intFromPtr(handle);
+    return (v >> 4) % LOCK_STRIPES;
+}
+
+fn sync_lock_for(device: c.VkDevice) *std.Thread.RwLock {
+    return &g_sync_locks[lock_index(device)];
+}
+
+fn queue_lock_for(queue: c.VkQueue) *std.Thread.Mutex {
+    return &g_queue_locks[lock_index(queue)];
+}
 
 /// Casts an integer pointer to an atomic value pointer.
 fn atomic(ptr: anytype) *std.atomic.Value(@TypeOf(ptr.*)) {
@@ -25,26 +37,28 @@ fn atomic(ptr: anytype) *std.atomic.Value(@TypeOf(ptr.*)) {
 }
 
 /// Acquires a shared lock guarding timeline semaphore operations.
-pub fn vulkan_sync_manager_lock_shared() void {
-    g_sync_lock.lockShared();
+pub fn vulkan_sync_manager_lock_shared(device: c.VkDevice) void {
+    sync_lock_for(device).lockShared();
 }
 
 /// Releases the shared lock acquired by `vulkan_sync_manager_lock_shared`.
-pub fn vulkan_sync_manager_unlock_shared() void {
-    g_sync_lock.unlockShared();
+pub fn vulkan_sync_manager_unlock_shared(device: c.VkDevice) void {
+    sync_lock_for(device).unlockShared();
 }
 
 /// Serializes `vkQueueSubmit` calls across threads for drivers that require it.
 pub fn vulkan_sync_manager_submit_queue(queue: c.VkQueue, submit_count: u32, pSubmits: [*]const c.VkSubmitInfo, fence: c.VkFence) c.VkResult {
-    g_queue_lock.lock();
-    defer g_queue_lock.unlock();
+    const m = queue_lock_for(queue);
+    m.lock();
+    defer m.unlock();
     return c.vkQueueSubmit(queue, submit_count, pSubmits, fence);
 }
 
 /// Serializes `vkQueueSubmit2` calls across threads for drivers that require it.
 pub fn vulkan_sync_manager_submit_queue2(queue: c.VkQueue, submit_count: u32, pSubmits: [*]const c.VkSubmitInfo2, fence: c.VkFence, submit_fn: ?*const fn (c.VkQueue, u32, [*]const c.VkSubmitInfo2, c.VkFence) callconv(.c) c.VkResult) c.VkResult {
-    g_queue_lock.lock();
-    defer g_queue_lock.unlock();
+    const m = queue_lock_for(queue);
+    m.lock();
+    defer m.unlock();
     if (submit_fn) |func| {
         return func(queue, submit_count, pSubmits, fence);
     }
@@ -52,8 +66,9 @@ pub fn vulkan_sync_manager_submit_queue2(queue: c.VkQueue, submit_count: u32, pS
 }
 
 pub fn vulkan_sync_manager_queue_wait_idle(queue: c.VkQueue) c.VkResult {
-    g_queue_lock.lock();
-    defer g_queue_lock.unlock();
+    const m = queue_lock_for(queue);
+    m.lock();
+    defer m.unlock();
     return c.vkQueueWaitIdle(queue);
 }
 
@@ -381,8 +396,9 @@ pub fn vulkan_sync_manager_get_timeline_value(sync_manager: ?*types.VulkanSyncMa
     const mgr = sync_manager.?;
     if (!mgr.initialized) return c.VK_ERROR_INITIALIZATION_FAILED;
 
-    g_sync_lock.lockShared();
-    defer g_sync_lock.unlockShared();
+    const l = sync_lock_for(mgr.device);
+    l.lockShared();
+    defer l.unlockShared();
     return c.vkGetSemaphoreCounterValue(mgr.device, mgr.timeline_semaphore, value);
 }
 
@@ -392,8 +408,9 @@ pub fn vulkan_sync_manager_get_next_timeline_value(sync_manager: ?*types.VulkanS
     const mgr = sync_manager.?;
     if (!mgr.initialized) return 0;
 
-    g_sync_lock.lockShared();
-    defer g_sync_lock.unlockShared();
+    const l = sync_lock_for(mgr.device);
+    l.lockShared();
+    defer l.unlockShared();
 
     if (mgr.timeline_semaphore == null) {
         sync_log.err("Timeline semaphore is null in get_next_timeline_value", .{});
@@ -426,9 +443,9 @@ pub fn vulkan_sync_manager_get_next_timeline_value(sync_manager: ?*types.VulkanS
         if (base_val >= std.math.maxInt(u64) - 1000) {
             sync_log.warn("Timeline value approaching overflow (val={d}), triggering reset", .{base_val});
 
-            g_sync_lock.unlockShared();
+            l.unlockShared();
             const reset_result = vulkan_sync_manager_reset_timeline_values(mgr);
-            g_sync_lock.lockShared();
+            l.lockShared();
 
             if (reset_result) {
                 result = c.vkGetSemaphoreCounterValue(mgr.device, mgr.timeline_semaphore, &current_device_value);
@@ -461,8 +478,9 @@ pub fn vulkan_sync_manager_reserve_timeline_values(sync_manager: ?*types.VulkanS
     const mgr = sync_manager.?;
     if (!mgr.initialized) return false;
 
-    g_sync_lock.lockShared();
-    defer g_sync_lock.unlockShared();
+    const l = sync_lock_for(mgr.device);
+    l.lockShared();
+    defer l.unlockShared();
 
     if (mgr.timeline_semaphore == null) {
         return false;
@@ -489,9 +507,9 @@ pub fn vulkan_sync_manager_reserve_timeline_values(sync_manager: ?*types.VulkanS
         }
 
         if (base_val >= std.math.maxInt(u64) - 1000) {
-            g_sync_lock.unlockShared();
+            l.unlockShared();
             const reset_result = vulkan_sync_manager_reset_timeline_values(mgr);
-            g_sync_lock.lockShared();
+            l.lockShared();
 
             if (reset_result) {
                 result = c.vkGetSemaphoreCounterValue(mgr.device, mgr.timeline_semaphore, &current_device_value);
@@ -551,20 +569,31 @@ pub fn vulkan_sync_manager_wait_timeline_batch(sync_manager: ?*types.VulkanSyncM
     const mgr = sync_manager.?;
     if (!mgr.initialized) return c.VK_ERROR_INITIALIZATION_FAILED;
 
-    // TODO: Avoid malloc; use a scratch allocator or fixed-size stack buffer for semaphores.
-    const ptr = c.malloc(count * @sizeOf(c.VkSemaphore));
-    if (ptr == null) return c.VK_ERROR_OUT_OF_HOST_MEMORY;
-    const semaphores = @as([*]c.VkSemaphore, @ptrCast(@alignCast(ptr)));
+    var stack_semaphores: [64]c.VkSemaphore = undefined;
+    var semaphores: []c.VkSemaphore = undefined;
+    var heap_semaphores: ?[]c.VkSemaphore = null;
+    defer if (heap_semaphores) |hs| {
+        const alloc = memory.cardinal_get_allocator_for_category(.RENDERER).?;
+        alloc.free(hs);
+    };
 
-    var i: u32 = 0;
-    while (i < count) : (i += 1) {
-        semaphores[i] = mgr.timeline_semaphore;
+    const n: usize = @intCast(count);
+    if (n <= stack_semaphores.len) {
+        semaphores = stack_semaphores[0..n];
+    } else {
+        const alloc = memory.cardinal_get_allocator_for_category(.RENDERER).?;
+        heap_semaphores = alloc.alloc(c.VkSemaphore, n) catch return c.VK_ERROR_OUT_OF_HOST_MEMORY;
+        semaphores = heap_semaphores.?;
+    }
+
+    for (semaphores) |*s| {
+        s.* = mgr.timeline_semaphore;
     }
 
     var wait_info = std.mem.zeroes(c.VkSemaphoreWaitInfo);
     wait_info.sType = c.VK_STRUCTURE_TYPE_SEMAPHORE_WAIT_INFO;
     wait_info.semaphoreCount = count;
-    wait_info.pSemaphores = semaphores;
+    wait_info.pSemaphores = semaphores.ptr;
     wait_info.pValues = values;
 
     const result = c.vkWaitSemaphores(mgr.device, &wait_info, timeout_ns);
@@ -572,7 +601,6 @@ pub fn vulkan_sync_manager_wait_timeline_batch(sync_manager: ?*types.VulkanSyncM
         _ = atomic(&mgr.timeline_wait_count).fetchAdd(count, .seq_cst);
     }
 
-    c.free(@ptrCast(semaphores));
     return result;
 }
 
@@ -583,8 +611,9 @@ pub fn vulkan_sync_manager_signal_timeline_batch(sync_manager: ?*types.VulkanSyn
     const vals = values.?;
     if (!mgr.initialized) return c.VK_ERROR_INITIALIZATION_FAILED;
 
-    g_sync_lock.lockShared();
-    defer g_sync_lock.unlockShared();
+    const l = sync_lock_for(mgr.device);
+    l.lockShared();
+    defer l.unlockShared();
 
     var i: u32 = 0;
     while (i < count) : (i += 1) {
@@ -693,8 +722,9 @@ pub fn vulkan_sync_manager_signal_timeline_safe(sync_manager: ?*types.VulkanSync
     if (sync_manager == null) return types.VulkanTimelineError.SEMAPHORE_INVALID;
     const mgr = sync_manager.?;
 
-    g_sync_lock.lockShared();
-    defer g_sync_lock.unlockShared();
+    const l = sync_lock_for(mgr.device);
+    l.lockShared();
+    defer l.unlockShared();
 
     if (mgr.timeline_semaphore == null) {
         if (error_info) |info| {
@@ -791,8 +821,9 @@ pub fn vulkan_sync_manager_recover_timeline_semaphore(sync_manager: ?*types.Vulk
     if (sync_manager == null) return false;
     const mgr = sync_manager.?;
 
-    g_sync_lock.lock();
-    defer g_sync_lock.unlock();
+    const l = sync_lock_for(mgr.device);
+    l.lock();
+    defer l.unlock();
 
     sync_log.warn("Attempting timeline semaphore recovery", .{});
 
@@ -896,8 +927,9 @@ pub fn vulkan_sync_manager_reset_timeline_values(sync_manager: ?*types.VulkanSyn
     if (sync_manager == null) return false;
     const mgr = sync_manager.?;
 
-    g_sync_lock.lock();
-    defer g_sync_lock.unlock();
+    const l = sync_lock_for(mgr.device);
+    l.lock();
+    defer l.unlock();
 
     if (mgr.timeline_semaphore == null) return false;
 
@@ -990,8 +1022,9 @@ pub fn vulkan_sync_manager_is_timeline_value_reached(sync_manager: ?*types.Vulka
     const mgr = sync_manager.?;
     if (!mgr.initialized) return c.VK_ERROR_INITIALIZATION_FAILED;
 
-    g_sync_lock.lockShared();
-    defer g_sync_lock.unlockShared();
+    const l = sync_lock_for(mgr.device);
+    l.lockShared();
+    defer l.unlockShared();
 
     var current_value: u64 = 0;
     const result = c.vkGetSemaphoreCounterValue(mgr.device, mgr.timeline_semaphore, &current_value);
@@ -1014,9 +1047,10 @@ pub fn vulkan_sync_manager_get_timeline_stats(sync_manager: ?*types.VulkanSyncMa
         sc.* = atomic(&mgr.timeline_signal_count).load(.seq_cst);
     }
     if (current_value) |cv| {
-        g_sync_lock.lockShared();
+        const l = sync_lock_for(mgr.device);
+        l.lockShared();
         const result = c.vkGetSemaphoreCounterValue(mgr.device, mgr.timeline_semaphore, cv);
-        g_sync_lock.unlockShared();
+        l.unlockShared();
         if (result != c.VK_SUCCESS) return result;
     }
 
