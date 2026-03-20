@@ -1,14 +1,19 @@
+//! Scene serializer support for `Terrain`.
+//!
+//! Encodes/decodes the editor terrain component to the JSON scene format.
 const std = @import("std");
 const components = @import("../../ecs/components.zig");
 const math = @import("../../core/math.zig");
 const json = @import("../scene_serializer_json.zig");
 
+/// Serializes a `Vec2`-like `{ .x, .y }` value as a JSON array.
 fn serializeVec2(writer: anytype, v: anytype) !void {
     var buf: [96]u8 = undefined;
     const str = try std.fmt.bufPrint(&buf, "[{d}, {d}]", .{ v.x, v.y });
     try writer.writeRaw(str);
 }
 
+/// Deserializes a JSON array into a `math.Vec2`.
 fn deserializeVec2(val: std.json.Value) !math.Vec2 {
     if (val != .array or val.array.items.len < 2) return error.InvalidFormat;
     return .{
@@ -17,6 +22,7 @@ fn deserializeVec2(val: std.json.Value) !math.Vec2 {
     };
 }
 
+/// Serializes `Terrain` into a JSON object.
 pub fn serialize(writer: anytype, t: *components.Terrain) !void {
     try writer.beginObject();
     try writer.objectField("size");
@@ -34,6 +40,7 @@ pub fn serialize(writer: anytype, t: *components.Terrain) !void {
     try writer.endObject();
 }
 
+/// Deserializes `Terrain` from a JSON object.
 pub fn deserialize(val: std.json.Value) !components.Terrain {
     if (val != .object) return error.InvalidFormat;
     var t = components.Terrain{};

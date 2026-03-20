@@ -14025,12 +14025,7 @@ pub const NiTriShapeData = struct {
             }
         }
         if (header.version >= 0x0A000103 and ((val.Has_Triangles orelse false))) {
-            // Fix: Check if Num_Triangles is reasonable. If 0, we can't allocate.
             if (val.base.Num_Triangles > 0) {
-                // val.Triangles_1 = try alloc.alloc(Triangle, @intCast(val.base.Num_Triangles));
-                // std.debug.print("NiTriShapeData: Reading {d} triangles (Triangles_1)\n", .{val.base.Num_Triangles});
-                // for (val.Triangles_1.?, 0..) |*item, i| {
-                //    use(i);
                 val.Triangles_1 = try alloc.alloc(Triangle, @intCast(val.base.Num_Triangles));
                 const bytes_ptr = std.mem.sliceAsBytes(val.Triangles_1.?);
                 try reader.readNoEof(bytes_ptr);

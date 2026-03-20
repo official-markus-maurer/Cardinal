@@ -62,14 +62,11 @@ fn compute_cache_key(buf: []u8, base: []const u8, uri: []const u8) ![]const u8 {
     return std.fmt.bufPrint(buf, "{s}/{s}", .{ dir, uri });
 }
 
-fn lookup_cached_path(base: []const u8, uri: []const u8) ?[]const u8 {
+fn lookup_cached_path_by_key(key: []const u8) ?[]const u8 {
     g_init_once.call();
 
     g_cache_mutex.lock();
     defer g_cache_mutex.unlock();
-
-    var key_buf: [1024]u8 = undefined;
-    const key = compute_cache_key(&key_buf, base, uri) catch return null;
 
     if (g_texture_path_cache.get(key)) |resolved| {
         gltf_log.debug("Cache hit for texture: {s} -> {s}", .{ key, resolved });
@@ -78,7 +75,13 @@ fn lookup_cached_path(base: []const u8, uri: []const u8) ?[]const u8 {
     return null;
 }
 
-fn cache_texture_path(base: []const u8, uri: []const u8, resolved_path: []const u8) void {
+fn lookup_cached_path(base: []const u8, uri: []const u8) ?[]const u8 {
+    var key_buf: [1024]u8 = undefined;
+    const key = compute_cache_key(&key_buf, base, uri) catch return null;
+    return lookup_cached_path_by_key(key);
+}
+
+fn cache_texture_path_by_key(key_slice: []const u8, resolved_path: []const u8) void {
     g_init_once.call();
 
     g_cache_mutex.lock();
@@ -86,9 +89,6 @@ fn cache_texture_path(base: []const u8, uri: []const u8, resolved_path: []const 
 
     const allocator = memory.cardinal_get_allocator_for_category(.ASSETS);
     const std_allocator = allocator.as_allocator();
-
-    var key_buf: [1024]u8 = undefined;
-    const key_slice = compute_cache_key(&key_buf, base, uri) catch return;
 
     if (g_texture_path_cache.contains(key_slice)) return;
 
@@ -105,6 +105,13 @@ fn cache_texture_path(base: []const u8, uri: []const u8, resolved_path: []const 
     };
 
     gltf_log.debug("Cached texture path: {s} -> {s}", .{ key_slice, resolved_path });
+}
+
+/// Stores `resolved_path` in the global cache for `(base, uri)`.
+fn cache_texture_path(base: []const u8, uri: []const u8, resolved_path: []const u8) void {
+    var key_buf: [1024]u8 = undefined;
+    const key_slice = compute_cache_key(&key_buf, base, uri) catch return;
+    cache_texture_path_by_key(key_slice, resolved_path);
 }
 
 fn try_texture_path(path: [:0]const u8, tex_data: *texture_loader.TextureData) ?*ref_counting.CardinalRefCountedResource {
@@ -262,7 +269,31 @@ fn load_texture_with_fallback(original_uri: [*:0]const u8, base_path: [*:0]const
         return create_fallback_texture(out_texture);
     }
 
-    if (lookup_cached_path(base, uri)) |cached_path| {
+    var key_buf: [1024]u8 = undefined;
+    const cache_key = compute_cache_key(&key_buf, base, uri) catch null;
+
+    const write_loaded = struct {
+        fn f(out: *scene.CardinalTexture, tex_data: *const texture_loader.TextureData, path: []const u8, ref: ?*ref_counting.CardinalRefCountedResource) void {
+            out.data = tex_data.data;
+            out.width = tex_data.width;
+            out.height = tex_data.height;
+            out.channels = tex_data.channels;
+            out.format = tex_data.format;
+            out.data_size = tex_data.data_size;
+
+            const allocator = memory.cardinal_get_allocator_for_category(.ASSETS);
+            const path_ptr = memory.cardinal_alloc(allocator, path.len + 1);
+            if (path_ptr) |ptr| {
+                @memcpy(@as([*]u8, @ptrCast(ptr))[0..path.len], path);
+                @as([*]u8, @ptrCast(ptr))[path.len] = 0;
+                out.path = @ptrCast(ptr);
+            }
+            out.ref_resource = ref;
+        }
+    }.f;
+
+    const cached_path_opt = if (cache_key) |key| lookup_cached_path_by_key(key) else lookup_cached_path(base, uri);
+    if (cached_path_opt) |cached_path| {
         gltf_log.debug("Found cached path '{s}'", .{cached_path});
         var tex_data: texture_loader.TextureData = undefined;
         var cached_path_z: [512]u8 = undefined;
@@ -270,21 +301,7 @@ fn load_texture_with_fallback(original_uri: [*:0]const u8, base_path: [*:0]const
         cached_path_z[cached_path.len] = 0;
 
         if (texture_loader.texture_load_with_ref_counting(&cached_path_z, &tex_data)) |ref| {
-            out_texture.data = tex_data.data;
-            out_texture.width = tex_data.width;
-            out_texture.height = tex_data.height;
-            out_texture.channels = tex_data.channels;
-            out_texture.format = tex_data.format;
-            out_texture.data_size = tex_data.data_size;
-
-            const allocator = memory.cardinal_get_allocator_for_category(.ASSETS);
-            const path_ptr = memory.cardinal_alloc(allocator, cached_path.len + 1);
-            if (path_ptr) |ptr| {
-                @memcpy(@as([*]u8, @ptrCast(ptr))[0..cached_path.len], cached_path);
-                @as([*]u8, @ptrCast(ptr))[cached_path.len] = 0;
-                out_texture.path = @ptrCast(ptr);
-            }
-            out_texture.ref_resource = ref;
+            write_loaded(out_texture, &tex_data, cached_path, ref);
             gltf_log.debug("Loaded texture from cache: {s}", .{cached_path});
             return true;
         }
@@ -295,31 +312,20 @@ fn load_texture_with_fallback(original_uri: [*:0]const u8, base_path: [*:0]const
     var tex_data: texture_loader.TextureData = undefined;
     var ref_resource: ?*ref_counting.CardinalRefCountedResource = null;
 
-    // Absolute path check
     if (uri[0] == '/' or std.mem.indexOf(u8, uri, "://") != null or (uri.len > 2 and uri[1] == ':')) {
         gltf_log.debug("Trying absolute path '{s}'", .{uri});
         ref_resource = try_texture_path(std.mem.span(original_uri), &tex_data);
         if (ref_resource != null) {
-            cache_texture_path(base, uri, uri);
             const path = std.fmt.bufPrintZ(&texture_path_buf, "{s}", .{uri}) catch |err| {
                 gltf_log.err("Failed to format absolute texture path '{s}': {s}", .{ uri, @errorName(err) });
                 return create_fallback_texture(out_texture);
             };
-            // Success logic duplicated below, maybe use a label block
-            out_texture.data = tex_data.data;
-            out_texture.width = tex_data.width;
-            out_texture.height = tex_data.height;
-            out_texture.channels = tex_data.channels;
-            out_texture.format = tex_data.format;
-            out_texture.data_size = tex_data.data_size;
-            const allocator = memory.cardinal_get_allocator_for_category(.ASSETS);
-            const path_ptr = memory.cardinal_alloc(allocator, path.len + 1);
-            if (path_ptr) |ptr| {
-                @memcpy(@as([*]u8, @ptrCast(ptr))[0..path.len], path);
-                @as([*]u8, @ptrCast(ptr))[path.len] = 0;
-                out_texture.path = @ptrCast(ptr);
+            if (cache_key) |key| {
+                cache_texture_path_by_key(key, uri);
+            } else {
+                cache_texture_path(base, uri, uri);
             }
-            out_texture.ref_resource = ref_resource;
+            write_loaded(out_texture, &tex_data, path, ref_resource);
             gltf_log.debug("Loaded texture absolute: {s}", .{uri});
             return true;
         }
@@ -328,9 +334,7 @@ fn load_texture_with_fallback(original_uri: [*:0]const u8, base_path: [*:0]const
         return create_fallback_texture(out_texture);
     }
 
-    // Try relative path (base_path + uri)
     if (base.len > 0) {
-        // base is the path to the GLTF file, so we need to strip the filename
         var dir: []const u8 = base;
         var dir_end: ?usize = null;
         if (std.mem.lastIndexOfScalar(u8, base, '/')) |idx| {
@@ -343,12 +347,10 @@ fn load_texture_with_fallback(original_uri: [*:0]const u8, base_path: [*:0]const
         if (dir_end) |end| {
             dir = base[0..end];
         } else {
-            // No separator found, implies file is in CWD or base is just filename
             dir = ".";
         }
 
         var separator: []const u8 = "";
-        // Check if dir needs a separator (if it's not empty and doesn't end in separator)
         if (dir.len > 0 and dir[dir.len - 1] != '/' and dir[dir.len - 1] != '\\') {
             separator = "/";
         }
@@ -358,21 +360,12 @@ fn load_texture_with_fallback(original_uri: [*:0]const u8, base_path: [*:0]const
             gltf_log.debug("Trying relative path '{s}'", .{p});
             ref_resource = try_texture_path(p, &tex_data);
             if (ref_resource != null) {
-                cache_texture_path(base, uri, p);
-                out_texture.data = tex_data.data;
-                out_texture.width = tex_data.width;
-                out_texture.height = tex_data.height;
-                out_texture.channels = tex_data.channels;
-                out_texture.format = tex_data.format;
-                out_texture.data_size = tex_data.data_size;
-                const allocator = memory.cardinal_get_allocator_for_category(.ASSETS);
-                const path_ptr = memory.cardinal_alloc(allocator, p.len + 1);
-                if (path_ptr) |ptr| {
-                    @memcpy(@as([*]u8, @ptrCast(ptr))[0..p.len], p);
-                    @as([*]u8, @ptrCast(ptr))[p.len] = 0;
-                    out_texture.path = @ptrCast(ptr);
+                if (cache_key) |key| {
+                    cache_texture_path_by_key(key, p);
+                } else {
+                    cache_texture_path(base, uri, p);
                 }
-                out_texture.ref_resource = ref_resource;
+                write_loaded(out_texture, &tex_data, p, ref_resource);
                 gltf_log.info("Successfully loaded texture relative: {s} (ref: {*} at {*}, data: {*})", .{ p, ref_resource, &out_texture.ref_resource, out_texture.data });
                 return true;
             }
@@ -380,33 +373,22 @@ fn load_texture_with_fallback(original_uri: [*:0]const u8, base_path: [*:0]const
         }
     }
 
-    // Try optimized fallback paths
     gltf_log.debug("Trying fallback paths for '{s}'", .{uri});
     ref_resource = try_optimized_fallback_paths(uri, base, &texture_path_buf, &tex_data);
     if (ref_resource) |res| {
         const path = std.mem.sliceTo(@as([*:0]u8, @ptrCast(&texture_path_buf)), 0);
-        cache_texture_path(base, uri, path);
-        out_texture.data = tex_data.data;
-        out_texture.width = tex_data.width;
-        out_texture.height = tex_data.height;
-        out_texture.channels = tex_data.channels;
-        out_texture.format = tex_data.format;
-        out_texture.data_size = tex_data.data_size;
-        const allocator = memory.cardinal_get_allocator_for_category(.ASSETS);
-        const path_ptr = memory.cardinal_alloc(allocator, path.len + 1);
-        if (path_ptr) |ptr| {
-            @memcpy(@as([*]u8, @ptrCast(ptr))[0..path.len], path);
-            @as([*]u8, @ptrCast(ptr))[path.len] = 0;
-            out_texture.path = @ptrCast(ptr);
+        if (cache_key) |key| {
+            cache_texture_path_by_key(key, path);
+        } else {
+            cache_texture_path(base, uri, path);
         }
-        out_texture.ref_resource = res;
+        write_loaded(out_texture, &tex_data, path, res);
         gltf_log.info("Loaded texture fallback: {s} (ref: {*} at {*}, data: {*})", .{ path, res, &out_texture.ref_resource, out_texture.data });
         return true;
     }
 
     gltf_log.warn("Failed all fallback paths for '{s}'", .{uri});
 
-    // Fallback to create_fallback_texture if no paths match
     gltf_log.warn("Failed to load texture '{s}' from all paths, using fallback", .{uri});
     return create_fallback_texture(out_texture);
 }
@@ -432,8 +414,6 @@ fn extract_texture_transform(texture_view: *const c.cgltf_texture_view, out_tran
 fn convert_sampler(gltf_sampler: ?*const c.cgltf_sampler, out_sampler: *scene.CardinalSampler) void {
     if (gltf_sampler == null) {
         gltf_log.debug("Sampler is NULL, defaulting to CLAMP_TO_EDGE", .{});
-        // Default to CLAMP_TO_EDGE instead of REPEAT to prevent tiling artifacts
-        // on models that don't explicitly define samplers.
         out_sampler.wrap_s = c.VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
         out_sampler.wrap_t = c.VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
         out_sampler.min_filter = c.VK_FILTER_LINEAR;

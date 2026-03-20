@@ -253,6 +253,9 @@ fn get_instance_extensions(out_extensions: *[*c]const [*c]const u8, out_count: *
     return true;
 }
 
+/// Configures instance creation for validation (layers + debug messenger).
+///
+/// TODO: Re-enable layer settings once validation collisions are resolved.
 fn configure_validation(ci: *c.VkInstanceCreateInfo, layers: [*]const [*c]const u8, debug_ci: *c.VkDebugUtilsMessengerCreateInfoEXT, layer_settings_ci: *VkLayerSettingsCreateInfoEXT, settings: *VkLayerSettingEXT) void {
     if (!validation_enabled()) {
         ci.enabledLayerCount = 0;
@@ -276,7 +279,6 @@ fn configure_validation(ci: *c.VkInstanceCreateInfo, layers: [*]const [*c]const 
     settings.valueCount = 1;
     settings.pValues = &c.VK_TRUE;
 
-    // TODO: Re-enable layer settings once validation collisions are resolved.
     ci.pNext = debug_ci;
 
     _ = layer_settings_ci;
@@ -843,6 +845,9 @@ pub export fn vk_create_device(s: ?*types.VulkanState) callconv(.c) bool {
     return true;
 }
 
+/// Creates a Win32 surface for the given window.
+///
+/// TODO: Replace the HWND write with a properly aligned window handle wrapper.
 pub export fn vk_create_surface(s: ?*types.VulkanState, win: ?*window.CardinalWindow) callconv(.c) bool {
     vk_log.info("[SURFACE] Creating surface from window", .{});
     if (s == null or win == null) return false;
@@ -854,7 +859,6 @@ pub export fn vk_create_surface(s: ?*types.VulkanState, win: ?*window.CardinalWi
     const native_handle = window.cardinal_window_get_native_handle(win);
     if (native_handle == null) return false;
 
-    // TODO: Replace the HWND write with a properly aligned window handle wrapper.
     const hwnd_ptr = @as(*usize, @ptrCast(&sci.hwnd));
     hwnd_ptr.* = @intFromPtr(native_handle);
 

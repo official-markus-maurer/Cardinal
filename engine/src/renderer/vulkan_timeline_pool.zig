@@ -2,7 +2,6 @@
 //!
 //! Manages a reusable pool of timeline semaphores to avoid frequent create/destroy churn.
 const std = @import("std");
-const builtin = @import("builtin");
 const log = @import("../core/log.zig");
 const tl_pool_log = log.ScopedLogger("TL_POOL");
 const platform = @import("../core/platform.zig");
@@ -12,22 +11,6 @@ const timeline_mutex = @import("util/vulkan_timeline_mutex.zig");
 const c = types.c;
 
 const memory = @import("../core/memory.zig");
-
-/// Returns a monotonic timestamp in nanoseconds.
-fn get_current_time_ns() u64 {
-    // TODO: Use `platform.get_time_ns()` for all platforms and remove this helper.
-    if (builtin.os.tag == .windows) {
-        var frequency: c.LARGE_INTEGER = undefined;
-        var counter: c.LARGE_INTEGER = undefined;
-        _ = c.QueryPerformanceFrequency(&frequency);
-        _ = c.QueryPerformanceCounter(&counter);
-        return @intCast(@divTrunc(counter.QuadPart * 1000000000, frequency.QuadPart));
-    } else {
-        var ts: c.timespec = undefined;
-        _ = c.clock_gettime(c.CLOCK_MONOTONIC, &ts);
-        return @as(u64, @intCast(ts.tv_sec)) * 1000000000 + @as(u64, @intCast(ts.tv_nsec));
-    }
-}
 
 /// Creates a timeline semaphore on `device`.
 fn create_timeline_semaphore(device: c.VkDevice, semaphore: *c.VkSemaphore) bool {
@@ -86,7 +69,7 @@ pub export fn vulkan_timeline_pool_init(pool: *types.VulkanTimelinePool, device:
     pool.max_idle_time_ns = 5_000_000_000;
     pool.auto_cleanup_enabled = true;
 
-    const current_time = get_current_time_ns();
+    const current_time = platform.get_time_ns();
     var i: u32 = 0;
     while (i < initial_size and i < pool.max_pool_size) : (i += 1) {
         if (create_timeline_semaphore(device, &pool.entries[i].semaphore)) {

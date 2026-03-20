@@ -2,7 +2,6 @@
 //!
 //! Owns per-frame semaphores/fences and a shared timeline semaphore used across renderer subsystems.
 //! Also provides global locking helpers for thread-safe timeline operations.
-//!
 const std = @import("std");
 const builtin = @import("builtin");
 const log = @import("../core/log.zig");
@@ -63,6 +62,41 @@ pub fn vulkan_sync_manager_submit_queue2(queue: c.VkQueue, submit_count: u32, pS
         return func(queue, submit_count, pSubmits, fence);
     }
     return c.vkQueueSubmit2(queue, submit_count, pSubmits, fence);
+}
+
+pub fn vulkan_sync_manager_submit_one_shot_command_buffer(sync_manager: ?*types.VulkanSyncManager, queue: c.VkQueue, command_buffer: c.VkCommandBuffer, fence: c.VkFence, submit_fn: ?*const fn (c.VkQueue, u32, [*]const c.VkSubmitInfo2, c.VkFence) callconv(.c) c.VkResult, out_timeline_value: ?*u64) c.VkResult {
+    if (queue == null or command_buffer == null) return c.VK_ERROR_INITIALIZATION_FAILED;
+
+    var cmd_buffer_info = std.mem.zeroes(c.VkCommandBufferSubmitInfo);
+    cmd_buffer_info.sType = c.VK_STRUCTURE_TYPE_COMMAND_BUFFER_SUBMIT_INFO;
+    cmd_buffer_info.commandBuffer = command_buffer;
+
+    var submit_info = std.mem.zeroes(c.VkSubmitInfo2);
+    submit_info.sType = c.VK_STRUCTURE_TYPE_SUBMIT_INFO_2;
+    submit_info.commandBufferInfoCount = 1;
+    submit_info.pCommandBufferInfos = &cmd_buffer_info;
+
+    if (sync_manager) |sync| {
+        if (!sync.initialized or sync.timeline_semaphore == null) return c.VK_ERROR_INITIALIZATION_FAILED;
+
+        const timeline_value = vulkan_sync_manager_get_next_timeline_value(sync);
+        if (timeline_value == 0) return c.VK_ERROR_INITIALIZATION_FAILED;
+
+        if (out_timeline_value) |out| out.* = timeline_value;
+
+        var signal_info = std.mem.zeroes(c.VkSemaphoreSubmitInfo);
+        signal_info.sType = c.VK_STRUCTURE_TYPE_SEMAPHORE_SUBMIT_INFO;
+        signal_info.semaphore = sync.timeline_semaphore;
+        signal_info.value = timeline_value;
+        signal_info.stageMask = c.VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT;
+
+        submit_info.signalSemaphoreInfoCount = 1;
+        submit_info.pSignalSemaphoreInfos = &signal_info;
+    } else {
+        if (out_timeline_value) |out| out.* = 0;
+    }
+
+    return vulkan_sync_manager_submit_queue2(queue, 1, @ptrCast(&submit_info), fence, submit_fn);
 }
 
 pub fn vulkan_sync_manager_queue_wait_idle(queue: c.VkQueue) c.VkResult {

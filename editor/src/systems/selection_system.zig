@@ -220,6 +220,10 @@ pub fn update(state: *EditorState) void {
     }
 
     if (state.ui.selected_entity.id != std.math.maxInt(u64)) {
+        if (state.runtime.registry.get(components.EditorGlobals, state.ui.selected_entity) != null) {
+            state.ui.selected_model_id = 0;
+            return;
+        }
         if (state.runtime.registry.get(components.Terrain, state.ui.selected_entity)) |_| {
             var group: std.ArrayListUnmanaged(engine.ecs_entity.Entity) = .{};
             defer group.deinit(state.runtime.arena_allocator);

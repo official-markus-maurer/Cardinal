@@ -10,12 +10,30 @@ const renderer = engine.vulkan_renderer;
 const types = engine.vulkan_types;
 const model_manager = engine.model_manager;
 const scene = engine.scene;
+const components = engine.ecs_components;
 const loader = engine.loader;
 const async_loader = engine.async_loader;
 const animation = engine.animation;
 
 const c = @import("c.zig").c;
 const undo = @import("undo.zig");
+
+/// Finds the active `EditorGlobals` entity, preferring `preferred` when valid.
+pub fn resolveEditorGlobalsEntity(registry: *engine.ecs_registry.Registry, preferred: engine.ecs_entity.Entity) ?engine.ecs_entity.Entity {
+    if (registry.entity_manager.is_alive(preferred) and registry.get(components.EditorGlobals, preferred) != null) {
+        return preferred;
+    }
+
+    var view = registry.view(components.EditorGlobals);
+    var it = view.iterator();
+    if (it.next()) |entry| {
+        if (registry.entity_manager.is_alive(entry.entity)) {
+            return entry.entity;
+        }
+    }
+
+    return null;
+}
 
 /// Asset browser UI state (directory, filters, and cached entries).
 pub const AssetState = struct {
@@ -27,6 +45,8 @@ pub const AssetState = struct {
     show_folders_only: bool = false,
     show_gltf_only: bool = false,
     show_textures_only: bool = false,
+    last_scan_dir_hash: u64 = 0,
+    last_scan_dir_mtime_ns: u64 = 0,
 
     pub const AssetType = enum {
         FOLDER,
@@ -76,6 +96,40 @@ pub const TerrainData = struct {
         std.math.maxInt(u32),
     },
     layer_imgui_ids: [4]u64 = .{ 0, 0, 0, 0 },
+    layer_imgui_generations: [4]u64 = .{ 0, 0, 0, 0 },
+};
+
+pub const InspectorComponentOrder = struct {
+    len: u8 = 0,
+    order: [16]u8 = [_]u8{0} ** 16,
+};
+
+pub const ComponentClipboard = struct {
+    has: bool = false,
+
+    has_name: bool = false,
+    name: components.Name = std.mem.zeroes(components.Name),
+
+    has_transform: bool = false,
+    transform: components.Transform = std.mem.zeroes(components.Transform),
+
+    has_node: bool = false,
+    node: components.Node = std.mem.zeroes(components.Node),
+
+    has_mesh_renderer: bool = false,
+    mesh_renderer: components.MeshRenderer = std.mem.zeroes(components.MeshRenderer),
+
+    has_light: bool = false,
+    light: components.Light = std.mem.zeroes(components.Light),
+
+    has_camera: bool = false,
+    camera: components.Camera = std.mem.zeroes(components.Camera),
+
+    has_skybox: bool = false,
+    skybox: components.Skybox = std.mem.zeroes(components.Skybox),
+
+    has_script: bool = false,
+    script: components.Script = std.mem.zeroes(components.Script),
 };
 
 pub const TerrainDirtyRect = struct {
@@ -88,6 +142,8 @@ pub const TerrainDirtyRect = struct {
 pub const AssetThumbnail = struct {
     handle: u32 = std.math.maxInt(u32),
     imgui_id: u64 = 0,
+    imgui_backend_user_data_ptr: u64 = 0,
+    imgui_vulkan_generation: u64 = 0,
     width: u32 = 0,
     height: u32 = 0,
 };
@@ -211,11 +267,16 @@ pub const EditorUiState = struct {
 
     selected_model_id: u32 = 0,
     selected_entity: engine.ecs_entity.Entity = .{ .id = std.math.maxInt(u64) },
+    selected_entities: std.AutoHashMapUnmanaged(u64, void) = .{},
     scene_graph_focus_target_id: u64 = std.math.maxInt(u64),
     scene_graph_focus_pending: bool = false,
     scene_graph_open_chain: [128]u64 = [_]u64{0} ** 128,
     scene_graph_open_chain_len: u8 = 0,
     scene_graph_open_state: std.AutoHashMapUnmanaged(u64, bool) = .{},
+    scene_graph_search: [128]u8 = [_]u8{0} ** 128,
+    scene_graph_filter_meshes: bool = false,
+    scene_graph_filter_lights: bool = false,
+    scene_graph_filter_cameras: bool = false,
 
     renaming_entity: engine.ecs_entity.Entity = .{ .id = std.math.maxInt(u64) },
     rename_buffer: [256]u8 = [_]u8{0} ** 256,
@@ -226,6 +287,17 @@ pub const EditorUiState = struct {
     inspector_add_component_search: [128]u8 = [_]u8{0} ** 128,
     inspector_rotation_euler_deg: [3]f32 = .{ 0.0, 0.0, 0.0 },
     inspector_rotation_editing: bool = false,
+    inspector_rotation_world_euler_deg: [3]f32 = .{ 0.0, 0.0, 0.0 },
+    inspector_rotation_world_editing: bool = false,
+    inspector_force_open: i8 = 0,
+    inspector_pinned_mask: u32 = 0,
+    inspector_component_order_by_entity: std.AutoHashMapUnmanaged(u64, InspectorComponentOrder) = .{},
+    transform_space_world: bool = false,
+    transform_clipboard_valid: bool = false,
+    transform_clipboard_pos: [3]f32 = .{ 0.0, 0.0, 0.0 },
+    transform_clipboard_rot: [4]f32 = .{ 0.0, 0.0, 0.0, 1.0 },
+    transform_clipboard_scale: [3]f32 = .{ 1.0, 1.0, 1.0 },
+    component_clipboard: ComponentClipboard = .{},
     inspector_last_model_id: u32 = 0,
     inspector_model_rotation_euler_deg: [3]f32 = .{ 0.0, 0.0, 0.0 },
     inspector_model_rotation_editing: bool = false,

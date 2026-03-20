@@ -49,17 +49,8 @@ var imgui_context: ?*anyopaque = null;
 var world_matrix_cache: std.AutoHashMapUnmanaged(u64, math.Mat4) = .{};
 
 fn ensure_globals_entity() void {
-    const invalid_id = std.math.maxInt(u64);
-    if (state.runtime.globals_entity.id != invalid_id) {
-        if (state.runtime.registry.entity_manager.is_alive(state.runtime.globals_entity) and state.runtime.registry.get(components.EditorGlobals, state.runtime.globals_entity) != null) {
-            return;
-        }
-    }
-
-    var view = state.runtime.registry.view(components.EditorGlobals);
-    var it = view.iterator();
-    if (it.next()) |entry| {
-        state.runtime.globals_entity = entry.entity;
+    if (editor_state.resolveEditorGlobalsEntity(state.runtime.registry, state.runtime.globals_entity)) |ent| {
+        state.runtime.globals_entity = ent;
         return;
     }
 
@@ -189,6 +180,9 @@ fn apply_globals_to_state() void {
         const ent = engine.ecs_entity.Entity{ .id = g.selected_entity_id };
         if (state.runtime.registry.entity_manager.is_alive(ent)) {
             state.ui.selected_entity = ent;
+            const alloc = engine.memory.cardinal_get_allocator_for_category(.ENGINE).as_allocator();
+            state.ui.selected_entities.clearRetainingCapacity();
+            state.ui.selected_entities.put(alloc, ent.id, {}) catch {};
         }
     }
 }
@@ -364,6 +358,14 @@ fn prune_terrain_runtime_data() void {
     }
 }
 
+fn refresh_terrain_material_bindings() void {
+    var view = state.runtime.registry.view(components.Terrain);
+    var it = view.iterator();
+    while (it.next()) |entry| {
+        _ = terrain_panel.ensure_terrain_data_for_entity(&state, entry.entity);
+    }
+}
+
 fn check_loading_status() void {
     if (state.runtime.loading_tasks.items.len == 0) {
         state.runtime.is_loading = false;
@@ -393,6 +395,7 @@ fn check_loading_status() void {
                     if (combined) |comb_ptr| {
                         state.runtime.combined_scene = comb_ptr.*;
                         state.runtime.scene_loaded = true;
+                        refresh_terrain_material_bindings();
 
                         if (info.target_entity) |parent| {
                             scene_io.instantiate_model(&state, model_id, parent);
@@ -467,55 +470,6 @@ fn load_scene() void {
     }
 }
 
-fn draw_pbr_settings_panel() void {
-    if (state.ui.show_pbr_settings) {
-        const open = c.imgui_bridge_begin("PBR Settings", &state.ui.show_pbr_settings, 0);
-        defer c.imgui_bridge_end();
-
-        if (open) {
-            c.imgui_bridge_separator();
-
-            if (c.imgui_bridge_collapsing_header("Material Override", c.ImGuiTreeNodeFlags_DefaultOpen)) {
-                _ = c.imgui_bridge_checkbox("Enable Material Override", &state.ui.material_override_enabled);
-
-                if (state.ui.material_override_enabled) {
-                    c.imgui_bridge_separator();
-                    _ = c.imgui_bridge_color_edit3("Albedo Factor", @ptrCast(&state.ui.material_albedo), 0);
-                    _ = c.imgui_bridge_slider_float("Metallic Factor", &state.ui.material_metallic, 0.0, 1.0, "%.3f");
-                    _ = c.imgui_bridge_slider_float("Roughness Factor", &state.ui.material_roughness, 0.0, 1.0, "%.3f");
-                    _ = c.imgui_bridge_color_edit3("Emissive Factor", &state.ui.material_emissive, 0);
-                    _ = c.imgui_bridge_slider_float("Normal Scale", &state.ui.material_normal_scale, 0.0, 2.0, "%.3f");
-                    _ = c.imgui_bridge_slider_float("AO Strength", &state.ui.material_ao_strength, 0.0, 1.0, "%.3f");
-
-                    if (c.imgui_bridge_button("Apply to All Materials")) {
-                        if (state.runtime.scene_loaded and state.runtime.combined_scene.material_count > 0) {
-                            var i: u32 = 0;
-                            while (i < state.runtime.combined_scene.material_count) : (i += 1) {
-                                if (state.runtime.combined_scene.materials) |materials| {
-                                    var mat = &materials[i];
-
-                                    mat.albedo_factor = state.ui.material_albedo;
-                                    mat.metallic_factor = state.ui.material_metallic;
-                                    mat.roughness_factor = state.ui.material_roughness;
-                                    mat.emissive_factor = state.ui.material_emissive;
-                                    mat.normal_scale = state.ui.material_normal_scale;
-                                    mat.ao_strength = state.ui.material_ao_strength;
-                                }
-                            }
-
-                            state.runtime.pending_scene = state.runtime.combined_scene;
-                            state.runtime.scene_upload_pending = true;
-                            _ = std.fmt.bufPrintZ(&state.ui.status_msg, "Applied material override to {d} materials", .{state.runtime.combined_scene.material_count}) catch {};
-                        } else {
-                            _ = std.fmt.bufPrintZ(&state.ui.status_msg, "No scene loaded or no materials to modify", .{}) catch {};
-                        }
-                    }
-                }
-            }
-        }
-    }
-}
-
 const VkCommandBuffer = c.VkCommandBuffer;
 
 fn ui_draw_callback(cmd: VkCommandBuffer) callconv(.c) void {
@@ -545,6 +499,8 @@ fn combo_index_to_rendering_mode(combo_index: i32) types.CardinalRenderingMode {
 }
 
 /// Initializes the editor layer and its UI backends.
+///
+/// TODO: Replace `std.debug.print` usage with structured logging.
 pub fn init(win_ptr: *window.CardinalWindow, rnd_ptr: *types.CardinalRenderer, registry: *engine.ecs_registry.Registry) bool {
     if (initialized) {
         log.cardinal_log_warn("[EDITOR] Already initialized", .{});
@@ -710,6 +666,7 @@ pub fn on_device_loss(_: ?*anyopaque) callconv(.c) void {
     }
 
     if (initialized) {
+        renderer.cardinal_renderer_wait_idle(state.runtime.renderer);
         c.imgui_bridge_impl_vulkan_shutdown();
         c.imgui_bridge_impl_glfw_shutdown();
     }
@@ -736,6 +693,7 @@ pub fn on_device_restored(user_data: ?*anyopaque, success: bool) callconv(.c) vo
 
     if (initialized) {
         log.cardinal_log_warn("[EDITOR_LAYER] Device restored but ImGui already initialized. Shutting down old instance.", .{});
+        renderer.cardinal_renderer_wait_idle(state.runtime.renderer);
         c.imgui_bridge_impl_vulkan_shutdown();
         c.imgui_bridge_impl_glfw_shutdown();
 
@@ -860,6 +818,7 @@ pub fn shutdown() void {
     _ = async_loader.cardinal_async_process_completed_tasks(0);
 
     renderer.cardinal_renderer_wait_for_texture_uploads(state.runtime.renderer);
+    renderer.cardinal_renderer_wait_idle(state.runtime.renderer);
 
     if (imgui_context != null) {
         c.imgui_bridge_set_current_context(imgui_context);
@@ -906,11 +865,16 @@ pub fn shutdown() void {
     }
 
     {
+        const gen = c.imgui_bridge_vk_generation();
         var it = state.runtime.asset_thumbnails.iterator();
         while (it.next()) |entry| {
             if (entry.value_ptr.imgui_id != 0) {
-                c.imgui_bridge_vk_remove_texture(entry.value_ptr.imgui_id);
+                if (gen != 0 and entry.value_ptr.imgui_vulkan_generation == gen) {
+                    c.imgui_bridge_vk_remove_texture(entry.value_ptr.imgui_id);
+                }
                 entry.value_ptr.imgui_id = 0;
+                entry.value_ptr.imgui_backend_user_data_ptr = 0;
+                entry.value_ptr.imgui_vulkan_generation = 0;
             }
             if (entry.value_ptr.handle != std.math.maxInt(u32)) {
                 renderer.cardinal_renderer_runtime_texture_free(state.runtime.renderer, entry.value_ptr.handle);
@@ -938,6 +902,8 @@ pub fn shutdown() void {
 
     state.ui.undo.deinit(allocator);
     state.ui.scene_graph_open_state.deinit(allocator);
+    state.ui.selected_entities.deinit(allocator);
+    state.ui.inspector_component_order_by_entity.deinit(allocator);
 
     state.runtime.config_manager.deinit();
     world_matrix_cache.deinit(allocator);
@@ -945,6 +911,7 @@ pub fn shutdown() void {
     initialized = false;
 }
 
+/// Advances editor state for the current frame and builds the UI.
 pub fn update() void {
     if (!initialized) return;
     if (imgui_context != null) {
@@ -966,7 +933,6 @@ pub fn update() void {
     scene_sync.sync_skybox_from_ecs(&state, allocator);
 
     if (state.runtime.model_manager.scene_dirty) {
-        renderer.cardinal_renderer_clear_scene(state.runtime.renderer);
         if (model_manager.cardinal_model_manager_get_combined_scene(&state.runtime.model_manager)) |comb_ptr| {
             state.runtime.combined_scene = comb_ptr.*;
             state.runtime.pending_scene = state.runtime.combined_scene;
@@ -976,6 +942,7 @@ pub fn update() void {
             selection_system.reset_picking_cache();
             state.ui.undo.clear();
             prune_terrain_runtime_data();
+            refresh_terrain_material_bindings();
         } else {
             state.runtime.scene_loaded = false;
         }
@@ -1093,8 +1060,6 @@ pub fn update() void {
         const dock_flags = c.ImGuiDockNodeFlags_PassthruCentralNode;
         c.imgui_bridge_dock_space(dock_id, &zero_vec, dock_flags);
 
-        selection_system.update(&state);
-
         if (c.imgui_bridge_begin_menu_bar()) {
             if (c.imgui_bridge_begin_menu("File", true)) {
                 if (c.imgui_bridge_menu_item("New Project...", null, false, true)) {
@@ -1116,13 +1081,11 @@ pub fn update() void {
             }
 
             if (c.imgui_bridge_begin_menu("View", true)) {
-                if (c.imgui_bridge_menu_item("Scene View", null, state.ui.show_scene_view, true)) state.ui.show_scene_view = !state.ui.show_scene_view;
                 if (c.imgui_bridge_menu_item("Scene Graph", null, state.ui.show_scene_graph, true)) state.ui.show_scene_graph = !state.ui.show_scene_graph;
                 if (c.imgui_bridge_menu_item("Assets", null, state.ui.show_assets, true)) state.ui.show_assets = !state.ui.show_assets;
                 if (c.imgui_bridge_menu_item("Model Manager", null, state.ui.show_model_manager, true)) state.ui.show_model_manager = !state.ui.show_model_manager;
                 if (c.imgui_bridge_menu_item("Inspector", null, state.ui.show_entity_inspector, true)) state.ui.show_entity_inspector = !state.ui.show_entity_inspector;
                 if (c.imgui_bridge_menu_item("Scene Manager", null, state.ui.show_scene_manager, true)) state.ui.show_scene_manager = !state.ui.show_scene_manager;
-                if (c.imgui_bridge_menu_item("PBR Settings", null, state.ui.show_pbr_settings, true)) state.ui.show_pbr_settings = !state.ui.show_pbr_settings;
                 if (c.imgui_bridge_menu_item("Animation", null, state.ui.show_animation, true)) state.ui.show_animation = !state.ui.show_animation;
                 if (c.imgui_bridge_menu_item("Terrain", null, state.ui.show_terrain_panel, true)) state.ui.show_terrain_panel = !state.ui.show_terrain_panel;
                 if (c.imgui_bridge_menu_item("Performance", null, state.ui.show_performance_panel, true)) state.ui.show_performance_panel = !state.ui.show_performance_panel;
@@ -1141,12 +1104,10 @@ pub fn update() void {
                     state.runtime.pbr_enabled = true;
                     renderer.cardinal_renderer_enable_pbr(state.runtime.renderer, true);
                     state.runtime.preview_game_camera = true;
-                    state.ui.show_scene_view = true;
                 }
             } else {
                 if (c.imgui_bridge_button("Stop")) {
                     state.runtime.preview_game_camera = false;
-                    state.ui.show_scene_view = true;
                 }
             }
             c.imgui_bridge_end_menu_bar();
@@ -1157,116 +1118,11 @@ pub fn update() void {
         hierarchy_panel.draw_hierarchy_panel(&state);
         content_browser.draw_asset_browser_panel(&state, allocator);
         inspector.draw_inspector_panel(&state);
-        draw_pbr_settings_panel();
         animation_panel.draw_animation_panel(&state);
         terrain_panel.draw_terrain_panel(&state);
         performance_panel.draw_performance_panel(&state);
         scene_manager_panel.draw_scene_manager_panel(&state, allocator);
         terrain_panel.flush_terrain_pending_uploads(&state);
-
-        const view_flags = c.ImGuiWindowFlags_NoScrollbar | c.ImGuiWindowFlags_NoScrollWithMouse | c.ImGuiWindowFlags_NoBackground;
-
-        if (state.ui.show_scene_view) {
-            const open_scene = c.imgui_bridge_begin("Scene", &state.ui.show_scene_view, view_flags);
-            defer c.imgui_bridge_end();
-
-            if (open_scene) {
-                if (!renderer.cardinal_renderer_is_pbr_enabled(state.runtime.renderer)) {
-                    c.imgui_bridge_text("Rendering disabled (PBR off)");
-                    if (c.imgui_bridge_button("Enable Rendering")) {
-                        if (state.runtime.registry.get(components.EditorGlobals, state.runtime.globals_entity)) |g| {
-                            g.pbr_enabled = true;
-                        }
-                        state.runtime.pbr_enabled = true;
-                        renderer.cardinal_renderer_enable_pbr(state.runtime.renderer, true);
-                    }
-                }
-                if (!state.runtime.scene_loaded) {
-                    c.imgui_bridge_text("No scene loaded");
-                    if (c.imgui_bridge_button("Load Default Scene")) {
-                        scene_io.load_scene(&state, allocator, "assets/scenes/sponza_scene.json");
-                    }
-                }
-                if (state.runtime.preview_game_camera) {
-                    c.imgui_bridge_text("Play Mode");
-                }
-                var win_pos: c.ImVec2 = undefined;
-                var win_size: c.ImVec2 = undefined;
-                c.imgui_bridge_get_window_pos(&win_pos);
-                c.imgui_bridge_get_window_size(&win_size);
-
-                if (state.ui.show_grid_axes) {
-                    const cam = state.runtime.camera;
-                    const world_up = Vec3{ .x = 0.0, .y = 1.0, .z = 0.0 };
-                    var forward = Vec3{
-                        .x = cam.target.x - cam.position.x,
-                        .y = cam.target.y - cam.position.y,
-                        .z = cam.target.z - cam.position.z,
-                    };
-                    const forward_len = forward.length();
-                    if (forward_len > 0.0001) {
-                        forward = forward.mul(1.0 / forward_len);
-                    } else {
-                        forward = Vec3{ .x = 0.0, .y = 0.0, .z = -1.0 };
-                    }
-
-                    var right = forward.cross(world_up);
-                    const right_len = right.length();
-                    if (right_len > 0.0001) {
-                        right = right.mul(1.0 / right_len);
-                    } else {
-                        right = Vec3{ .x = 1.0, .y = 0.0, .z = 0.0 };
-                    }
-
-                    var up_cam = right.cross(forward);
-                    const up_len = up_cam.length();
-                    if (up_len > 0.0001) {
-                        up_cam = up_cam.mul(1.0 / up_len);
-                    } else {
-                        up_cam = world_up;
-                    }
-
-                    const origin = c.ImVec2{
-                        .x = win_pos.x + 60.0,
-                        .y = win_pos.y + win_size.y - 60.0,
-                    };
-                    const axis_size: f32 = 40.0;
-
-                    const axes = [_]struct { dir: Vec3, color: u32 }{
-                        .{ .dir = Vec3{ .x = 1.0, .y = 0.0, .z = 0.0 }, .color = 0xFFFF5555 },
-                        .{ .dir = Vec3{ .x = 0.0, .y = 1.0, .z = 0.0 }, .color = 0xFF55FF55 },
-                        .{ .dir = Vec3{ .x = 0.0, .y = 0.0, .z = 1.0 }, .color = 0xFF5599FF },
-                    };
-
-                    var i: usize = 0;
-                    while (i < axes.len) : (i += 1) {
-                        const axis_world = axes[i].dir;
-                        const vx = axis_world.dot(right);
-                        const vy = axis_world.dot(up_cam);
-
-                        var sx = vx;
-                        var sy = -vy;
-                        const len_sq = sx * sx + sy * sy;
-                        if (len_sq <= 0.0001) continue;
-                        const inv_len = 1.0 / @sqrt(len_sq);
-                        sx *= inv_len;
-                        sy *= inv_len;
-
-                        const end = c.ImVec2{
-                            .x = origin.x + sx * axis_size,
-                            .y = origin.y + sy * axis_size,
-                        };
-
-                        var p0 = origin;
-                        var p1 = end;
-                        c.imgui_bridge_draw_line(&p0, &p1, axes[i].color, 2.0);
-                    }
-
-                    var center = origin;
-                    c.imgui_bridge_draw_circle_filled(&center, 3.0, 0xFFFFFFFF);
-                }
-            }
-        }
 
         scene_sync.sync_mesh_visibility_from_ecs(&state);
         scene_sync.sync_mesh_transforms_from_ecs(&state, allocator, &world_matrix_cache);
@@ -1304,23 +1160,18 @@ pub fn update() void {
             }
         }
         scene_sync.sync_mesh_index_maps_from_ecs(&state, allocator);
-
-        const status_open = c.imgui_bridge_begin("Status", null, 0);
-        defer c.imgui_bridge_end();
-
-        if (status_open) {
-            c.imgui_bridge_text("Status: %s", &state.ui.status_msg);
-        }
     }
 
     persist_state_to_globals();
 }
 
+/// Submits the UI draw data for rendering.
 pub fn render() void {
     if (!initialized) return;
     c.imgui_bridge_render();
 }
 
+/// Uploads any pending scene changes to the renderer.
 pub fn process_pending_uploads() void {
     if (state.runtime.scene_upload_pending and initialized) {
         log.cardinal_log_info("[EDITOR] Pending upload detected", .{});

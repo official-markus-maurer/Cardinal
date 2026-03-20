@@ -53,6 +53,46 @@ pub fn instantiate_model(state: *EditorState, model_id: u32, parent_entity: engi
 
     log.cardinal_log_info("[SCENE_IO] Instantiating model {d} under entity {d}...", .{ model_id, parent_entity.id });
 
+    if (!state.runtime.registry.entity_manager.is_alive(parent_entity)) return;
+
+    const ensure_hierarchy = struct {
+        fn f(registry: *engine.ecs_registry.Registry, ent: engine.ecs_entity.Entity) components.Hierarchy {
+            if (registry.get(components.Hierarchy, ent)) |h| return h.*;
+            registry.add(ent, components.Hierarchy{}) catch {};
+            return components.Hierarchy{};
+        }
+    }.f;
+
+    var before_ids: [6]u64 = [_]u64{0} ** 6;
+    var before_h: [6]components.Hierarchy = undefined;
+    var after_h: [6]components.Hierarchy = undefined;
+    var before_count: u8 = 0;
+
+    before_ids[before_count] = parent_entity.id;
+    before_h[before_count] = ensure_hierarchy(state.runtime.registry, parent_entity);
+    before_count += 1;
+
+    const parent_h = before_h[0];
+    if (parent_h.last_child) |lc| {
+        before_ids[before_count] = lc.id;
+        before_h[before_count] = ensure_hierarchy(state.runtime.registry, lc);
+        before_count += 1;
+    } else if (parent_h.first_child) |fc| {
+        var last = fc;
+        var guard: u32 = 0;
+        while (guard < 100000) : (guard += 1) {
+            const lh = state.runtime.registry.get(components.Hierarchy, last) orelse break;
+            if (lh.next_sibling) |nx| {
+                last = nx;
+            } else {
+                break;
+            }
+        }
+        before_ids[before_count] = last.id;
+        before_h[before_count] = ensure_hierarchy(state.runtime.registry, last);
+        before_count += 1;
+    }
+
     const root_entity = state.runtime.registry.create() catch return;
     const root_name = if (model.name) |n| std.mem.span(n) else "Model";
     const root_stem = std.fs.path.stem(root_name);
@@ -62,6 +102,12 @@ pub fn instantiate_model(state: *EditorState, model_id: u32, parent_entity: engi
     state.runtime.registry.add(root_entity, components.Transform{}) catch {};
     state.runtime.registry.add(root_entity, components.Hierarchy{}) catch {};
     node_factory.append_child(state.runtime.registry, parent_entity, root_entity);
+
+    var h_i: u8 = 0;
+    while (h_i < before_count) : (h_i += 1) {
+        after_h[h_i] = ensure_hierarchy(state.runtime.registry, .{ .id = before_ids[h_i] });
+    }
+
     state.runtime.model_root_by_id.put(map_alloc, model_id, root_entity.id) catch {};
 
     var mesh_offset: u32 = 0;
@@ -171,6 +217,8 @@ pub fn instantiate_model(state: *EditorState, model_id: u32, parent_entity: engi
             }
         }
     }
+
+    state.ui.undo.push_entity_subtree(state.runtime.registry, root_entity, .Create, before_ids[0..before_count], before_h[0..before_count], after_h[0..before_count]);
 }
 
 /// Cancels outstanding async loading tasks and clears the list.

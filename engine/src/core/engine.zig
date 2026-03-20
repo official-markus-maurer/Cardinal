@@ -200,7 +200,6 @@ pub const CardinalEngine = struct {
 
     /// Initializes core subsystems (memory, ECS systems, modules, async loaders, caches).
     ///
-    /// TODO: Make frame allocator size configurable via `CardinalEngineConfig`.
     fn initSystems(self: *CardinalEngine) !void {
         try self.scheduler.add(ecs_systems.ScriptSystemDesc);
         try self.scheduler.add(ecs_systems.PhysicsSystemDesc);
@@ -212,7 +211,7 @@ pub const CardinalEngine = struct {
         self.memory_initialized = true;
         eng_log.info("Memory management system initialized", .{});
 
-        const frame_mem_size = 16 * 1024 * 1024;
+        const frame_mem_size = self.config.frame_allocator_size;
         self.frame_memory = try self.allocator.alloc(u8, frame_mem_size);
         self.frame_allocator = stack_allocator.StackAllocator.init(self.frame_memory);
         eng_log.info("Frame allocator initialized with {d}MB", .{frame_mem_size / 1024 / 1024});

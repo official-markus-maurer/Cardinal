@@ -4,12 +4,17 @@
 #include <backends/imgui_impl_glfw.h>
 #include <backends/imgui_impl_vulkan.h>
 #include <imgui.h>
+#include <unordered_set>
 #include <stdarg.h>
 #include <stdio.h>
 #include <math.h>
 #include <vulkan/vulkan.h>
 
+static std::unordered_set<uint64_t> g_imgui_vk_tracked_textures;
+
 extern "C" {
+
+static uint64_t g_imgui_vulkan_generation = 1;
 
 // Main Viewport & Layout
 const ImGuiViewport *imgui_bridge_get_main_viewport(void) {
@@ -26,17 +31,37 @@ float imgui_bridge_get_framerate(void) {
 
 uint64_t imgui_bridge_vk_add_texture(VkSampler sampler, VkImageView view, int image_layout) {
   if (sampler == VK_NULL_HANDLE || view == VK_NULL_HANDLE) return 0;
+  if (ImGui::GetCurrentContext() == nullptr) return 0;
+  if (ImGui::GetIO().BackendRendererUserData == nullptr) return 0;
   VkDescriptorSet set = ImGui_ImplVulkan_AddTexture(sampler, view, (VkImageLayout)image_layout);
+  if (set != VK_NULL_HANDLE) g_imgui_vk_tracked_textures.insert((uint64_t)set);
   return (uint64_t)set;
 }
 
 void imgui_bridge_vk_remove_texture(uint64_t texture_id) {
   if (texture_id == 0) return;
+  if (ImGui::GetCurrentContext() == nullptr) return;
+  if (ImGui::GetIO().BackendRendererUserData == nullptr) return;
+  g_imgui_vk_tracked_textures.erase(texture_id);
   ImGui_ImplVulkan_RemoveTexture((VkDescriptorSet)texture_id);
+}
+
+uint64_t imgui_bridge_vk_backend_user_data_ptr(void) {
+  if (ImGui::GetCurrentContext() == nullptr) return 0;
+  return (uint64_t)ImGui::GetIO().BackendRendererUserData;
+}
+
+uint64_t imgui_bridge_vk_generation(void) {
+  if (ImGui::GetCurrentContext() == nullptr) return 0;
+  if (ImGui::GetIO().BackendRendererUserData == nullptr) return 0;
+  return g_imgui_vulkan_generation;
 }
 
 void imgui_bridge_image_u64(uint64_t texture_id, float width, float height) {
   if (texture_id == 0) return;
+  if (ImGui::GetCurrentContext() == nullptr) return;
+  if (ImGui::GetIO().BackendRendererUserData == nullptr) return;
+  if (g_imgui_vk_tracked_textures.find(texture_id) == g_imgui_vk_tracked_textures.end()) return;
   ImGui::Image((ImTextureID)(VkDescriptorSet)texture_id, ImVec2(width, height));
 }
 
@@ -295,6 +320,8 @@ bool imgui_bridge_impl_vulkan_init(ImGuiBridgeVulkanInitInfo *info) {
     init_info.PipelineInfoMain.RenderPass = VK_NULL_HANDLE;
     init_info.PipelineInfoMain.Subpass = 0;
 
+    g_imgui_vulkan_generation += 1;
+    g_imgui_vk_tracked_textures.clear();
     return ImGui_ImplVulkan_Init(&init_info);
   } else {
     // Not supporting render pass mode in this bridge for now as the editor uses
@@ -303,7 +330,11 @@ bool imgui_bridge_impl_vulkan_init(ImGuiBridgeVulkanInitInfo *info) {
   }
 }
 
-void imgui_bridge_impl_vulkan_shutdown(void) { ImGui_ImplVulkan_Shutdown(); }
+void imgui_bridge_impl_vulkan_shutdown(void) {
+  g_imgui_vulkan_generation += 1;
+  g_imgui_vk_tracked_textures.clear();
+  ImGui_ImplVulkan_Shutdown();
+}
 
 void imgui_bridge_force_clear_backend_data(void) {
   ImGuiIO &io = ImGui::GetIO();
@@ -314,6 +345,15 @@ void imgui_bridge_force_clear_backend_data(void) {
 }
 
 void imgui_bridge_invalidate_device_objects(void) {
+  g_imgui_vulkan_generation += 1;
+  g_imgui_vk_tracked_textures.clear();
+  ImGuiIO &io = ImGui::GetIO();
+  if (io.Fonts)
+  {
+    io.Fonts->TexRef._TexID = ImTextureID_Invalid;
+    if (io.Fonts->TexData)
+      io.Fonts->TexData->SetTexID(ImTextureID_Invalid);
+  }
   ImGuiPlatformIO& platform_io = ImGui::GetPlatformIO();
   for (int i = 0; i < platform_io.Textures.Size; i++) {
     ImTextureData* tex = platform_io.Textures[i];
@@ -576,6 +616,10 @@ void imgui_bridge_set_tooltip(const char *fmt, ...) {
   va_end(args);
 }
 
+void imgui_bridge_begin_tooltip(void) { ImGui::BeginTooltip(); }
+
+void imgui_bridge_end_tooltip(void) { ImGui::EndTooltip(); }
+
 bool imgui_bridge_is_item_hovered(int flags) {
   return ImGui::IsItemHovered(flags);
 }
@@ -804,5 +848,9 @@ const void* imgui_bridge_payload_get_data(const ImGuiPayload* payload) {
 
 int imgui_bridge_payload_get_data_size(const ImGuiPayload* payload) {
   return payload ? payload->DataSize : 0;
+}
+
+bool imgui_bridge_payload_is_delivery(const ImGuiPayload* payload) {
+  return payload ? payload->Delivery : false;
 }
 }

@@ -134,7 +134,7 @@ pub export fn texture_load_from_memory(data: [*]const u8, size: usize, out_textu
     if (is_dds) {
         const buffer = data[0..size];
         if (dds_loader.load_dds_from_memory(buffer, out_texture)) {
-            texture_log.warn("DDS loaded: {d}x{d}, Size: {d}, Format: {d}", .{ out_texture.width, out_texture.height, out_texture.data_size, out_texture.format });
+            texture_log.debug("DDS loaded: {d}x{d}, Size: {d}, Format: {d}", .{ out_texture.width, out_texture.height, out_texture.data_size, out_texture.format });
             return true;
         } else {
             texture_log.err("Failed to load DDS texture from memory", .{});

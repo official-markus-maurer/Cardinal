@@ -323,7 +323,7 @@ pub fn cardinal_mt_command_manager_shutdown(manager: *types.CardinalMTCommandMan
                 pool.secondary_buffers = null;
             }
 
-            const vs = manager.vulkan_state.?;
+            const vs = @as(*types.VulkanState, @ptrCast(@alignCast(manager.vulkan_state.?)));
 
             if (pool.primary_pool != null) {
                 c.vkDestroyCommandPool(vs.context.device, pool.primary_pool, null);
@@ -382,7 +382,7 @@ pub fn cardinal_mt_get_thread_command_pool(manager: *types.CardinalMTCommandMana
     const pool = free_pool.?;
     pool.thread_id = thread_id;
 
-    const vs = manager.vulkan_state.?;
+    const vs = @as(*types.VulkanState, @ptrCast(@alignCast(manager.vulkan_state.?)));
     const queue_family_index = vs.context.graphics_queue_family;
 
     var pool_info = c.VkCommandPoolCreateInfo{
@@ -452,8 +452,52 @@ pub fn cardinal_mt_get_thread_command_pool(manager: *types.CardinalMTCommandMana
 
 pub fn cardinal_mt_allocate_secondary_command_buffer(pool: *types.CardinalThreadCommandPool, context: *types.CardinalSecondaryCommandContext) bool {
     if (pool.next_secondary_index >= pool.secondary_buffer_count) {
-        mt_log.warn("Thread command pool exhausted", .{});
-        return false;
+        const vs_ptr = g_cardinal_mt_subsystem.command_manager.vulkan_state orelse {
+            mt_log.warn("Thread command pool exhausted and MT subsystem is not initialized", .{});
+            return false;
+        };
+        const vs = @as(*types.VulkanState, @ptrCast(@alignCast(vs_ptr)));
+        if (pool.secondary_pool == null) {
+            mt_log.warn("Thread command pool exhausted and secondary pool is null", .{});
+            return false;
+        }
+        if (pool.secondary_buffers == null) {
+            mt_log.warn("Thread command pool exhausted and secondary buffer array is null", .{});
+            return false;
+        }
+
+        const old_count: u32 = pool.secondary_buffer_count;
+        const old_count_usize: usize = @intCast(old_count);
+        const grow_by: u32 = @max(64, types.CARDINAL_MAX_SECONDARY_COMMAND_BUFFERS / 2);
+        const new_count = old_count + grow_by;
+        const new_count_usize: usize = @intCast(new_count);
+
+        const allocator = memory.cardinal_get_allocator_for_category(.RENDERER);
+        const new_ptr = memory.cardinal_alloc(allocator, @sizeOf(c.VkCommandBuffer) * new_count_usize) orelse {
+            mt_log.warn("Thread command pool exhausted and failed to allocate expanded buffer array", .{});
+            return false;
+        };
+        const new_bufs = @as([*]c.VkCommandBuffer, @ptrCast(@alignCast(new_ptr)));
+
+        @memcpy(new_bufs[0..old_count_usize], pool.secondary_buffers.?[0..old_count_usize]);
+
+        var alloc_info = c.VkCommandBufferAllocateInfo{
+            .sType = c.VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO,
+            .pNext = null,
+            .commandPool = pool.secondary_pool,
+            .level = c.VK_COMMAND_BUFFER_LEVEL_SECONDARY,
+            .commandBufferCount = grow_by,
+        };
+        if (c.vkAllocateCommandBuffers(vs.context.device, &alloc_info, &new_bufs[old_count_usize]) != c.VK_SUCCESS) {
+            mt_log.warn("Thread command pool exhausted and failed to allocate expanded command buffers", .{});
+            memory.cardinal_free(allocator, new_ptr);
+            return false;
+        }
+
+        memory.cardinal_free(allocator, @ptrCast(pool.secondary_buffers));
+        pool.secondary_buffers = new_bufs;
+        pool.secondary_buffer_count = new_count;
+        mt_log.info("Expanded thread command pool secondary buffers ({d} -> {d})", .{ old_count, new_count });
     }
 
     if (pool.secondary_buffers) |bufs| {
@@ -554,7 +598,8 @@ pub fn cardinal_mt_reset_all_command_pools(manager: *types.CardinalMTCommandMana
     while (i < types.CARDINAL_MAX_MT_THREADS) : (i += 1) {
         var pool = &manager.thread_pools.?[i];
         if (pool.is_active) {
-            const device = manager.vulkan_state.?.context.device;
+            const vs = @as(*types.VulkanState, @ptrCast(@alignCast(manager.vulkan_state.?)));
+            const device = vs.context.device;
 
             if (pool.secondary_pool != null) {
                 _ = c.vkResetCommandPool(device, pool.secondary_pool, 0);

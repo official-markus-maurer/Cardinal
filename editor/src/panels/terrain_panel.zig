@@ -108,6 +108,18 @@ fn lerp(a: f32, b: f32, t: f32) f32 {
     return a + (b - a) * t;
 }
 
+fn is_texture_asset_path(path: []const u8) bool {
+    const ext = std.fs.path.extension(path);
+    return std.mem.eql(u8, ext, ".png") or
+        std.mem.eql(u8, ext, ".jpg") or
+        std.mem.eql(u8, ext, ".jpeg") or
+        std.mem.eql(u8, ext, ".tga") or
+        std.mem.eql(u8, ext, ".bmp") or
+        std.mem.eql(u8, ext, ".dds") or
+        std.mem.eql(u8, ext, ".hdr") or
+        std.mem.eql(u8, ext, ".exr");
+}
+
 fn sample_height_bilinear(td: *editor_state.TerrainData, verts_per_side: u32, terr: *components.Terrain, local_x: f32, local_z: f32) f32 {
     if (verts_per_side < 2) return 0.0;
     const grid: u32 = verts_per_side - 1;
@@ -554,10 +566,12 @@ pub fn ensure_terrain_data_for_entity(state: *EditorState, entity: engine.ecs_en
     return td;
 }
 
+/// Rebinds `terr` to use the runtime textures referenced by `td`.
 pub fn bind_terrain_material(state: *EditorState, terr: *components.Terrain, td: *editor_state.TerrainData) void {
     ensure_terrain_material_bound(state, terr, td);
 }
 
+/// Rewrites the terrain mesh index buffer using the alpha carving mask.
 pub fn rewrite_indices_from_carve_alpha(model_mesh: *scene.CardinalMesh, verts_per_side: u32) void {
     rewrite_indices_from_alpha(model_mesh, verts_per_side);
 }
@@ -1297,6 +1311,8 @@ fn create_terrain_at(state: *EditorState, grid_resolution: u32, world_size: f32,
     state.runtime.mark_transform_override_tree(created);
 
     state.ui.selected_entity = created;
+    state.ui.selected_entities.clearRetainingCapacity();
+    state.ui.selected_entities.put(alloc, created.id, {}) catch {};
     state.ui.selected_model_id = 0;
     state.ui.scene_graph_focus_target_id = created.id;
     state.ui.scene_graph_focus_pending = true;
@@ -1720,10 +1736,12 @@ fn set_terrain_layer_texture_from_path(state: *EditorState, terr: *components.Te
     if (tex.data == null or tex.data_size == 0 or tex.width == 0 or tex.height == 0) return;
 
     if (td.layer_handles[layer_index] != std.math.maxInt(u32)) {
-        if (td.layer_imgui_ids[layer_index] != 0) {
+        const gen = c.imgui_bridge_vk_generation();
+        if (td.layer_imgui_ids[layer_index] != 0 and td.layer_imgui_generations[layer_index] == gen and gen != 0) {
             c.imgui_bridge_vk_remove_texture(td.layer_imgui_ids[layer_index]);
-            td.layer_imgui_ids[layer_index] = 0;
         }
+        td.layer_imgui_ids[layer_index] = 0;
+        td.layer_imgui_generations[layer_index] = 0;
         renderer.cardinal_renderer_runtime_texture_free(state.runtime.renderer, td.layer_handles[layer_index]);
         td.layer_handles[layer_index] = std.math.maxInt(u32);
     }
@@ -1746,18 +1764,45 @@ fn set_terrain_layer_texture_from_path(state: *EditorState, terr: *components.Te
 
 fn ensure_imgui_texture_id_for_layer(state: *EditorState, td: *editor_state.TerrainData, layer_index: usize) u64 {
     if (layer_index >= 4) return 0;
-    if (td.layer_imgui_ids[layer_index] != 0) return td.layer_imgui_ids[layer_index];
+    const gen = c.imgui_bridge_vk_generation();
+    if (td.layer_imgui_ids[layer_index] != 0 and td.layer_imgui_generations[layer_index] == gen and gen != 0) {
+        return td.layer_imgui_ids[layer_index];
+    }
+    td.layer_imgui_ids[layer_index] = 0;
+    td.layer_imgui_generations[layer_index] = 0;
     const handle = td.layer_handles[layer_index];
     if (handle == std.math.maxInt(u32)) return 0;
+    if (gen == 0) return 0;
 
     var sampler_raw: ?*anyopaque = null;
     var view_raw: ?*anyopaque = null;
     if (!renderer.cardinal_renderer_runtime_texture_get_vk_handles(state.runtime.renderer, handle, @ptrCast(@alignCast(&sampler_raw)), @ptrCast(@alignCast(&view_raw)))) return 0;
+    if (sampler_raw == null or view_raw == null) return 0;
     const id = c.imgui_bridge_vk_add_texture(@ptrCast(sampler_raw), @ptrCast(view_raw), c.VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
     td.layer_imgui_ids[layer_index] = id;
+    td.layer_imgui_generations[layer_index] = if (id != 0) gen else 0;
     return id;
 }
 
+fn try_apply_default_texture_to_selected_layer0(state: *EditorState) void {
+    const default_path_len = std.mem.indexOfScalar(u8, &state.ui.terrain_default_texture_path, 0) orelse state.ui.terrain_default_texture_path.len;
+    if (default_path_len == 0) return;
+    const path = state.ui.terrain_default_texture_path[0..default_path_len];
+
+    const selected = state.ui.selected_entity;
+    const terr_ptr = if (state.runtime.registry.entity_manager.is_alive(selected)) state.runtime.registry.get(components.Terrain, selected) else null;
+    if (terr_ptr == null) return;
+
+    if (get_terrain_meshes(state, terr_ptr.?)) |meshes| {
+        if (derive_grid_from_mesh(terr_ptr.?, meshes.model_mesh)) |grid_ctx| {
+            if (ensure_terrain_data(state, selected.id, meshes.model_mesh, grid_ctx.verts_per_side)) |td| {
+                set_terrain_layer_texture_from_path(state, terr_ptr.?, td, 0, path);
+            }
+        }
+    }
+}
+
+/// Draws the Terrain panel UI.
 pub fn draw_terrain_panel(state: *EditorState) void {
     if (!state.ui.show_terrain_panel) return;
     const open = c.imgui_bridge_begin("Terrain", &state.ui.show_terrain_panel, 0);
@@ -1777,15 +1822,21 @@ pub fn draw_terrain_panel(state: *EditorState) void {
     } else {
         c.imgui_bridge_text_wrapped("Default Texture: (none)");
     }
+    var apply_default_to_layer0 = false;
     if (c.imgui_bridge_begin_drag_drop_target()) {
         if (c.imgui_bridge_accept_drag_drop_payload("ASSET_PATH", 0)) |payload| {
-            const data_ptr = c.imgui_bridge_payload_get_data(payload);
-            if (data_ptr != null) {
-                const path_c: [*:0]const u8 = @ptrCast(@alignCast(data_ptr));
-                const path = std.mem.span(path_c);
-                const len = @min(path.len, state.ui.terrain_default_texture_path.len - 1);
-                @memcpy(state.ui.terrain_default_texture_path[0..len], path[0..len]);
-                state.ui.terrain_default_texture_path[len] = 0;
+            if (c.imgui_bridge_payload_is_delivery(payload)) {
+                const data_ptr = c.imgui_bridge_payload_get_data(payload);
+                if (data_ptr != null) {
+                    const path_c: [*:0]const u8 = @ptrCast(@alignCast(data_ptr));
+                    const path = std.mem.span(path_c);
+                    if (is_texture_asset_path(path)) {
+                        const len = @min(path.len, state.ui.terrain_default_texture_path.len - 1);
+                        @memcpy(state.ui.terrain_default_texture_path[0..len], path[0..len]);
+                        state.ui.terrain_default_texture_path[len] = 0;
+                        apply_default_to_layer0 = true;
+                    }
+                }
             }
         }
         c.imgui_bridge_end_drag_drop_target();
@@ -1797,11 +1848,15 @@ pub fn draw_terrain_panel(state: *EditorState) void {
             const len = @min(picked.len, state.ui.terrain_default_texture_path.len - 1);
             @memcpy(state.ui.terrain_default_texture_path[0..len], picked[0..len]);
             state.ui.terrain_default_texture_path[len] = 0;
+            apply_default_to_layer0 = true;
         }
     }
     c.imgui_bridge_same_line(0, -1);
     if (c.imgui_bridge_button("Clear Default")) {
         @memset(&state.ui.terrain_default_texture_path, 0);
+    }
+    if (apply_default_to_layer0) {
+        try_apply_default_texture_to_selected_layer0(state);
     }
 
     if (c.imgui_bridge_button("Create Terrain")) {
@@ -1823,12 +1878,6 @@ pub fn draw_terrain_panel(state: *EditorState) void {
         if (derive_grid_from_mesh(terr_ptr.?, meshes.model_mesh)) |grid_ctx| {
             if (ensure_terrain_data(state, selected.id, meshes.model_mesh, grid_ctx.verts_per_side)) |td| {
                 ensure_terrain_material_bound(state, terr_ptr.?, td);
-                if (default_path_len > 0) {
-                    if (c.imgui_bridge_button("Apply Default Texture to Layer 0")) {
-                        const path = state.ui.terrain_default_texture_path[0..default_path_len];
-                        set_terrain_layer_texture_from_path(state, terr_ptr.?, td, 0, path);
-                    }
-                }
             }
         }
     }
@@ -1937,6 +1986,21 @@ pub fn draw_terrain_panel(state: *EditorState) void {
                 if (tex_id != 0) {
                     c.imgui_bridge_image_u64(tex_id, 64.0, 64.0);
                     c.imgui_bridge_same_line(0, -1);
+                }
+                if (c.imgui_bridge_begin_drag_drop_target()) {
+                    if (c.imgui_bridge_accept_drag_drop_payload("ASSET_PATH", 0)) |payload| {
+                        if (c.imgui_bridge_payload_is_delivery(payload)) {
+                            const data_ptr = c.imgui_bridge_payload_get_data(payload);
+                            if (data_ptr != null) {
+                                const path_c: [*:0]const u8 = @ptrCast(@alignCast(data_ptr));
+                                const path = std.mem.span(path_c);
+                                if (is_texture_asset_path(path)) {
+                                    set_terrain_layer_texture_from_path(state, terr_ptr.?, td, li, path);
+                                }
+                            }
+                        }
+                    }
+                    c.imgui_bridge_end_drag_drop_target();
                 }
                 if (c.imgui_bridge_button(set_labels[li])) {
                     const filter = "Textures\x00*.png;*.jpg;*.jpeg;*.tga;*.bmp;*.dds;*.hdr;*.exr\x00All Files\x00*.*\x00";
@@ -2096,6 +2160,7 @@ pub fn draw_terrain_panel(state: *EditorState) void {
     }
 }
 
+/// Uploads any accumulated dirty terrain rectangles to the renderer.
 pub fn flush_terrain_pending_uploads(state: *EditorState) void {
     if (state.runtime.terrain_dirty_rects.count() == 0) return;
 

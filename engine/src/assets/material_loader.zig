@@ -3,8 +3,6 @@
 //! Materials are lightweight POD structs in `scene.zig` and typically reference textures by handle.
 //! This module currently provides a small async wrapper so higher-level systems can schedule
 //! material processing/upload.
-//!
-//! TODO: Move material GPU upload details into a renderer-owned module to reduce layering.
 const std = @import("std");
 const memory = @import("../core/memory.zig");
 const log = @import("../core/log.zig");

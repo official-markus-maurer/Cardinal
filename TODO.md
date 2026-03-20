@@ -10,7 +10,6 @@ This document outlines the roadmap for the Cardinal Engine, focusing on robustne
 ### Core Systems
 - [ ] **Animation Blending**: Implement animation cross-fading and masking (e.g., separate upper/lower body animations).
 - [ ] **Math Library**: Add missing geometric primitives (AABB, OBB, Frustum, Plane) and intersection tests.
-
 ### Memory & Concurrency
 - [ ] **Lock-Free Job System**: Replace mutex/condition variable queue with a lock-free work-stealing queue.
 - [ ] **Allocator Improvements**: Investigate high-performance scalable allocators (rpmalloc/mimalloc).
@@ -19,12 +18,12 @@ This document outlines the roadmap for the Cardinal Engine, focusing on robustne
     - Switch to a **Fiber-based** architecture (Naughty Dog / GDC 2015 style).
     - Enable finer-grained concurrency.
     - Avoid blocking worker threads during dependency waits.
-- [ ] **Command Pool Expansion**: Handle thread command pool exhaustion dynamically instead of failing (`vulkan_mt.zig` L472).
+- [x] **Command Pool Expansion**: Handle thread command pool exhaustion dynamically instead of failing (`vulkan_mt.zig` L472).
 
 ## 2. Data & Assets
 
 ### World Management
-- [ ] **Spatial Partitioning**: Implement an Octree or BVH (Bounding Volume Hierarchy) for efficient scene queries and culling.
+- [x] **Spatial Partitioning**: Implement an Octree or BVH (Bounding Volume Hierarchy) for efficient scene queries and culling.
 - [ ] **Level Streaming**: Implement a system to load/unload grid-based world chunks asynchronously.
 - [ ] **Terrain System**: Implement heightmap-based terrain with LOD (CDLOD or Geometry Clipmaps).
 
@@ -91,7 +90,7 @@ This document outlines the roadmap for the Cardinal Engine, focusing on robustne
 - [ ] **Console Panel**: Interactive console for logging and executing commands/scripts.
 
 ### Editor Core
-- [ ] **Command Pattern**: Implement Undo/Redo system for all editor actions.
+- [x] **Command Pattern**: Implement Undo/Redo system for all editor actions.
 
 ### UI/UX
 - [x] **Asset Browser**: Thumbnail generation and drag-and-drop support.
@@ -100,16 +99,16 @@ This document outlines the roadmap for the Cardinal Engine, focusing on robustne
 - [ ] **Grid & Axes**: Visual reference guides.
 
 ### Scene Graph & Inspector
-- [ ] **Undo/Redo (Hierarchy)**: Add undoable Create/Rename/Delete/Reparent operations in Scene Graph.
-- [ ] **Sibling Reordering**: Support drag reorder among siblings + stable ordering persistence.
-- [ ] **Multi-Select**: Support multi-select and batch operations (delete, visibility, component add/remove).
-- [ ] **Search & Filter**: Add fast search (name/type) with filter chips (Meshes/Lights/Cameras/etc).
-- [ ] **Inspector Undo Coverage**: Add undo for Light and Camera field edits (not just add/remove).
-- [ ] **Resource Pickers**: Mesh/material pickers in MeshRenderer (names + asset drag-drop), not raw indices.
-- [ ] **Copy/Paste Components**: Copy component data between entities; duplicate entity/subtree.
-- [ ] **Component Grouping**: Reorder components, pin favorites, and collapse/expand all.
-- [ ] **Transform UX**: Local/world toggle, reset buttons, numeric input + copy/paste TRS fields.
-- [ ] **Hierarchy Integrity**: Prevent cycles and enforce invariants (child_count, sibling links) on edits.
+- [x] **Undo/Redo (Hierarchy)**: Add undoable Create/Rename/Delete/Reparent operations in Scene Graph.
+- [x] **Sibling Reordering**: Support drag reorder among siblings + stable ordering persistence.
+- [x] **Multi-Select**: Support multi-select and batch operations (delete, visibility, component add/remove).
+- [x] **Search & Filter**: Add fast search (name/type) with filter chips (Meshes/Lights/Cameras/etc).
+- [x] **Inspector Undo Coverage**: Add undo for Light and Camera field edits (not just add/remove).
+- [x] **Resource Pickers**: Mesh/material pickers in MeshRenderer (names + asset drag-drop), not raw indices.
+- [x] **Copy/Paste Components**: Copy component data between entities; duplicate entity/subtree.
+- [x] **Component Grouping**: Reorder components, pin favorites, and collapse/expand all.
+- [x] **Transform UX**: Local/world toggle, reset buttons, numeric input + copy/paste TRS fields.
+- [x] **Hierarchy Integrity**: Prevent cycles and enforce invariants (child_count, sibling links) on edits.
 
 ## 7. Quality Assurance
 

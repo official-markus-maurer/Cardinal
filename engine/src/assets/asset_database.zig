@@ -1,7 +1,14 @@
+//! Asset database: GUID <-> path mapping backed by `.meta` sidecar files.
+//!
+//! Scans an asset root directory for `*.meta` files and maintains maps for resolving GUIDs to
+//! absolute asset paths (and vice versa). When a `.meta` file is missing, it can be created on
+//! demand with a freshly generated GUID.
 const std = @import("std");
 
+/// 128-bit stable identifier stored in `.meta` files.
 pub const AssetGuid = u128;
 
+/// Asset importer classification derived from file extension.
 pub const Importer = enum {
     Texture,
     Model,
@@ -12,21 +19,25 @@ pub const Importer = enum {
     Unknown,
 };
 
+/// Import settings for texture assets.
 pub const TextureImportSettings = struct {
     srgb: bool = true,
     generate_mips: bool = true,
 };
 
+/// Import settings for model assets.
 pub const ModelImportSettings = struct {
     scale: f32 = 1.0,
 };
 
+/// Tracks GUID/path mappings and performs `.meta` discovery under `root_dir`.
 pub const AssetDatabase = struct {
     allocator: std.mem.Allocator,
     root_dir: []const u8,
     guid_to_path: std.AutoHashMapUnmanaged(AssetGuid, []const u8) = .{},
     path_to_guid: std.StringHashMapUnmanaged(AssetGuid) = .{},
 
+    /// Creates a database rooted at `root_dir` (must be an absolute path).
     pub fn init(allocator: std.mem.Allocator, root_dir: []const u8) !AssetDatabase {
         return .{
             .allocator = allocator,
@@ -36,6 +47,7 @@ pub const AssetDatabase = struct {
         };
     }
 
+    /// Frees all stored path strings and releases internal maps.
     pub fn deinit(self: *AssetDatabase) void {
         var it = self.guid_to_path.iterator();
         while (it.next()) |entry| {
@@ -52,11 +64,16 @@ pub const AssetDatabase = struct {
         self.allocator.free(self.root_dir);
     }
 
+    /// Clears current mappings and rescans `root_dir` for `*.meta` files.
     pub fn refresh(self: *AssetDatabase) !void {
         self.clearRetainingCapacity();
-        try self.scanForMetaFiles(self.root_dir);
+        var path_buf = std.ArrayListUnmanaged(u8){};
+        defer path_buf.deinit(self.allocator);
+        try path_buf.appendSlice(self.allocator, self.root_dir);
+        try self.scanForMetaFiles(&path_buf);
     }
 
+    /// Clears both maps without freeing their backing capacity.
     pub fn clearRetainingCapacity(self: *AssetDatabase) void {
         var it = self.guid_to_path.iterator();
         while (it.next()) |entry| {
@@ -71,14 +88,17 @@ pub const AssetDatabase = struct {
         self.path_to_guid.clearRetainingCapacity();
     }
 
+    /// Returns the absolute asset path for `guid` if known.
     pub fn resolvePathByGuid(self: *const AssetDatabase, guid: AssetGuid) ?[]const u8 {
         return self.guid_to_path.get(guid);
     }
 
+    /// Returns the GUID for `asset_path_abs` if known.
     pub fn getGuidForPath(self: *const AssetDatabase, asset_path_abs: []const u8) ?AssetGuid {
         return self.path_to_guid.get(asset_path_abs);
     }
 
+    /// Returns the GUID for `asset_path_abs`, creating a `.meta` file when missing.
     pub fn getOrCreateGuidForAsset(self: *AssetDatabase, asset_path_abs: []const u8) !AssetGuid {
         if (self.path_to_guid.get(asset_path_abs)) |g| return g;
 
@@ -113,17 +133,24 @@ pub const AssetDatabase = struct {
         return guid;
     }
 
-    fn scanForMetaFiles(self: *AssetDatabase, dir_path: []const u8) !void {
+    fn scanForMetaFiles(self: *AssetDatabase, path_buf: *std.ArrayListUnmanaged(u8)) !void {
+        const dir_path = path_buf.items;
         var dir = std.fs.openDirAbsolute(dir_path, .{ .iterate = true }) catch return;
         defer dir.close();
 
         var it = dir.iterate();
         while (try it.next()) |entry| {
-            const child_path = try std.fs.path.join(self.allocator, &[_][]const u8{ dir_path, entry.name });
-            defer self.allocator.free(child_path);
+            const base_len = path_buf.items.len;
+            defer path_buf.items.len = base_len;
+
+            if (path_buf.items.len > 0 and path_buf.items[path_buf.items.len - 1] != std.fs.path.sep) {
+                try path_buf.appendSlice(self.allocator, std.fs.path.sep_str);
+            }
+            try path_buf.appendSlice(self.allocator, entry.name);
+            const child_path = path_buf.items;
 
             if (entry.kind == .directory) {
-                try self.scanForMetaFiles(child_path);
+                try self.scanForMetaFiles(path_buf);
                 continue;
             }
 
@@ -155,10 +182,12 @@ pub const AssetDatabase = struct {
     }
 };
 
+/// Returns `asset_path_abs ++ ".meta"`.
 pub fn metaPathForAsset(allocator: std.mem.Allocator, asset_path_abs: []const u8) ![]u8 {
     return std.mem.concat(allocator, u8, &[_][]const u8{ asset_path_abs, ".meta" });
 }
 
+/// Infers an importer type from `asset_path`'s extension.
 pub fn inferImporter(asset_path: []const u8) Importer {
     const ext = std.fs.path.extension(asset_path);
     if (std.mem.eql(u8, ext, ".png") or std.mem.eql(u8, ext, ".jpg") or std.mem.eql(u8, ext, ".jpeg") or std.mem.eql(u8, ext, ".tga") or std.mem.eql(u8, ext, ".bmp") or std.mem.eql(u8, ext, ".hdr") or std.mem.eql(u8, ext, ".exr")) {
@@ -179,6 +208,7 @@ pub fn inferImporter(asset_path: []const u8) Importer {
     return .Unknown;
 }
 
+/// Writes `guid` as 32 lowercase hex characters into `out`.
 pub fn guidToHex(guid: AssetGuid, out: *[32]u8) void {
     var bytes: [16]u8 = undefined;
     std.mem.writeInt(u128, &bytes, guid, .big);
@@ -191,6 +221,7 @@ pub fn guidToHex(guid: AssetGuid, out: *[32]u8) void {
     }
 }
 
+/// Parses a 32-hex-character GUID string (dashes are ignored).
 pub fn parseGuidHex(s: []const u8) !AssetGuid {
     var tmp: [32]u8 = undefined;
     var filled: usize = 0;

@@ -2,8 +2,6 @@
 //!
 //! Provides utilities for creating, uploading to, and destroying Vulkan buffers using VMA and
 //! timeline-semaphore synchronization via the centralized sync manager.
-//!
-//! TODO: Consider merging one-shot command buffer helpers with other upload paths to reduce duplication.
 const std = @import("std");
 const builtin = @import("builtin");
 const log = @import("../core/log.zig");
@@ -26,7 +24,7 @@ pub const VulkanBufferCreateInfo = extern struct {
 };
 
 /// Begins a one-shot command buffer for short-lived transfer operations.
-fn begin_single_time_commands(device: c.VkDevice, commandPool: c.VkCommandPool) c.VkCommandBuffer {
+pub fn begin_single_time_commands(device: c.VkDevice, commandPool: c.VkCommandPool) c.VkCommandBuffer {
     var allocInfo = std.mem.zeroes(c.VkCommandBufferAllocateInfo);
     allocInfo.sType = c.VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO;
     allocInfo.level = c.VK_COMMAND_BUFFER_LEVEL_PRIMARY;
@@ -59,49 +57,12 @@ fn end_single_time_commands(device: c.VkDevice, commandPool: c.VkCommandPool, qu
         return;
     }
 
-    const timeline_value = vk_sync_manager.vulkan_sync_manager_get_next_timeline_value(&vulkan_state.sync);
-
-    if (timeline_value == 0) {
-        buf_log.err("[BUFFER_MANAGER] Failed to get valid timeline value (got 0)", .{});
-        c.vkFreeCommandBuffers(device, commandPool, 1, &commandBuffer);
+    var timeline_value: u64 = 0;
+    const submit_result = vk_sync_manager.vulkan_sync_manager_submit_one_shot_command_buffer(&vulkan_state.sync, queue, commandBuffer, null, vulkan_state.context.vkQueueSubmit2, &timeline_value);
+    if (submit_result != c.VK_SUCCESS) {
+        buf_log.err("CMD_SUBMIT_FAILED: Failed to submit command buffer {any}: {d}", .{ commandBuffer, submit_result });
+        buf_log.warn("CMD_LEAK_WARNING: Command buffer {any} may leak due to submit failure - cannot free while potentially in pending state", .{commandBuffer});
         return;
-    }
-
-    {
-        vk_sync_manager.vulkan_sync_manager_lock_shared(device);
-        defer vk_sync_manager.vulkan_sync_manager_unlock_shared(device);
-
-        if (vulkan_state.sync.timeline_semaphore == null) {
-            buf_log.err("[BUFFER_MANAGER] Timeline semaphore is NULL!", .{});
-            c.vkFreeCommandBuffers(device, commandPool, 1, &commandBuffer);
-            return;
-        }
-
-        var cmd_buffer_info = std.mem.zeroes(c.VkCommandBufferSubmitInfo);
-        cmd_buffer_info.sType = c.VK_STRUCTURE_TYPE_COMMAND_BUFFER_SUBMIT_INFO;
-        cmd_buffer_info.commandBuffer = commandBuffer;
-
-        var signal_semaphore_info = std.mem.zeroes(c.VkSemaphoreSubmitInfo);
-        signal_semaphore_info.sType = c.VK_STRUCTURE_TYPE_SEMAPHORE_SUBMIT_INFO;
-        signal_semaphore_info.semaphore = vulkan_state.sync.timeline_semaphore;
-        signal_semaphore_info.value = timeline_value;
-        signal_semaphore_info.stageMask = c.VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT;
-
-        buf_log.debug("About to submit with semaphore {any}, value {d}", .{ vulkan_state.sync.timeline_semaphore, timeline_value });
-
-        var submit_info = std.mem.zeroes(c.VkSubmitInfo2);
-        submit_info.sType = c.VK_STRUCTURE_TYPE_SUBMIT_INFO_2;
-        submit_info.commandBufferInfoCount = 1;
-        submit_info.pCommandBufferInfos = &cmd_buffer_info;
-        submit_info.signalSemaphoreInfoCount = 1;
-        submit_info.pSignalSemaphoreInfos = &signal_semaphore_info;
-
-        const submit_result = vk_sync_manager.vulkan_sync_manager_submit_queue2(queue, 1, @ptrCast(&submit_info), null, vulkan_state.context.vkQueueSubmit2);
-        if (submit_result != c.VK_SUCCESS) {
-            buf_log.err("CMD_SUBMIT_FAILED: Failed to submit command buffer {any}: {d}", .{ commandBuffer, submit_result });
-            buf_log.warn("CMD_LEAK_WARNING: Command buffer {any} may leak due to submit failure - cannot free while potentially in pending state", .{commandBuffer});
-            return;
-        }
     }
 
     var error_info = std.mem.zeroes(types.VulkanTimelineErrorInfo);
@@ -222,7 +183,6 @@ pub export fn vk_buffer_destroy_immediate(buffer_ptr: ?*VulkanBuffer, device: c.
     const buffer = buffer_ptr.?;
     if (buffer.handle == null) return;
 
-    // Direct cleanup without waiting
     cleanup_buffer_resources(buffer, device, allocator);
 }
 
@@ -240,10 +200,8 @@ pub export fn vk_buffer_destroy(buffer_ptr: ?*VulkanBuffer, device: c.VkDevice, 
 
     buf_log.info("DESTROY_START: buffer={any} handle={any} memory={any} mapped={any}", .{ buffer, buffer.handle, buffer.memory, buffer.mapped });
 
-    // Wait for buffer to be idle
     wait_for_buffer_idle(buffer, device, vulkan_state);
 
-    // Cleanup resources
     cleanup_buffer_resources(buffer, device, allocator);
 
     buf_log.info("DESTROY_COMPLETE: Buffer structure cleared", .{});
@@ -266,7 +224,6 @@ pub export fn vk_buffer_upload_data(buffer_ptr: ?*VulkanBuffer, device: c.VkDevi
         return false;
     }
 
-    // Check if buffer is host visible
     if ((buffer.properties & c.VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT) == 0) {
         buf_log.err("Buffer is not host visible, cannot upload data directly", .{});
         return false;
@@ -274,12 +231,9 @@ pub export fn vk_buffer_upload_data(buffer_ptr: ?*VulkanBuffer, device: c.VkDevi
 
     var mappedData: ?*anyopaque = null;
     if (buffer.mapped) |mapped| {
-        // Use existing mapping
-        // Zig pointer arithmetic needs casting to byte pointer first
         const mappedBytes = @as([*]u8, @ptrCast(mapped));
         mappedData = @ptrCast(mappedBytes + offset);
 
-        // Ensure we don't write past buffer bounds
         if (offset + size > buffer.size) {
             buf_log.err("Buffer upload overflow: offset={d}, size={d}, buffer size={d}", .{ offset, size, buffer.size });
             return false;
@@ -288,7 +242,6 @@ pub export fn vk_buffer_upload_data(buffer_ptr: ?*VulkanBuffer, device: c.VkDevi
         @memcpy(@as([*]u8, @ptrCast(mappedData))[0..size], @as([*]const u8, @ptrCast(data))[0..size]);
     } else {
         if (allocator) |alloc| {
-            // Temporary mapping
             if (vk_allocator.map_memory(alloc, buffer.allocation, &mappedData) != c.VK_SUCCESS) {
                 buf_log.err("Failed to map buffer memory for data upload", .{});
                 return false;
@@ -297,7 +250,6 @@ pub export fn vk_buffer_upload_data(buffer_ptr: ?*VulkanBuffer, device: c.VkDevi
             const mappedBytes = @as([*]u8, @ptrCast(mappedData));
             const offsetPtr = mappedBytes + offset;
 
-            // Ensure we don't write past buffer bounds
             if (offset + size > buffer.size) {
                 buf_log.err("Buffer upload overflow: offset={d}, size={d}, buffer size={d}", .{ offset, size, buffer.size });
                 vk_allocator.unmap_memory(alloc, buffer.allocation);
@@ -312,7 +264,6 @@ pub export fn vk_buffer_upload_data(buffer_ptr: ?*VulkanBuffer, device: c.VkDevi
         }
     }
 
-    // Flush if memory is not coherent
     if ((buffer.properties & c.VK_MEMORY_PROPERTY_HOST_COHERENT_BIT) == 0) {
         if (allocator) |alloc| {
             _ = c.vmaFlushAllocation(alloc.handle, buffer.allocation, offset, size);
@@ -383,7 +334,6 @@ pub export fn vk_buffer_create_device_local(buffer_ptr: ?*VulkanBuffer, device: 
     const buffer = buffer_ptr.?;
     const allocator = allocator_ptr.?; // Assuming allocator is required here as we use it
 
-    // Create staging buffer
     var stagingInfo = std.mem.zeroes(VulkanBufferCreateInfo);
     stagingInfo.size = size;
     stagingInfo.usage = c.VK_BUFFER_USAGE_TRANSFER_SRC_BIT;
@@ -396,14 +346,12 @@ pub export fn vk_buffer_create_device_local(buffer_ptr: ?*VulkanBuffer, device: 
         return false;
     }
 
-    // Upload data to staging buffer
     if (!vk_buffer_upload_data(&stagingBuffer, device, allocator, data, size, 0)) {
         buf_log.err("Failed to upload data to staging buffer", .{});
         vk_buffer_destroy(&stagingBuffer, device, allocator, vulkan_state);
         return false;
     }
 
-    // Create device local buffer
     var deviceBufferInfo = std.mem.zeroes(VulkanBufferCreateInfo);
     deviceBufferInfo.size = size;
     deviceBufferInfo.usage = @as(c.VkBufferUsageFlags, c.VK_BUFFER_USAGE_TRANSFER_DST_BIT) | usage;
@@ -416,7 +364,6 @@ pub export fn vk_buffer_create_device_local(buffer_ptr: ?*VulkanBuffer, device: 
         return false;
     }
 
-    // Copy from staging to device buffer
     if (!vk_buffer_copy(device, commandPool, queue, stagingBuffer.handle, buffer.handle, size, 0, 0, vulkan_state)) {
         buf_log.err("Failed to copy data to device buffer", .{});
         vk_buffer_destroy(buffer, device, allocator, vulkan_state);
@@ -424,7 +371,6 @@ pub export fn vk_buffer_create_device_local(buffer_ptr: ?*VulkanBuffer, device: 
         return false;
     }
 
-    // Clean up staging buffer
     vk_buffer_destroy(&stagingBuffer, device, allocator, vulkan_state);
 
     return true;

@@ -30,6 +30,86 @@ const c = @import("vulkan_c.zig").c;
 
 const pbr_log = log.ScopedLogger("PBR");
 
+const SceneCullCache = struct {
+    scene_ptr: ?*const scene.CardinalScene = null,
+    meshes_ptr: ?[*]scene.CardinalMesh = null,
+    mesh_count: u32 = 0,
+    index_offsets: []u32 = @as([]u32, &[_]u32{}),
+    mesh_aabbs: []math.AABB = @as([]math.AABB, &[_]math.AABB{}),
+    bvh: math.BVH = .{},
+    visible: std.ArrayListUnmanaged(u32) = .{},
+    allocator: ?std.mem.Allocator = null,
+
+    fn deinit(self: *SceneCullCache) void {
+        if (self.allocator) |a| {
+            if (self.index_offsets.len > 0) a.free(self.index_offsets);
+            if (self.mesh_aabbs.len > 0) a.free(self.mesh_aabbs);
+            self.bvh.deinit(a);
+            self.visible.deinit(a);
+        }
+        self.* = .{};
+    }
+};
+
+var g_scene_cull_cache: SceneCullCache = .{};
+
+fn ensure_visible_meshes(scn: *const scene.CardinalScene, view: math.Mat4, proj: math.Mat4) []const u32 {
+    if (scn.mesh_count == 0 or scn.meshes == null) return &[_]u32{};
+
+    const mem_alloc = memory.cardinal_get_allocator_for_category(.RENDERER);
+    const allocator = mem_alloc.as_allocator();
+    if (g_scene_cull_cache.allocator == null) g_scene_cull_cache.allocator = allocator;
+
+    const mesh_count: usize = @intCast(scn.mesh_count);
+    const scene_changed = g_scene_cull_cache.scene_ptr != scn or g_scene_cull_cache.meshes_ptr != scn.meshes or g_scene_cull_cache.mesh_count != scn.mesh_count;
+    if (scene_changed) {
+        g_scene_cull_cache.scene_ptr = scn;
+        g_scene_cull_cache.meshes_ptr = scn.meshes;
+        g_scene_cull_cache.mesh_count = scn.mesh_count;
+        if (g_scene_cull_cache.index_offsets.len < mesh_count) {
+            if (g_scene_cull_cache.index_offsets.len > 0) allocator.free(g_scene_cull_cache.index_offsets);
+            g_scene_cull_cache.index_offsets = allocator.alloc(u32, mesh_count) catch return &[_]u32{};
+        }
+        if (g_scene_cull_cache.mesh_aabbs.len < mesh_count) {
+            if (g_scene_cull_cache.mesh_aabbs.len > 0) allocator.free(g_scene_cull_cache.mesh_aabbs);
+            g_scene_cull_cache.mesh_aabbs = allocator.alloc(math.AABB, mesh_count) catch return &[_]u32{};
+        }
+
+        var offset: u32 = 0;
+        var i: usize = 0;
+        while (i < mesh_count) : (i += 1) {
+            g_scene_cull_cache.index_offsets[i] = offset;
+            const mesh = &scn.meshes.?[@intCast(i)];
+            offset +%= mesh.index_count;
+        }
+
+        g_scene_cull_cache.visible.ensureTotalCapacity(allocator, mesh_count) catch {};
+    }
+
+    var i: usize = 0;
+    while (i < mesh_count) : (i += 1) {
+        const mesh = &scn.meshes.?[@intCast(i)];
+        const local = math.AABB{
+            .min = math.Vec3.fromArray(mesh.bounding_box_min),
+            .max = math.Vec3.fromArray(mesh.bounding_box_max),
+        };
+        const m = math.Mat4.fromArray(mesh.transform);
+        g_scene_cull_cache.mesh_aabbs[i] = local.transformFast(m);
+    }
+
+    if (scene_changed) {
+        g_scene_cull_cache.bvh.build(allocator, g_scene_cull_cache.mesh_aabbs[0..mesh_count]) catch return &[_]u32{};
+    } else {
+        g_scene_cull_cache.bvh.refit(g_scene_cull_cache.mesh_aabbs[0..mesh_count]);
+    }
+
+    const frustum = math.Frustum.fromMatrix(proj.mul(view));
+    g_scene_cull_cache.visible.clearRetainingCapacity();
+    g_scene_cull_cache.bvh.queryFrustum(frustum, g_scene_cull_cache.mesh_aabbs[0..mesh_count], &g_scene_cull_cache.visible, allocator);
+
+    return g_scene_cull_cache.visible.items;
+}
+
 /// Creates and allocates the descriptor manager used by the PBR pipeline.
 ///
 fn create_pbr_descriptor_manager(pipeline: *types.VulkanPBRPipeline, device: c.VkDevice, allocator: *types.VulkanAllocator, vulkan_state: ?*types.VulkanState, bindings_map: *std.AutoHashMap(u32, c.VkDescriptorSetLayoutBinding)) bool {
@@ -49,7 +129,6 @@ fn create_pbr_pipeline_layout(pipeline: *types.VulkanPBRPipeline, device: c.VkDe
 
     if (pipeline.textureManager != null) {
         pbr_log.info("Checking bindless pool...", .{});
-        // Always try to use bindless layout if pool is valid, even if no textures yet
         const bindlessLayout = vk_descriptor_indexing.vk_bindless_texture_get_layout(&pipeline.textureManager.?.bindless_pool);
         if (bindlessLayout != null) {
             pbr_log.info("Bindless layout found and added to pipeline layout at index 1. Handle: 0x{x}", .{@intFromPtr(bindlessLayout)});
@@ -84,8 +163,6 @@ fn create_pbr_graphics_pipeline(pipeline: *types.VulkanPBRPipeline, device: c.Vk
     defer parsed.deinit();
 
     var descriptor = parsed.value;
-
-    // Override shader modules with pre-compiled ones
     if (descriptor.vertex_shader) |*vs| {
         vs.module_handle = @intFromPtr(vertShader);
     } else {
@@ -104,8 +181,6 @@ fn create_pbr_graphics_pipeline(pipeline: *types.VulkanPBRPipeline, device: c.Vk
             .module_handle = @intFromPtr(fragShader),
         };
     }
-
-    // Override rendering formats
     var color_formats = [_]c.VkFormat{swapchainFormat};
     descriptor.rendering.color_formats = &color_formats;
     descriptor.rendering.depth_format = depthFormat;
@@ -121,10 +196,7 @@ fn create_pbr_graphics_pipeline(pipeline: *types.VulkanPBRPipeline, device: c.Vk
             descriptor.flags |= c.VK_PIPELINE_CREATE_DESCRIPTOR_BUFFER_BIT_EXT;
         }
     }
-
-    // Disable culling to ensure visibility while debugging
     descriptor.rasterization.cull_mode = .none;
-    // descriptor.rasterization.front_face = .clockwise;
 
     builder.build(descriptor, pipeline.pipelineLayout, outPipeline) catch {
         return false;
@@ -136,7 +208,6 @@ fn create_pbr_graphics_pipeline(pipeline: *types.VulkanPBRPipeline, device: c.Vk
 fn create_pbr_uniform_buffers(pipeline: *types.VulkanPBRPipeline, device: c.VkDevice, allocator: *types.VulkanAllocator) bool {
     var i: u32 = 0;
     while (i < types.MAX_FRAMES_IN_FLIGHT) : (i += 1) {
-        // UBO
         var uboInfo = std.mem.zeroes(buffer_mgr.VulkanBufferCreateInfo);
         uboInfo.size = @sizeOf(types.PBRUniformBufferObject);
         uboInfo.usage = c.VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT | c.VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT;
@@ -149,8 +220,6 @@ fn create_pbr_uniform_buffers(pipeline: *types.VulkanPBRPipeline, device: c.VkDe
         pipeline.uniformBuffersMemory[i] = uboBuffer.memory;
         pipeline.uniformBuffersAllocation[i] = uboBuffer.allocation;
         pipeline.uniformBuffersMapped[i] = uboBuffer.mapped;
-
-        // Lighting
         var lightInfo = std.mem.zeroes(buffer_mgr.VulkanBufferCreateInfo);
         lightInfo.size = @sizeOf(types.PBRLightingBuffer);
         lightInfo.usage = c.VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | c.VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT;
@@ -159,7 +228,6 @@ fn create_pbr_uniform_buffers(pipeline: *types.VulkanPBRPipeline, device: c.VkDe
 
         var lightBuffer: buffer_mgr.VulkanBuffer = undefined;
         if (!buffer_mgr.vk_buffer_create(&lightBuffer, device, allocator, &lightInfo)) {
-            // Cleanup UBO for this frame
             buffer_mgr.vk_buffer_destroy(&uboBuffer, device, allocator, null);
             return false;
         }
@@ -167,8 +235,6 @@ fn create_pbr_uniform_buffers(pipeline: *types.VulkanPBRPipeline, device: c.VkDe
         pipeline.lightingBuffersMemory[i] = lightBuffer.memory;
         pipeline.lightingBuffersAllocation[i] = lightBuffer.allocation;
         pipeline.lightingBuffersMapped[i] = lightBuffer.mapped;
-
-        // Bone matrices
         pipeline.maxBones = 256;
         var boneInfo = std.mem.zeroes(buffer_mgr.VulkanBufferCreateInfo);
         boneInfo.size = pipeline.maxBones * 16 * @sizeOf(f32);
@@ -186,8 +252,6 @@ fn create_pbr_uniform_buffers(pipeline: *types.VulkanPBRPipeline, device: c.VkDe
         pipeline.boneMatricesBuffersMemory[i] = boneBuffer.memory;
         pipeline.boneMatricesBuffersAllocation[i] = boneBuffer.allocation;
         pipeline.boneMatricesBuffersMapped[i] = boneBuffer.mapped;
-
-        // Init bone matrices to identity
         const boneMatrices = @as([*]f32, @ptrCast(@alignCast(pipeline.boneMatricesBuffersMapped[i])));
         var b: u32 = 0;
         while (b < pipeline.maxBones) : (b += 1) {
@@ -207,8 +271,7 @@ fn initialize_pbr_defaults(pipeline: *types.VulkanPBRPipeline, config: *const ty
     defaultLighting.count = 1;
     defaultLighting.lights[0].lightDirection = config.pbr_default_light_direction;
     defaultLighting.lights[0].lightColor = config.pbr_default_light_color;
-    defaultLighting.lights[0].params[0] = config.pbr_ambient_color[3]; // Range from config
-    // Cones are 0.0 by default (Directional)
+    defaultLighting.lights[0].params[0] = config.pbr_ambient_color[3];
 
     var i: u32 = 0;
     while (i < types.MAX_FRAMES_IN_FLIGHT) : (i += 1) {
@@ -1104,6 +1167,8 @@ pub export fn vk_pbr_pipeline_destroy(pipeline: ?*types.VulkanPBRPipeline, devic
     const pipe = pipeline.?;
     const alloc = allocator.?;
 
+    g_scene_cull_cache.deinit();
+
     pbr_log.debug("vk_pbr_pipeline_destroy: start", .{});
 
     if (pipe.textureManager != null) {
@@ -1536,6 +1601,20 @@ pub export fn vk_pbr_render(pipeline: ?*types.VulkanPBRPipeline, commandBuffer: 
         return;
     }
 
+    if (pipe.textureManager) |tm| {
+        if (tm.hasPlaceholder and tm.textures != null) {
+            const placeholder = &tm.textures.?[0];
+            if (placeholder.view == null or placeholder.sampler == null) {
+                pbr_log.err("vk_pbr_render: placeholder texture is not valid (view={any} sampler={any})", .{ placeholder.view, placeholder.sampler });
+                return;
+            }
+        }
+    }
+
+    const view = math.Mat4.fromArray(pipe.current_ubo.view);
+    const proj = math.Mat4.fromArray(pipe.current_ubo.proj);
+    const visible_meshes = ensure_visible_meshes(scn, view, proj);
+
     // Pass 1: Opaque
     cmd.bindPipeline(c.VK_PIPELINE_BIND_POINT_GRAPHICS, pipe.pipeline);
 
@@ -1618,11 +1697,11 @@ pub export fn vk_pbr_render(pipeline: ?*types.VulkanPBRPipeline, commandBuffer: 
 
     c.vkCmdSetDepthBias(commandBuffer, 0.0, 0.0, 0.0);
 
-    var indexOffset: u32 = 0;
-    var i: u32 = 0;
     var drawn_count: u32 = 0;
-    while (i < scn.mesh_count) : (i += 1) {
+    for (visible_meshes) |mesh_index| {
+        const i: u32 = mesh_index;
         const mesh = &scn.meshes.?[i];
+        const indexOffset = if (@as(usize, @intCast(mesh_index)) < g_scene_cull_cache.index_offsets.len) g_scene_cull_cache.index_offsets[@intCast(mesh_index)] else 0;
         var is_blend = false;
         var is_mask = false;
 
@@ -1636,7 +1715,6 @@ pub export fn vk_pbr_render(pipeline: ?*types.VulkanPBRPipeline, commandBuffer: 
         }
 
         if (is_blend) {
-            indexOffset +%= mesh.index_count;
             continue;
         }
 
@@ -1648,11 +1726,9 @@ pub export fn vk_pbr_render(pipeline: ?*types.VulkanPBRPipeline, commandBuffer: 
         }
 
         if (mesh.vertex_count == 0 or mesh.index_count == 0 or mesh.index_count > 1000000000) {
-            indexOffset +%= mesh.index_count;
             continue;
         }
         if (!mesh.visible) {
-            indexOffset +%= mesh.index_count;
             continue;
         }
 
@@ -1698,11 +1774,10 @@ pub export fn vk_pbr_render(pipeline: ?*types.VulkanPBRPipeline, commandBuffer: 
 
         cmd.pushConstants(pipe.pipelineLayout, c.VK_SHADER_STAGE_VERTEX_BIT | c.VK_SHADER_STAGE_FRAGMENT_BIT, 0, @sizeOf(types.PBRPushConstants), &pushConstants);
 
-        if (@as(u64, indexOffset) + @as(u64, mesh.index_count) > pipe.totalIndexCount) break;
+        if (@as(u64, indexOffset) + @as(u64, mesh.index_count) > pipe.totalIndexCount) continue;
 
         cmd.drawIndexed(mesh.index_count, 1, indexOffset, 0, 0);
         drawn_count += 1;
-        indexOffset +%= mesh.index_count;
     }
 
     pbr_log.debug("vk_pbr_render frame {d}: meshes={d}, drawn_opaque={d}", .{ frame, scn.mesh_count, drawn_count });
@@ -1786,9 +1861,8 @@ pub export fn vk_pbr_render(pipeline: ?*types.VulkanPBRPipeline, commandBuffer: 
     const ubo = @as(*types.PBRUniformBufferObject, @ptrCast(@alignCast(pipe.uniformBuffersMapped[frame])));
     const camPos = math.Vec3.fromArray(ubo.viewPos);
 
-    var currentIndexOffset: u32 = 0;
-    i = 0;
-    while (i < scn.mesh_count) : (i += 1) {
+    for (visible_meshes) |mesh_index| {
+        const i: u32 = mesh_index;
         const mesh = &scn.meshes.?[i];
 
         var is_blend = false;
@@ -1820,14 +1894,11 @@ pub export fn vk_pbr_render(pipeline: ?*types.VulkanPBRPipeline, commandBuffer: 
                 const centerWorld = math.Vec3{ .x = wx, .y = wy, .z = wz };
 
                 const distSq = centerWorld.sub(camPos).lengthSq();
-                transparent_meshes.append(allocator, .{ .index = i, .distSq = distSq, .indexOffset = currentIndexOffset }) catch |err| {
+                const indexOffset = if (@as(usize, @intCast(mesh_index)) < g_scene_cull_cache.index_offsets.len) g_scene_cull_cache.index_offsets[@intCast(mesh_index)] else 0;
+                transparent_meshes.append(allocator, .{ .index = i, .distSq = distSq, .indexOffset = indexOffset }) catch |err| {
                     pbr_log.err("Failed to append transparent mesh: {s}", .{@errorName(err)});
                 };
             }
-        }
-
-        if (mesh.index_count > 0 and mesh.indices != null) {
-            currentIndexOffset +%= mesh.index_count;
         }
     }
 

@@ -1,8 +1,37 @@
+//! Procedural mesh generators used by editor tools.
+//!
+//! Provides small helpers to synthesize engine scene data (meshes/materials) for previewing or
+//! authoring workflows (e.g. generating a flat terrain grid).
 const std = @import("std");
 const engine = @import("cardinal_engine");
 
 const memory = engine.memory;
 const scene = engine.scene;
+
+const AllocBundle = struct {
+    assets_alloc: *memory.CardinalAllocator,
+
+    meshes_ptr: ?*anyopaque = null,
+    materials_ptr: ?*anyopaque = null,
+    vertices_ptr: ?*anyopaque = null,
+    indices_ptr: ?*anyopaque = null,
+    bottom_vertices_ptr: ?*anyopaque = null,
+    bottom_indices_ptr: ?*anyopaque = null,
+    wall_vertices_ptr: ?*anyopaque = null,
+    wall_indices_ptr: ?*anyopaque = null,
+
+    fn deinit(self: *AllocBundle) void {
+        if (self.wall_indices_ptr) |p| memory.cardinal_free(self.assets_alloc, p);
+        if (self.wall_vertices_ptr) |p| memory.cardinal_free(self.assets_alloc, p);
+        if (self.bottom_indices_ptr) |p| memory.cardinal_free(self.assets_alloc, p);
+        if (self.bottom_vertices_ptr) |p| memory.cardinal_free(self.assets_alloc, p);
+        if (self.indices_ptr) |p| memory.cardinal_free(self.assets_alloc, p);
+        if (self.vertices_ptr) |p| memory.cardinal_free(self.assets_alloc, p);
+        if (self.materials_ptr) |p| memory.cardinal_free(self.assets_alloc, p);
+        if (self.meshes_ptr) |p| memory.cardinal_free(self.assets_alloc, p);
+        self.* = .{ .assets_alloc = self.assets_alloc };
+    }
+};
 
 fn emit_wall_quad(wall_vertices: [*]scene.CardinalVertex, wall_indices: [*]u32, wall_v: *u32, wall_i: *u32, v0: scene.CardinalVertex, v1: scene.CardinalVertex, nx: f32, nz: f32, flip: bool, thickness: f32) void {
     const top0 = v0;
@@ -54,6 +83,7 @@ fn emit_wall_quad(wall_vertices: [*]scene.CardinalVertex, wall_indices: [*]u32, 
     wall_i.* += 6;
 }
 
+/// Builds a flat grid mesh (and optional "thickness" walls) as a standalone scene.
 pub fn build_flat_terrain_scene(grid_resolution: u32, world_size: f32, thickness: f32) ?scene.CardinalScene {
     const assets_alloc = memory.cardinal_get_allocator_for_category(.ASSETS);
 
@@ -65,27 +95,17 @@ pub fn build_flat_terrain_scene(grid_resolution: u32, world_size: f32, thickness
     const index_count: u32 = grid * grid * 6;
 
     if (thickness <= 0.01) {
-        const meshes_ptr = memory.cardinal_calloc(assets_alloc, 1, @sizeOf(scene.CardinalMesh)) orelse return null;
-        const materials_ptr = memory.cardinal_calloc(assets_alloc, 1, @sizeOf(scene.CardinalMaterial)) orelse {
-            memory.cardinal_free(assets_alloc, meshes_ptr);
-            return null;
-        };
-        const vertices_ptr = memory.cardinal_alloc(assets_alloc, @as(usize, vertex_count) * @sizeOf(scene.CardinalVertex)) orelse {
-            memory.cardinal_free(assets_alloc, materials_ptr);
-            memory.cardinal_free(assets_alloc, meshes_ptr);
-            return null;
-        };
-        const indices_ptr = memory.cardinal_alloc(assets_alloc, @as(usize, index_count) * @sizeOf(u32)) orelse {
-            memory.cardinal_free(assets_alloc, vertices_ptr);
-            memory.cardinal_free(assets_alloc, materials_ptr);
-            memory.cardinal_free(assets_alloc, meshes_ptr);
-            return null;
-        };
+        var allocs = AllocBundle{ .assets_alloc = assets_alloc };
+        allocs.meshes_ptr = memory.cardinal_calloc(assets_alloc, 1, @sizeOf(scene.CardinalMesh)) orelse return null;
+        errdefer allocs.deinit();
+        allocs.materials_ptr = memory.cardinal_calloc(assets_alloc, 1, @sizeOf(scene.CardinalMaterial)) orelse return null;
+        allocs.vertices_ptr = memory.cardinal_alloc(assets_alloc, @as(usize, vertex_count) * @sizeOf(scene.CardinalVertex)) orelse return null;
+        allocs.indices_ptr = memory.cardinal_alloc(assets_alloc, @as(usize, index_count) * @sizeOf(u32)) orelse return null;
 
-        const meshes: [*]scene.CardinalMesh = @ptrCast(@alignCast(meshes_ptr));
-        const materials: [*]scene.CardinalMaterial = @ptrCast(@alignCast(materials_ptr));
-        const vertices: [*]scene.CardinalVertex = @ptrCast(@alignCast(vertices_ptr));
-        const indices: [*]u32 = @ptrCast(@alignCast(indices_ptr));
+        const meshes: [*]scene.CardinalMesh = @ptrCast(@alignCast(allocs.meshes_ptr));
+        const materials: [*]scene.CardinalMaterial = @ptrCast(@alignCast(allocs.materials_ptr));
+        const vertices: [*]scene.CardinalVertex = @ptrCast(@alignCast(allocs.vertices_ptr));
+        const indices: [*]u32 = @ptrCast(@alignCast(allocs.indices_ptr));
 
         const half = world_size * 0.5;
 
@@ -188,69 +208,29 @@ pub fn build_flat_terrain_scene(grid_resolution: u32, world_size: f32, thickness
         return out;
     }
 
-    const meshes_ptr = memory.cardinal_calloc(assets_alloc, 3, @sizeOf(scene.CardinalMesh)) orelse return null;
-    const materials_ptr = memory.cardinal_calloc(assets_alloc, 1, @sizeOf(scene.CardinalMaterial)) orelse {
-        memory.cardinal_free(assets_alloc, meshes_ptr);
-        return null;
-    };
-    const vertices_ptr = memory.cardinal_alloc(assets_alloc, @as(usize, vertex_count) * @sizeOf(scene.CardinalVertex)) orelse {
-        memory.cardinal_free(assets_alloc, materials_ptr);
-        memory.cardinal_free(assets_alloc, meshes_ptr);
-        return null;
-    };
-    const indices_ptr = memory.cardinal_alloc(assets_alloc, @as(usize, index_count) * @sizeOf(u32)) orelse {
-        memory.cardinal_free(assets_alloc, vertices_ptr);
-        memory.cardinal_free(assets_alloc, materials_ptr);
-        memory.cardinal_free(assets_alloc, meshes_ptr);
-        return null;
-    };
-    const bottom_vertices_ptr = memory.cardinal_alloc(assets_alloc, @as(usize, vertex_count) * @sizeOf(scene.CardinalVertex)) orelse {
-        memory.cardinal_free(assets_alloc, indices_ptr);
-        memory.cardinal_free(assets_alloc, vertices_ptr);
-        memory.cardinal_free(assets_alloc, materials_ptr);
-        memory.cardinal_free(assets_alloc, meshes_ptr);
-        return null;
-    };
-    const bottom_indices_ptr = memory.cardinal_alloc(assets_alloc, @as(usize, index_count) * @sizeOf(u32)) orelse {
-        memory.cardinal_free(assets_alloc, bottom_vertices_ptr);
-        memory.cardinal_free(assets_alloc, indices_ptr);
-        memory.cardinal_free(assets_alloc, vertices_ptr);
-        memory.cardinal_free(assets_alloc, materials_ptr);
-        memory.cardinal_free(assets_alloc, meshes_ptr);
-        return null;
-    };
+    var allocs = AllocBundle{ .assets_alloc = assets_alloc };
+    allocs.meshes_ptr = memory.cardinal_calloc(assets_alloc, 3, @sizeOf(scene.CardinalMesh)) orelse return null;
+    errdefer allocs.deinit();
+    allocs.materials_ptr = memory.cardinal_calloc(assets_alloc, 1, @sizeOf(scene.CardinalMaterial)) orelse return null;
+    allocs.vertices_ptr = memory.cardinal_alloc(assets_alloc, @as(usize, vertex_count) * @sizeOf(scene.CardinalVertex)) orelse return null;
+    allocs.indices_ptr = memory.cardinal_alloc(assets_alloc, @as(usize, index_count) * @sizeOf(u32)) orelse return null;
+    allocs.bottom_vertices_ptr = memory.cardinal_alloc(assets_alloc, @as(usize, vertex_count) * @sizeOf(scene.CardinalVertex)) orelse return null;
+    allocs.bottom_indices_ptr = memory.cardinal_alloc(assets_alloc, @as(usize, index_count) * @sizeOf(u32)) orelse return null;
 
     const max_edges: u32 = 4 * grid * grid + 4 * grid;
     const wall_vertex_cap: u32 = max_edges * 4;
     const wall_index_cap: u32 = max_edges * 6;
-    const wall_vertices_ptr = memory.cardinal_alloc(assets_alloc, @as(usize, wall_vertex_cap) * @sizeOf(scene.CardinalVertex)) orelse {
-        memory.cardinal_free(assets_alloc, bottom_indices_ptr);
-        memory.cardinal_free(assets_alloc, bottom_vertices_ptr);
-        memory.cardinal_free(assets_alloc, indices_ptr);
-        memory.cardinal_free(assets_alloc, vertices_ptr);
-        memory.cardinal_free(assets_alloc, materials_ptr);
-        memory.cardinal_free(assets_alloc, meshes_ptr);
-        return null;
-    };
-    const wall_indices_ptr = memory.cardinal_alloc(assets_alloc, @as(usize, wall_index_cap) * @sizeOf(u32)) orelse {
-        memory.cardinal_free(assets_alloc, wall_vertices_ptr);
-        memory.cardinal_free(assets_alloc, bottom_indices_ptr);
-        memory.cardinal_free(assets_alloc, bottom_vertices_ptr);
-        memory.cardinal_free(assets_alloc, indices_ptr);
-        memory.cardinal_free(assets_alloc, vertices_ptr);
-        memory.cardinal_free(assets_alloc, materials_ptr);
-        memory.cardinal_free(assets_alloc, meshes_ptr);
-        return null;
-    };
+    allocs.wall_vertices_ptr = memory.cardinal_alloc(assets_alloc, @as(usize, wall_vertex_cap) * @sizeOf(scene.CardinalVertex)) orelse return null;
+    allocs.wall_indices_ptr = memory.cardinal_alloc(assets_alloc, @as(usize, wall_index_cap) * @sizeOf(u32)) orelse return null;
 
-    const meshes: [*]scene.CardinalMesh = @ptrCast(@alignCast(meshes_ptr));
-    const materials: [*]scene.CardinalMaterial = @ptrCast(@alignCast(materials_ptr));
-    const vertices: [*]scene.CardinalVertex = @ptrCast(@alignCast(vertices_ptr));
-    const indices: [*]u32 = @ptrCast(@alignCast(indices_ptr));
-    const bottom_vertices: [*]scene.CardinalVertex = @ptrCast(@alignCast(bottom_vertices_ptr));
-    const bottom_indices: [*]u32 = @ptrCast(@alignCast(bottom_indices_ptr));
-    const wall_vertices: [*]scene.CardinalVertex = @ptrCast(@alignCast(wall_vertices_ptr));
-    const wall_indices: [*]u32 = @ptrCast(@alignCast(wall_indices_ptr));
+    const meshes: [*]scene.CardinalMesh = @ptrCast(@alignCast(allocs.meshes_ptr));
+    const materials: [*]scene.CardinalMaterial = @ptrCast(@alignCast(allocs.materials_ptr));
+    const vertices: [*]scene.CardinalVertex = @ptrCast(@alignCast(allocs.vertices_ptr));
+    const indices: [*]u32 = @ptrCast(@alignCast(allocs.indices_ptr));
+    const bottom_vertices: [*]scene.CardinalVertex = @ptrCast(@alignCast(allocs.bottom_vertices_ptr));
+    const bottom_indices: [*]u32 = @ptrCast(@alignCast(allocs.bottom_indices_ptr));
+    const wall_vertices: [*]scene.CardinalVertex = @ptrCast(@alignCast(allocs.wall_vertices_ptr));
+    const wall_indices: [*]u32 = @ptrCast(@alignCast(allocs.wall_indices_ptr));
 
     const half = world_size * 0.5;
     const min_y: f32 = 0.0;

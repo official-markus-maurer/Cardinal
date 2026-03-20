@@ -7,6 +7,240 @@ const engine = @import("cardinal_engine");
 const components = engine.ecs_components;
 const EditorState = @import("../editor_state.zig").EditorState;
 
+fn ensure_hierarchy(state: *EditorState, entity: engine.ecs_entity.Entity) components.Hierarchy {
+    if (state.runtime.registry.get(components.Hierarchy, entity)) |h| return h.*;
+    state.runtime.registry.add(entity, components.Hierarchy{}) catch {};
+    return components.Hierarchy{};
+}
+
+fn is_descendant_of(state: *EditorState, maybe_descendant: engine.ecs_entity.Entity, ancestor: engine.ecs_entity.Entity) bool {
+    var current: ?engine.ecs_entity.Entity = maybe_descendant;
+    var guard: u32 = 0;
+    while (current) |e| {
+        if (guard > 2048) break;
+        guard += 1;
+        if (e.id == ancestor.id) return true;
+        const h = state.runtime.registry.get(components.Hierarchy, e) orelse break;
+        current = h.parent;
+    }
+    return false;
+}
+
+fn repair_parent_links(state: *EditorState, parent: engine.ecs_entity.Entity) void {
+    if (!state.runtime.registry.entity_manager.is_alive(parent)) return;
+    const alloc = engine.memory.cardinal_get_allocator_for_category(.ENGINE).as_allocator();
+
+    var children: std.ArrayListUnmanaged(engine.ecs_entity.Entity) = .{};
+    defer children.deinit(alloc);
+
+    var child_set: std.AutoHashMapUnmanaged(u64, void) = .{};
+    defer child_set.deinit(alloc);
+
+    var view = state.runtime.registry.view(components.Hierarchy);
+    var it = view.iterator();
+    while (it.next()) |entry| {
+        const ent = entry.entity;
+        const h = entry.component.*;
+        if (h.parent) |p| {
+            if (p.id == parent.id) {
+                children.append(alloc, ent) catch {};
+                child_set.put(alloc, ent.id, {}) catch {};
+            }
+        }
+    }
+
+    var parent_h = ensure_hierarchy(state, parent);
+    if (children.items.len == 0) {
+        parent_h.first_child = null;
+        parent_h.last_child = null;
+        parent_h.child_count = 0;
+        state.runtime.registry.add(parent, parent_h) catch {};
+        return;
+    }
+
+    var head: engine.ecs_entity.Entity = children.items[0];
+    for (children.items) |ent| {
+        const h = ensure_hierarchy(state, ent);
+        if (h.prev_sibling == null) {
+            head = ent;
+            break;
+        }
+        const prev = h.prev_sibling.?;
+        if (!child_set.contains(prev.id)) {
+            head = ent;
+            break;
+        }
+    }
+
+    var visited: std.AutoHashMapUnmanaged(u64, void) = .{};
+    defer visited.deinit(alloc);
+
+    var last: ?engine.ecs_entity.Entity = null;
+    var count: u32 = 0;
+
+    var current: ?engine.ecs_entity.Entity = head;
+    var guard: u32 = 0;
+    while (current) |ent| {
+        if (guard > 100000) break;
+        guard += 1;
+        if (!child_set.contains(ent.id)) break;
+        if (visited.contains(ent.id)) break;
+        visited.put(alloc, ent.id, {}) catch {};
+
+        var h = ensure_hierarchy(state, ent);
+        h.parent = parent;
+        h.prev_sibling = last;
+        state.runtime.registry.add(ent, h) catch {};
+
+        if (last) |p| {
+            var ph = ensure_hierarchy(state, p);
+            ph.next_sibling = ent;
+            state.runtime.registry.add(p, ph) catch {};
+        }
+
+        last = ent;
+        count += 1;
+        current = h.next_sibling;
+    }
+
+    for (children.items) |ent| {
+        if (visited.contains(ent.id)) continue;
+        if (last) |p| {
+            var ph = ensure_hierarchy(state, p);
+            ph.next_sibling = ent;
+            state.runtime.registry.add(p, ph) catch {};
+        } else {
+            head = ent;
+        }
+        var h = ensure_hierarchy(state, ent);
+        h.parent = parent;
+        h.prev_sibling = last;
+        h.next_sibling = null;
+        state.runtime.registry.add(ent, h) catch {};
+        last = ent;
+        count += 1;
+    }
+
+    if (last) |l| {
+        var lh = ensure_hierarchy(state, l);
+        lh.next_sibling = null;
+        state.runtime.registry.add(l, lh) catch {};
+    }
+
+    parent_h.first_child = head;
+    parent_h.last_child = last;
+    parent_h.child_count = count;
+    state.runtime.registry.add(parent, parent_h) catch {};
+}
+
+const InsertMode = enum {
+    Before,
+    After,
+};
+
+fn insert_child_relative_to_sibling(state: *EditorState, parent: engine.ecs_entity.Entity, child: engine.ecs_entity.Entity, sibling: engine.ecs_entity.Entity, mode: InsertMode) void {
+    if (!state.runtime.registry.entity_manager.is_alive(parent)) return;
+    if (!state.runtime.registry.entity_manager.is_alive(child)) return;
+    if (!state.runtime.registry.entity_manager.is_alive(sibling)) return;
+    if (parent.id == child.id) return;
+    if (child.id == sibling.id) return;
+    if (is_descendant_of(state, parent, child)) return;
+
+    var parent_h = ensure_hierarchy(state, parent);
+    var sibling_h = ensure_hierarchy(state, sibling);
+    if (sibling_h.parent == null or sibling_h.parent.?.id != parent.id) return;
+
+    unlink_entity_from_parent(state, child);
+
+    var child_h = ensure_hierarchy(state, child);
+    child_h.parent = parent;
+
+    switch (mode) {
+        .Before => {
+            child_h.prev_sibling = sibling_h.prev_sibling;
+            child_h.next_sibling = sibling;
+
+            if (sibling_h.prev_sibling) |prev| {
+                if (state.runtime.registry.get(components.Hierarchy, prev)) |prev_ptr| {
+                    var prev_h = prev_ptr.*;
+                    prev_h.next_sibling = child;
+                    state.runtime.registry.add(prev, prev_h) catch {};
+                }
+            } else {
+                parent_h.first_child = child;
+            }
+
+            sibling_h.prev_sibling = child;
+
+            if (parent_h.last_child == null) parent_h.last_child = child;
+        },
+        .After => {
+            child_h.prev_sibling = sibling;
+            child_h.next_sibling = sibling_h.next_sibling;
+
+            if (sibling_h.next_sibling) |next| {
+                if (state.runtime.registry.get(components.Hierarchy, next)) |next_ptr| {
+                    var next_h = next_ptr.*;
+                    next_h.prev_sibling = child;
+                    state.runtime.registry.add(next, next_h) catch {};
+                }
+            } else {
+                parent_h.last_child = child;
+            }
+
+            sibling_h.next_sibling = child;
+
+            if (parent_h.first_child == null) parent_h.first_child = child;
+        },
+    }
+
+    parent_h.child_count += 1;
+
+    state.runtime.registry.add(sibling, sibling_h) catch {};
+    state.runtime.registry.add(child, child_h) catch {};
+    state.runtime.registry.add(parent, parent_h) catch {};
+    repair_parent_links(state, parent);
+}
+
+/// Inserts `child` into `parent`'s children list immediately before `before_sibling`.
+pub fn insert_child_before(state: *EditorState, parent: engine.ecs_entity.Entity, child: engine.ecs_entity.Entity, before_sibling: engine.ecs_entity.Entity) void {
+    insert_child_relative_to_sibling(state, parent, child, before_sibling, .Before);
+}
+
+/// Inserts `child` into `parent`'s children list immediately after `after_sibling`.
+pub fn insert_child_after(state: *EditorState, parent: engine.ecs_entity.Entity, child: engine.ecs_entity.Entity, after_sibling: engine.ecs_entity.Entity) void {
+    insert_child_relative_to_sibling(state, parent, child, after_sibling, .After);
+}
+
+/// Appends `child` as the last child of `parent`.
+pub fn append_child_end(state: *EditorState, parent: engine.ecs_entity.Entity, child: engine.ecs_entity.Entity) void {
+    if (!state.runtime.registry.entity_manager.is_alive(parent)) return;
+    if (!state.runtime.registry.entity_manager.is_alive(child)) return;
+    if (parent.id == child.id) return;
+    if (is_descendant_of(state, parent, child)) return;
+
+    var parent_h = ensure_hierarchy(state, parent);
+    if (parent_h.last_child) |lc| {
+        insert_child_after(state, parent, child, lc);
+        return;
+    }
+
+    unlink_entity_from_parent(state, child);
+
+    var child_h = ensure_hierarchy(state, child);
+    child_h.parent = parent;
+    child_h.prev_sibling = null;
+    child_h.next_sibling = null;
+
+    parent_h.first_child = child;
+    parent_h.last_child = child;
+    parent_h.child_count += 1;
+
+    state.runtime.registry.add(child, child_h) catch {};
+    state.runtime.registry.add(parent, parent_h) catch {};
+    repair_parent_links(state, parent);
+}
+
 /// Unlinks an entity from its parent and sibling list, leaving it as a root.
 pub fn unlink_entity_from_parent(state: *EditorState, entity: engine.ecs_entity.Entity) void {
     const hierarchy_ptr = state.runtime.registry.get(components.Hierarchy, entity) orelse return;
@@ -64,6 +298,7 @@ pub fn unlink_entity_from_parent(state: *EditorState, entity: engine.ecs_entity.
         parent_h.last_child = null;
     }
     state.runtime.registry.add(parent, parent_h) catch {};
+    repair_parent_links(state, parent);
 
     hierarchy.parent = null;
     hierarchy.prev_sibling = null;
@@ -106,6 +341,18 @@ pub fn cleanup_deleted_entities(state: *EditorState, root: engine.ecs_entity.Ent
 
     if (deleted.contains(state.ui.selected_entity.id)) {
         state.ui.selected_entity = .{ .id = std.math.maxInt(u64) };
+    }
+    var selected_keys_to_remove: std.ArrayListUnmanaged(u64) = .{};
+    defer selected_keys_to_remove.deinit(alloc);
+
+    var it_sel = state.ui.selected_entities.iterator();
+    while (it_sel.next()) |entry| {
+        if (deleted.contains(entry.key_ptr.*)) {
+            selected_keys_to_remove.append(alloc, entry.key_ptr.*) catch {};
+        }
+    }
+    for (selected_keys_to_remove.items) |id| {
+        _ = state.ui.selected_entities.remove(id);
     }
 
     var deleted_it = deleted.iterator();

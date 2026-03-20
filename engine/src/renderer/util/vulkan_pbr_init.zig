@@ -61,6 +61,7 @@ pub fn create_pbr_texture_manager(pipeline: *types.VulkanPBRPipeline, device: c.
 
     textureConfig.vulkan_state = vulkan_state;
     textureConfig.initialCapacity = 16;
+    textureConfig.bindless_pool_capacity = 4096;
 
     if (!vk_texture_mgr.vk_texture_manager_init(pipeline.textureManager.?, &textureConfig)) {
         pbr_init_log.err("Failed to initialize texture manager for PBR pipeline", .{});

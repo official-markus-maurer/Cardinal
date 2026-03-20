@@ -487,28 +487,7 @@ pub fn record_texture_copy_commands(commandBuffer: c.VkCommandBuffer, stagingBuf
 }
 
 fn submit_texture_upload(device: c.VkDevice, graphicsQueue: c.VkQueue, commandBuffer: c.VkCommandBuffer, sync_manager: ?*types.VulkanSyncManager, outTimelineValue: ?*u64) bool {
-    var cmdBufSubmitInfo = std.mem.zeroes(c.VkCommandBufferSubmitInfo);
-    cmdBufSubmitInfo.sType = c.VK_STRUCTURE_TYPE_COMMAND_BUFFER_SUBMIT_INFO;
-    cmdBufSubmitInfo.commandBuffer = commandBuffer;
-
-    var submitInfo = std.mem.zeroes(c.VkSubmitInfo2);
-    submitInfo.sType = c.VK_STRUCTURE_TYPE_SUBMIT_INFO_2;
-    submitInfo.commandBufferInfoCount = 1;
-    submitInfo.pCommandBufferInfos = &cmdBufSubmitInfo;
-
     if (sync_manager) |sync| {
-        const timeline_value = vk_sync_manager.vulkan_sync_manager_get_next_timeline_value(@ptrCast(sync));
-        if (outTimelineValue) |out| out.* = timeline_value;
-
-        var signal_info = std.mem.zeroes(c.VkSemaphoreSubmitInfo);
-        signal_info.sType = c.VK_STRUCTURE_TYPE_SEMAPHORE_SUBMIT_INFO;
-        signal_info.semaphore = sync.timeline_semaphore;
-        signal_info.value = timeline_value;
-        signal_info.stageMask = c.VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT;
-
-        submitInfo.signalSemaphoreInfoCount = 1;
-        submitInfo.pSignalSemaphoreInfos = &signal_info;
-
         var uploadFence: c.VkFence = null;
         var fenceInfo = std.mem.zeroes(c.VkFenceCreateInfo);
         fenceInfo.sType = c.VK_STRUCTURE_TYPE_FENCE_CREATE_INFO;
@@ -516,27 +495,29 @@ fn submit_texture_upload(device: c.VkDevice, graphicsQueue: c.VkQueue, commandBu
             return false;
         }
 
-        if (vk_sync_manager.vulkan_sync_manager_submit_queue2(graphicsQueue, 1, @ptrCast(&submitInfo), uploadFence, null) != c.VK_SUCCESS) {
+        var timeline_value: u64 = 0;
+        const submit_result = vk_sync_manager.vulkan_sync_manager_submit_one_shot_command_buffer(sync, graphicsQueue, commandBuffer, uploadFence, null, &timeline_value);
+        if (submit_result != c.VK_SUCCESS) {
             c.vkDestroyFence(device, uploadFence, null);
             return false;
         }
+        if (outTimelineValue) |out| out.* = timeline_value;
 
         if (c.vkWaitForFences(device, 1, &uploadFence, c.VK_TRUE, 5000000000) != c.VK_SUCCESS) {
             tex_utils_log.err("Texture upload fence wait failed or timed out", .{});
         }
         c.vkDestroyFence(device, uploadFence, null);
 
-        var waitInfo = std.mem.zeroes(c.VkSemaphoreWaitInfo);
-        waitInfo.sType = c.VK_STRUCTURE_TYPE_SEMAPHORE_WAIT_INFO;
-        waitInfo.semaphoreCount = 1;
-        waitInfo.pSemaphores = &sync.timeline_semaphore;
-        waitInfo.pValues = &timeline_value;
-        _ = c.vkWaitSemaphores(device, &waitInfo, c.UINT64_MAX);
+        const wait_result = vk_sync_manager.vulkan_sync_manager_wait_timeline(sync, timeline_value, c.UINT64_MAX);
+        if (wait_result != c.VK_SUCCESS) {
+            tex_utils_log.err("Texture upload timeline wait failed: {d}", .{wait_result});
+        }
     } else {
-        if (vk_sync_manager.vulkan_sync_manager_submit_queue2(graphicsQueue, 1, @ptrCast(&submitInfo), null, null) != c.VK_SUCCESS) {
+        const submit_result = vk_sync_manager.vulkan_sync_manager_submit_one_shot_command_buffer(null, graphicsQueue, commandBuffer, null, null, null);
+        if (submit_result != c.VK_SUCCESS) {
             return false;
         }
-        _ = c.vkQueueWaitIdle(graphicsQueue);
+        _ = vk_sync_manager.vulkan_sync_manager_queue_wait_idle(graphicsQueue);
     }
     return true;
 }
@@ -586,24 +567,8 @@ pub export fn vk_texture_create_from_data(allocator: ?*types.VulkanAllocator, de
         return false;
     }
 
-    var allocInfo = std.mem.zeroes(c.VkCommandBufferAllocateInfo);
-    allocInfo.sType = c.VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO;
-    allocInfo.level = c.VK_COMMAND_BUFFER_LEVEL_PRIMARY;
-    allocInfo.commandPool = commandPool;
-    allocInfo.commandBufferCount = 1;
-
-    var commandBuffer: c.VkCommandBuffer = null;
-    if (c.vkAllocateCommandBuffers(device, &allocInfo, &commandBuffer) != c.VK_SUCCESS or commandBuffer == null) {
-        vk_allocator.free_buffer(allocator, stagingBuffer, stagingBufferAllocation);
-        vk_allocator.free_image(allocator, textureImage.?.*, textureAllocation.?.*);
-        return false;
-    }
-
-    var beginInfo = std.mem.zeroes(c.VkCommandBufferBeginInfo);
-    beginInfo.sType = c.VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
-    beginInfo.flags = c.VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
-    if (c.vkBeginCommandBuffer(commandBuffer, &beginInfo) != c.VK_SUCCESS) {
-        c.vkFreeCommandBuffers(device, commandPool, 1, &commandBuffer);
+    const commandBuffer = buffer_mgr.begin_single_time_commands(device, commandPool);
+    if (commandBuffer == null) {
         vk_allocator.free_buffer(allocator, stagingBuffer, stagingBufferAllocation);
         vk_allocator.free_image(allocator, textureImage.?.*, textureAllocation.?.*);
         return false;
@@ -650,27 +615,8 @@ fn submit_one_shot(device: c.VkDevice, queue: c.VkQueue, cmd: c.VkCommandBuffer,
 
 pub fn transition_image_layout(device: c.VkDevice, graphicsQueue: c.VkQueue, commandPool: c.VkCommandPool, image: c.VkImage, format: c.VkFormat, oldLayout: c.VkImageLayout, newLayout: c.VkImageLayout) void {
     _ = format;
-
-    var commandBuffer: c.VkCommandBuffer = null;
-
-    var allocInfo = std.mem.zeroes(c.VkCommandBufferAllocateInfo);
-    allocInfo.sType = c.VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO;
-    allocInfo.level = c.VK_COMMAND_BUFFER_LEVEL_PRIMARY;
-    allocInfo.commandPool = commandPool;
-    allocInfo.commandBufferCount = 1;
-
-    if (c.vkAllocateCommandBuffers(device, &allocInfo, &commandBuffer) != c.VK_SUCCESS or commandBuffer == null) {
-        return;
-    }
-
-    var beginInfo = std.mem.zeroes(c.VkCommandBufferBeginInfo);
-    beginInfo.sType = c.VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
-    beginInfo.flags = c.VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
-
-    if (c.vkBeginCommandBuffer(commandBuffer, &beginInfo) != c.VK_SUCCESS) {
-        c.vkFreeCommandBuffers(device, commandPool, 1, &commandBuffer);
-        return;
-    }
+    const commandBuffer = buffer_mgr.begin_single_time_commands(device, commandPool);
+    if (commandBuffer == null) return;
 
     var barrier = std.mem.zeroes(c.VkImageMemoryBarrier2);
     barrier.sType = c.VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2;
@@ -721,16 +667,19 @@ pub fn transition_image_layout(device: c.VkDevice, graphicsQueue: c.VkQueue, com
     c.vkCmdPipelineBarrier2(commandBuffer, &depInfo);
 
     if (c.vkEndCommandBuffer(commandBuffer) != c.VK_SUCCESS) {
-        c.vkFreeCommandBuffers(device, commandPool, 1, &commandBuffer);
+        var cmd = commandBuffer;
+        c.vkFreeCommandBuffers(device, commandPool, 1, &cmd);
         return;
     }
 
     if (!submit_one_shot(device, graphicsQueue, commandBuffer, null)) {
-        c.vkFreeCommandBuffers(device, commandPool, 1, &commandBuffer);
+        var cmd = commandBuffer;
+        c.vkFreeCommandBuffers(device, commandPool, 1, &cmd);
         return;
     }
 
-    c.vkFreeCommandBuffers(device, commandPool, 1, &commandBuffer);
+    var cmd = commandBuffer;
+    c.vkFreeCommandBuffers(device, commandPool, 1, &cmd);
 }
 
 /// Creates a 1x1 magenta placeholder texture.
@@ -753,26 +702,8 @@ pub fn copy_buffer_to_image(device: c.VkDevice, graphicsQueue: c.VkQueue, comman
     if (device == null or graphicsQueue == null or commandPool == null) return;
     if (buffer == null or image == null) return;
     if (width == 0 or height == 0) return;
-    var commandBuffer: c.VkCommandBuffer = null;
-
-    var allocInfo = std.mem.zeroes(c.VkCommandBufferAllocateInfo);
-    allocInfo.sType = c.VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO;
-    allocInfo.level = c.VK_COMMAND_BUFFER_LEVEL_PRIMARY;
-    allocInfo.commandPool = commandPool;
-    allocInfo.commandBufferCount = 1;
-
-    if (c.vkAllocateCommandBuffers(device, &allocInfo, &commandBuffer) != c.VK_SUCCESS or commandBuffer == null) {
-        return;
-    }
-
-    var beginInfo = std.mem.zeroes(c.VkCommandBufferBeginInfo);
-    beginInfo.sType = c.VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
-    beginInfo.flags = c.VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
-
-    if (c.vkBeginCommandBuffer(commandBuffer, &beginInfo) != c.VK_SUCCESS) {
-        c.vkFreeCommandBuffers(device, commandPool, 1, &commandBuffer);
-        return;
-    }
+    const commandBuffer = buffer_mgr.begin_single_time_commands(device, commandPool);
+    if (commandBuffer == null) return;
 
     var region = std.mem.zeroes(c.VkBufferImageCopy);
     region.bufferOffset = 0;
@@ -788,16 +719,19 @@ pub fn copy_buffer_to_image(device: c.VkDevice, graphicsQueue: c.VkQueue, comman
     c.vkCmdCopyBufferToImage(commandBuffer, buffer, image, c.VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &region);
 
     if (c.vkEndCommandBuffer(commandBuffer) != c.VK_SUCCESS) {
-        c.vkFreeCommandBuffers(device, commandPool, 1, &commandBuffer);
+        var cmd = commandBuffer;
+        c.vkFreeCommandBuffers(device, commandPool, 1, &cmd);
         return;
     }
 
     if (!submit_one_shot(device, graphicsQueue, commandBuffer, null)) {
-        c.vkFreeCommandBuffers(device, commandPool, 1, &commandBuffer);
+        var cmd = commandBuffer;
+        c.vkFreeCommandBuffers(device, commandPool, 1, &cmd);
         return;
     }
 
-    c.vkFreeCommandBuffers(device, commandPool, 1, &commandBuffer);
+    var cmd = commandBuffer;
+    c.vkFreeCommandBuffers(device, commandPool, 1, &cmd);
 }
 
 pub export fn vk_texture_create_sampler(device: c.VkDevice, physicalDevice: c.VkPhysicalDevice, sampler: ?*c.VkSampler) callconv(.c) bool {

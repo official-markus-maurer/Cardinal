@@ -1,8 +1,6 @@
 //! PBR material helpers.
 //!
 //! Prepares per-draw push constants from scene materials and resolves bindless texture indices.
-//!
-//! TODO: Replace packedInfo magic bits with named constants.
 const std = @import("std");
 const types = @import("../vulkan_types.zig");
 const handles = @import("../../core/handles.zig");
@@ -16,6 +14,19 @@ const c = @cImport({
 });
 
 const mat_utils_log = log.ScopedLogger("MAT_UTILS");
+
+/// Bits per UV slot packed into `PBRPushConstants.packedInfo`.
+const PACKEDINFO_UV_BITS_PER_SLOT: u32 = 3;
+/// Mask for a single UV slot value.
+const PACKEDINFO_UV_SLOT_MASK: u32 = 0x7;
+/// Mask for the UV field stored in the low 16 bits.
+const PACKEDINFO_UV_FIELD_MASK: u32 = 0xFFFF;
+/// Bit shift for the flags field stored in the high 16 bits.
+const PACKEDINFO_FLAGS_SHIFT: u32 = 16;
+/// Mask for `alpha_mode` bits stored in the flags field.
+const PACKEDINFO_ALPHA_MODE_MASK: u32 = 0x3;
+/// Flag bit indicating textures are present.
+const PACKEDINFO_FLAG_HAS_TEXTURES: u32 = 1 << 3;
 
 fn set_default_material_properties(pushConstants: *types.PBRPushConstants, hasTextures: bool) void {
     pushConstants.albedoFactor[0] = 1.0;
@@ -66,10 +77,23 @@ pub fn resolve_texture_index(textureHandle: handles.TextureHandle, manager: ?*co
         const tex = &manager.?.textures.?[mappedIndex];
 
         if (tex.bindless_index != c.UINT32_MAX) {
-            return tex.bindless_index;
-        } else {
-            if (manager.?.hasPlaceholder and manager.?.textures.?[0].bindless_index != c.UINT32_MAX) {
-                return manager.?.textures.?[0].bindless_index;
+            const pool = &manager.?.bindless_pool;
+            if (pool.textures != null and tex.bindless_index < pool.max_textures) {
+                const bt = &pool.textures.?[tex.bindless_index];
+                if (bt.is_allocated and bt.image_view != null and bt.sampler != null) {
+                    return tex.bindless_index;
+                }
+            }
+        }
+    }
+
+    if (manager.?.hasPlaceholder and manager.?.textures != null and manager.?.textureCount > 0 and manager.?.textures.?[0].bindless_index != c.UINT32_MAX) {
+        const placeholder = manager.?.textures.?[0].bindless_index;
+        const pool = &manager.?.bindless_pool;
+        if (pool.textures != null and placeholder < pool.max_textures) {
+            const bt = &pool.textures.?[placeholder];
+            if (bt.is_allocated and bt.image_view != null and bt.sampler != null) {
+                return placeholder;
             }
         }
     }
@@ -128,16 +152,17 @@ fn set_material_properties(pushConstants: *types.PBRPushConstants, material: *co
     pushConstants.metallicNormalAO[3] = material.alpha_cutoff;
 
     var flags: u32 = 0;
-    flags |= (@as(u32, @bitCast(@intFromEnum(material.alpha_mode))) & 3);
+    flags |= (@as(u32, @bitCast(@intFromEnum(material.alpha_mode))) & PACKEDINFO_ALPHA_MODE_MASK);
 
     var packedUVs: u32 = 0;
-    packedUVs |= @as(u32, material.uv_indices[0]) & 0x7;
-    packedUVs |= (@as(u32, material.uv_indices[1]) & 0x7) << 3;
-    packedUVs |= (@as(u32, material.uv_indices[2]) & 0x7) << 6;
-    packedUVs |= (@as(u32, material.uv_indices[3]) & 0x7) << 9;
-    packedUVs |= (@as(u32, material.uv_indices[4]) & 0x7) << 12;
+    var i: u32 = 0;
+    while (i < 5) : (i += 1) {
+        const slot = @as(u32, material.uv_indices[i]) & PACKEDINFO_UV_SLOT_MASK;
+        const shift: u5 = @intCast(PACKEDINFO_UV_BITS_PER_SLOT * i);
+        packedUVs |= slot << shift;
+    }
 
-    pushConstants.packedInfo = (flags << 16) | (packedUVs & 0xFFFF);
+    pushConstants.packedInfo = (flags << PACKEDINFO_FLAGS_SHIFT) | (packedUVs & PACKEDINFO_UV_FIELD_MASK);
 }
 
 pub export fn vk_material_setup_push_constants(pushConstants: ?*types.PBRPushConstants, mesh: ?*const types.CardinalMesh, scene: ?*const types.CardinalScene, textureManager: ?*const types.VulkanTextureManager) callconv(.c) void {
@@ -161,7 +186,7 @@ pub export fn vk_material_setup_push_constants(pushConstants: ?*types.PBRPushCon
         set_texture_transforms(pc, material);
 
         if (hasTextures) {
-            pc.packedInfo |= (8 << 16);
+            pc.packedInfo |= (PACKEDINFO_FLAG_HAS_TEXTURES << PACKEDINFO_FLAGS_SHIFT);
         }
     } else {
         set_default_material_properties(pc, hasTextures);

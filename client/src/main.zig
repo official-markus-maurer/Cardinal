@@ -46,22 +46,17 @@ fn print_usage(program_name: []const u8) void {
     std.debug.print("Usage: {s} [options]\n", .{program_name});
     std.debug.print("Options:\n", .{});
     std.debug.print("  --log-level <level>  Set log level (TRACE, DEBUG, INFO, WARN, ERROR, FATAL)\n", .{});
+    std.debug.print("  --config <path>      Config file path (default: cardinal_config.json)\n", .{});
     std.debug.print("  --help               Show this help message\n", .{});
 }
 
 /// Initializes subsystems, runs a short render loop, then shuts down.
 pub fn main() !u8 {
-    // Initialize memory system first
-    // TODO: Move bootstrap values (memory size, threads, cache sizes) into config.
-    memory.cardinal_memory_init(1024 * 1024 * 64); // 64MB
-
-    // Get allocator for arguments
-    const allocator = memory.cardinal_get_allocator_for_category(.ENGINE).as_allocator();
-
     var log_level: log.CardinalLogLevel = .WARN;
+    var config_path: []const u8 = "cardinal_config.json";
 
-    const args = try std.process.argsAlloc(allocator);
-    defer std.process.argsFree(allocator, args);
+    const args = try std.process.argsAlloc(std.heap.page_allocator);
+    defer std.process.argsFree(std.heap.page_allocator, args);
 
     var i: usize = 1;
     while (i < args.len) : (i += 1) {
@@ -69,61 +64,85 @@ pub fn main() !u8 {
         if (std.mem.eql(u8, arg, "--log-level") and i + 1 < args.len) {
             log_level = log.cardinal_log_parse_level(args[i + 1].ptr);
             i += 1;
+        } else if (std.mem.eql(u8, arg, "--config") and i + 1 < args.len) {
+            config_path = args[i + 1];
+            i += 1;
         } else if (std.mem.eql(u8, arg, "--help")) {
             print_usage(args[0]);
             return 0;
         }
     }
 
-    log.cardinal_log_init_with_level(log_level);
-
-    // Initialize async loader
-    const async_config = async_loader.CardinalAsyncLoaderConfig{
-        .worker_thread_count = 4,
-        .max_queue_size = 256,
-        .enable_priority_queue = true,
+    var config_manager = engine.config.ConfigManager.init(std.heap.page_allocator, config_path, .{
+        .window_title = "Cardinal Client",
+        .window_width = 1024,
+        .window_height = 768,
+        .window_resizable = true,
+        .memory_size = 1024 * 1024 * 64,
+        .ref_counting_buckets = 1009,
+        .async_worker_threads = 4,
+        .async_queue_size = 256,
+        .cache_size = 1000,
+    });
+    defer config_manager.deinit();
+    config_manager.load() catch |err| {
+        std.debug.print("Failed to load config '{s}': {s}\n", .{ config_manager.config_path, @errorName(err) });
     };
 
-    if (!async_loader.cardinal_async_loader_init(&async_config)) {
-        client_log.err("Failed to initialize async loader", .{});
-        memory.cardinal_memory_shutdown();
-        log.cardinal_log_shutdown();
+    const cfg = config_manager.config;
+    memory.cardinal_memory_init(cfg.memory_size);
+    defer memory.cardinal_memory_shutdown();
+
+    log.cardinal_log_init_with_level(log_level);
+    defer log.cardinal_log_shutdown();
+
+    if (!ref_counting.cardinal_ref_counting_init(cfg.ref_counting_buckets)) {
+        client_log.err("Failed to initialize reference counting registry", .{});
         return 255;
     }
+    defer ref_counting.cardinal_ref_counting_shutdown();
 
-    // Initialize asset caches
-    _ = texture_loader.texture_cache_initialize(1000);
-    _ = mesh_loader.mesh_cache_initialize(1000);
+    const async_config = async_loader.CardinalAsyncLoaderConfig{
+        .worker_thread_count = cfg.async_worker_threads,
+        .max_queue_size = cfg.async_queue_size,
+        .enable_priority_queue = true,
+    };
+    if (!async_loader.cardinal_async_loader_init(&async_config)) {
+        client_log.err("Failed to initialize async loader", .{});
+        return 255;
+    }
+    defer async_loader.cardinal_async_loader_shutdown();
+
+    _ = texture_loader.texture_cache_initialize(cfg.cache_size);
+    _ = mesh_loader.mesh_cache_initialize(cfg.cache_size);
+    defer texture_loader.texture_cache_shutdown_system();
+    defer mesh_loader.mesh_cache_shutdown_system();
 
     client_log.info("Multi-threaded engine initialized successfully", .{});
 
+    const allocator = memory.cardinal_get_allocator_for_category(.ENGINE).as_allocator();
+    const title_z = allocator.dupeZ(u8, cfg.window_title) catch return 255;
+    defer allocator.free(title_z);
+
     const config = window.CardinalWindowConfig{
-        .title = "Cardinal Client",
-        .width = 1024,
-        .height = 768,
-        .resizable = true,
+        .title = title_z.ptr,
+        .width = cfg.window_width,
+        .height = cfg.window_height,
+        .resizable = cfg.window_resizable,
     };
     const win = window.cardinal_window_create(&config);
     if (win == null) {
-        log.cardinal_log_shutdown();
         return 255;
     }
+    defer window.cardinal_window_destroy(win);
 
     var renderer: types.CardinalRenderer = .{ ._opaque = null };
-    if (!vulkan_renderer.cardinal_renderer_create(&renderer, win, null)) {
-        window.cardinal_window_destroy(win);
-        log.cardinal_log_shutdown();
+    if (!vulkan_renderer.cardinal_renderer_create(&renderer, win, &cfg.renderer)) {
         return 255;
     }
+    defer vulkan_renderer.cardinal_renderer_destroy(&renderer);
 
-    // Enable PBR to ensure pipelines are set up (skybox might depend on some shared state or just to be safe)
     vulkan_renderer.cardinal_renderer_enable_pbr(&renderer, true);
-
-    // Load Skybox
-    // const skybox_path = "C:\\Users\\admin\\Documents\\Cardinal\\assets\\skybox\\kloofendal_48d_partly_cloudy_puresky_16k.exr";
-    // if (!vulkan_renderer.cardinal_renderer_set_skybox(&renderer, skybox_path)) {
-    //    log.cardinal_log_error("Failed to set skybox: {s}", .{skybox_path});
-    // }
 
     var frames: u32 = 0;
     while (!window.cardinal_window_should_close(win)) {
@@ -136,18 +155,8 @@ pub fn main() !u8 {
     }
 
     vulkan_renderer.cardinal_renderer_wait_idle(&renderer);
-    vulkan_renderer.cardinal_renderer_destroy(&renderer);
-    window.cardinal_window_destroy(win);
 
     client_log.info("Shutting down multi-threaded engine systems", .{});
-
-    texture_loader.texture_cache_shutdown_system();
-    mesh_loader.mesh_cache_shutdown_system();
-
-    async_loader.cardinal_async_loader_shutdown();
-    ref_counting.cardinal_ref_counting_shutdown();
-    memory.cardinal_memory_shutdown();
-    log.cardinal_log_shutdown();
 
     return 0;
 }

@@ -2,7 +2,6 @@
 //!
 //! Owns GPU texture lifetime, placeholder creation, and async upload/update tasks used by the
 //! renderer to stream textures into the bindless pool.
-//!
 const std = @import("std");
 const builtin = @import("builtin");
 const log = @import("../core/log.zig");
@@ -206,8 +205,8 @@ pub fn vk_texture_manager_init(manager: *types.VulkanTextureManager, config: *co
 
         manager.vkQueueSubmit2 = vs.context.vkQueueSubmit2;
 
-        // TODO: Make bindless pool capacity configurable.
-        if (!vk_descriptor_indexing.vk_bindless_texture_pool_init(&manager.bindless_pool, vs, 4096)) {
+        const cap = if (config.bindless_pool_capacity > 0) config.bindless_pool_capacity else 4096;
+        if (!vk_descriptor_indexing.vk_bindless_texture_pool_init(&manager.bindless_pool, vs, cap)) {
             tex_mgr_log.err("Failed to initialize bindless texture pool", .{});
             return false;
         }
@@ -473,7 +472,41 @@ fn wait_for_uploads_idle(manager: *types.VulkanTextureManager) void {
 }
 
 fn reset_bindless_pool_and_placeholder(manager: *types.VulkanTextureManager) bool {
-    vk_texture_manager_clear_textures(manager);
+    const is_runtime_tex = struct {
+        fn f(t: *const types.VulkanManagedTexture) bool {
+            return (!t.isPlaceholder and t.path == null and t.resource == null and t.image != null and t.view != null and t.sampler != null);
+        }
+    }.f;
+
+    if (manager.textures != null) {
+        var max_runtime_slot: u32 = 0;
+        var i: u32 = 1;
+        while (i < manager.textureCount) : (i += 1) {
+            const tex = &manager.textures.?[i];
+            if (is_runtime_tex(tex)) {
+                if (i > max_runtime_slot) max_runtime_slot = i;
+                continue;
+            }
+
+            if (tex.is_allocated) {
+                if (tex.view != null) c.vkDestroyImageView(manager.device, tex.view, null);
+                if (tex.sampler != null) c.vkDestroySampler(manager.device, tex.sampler, null);
+                if (tex.image != null) vk_allocator.free_image(manager.allocator, tex.image, tex.allocation);
+            } else {
+                if (tex.view != null) c.vkDestroyImageView(manager.device, tex.view, null);
+                if (tex.sampler != null) c.vkDestroySampler(manager.device, tex.sampler, null);
+            }
+
+            @memset(@as([*]u8, @ptrCast(tex))[0..@sizeOf(types.VulkanManagedTexture)], 0);
+        }
+
+        if (manager.hasPlaceholder) {
+            manager.textureCount = if (max_runtime_slot > 0) (max_runtime_slot + 1) else 1;
+        } else {
+            manager.textureCount = if (max_runtime_slot > 0) (max_runtime_slot + 1) else 0;
+        }
+    }
+
     vk_descriptor_indexing.vk_bindless_texture_pool_reset(&manager.bindless_pool);
 
     if (!manager.hasPlaceholder) {
@@ -494,6 +527,27 @@ fn reset_bindless_pool_and_placeholder(manager: *types.VulkanTextureManager) boo
             _ = vk_descriptor_indexing.vk_bindless_texture_fill_all_descriptors(&manager.bindless_pool, tex.view, tex.sampler);
         } else {
             tex_mgr_log.err("Failed to re-register placeholder texture after pool reset", .{});
+        }
+    }
+
+    if (manager.textures != null and manager.bindless_pool.textures != null) {
+        var any_runtime: bool = false;
+        var i: u32 = 1;
+        while (i < manager.textureCount) : (i += 1) {
+            const tex = &manager.textures.?[i];
+            if (!is_runtime_tex(tex)) continue;
+
+            var bindless_idx: u32 = 0;
+            if (vk_descriptor_indexing.vk_bindless_texture_register_existing(&manager.bindless_pool, tex.image, tex.view, tex.sampler, &bindless_idx)) {
+                tex.bindless_index = bindless_idx;
+                _ = vk_descriptor_indexing.vk_bindless_texture_set_extent(&manager.bindless_pool, bindless_idx, tex.width, tex.height);
+                any_runtime = true;
+            } else {
+                tex_mgr_log.err("Failed to re-register runtime texture slot {d} after pool reset", .{i});
+            }
+        }
+        if (any_runtime) {
+            _ = vk_descriptor_indexing.vk_bindless_texture_flush_updates(&manager.bindless_pool);
         }
     }
     return true;

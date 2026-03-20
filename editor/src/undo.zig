@@ -39,7 +39,9 @@ const SnapshotMask = packed struct(u32) {
     camera: bool = false,
     skybox: bool = false,
     terrain: bool = false,
-    _pad: u23 = 0,
+    script: bool = false,
+    editor_globals: bool = false,
+    _pad: u21 = 0,
 };
 
 const EntitySnapshot = struct {
@@ -54,6 +56,8 @@ const EntitySnapshot = struct {
     camera: components.Camera = undefined,
     skybox: components.Skybox = undefined,
     terrain: components.Terrain = undefined,
+    script: components.Script = undefined,
+    editor_globals: components.EditorGlobals = undefined,
 };
 
 const HierarchyAdjacencySnapshot = struct {
@@ -116,6 +120,8 @@ pub const UndoCommand = union(enum) {
     EntityCamera: EntityComponentCommand(components.Camera),
     EntitySkybox: EntityComponentCommand(components.Skybox),
     EntityTerrain: EntityComponentCommand(components.Terrain),
+    EntityScript: EntityComponentCommand(components.Script),
+    EntityEditorGlobals: EntityComponentCommand(components.EditorGlobals),
     EntityReparent: HierarchyAdjacencySnapshot,
     EntitySubtree: *EntitySubtreeCommand,
     TerrainMeshEdit: *TerrainMeshEditCommand,
@@ -135,6 +141,7 @@ const Capture = union(enum) {
     EntitySkybox: struct { entity_id: u64, before: components.Skybox },
     EntityLight: struct { entity_id: u64, before: components.Light },
     EntityCamera: struct { entity_id: u64, before: components.Camera },
+    EntityEditorGlobals: struct { entity_id: u64, before: components.EditorGlobals },
     ModelTransform: struct { model_id: u32, before: [16]f32 },
 };
 
@@ -142,6 +149,20 @@ pub const UndoState = struct {
     undo_stack: std.ArrayListUnmanaged(UndoCommand) = .{},
     redo_stack: std.ArrayListUnmanaged(UndoCommand) = .{},
     capture: ?Capture = null,
+
+    pub fn is_capturing_entity_light(self: *UndoState, entity_id: u64) bool {
+        if (self.capture) |cap| {
+            return cap == .EntityLight and cap.EntityLight.entity_id == entity_id;
+        }
+        return false;
+    }
+
+    pub fn is_capturing_entity_camera(self: *UndoState, entity_id: u64) bool {
+        if (self.capture) |cap| {
+            return cap == .EntityCamera and cap.EntityCamera.entity_id == entity_id;
+        }
+        return false;
+    }
 
     /// Releases any heap-backed commands and clears stacks.
     pub fn deinit(self: *UndoState, alloc: std.mem.Allocator) void {
@@ -341,6 +362,28 @@ pub const UndoState = struct {
         }
     }
 
+    pub fn begin_entity_editor_globals(self: *UndoState, entity_id: u64, before: components.EditorGlobals) void {
+        if (self.capture != null) return;
+        self.capture = .{ .EntityEditorGlobals = .{ .entity_id = entity_id, .before = before } };
+    }
+
+    pub fn end_entity_editor_globals(self: *UndoState, entity_id: u64, after: components.EditorGlobals) void {
+        if (self.capture) |cap| {
+            if (cap == .EntityEditorGlobals and cap.EntityEditorGlobals.entity_id == entity_id) {
+                const before = cap.EntityEditorGlobals.before;
+                self.capture = null;
+                if (std.mem.eql(u8, std.mem.asBytes(&before), std.mem.asBytes(&after))) return;
+                self.push(.{ .EntityEditorGlobals = .{
+                    .entity_id = entity_id,
+                    .before_present = true,
+                    .after_present = true,
+                    .before = before,
+                    .after = after,
+                } });
+            }
+        }
+    }
+
     pub fn capture_entity_subtree(self: *UndoState, registry: *engine.ecs_registry.Registry, root: engine.ecs_entity.Entity) ?[]EntitySnapshot {
         _ = self;
         const alloc = allocator();
@@ -524,6 +567,8 @@ fn apply(runtime: anytype, cmd: UndoCommand, forward: bool) void {
             runtime.scene_loaded = (runtime.combined_scene.mesh_count > 0);
             runtime.picking_cache_dirty = true;
         },
+        .EntityScript => |c| apply_entity_component(runtime, components.Script, c, forward),
+        .EntityEditorGlobals => |c| apply_entity_component(runtime, components.EditorGlobals, c, forward),
         .EntityReparent => |r| {
             const count: usize = @min(r.entity_ids.len, @min(r.before.len, r.after.len));
             const src = if (forward) r.after[0..count] else r.before[0..count];
@@ -903,6 +948,14 @@ fn snapshot_entity(registry: *engine.ecs_registry.Registry, ent: engine.ecs_enti
         snap.mask.terrain = true;
         snap.terrain = c.*;
     }
+    if (registry.get(components.Script, ent)) |c| {
+        snap.mask.script = true;
+        snap.script = c.*;
+    }
+    if (registry.get(components.EditorGlobals, ent)) |c| {
+        snap.mask.editor_globals = true;
+        snap.editor_globals = c.*;
+    }
 
     return snap;
 }
@@ -948,6 +1001,8 @@ fn apply_entity_snapshot_restore(registry: *engine.ecs_registry.Registry, snap: 
     if (snap.mask.skybox) registry.add(ent, snap.skybox) catch {};
     if (snap.mask.hierarchy) registry.add(ent, snap.hierarchy) catch {};
     if (snap.mask.terrain) registry.add(ent, snap.terrain) catch {};
+    if (snap.mask.script) registry.add(ent, snap.script) catch {};
+    if (snap.mask.editor_globals) registry.add(ent, snap.editor_globals) catch {};
 }
 
 fn apply_entity_snapshot_delete(registry: *engine.ecs_registry.Registry, snap: *const EntitySnapshot) void {
@@ -963,6 +1018,8 @@ fn apply_entity_snapshot_delete(registry: *engine.ecs_registry.Registry, snap: *
     registry.remove(components.Skybox, ent);
     registry.remove(components.Terrain, ent);
     registry.remove(components.Hierarchy, ent);
+    registry.remove(components.Script, ent);
+    registry.remove(components.EditorGlobals, ent);
 }
 
 fn cleanup_runtime_maps(runtime: anytype, snaps: []const EntitySnapshot) void {

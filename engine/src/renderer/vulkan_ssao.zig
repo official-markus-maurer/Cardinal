@@ -2,7 +2,6 @@
 //!
 //! Creates SSAO resources (noise texture, kernel, images) and the compute/graphics passes that
 //! write and blur the occlusion buffer.
-//!
 const std = @import("std");
 const builtin = @import("builtin");
 const log = @import("../core/log.zig");

@@ -1,3 +1,7 @@
+//! Built-in render graph pass callbacks for the Vulkan renderer.
+//!
+//! Each callback records commands for a specific pass (PBR, post-process, shadows, UI) and is
+//! typically referenced by a render graph `RenderPass`.
 const std = @import("std");
 const log = @import("../core/log.zig");
 const math = @import("../core/math.zig");
@@ -14,6 +18,7 @@ const renderer_log = log.ScopedLogger("RENDERER");
 
 const c = @import("vulkan_c.zig").c;
 
+/// Records the main PBR scene rendering pass (optionally using secondary command buffers).
 pub fn pbr_pass_callback(cmd: c.VkCommandBuffer, state: *types.VulkanState) void {
     var clears: [2]c.VkClearValue = undefined;
     clears[0].color.float32[0] = state.config.pbr_clear_color[0];
@@ -67,6 +72,7 @@ pub fn pbr_pass_callback(cmd: c.VkCommandBuffer, state: *types.VulkanState) void
     }
 }
 
+/// Records fullscreen post-processing, sampling from the HDR color resource when present.
 pub fn post_process_pass_callback(cmd: c.VkCommandBuffer, state: *types.VulkanState) void {
     var input_view: ?c.VkImageView = null;
     if (state.render_graph) |rg_ptr| {
@@ -92,6 +98,7 @@ pub fn post_process_pass_callback(cmd: c.VkCommandBuffer, state: *types.VulkanSt
     }
 }
 
+/// Runs a bloom compute dispatch over the HDR color resource when present.
 pub fn bloom_compute_pass_callback(cmd: c.VkCommandBuffer, state: *types.VulkanState) void {
     var input_view: ?c.VkImageView = null;
     if (state.render_graph) |rg_ptr| {
@@ -106,6 +113,7 @@ pub fn bloom_compute_pass_callback(cmd: c.VkCommandBuffer, state: *types.VulkanS
     }
 }
 
+/// Renders the skybox using camera matrices from the PBR uniform buffer.
 pub fn skybox_pass_callback(cmd: c.VkCommandBuffer, state: *types.VulkanState) void {
     var clears: [1]c.VkClearValue = undefined;
     clears[0].color.float32[0] = 0.0;
@@ -137,6 +145,7 @@ pub fn skybox_pass_callback(cmd: c.VkCommandBuffer, state: *types.VulkanState) v
     }
 }
 
+/// Records the UI pass by invoking the external UI recording callback.
 pub fn ui_pass_callback(cmd: c.VkCommandBuffer, state: *types.VulkanState) void {
     if (state.ui_record_callback == null) return;
     var clears: [1]c.VkClearValue = undefined;
@@ -160,15 +169,18 @@ pub fn ui_pass_callback(cmd: c.VkCommandBuffer, state: *types.VulkanState) void 
     }
 }
 
+/// Placeholder pass for present-only steps.
 pub fn present_pass_callback(cmd: c.VkCommandBuffer, state: *types.VulkanState) void {
     _ = cmd;
     _ = state;
 }
 
+/// Records the shadow map rendering pass.
 pub fn shadow_pass_callback(cmd: c.VkCommandBuffer, state: *types.VulkanState) void {
     vk_shadows.vk_shadow_render(state, cmd);
 }
 
+/// Records a depth-only prepass used by the PBR pipeline.
 pub fn depth_prepass_pass_callback(cmd: c.VkCommandBuffer, state: *types.VulkanState) void {
     var clears: [2]c.VkClearValue = undefined;
     clears[1].depthStencil.depth = 1.0;
@@ -204,4 +216,3 @@ pub fn ssao_pass_callback(cmd: c.VkCommandBuffer, state: *types.VulkanState) voi
     renderer_log.debug("SSAO pass frame {d}: running", .{state.sync.current_frame});
     vk_ssao.vk_ssao_compute(state, cmd, state.sync.current_frame);
 }
-

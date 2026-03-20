@@ -5,8 +5,6 @@
 //!
 //! This is separated from the animation system to reduce rebuild scope and to allow
 //! reuse in other animation backends.
-//!
-//! TODO: Add unit tests for edge cases (degenerate time ranges, quaternion sign flips).
 const std = @import("std");
 
 fn find_keyframe_indices(input: [*]const f32, input_count: u32, time: f32, prev_index: *u32, next_index: *u32, factor: *f32) bool {
@@ -275,4 +273,70 @@ pub fn interpolate_cached(interpolation: u32, time: f32, input: [*]const f32, ou
         else => return false,
     }
     return true;
+}
+
+fn expectApproxEqSlice(comptime N: usize, expected: [N]f32, actual: [N]f32, tol: f32) !void {
+    var i: usize = 0;
+    while (i < N) : (i += 1) {
+        try std.testing.expectApproxEqAbs(expected[i], actual[i], tol);
+    }
+}
+
+test "animation_sampling clamps degenerate cubic-spline times" {
+    const input = [_]f32{ 0.0, 1.0 };
+    const output = [_]f32{
+        0.0, 10.0, 0.0,
+        0.0, 20.0, 0.0,
+    };
+
+    var result: [1]f32 = undefined;
+    try std.testing.expect(interpolate(2, -10.0, input[0..].ptr, output[0..].ptr, 2, 1, result[0..].ptr));
+    try std.testing.expectApproxEqAbs(@as(f32, 10.0), result[0], 0.0001);
+
+    try std.testing.expect(interpolate(2, 10.0, input[0..].ptr, output[0..].ptr, 2, 1, result[0..].ptr));
+    try std.testing.expectApproxEqAbs(@as(f32, 20.0), result[0], 0.0001);
+}
+
+test "animation_sampling slerp handles quaternion sign flip" {
+    const input = [_]f32{ 0.0, 1.0 };
+    const output = [_]f32{
+        0.0, 0.0, 0.0, 1.0,
+        0.0, 0.0, 0.0, -1.0,
+    };
+
+    var result: [4]f32 = undefined;
+    try std.testing.expect(interpolate(0, 0.5, input[0..].ptr, output[0..].ptr, 2, 4, result[0..].ptr));
+    try expectApproxEqSlice(4, .{ 0.0, 0.0, 0.0, 1.0 }, result, 0.0001);
+}
+
+test "animation_sampling cubic-spline handles quaternion sign flip" {
+    const input = [_]f32{ 0.0, 1.0 };
+    const output = [_]f32{
+        0.0, 0.0, 0.0, 0.0,
+        0.0, 0.0, 0.0, 1.0,
+        0.0, 0.0, 0.0, 0.0,
+        0.0, 0.0, 0.0, 0.0,
+        0.0, 0.0, 0.0, -1.0,
+        0.0, 0.0, 0.0, 0.0,
+    };
+
+    var result: [4]f32 = undefined;
+    try std.testing.expect(interpolate(2, 0.5, input[0..].ptr, output[0..].ptr, 2, 4, result[0..].ptr));
+    try expectApproxEqSlice(4, .{ 0.0, 0.0, 0.0, 1.0 }, result, 0.0001);
+}
+
+test "animation_sampling cached matches uncached for forward and backward time" {
+    const input = [_]f32{ 0.0, 1.0, 2.0, 3.0 };
+    const output = [_]f32{ 0.0, 10.0, 20.0, 30.0 };
+
+    var hint: u32 = 0;
+    var cached: [1]f32 = undefined;
+    var uncached: [1]f32 = undefined;
+
+    const times = [_]f32{ 0.25, 1.25, 2.25, 0.5 };
+    for (times) |t| {
+        try std.testing.expect(interpolate_cached(0, t, input[0..].ptr, output[0..].ptr, 4, 1, &hint, cached[0..].ptr));
+        try std.testing.expect(interpolate(0, t, input[0..].ptr, output[0..].ptr, 4, 1, uncached[0..].ptr));
+        try std.testing.expectApproxEqAbs(uncached[0], cached[0], 0.0001);
+    }
 }

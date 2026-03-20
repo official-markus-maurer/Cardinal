@@ -3,8 +3,6 @@
 //! Tracks recent resource accesses and validates barrier parameters to detect common hazards such as
 //! missing transitions or overlapping usage. Designed as a debug aid; it is not a full GPU hazard
 //! tracker.
-//!
-//! TODO: Replace linear access tracking with a fixed-size hash map to reduce O(n) scans.
 const std = @import("std");
 const builtin = @import("builtin");
 const log = @import("../core/log.zig");
@@ -26,6 +24,50 @@ var g_race_conditions: u32 = 0;
 
 /// Platform mutex guarding the global validation context.
 var g_validation_mutex: if (builtin.os.tag == .windows) c.CRITICAL_SECTION else c.pthread_mutex_t = undefined;
+
+const ACCESS_TABLE_SIZE: usize = 4096;
+const ACCESS_TABLE_MASK: usize = ACCESS_TABLE_SIZE - 1;
+
+const AccessTableEntry = struct {
+    used: bool = false,
+    resource_id: u64 = 0,
+    thread_id: u32 = 0,
+    access_type: types.CardinalResourceAccessType = .CARDINAL_ACCESS_NONE,
+};
+
+var g_access_table: [ACCESS_TABLE_SIZE]AccessTableEntry = std.mem.zeroes([ACCESS_TABLE_SIZE]AccessTableEntry);
+
+fn reset_access_table() void {
+    @memset(@as([*]u8, @ptrCast(&g_access_table))[0..@sizeOf(@TypeOf(g_access_table))], 0);
+}
+
+fn access_table_index(resource_id: u64) usize {
+    const h = std.hash.Wyhash.hash(0, std.mem.asBytes(&resource_id));
+    return @as(usize, @truncate(h)) & ACCESS_TABLE_MASK;
+}
+
+fn find_access_entry(resource_id: u64) ?*AccessTableEntry {
+    const start = access_table_index(resource_id);
+    var probe: usize = 0;
+    while (probe < ACCESS_TABLE_SIZE) : (probe += 1) {
+        const idx = (start + probe) & ACCESS_TABLE_MASK;
+        const entry = &g_access_table[idx];
+        if (!entry.used) return null;
+        if (entry.resource_id == resource_id) return entry;
+    }
+    return null;
+}
+
+fn get_or_insert_access_entry(resource_id: u64) *AccessTableEntry {
+    const start = access_table_index(resource_id);
+    var probe: usize = 0;
+    while (probe < ACCESS_TABLE_SIZE) : (probe += 1) {
+        const idx = (start + probe) & ACCESS_TABLE_MASK;
+        const entry = &g_access_table[idx];
+        if (!entry.used or entry.resource_id == resource_id) return entry;
+    }
+    return &g_access_table[start];
+}
 
 /// Returns a monotonically-increasing timestamp for access ordering.
 fn get_timestamp() u64 {
@@ -85,6 +127,7 @@ pub export fn cardinal_barrier_validation_init(max_tracked_accesses: u32, strict
     g_total_accesses = 0;
     g_validation_errors = 0;
     g_race_conditions = 0;
+    reset_access_table();
 
     g_validation_initialized = true;
 
@@ -108,6 +151,7 @@ pub export fn cardinal_barrier_validation_shutdown() callconv(.c) void {
     g_validation_context.access_count = 0;
     g_validation_context.max_accesses = 0;
     g_validation_context.validation_enabled = false;
+    reset_access_table();
 
     unlock_validation_mutex();
 
@@ -134,6 +178,9 @@ pub export fn cardinal_barrier_validation_set_enabled(enabled: bool) callconv(.c
     barrier_log.debug("Validation {s}", .{if (enabled) "enabled" else "disabled"});
 }
 
+/// Records a resource access for later validation.
+///
+/// When `strict_mode` is disabled, exceeding `max_tracked_accesses` resets the table and continues.
 pub export fn cardinal_barrier_validation_track_access(resource_id: u64, resource_type: types.CardinalResourceType, access_type: types.CardinalResourceAccessType, stage_mask: c.VkPipelineStageFlags2, access_mask: c.VkAccessFlags2, thread_id: u32, command_buffer: c.VkCommandBuffer) callconv(.c) bool {
     if (!g_validation_initialized or !g_validation_context.validation_enabled) {
         return true;
@@ -141,10 +188,10 @@ pub export fn cardinal_barrier_validation_track_access(resource_id: u64, resourc
 
     lock_validation_mutex();
 
-    // Check if we have space
     if (g_validation_context.access_count >= g_validation_context.max_accesses) {
         if (!g_validation_context.strict_mode) {
             g_validation_context.access_count = 0;
+            reset_access_table();
         } else {
             unlock_validation_mutex();
             barrier_log.err("Maximum tracked accesses exceeded", .{});
@@ -153,12 +200,8 @@ pub export fn cardinal_barrier_validation_track_access(resource_id: u64, resourc
         }
     }
 
-    // Check for race conditions
-    var i: u32 = 0;
-    while (i < g_validation_context.access_count) : (i += 1) {
-        const existing = &g_validation_context.resource_accesses[i];
-
-        if (existing.resource_id == resource_id and existing.thread_id != thread_id) {
+    if (find_access_entry(resource_id)) |existing| {
+        if (existing.thread_id != thread_id) {
             if (access_type == types.CardinalResourceAccessType.CARDINAL_ACCESS_WRITE or existing.access_type == types.CardinalResourceAccessType.CARDINAL_ACCESS_WRITE) {
                 barrier_log.warn("Potential race condition detected: Resource 0x{x} accessed by threads {d} and {d}", .{ resource_id, existing.thread_id, thread_id });
                 g_race_conditions += 1;
@@ -166,7 +209,6 @@ pub export fn cardinal_barrier_validation_track_access(resource_id: u64, resourc
         }
     }
 
-    // Record access
     var access = &g_validation_context.resource_accesses[g_validation_context.access_count];
     access.resource_id = resource_id;
     access.resource_type = resource_type;
@@ -179,6 +221,14 @@ pub export fn cardinal_barrier_validation_track_access(resource_id: u64, resourc
 
     g_validation_context.access_count += 1;
     g_total_accesses += 1;
+
+    {
+        const entry = get_or_insert_access_entry(resource_id);
+        entry.used = true;
+        entry.resource_id = resource_id;
+        entry.thread_id = thread_id;
+        entry.access_type = access_type;
+    }
 
     unlock_validation_mutex();
     return true;
@@ -367,6 +417,7 @@ pub export fn cardinal_barrier_validation_clear_accesses() callconv(.c) void {
 
     lock_validation_mutex();
     g_validation_context.access_count = 0;
+    reset_access_table();
     unlock_validation_mutex();
 
     barrier_log.debug("Cleared all tracked accesses", .{});

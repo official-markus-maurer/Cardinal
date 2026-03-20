@@ -1,3 +1,7 @@
+//! Vulkan device-loss recovery.
+//!
+//! Attempts to tear down and recreate Vulkan objects after a `VK_ERROR_DEVICE_LOST`, restoring
+//! pipelines and (when available) reloading the currently bound scene.
 const std = @import("std");
 const log = @import("../core/log.zig");
 const types = @import("vulkan_types.zig");
@@ -16,6 +20,35 @@ const vk_simple_pipelines = @import("vulkan_simple_pipelines.zig");
 const vk_post_process = @import("vulkan_post_process.zig");
 const vk_renderer = @import("vulkan_renderer.zig");
 
+const FailurePoint = enum {
+    device,
+    swapchain,
+    pipeline,
+    commands_sync,
+    simple_pipelines,
+    post_process_pipeline,
+    pbr_pipeline,
+    pbr_scene_reload,
+    mesh_shader_paths,
+    mesh_shader_pipeline,
+};
+
+fn failurePointName(point: FailurePoint) []const u8 {
+    return switch (point) {
+        .device => "device",
+        .swapchain => "swapchain",
+        .pipeline => "pipeline",
+        .commands_sync => "commands sync",
+        .simple_pipelines => "simple pipelines",
+        .post_process_pipeline => "post process pipeline",
+        .pbr_pipeline => "PBR pipeline",
+        .pbr_scene_reload => "PBR scene reload",
+        .mesh_shader_paths => "mesh shader paths",
+        .mesh_shader_pipeline => "mesh shader pipeline",
+    };
+}
+
+/// Performs a best-effort recovery sequence, returning true when the renderer is usable again.
 pub fn recover_from_device_loss(s: *types.VulkanState) bool {
     if (s.recovery.recovery_in_progress) {
         return false;
@@ -75,47 +108,47 @@ pub fn recover_from_device_loss(s: *types.VulkanState) bool {
     vk_swapchain.vk_destroy_swapchain(s);
 
     var success = true;
-    var failure_point: ?[]const u8 = null;
+    var failure_point: ?FailurePoint = null;
 
     if (!vk_instance.vk_create_device(@ptrCast(s))) {
-        failure_point = "device";
+        failure_point = .device;
         success = false;
     }
 
     if (success and !vk_swapchain.vk_create_swapchain(s)) {
-        failure_point = "swapchain";
+        failure_point = .swapchain;
         success = false;
     }
 
     if (success and !vk_pipeline.vk_create_pipeline(s)) {
-        failure_point = "pipeline";
+        failure_point = .pipeline;
         success = false;
     }
 
     if (success and !vk_commands.vk_create_commands_sync(@ptrCast(s))) {
-        failure_point = "commands sync";
+        failure_point = .commands_sync;
         success = false;
     }
 
     if (success and !vk_simple_pipelines.vk_create_simple_pipelines(s, null)) {
-        failure_point = "simple pipelines";
+        failure_point = .simple_pipelines;
         success = false;
     }
 
     if (success and !vk_post_process.vk_post_process_init(s)) {
-        failure_point = "post process pipeline";
+        failure_point = .post_process_pipeline;
         success = false;
     }
 
     if (success and stored_scene != null) {
         if (!vk_pbr.vk_pbr_pipeline_create(&s.pipelines.pbr_pipeline, s.context.device, s.context.physical_device, s.swapchain.format, s.swapchain.depth_format, s.commands.pools.?[0], s.context.graphics_queue, &s.allocator, s, s.pipelines.pipeline_cache)) {
-            failure_point = "PBR pipeline";
+            failure_point = .pbr_pipeline;
             success = false;
         } else {
             s.pipelines.use_pbr_pipeline = true;
 
             if (!vk_pbr.vk_pbr_load_scene(&s.pipelines.pbr_pipeline, s.context.device, s.context.physical_device, s.commands.pools.?[0], s.context.graphics_queue, stored_scene, &s.allocator, s)) {
-                failure_point = "PBR scene reload";
+                failure_point = .pbr_scene_reload;
                 success = false;
             }
         }
@@ -135,14 +168,17 @@ pub fn recover_from_device_loss(s: *types.VulkanState) bool {
 
         _ = std.fmt.bufPrintZ(&task_path, "{s}/task.task.spv", .{shaders_dir}) catch |err| {
             frame_log.err("Failed to format task shader path: {s}", .{@errorName(err)});
+            failure_point = .mesh_shader_paths;
             success = false;
         };
         _ = std.fmt.bufPrintZ(&mesh_path, "{s}/mesh.mesh.spv", .{shaders_dir}) catch |err| {
             frame_log.err("Failed to format mesh shader path: {s}", .{@errorName(err)});
+            failure_point = .mesh_shader_paths;
             success = false;
         };
         _ = std.fmt.bufPrintZ(&frag_path, "{s}/mesh.frag.spv", .{shaders_dir}) catch |err| {
             frame_log.err("Failed to format fragment shader path: {s}", .{@errorName(err)});
+            failure_point = .mesh_shader_paths;
             success = false;
         };
 
@@ -161,7 +197,7 @@ pub fn recover_from_device_loss(s: *types.VulkanState) bool {
 
         if (!vk_mesh_shader.vk_mesh_shader_create_pipeline(s, &config, s.swapchain.format, s.swapchain.depth_format, &s.pipelines.mesh_shader_pipeline, null)) {
             frame_log.err("Failed to initialize mesh shader pipeline", .{});
-            failure_point = "mesh shader pipeline";
+            failure_point = .mesh_shader_pipeline;
             success = false;
         } else {
             s.pipelines.use_mesh_shader_pipeline = true;
@@ -169,7 +205,7 @@ pub fn recover_from_device_loss(s: *types.VulkanState) bool {
     }
 
     if (success and !vk_commands.vk_create_commands_sync(s)) {
-        failure_point = "commands and synchronization";
+        failure_point = .commands_sync;
         success = false;
     }
 
@@ -182,7 +218,8 @@ pub fn recover_from_device_loss(s: *types.VulkanState) bool {
         s.recovery.device_lost = false;
         s.recovery.attempt_count = 0;
     } else {
-        frame_log.err("[RECOVERY] Device loss recovery failed at: {any}", .{failure_point orelse "unknown"});
+        const fp_str = if (failure_point) |fp| failurePointName(fp) else "unknown";
+        frame_log.err("[RECOVERY] Device loss recovery failed at: {s}", .{fp_str});
     }
 
     s.recovery.recovery_in_progress = false;

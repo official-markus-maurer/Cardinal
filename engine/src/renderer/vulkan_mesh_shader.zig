@@ -82,7 +82,6 @@ pub export fn vk_mesh_shader_cleanup(s: ?*types.VulkanState) callconv(.c) void {
 
     vk_mesh_shader_destroy_pipeline(vs, &vs.pipelines.mesh_shader_pipeline);
 
-    // Process all pending cleanups
     if (vs.pending_cleanup_lists != null) {
         const mem_alloc = memory.cardinal_get_allocator_for_category(.RENDERER);
         var f: u32 = 0;
@@ -114,13 +113,11 @@ pub export fn vk_mesh_shader_create_pipeline(s: ?*types.VulkanState, config: ?*c
     pipe.max_meshlets_per_workgroup = 32;
     pipe.max_vertices_per_meshlet = cfg.max_vertices_per_meshlet;
 
-    // Allocator for reflection data
     const renderer_allocator = memory.cardinal_get_allocator_for_category(.RENDERER).as_allocator();
     var arena = std.heap.ArenaAllocator.init(renderer_allocator);
     defer arena.deinit();
     const allocator = arena.allocator();
 
-    // Helper map for merging bindings
     const BindingInfo = struct {
         binding: c.VkDescriptorSetLayoutBinding,
         is_runtime_array: bool,
@@ -136,7 +133,6 @@ pub export fn vk_mesh_shader_create_pipeline(s: ?*types.VulkanState, config: ?*c
     var fragShaderModule: c.VkShaderModule = null;
     var taskShaderModule: c.VkShaderModule = null;
 
-    // Load Shaders and Reflect
     const process_shader = struct {
         fn func(device: c.VkDevice, path_c: ?[*:0]const u8, stage: c.VkShaderStageFlags, module_out: *c.VkShaderModule, s0: *std.AutoHashMap(u32, BindingInfo), s1: *std.AutoHashMap(u32, BindingInfo), pc: *c.VkPushConstantRange, alloc: std.mem.Allocator) !bool {
             if (path_c == null) return false;

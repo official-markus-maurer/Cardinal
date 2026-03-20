@@ -2,8 +2,6 @@
 //!
 //! Computes cascade splits from the active camera, builds light-space matrices for a chosen
 //! directional light, and records the shadow render pass.
-//!
-//! TODO: Move cascade math into a standalone helper module for easier testing.
 const std = @import("std");
 const c = @import("vulkan_c.zig").c;
 const types = @import("vulkan_types.zig");
@@ -16,22 +14,13 @@ const wrappers = @import("vulkan_wrappers.zig");
 const vk_pso = @import("vulkan_pso.zig");
 const material_utils = @import("util/vulkan_material_utils.zig");
 const descriptor_mgr = @import("vulkan_descriptor_manager.zig");
+const cascade_math = @import("util/vulkan_shadow_cascades.zig");
 
 const shadows_log = log.ScopedLogger("SHADOWS");
 
-fn mat4_identity() math.Mat4 {
-    return math.Mat4.identity();
-}
-
-fn mat4_ortho(left: f32, right: f32, bottom: f32, top: f32, zNear: f32, zFar: f32) math.Mat4 {
-    return math.Mat4.ortho(left, right, bottom, top, zNear, zFar);
-}
-
-fn mat4_lookAt(eye: math.Vec3, center: math.Vec3, up: math.Vec3) math.Mat4 {
-    return math.Mat4.lookAt(eye, center, up);
-}
-
 /// Records the shadow pass for the current frame when the PBR pipeline is active.
+///
+/// TODO: Tune depth bias per scene to reduce acne/peter-panning.
 pub fn vk_shadow_render(s: *types.VulkanState, cmd: c.VkCommandBuffer) void {
     if (!s.pipelines.use_pbr_pipeline or !s.pipelines.pbr_pipeline.initialized) {
         return;
@@ -96,162 +85,25 @@ pub fn vk_shadow_render(s: *types.VulkanState, cmd: c.VkCommandBuffer) void {
 
     lightDir = lightDir.normalize();
 
-    const view = math.Mat4.fromArray(ubo.view);
-    const proj = math.Mat4.fromArray(ubo.proj);
-
     var cascadeSplits = [_]f32{0} ** types.MAX_SHADOW_CASCADES;
-    var lightSpaceMatrices = [_]math.Mat4{mat4_identity()} ** types.MAX_SHADOW_CASCADES;
-
-    const nearClip: f32 = s.config.shadow_near_clip;
-
-    var farClip: f32 = s.config.shadow_far_clip;
-    const p10 = proj.data[10];
-    const p14 = proj.data[14];
-    if (@abs(1.0 + p10) > 0.001) {
-        farClip = p14 / (1.0 + p10);
-    }
-
-    const minZ = nearClip;
-    const maxZ = farClip;
-    const ratio = maxZ / minZ;
-    const range = maxZ - minZ;
-
-    const lambda: f32 = s.config.shadow_split_lambda;
+    var lightSpaceMatrices = [_]math.Mat4{math.Mat4.identity()} ** types.MAX_SHADOW_CASCADES;
     const cascade_count_u32: u32 = @min(s.config.shadow_cascade_count, @as(u32, pipe.shadowCascadeViews.len));
     const cascade_count: usize = @intCast(cascade_count_u32);
-
-    var lastSplitDist: f32 = 0.0;
-
-    var j: usize = 0;
-    while (j < cascade_count) : (j += 1) {
-        const p = @as(f32, @floatFromInt(j + 1)) / @as(f32, @floatFromInt(cascade_count));
-        const logC = minZ * std.math.pow(f32, ratio, p);
-        const uniC = minZ + range * p;
-        const d = lambda * logC + (1.0 - lambda) * uniC;
-        cascadeSplits[j] = d; // Store actual depth for comparison
-
-        const camPos = math.Vec3.fromArray(ubo.viewPos);
-        const camRight = math.Vec3{ .x = view.data[0], .y = view.data[4], .z = view.data[8] };
-        const camUp = math.Vec3{ .x = view.data[1], .y = view.data[5], .z = view.data[9] };
-        const camForward = math.Vec3{ .x = -view.data[2], .y = -view.data[6], .z = -view.data[10] };
-
-        const tanHalfFov = 1.0 / proj.data[5]; // Can be negative if Y is flipped
-        const aspect = proj.data[5] / proj.data[0];
-
-        const getCornersAtDist = struct {
-            fn call(dist: f32, cPos: math.Vec3, cFwd: math.Vec3, cRight: math.Vec3, cUp: math.Vec3, thf: f32, asp: f32) [4]math.Vec3 {
-                const height = dist * thf * 2.0;
-                const width = height * asp;
-
-                const center_slice = cPos.add(cFwd.mul(dist));
-                const up_vec = cUp.mul(height * 0.5);
-                const right_vec = cRight.mul(width * 0.5);
-
-                return [4]math.Vec3{
-                    center_slice.sub(right_vec).add(up_vec), // TL
-                    center_slice.add(right_vec).add(up_vec), // TR
-                    center_slice.sub(right_vec).sub(up_vec), // BL
-                    center_slice.add(right_vec).sub(up_vec), // BR
-                };
-            }
-        }.call;
-
-        const cornersNear = getCornersAtDist(lastSplitDist, camPos, camForward, camRight, camUp, tanHalfFov, aspect);
-        const cornersFar = getCornersAtDist(d, camPos, camForward, camRight, camUp, tanHalfFov, aspect);
-
-        const worldCorners = [8]math.Vec3{ cornersNear[0], cornersNear[1], cornersNear[2], cornersNear[3], cornersFar[0], cornersFar[1], cornersFar[2], cornersFar[3] };
-
-        var center = math.Vec3.zero();
-        for (worldCorners) |wc| {
-            center = center.add(wc);
-        }
-        center = center.mul(1.0 / 8.0);
-
-        const zeroPos = math.Vec3.zero();
-        const identFwd = math.Vec3{ .x = 0, .y = 0, .z = -1 };
-        const identRight = math.Vec3{ .x = 1, .y = 0, .z = 0 };
-        const identUp = math.Vec3{ .x = 0, .y = 1, .z = 0 };
-
-        const vsCornersNear = getCornersAtDist(lastSplitDist, zeroPos, identFwd, identRight, identUp, tanHalfFov, aspect);
-        const vsCornersFar = getCornersAtDist(d, zeroPos, identFwd, identRight, identUp, tanHalfFov, aspect);
-
-        const vsCorners = [8]math.Vec3{ vsCornersNear[0], vsCornersNear[1], vsCornersNear[2], vsCornersNear[3], vsCornersFar[0], vsCornersFar[1], vsCornersFar[2], vsCornersFar[3] };
-
-        var vsCenter = math.Vec3.zero();
-        for (vsCorners) |vc| {
-            vsCenter = vsCenter.add(vc);
-        }
-        vsCenter = vsCenter.mul(1.0 / 8.0);
-
-        var radius: f32 = 0.0;
-        for (vsCorners) |vc| {
-            const d2 = vc.sub(vsCenter).lengthSq();
-            radius = @max(radius, d2);
-        }
-        radius = std.math.sqrt(radius);
-
-        radius *= 1.4;
-
-        const min_radius: f32 = 25.0;
-        radius = @max(radius, min_radius);
-
-        radius = std.math.ceil(radius * 16.0) / 16.0;
-
-        var up = math.Vec3{ .x = 0, .y = 1, .z = 0 };
-        if (std.math.approxEqAbs(f32, @abs(lightDir.dot(up)), 1.0, 0.001)) {
-            up = math.Vec3{ .x = 0, .y = 0, .z = 1 };
-        }
-
-        const baseLightView = mat4_lookAt(lightDir.mul(-1.0), math.Vec3.zero(), up);
-
-        const mulMat4Vec3 = struct {
-            fn call(m: math.Mat4, v: math.Vec3) math.Vec3 {
-                const x = m.data[0] * v.x + m.data[4] * v.y + m.data[8] * v.z + m.data[12];
-                const y = m.data[1] * v.x + m.data[5] * v.y + m.data[9] * v.z + m.data[13];
-                const z = m.data[2] * v.x + m.data[6] * v.y + m.data[10] * v.z + m.data[14];
-                return math.Vec3{ .x = x, .y = y, .z = z };
-            }
-        }.call;
-
-        var centerLS = mulMat4Vec3(baseLightView, center);
-
-        const shadowMapWidth = @as(f32, @floatFromInt(s.config.shadow_map_size));
-
-        const worldUnitsPerTexel = (2.0 * radius) / shadowMapWidth;
-
-        // TODO: Extract stable cascade snapping into a helper and make it unit-testable.
-        const snappedX = @floor((centerLS.x - radius) / worldUnitsPerTexel) * worldUnitsPerTexel + radius;
-        const snappedY = @floor((centerLS.y - radius) / worldUnitsPerTexel) * worldUnitsPerTexel + radius;
-
-        centerLS.x = snappedX;
-        centerLS.y = snappedY;
-
-        const lightView = baseLightView;
-
-        const minX = centerLS.x - radius;
-        const maxX = centerLS.x + radius;
-        const minY = centerLS.y - radius;
-        const maxY = centerLS.y + radius;
-
-        // TODO: Make z range configurable per scene/cascade.
-        const zRange = 4000.0;
-        const minZ_ortho = centerLS.z - zRange;
-        const maxZ_ortho = centerLS.z + zRange;
-
-        const lightProjFinal = mat4_ortho(minX, maxX, minY, maxY, maxZ_ortho, minZ_ortho);
-
-        lightSpaceMatrices[j] = lightProjFinal.mul(lightView);
-
-        lastSplitDist = d;
-    }
+    cascade_math.build_shadow_cascades(&s.config, ubo, lightDir, cascade_count, cascadeSplits[0..cascade_count], lightSpaceMatrices[0..cascade_count]);
 
     const frame = if (s.sync.current_frame >= types.MAX_FRAMES_IN_FLIGHT) 0 else s.sync.current_frame;
     if (pipe.shadowUBOsMapped[frame]) |ptr| {
         const matricesPtr = @as([*]math.Mat4, @ptrCast(@alignCast(ptr)));
-        @memcpy(matricesPtr[0..4], lightSpaceMatrices[0..4]);
-
+        const fixed_count = pipe.shadowCascadeViews.len;
+        var mi: usize = 0;
+        while (mi < fixed_count) : (mi += 1) {
+            matricesPtr[mi] = if (mi < cascade_count) lightSpaceMatrices[mi] else math.Mat4.identity();
+        }
         const splitsPtr = @as([*]f32, @ptrCast(@alignCast(@as([*]u8, @ptrCast(ptr)) + 256)));
-        @memcpy(splitsPtr[0..4], cascadeSplits[0..4]);
+        var si: usize = 0;
+        while (si < fixed_count) : (si += 1) {
+            splitsPtr[si] = if (si < cascade_count) cascadeSplits[si] else 0;
+        }
     }
 
     const scn = s.current_scene orelse return;
@@ -301,7 +153,6 @@ pub fn vk_shadow_render(s: *types.VulkanState, cmd: c.VkCommandBuffer) void {
         sc.extent.height = s.config.shadow_map_size;
         c.vkCmdSetScissor(cmd, 0, 1, &sc);
 
-        // TODO: Tune depth bias per scene to reduce acne/peter-panning.
         c.vkCmdSetDepthBias(cmd, 0.0, 0.0, 0.0);
 
         c.vkCmdBindPipeline(cmd, c.VK_PIPELINE_BIND_POINT_GRAPHICS, pipe.shadowPipeline);

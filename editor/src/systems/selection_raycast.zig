@@ -947,15 +947,29 @@ pub fn pick_under_mouse(state: *EditorState) void {
                 mesh_index_to_entity(state, mesh_index, true) orelse mesh_index_to_entity(state, mesh_index, false);
 
             if (ent) |e| {
+                const alloc = engine.memory.cardinal_get_allocator_for_category(.ENGINE).as_allocator();
                 state.ui.selected_entity = e;
                 state.ui.selected_model_id = 0;
                 state.ui.scene_graph_focus_target_id = e.id;
                 state.ui.scene_graph_focus_pending = true;
+                if (!c.imgui_bridge_is_ctrl_down()) {
+                    state.ui.selected_entities.clearRetainingCapacity();
+                }
+                if (c.imgui_bridge_is_ctrl_down() and state.ui.selected_entities.contains(e.id)) {
+                    _ = state.ui.selected_entities.remove(e.id);
+                    if (state.ui.selected_entities.count() == 0) {
+                        state.ui.selected_entity = .{ .id = std.math.maxInt(u64) };
+                    }
+                } else {
+                    state.ui.selected_entities.put(alloc, e.id, {}) catch {};
+                }
             } else {
                 state.ui.selected_entity = .{ .id = std.math.maxInt(u64) };
+                state.ui.selected_entities.clearRetainingCapacity();
             }
         } else {
             state.ui.selected_entity = .{ .id = std.math.maxInt(u64) };
+            state.ui.selected_entities.clearRetainingCapacity();
         }
     }
 }

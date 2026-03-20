@@ -53,5 +53,6 @@
         "pipeline_dir": "assets/pipelines",
         "texture_dir": "assets/textures",
         "model_dir": "assets/models"
-    }
+    },
+    "frame_allocator_size": 16777216
 }

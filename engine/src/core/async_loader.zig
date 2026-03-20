@@ -2,7 +2,6 @@
 //!
 //! The async loader provides a C-ABI-friendly task API backed by the engine job system.
 //! Tasks can represent built-in operations (textures/scenes/meshes/materials) or custom user jobs.
-//!
 const std = @import("std");
 const log = @import("log.zig");
 const memory = @import("memory.zig");
@@ -220,6 +219,66 @@ fn execute_material_load_task(task: *CardinalAsyncTask) bool {
     return true;
 }
 
+fn hash_mesh_content(mesh: *const scene.CardinalMesh) u64 {
+    const prime: u64 = 1099511628211;
+    var hash: u64 = 14695981039346656037;
+
+    const update = struct {
+        fn bytes(h: *u64, b: []const u8) void {
+            for (b) |v| {
+                h.* ^= v;
+                h.* *%= prime;
+            }
+        }
+    }.bytes;
+
+    update(&hash, std.mem.asBytes(&mesh.vertex_count));
+    update(&hash, std.mem.asBytes(&mesh.index_count));
+    update(&hash, std.mem.asBytes(&mesh.material_index));
+    update(&hash, std.mem.asBytes(&mesh.bounding_box_min));
+    update(&hash, std.mem.asBytes(&mesh.bounding_box_max));
+
+    const full_limit: usize = 4 * 1024 * 1024;
+
+    if (mesh.vertices) |vertices| {
+        if (mesh.vertex_count > 0) {
+            const verts = vertices[0..mesh.vertex_count];
+            const bytes_len: usize = @as(usize, mesh.vertex_count) * @sizeOf(scene.CardinalVertex);
+            const bytes = @as([*]const u8, @ptrCast(verts.ptr))[0..bytes_len];
+            if (bytes_len <= full_limit) {
+                update(&hash, bytes);
+            } else {
+                const head_len: usize = @min(bytes_len, 4096);
+                update(&hash, bytes[0..head_len]);
+                if (bytes_len > head_len) {
+                    const tail_len: usize = @min(bytes_len - head_len, 4096);
+                    update(&hash, bytes[bytes_len - tail_len .. bytes_len]);
+                }
+            }
+        }
+    }
+
+    if (mesh.indices) |indices| {
+        if (mesh.index_count > 0) {
+            const idx = indices[0..mesh.index_count];
+            const bytes_len: usize = @as(usize, mesh.index_count) * @sizeOf(u32);
+            const bytes = @as([*]const u8, @ptrCast(idx.ptr))[0..bytes_len];
+            if (bytes_len <= full_limit) {
+                update(&hash, bytes);
+            } else {
+                const head_len: usize = @min(bytes_len, 4096);
+                update(&hash, bytes[0..head_len]);
+                if (bytes_len > head_len) {
+                    const tail_len: usize = @min(bytes_len - head_len, 4096);
+                    update(&hash, bytes[bytes_len - tail_len .. bytes_len]);
+                }
+            }
+        }
+    }
+
+    return hash;
+}
+
 /// Loads a mesh from `custom_data` by deep-copying buffers into ASSETS memory and registering
 /// a ref-counted resource that owns the allocation.
 fn execute_mesh_load_task(task: *CardinalAsyncTask) bool {
@@ -263,9 +322,9 @@ fn execute_mesh_load_task(task: *CardinalAsyncTask) bool {
         mesh.indices = null;
     }
 
-    // TODO: Generate a stable mesh id (content hash) instead of pointer-derived ids.
+    const mesh_hash = hash_mesh_content(mesh);
     var mesh_id: [128]u8 = undefined;
-    _ = std.fmt.bufPrintZ(&mesh_id, "mesh_{d}_{d}_{x}", .{ mesh.vertex_count, mesh.index_count, @intFromPtr(mesh) }) catch {
+    _ = std.fmt.bufPrintZ(&mesh_id, "mesh_{x:0>16}", .{mesh_hash}) catch {
         if (mesh.vertices) |v| memory.cardinal_free(allocator, v);
         if (mesh.indices) |i| memory.cardinal_free(allocator, i);
         memory.cardinal_free(allocator, mesh_ptr);

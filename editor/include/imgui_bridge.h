@@ -298,7 +298,10 @@ float imgui_bridge_get_framerate(void);
 
 uint64_t imgui_bridge_vk_add_texture(VkSampler sampler, VkImageView view, int image_layout);
 void imgui_bridge_vk_remove_texture(uint64_t texture_id);
+uint64_t imgui_bridge_vk_backend_user_data_ptr(void);
+uint64_t imgui_bridge_vk_generation(void);
 void imgui_bridge_image_u64(uint64_t texture_id, float width, float height);
+
 
 // Bridge API
 void imgui_bridge_create_context(void);
@@ -429,11 +432,14 @@ const ImGuiPayload* imgui_bridge_accept_drag_drop_payload(const char* type, int 
 void imgui_bridge_end_drag_drop_target(void);
 const void* imgui_bridge_payload_get_data(const ImGuiPayload* payload);
 int imgui_bridge_payload_get_data_size(const ImGuiPayload* payload);
+bool imgui_bridge_payload_is_delivery(const ImGuiPayload* payload);
 void imgui_bridge_set_keyboard_focus_here(int offset);
 bool imgui_bridge_is_window_appearing(void);
 
 // Tooltips & Interaction
 void imgui_bridge_set_tooltip(const char *fmt, ...);
+void imgui_bridge_begin_tooltip(void);
+void imgui_bridge_end_tooltip(void);
 bool imgui_bridge_is_item_hovered(int flags);
 bool imgui_bridge_is_item_active(void);
 bool imgui_bridge_is_any_item_active(void);

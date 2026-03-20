@@ -1,5 +1,8 @@
+//! Vulkan resource manager for renderer-owned objects.
+//!
+//! Exposes a C ABI for tearing down renderer resources in a consistent order (scene buffers,
+//! pipelines, swapchain objects, command buffers, compute pools).
 const std = @import("std");
-const builtin = @import("builtin");
 const log = @import("../core/log.zig");
 const memory = @import("../core/memory.zig");
 const types = @import("vulkan_types.zig");
@@ -17,11 +20,114 @@ const res_log = log.ScopedLogger("RES_MGR");
 
 const c = @import("vulkan_c.zig").c;
 
+/// Lightweight handle passed through the C ABI for resource lifecycle operations.
 pub const VulkanResourceManager = extern struct {
     vulkan_state: ?*types.VulkanState,
     initialized: bool,
 };
 
+/// Scene-related teardown routines (per-scene buffers and allocations).
+const SceneDomain = struct {
+    fn destroy_scene(mgr: *VulkanResourceManager) void {
+        const s = mgr.vulkan_state.?;
+
+        res_log.debug("Destroying scene buffers", .{});
+
+        if (s.scene_meshes != null) {
+            var i: u32 = 0;
+            while (i < s.scene_mesh_count) : (i += 1) {
+                var m = &s.scene_meshes.?[i];
+                if (m.vbuf != null) {
+                    vk_allocator.free_buffer(&s.allocator, m.vbuf, m.v_allocation);
+                    m.vbuf = null;
+                }
+                if (m.ibuf != null) {
+                    vk_allocator.free_buffer(&s.allocator, m.ibuf, m.i_allocation);
+                    m.ibuf = null;
+                }
+            }
+
+            vulkan_resource_manager_free(s.scene_meshes);
+            s.scene_meshes = null;
+            s.scene_mesh_count = 0;
+        }
+    }
+};
+
+/// Pipeline-related teardown routines (PBR/simple/mesh pipelines and their GPU buffers).
+const PipelineDomain = struct {
+    fn destroy_pipelines(mgr: *VulkanResourceManager) void {
+        const s = mgr.vulkan_state.?;
+
+        if (s.pipelines.pbr_pipeline.initialized) {
+            res_log.debug("Destroying PBR pipeline resources", .{});
+            vulkan_resource_manager_destroy_textures(mgr, &s.pipelines.pbr_pipeline);
+
+            const pbr = &s.pipelines.pbr_pipeline;
+            var i: u32 = 0;
+            while (i < types.MAX_FRAMES_IN_FLIGHT) : (i += 1) {
+                if (pbr.uniformBuffers[i] != null) {
+                    vk_allocator.free_buffer(&s.allocator, pbr.uniformBuffers[i], pbr.uniformBuffersAllocation[i]);
+                    pbr.uniformBuffers[i] = null;
+                }
+                if (pbr.lightingBuffers[i] != null) {
+                    vk_allocator.free_buffer(&s.allocator, pbr.lightingBuffers[i], pbr.lightingBuffersAllocation[i]);
+                    pbr.lightingBuffers[i] = null;
+                }
+                if (pbr.boneMatricesBuffers[i] != null) {
+                    vk_allocator.free_buffer(&s.allocator, pbr.boneMatricesBuffers[i], pbr.boneMatricesBuffersAllocation[i]);
+                    pbr.boneMatricesBuffers[i] = null;
+                }
+                if (pbr.shadowUBOs[i] != null) {
+                    vk_allocator.free_buffer(&s.allocator, pbr.shadowUBOs[i], pbr.shadowUBOsAllocation[i]);
+                    pbr.shadowUBOs[i] = null;
+                }
+            }
+
+            if (pbr.vertexBuffer != null) {
+                vk_allocator.free_buffer(&s.allocator, pbr.vertexBuffer, pbr.vertexBufferAllocation);
+                pbr.vertexBuffer = null;
+            }
+            if (pbr.indexBuffer != null) {
+                vk_allocator.free_buffer(&s.allocator, pbr.indexBuffer, pbr.indexBufferAllocation);
+                pbr.indexBuffer = null;
+            }
+
+            if (pbr.descriptorManager) |dm| {
+                vk_descriptor_manager.vk_descriptor_manager_destroy(dm);
+                const allocator = memory.cardinal_get_allocator_for_category(.RENDERER);
+                memory.cardinal_free(allocator, dm);
+                pbr.descriptorManager = null;
+            }
+        }
+
+        vk_simple_pipelines.vk_destroy_simple_pipelines(s);
+
+        _ = vulkan_resource_manager_wait_idle(mgr);
+
+        vk_mesh_shader.vk_mesh_shader_cleanup(s);
+
+        vk_pipeline.vk_destroy_pipeline(s);
+    }
+};
+
+/// Swapchain-related teardown routines (swapchain and dependent images/views).
+const SwapchainDomain = struct {
+    fn destroy_swapchain_resources(mgr: *VulkanResourceManager) void {
+        res_log.debug("Destroying swapchain resources", .{});
+        vk_swapchain.vk_destroy_swapchain(mgr.vulkan_state.?);
+    }
+};
+
+/// Command/sync teardown routines (command buffers, semaphores, fences).
+const CommandsDomain = struct {
+    fn destroy_commands_sync(mgr: *VulkanResourceManager) void {
+        res_log.debug("Destroying command buffers and synchronization objects", .{});
+        vk_commands.vk_destroy_commands_sync(@ptrCast(mgr.vulkan_state.?));
+    }
+};
+
+/// Initializes `manager` for use with `vulkan_state`.
 pub export fn vulkan_resource_manager_init(manager: ?*VulkanResourceManager, vulkan_state: ?*types.VulkanState) callconv(.c) c.VkResult {
     if (manager == null or vulkan_state == null) {
         res_log.err("Invalid parameters for initialization", .{});
@@ -37,6 +143,7 @@ pub export fn vulkan_resource_manager_init(manager: ?*VulkanResourceManager, vul
     return c.VK_SUCCESS;
 }
 
+/// Marks `manager` as destroyed without freeing renderer-owned resources.
 pub export fn vulkan_resource_manager_destroy(manager: ?*VulkanResourceManager) callconv(.c) void {
     if (manager == null) return;
     const mgr = manager.?;
@@ -48,6 +155,7 @@ pub export fn vulkan_resource_manager_destroy(manager: ?*VulkanResourceManager) 
     res_log.debug("Destroyed successfully", .{});
 }
 
+/// Destroys all known renderer resources tracked by `VulkanState`.
 pub export fn vulkan_resource_manager_destroy_all(manager: ?*VulkanResourceManager) callconv(.c) void {
     if (manager == null) return;
     const mgr = manager.?;
@@ -61,128 +169,51 @@ pub export fn vulkan_resource_manager_destroy_all(manager: ?*VulkanResourceManag
 
     vulkan_resource_manager_process_mesh_cleanup(mgr);
 
-    vulkan_resource_manager_destroy_commands_sync(mgr);
-    vulkan_resource_manager_destroy_scene(mgr);
+    CommandsDomain.destroy_commands_sync(mgr);
+    SceneDomain.destroy_scene(mgr);
 
     if (s.pipelines.compute_shader_initialized) {
         vk_compute.vk_compute_cleanup(s);
     }
 
-    vulkan_resource_manager_destroy_pipelines(mgr);
-    vulkan_resource_manager_destroy_swapchain_resources(mgr);
+    PipelineDomain.destroy_pipelines(mgr);
+    SwapchainDomain.destroy_swapchain_resources(mgr);
 
     res_log.info("Complete resource destruction finished", .{});
 }
 
+/// Destroys per-scene GPU buffers (meshes and related allocations).
 pub export fn vulkan_resource_manager_destroy_scene(manager: ?*VulkanResourceManager) callconv(.c) void {
     if (manager == null) return;
     const mgr = manager.?;
     if (!mgr.initialized or mgr.vulkan_state == null) return;
-
-    const s = mgr.vulkan_state.?;
-
-    res_log.debug("Destroying scene buffers", .{});
-
-    if (s.scene_meshes != null) {
-        var i: u32 = 0;
-        while (i < s.scene_mesh_count) : (i += 1) {
-            var m = &s.scene_meshes.?[i];
-            if (m.vbuf != null) {
-                vulkan_resource_manager_destroy_buffer(mgr, m.vbuf, m.v_allocation);
-                m.vbuf = null;
-            }
-            if (m.ibuf != null) {
-                vulkan_resource_manager_destroy_buffer(mgr, m.ibuf, m.i_allocation);
-                m.ibuf = null;
-            }
-        }
-
-        vulkan_resource_manager_free(s.scene_meshes);
-        s.scene_meshes = null;
-        s.scene_mesh_count = 0;
-    }
+    SceneDomain.destroy_scene(mgr);
 }
 
 pub export fn vulkan_resource_manager_destroy_pipelines(manager: ?*VulkanResourceManager) callconv(.c) void {
     if (manager == null) return;
     const mgr = manager.?;
     if (!mgr.initialized or mgr.vulkan_state == null) return;
-
-    const s = mgr.vulkan_state.?;
-
-    if (s.pipelines.pbr_pipeline.initialized) {
-        res_log.debug("Destroying PBR pipeline resources", .{});
-        vulkan_resource_manager_destroy_textures(manager, &s.pipelines.pbr_pipeline);
-
-        // Destroy PBR buffers
-        const pbr = &s.pipelines.pbr_pipeline;
-        var i: u32 = 0;
-        while (i < types.MAX_FRAMES_IN_FLIGHT) : (i += 1) {
-            if (pbr.uniformBuffers[i] != null) {
-                vulkan_resource_manager_destroy_buffer(manager, pbr.uniformBuffers[i], pbr.uniformBuffersAllocation[i]);
-                pbr.uniformBuffers[i] = null;
-            }
-            if (pbr.lightingBuffers[i] != null) {
-                vulkan_resource_manager_destroy_buffer(manager, pbr.lightingBuffers[i], pbr.lightingBuffersAllocation[i]);
-                pbr.lightingBuffers[i] = null;
-            }
-            if (pbr.boneMatricesBuffers[i] != null) {
-                vulkan_resource_manager_destroy_buffer(manager, pbr.boneMatricesBuffers[i], pbr.boneMatricesBuffersAllocation[i]);
-                pbr.boneMatricesBuffers[i] = null;
-            }
-            if (pbr.shadowUBOs[i] != null) {
-                vulkan_resource_manager_destroy_buffer(manager, pbr.shadowUBOs[i], pbr.shadowUBOsAllocation[i]);
-                pbr.shadowUBOs[i] = null;
-            }
-        }
-
-        if (pbr.vertexBuffer != null) {
-            vulkan_resource_manager_destroy_buffer(manager, pbr.vertexBuffer, pbr.vertexBufferAllocation);
-            pbr.vertexBuffer = null;
-        }
-        if (pbr.indexBuffer != null) {
-            vulkan_resource_manager_destroy_buffer(manager, pbr.indexBuffer, pbr.indexBufferAllocation);
-            pbr.indexBuffer = null;
-        }
-
-        // Descriptor manager should also be destroyed if it exists
-        if (pbr.descriptorManager) |dm| {
-            vk_descriptor_manager.vk_descriptor_manager_destroy(dm);
-            const allocator = memory.cardinal_get_allocator_for_category(.RENDERER);
-            memory.cardinal_free(allocator, dm);
-            pbr.descriptorManager = null;
-        }
-    }
-
-    vk_simple_pipelines.vk_destroy_simple_pipelines(s);
-
-    _ = vulkan_resource_manager_wait_idle(mgr);
-
-    vk_mesh_shader.vk_mesh_shader_cleanup(s);
-
-    vk_pipeline.vk_destroy_pipeline(s);
+    PipelineDomain.destroy_pipelines(mgr);
 }
 
+/// Destroys swapchain-dependent resources (image views, depth buffers, framebuffers).
 pub export fn vulkan_resource_manager_destroy_swapchain_resources(manager: ?*VulkanResourceManager) callconv(.c) void {
     if (manager == null) return;
     const mgr = manager.?;
     if (!mgr.initialized or mgr.vulkan_state == null) return;
-
-    res_log.debug("Destroying swapchain resources", .{});
-
-    vk_swapchain.vk_destroy_swapchain(mgr.vulkan_state.?);
+    SwapchainDomain.destroy_swapchain_resources(mgr);
 }
 
+/// Destroys command buffers and synchronization primitives.
 pub export fn vulkan_resource_manager_destroy_commands_sync(manager: ?*VulkanResourceManager) callconv(.c) void {
     if (manager == null) return;
     const mgr = manager.?;
     if (!mgr.initialized or mgr.vulkan_state == null) return;
-
-    res_log.debug("Destroying command buffers and synchronization objects", .{});
-
-    vk_commands.vk_destroy_commands_sync(@ptrCast(mgr.vulkan_state.?));
+    CommandsDomain.destroy_commands_sync(mgr);
 }
 
+/// Destroys depth image resources used by the swapchain.
 pub export fn vulkan_resource_manager_destroy_depth_resources(manager: ?*VulkanResourceManager) callconv(.c) void {
     if (manager == null) return;
     const mgr = manager.?;

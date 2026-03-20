@@ -21,6 +21,8 @@ pub const CardinalEngineConfig = struct {
 
     /// Total memory budget passed to the engine memory system.
     memory_size: usize = 4 * 1024 * 1024,
+    /// Per-frame scratch allocation size for the stack allocator.
+    frame_allocator_size: usize = 16 * 1024 * 1024,
     /// Number of hash buckets for the ref-counting registry.
     ref_counting_buckets: u32 = 1009,
     /// Worker thread count used by the async loader.
@@ -187,6 +189,7 @@ pub const ConfigManager = struct {
             window_height: ?u32 = null,
             window_resizable: ?bool = null,
             memory_size: ?usize = null,
+            frame_allocator_size: ?usize = null,
             ref_counting_buckets: ?u32 = null,
             async_worker_threads: ?u32 = null,
             async_queue_size: ?u32 = null,
@@ -208,6 +211,7 @@ pub const ConfigManager = struct {
         if (parsed.value.window_height) |val| self.config.window_height = val;
         if (parsed.value.window_resizable) |val| self.config.window_resizable = val;
         if (parsed.value.memory_size) |val| self.config.memory_size = val;
+        if (parsed.value.frame_allocator_size) |val| self.config.frame_allocator_size = val;
         if (parsed.value.ref_counting_buckets) |val| self.config.ref_counting_buckets = val;
         if (parsed.value.async_worker_threads) |val| self.config.async_worker_threads = val;
         if (parsed.value.async_queue_size) |val| self.config.async_queue_size = val;
@@ -339,6 +343,7 @@ pub const ConfigManager = struct {
         window_height: u32,
         window_resizable: bool,
         memory_size: usize,
+        frame_allocator_size: usize,
         ref_counting_buckets: u32,
         async_worker_threads: u32,
         async_queue_size: u32,
@@ -354,6 +359,7 @@ pub const ConfigManager = struct {
                 .window_height = cfg.window_height,
                 .window_resizable = cfg.window_resizable,
                 .memory_size = cfg.memory_size,
+                .frame_allocator_size = cfg.frame_allocator_size,
                 .ref_counting_buckets = cfg.ref_counting_buckets,
                 .async_worker_threads = cfg.async_worker_threads,
                 .async_queue_size = cfg.async_queue_size,

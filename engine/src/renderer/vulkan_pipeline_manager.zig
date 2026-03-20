@@ -2,8 +2,6 @@
 //!
 //! Tracks graphics/compute pipelines, caches shader modules, and owns a persistent pipeline cache
 //! blob to speed up subsequent startups.
-//!
-//! TODO: Split shader module caching from pipeline lifetime management.
 const std = @import("std");
 const builtin = @import("builtin");
 const log = @import("../core/log.zig");
@@ -15,6 +13,8 @@ const vk_pbr = @import("vulkan_pbr.zig");
 const vk_mesh_shader = @import("vulkan_mesh_shader.zig");
 const vk_simple_pipelines = @import("vulkan_simple_pipelines.zig");
 const shader_utils = @import("util/vulkan_shader_utils.zig");
+const pipeline_cache_io = @import("util/vulkan_pipeline_cache_io.zig");
+const shader_cache = @import("util/vulkan_shader_module_cache.zig");
 
 const pipe_log = log.ScopedLogger("PIPELINE");
 
@@ -88,93 +88,25 @@ fn get_state(manager: *VulkanPipelineManager) *types.VulkanState {
     return manager.vulkan_state.?;
 }
 
-const CACHE_HEADER_MAGIC: u32 = 0xCAD10001;
-
-const CacheHeader = extern struct {
-    magic: u32,
-    checksum: u64,
-    size: u64,
-};
+const PIPELINE_CACHE_FILE_NAME = "pipeline_cache.bin";
 
 /// Creates (and optionally warms) the pipeline cache from `pipeline_cache.bin`.
+///
+/// TODO: Route pipeline cache IO through the engine virtual filesystem.
 fn create_pipeline_cache(manager: *VulkanPipelineManager) bool {
     var cache_info = std.mem.zeroes(c.VkPipelineCacheCreateInfo);
     cache_info.sType = c.VK_STRUCTURE_TYPE_PIPELINE_CACHE_CREATE_INFO;
 
     const s = get_state(manager);
 
-    var file_buffer: []u8 = &[_]u8{};
-    // TODO: Route pipeline cache IO through the engine virtual filesystem.
-    const file = std.fs.cwd().openFile("pipeline_cache.bin", .{}) catch null;
-    if (file) |f| {
-        defer f.close();
-        if (f.stat()) |stat| {
-            if (stat.size > @sizeOf(CacheHeader)) {
-                var header: CacheHeader = undefined;
-                const header_read = f.readAll(std.mem.asBytes(&header)) catch 0;
-
-                if (header_read == @sizeOf(CacheHeader)) {
-                    var valid = true;
-                    const data_size = stat.size - @sizeOf(CacheHeader);
-
-                    if (header.magic != CACHE_HEADER_MAGIC) {
-                        pipe_log.warn("Cache header magic mismatch", .{});
-                        valid = false;
-                    } else if (header.size != data_size) {
-                        pipe_log.warn("Cache size mismatch", .{});
-                        valid = false;
-                    }
-
-                    if (valid) {
-                        const alloc = memory.cardinal_get_allocator_for_category(.RENDERER).as_allocator();
-                        if (alloc.alloc(u8, data_size)) |buf| {
-                            if (f.readAll(buf)) |read_bytes| {
-                                if (read_bytes == data_size) {
-                                    const checksum = std.hash.Wyhash.hash(0, buf);
-                                    if (checksum != header.checksum) {
-                                        pipe_log.warn("Cache checksum mismatch", .{});
-                                        valid = false;
-                                    }
-
-                                    if (valid and buf.len >= 16 + c.VK_UUID_SIZE) {
-                                        var props: c.VkPhysicalDeviceProperties = undefined;
-                                        c.vkGetPhysicalDeviceProperties(s.context.physical_device, &props);
-
-                                        const cache_vendor_id = std.mem.readInt(u32, buf[8..12], .little);
-                                        const cache_device_id = std.mem.readInt(u32, buf[12..16], .little);
-                                        const cache_uuid = buf.ptr + 16;
-
-                                        if (cache_vendor_id != props.vendorID or cache_device_id != props.deviceID) {
-                                            pipe_log.warn("Cache device mismatch (Vendor/Device ID)", .{});
-                                            valid = false;
-                                        } else if (!std.mem.eql(u8, cache_uuid[0..c.VK_UUID_SIZE], props.pipelineCacheUUID[0..c.VK_UUID_SIZE])) {
-                                            pipe_log.warn("Cache UUID mismatch", .{});
-                                            valid = false;
-                                        }
-                                    }
-
-                                    if (valid) {
-                                        cache_info.initialDataSize = buf.len;
-                                        cache_info.pInitialData = buf.ptr;
-                                        file_buffer = buf;
-                                        pipe_log.info("Loading pipeline cache ({d} bytes)", .{buf.len});
-                                    } else {
-                                        alloc.free(buf);
-                                    }
-                                }
-                            } else |_| {
-                                alloc.free(buf);
-                            }
-                        } else |_| {}
-                    }
-                }
-            }
-        } else |_| {}
+    const alloc = memory.cardinal_get_allocator_for_category(.RENDERER).as_allocator();
+    const seed = pipeline_cache_io.load_seed_data(alloc, s.context.physical_device, PIPELINE_CACHE_FILE_NAME);
+    defer if (seed) |buf| alloc.free(buf);
+    if (seed) |buf| {
+        cache_info.initialDataSize = buf.len;
+        cache_info.pInitialData = buf.ptr;
+        pipe_log.info("Loading pipeline cache ({d} bytes)", .{buf.len});
     }
-    defer if (file_buffer.len > 0) {
-        const alloc = memory.cardinal_get_allocator_for_category(.RENDERER).as_allocator();
-        alloc.free(file_buffer);
-    };
 
     if (c.vkCreatePipelineCache(s.context.device, &cache_info, null, &manager.pipeline_cache) != c.VK_SUCCESS) {
         pipe_log.err("Failed to create pipeline cache", .{});
@@ -186,34 +118,8 @@ fn create_pipeline_cache(manager: *VulkanPipelineManager) bool {
 fn destroy_pipeline_cache(manager: *VulkanPipelineManager) void {
     if (manager.pipeline_cache != null) {
         const s = get_state(manager);
-
-        var size: usize = 0;
-        if (c.vkGetPipelineCacheData(s.context.device, manager.pipeline_cache, &size, null) == c.VK_SUCCESS) {
-            if (size > 0) {
-                const alloc = memory.cardinal_get_allocator_for_category(.RENDERER).as_allocator();
-                if (alloc.alloc(u8, size)) |buf| {
-                    defer alloc.free(buf);
-                    if (c.vkGetPipelineCacheData(s.context.device, manager.pipeline_cache, &size, buf.ptr) == c.VK_SUCCESS) {
-                        if (std.fs.cwd().createFile("pipeline_cache.bin", .{})) |file| {
-                            defer file.close();
-
-                            const checksum = std.hash.Wyhash.hash(0, buf);
-                            const header = CacheHeader{
-                                .magic = CACHE_HEADER_MAGIC,
-                                .checksum = checksum,
-                                .size = size,
-                            };
-
-                            _ = file.writeAll(std.mem.asBytes(&header)) catch {};
-                            _ = file.writeAll(buf) catch {};
-                            pipe_log.info("Saved pipeline cache ({d} bytes)", .{size});
-                        } else |_| {
-                            pipe_log.warn("Failed to create cache file", .{});
-                        }
-                    }
-                } else |_| {}
-            }
-        }
+        const alloc = memory.cardinal_get_allocator_for_category(.RENDERER).as_allocator();
+        pipeline_cache_io.save_cache_file(alloc, s.context.device, manager.pipeline_cache, PIPELINE_CACHE_FILE_NAME);
 
         c.vkDestroyPipelineCache(s.context.device, manager.pipeline_cache, null);
         manager.pipeline_cache = null;
@@ -255,34 +161,6 @@ fn remove_pipeline_from_manager(manager: *VulkanPipelineManager, type_val: Vulka
             break;
         }
     }
-}
-
-fn ensure_shader_capacity(manager: *VulkanPipelineManager) bool {
-    if (manager.shader_module_count >= manager.shader_module_capacity) {
-        const new_capacity = if (manager.shader_module_capacity == 0) 16 else manager.shader_module_capacity * 2;
-        const alloc = memory.cardinal_get_allocator_for_category(.RENDERER);
-        const new_modules = memory.cardinal_realloc(alloc, @as(?*anyopaque, @ptrCast(manager.shader_modules)), @sizeOf(c.VkShaderModule) * new_capacity);
-        const new_paths = memory.cardinal_realloc(alloc, @as(?*anyopaque, @ptrCast(manager.shader_paths)), @sizeOf([*c]u8) * new_capacity);
-
-        if (new_modules == null or new_paths == null) {
-            pipe_log.err("Failed to expand shader cache", .{});
-            return false;
-        }
-        manager.shader_modules = @ptrCast(@alignCast(new_modules));
-        manager.shader_paths = @ptrCast(@alignCast(new_paths));
-        manager.shader_module_capacity = new_capacity;
-    }
-    return true;
-}
-
-fn find_shader_index(manager: *VulkanPipelineManager, shader_path: [*c]const u8) i32 {
-    var i: u32 = 0;
-    while (i < manager.shader_module_count) : (i += 1) {
-        if (manager.shader_paths.?[i] != null and c.strcmp(manager.shader_paths.?[i], shader_path) == 0) {
-            return @intCast(i);
-        }
-    }
-    return -1;
 }
 
 /// Initializes a pipeline manager and loads the persistent pipeline cache.
@@ -853,7 +731,13 @@ export fn vulkan_pipeline_manager_load_shader(manager: ?*VulkanPipelineManager, 
     const m = manager.?;
     const s = get_state(m);
 
-    const cached = vulkan_pipeline_manager_get_cached_shader(m, shader_path);
+    var view = shader_cache.CacheView{
+        .shader_modules = &m.shader_modules,
+        .shader_paths = &m.shader_paths,
+        .shader_module_count = &m.shader_module_count,
+        .shader_module_capacity = &m.shader_module_capacity,
+    };
+    const cached = shader_cache.get_cached_shader(&view, shader_path);
     if (cached != null) {
         shader_module.?.* = cached;
         return true;
@@ -864,18 +748,10 @@ export fn vulkan_pipeline_manager_load_shader(manager: ?*VulkanPipelineManager, 
         return false;
     }
 
-    if (!ensure_shader_capacity(m)) {
+    if (!shader_cache.add_shader(&view, shader_path, shader_module.?.*)) {
         pipe_log.err("Failed to expand shader cache", .{});
         c.vkDestroyShaderModule(s.context.device, shader_module.?.*, null);
         return false;
-    }
-
-    const index = m.shader_module_count;
-    m.shader_module_count += 1;
-    m.shader_modules.?[index] = shader_module.?.*;
-    m.shader_paths.?[index] = @ptrCast(c.malloc(c.strlen(shader_path) + 1));
-    if (m.shader_paths.?[index] != null) {
-        _ = c.strcpy(m.shader_paths.?[index], shader_path);
     }
 
     return true;
@@ -886,11 +762,13 @@ export fn vulkan_pipeline_manager_get_cached_shader(manager: ?*VulkanPipelineMan
         return null;
     }
     const m = manager.?;
-    const index = find_shader_index(m, shader_path);
-    if (index >= 0) {
-        return m.shader_modules.?[@intCast(index)];
-    }
-    return null;
+    const view = shader_cache.CacheView{
+        .shader_modules = &m.shader_modules,
+        .shader_paths = &m.shader_paths,
+        .shader_module_count = &m.shader_module_count,
+        .shader_module_capacity = &m.shader_module_capacity,
+    };
+    return shader_cache.get_cached_shader(&view, shader_path);
 }
 
 export fn vulkan_pipeline_manager_clear_shader_cache(manager: ?*VulkanPipelineManager) callconv(.c) void {
@@ -901,17 +779,13 @@ export fn vulkan_pipeline_manager_clear_shader_cache(manager: ?*VulkanPipelineMa
     const s = get_state(m);
     const device = s.context.device;
 
-    var i: u32 = 0;
-    while (i < m.shader_module_count) : (i += 1) {
-        if (m.shader_modules.?[i] != null) {
-            c.vkDestroyShaderModule(device, m.shader_modules.?[i], null);
-        }
-        if (m.shader_paths.?[i] != null) {
-            c.free(@as(?*anyopaque, @ptrCast(m.shader_paths.?[i])));
-        }
-    }
-
-    m.shader_module_count = 0;
+    var view = shader_cache.CacheView{
+        .shader_modules = &m.shader_modules,
+        .shader_paths = &m.shader_paths,
+        .shader_module_count = &m.shader_module_count,
+        .shader_module_capacity = &m.shader_module_capacity,
+    };
+    shader_cache.clear(&view, device);
 }
 
 export fn vulkan_pipeline_manager_is_pbr_enabled(manager: ?*VulkanPipelineManager) callconv(.c) bool {

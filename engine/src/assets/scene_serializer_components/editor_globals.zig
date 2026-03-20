@@ -1,6 +1,11 @@
+//! Scene serializer support for `EditorGlobals`.
+//!
+//! Converts editor-only global state (camera, panel visibility, post-process settings) to and
+//! from the JSON scene format.
 const std = @import("std");
 const components = @import("../../ecs/components.zig");
 
+/// Serializes `EditorGlobals` into a JSON object.
 pub fn serialize(writer: anytype, g: *components.EditorGlobals) !void {
     try writer.beginObject();
 
@@ -80,6 +85,7 @@ pub fn serialize(writer: anytype, g: *components.EditorGlobals) !void {
     try writer.endObject();
 }
 
+/// Deserializes `EditorGlobals` from a JSON object.
 pub fn deserialize(val: std.json.Value) !components.EditorGlobals {
     if (val != .object) return error.InvalidFormat;
     var g = components.EditorGlobals{};

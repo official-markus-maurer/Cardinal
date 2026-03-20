@@ -784,6 +784,21 @@ pub const AABB = struct {
 
         return .{ .min = new_min, .max = new_max };
     }
+
+    pub fn transformFast(self: AABB, matrix: Mat4) AABB {
+        const c = self.center();
+        const e = self.size().mul(0.5);
+
+        const wc = matrix.transformPoint(c);
+        const m = matrix.data;
+
+        const ex = @abs(m[0]) * e.x + @abs(m[4]) * e.y + @abs(m[8]) * e.z;
+        const ey = @abs(m[1]) * e.x + @abs(m[5]) * e.y + @abs(m[9]) * e.z;
+        const ez = @abs(m[2]) * e.x + @abs(m[6]) * e.y + @abs(m[10]) * e.z;
+        const we = Vec3{ .x = ex, .y = ey, .z = ez };
+
+        return .{ .min = wc.sub(we), .max = wc.add(we) };
+    }
 };
 
 /// Returns the parametric distance `t` where `ray` intersects `aabb`, if any.
@@ -856,4 +871,266 @@ pub fn intersectRayAABB(ray: Ray, aabb: AABB, t_min: f32, t_max: f32) ?f32 {
     if (t_hit < t_min) t_hit = t1;
     if (t_hit < t_min or t_hit > t_max) return null;
     return t_hit;
+}
+
+pub const Plane = struct {
+    n: Vec3,
+    d: f32,
+
+    pub fn normalize(self: Plane) Plane {
+        const len_sq = self.n.dot(self.n);
+        if (len_sq <= 0.0) return self;
+        const inv = 1.0 / @sqrt(len_sq);
+        return .{ .n = self.n.mul(inv), .d = self.d * inv };
+    }
+
+    pub fn distance(self: Plane, p: Vec3) f32 {
+        return self.n.dot(p) + self.d;
+    }
+};
+
+pub const Frustum = struct {
+    planes: [6]Plane,
+
+    pub fn fromMatrix(view_proj: Mat4) Frustum {
+        const m = view_proj.data;
+
+        const r0 = @Vector(4, f32){ m[0], m[4], m[8], m[12] };
+        const r1 = @Vector(4, f32){ m[1], m[5], m[9], m[13] };
+        const r2 = @Vector(4, f32){ m[2], m[6], m[10], m[14] };
+        const r3 = @Vector(4, f32){ m[3], m[7], m[11], m[15] };
+
+        const make = struct {
+            fn f(v: @Vector(4, f32)) Plane {
+                return (Plane{
+                    .n = .{ .x = v[0], .y = v[1], .z = v[2] },
+                    .d = v[3],
+                }).normalize();
+            }
+        }.f;
+
+        return .{
+            .planes = .{
+                make(r3 + r0),
+                make(r3 - r0),
+                make(r3 + r1),
+                make(r3 - r1),
+                make(r3 + r2),
+                make(r3 - r2),
+            },
+        };
+    }
+};
+
+pub fn aabbIntersectsFrustum(aabb: AABB, frustum: Frustum) bool {
+    const min = aabb.min;
+    const max = aabb.max;
+    for (frustum.planes) |p| {
+        const px = if (p.n.x >= 0.0) max.x else min.x;
+        const py = if (p.n.y >= 0.0) max.y else min.y;
+        const pz = if (p.n.z >= 0.0) max.z else min.z;
+        if (p.distance(.{ .x = px, .y = py, .z = pz }) < 0.0) return false;
+    }
+    return true;
+}
+
+pub const BVH = struct {
+    pub const Node = struct {
+        aabb: AABB,
+        left: i32,
+        right: i32,
+        start: u32,
+        count: u32,
+    };
+
+    nodes: []Node = @as([]Node, &[_]Node{}),
+    node_count: u32 = 0,
+    indices: []u32 = @as([]u32, &[_]u32{}),
+    leaf_size: u32 = 4,
+
+    pub fn deinit(self: *BVH, allocator: std.mem.Allocator) void {
+        if (self.nodes.len > 0) allocator.free(self.nodes);
+        if (self.indices.len > 0) allocator.free(self.indices);
+        self.* = .{};
+    }
+
+    pub fn build(self: *BVH, allocator: std.mem.Allocator, aabbs: []const AABB) !void {
+        if (aabbs.len == 0) return;
+
+        const aabb_len: usize = aabbs.len;
+        if (self.indices.len < aabb_len) {
+            if (self.indices.len > 0) allocator.free(self.indices);
+            self.indices = try allocator.alloc(u32, aabb_len);
+        }
+        for (self.indices[0..aabb_len], 0..) |*dst, i| dst.* = @intCast(i);
+
+        const needed_nodes: usize = aabb_len * 2;
+        if (self.nodes.len < needed_nodes) {
+            if (self.nodes.len > 0) allocator.free(self.nodes);
+            self.nodes = try allocator.alloc(Node, needed_nodes);
+        }
+        self.node_count = 0;
+
+        _ = try self.build_node(aabbs, 0, @intCast(aabbs.len), &self.node_count);
+    }
+
+    fn build_node(self: *BVH, aabbs: []const AABB, start: u32, count: u32, node_count: *u32) !u32 {
+        const idx: u32 = node_count.*;
+        node_count.* += 1;
+
+        const bounds = union_aabbs(aabbs, self.indices[start..][0..count]);
+
+        var node = Node{
+            .aabb = bounds,
+            .left = -1,
+            .right = -1,
+            .start = start,
+            .count = count,
+        };
+
+        if (count <= self.leaf_size) {
+            self.nodes[idx] = node;
+            return idx;
+        }
+
+        var cmin = Vec3{ .x = std.math.floatMax(f32), .y = std.math.floatMax(f32), .z = std.math.floatMax(f32) };
+        var cmax = Vec3{ .x = -std.math.floatMax(f32), .y = -std.math.floatMax(f32), .z = -std.math.floatMax(f32) };
+        for (self.indices[start..][0..count]) |i_idx| {
+            const c = aabbs[i_idx].center();
+            cmin.x = @min(cmin.x, c.x);
+            cmin.y = @min(cmin.y, c.y);
+            cmin.z = @min(cmin.z, c.z);
+            cmax.x = @max(cmax.x, c.x);
+            cmax.y = @max(cmax.y, c.y);
+            cmax.z = @max(cmax.z, c.z);
+        }
+        const extent = cmax.sub(cmin);
+        var axis: u8 = 0;
+        if (extent.y > extent.x and extent.y >= extent.z) axis = 1 else if (extent.z > extent.x and extent.z > extent.y) axis = 2;
+
+        const slice = self.indices[start..][0..count];
+        const Ctx = struct {
+            aabbs: []const AABB,
+            axis: u8,
+        };
+        const less = struct {
+            fn f(ctx: Ctx, a: u32, b: u32) bool {
+                const ca = ctx.aabbs[a].center();
+                const cb = ctx.aabbs[b].center();
+                return switch (ctx.axis) {
+                    0 => ca.x < cb.x,
+                    1 => ca.y < cb.y,
+                    else => ca.z < cb.z,
+                };
+            }
+        }.f;
+        std.sort.pdq(u32, slice, Ctx{ .aabbs = aabbs, .axis = axis }, less);
+
+        const mid: u32 = start + count / 2;
+        const left_idx = try self.build_node(aabbs, start, mid - start, node_count);
+        const right_idx = try self.build_node(aabbs, mid, start + count - mid, node_count);
+
+        node.left = @intCast(left_idx);
+        node.right = @intCast(right_idx);
+        node.count = 0;
+        node.aabb = merge_aabb(self.nodes[left_idx].aabb, self.nodes[right_idx].aabb);
+        self.nodes[idx] = node;
+        return idx;
+    }
+
+    pub fn refit(self: *BVH, aabbs: []const AABB) void {
+        if (self.nodes.len == 0 or self.node_count == 0) return;
+        var i: usize = @intCast(self.node_count);
+        while (i > 0) {
+            i -= 1;
+            var n = self.nodes[i];
+            if (n.count > 0) {
+                const range = self.indices[n.start..][0..n.count];
+                n.aabb = union_aabbs(aabbs, range);
+                self.nodes[i] = n;
+            } else {
+                if (n.left >= 0 and n.right >= 0) {
+                    const l = self.nodes[@intCast(n.left)].aabb;
+                    const r = self.nodes[@intCast(n.right)].aabb;
+                    n.aabb = merge_aabb(l, r);
+                    self.nodes[i] = n;
+                }
+            }
+        }
+    }
+
+    pub fn queryFrustum(self: *const BVH, frustum: Frustum, aabbs: []const AABB, out: *std.ArrayListUnmanaged(u32), allocator: std.mem.Allocator) void {
+        if (self.nodes.len == 0 or self.node_count == 0) return;
+        var stack: [256]u32 = undefined;
+        var sp: usize = 0;
+        stack[sp] = 0;
+        sp += 1;
+
+        while (sp > 0) {
+            sp -= 1;
+            const ni = stack[sp];
+
+            const node = self.nodes[ni];
+            if (!aabbIntersectsFrustum(node.aabb, frustum)) continue;
+
+            if (node.count > 0) {
+                const range = self.indices[node.start..][0..node.count];
+                for (range) |idx| {
+                    if (@as(usize, @intCast(idx)) < aabbs.len and aabbIntersectsFrustum(aabbs[idx], frustum)) {
+                        out.append(allocator, idx) catch {};
+                    }
+                }
+            } else {
+                if (node.left >= 0 and sp < stack.len) {
+                    stack[sp] = @intCast(node.left);
+                    sp += 1;
+                }
+                if (node.right >= 0 and sp < stack.len) {
+                    stack[sp] = @intCast(node.right);
+                    sp += 1;
+                }
+            }
+        }
+    }
+};
+
+fn merge_aabb(a: AABB, b: AABB) AABB {
+    return .{
+        .min = .{ .x = @min(a.min.x, b.min.x), .y = @min(a.min.y, b.min.y), .z = @min(a.min.z, b.min.z) },
+        .max = .{ .x = @max(a.max.x, b.max.x), .y = @max(a.max.y, b.max.y), .z = @max(a.max.z, b.max.z) },
+    };
+}
+
+fn union_aabbs(aabbs: []const AABB, indices: []const u32) AABB {
+    var out = AABB{
+        .min = Vec3{ .x = std.math.floatMax(f32), .y = std.math.floatMax(f32), .z = std.math.floatMax(f32) },
+        .max = Vec3{ .x = -std.math.floatMax(f32), .y = -std.math.floatMax(f32), .z = -std.math.floatMax(f32) },
+    };
+    for (indices) |i| {
+        const b = aabbs[i];
+        out = merge_aabb(out, b);
+    }
+    return out;
+}
+
+test "BVH frustum query culls outside AABBs" {
+    const allocator = std.testing.allocator;
+
+    const aabbs = [_]AABB{
+        .{ .min = .{ .x = -0.5, .y = -0.5, .z = -0.5 }, .max = .{ .x = 0.5, .y = 0.5, .z = 0.5 } },
+        .{ .min = .{ .x = 9.5, .y = -0.5, .z = -0.5 }, .max = .{ .x = 10.5, .y = 0.5, .z = 0.5 } },
+    };
+
+    var bvh: BVH = .{};
+    defer bvh.deinit(allocator);
+    try bvh.build(allocator, &aabbs);
+
+    const frustum = Frustum.fromMatrix(Mat4.identity());
+
+    var hits: std.ArrayListUnmanaged(u32) = .{};
+    defer hits.deinit(allocator);
+    bvh.queryFrustum(frustum, &aabbs, &hits, allocator);
+
+    try std.testing.expect(hits.items.len == 1);
+    try std.testing.expect(hits.items[0] == 0);
 }
