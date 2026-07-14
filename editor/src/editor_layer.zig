@@ -30,6 +30,7 @@ const animation_panel = @import("panels/animation_panel.zig");
 const scene_manager_panel = @import("panels/scene_manager_panel.zig");
 const terrain_panel = @import("panels/terrain_panel.zig");
 const selection_system = @import("systems/selection_system.zig");
+const volumetric_terrain = @import("systems/volumetric_terrain.zig");
 const performance_panel = @import("panels/performance_panel.zig");
 const input_system = @import("systems/input.zig");
 const camera_controller = @import("systems/camera_controller.zig");
@@ -84,6 +85,7 @@ fn ensure_globals_entity() void {
     g.game_camera_entity_id = std.math.maxInt(u64);
 
     g.pbr_enabled = state.runtime.pbr_enabled;
+    g.enable_shadows = state.runtime.enable_shadows;
     g.rendering_mode = @as(u32, @intCast(@intFromEnum(renderer.cardinal_renderer_get_rendering_mode(state.runtime.renderer))));
 
     g.post_exposure = state.runtime.post_process.exposure;
@@ -137,8 +139,12 @@ fn apply_globals_to_state() void {
         renderer.cardinal_renderer_enable_pbr(state.runtime.renderer, state.runtime.pbr_enabled);
         if (state.runtime.pbr_enabled) {
             renderer.cardinal_renderer_set_camera(state.runtime.renderer, &state.runtime.camera);
-            renderer.cardinal_renderer_set_lighting(state.runtime.renderer, &state.runtime.light);
         }
+    }
+
+    if (state.runtime.enable_shadows != g.enable_shadows) {
+        state.runtime.enable_shadows = g.enable_shadows;
+        renderer.cardinal_renderer_set_debug_flags(state.runtime.renderer, if (state.runtime.enable_shadows) 0.0 else 1.0);
     }
 
     const desired_mode: types.CardinalRenderingMode = combo_index_to_rendering_mode(@intCast(@min(g.rendering_mode, 3)));
@@ -215,6 +221,7 @@ fn persist_state_to_globals() void {
     g.enable_viewports = false;
 
     g.pbr_enabled = state.runtime.pbr_enabled;
+    g.enable_shadows = state.runtime.enable_shadows;
     g.rendering_mode = @as(u32, @intCast(@intFromEnum(renderer.cardinal_renderer_get_rendering_mode(state.runtime.renderer))));
 
     g.post_exposure = state.runtime.post_process.exposure;
@@ -321,6 +328,23 @@ fn free_terrain_runtime_data(entry: *editor_state.TerrainData) void {
         }
     }
     allocator.free(entry.height);
+    allocator.free(entry.bottom_height);
+    allocator.free(entry.splat);
+}
+
+fn free_volumetric_terrain_runtime_data(editor_state_ptr: *EditorState, entity_id: u64, entry: *editor_state.VolumetricTerrainData) void {
+    _ = entity_id;
+    if (entry.splat_handle != std.math.maxInt(u32)) {
+        renderer.cardinal_renderer_runtime_texture_free(editor_state_ptr.runtime.renderer, entry.splat_handle);
+        entry.splat_handle = std.math.maxInt(u32);
+    }
+    for (entry.layer_handles, 0..) |h, i| {
+        if (h != std.math.maxInt(u32)) {
+            renderer.cardinal_renderer_runtime_texture_free(editor_state_ptr.runtime.renderer, h);
+            entry.layer_handles[i] = std.math.maxInt(u32);
+        }
+    }
+    allocator.free(entry.density);
     allocator.free(entry.splat);
 }
 
@@ -355,6 +379,93 @@ fn prune_terrain_runtime_data() void {
 
     for (dead_ids.items) |id| {
         _ = state.runtime.terrain_data_by_entity.remove(id);
+    }
+
+    dead_ids.clearRetainingCapacity();
+    var vt_it = state.runtime.volumetric_terrain_data_by_entity.iterator();
+    while (vt_it.next()) |entry| {
+        const entity_id = entry.key_ptr.*;
+        const ent = engine.ecs_entity.Entity{ .id = entity_id };
+        const alive = state.runtime.registry.entity_manager.is_alive(ent);
+        if (!alive) {
+            free_volumetric_terrain_runtime_data(&state, entity_id, entry.value_ptr);
+            dead_ids.append(allocator, entity_id) catch {};
+            continue;
+        }
+
+        const vt = state.runtime.registry.get(components.VolumetricTerrain, ent);
+        if (vt == null) {
+            free_volumetric_terrain_runtime_data(&state, entity_id, entry.value_ptr);
+            dead_ids.append(allocator, entity_id) catch {};
+            continue;
+        }
+
+        if (model_manager.cardinal_model_manager_get_model(&state.runtime.model_manager, vt.?.model_id) == null) {
+            free_volumetric_terrain_runtime_data(&state, entity_id, entry.value_ptr);
+            dead_ids.append(allocator, entity_id) catch {};
+            continue;
+        }
+    }
+
+    for (dead_ids.items) |id| {
+        _ = state.runtime.volumetric_terrain_data_by_entity.remove(id);
+        _ = state.runtime.volumetric_splat_dirty_rects.remove(id);
+        _ = state.runtime.volumetric_dirty_boxes.remove(id);
+        _ = state.runtime.volumetric_dirty_lod_masks.remove(id);
+        _ = state.runtime.volumetric_lod_by_entity.remove(id);
+        _ = state.runtime.volumetric_visible_by_entity.remove(id);
+        if (state.runtime.volumetric_remesh_tasks.get(id)) |t| {
+            _ = async_loader.cardinal_async_cancel_task(t);
+            async_loader.cardinal_async_free_task(t);
+            _ = state.runtime.volumetric_remesh_tasks.remove(id);
+        }
+
+        {
+            var brick_keys: std.ArrayListUnmanaged(editor_state.VolumetricBrickKey) = .{};
+            defer brick_keys.deinit(allocator);
+            var bit = state.runtime.volumetric_brick_remesh_tasks.iterator();
+            while (bit.next()) |entry| {
+                if (entry.key_ptr.entity_id == id) brick_keys.append(allocator, entry.key_ptr.*) catch {};
+            }
+            for (brick_keys.items) |k| {
+                if (state.runtime.volumetric_brick_remesh_tasks.get(k)) |t| {
+                    _ = async_loader.cardinal_async_cancel_task(t);
+                    async_loader.cardinal_async_free_task(t);
+                    _ = state.runtime.volumetric_brick_remesh_tasks.remove(k);
+                }
+                _ = state.runtime.volumetric_dirty_brick_boxes.remove(k);
+                _ = state.runtime.volumetric_dirty_brick_lod_masks.remove(k);
+                _ = state.runtime.volumetric_brick_generation.remove(k);
+                _ = state.runtime.volumetric_brick_last_schedule_ms.remove(k);
+
+                var lod: u8 = 0;
+                while (lod < 3) : (lod += 1) {
+                    const lk = editor_state.VolumetricBrickLodKey{ .entity_id = k.entity_id, .brick_id = k.brick_id, .lod = lod };
+                    if (state.runtime.volumetric_brick_tile_cache.fetchRemove(lk)) |removed| {
+                        var i: usize = 0;
+                        while (i < removed.value.tiles.len) : (i += 1) {
+                            if (removed.value.tiles[i].vertices.len != 0) allocator.free(removed.value.tiles[i].vertices);
+                            if (removed.value.tiles[i].indices.len != 0) allocator.free(removed.value.tiles[i].indices);
+                        }
+                    }
+                }
+            }
+        }
+
+        {
+            var snap_keys: std.ArrayListUnmanaged(editor_state.VolumetricDensitySnapshotKey) = .{};
+            defer snap_keys.deinit(allocator);
+            var sit = state.runtime.volumetric_density_snapshots.iterator();
+            while (sit.next()) |entry| {
+                if (entry.key_ptr.entity_id == id) snap_keys.append(allocator, entry.key_ptr.*) catch {};
+            }
+            for (snap_keys.items) |k| {
+                const snap = state.runtime.volumetric_density_snapshots.get(k).?;
+                allocator.free(snap.density);
+                allocator.free(snap.splat);
+                _ = state.runtime.volumetric_density_snapshots.remove(k);
+            }
+        }
     }
 }
 
@@ -499,8 +610,6 @@ fn combo_index_to_rendering_mode(combo_index: i32) types.CardinalRenderingMode {
 }
 
 /// Initializes the editor layer and its UI backends.
-///
-/// TODO: Replace `std.debug.print` usage with structured logging.
 pub fn init(win_ptr: *window.CardinalWindow, rnd_ptr: *types.CardinalRenderer, registry: *engine.ecs_registry.Registry) bool {
     if (initialized) {
         log.cardinal_log_warn("[EDITOR] Already initialized", .{});
@@ -642,9 +751,9 @@ pub fn init(win_ptr: *window.CardinalWindow, rnd_ptr: *types.CardinalRenderer, r
     log.cardinal_log_info("[EDITOR_LAYER] Assets dir scanned.", .{});
 
     renderer.cardinal_renderer_set_camera(rnd_ptr, &state.runtime.camera);
-    std.debug.print("[EDITOR_LAYER] Camera set.\n", .{});
+    log.cardinal_log_info("[EDITOR_LAYER] Camera set.", .{});
     renderer.cardinal_renderer_set_lighting(rnd_ptr, &state.runtime.light);
-    std.debug.print("[EDITOR_LAYER] Lighting set.\n", .{});
+    log.cardinal_log_info("[EDITOR_LAYER] Lighting set.", .{});
     renderer.cardinal_renderer_set_post_process_params(rnd_ptr, &state.runtime.post_process);
     renderer.cardinal_renderer_set_ui_callback(rnd_ptr, @ptrCast(&ui_draw_callback));
 
@@ -803,6 +912,56 @@ fn close_project() void {
     }
     state.runtime.terrain_dirty_rects.clearRetainingCapacity();
 
+    {
+        var it = state.runtime.volumetric_terrain_data_by_entity.iterator();
+        while (it.next()) |entry| {
+            free_volumetric_terrain_runtime_data(&state, entry.key_ptr.*, entry.value_ptr);
+        }
+        state.runtime.volumetric_terrain_data_by_entity.clearRetainingCapacity();
+    }
+    state.runtime.volumetric_splat_dirty_rects.clearRetainingCapacity();
+    state.runtime.volumetric_dirty_boxes.clearRetainingCapacity();
+    state.runtime.volumetric_dirty_lod_masks.clearRetainingCapacity();
+    state.runtime.volumetric_lod_by_entity.clearRetainingCapacity();
+    state.runtime.volumetric_visible_by_entity.clearRetainingCapacity();
+    state.runtime.volumetric_mesh_caps.clearRetainingCapacity();
+    state.runtime.volumetric_dirty_brick_boxes.clearRetainingCapacity();
+    state.runtime.volumetric_dirty_brick_lod_masks.clearRetainingCapacity();
+    state.runtime.volumetric_brick_generation.clearRetainingCapacity();
+    state.runtime.volumetric_brick_last_schedule_ms.clearRetainingCapacity();
+    {
+        var it = state.runtime.volumetric_brick_tile_cache.iterator();
+        while (it.next()) |entry| {
+            var i: usize = 0;
+            while (i < entry.value_ptr.tiles.len) : (i += 1) {
+                if (entry.value_ptr.tiles[i].vertices.len != 0) allocator.free(entry.value_ptr.tiles[i].vertices);
+                if (entry.value_ptr.tiles[i].indices.len != 0) allocator.free(entry.value_ptr.tiles[i].indices);
+            }
+        }
+        state.runtime.volumetric_brick_tile_cache.clearRetainingCapacity();
+    }
+    {
+        var it = state.runtime.volumetric_remesh_tasks.iterator();
+        while (it.next()) |entry| {
+            _ = async_loader.cardinal_async_cancel_task(entry.value_ptr.*);
+        }
+    }
+    {
+        var it = state.runtime.volumetric_brick_remesh_tasks.iterator();
+        while (it.next()) |entry| {
+            _ = async_loader.cardinal_async_cancel_task(entry.value_ptr.*);
+        }
+    }
+    state.runtime.volumetric_brick_remesh_tasks.clearRetainingCapacity();
+    {
+        var it = state.runtime.volumetric_density_snapshots.iterator();
+        while (it.next()) |entry| {
+            allocator.free(entry.value_ptr.density);
+            allocator.free(entry.value_ptr.splat);
+        }
+    }
+    state.runtime.volumetric_density_snapshots.clearRetainingCapacity();
+
     engine.window.cardinal_window_restore(state.runtime.window);
     engine.window.cardinal_window_set_size(state.runtime.window, 600, 400);
     engine.window.cardinal_window_center(state.runtime.window);
@@ -865,6 +1024,37 @@ pub fn shutdown() void {
     }
 
     {
+        var it = state.runtime.volumetric_remesh_tasks.iterator();
+        while (it.next()) |entry| {
+            _ = async_loader.cardinal_async_cancel_task(entry.value_ptr.*);
+            async_loader.cardinal_async_free_task(entry.value_ptr.*);
+        }
+        state.runtime.volumetric_remesh_tasks.deinit(allocator);
+    }
+    state.runtime.volumetric_dirty_boxes.deinit(allocator);
+    state.runtime.volumetric_dirty_lod_masks.deinit(allocator);
+    state.runtime.volumetric_lod_by_entity.deinit(allocator);
+    state.runtime.volumetric_brick_last_schedule_ms.deinit(allocator);
+    {
+        var it = state.runtime.volumetric_brick_tile_cache.iterator();
+        while (it.next()) |entry| {
+            var i: usize = 0;
+            while (i < entry.value_ptr.tiles.len) : (i += 1) {
+                if (entry.value_ptr.tiles[i].vertices.len != 0) allocator.free(entry.value_ptr.tiles[i].vertices);
+                if (entry.value_ptr.tiles[i].indices.len != 0) allocator.free(entry.value_ptr.tiles[i].indices);
+            }
+        }
+        state.runtime.volumetric_brick_tile_cache.deinit(allocator);
+    }
+    {
+        var it = state.runtime.volumetric_terrain_data_by_entity.iterator();
+        while (it.next()) |entry| {
+            allocator.free(entry.value_ptr.density);
+        }
+        state.runtime.volumetric_terrain_data_by_entity.deinit(allocator);
+    }
+
+    {
         const gen = c.imgui_bridge_vk_generation();
         var it = state.runtime.asset_thumbnails.iterator();
         while (it.next()) |entry| {
@@ -918,6 +1108,8 @@ pub fn update() void {
         c.imgui_bridge_set_current_context(imgui_context);
     }
 
+    _ = async_loader.cardinal_async_process_completed_tasks(0);
+
     if (!state.ui.project_loaded) {
         c.imgui_bridge_impl_vulkan_new_frame();
         c.imgui_bridge_impl_glfw_new_frame();
@@ -926,8 +1118,6 @@ pub fn update() void {
         project_manager.draw_project_manager_panel(&state, allocator);
         return;
     }
-
-    _ = async_loader.cardinal_async_process_completed_tasks(0);
 
     check_loading_status();
     scene_sync.sync_skybox_from_ecs(&state, allocator);
@@ -1123,7 +1313,18 @@ pub fn update() void {
         performance_panel.draw_performance_panel(&state);
         scene_manager_panel.draw_scene_manager_panel(&state, allocator);
         terrain_panel.flush_terrain_pending_uploads(&state);
+        // volumetric_terrain.flush_volumetric_pending_uploads(&state);
 
+        // volumetric_terrain.update_lods_and_streaming(&state);
+        {
+            var view = state.runtime.registry.view(components.VolumetricTerrainBrick);
+            var it = view.iterator();
+            while (it.next()) |entry| {
+                if (state.runtime.registry.get(components.MeshRenderer, entry.entity)) |mr| {
+                    mr.visible = false;
+                }
+            }
+        }
         scene_sync.sync_mesh_visibility_from_ecs(&state);
         scene_sync.sync_mesh_transforms_from_ecs(&state, allocator, &world_matrix_cache);
 
@@ -1213,15 +1414,6 @@ pub fn process_pending_uploads() void {
         var pbr_lights: [types.MAX_LIGHTS]types.PBRLight = undefined;
         var light_count: u32 = 0;
 
-        if (state.runtime.enable_directional_light) {
-            pbr_lights[light_count] = std.mem.zeroes(types.PBRLight);
-            pbr_lights[light_count].lightDirection = .{ state.runtime.light.direction.x, state.runtime.light.direction.y, state.runtime.light.direction.z, 0.0 };
-            pbr_lights[light_count].lightPosition = .{ state.runtime.light.position.x, state.runtime.light.position.y, state.runtime.light.position.z, 0.0 };
-            pbr_lights[light_count].lightColor = .{ state.runtime.light.color.x, state.runtime.light.color.y, state.runtime.light.color.z, state.runtime.light.intensity };
-            pbr_lights[light_count].params = .{ state.runtime.light.range, @cos(state.runtime.light.inner_cone), @cos(state.runtime.light.outer_cone), 0.0 };
-            light_count += 1;
-        }
-
         if (state.runtime.combined_scene.light_count > 0 and state.runtime.combined_scene.lights != null) {
             var i: u32 = 0;
             while (i < state.runtime.combined_scene.light_count and light_count < types.MAX_LIGHTS) : (i += 1) {
@@ -1249,6 +1441,58 @@ pub fn process_pending_uploads() void {
                 pbr_lights[light_count].lightColor = .{ sl.color[0], sl.color[1], sl.color[2], intensity };
                 pbr_lights[light_count].params = .{ sl.range, @cos(sl.inner_cone_angle), @cos(sl.outer_cone_angle), 0.0 };
 
+                light_count += 1;
+            }
+        }
+
+        {
+            const alloc = engine.memory.cardinal_get_allocator_for_category(.ENGINE).as_allocator();
+            var world_cache: std.AutoHashMapUnmanaged(u64, math.Mat4) = .{};
+            defer world_cache.deinit(alloc);
+
+            const compute_world_cached = struct {
+                fn f(st: *EditorState, a: std.mem.Allocator, cache: *std.AutoHashMapUnmanaged(u64, math.Mat4), ent: engine.ecs_entity.Entity, depth: u32) math.Mat4 {
+                    if (cache.get(ent.id)) |m| return m;
+                    if (depth > 2048) return math.Mat4.identity();
+
+                    var parent_world = math.Mat4.identity();
+                    if (st.runtime.registry.get(components.Hierarchy, ent)) |h| {
+                        if (h.parent) |p| {
+                            if (st.runtime.registry.entity_manager.is_alive(p)) {
+                                parent_world = f(st, a, cache, p, depth + 1);
+                            }
+                        }
+                    }
+
+                    const local = if (st.runtime.registry.get(components.Transform, ent)) |t|
+                        math.Mat4.fromTRS(t.position, t.rotation, t.scale)
+                    else
+                        math.Mat4.identity();
+
+                    const world = parent_world.mul(local);
+                    cache.put(a, ent.id, world) catch {};
+                    return world;
+                }
+            }.f;
+
+            var view = state.runtime.registry.view(components.Light);
+            var it = view.iterator();
+            while (it.next()) |entry| {
+                if (light_count >= types.MAX_LIGHTS) break;
+                const l = entry.component;
+
+                const m = compute_world_cached(&state, alloc, &world_cache, entry.entity, 0);
+                const dir = math.Vec3{ .x = -m.data[8], .y = -m.data[9], .z = -m.data[10] };
+                const pos = math.Vec3{ .x = m.data[12], .y = m.data[13], .z = m.data[14] };
+
+                var intensity = l.intensity;
+                if (intensity < 100.0) intensity *= 100.0;
+
+                pbr_lights[light_count] = std.mem.zeroes(types.PBRLight);
+                pbr_lights[light_count].lightDirection = .{ dir.x, dir.y, dir.z, @floatFromInt(@intFromEnum(l.type)) };
+                pbr_lights[light_count].lightPosition = .{ pos.x, pos.y, pos.z, 0.0 };
+                pbr_lights[light_count].lightColor = .{ l.color.x, l.color.y, l.color.z, intensity };
+                pbr_lights[light_count].params = .{ l.range, @cos(l.inner_cone_angle), @cos(l.outer_cone_angle), 0.0 };
                 light_count += 1;
             }
         }

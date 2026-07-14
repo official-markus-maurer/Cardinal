@@ -113,6 +113,68 @@ fn create_entity(state: *EditorState, parent: ?entity_module.Entity, node_type: 
     const created = node_factory.create_node(state.runtime.registry, parent, node_type, default_name, opts) catch null;
     if (created == null) return null;
 
+    if (node_type == .DirectionalLight3D or node_type == .PointLight3D or node_type == .SpotLight3D) {
+        const tr = blk: {
+            if (state.runtime.registry.get(components.Transform, created.?)) |t| break :blk t;
+            state.runtime.registry.add(created.?, components.Transform{}) catch {};
+            break :blk state.runtime.registry.get(components.Transform, created.?) orelse null;
+        } orelse {
+            // No transform, still create the node/light but it won't be placeable.
+            // (Should be extremely rare.)
+            return created.?;
+        };
+
+        if (state.runtime.registry.get(components.Light, created.?)) |l| {
+            _ = l;
+        } else {
+            const lt: components.LightType = if (node_type == .PointLight3D) .Point else if (node_type == .SpotLight3D) .Spot else .Directional;
+            state.runtime.registry.add(created.?, components.Light{
+                .type = lt,
+                .color = math.Vec3.one(),
+                .intensity = if (lt == .Directional) 1.0 else 5.0,
+                .range = if (lt == .Directional) 0.0 else 30.0,
+                .inner_cone_angle = if (lt == .Spot) 0.5235988 else 0.0,
+                .outer_cone_angle = if (lt == .Spot) 0.7853982 else 0.0,
+                .cast_shadows = false,
+            }) catch {};
+        }
+
+        const cam_pos = state.runtime.camera.position;
+        const cam_fwd = state.runtime.camera.target.sub(cam_pos).normalize();
+        tr.position = cam_pos.add(cam_fwd.mul(5.0)).add(.{ .x = 0.0, .y = 1.0, .z = 0.0 });
+        tr.scale = math.Vec3.one();
+
+        const euler_xyz_deg_to_quat = struct {
+            fn f(euler_deg: [3]f32) math.Quat {
+                const roll = math.toRadians(euler_deg[0]);
+                const pitch = math.toRadians(euler_deg[1]);
+                const yaw = math.toRadians(euler_deg[2]);
+
+                const half: f32 = 0.5;
+                const cy = std.math.cos(yaw * half);
+                const sy = std.math.sin(yaw * half);
+                const cp = std.math.cos(pitch * half);
+                const sp = std.math.sin(pitch * half);
+                const cr = std.math.cos(roll * half);
+                const sr = std.math.sin(roll * half);
+
+                return (math.Quat{
+                    .x = sr * cp * cy - cr * sp * sy,
+                    .y = cr * sp * cy + sr * cp * sy,
+                    .z = cr * cp * sy - sr * sp * cy,
+                    .w = cr * cp * cy + sr * sp * sy,
+                }).normalize();
+            }
+        }.f;
+
+        if (node_type == .SpotLight3D or node_type == .DirectionalLight3D) {
+            tr.rotation = euler_xyz_deg_to_quat(.{ 90.0, 0.0, 0.0 });
+        } else {
+            tr.rotation = math.Quat.identity();
+        }
+        tr.dirty = true;
+    }
+
     var after_h: [6]components.Hierarchy = undefined;
     var i: u8 = 0;
     while (i < before_count) : (i += 1) {

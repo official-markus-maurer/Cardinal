@@ -209,43 +209,49 @@ pub fn disableQueue(event_id: EventId) void {
     if (removed) |q| q.release();
 }
 
-/// TODO: Deduplicate listener snapshot logic shared with `flush`.
+fn snapshot_listeners_locked(event_id: EventId, stack_buffer: *[64]Listener, out_count: *usize, out_heap_copy: *?std.ArrayListUnmanaged(Listener)) bool {
+    out_count.* = 0;
+    out_heap_copy.* = null;
+
+    const list_ptr = g_listeners.getPtr(event_id) orelse return true;
+    const count = list_ptr.items.len;
+    out_count.* = count;
+    if (count == 0) return true;
+
+    if (count <= stack_buffer.len) {
+        @memcpy(stack_buffer[0..count], list_ptr.items);
+        return true;
+    }
+
+    const copy = list_ptr.clone(g_allocator) catch {
+        evt_log.err("Failed to allocate listener copy for event {}", .{event_id});
+        return false;
+    };
+    out_heap_copy.* = copy;
+    return true;
+}
+
 fn dispatch_to_listeners(event_id: EventId, data: ?*const anyopaque) void {
     const MAX_STACK_LISTENERS = 64;
     var stack_buffer: [MAX_STACK_LISTENERS]Listener = undefined;
 
     g_mutex.lock();
+    var heap_copy: ?std.ArrayListUnmanaged(Listener) = null;
+    var count: usize = 0;
+    const ok = snapshot_listeners_locked(event_id, &stack_buffer, &count, &heap_copy);
+    g_mutex.unlock();
+    if (!ok or count == 0) return;
+    defer if (heap_copy) |*copy| copy.deinit(g_allocator);
 
-    const list_ptr = g_listeners.getPtr(event_id);
-    if (list_ptr == null) {
-        g_mutex.unlock();
+    const event = Event{ .id = event_id, .data = data };
+    if (heap_copy) |copy| {
+        for (copy.items) |listener| {
+            listener.callback(event, listener.user_data);
+        }
         return;
     }
-
-    const list = list_ptr.?;
-    const count = list.items.len;
-
-    if (count <= MAX_STACK_LISTENERS) {
-        @memcpy(stack_buffer[0..count], list.items);
-        g_mutex.unlock();
-
-        const event = Event{ .id = event_id, .data = data };
-        for (stack_buffer[0..count]) |listener| {
-            listener.callback(event, listener.user_data);
-        }
-    } else {
-        var listeners_copy = list.clone(g_allocator) catch {
-            g_mutex.unlock();
-            evt_log.err("Failed to allocate listener copy for event {}", .{event_id});
-            return;
-        };
-        g_mutex.unlock();
-        defer listeners_copy.deinit(g_allocator);
-
-        const event = Event{ .id = event_id, .data = data };
-        for (listeners_copy.items) |listener| {
-            listener.callback(event, listener.user_data);
-        }
+    for (stack_buffer[0..count]) |listener| {
+        listener.callback(event, listener.user_data);
     }
 }
 
@@ -284,21 +290,10 @@ pub fn flush(event_id: EventId, max_events: u32) u32 {
         q.retain();
         queue = q;
     }
-
-    const list_ptr = g_listeners.getPtr(event_id);
-    if (list_ptr) |list| {
-        listener_count = list.items.len;
-        if (listener_count <= MAX_STACK_LISTENERS) {
-            @memcpy(stack_buffer[0..listener_count], list.items);
-        } else {
-            const copy = list.clone(g_allocator) catch {
-                g_mutex.unlock();
-                if (queue) |q| q.release();
-                evt_log.err("Failed to allocate listener copy for event {}", .{event_id});
-                return 0;
-            };
-            heap_copy = copy;
-        }
+    if (!snapshot_listeners_locked(event_id, &stack_buffer, &listener_count, &heap_copy)) {
+        g_mutex.unlock();
+        if (queue) |q| q.release();
+        return 0;
     }
     g_mutex.unlock();
 

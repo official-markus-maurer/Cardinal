@@ -25,6 +25,7 @@ struct Vertex {
     vec2 texcoord1;
     vec4 boneWeights;
     uvec4 boneIndices;
+    vec4 color;
 };
 
 // Storage buffers
@@ -53,6 +54,8 @@ layout(set = 0, binding = 5) uniform UniformBuffer {
     uint materialIndex;
     vec4 viewPos; // xyz = pos, w = unused
     vec4 ambientColor; // xyz = color, w = range/unused
+    vec4 terrainBrushPosRadius;
+    vec4 terrainBrushParams;
 } ubo;
 
 // Output vertex attributes
@@ -62,6 +65,7 @@ layout(location = 2) out vec2 fragTexCoord[];
 layout(location = 3) out flat uint fragMaterialIndex[];
 layout(location = 4) out flat vec3 fragCameraPos[];
 layout(location = 5) out vec2 fragTexCoord1[];
+layout(location = 6) out vec4 fragColor[];
 
 void main() {
     uint meshlet_index = gl_WorkGroupID.x;
@@ -93,6 +97,7 @@ void main() {
         fragMaterialIndex[thread_id] = ubo.materialIndex;
         fragCameraPos[thread_id] = ubo.viewPos.xyz;
         fragTexCoord1[thread_id] = vertex.texcoord1;
+        fragColor[thread_id] = vertex.color;
     }
     
     // Process primitives (triangles)

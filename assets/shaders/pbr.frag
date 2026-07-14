@@ -241,6 +241,31 @@ vec4 sampleArray(uint idx, vec2 uv) {
     return texture(textures[nonuniformEXT(idx)], uv);
 }
 
+vec3 triplanarSample(sampler2D tex, vec3 worldPos, vec3 normal, vec2 offset, vec2 scale) {
+    vec3 an = abs(normalize(normal));
+    vec3 w = an / max(an.x + an.y + an.z, 1e-6);
+
+    vec2 uvX = worldPos.zy * scale + offset;
+    vec2 uvY = worldPos.xz * scale + offset;
+    vec2 uvZ = worldPos.xy * scale + offset;
+
+    vec2 dxX = dFdxFine(worldPos.zy) * scale;
+    vec2 dyX = dFdyFine(worldPos.zy) * scale;
+    vec2 dxY = dFdxFine(worldPos.xz) * scale;
+    vec2 dyY = dFdyFine(worldPos.xz) * scale;
+    vec2 dxZ = dFdxFine(worldPos.xy) * scale;
+    vec2 dyZ = dFdyFine(worldPos.xy) * scale;
+
+    vec3 sx = textureGrad(tex, uvX, dxX, dyX).rgb;
+    vec3 sy = textureGrad(tex, uvY, dxY, dyY).rgb;
+    vec3 sz = textureGrad(tex, uvZ, dxZ, dyZ).rgb;
+    return sx * w.x + sy * w.y + sz * w.z;
+}
+
+vec3 triplanarSampleArray(uint idx, vec3 worldPos, vec3 normal, vec2 offset, vec2 scale) {
+    return triplanarSample(textures[nonuniformEXT(idx)], worldPos, normal, offset, scale);
+}
+
 // Helper to unpack flags
 uint getAlphaMode() {
     uint flags = material.packedInfo >> 16;
@@ -264,6 +289,10 @@ bool canUseArray(uint idx) {
 
 // Enhanced normal mapping function with quad control
 vec3 getNormalFromMap(vec2 uv) {
+    if (isNoTex(material.normalTextureIndex)) {
+        return normalize(fragNormal);
+    }
+
     vec3 nrm;
     
     // Use quad control for enhanced texture sampling in conditional branches
@@ -346,6 +375,7 @@ void main() {
     vec2 emissiveUV = applyTextureTransform(getUV(getUVIndex(4)), 4);
 
     bool isTerrain = material.emissiveStrength < 0.0;
+    bool terrainVertexSplat = material.emissiveStrength < -1.5;
     
     // Enhanced material property sampling with quad control
     vec4 albedoSample = vec4(1.0);
@@ -354,9 +384,14 @@ void main() {
     if (isTerrain) {
         vec2 dx0 = dFdxFine(albedoUV);
         vec2 dy0 = dFdyFine(albedoUV);
+        vec2 triOffset = material.textureTransforms[0].xy;
+        vec2 triScale = material.textureTransforms[0].zw;
+        vec3 triN = normalize(fragNormal);
 
         vec4 splat = vec4(1.0, 0.0, 0.0, 0.0);
-        if (!isNoTex(material.emissiveTextureIndex)) {
+        if (terrainVertexSplat) {
+            splat = fragColor;
+        } else if (!isNoTex(material.emissiveTextureIndex)) {
             vec2 dxs = dFdxFine(emissiveUV);
             vec2 dys = dFdyFine(emissiveUV);
             if (canUseArray(material.emissiveTextureIndex)) {
@@ -372,36 +407,36 @@ void main() {
         vec3 layer0 = vec3(0.31, 0.55, 0.31);
         if (!isNoTex(material.albedoTextureIndex)) {
             if (canUseArray(material.albedoTextureIndex)) {
-                layer0 = textureGrad(textures[nonuniformEXT(material.albedoTextureIndex)], albedoUV, dx0, dy0).rgb;
+                layer0 = triplanarSampleArray(material.albedoTextureIndex, fragWorldPos, triN, triOffset, triScale);
             } else {
-                layer0 = textureGrad(albedoMap, albedoUV, dx0, dy0).rgb;
+                layer0 = triplanarSample(albedoMap, fragWorldPos, triN, triOffset, triScale);
             }
         }
 
         vec3 layer1 = vec3(0.47, 0.37, 0.24);
         if (!isNoTex(material.normalTextureIndex)) {
             if (canUseArray(material.normalTextureIndex)) {
-                layer1 = textureGrad(textures[nonuniformEXT(material.normalTextureIndex)], albedoUV, dx0, dy0).rgb;
+                layer1 = triplanarSampleArray(material.normalTextureIndex, fragWorldPos, triN, triOffset, triScale);
             } else {
-                layer1 = textureGrad(normalMap, albedoUV, dx0, dy0).rgb;
+                layer1 = triplanarSample(normalMap, fragWorldPos, triN, triOffset, triScale);
             }
         }
 
         vec3 layer2 = vec3(0.51, 0.51, 0.51);
         if (!isNoTex(material.metallicRoughnessTextureIndex)) {
             if (canUseArray(material.metallicRoughnessTextureIndex)) {
-                layer2 = textureGrad(textures[nonuniformEXT(material.metallicRoughnessTextureIndex)], albedoUV, dx0, dy0).rgb;
+                layer2 = triplanarSampleArray(material.metallicRoughnessTextureIndex, fragWorldPos, triN, triOffset, triScale);
             } else {
-                layer2 = textureGrad(metallicRoughnessMap, albedoUV, dx0, dy0).rgb;
+                layer2 = triplanarSample(metallicRoughnessMap, fragWorldPos, triN, triOffset, triScale);
             }
         }
 
         vec3 layer3 = vec3(0.78, 0.78, 0.63);
         if (!isNoTex(material.aoTextureIndex)) {
             if (canUseArray(material.aoTextureIndex)) {
-                layer3 = textureGrad(textures[nonuniformEXT(material.aoTextureIndex)], albedoUV, dx0, dy0).rgb;
+                layer3 = triplanarSampleArray(material.aoTextureIndex, fragWorldPos, triN, triOffset, triScale);
             } else {
-                layer3 = textureGrad(aoMap, albedoUV, dx0, dy0).rgb;
+                layer3 = triplanarSample(aoMap, fragWorldPos, triN, triOffset, triScale);
             }
         }
 
@@ -551,10 +586,13 @@ void main() {
         }
 
         float shadow = 1.0;
-        if (type == 0) { // Directional
+        bool shadowsEnabled = (ubo.viewPosAndDebug.w < 0.5);
+        if (type == 0 && shadowsEnabled) { // Directional
             // Pass geometry normal (fragNormal) instead of perturbed normal (N) for shadow bias calculation
             // This prevents shadow acne on surfaces with strong normal maps
             shadow = ShadowCalculation(fragWorldPos, normalize(fragNormal), L);
+        } else if (type == 0 && !shadowsEnabled) {
+            shadow = 0.0;
         }
 
         vec3 H = normalize(V + L);

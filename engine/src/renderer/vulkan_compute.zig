@@ -433,6 +433,11 @@ pub fn vk_compute_dispatch(cmd_buffer: c.VkCommandBuffer, pipeline: ?*const type
     c.vkCmdBindPipeline(cmd_buffer, c.VK_PIPELINE_BIND_POINT_COMPUTE, pipe.pipeline);
 
     if (info.descriptor_sets != null and info.descriptor_set_count > 0) {
+        const first = info.descriptor_sets.?[0];
+        const first_val = @intFromPtr(first);
+        if (first_val > 0 and first_val < 4096) {
+            return;
+        }
         c.vkCmdBindDescriptorSets(cmd_buffer, c.VK_PIPELINE_BIND_POINT_COMPUTE, pipe.pipeline_layout, 0, info.descriptor_set_count, info.descriptor_sets, 0, null);
     }
 

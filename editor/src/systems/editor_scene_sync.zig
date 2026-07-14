@@ -215,7 +215,11 @@ pub fn sync_mesh_index_maps_from_ecs(state: *EditorState, allocator: std.mem.All
     var it = view.iterator();
     while (it.next()) |entry| {
         const mr = entry.component;
+        var owner_id = entry.entity.id;
+        if (state.runtime.registry.get(engine.ecs_components.VolumetricTerrainBrick, entry.entity)) |b| {
+            if (b.parent_id != 0) owner_id = b.parent_id;
+        }
         state.runtime.mesh_entity_by_mesh_index.put(allocator, mr.mesh.index, entry.entity.id) catch {};
-        state.runtime.mesh_owner_by_mesh_index.put(allocator, mr.mesh.index, entry.entity.id) catch {};
+        state.runtime.mesh_owner_by_mesh_index.put(allocator, mr.mesh.index, owner_id) catch {};
     }
 }

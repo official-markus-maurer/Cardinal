@@ -18,6 +18,10 @@ const cascade_math = @import("util/vulkan_shadow_cascades.zig");
 
 const shadows_log = log.ScopedLogger("SHADOWS");
 
+var last_no_lights_log_ms: i64 = -10_000;
+var last_no_directional_log_ms: i64 = -10_000;
+var last_using_directional_log_ms: i64 = -10_000;
+
 /// Records the shadow pass for the current frame when the PBR pipeline is active.
 ///
 /// TODO: Tune depth bias per scene to reduce acne/peter-panning.
@@ -40,8 +44,14 @@ pub fn vk_shadow_render(s: *types.VulkanState, cmd: c.VkCommandBuffer) void {
     const ubo = @as(*types.PBRUniformBufferObject, @ptrCast(@alignCast(pipe.uniformBuffersMapped[frame_check])));
     const lighting = @as(*types.PBRLightingBuffer, @ptrCast(@alignCast(pipe.lightingBuffersMapped[frame_check])));
 
+    if (ubo.debugFlags >= 0.5) return;
+
     if (lighting.count == 0) {
-        shadows_log.warn("No lights in lighting buffer", .{});
+        const now_ms: i64 = std.time.milliTimestamp();
+        if (now_ms - last_no_lights_log_ms > 10_000) {
+            last_no_lights_log_ms = now_ms;
+            shadows_log.warn("No lights in lighting buffer", .{});
+        }
         return;
     }
 
@@ -75,11 +85,19 @@ pub fn vk_shadow_render(s: *types.VulkanState, cmd: c.VkCommandBuffer) void {
     }
 
     if (found) {
-        shadows_log.info("Using directional light with intensity {d:.2}: ({d:.2}, {d:.2}, {d:.2})", .{ bestIntensity, lightDir.x, lightDir.y, lightDir.z });
+        const now_ms: i64 = std.time.milliTimestamp();
+        if (now_ms - last_using_directional_log_ms > 5000) {
+            last_using_directional_log_ms = now_ms;
+            shadows_log.info("Using directional light with intensity {d:.2}: ({d:.2}, {d:.2}, {d:.2})", .{ bestIntensity, lightDir.x, lightDir.y, lightDir.z });
+        }
     }
 
     if (!found) {
-        shadows_log.warn("No directional light found", .{});
+        const now_ms: i64 = std.time.milliTimestamp();
+        if (now_ms - last_no_directional_log_ms > 10_000) {
+            last_no_directional_log_ms = now_ms;
+            shadows_log.warn("No directional light found", .{});
+        }
         return;
     }
 
@@ -167,10 +185,10 @@ pub fn vk_shadow_render(s: *types.VulkanState, cmd: c.VkCommandBuffer) void {
             }
             descriptor_mgr.vk_descriptor_manager_bind_sets(mgr, cmd, c.VK_PIPELINE_BIND_POINT_GRAPHICS, pipe.shadowPipelineLayout, 0, 1, sets, 0, null);
         } else {
-            if (pipe.shadowDescriptorSets[frame_check] != null and @intFromPtr(pipe.shadowDescriptorSets[frame_check]) != 0) {
-                const descriptorSets = [_]c.VkDescriptorSet{pipe.shadowDescriptorSets[frame_check]};
-                c.vkCmdBindDescriptorSets(cmd, c.VK_PIPELINE_BIND_POINT_GRAPHICS, pipe.shadowPipelineLayout, 0, 1, &descriptorSets, 0, null);
+            if (s.context.vkCmdEndRendering) |func| {
+                func(cmd);
             }
+            continue;
         }
 
         const vertexBuffers = [_]c.VkBuffer{pipe.vertexBuffer};

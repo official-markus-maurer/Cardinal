@@ -457,8 +457,13 @@ fn draw_editor_globals(state: *EditorState, entity: engine.ecs_entity.Entity, g:
             renderer.cardinal_renderer_enable_pbr(state.runtime.renderer, state.runtime.pbr_enabled);
             if (state.runtime.pbr_enabled) {
                 renderer.cardinal_renderer_set_camera(state.runtime.renderer, &state.runtime.camera);
-                renderer.cardinal_renderer_set_lighting(state.runtime.renderer, &state.runtime.light);
             }
+        }
+
+        if (c.imgui_bridge_checkbox("Enable Shadows", &g.enable_shadows)) {
+            changed = true;
+            state.runtime.enable_shadows = g.enable_shadows;
+            renderer.cardinal_renderer_set_debug_flags(state.runtime.renderer, if (state.runtime.enable_shadows) 0.0 else 1.0);
         }
 
         const items = [_][*:0]const u8{ "Normal", "UV Visualization", "Wireframe", "Mesh Shader" };

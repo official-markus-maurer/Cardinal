@@ -8,6 +8,8 @@ const model_manager = engine.model_manager;
 const renderer = engine.vulkan_renderer;
 const vk = @import("c.zig").c;
 const terrain_volume = @import("systems/terrain_volume.zig");
+const vt_common = @import("systems/volumetric_terrain/common.zig");
+const async_loader = engine.async_loader;
 
 fn allocator() std.mem.Allocator {
     return engine.memory.cardinal_get_allocator_for_category(.ENGINE).as_allocator();
@@ -109,6 +111,21 @@ pub const TerrainTexRectEditGroupCommand = struct {
     edits: []*TerrainTexRectEditCommand,
 };
 
+pub const VolumetricTerrainEditCommand = struct {
+    entity_id: u64,
+    dims: u32,
+    before_density: []f32,
+    after_density: []f32,
+    before_splat: []u8,
+    after_splat: []u8,
+    before_data_id: u64,
+    after_data_id: u64,
+};
+
+pub const VolumetricTerrainEditGroupCommand = struct {
+    edits: []*VolumetricTerrainEditCommand,
+};
+
 /// Undoable editor command.
 pub const UndoCommand = union(enum) {
     EntityTransform: EntityComponentCommand(components.Transform),
@@ -128,6 +145,8 @@ pub const UndoCommand = union(enum) {
     TerrainMeshEditGroup: TerrainMeshEditGroupCommand,
     TerrainTexRectEdit: *TerrainTexRectEditCommand,
     TerrainTexRectEditGroup: TerrainTexRectEditGroupCommand,
+    VolumetricTerrainEdit: *VolumetricTerrainEditCommand,
+    VolumetricTerrainEditGroup: VolumetricTerrainEditGroupCommand,
     ModelTransform: struct {
         model_id: u32,
         before: [16]f32,
@@ -595,12 +614,121 @@ fn apply(runtime: anytype, cmd: UndoCommand, forward: bool) void {
                 apply_terrain_tex_rect_edit(runtime, p, forward);
             }
         },
+        .VolumetricTerrainEdit => |p| apply_volumetric_terrain_edit(runtime, p, forward),
+        .VolumetricTerrainEditGroup => |g| {
+            for (g.edits) |p| {
+                apply_volumetric_terrain_edit(runtime, p, forward);
+            }
+        },
         .ModelTransform => |m| {
             const mat = if (forward) m.after else m.before;
             _ = model_manager.cardinal_model_manager_set_transform(&runtime.model_manager, m.model_id, &mat);
             runtime.model_manager.transform_dirty = true;
         },
     }
+}
+
+fn brick_axis_count(base_res: u32) u32 {
+    const r = if (base_res < 1) 1 else base_res;
+    return (r + vt_common.brick_cells_base - 1) / vt_common.brick_cells_base;
+}
+
+fn mark_volumetric_dirty_bricks_masked(runtime: anytype, entity_id: u64, box: anytype, lod_mask: u8, base_res: u32) void {
+    const Map = @TypeOf(runtime.volumetric_dirty_brick_boxes);
+    const KeyT = @typeInfo(Map.KV).@"struct".fields[0].type;
+    const ValT = @typeInfo(Map.KV).@"struct".fields[1].type;
+
+    const axis = brick_axis_count(base_res);
+    if (axis == 0) return;
+
+    const bx0 = @min(axis - 1, box.min_x / vt_common.brick_cells_base);
+    const by0 = @min(axis - 1, box.min_y / vt_common.brick_cells_base);
+    const bz0 = @min(axis - 1, box.min_z / vt_common.brick_cells_base);
+    const bx1 = @min(axis - 1, box.max_x / vt_common.brick_cells_base);
+    const by1 = @min(axis - 1, box.max_y / vt_common.brick_cells_base);
+    const bz1 = @min(axis - 1, box.max_z / vt_common.brick_cells_base);
+
+    const alloc = allocator();
+    var bz: u32 = bz0;
+    while (bz <= bz1) : (bz += 1) {
+        var by: u32 = by0;
+        while (by <= by1) : (by += 1) {
+            var bx: u32 = bx0;
+            while (bx <= bx1) : (bx += 1) {
+                const id: u32 = (bz * axis + by) * axis + bx;
+                const key = KeyT{ .entity_id = entity_id, .brick_id = id };
+
+                if (runtime.volumetric_dirty_brick_boxes.getPtr(key)) |existing| {
+                    existing.min_x = @min(existing.min_x, box.min_x);
+                    existing.min_y = @min(existing.min_y, box.min_y);
+                    existing.min_z = @min(existing.min_z, box.min_z);
+                    existing.max_x = @max(existing.max_x, box.max_x);
+                    existing.max_y = @max(existing.max_y, box.max_y);
+                    existing.max_z = @max(existing.max_z, box.max_z);
+                } else {
+                    runtime.volumetric_dirty_brick_boxes.put(alloc, key, @as(ValT, box)) catch {};
+                }
+
+                if (runtime.volumetric_dirty_brick_lod_masks.getPtr(key)) |m| {
+                    m.* |= lod_mask;
+                } else {
+                    runtime.volumetric_dirty_brick_lod_masks.put(alloc, key, lod_mask) catch {};
+                }
+
+                if (runtime.volumetric_brick_generation.getPtr(key)) |g| {
+                    g.* +%= 1;
+                } else {
+                    runtime.volumetric_brick_generation.put(alloc, key, 1) catch {};
+                }
+
+                if (runtime.volumetric_brick_remesh_tasks.get(key)) |t| {
+                    const status = async_loader.cardinal_async_get_task_status(t);
+                    if (status == .PENDING) {
+                        _ = async_loader.cardinal_async_cancel_task(t);
+                        async_loader.cardinal_async_free_task(t);
+                        _ = runtime.volumetric_brick_remesh_tasks.remove(key);
+                    }
+                }
+            }
+        }
+    }
+}
+
+fn apply_volumetric_terrain_edit(runtime: anytype, p: *VolumetricTerrainEditCommand, forward: bool) void {
+    const use_density = if (forward) p.after_density else p.before_density;
+    const use_splat = if (forward) p.after_splat else p.before_splat;
+    const use_data_id = if (forward) p.after_data_id else p.before_data_id;
+
+    const DirtyBoxT = @typeInfo(@TypeOf(runtime.volumetric_dirty_brick_boxes).KV).@"struct".fields[1].type;
+
+    const ent = engine.ecs_entity.Entity{ .id = p.entity_id };
+    if (!runtime.registry.entity_manager.is_alive(ent)) return;
+    const vt = runtime.registry.get(components.VolumetricTerrain, ent) orelse return;
+    const td = runtime.volumetric_terrain_data_by_entity.getPtr(p.entity_id) orelse return;
+    if (td.dims != p.dims) return;
+
+    if (use_density.len == td.density.len) {
+        @memcpy(td.density, use_density);
+    }
+    if (use_splat.len == td.splat.len) {
+        @memcpy(td.splat, use_splat);
+    }
+    vt.data_id = use_data_id;
+
+    if (td.dims >= 2) {
+        const res: u32 = td.dims - 1;
+        if (res >= 1) {
+            mark_volumetric_dirty_bricks_masked(runtime, p.entity_id, DirtyBoxT{
+                .min_x = 0,
+                .min_y = 0,
+                .min_z = 0,
+                .max_x = res - 1,
+                .max_y = res - 1,
+                .max_z = res - 1,
+            }, 0xff, res);
+        }
+    }
+    runtime.picking_cache_dirty = true;
 }
 
 fn sync_mesh_visibility_and_schedule_upload(runtime: anytype) void {
@@ -777,9 +905,13 @@ fn apply_terrain_tex_rect_edit(runtime: anytype, p: *TerrainTexRectEditCommand, 
     const use_c = if (forward) p.after_color else p.before_color;
     const use_s = if (forward) p.after_splat else p.before_splat;
 
+    const range = get_model_combined_mesh_range(runtime, p.model_id) orelse return;
     const model = model_manager.cardinal_model_manager_get_model(&runtime.model_manager, p.model_id) orelse return;
     if (model.scene.meshes == null or model.scene.mesh_count == 0) return;
-    const mesh = &model.scene.meshes.?[0];
+    if (p.combined_mesh_index < range.start) return;
+    const local_index: u32 = p.combined_mesh_index - range.start;
+    if (local_index >= model.scene.mesh_count) return;
+    const mesh = &model.scene.meshes.?[local_index];
     if (mesh.vertices == null or mesh.vertex_count == 0) return;
 
     const verts = @as([*]engine.scene.CardinalVertex, @ptrCast(mesh.vertices.?));
@@ -788,6 +920,11 @@ fn apply_terrain_tex_rect_edit(runtime: anytype, p: *TerrainTexRectEditCommand, 
 
     if (runtime.mesh_entity_by_mesh_index.get(p.combined_mesh_index)) |entity_id| {
         if (runtime.terrain_data_by_entity.getPtr(entity_id)) |td| {
+            const ent = engine.ecs_entity.Entity{ .id = entity_id };
+            const terr = runtime.registry.get(components.Terrain, ent) orelse return;
+            const use_bottom = (p.combined_mesh_index == terr.mesh_index + 1);
+            const height_map: []f32 = if (use_bottom) td.bottom_height else td.height;
+
             if (p.max_x >= td.dims or p.max_y >= td.dims) return;
             if (td.dims < 2) return;
 
@@ -812,8 +949,8 @@ fn apply_terrain_tex_rect_edit(runtime: anytype, p: *TerrainTexRectEditCommand, 
                         verts[vi].color = use_c[idx];
                     }
                     const vi_usize: usize = @intCast(vi);
-                    if (vi_usize < td.height.len) {
-                        td.height[vi_usize] = use_y[idx];
+                    if (vi_usize < height_map.len) {
+                        height_map[vi_usize] = use_y[idx];
                     }
                     const base = vi_usize * 4;
                     if (base + 3 < td.splat.len) {
@@ -853,11 +990,13 @@ fn apply_terrain_tex_rect_edit(runtime: anytype, p: *TerrainTexRectEditCommand, 
                 }
             }
 
-            if (td.height_handle == std.math.maxInt(u32)) {
-                var hndl: u32 = 0;
-                if (renderer.cardinal_renderer_runtime_texture_allocate(runtime.renderer, td.dims, td.dims, vk.VK_FORMAT_R32_SFLOAT, &hndl)) {
-                    td.height_handle = hndl;
-                    _ = renderer.cardinal_renderer_runtime_texture_upload_full(runtime.renderer, hndl, @ptrCast(td.height.ptr), td.height.len * @sizeOf(f32));
+            if (!use_bottom) {
+                if (td.height_handle == std.math.maxInt(u32)) {
+                    var hndl: u32 = 0;
+                    if (renderer.cardinal_renderer_runtime_texture_allocate(runtime.renderer, td.dims, td.dims, vk.VK_FORMAT_R32_SFLOAT, &hndl)) {
+                        td.height_handle = hndl;
+                        _ = renderer.cardinal_renderer_runtime_texture_upload_full(runtime.renderer, hndl, @ptrCast(td.height.ptr), td.height.len * @sizeOf(f32));
+                    }
                 }
             }
             if (td.splat_handle == std.math.maxInt(u32)) {
@@ -868,14 +1007,16 @@ fn apply_terrain_tex_rect_edit(runtime: anytype, p: *TerrainTexRectEditCommand, 
                 }
             }
 
-            if (td.height_handle != std.math.maxInt(u32) and td.splat_handle != std.math.maxInt(u32)) {
-                if (runtime.terrain_dirty_rects.getPtr(entity_id)) |r| {
-                    r.min_x = @min(r.min_x, p.min_x);
-                    r.min_y = @min(r.min_y, p.min_y);
-                    r.max_x = @max(r.max_x, p.max_x);
-                    r.max_y = @max(r.max_y, p.max_y);
-                } else {
-                    runtime.terrain_dirty_rects.put(allocator(), entity_id, .{ .min_x = p.min_x, .min_y = p.min_y, .max_x = p.max_x, .max_y = p.max_y }) catch {};
+            if (!use_bottom) {
+                if (td.height_handle != std.math.maxInt(u32) and td.splat_handle != std.math.maxInt(u32)) {
+                    if (runtime.terrain_dirty_rects.getPtr(entity_id)) |r| {
+                        r.min_x = @min(r.min_x, p.min_x);
+                        r.min_y = @min(r.min_y, p.min_y);
+                        r.max_x = @max(r.max_x, p.max_x);
+                        r.max_y = @max(r.max_y, p.max_y);
+                    } else {
+                        runtime.terrain_dirty_rects.put(allocator(), entity_id, .{ .min_x = p.min_x, .min_y = p.min_y, .max_x = p.max_x, .max_y = p.max_y }) catch {};
+                    }
                 }
             }
 
@@ -887,6 +1028,20 @@ fn apply_terrain_tex_rect_edit(runtime: anytype, p: *TerrainTexRectEditCommand, 
     runtime.scene_upload_pending = true;
     runtime.scene_loaded = (runtime.combined_scene.mesh_count > 0);
     runtime.picking_cache_dirty = true;
+}
+
+fn get_model_combined_mesh_range(runtime: anytype, model_id: u32) ?struct { start: u32, count: u32 } {
+    if (runtime.model_manager.models == null) return null;
+    const models = runtime.model_manager.models.?;
+    var offset: u32 = 0;
+    var i: u32 = 0;
+    while (i < runtime.model_manager.model_count) : (i += 1) {
+        const m = &models[i];
+        if (!m.visible or m.is_loading) continue;
+        if (m.id == model_id) return .{ .start = offset, .count = m.scene.mesh_count };
+        offset += m.scene.mesh_count;
+    }
+    return null;
 }
 
 fn apply_entity_component(runtime: anytype, comptime T: type, c: EntityComponentCommand(T), forward: bool) void {
@@ -1174,6 +1329,25 @@ fn free_command(cmd: UndoCommand) void {
                 alloc.free(p.after_y);
                 alloc.free(p.before_color);
                 alloc.free(p.after_color);
+                alloc.free(p.before_splat);
+                alloc.free(p.after_splat);
+                alloc.destroy(p);
+            }
+            alloc.free(g.edits);
+        },
+        .VolumetricTerrainEdit => |p| {
+            const alloc = allocator();
+            alloc.free(p.before_density);
+            alloc.free(p.after_density);
+            alloc.free(p.before_splat);
+            alloc.free(p.after_splat);
+            alloc.destroy(p);
+        },
+        .VolumetricTerrainEditGroup => |g| {
+            const alloc = allocator();
+            for (g.edits) |p| {
+                alloc.free(p.before_density);
+                alloc.free(p.after_density);
                 alloc.free(p.before_splat);
                 alloc.free(p.after_splat);
                 alloc.destroy(p);

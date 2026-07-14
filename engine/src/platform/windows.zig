@@ -11,6 +11,7 @@ pub const c = @cImport({
     @cInclude("GLFW/glfw3.h");
     @cInclude("windows.h");
     @cInclude("commdlg.h");
+    @cInclude("shlobj.h");
     @cInclude("malloc.h");
     @cDefine("GLFW_EXPOSE_NATIVE_WIN32", {});
     @cInclude("GLFW/glfw3native.h");
@@ -167,8 +168,32 @@ pub fn save_file_dialog(allocator: std.mem.Allocator, filter: ?[:0]const u8, def
 
 /// Folder dialog support is currently unimplemented on Windows.
 pub fn open_folder_dialog(allocator: std.mem.Allocator, default_path: ?[:0]const u8) ?[]const u8 {
-    // TODO: Implement folder selection via IFileOpenDialog (COM).
-    _ = allocator;
-    _ = default_path;
-    return null;
+    const callback = struct {
+        fn proc(hwnd: c.HWND, msg: c.UINT, lparam: c.LPARAM, data: c.LPARAM) callconv(.C) c.c_int {
+            _ = lparam;
+            if (msg == c.BFFM_INITIALIZED and data != 0) {
+                _ = c.SendMessageA(hwnd, c.BFFM_SETSELECTIONA, 1, data);
+            }
+            return 0;
+        }
+    }.proc;
+
+    var display_name: [c.MAX_PATH]u8 = std.mem.zeroes([c.MAX_PATH]u8);
+    var bi: c.BROWSEINFOA = std.mem.zeroes(c.BROWSEINFOA);
+    bi.hwndOwner = null;
+    bi.pidlRoot = null;
+    bi.pszDisplayName = &display_name;
+    bi.lpszTitle = "Select Folder\x00".ptr;
+    bi.ulFlags = c.BIF_RETURNONLYFSDIRS | c.BIF_NEWDIALOGSTYLE;
+    bi.lpfn = callback;
+    bi.lParam = if (default_path) |p| @intCast(@intFromPtr(p.ptr)) else 0;
+
+    const pidl = c.SHBrowseForFolderA(&bi);
+    if (pidl == null) return null;
+    defer c.CoTaskMemFree(pidl);
+
+    var out_buf: [c.MAX_PATH]u8 = std.mem.zeroes([c.MAX_PATH]u8);
+    if (c.SHGetPathFromIDListA(pidl, &out_buf) == 0) return null;
+    const len = std.mem.indexOfScalar(u8, &out_buf, 0) orelse out_buf.len;
+    return allocator.dupe(u8, out_buf[0..len]) catch null;
 }

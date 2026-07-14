@@ -58,8 +58,9 @@ const DDS_HEADER = extern struct {
 
 /// Optional DX10 header present when the pixel format FourCC is "DX10".
 ///
-/// Only a minimal subset of DXGI formats is supported.
-/// TODO: Expand DXGI format mapping (BC6H/BC7 variants, RG formats, arrays/cubemaps).
+/// Supports a subset of DXGI formats (BC1-BC7, BC6H, R8/RG8/RGBA8, BGRA8).
+///
+/// Array textures and cubemaps are not currently supported.
 const DDS_HEADER_DXT10 = extern struct {
     dxgiFormat: u32,
     resourceDimension: u32,
@@ -104,7 +105,19 @@ pub fn load_dds_from_memory(buffer: []const u8, out_data: *texture_types.Texture
             const dx10 = @as(*const DDS_HEADER_DXT10, @ptrCast(@alignCast(buffer.ptr + data_offset)));
             data_offset += @sizeOf(DDS_HEADER_DXT10);
 
+            if (dx10.arraySize > 1) return false;
+            if ((dx10.miscFlag & 0x4) != 0) return false;
+            if (dx10.resourceDimension != 3) return false;
+
             switch (dx10.dxgiFormat) {
+                28 => format = vk_formats.VK_FORMAT_R8G8B8A8_UNORM,
+                29 => format = vk_formats.VK_FORMAT_R8G8B8A8_SRGB,
+                49 => format = vk_formats.VK_FORMAT_R8G8_UNORM,
+                61 => format = vk_formats.VK_FORMAT_R8_UNORM,
+                87 => format = vk_formats.VK_FORMAT_B8G8R8A8_UNORM,
+                91 => format = vk_formats.VK_FORMAT_B8G8R8A8_SRGB,
+                95 => format = vk_formats.VK_FORMAT_BC6H_UFLOAT_BLOCK,
+                96 => format = vk_formats.VK_FORMAT_BC6H_SFLOAT_BLOCK,
                 98 => format = vk_formats.VK_FORMAT_BC7_UNORM_BLOCK,
                 99 => format = vk_formats.VK_FORMAT_BC7_SRGB_BLOCK,
                 71 => format = vk_formats.VK_FORMAT_BC1_RGBA_UNORM_BLOCK,
@@ -114,7 +127,9 @@ pub fn load_dds_from_memory(buffer: []const u8, out_data: *texture_types.Texture
                 77 => format = vk_formats.VK_FORMAT_BC3_UNORM_BLOCK,
                 78 => format = vk_formats.VK_FORMAT_BC3_SRGB_BLOCK,
                 80 => format = vk_formats.VK_FORMAT_BC4_UNORM_BLOCK,
+                81 => format = vk_formats.VK_FORMAT_BC4_SNORM_BLOCK,
                 83 => format = vk_formats.VK_FORMAT_BC5_UNORM_BLOCK,
+                84 => format = vk_formats.VK_FORMAT_BC5_SNORM_BLOCK,
                 else => return false,
             }
         } else if (fourCC == makeFourCC('D', 'X', 'T', '1')) {

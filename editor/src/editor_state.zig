@@ -86,6 +86,7 @@ pub const LoadingTaskInfo = struct {
 pub const TerrainData = struct {
     dims: u32,
     height: []f32,
+    bottom_height: []f32,
     splat: []u8,
     height_handle: u32 = std.math.maxInt(u32),
     splat_handle: u32 = std.math.maxInt(u32),
@@ -97,6 +98,76 @@ pub const TerrainData = struct {
     },
     layer_imgui_ids: [4]u64 = .{ 0, 0, 0, 0 },
     layer_imgui_generations: [4]u64 = .{ 0, 0, 0, 0 },
+};
+
+pub const VolumetricTerrainData = struct {
+    dims: u32,
+    density: []f32,
+    splat: []u8,
+    splat_handle: u32 = std.math.maxInt(u32),
+    layer_handles: [4]u32 = .{
+        std.math.maxInt(u32),
+        std.math.maxInt(u32),
+        std.math.maxInt(u32),
+        std.math.maxInt(u32),
+    },
+};
+
+pub const VolumetricDirtyBox = struct {
+    min_x: u32,
+    min_y: u32,
+    min_z: u32,
+    max_x: u32,
+    max_y: u32,
+    max_z: u32,
+};
+
+pub const VolumetricBrickKey = struct {
+    entity_id: u64,
+    brick_id: u32,
+};
+
+pub const VolumetricBrickLodKey = struct {
+    entity_id: u64,
+    brick_id: u32,
+    lod: u8,
+};
+
+pub const VolumetricTileMesh = struct {
+    vertices: []scene.CardinalVertex,
+    indices: []u32,
+    vertex_count: u32 = 0,
+    index_count: u32 = 0,
+};
+
+pub const VolumetricBrickTileCache = struct {
+    data_id: u64 = 0,
+    tiles: [8]VolumetricTileMesh = .{
+        .{ .vertices = @constCast(&[_]scene.CardinalVertex{}), .indices = @constCast(&[_]u32{}), .vertex_count = 0, .index_count = 0 },
+        .{ .vertices = @constCast(&[_]scene.CardinalVertex{}), .indices = @constCast(&[_]u32{}), .vertex_count = 0, .index_count = 0 },
+        .{ .vertices = @constCast(&[_]scene.CardinalVertex{}), .indices = @constCast(&[_]u32{}), .vertex_count = 0, .index_count = 0 },
+        .{ .vertices = @constCast(&[_]scene.CardinalVertex{}), .indices = @constCast(&[_]u32{}), .vertex_count = 0, .index_count = 0 },
+        .{ .vertices = @constCast(&[_]scene.CardinalVertex{}), .indices = @constCast(&[_]u32{}), .vertex_count = 0, .index_count = 0 },
+        .{ .vertices = @constCast(&[_]scene.CardinalVertex{}), .indices = @constCast(&[_]u32{}), .vertex_count = 0, .index_count = 0 },
+        .{ .vertices = @constCast(&[_]scene.CardinalVertex{}), .indices = @constCast(&[_]u32{}), .vertex_count = 0, .index_count = 0 },
+        .{ .vertices = @constCast(&[_]scene.CardinalVertex{}), .indices = @constCast(&[_]u32{}), .vertex_count = 0, .index_count = 0 },
+    },
+};
+
+pub const VolumetricDensitySnapshotKey = struct {
+    entity_id: u64,
+    data_id: u64,
+};
+
+pub const VolumetricDensitySnapshot = struct {
+    density: []f32,
+    splat: []u8,
+    ref_count: u32 = 0,
+};
+
+pub const MeshCapacity = struct {
+    vertex_cap: u32,
+    index_cap: u32,
 };
 
 pub const InspectorComponentOrder = struct {
@@ -137,6 +208,13 @@ pub const TerrainDirtyRect = struct {
     min_y: u32,
     max_x: u32,
     max_y: u32,
+};
+
+pub const VolumetricSplatDirtyRect = struct {
+    min_x: u32,
+    min_z: u32,
+    max_x: u32,
+    max_z: u32,
 };
 
 pub const AssetThumbnail = struct {
@@ -183,6 +261,21 @@ pub const EditorRuntimeState = struct {
     model_root_by_id: std.AutoHashMapUnmanaged(u32, u64) = .{},
     terrain_data_by_entity: std.AutoHashMapUnmanaged(u64, TerrainData) = .{},
     terrain_dirty_rects: std.AutoHashMapUnmanaged(u64, TerrainDirtyRect) = .{},
+    volumetric_terrain_data_by_entity: std.AutoHashMapUnmanaged(u64, VolumetricTerrainData) = .{},
+    volumetric_splat_dirty_rects: std.AutoHashMapUnmanaged(u64, VolumetricSplatDirtyRect) = .{},
+    volumetric_dirty_boxes: std.AutoHashMapUnmanaged(u64, VolumetricDirtyBox) = .{},
+    volumetric_dirty_lod_masks: std.AutoHashMapUnmanaged(u64, u8) = .{},
+    volumetric_remesh_tasks: std.AutoHashMapUnmanaged(u64, *async_loader.CardinalAsyncTask) = .{},
+    volumetric_lod_by_entity: std.AutoHashMapUnmanaged(u64, u8) = .{},
+    volumetric_visible_by_entity: std.AutoHashMapUnmanaged(u64, bool) = .{},
+    volumetric_mesh_caps: std.AutoHashMapUnmanaged(u32, MeshCapacity) = .{},
+    volumetric_dirty_brick_boxes: std.AutoHashMapUnmanaged(VolumetricBrickKey, VolumetricDirtyBox) = .{},
+    volumetric_dirty_brick_lod_masks: std.AutoHashMapUnmanaged(VolumetricBrickKey, u8) = .{},
+    volumetric_brick_generation: std.AutoHashMapUnmanaged(VolumetricBrickKey, u32) = .{},
+    volumetric_brick_remesh_tasks: std.AutoHashMapUnmanaged(VolumetricBrickKey, *async_loader.CardinalAsyncTask) = .{},
+    volumetric_brick_last_schedule_ms: std.AutoHashMapUnmanaged(VolumetricBrickKey, u64) = .{},
+    volumetric_brick_tile_cache: std.AutoHashMapUnmanaged(VolumetricBrickLodKey, VolumetricBrickTileCache) = .{},
+    volumetric_density_snapshots: std.AutoHashMapUnmanaged(VolumetricDensitySnapshotKey, VolumetricDensitySnapshot) = .{},
     asset_thumbnails: std.StringHashMapUnmanaged(AssetThumbnail) = .{},
 
     /// Camera state passed to the renderer.
@@ -190,7 +283,8 @@ pub const EditorRuntimeState = struct {
     /// Primary light passed to the renderer.
     light: types.CardinalLight = undefined,
     pbr_enabled: bool = true,
-    enable_directional_light: bool = true,
+    enable_directional_light: bool = false,
+    enable_shadows: bool = true,
 
     post_process: types.PostProcessParams = .{
         .exposure = 1.0,
@@ -337,16 +431,23 @@ pub const EditorUiState = struct {
     terrain_sculpt_enabled: bool = false,
     terrain_tool: i32 = 0,
     terrain_sculpt_mode: i32 = 0,
+    terrain_sculpt_surface: i32 = 0,
     terrain_paint_color: [3]f32 = .{ 0.8, 0.2, 0.2 },
     terrain_paint_layer: i32 = 0,
     terrain_carve_mode: i32 = 0,
     terrain_brush_radius: f32 = 2.0,
     terrain_brush_strength: f32 = 0.5,
+    terrain_brush_falloff: i32 = 0,
+    terrain_brush_spacing: f32 = 0.0,
+    terrain_brush_stamp_valid: bool = false,
+    terrain_brush_stamp_pos: [3]f32 = .{ 0.0, 0.0, 0.0 },
     terrain_brush_last_mouse_down: bool = false,
     terrain_create_resolution: f32 = 128.0,
     terrain_create_size: f32 = 64.0,
     terrain_create_thickness: f32 = 8.0,
     terrain_create_volume: bool = true,
+    volumetric_grid_x: i32 = 2,
+    volumetric_grid_z: i32 = 2,
     terrain_default_texture_path: [512]u8 = [_]u8{0} ** 512,
     terrain_texture_tiling: f32 = 8.0,
     terrain_brush_outline_enabled: bool = false,
@@ -355,6 +456,7 @@ pub const EditorUiState = struct {
     terrain_brush_outline_strength: f32 = 0.0,
     terrain_brush_outline_tool: i32 = 0,
     terrain_brush_outline_mode: i32 = 0,
+    terrain_brush_outline_surface: i32 = 0,
 
     undo: undo.UndoState = .{},
 

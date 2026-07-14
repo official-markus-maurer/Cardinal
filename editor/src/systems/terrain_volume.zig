@@ -15,16 +15,11 @@ const components = engine.ecs_components;
 const model_manager = engine.model_manager;
 const scene = engine.scene;
 
-fn emit_wall_quad(wall_verts: [*]scene.CardinalVertex, wall_indices: [*]u32, wall_v: *u32, wall_i: *u32, v0: scene.CardinalVertex, v1: scene.CardinalVertex, nx: f32, nz: f32, flip: bool, thickness: f32) void {
-    const top0 = v0;
-    const top1 = v1;
-    var bot0 = v0;
-    var bot1 = v1;
-    bot0.py = v0.py - thickness;
-    bot1.py = v1.py - thickness;
-
+fn emit_wall_quad(wall_verts: [*]scene.CardinalVertex, wall_indices: [*]u32, wall_v: *u32, wall_i: *u32, top0: scene.CardinalVertex, top1: scene.CardinalVertex, bot0_in: scene.CardinalVertex, bot1_in: scene.CardinalVertex, nx: f32, nz: f32, flip: bool) void {
     var t0 = top0;
     var t1 = top1;
+    var bot0 = bot0_in;
+    var bot1 = bot1_in;
     t0.nx = nx;
     t0.ny = 0.0;
     t0.nz = nz;
@@ -202,13 +197,15 @@ pub fn update_terrain_volume_meshes(runtime: *EditorRuntimeState, entity_id: u64
     if (vps < 2 or vps * vps != vc) return;
     const grid: u32 = vps - 1;
 
-    const thickness: f32 = @max(0.01, terr.thickness);
     const top_verts = @as([*]scene.CardinalVertex, @ptrCast(top.vertices.?));
     const bottom_verts = @as([*]scene.CardinalVertex, @ptrCast(bottom.vertices.?));
+    const thickness: f32 = @max(0.01, terr.thickness);
+    const bottom_ok = (bottom.vertex_count == top.vertex_count and bottom.vertices != null);
     var i: u32 = 0;
     while (i < vc) : (i += 1) {
+        const py = bottom_verts[i].py;
         bottom_verts[i] = top_verts[i];
-        bottom_verts[i].py = top_verts[i].py - thickness;
+        bottom_verts[i].py = if (bottom_ok) py else top_verts[i].py - thickness;
         bottom_verts[i].nx = 0.0;
         bottom_verts[i].ny = -1.0;
         bottom_verts[i].nz = 0.0;
@@ -277,10 +274,31 @@ pub fn update_terrain_volume_meshes(runtime: *EditorRuntimeState, entity_id: u64
             const allow_up = !solid_up and !(z == 0 and has_up);
             const allow_down = !solid_down and !(z == grid - 1 and has_down);
 
-            if (allow_left) emit_wall_quad(wall_verts, wall_indices, &wall_v, &wall_i, top_verts[idx0], top_verts[idx2], -1.0, 0.0, true, thickness);
-            if (allow_right) emit_wall_quad(wall_verts, wall_indices, &wall_v, &wall_i, top_verts[idx1], top_verts[idx3], 1.0, 0.0, false, thickness);
-            if (allow_up) emit_wall_quad(wall_verts, wall_indices, &wall_v, &wall_i, top_verts[idx0], top_verts[idx1], 0.0, -1.0, false, thickness);
-            if (allow_down) emit_wall_quad(wall_verts, wall_indices, &wall_v, &wall_i, top_verts[idx2], top_verts[idx3], 0.0, 1.0, true, thickness);
+            const bot0 = if (bottom_ok) bottom_verts[idx0] else blk: {
+                var v = top_verts[idx0];
+                v.py -= thickness;
+                break :blk v;
+            };
+            const bot1 = if (bottom_ok) bottom_verts[idx1] else blk: {
+                var v = top_verts[idx1];
+                v.py -= thickness;
+                break :blk v;
+            };
+            const bot2 = if (bottom_ok) bottom_verts[idx2] else blk: {
+                var v = top_verts[idx2];
+                v.py -= thickness;
+                break :blk v;
+            };
+            const bot3 = if (bottom_ok) bottom_verts[idx3] else blk: {
+                var v = top_verts[idx3];
+                v.py -= thickness;
+                break :blk v;
+            };
+
+            if (allow_left) emit_wall_quad(wall_verts, wall_indices, &wall_v, &wall_i, top_verts[idx0], top_verts[idx2], bot0, bot2, -1.0, 0.0, true);
+            if (allow_right) emit_wall_quad(wall_verts, wall_indices, &wall_v, &wall_i, top_verts[idx1], top_verts[idx3], bot1, bot3, 1.0, 0.0, false);
+            if (allow_up) emit_wall_quad(wall_verts, wall_indices, &wall_v, &wall_i, top_verts[idx0], top_verts[idx1], bot0, bot1, 0.0, -1.0, false);
+            if (allow_down) emit_wall_quad(wall_verts, wall_indices, &wall_v, &wall_i, top_verts[idx2], top_verts[idx3], bot2, bot3, 0.0, 1.0, true);
         }
     }
 
@@ -297,8 +315,9 @@ pub fn update_terrain_volume_meshes(runtime: *EditorRuntimeState, entity_id: u64
             const bv = @as([*]scene.CardinalVertex, @ptrCast(bottom_m.vertices.?));
             var vi: u32 = 0;
             while (vi < top_m.vertex_count) : (vi += 1) {
+                const py = bv[vi].py;
                 bv[vi] = tv[vi];
-                bv[vi].py = tv[vi].py - thickness;
+                bv[vi].py = py;
                 bv[vi].nx = 0.0;
                 bv[vi].ny = -1.0;
                 bv[vi].nz = 0.0;

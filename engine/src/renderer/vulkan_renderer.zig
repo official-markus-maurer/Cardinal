@@ -972,7 +972,7 @@ pub export fn cardinal_renderer_destroy(renderer: ?*types.CardinalRenderer) call
 
     vk_barrier_validation.cardinal_barrier_validation_shutdown();
 
-    if (s.pipelines.use_ssao) {
+    if (s.pipelines.ssao_pipeline.initialized) {
         renderer_log.debug("Destroying SSAO pipeline", .{});
         vk_ssao.vk_ssao_destroy(s);
     }

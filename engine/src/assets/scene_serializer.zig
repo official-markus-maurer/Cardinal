@@ -19,6 +19,7 @@ const ser_hierarchy = @import("scene_serializer_components/hierarchy.zig");
 const ser_node = @import("scene_serializer_components/node.zig");
 const ser_mesh_renderer = @import("scene_serializer_components/mesh_renderer.zig");
 const ser_terrain = @import("scene_serializer_components/terrain.zig");
+const ser_volumetric_terrain = @import("scene_serializer_components/volumetric_terrain.zig");
 const ser_skybox = @import("scene_serializer_components/skybox.zig");
 const ser_light = @import("scene_serializer_components/light.zig");
 const ser_camera = @import("scene_serializer_components/camera.zig");
@@ -137,6 +138,7 @@ pub const SceneSerializer = struct {
             if (!is_free[i]) {
                 const gen = handle_mgr.generations.items[i];
                 const entity = entity_pkg.Entity.make(i, gen);
+                if (self.registry.get(components.EditorOnly, entity) != null) continue;
 
                 try json_writer.beginObject();
 
@@ -174,6 +176,11 @@ pub const SceneSerializer = struct {
                 if (self.registry.get(components.Terrain, entity)) |terrain| {
                     try json_writer.objectField("Terrain");
                     try ser_terrain.serialize(&json_writer, terrain);
+                }
+
+                if (self.registry.get(components.VolumetricTerrain, entity)) |vt| {
+                    try json_writer.objectField("VolumetricTerrain");
+                    try ser_volumetric_terrain.serialize(&json_writer, vt);
                 }
 
                 if (self.registry.get(components.Skybox, entity)) |skybox| {
@@ -495,6 +502,15 @@ pub const SceneSerializer = struct {
                             self.registry.add(entity, comp) catch |e| serializer_log.err("Failed to add Terrain component to entity {d}: {}", .{ entity.index(), e });
                         } else |err| {
                             serializer_log.err("Failed to deserialize Terrain for entity {d}: {}", .{ entity.index(), err });
+                        }
+                    }
+
+                    if (comps.object.get("VolumetricTerrain")) |val| {
+                        has_any = true;
+                        if (ser_volumetric_terrain.deserialize(val)) |comp| {
+                            self.registry.add(entity, comp) catch |e| serializer_log.err("Failed to add VolumetricTerrain component to entity {d}: {}", .{ entity.index(), e });
+                        } else |err| {
+                            serializer_log.err("Failed to deserialize VolumetricTerrain for entity {d}: {}", .{ entity.index(), err });
                         }
                     }
 

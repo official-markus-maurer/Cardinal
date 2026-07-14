@@ -91,8 +91,6 @@ fn get_state(manager: *VulkanPipelineManager) *types.VulkanState {
 const PIPELINE_CACHE_FILE_NAME = "pipeline_cache.bin";
 
 /// Creates (and optionally warms) the pipeline cache from `pipeline_cache.bin`.
-///
-/// TODO: Route pipeline cache IO through the engine virtual filesystem.
 fn create_pipeline_cache(manager: *VulkanPipelineManager) bool {
     var cache_info = std.mem.zeroes(c.VkPipelineCacheCreateInfo);
     cache_info.sType = c.VK_STRUCTURE_TYPE_PIPELINE_CACHE_CREATE_INFO;

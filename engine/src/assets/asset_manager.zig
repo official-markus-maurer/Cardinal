@@ -370,14 +370,13 @@ fn cardinalAlloc(ctx: *anyopaque, len: usize, ptr_align: std.mem.Alignment, ret_
     return @as(?[*]u8, @ptrCast(ptr));
 }
 
-/// TODO: Implement resize support for better interop with std containers.
 fn cardinalResize(ctx: *anyopaque, buf: []u8, buf_align: std.mem.Alignment, new_len: usize, ret_addr: usize) bool {
-    _ = ctx;
-    _ = buf;
-    _ = buf_align;
-    _ = new_len;
     _ = ret_addr;
-    return false;
+    if (new_len <= buf.len) return true;
+    const self = @as(*memory.CardinalAllocator, @ptrCast(@alignCast(ctx)));
+    const align_val = buf_align.toByteUnits();
+    const p = self.realloc(self, @ptrCast(buf.ptr), buf.len, new_len, align_val);
+    return p != null and @intFromPtr(p.?) == @intFromPtr(buf.ptr);
 }
 
 fn cardinalFree(ctx: *anyopaque, buf: []u8, buf_align: std.mem.Alignment, ret_addr: usize) void {
@@ -387,14 +386,16 @@ fn cardinalFree(ctx: *anyopaque, buf: []u8, buf_align: std.mem.Alignment, ret_ad
     self.free(self, @ptrCast(buf.ptr));
 }
 
-/// TODO: Implement remap support for better interop with std containers.
 fn cardinalRemap(ctx: *anyopaque, buf: []u8, buf_align: std.mem.Alignment, new_len: usize, ret_addr: usize) ?[*]u8 {
-    _ = ctx;
-    _ = buf;
-    _ = buf_align;
-    _ = new_len;
     _ = ret_addr;
-    return null;
+    const self = @as(*memory.CardinalAllocator, @ptrCast(@alignCast(ctx)));
+    const align_val = buf_align.toByteUnits();
+    if (new_len == 0) {
+        self.free(self, @ptrCast(buf.ptr));
+        return null;
+    }
+    const p = self.realloc(self, @ptrCast(buf.ptr), buf.len, new_len, align_val) orelse return null;
+    return @ptrCast(p);
 }
 
 const cardinal_vtable = Allocator.VTable{

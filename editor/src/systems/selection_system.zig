@@ -31,11 +31,12 @@ fn lerp(a: f32, b: f32, t: f32) f32 {
     return a + (b - a) * t;
 }
 
-fn sample_height_bilinear(td: *editor_state.TerrainData, terr: *components.Terrain, local_x: f32, local_z: f32) f32 {
+fn sample_height_bilinear(td: *editor_state.TerrainData, terr: *components.Terrain, local_x: f32, local_z: f32, use_bottom: bool) f32 {
     if (td.dims < 2) return 0.0;
     const grid: u32 = td.dims - 1;
     const half_x = terr.size.x * 0.5;
     const half_z = terr.size.y * 0.5;
+    const height_map: []const f32 = if (use_bottom and terr.thickness > 0.01) td.bottom_height else td.height;
 
     const fx = std.math.clamp((local_x + half_x) / terr.size.x, 0.0, 1.0);
     const fz = std.math.clamp((local_z + half_z) / terr.size.y, 0.0, 1.0);
@@ -57,12 +58,12 @@ fn sample_height_bilinear(td: *editor_state.TerrainData, terr: *components.Terra
     const idx01: usize = @as(usize, z1_u32) * @as(usize, vps) + @as(usize, x0_u32);
     const idx11: usize = @as(usize, z1_u32) * @as(usize, vps) + @as(usize, x1_u32);
 
-    if (idx11 >= td.height.len) return 0.0;
+    if (idx11 >= height_map.len) return 0.0;
 
-    const h00 = td.height[idx00];
-    const h10 = td.height[idx10];
-    const h01 = td.height[idx01];
-    const h11 = td.height[idx11];
+    const h00 = height_map[idx00];
+    const h10 = height_map[idx10];
+    const h01 = height_map[idx01];
+    const h11 = height_map[idx11];
     return lerp(lerp(h00, h10, tx), lerp(h01, h11, tx), tz);
 }
 
@@ -94,7 +95,8 @@ fn find_terrain_height_at_world_xz(
         if (local_x < -half_x or local_x > half_x) continue;
         if (local_z < -half_z or local_z > half_z) continue;
 
-        const base = sample_height_bilinear(td, terr, local_x, local_z);
+        const use_bottom = (state.ui.terrain_brush_outline_tool == 0 and state.ui.terrain_brush_outline_surface == 1 and terr.thickness > 0.01);
+        const base = sample_height_bilinear(td, terr, local_x, local_z, use_bottom);
         return .{ .terr = terr, .tr = tr, .td = td, .local_x = local_x, .local_z = local_z, .base_h = base };
     }
     return null;
@@ -113,6 +115,7 @@ fn predicted_height_delta(
     radius: f32,
     strength_in: f32,
     flatten_target: f32,
+    use_bottom: bool,
 ) f32 {
     if (tool != 0) return 0.0;
 
@@ -123,18 +126,18 @@ fn predicted_height_delta(
 
     const strength = if (mode == 0 or mode == 1) @max(0.0, strength_in) else @min(1.0, @max(0.0, strength_in));
 
-    if (mode == 0) return strength * w;
-    if (mode == 1) return -strength * w;
+    if (mode == 0) return (if (use_bottom) -strength * w else strength * w);
+    if (mode == 1) return (if (use_bottom) strength * w else -strength * w);
     if (mode == 2) return (flatten_target - base_h) * (strength * w);
     if (mode == 3) {
         if (td.dims < 2) return 0.0;
         const grid: u32 = td.dims - 1;
         const step_x = terr.size.x / @as(f32, @floatFromInt(grid));
         const step_z = terr.size.y / @as(f32, @floatFromInt(grid));
-        const h1 = sample_height_bilinear(td, terr, local_x - step_x, local_z);
-        const h2 = sample_height_bilinear(td, terr, local_x + step_x, local_z);
-        const h3 = sample_height_bilinear(td, terr, local_x, local_z - step_z);
-        const h4 = sample_height_bilinear(td, terr, local_x, local_z + step_z);
+        const h1 = sample_height_bilinear(td, terr, local_x - step_x, local_z, use_bottom);
+        const h2 = sample_height_bilinear(td, terr, local_x + step_x, local_z, use_bottom);
+        const h3 = sample_height_bilinear(td, terr, local_x, local_z - step_z, use_bottom);
+        const h4 = sample_height_bilinear(td, terr, local_x, local_z + step_z, use_bottom);
         const avg = (base_h + h1 + h2 + h3 + h4) / 5.0;
         return (avg - base_h) * (strength * w);
     }
@@ -195,8 +198,11 @@ fn draw_terrain_brush_outline(state: *EditorState, terrain_group: []const engine
             const tool = state.ui.terrain_brush_outline_tool;
             const mode = state.ui.terrain_brush_outline_mode;
 
-            const delta0 = predicted_height_delta(s0.terr, s0.td, s0.base_h, s0.local_x, s0.local_z, center_world, s0.tr, tool, mode, radius, state.ui.terrain_brush_outline_strength, flatten_target);
-            const delta1 = predicted_height_delta(s1.terr, s1.td, s1.base_h, s1.local_x, s1.local_z, center_world, s1.tr, tool, mode, radius, state.ui.terrain_brush_outline_strength, flatten_target);
+            const use_bottom0 = (tool == 0 and state.ui.terrain_brush_outline_surface == 1 and s0.terr.thickness > 0.01);
+            const use_bottom1 = (tool == 0 and state.ui.terrain_brush_outline_surface == 1 and s1.terr.thickness > 0.01);
+
+            const delta0 = predicted_height_delta(s0.terr, s0.td, s0.base_h, s0.local_x, s0.local_z, center_world, s0.tr, tool, mode, radius, state.ui.terrain_brush_outline_strength, flatten_target, use_bottom0);
+            const delta1 = predicted_height_delta(s1.terr, s1.td, s1.base_h, s1.local_x, s1.local_z, center_world, s1.tr, tool, mode, radius, state.ui.terrain_brush_outline_strength, flatten_target, use_bottom1);
 
             const p0 = math.Vec3{ .x = x0, .y = s0.tr.position.y + s0.base_h + delta0 + y_offset, .z = z0 };
             const p1 = math.Vec3{ .x = x1, .y = s1.tr.position.y + s1.base_h + delta1 + y_offset, .z = z1 };

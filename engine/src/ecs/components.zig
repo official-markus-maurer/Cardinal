@@ -44,6 +44,24 @@ pub const Terrain = struct {
     data_id: u64 = 0,
 };
 
+pub const VolumetricTerrain = struct {
+    size: math.Vec3 = .{ .x = 64.0, .y = 32.0, .z = 64.0 },
+    resolution: u32 = 16,
+    chunk_x: i32 = 0,
+    chunk_y: i32 = 0,
+    chunk_z: i32 = 0,
+    model_id: u32 = 0,
+    mesh_index: u32 = 0,
+    data_id: u64 = 0,
+};
+
+pub const VolumetricTerrainBrick = struct {
+    parent_id: u64 = 0,
+    brick_id: u32 = 0,
+};
+
+pub const EditorOnly = struct { value: u8 = 0 };
+
 /// Light category.
 pub const LightType = enum {
     Directional,
@@ -229,6 +247,7 @@ pub const EditorGlobals = struct {
     game_camera_entity_id: u64 = std.math.maxInt(u64),
 
     pbr_enabled: bool = true,
+    enable_shadows: bool = true,
     rendering_mode: u32 = 0,
 
     post_exposure: f32 = 1.0,

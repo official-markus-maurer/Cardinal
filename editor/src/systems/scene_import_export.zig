@@ -15,6 +15,8 @@ const node_factory = engine.ecs_node_factory;
 const hierarchy_system = @import("hierarchy_system.zig");
 const scene_async = @import("scene_async_loading.zig");
 const terrain_panel = @import("../panels/terrain_panel.zig");
+const terrain_volume = @import("terrain_volume.zig");
+const volumetric_terrain = @import("volumetric_terrain.zig");
 
 const TerrainFileHeader = extern struct {
     magic: [4]u8,
@@ -22,6 +24,150 @@ const TerrainFileHeader = extern struct {
     dims: u32,
     reserved: u32,
 };
+
+const VolumetricTerrainFileHeader = extern struct {
+    magic: [4]u8,
+    version: u32,
+    dims: u32,
+    reserved: u32,
+};
+
+fn rle_encode_u32(allocator: std.mem.Allocator, words: []const u32) ?[]u8 {
+    var out: std.ArrayListUnmanaged(u8) = .{};
+    errdefer out.deinit(allocator);
+
+    var i: usize = 0;
+    while (i < words.len) {
+        const v = words[i];
+        var run_len: usize = 1;
+        while (i + run_len < words.len and words[i + run_len] == v) : (run_len += 1) {}
+
+        if (run_len >= 4) {
+            out.append(allocator, 1) catch return null;
+            var buf4: [4]u8 = undefined;
+            std.mem.writeInt(u32, &buf4, @intCast(run_len), .little);
+            out.appendSlice(allocator, &buf4) catch return null;
+            std.mem.writeInt(u32, &buf4, v, .little);
+            out.appendSlice(allocator, &buf4) catch return null;
+            i += run_len;
+            continue;
+        }
+
+        const raw_start = i;
+        i += 1;
+        while (i < words.len) : (i += 1) {
+            const vv = words[i];
+            var next_run: usize = 1;
+            while (i + next_run < words.len and words[i + next_run] == vv) : (next_run += 1) {}
+            if (next_run >= 4) break;
+        }
+        const raw_count: usize = i - raw_start;
+        out.append(allocator, 0) catch return null;
+        var buf4: [4]u8 = undefined;
+        std.mem.writeInt(u32, &buf4, @intCast(raw_count), .little);
+        out.appendSlice(allocator, &buf4) catch return null;
+        const raw_bytes = std.mem.sliceAsBytes(words[raw_start .. raw_start + raw_count]);
+        out.appendSlice(allocator, raw_bytes) catch return null;
+    }
+
+    return out.toOwnedSlice(allocator) catch null;
+}
+
+fn rle_decode_u32(encoded: []const u8, out_words: []u32) bool {
+    var off: usize = 0;
+    var out_i: usize = 0;
+    while (off < encoded.len and out_i < out_words.len) {
+        const tag = encoded[off];
+        off += 1;
+        if (off + 4 > encoded.len) return false;
+        const count = std.mem.readInt(u32, encoded[off .. off + 4][0..4], .little);
+        off += 4;
+        if (count == 0) continue;
+        if (tag == 1) {
+            if (off + 4 > encoded.len) return false;
+            const v = std.mem.readInt(u32, encoded[off .. off + 4][0..4], .little);
+            off += 4;
+            if (out_i + count > out_words.len) return false;
+            @memset(out_words[out_i .. out_i + count], v);
+            out_i += count;
+        } else {
+            const bytes_need: usize = @as(usize, count) * 4;
+            if (off + bytes_need > encoded.len) return false;
+            if (out_i + count > out_words.len) return false;
+            @memcpy(std.mem.sliceAsBytes(out_words[out_i .. out_i + count]), encoded[off .. off + bytes_need]);
+            off += bytes_need;
+            out_i += count;
+        }
+    }
+    return out_i == out_words.len;
+}
+
+fn rle_encode_u8(allocator: std.mem.Allocator, bytes: []const u8) ?[]u8 {
+    var out: std.ArrayListUnmanaged(u8) = .{};
+    errdefer out.deinit(allocator);
+
+    var i: usize = 0;
+    while (i < bytes.len) {
+        const v = bytes[i];
+        var run_len: usize = 1;
+        while (i + run_len < bytes.len and bytes[i + run_len] == v) : (run_len += 1) {}
+
+        if (run_len >= 8) {
+            out.append(allocator, 1) catch return null;
+            var buf4: [4]u8 = undefined;
+            std.mem.writeInt(u32, &buf4, @intCast(run_len), .little);
+            out.appendSlice(allocator, &buf4) catch return null;
+            out.append(allocator, v) catch return null;
+            i += run_len;
+            continue;
+        }
+
+        const raw_start = i;
+        i += 1;
+        while (i < bytes.len) : (i += 1) {
+            const vv = bytes[i];
+            var next_run: usize = 1;
+            while (i + next_run < bytes.len and bytes[i + next_run] == vv) : (next_run += 1) {}
+            if (next_run >= 8) break;
+        }
+        const raw_count: usize = i - raw_start;
+        out.append(allocator, 0) catch return null;
+        var buf4: [4]u8 = undefined;
+        std.mem.writeInt(u32, &buf4, @intCast(raw_count), .little);
+        out.appendSlice(allocator, &buf4) catch return null;
+        out.appendSlice(allocator, bytes[raw_start .. raw_start + raw_count]) catch return null;
+    }
+
+    return out.toOwnedSlice(allocator) catch null;
+}
+
+fn rle_decode_u8(encoded: []const u8, out_bytes: []u8) bool {
+    var off: usize = 0;
+    var out_i: usize = 0;
+    while (off < encoded.len and out_i < out_bytes.len) {
+        const tag = encoded[off];
+        off += 1;
+        if (off + 4 > encoded.len) return false;
+        const count = std.mem.readInt(u32, encoded[off .. off + 4][0..4], .little);
+        off += 4;
+        if (count == 0) continue;
+        if (tag == 1) {
+            if (off >= encoded.len) return false;
+            const v = encoded[off];
+            off += 1;
+            if (out_i + count > out_bytes.len) return false;
+            @memset(out_bytes[out_i .. out_i + count], v);
+            out_i += count;
+        } else {
+            if (off + count > encoded.len) return false;
+            if (out_i + count > out_bytes.len) return false;
+            @memcpy(out_bytes[out_i .. out_i + count], encoded[off .. off + count]);
+            off += count;
+            out_i += count;
+        }
+    }
+    return out_i == out_bytes.len;
+}
 
 fn terrain_data_dir_path(allocator: std.mem.Allocator, scene_path: []const u8) ?[]u8 {
     const dir = std.fmt.allocPrint(allocator, "{s}.terrain", .{scene_path}) catch return null;
@@ -34,6 +180,12 @@ fn ensure_terrain_data_id(terr: *components.Terrain) void {
     if (terr.data_id == 0) terr.data_id = 1;
 }
 
+fn ensure_volumetric_terrain_data_id(vt: *components.VolumetricTerrain) void {
+    if (vt.data_id != 0) return;
+    vt.data_id = std.crypto.random.int(u64);
+    if (vt.data_id == 0) vt.data_id = 1;
+}
+
 fn get_model_mesh_for_terrain(state: *EditorState, terr: *components.Terrain) ?*engine.scene.CardinalMesh {
     const model = engine.model_manager.cardinal_model_manager_get_model(&state.runtime.model_manager, terr.model_id) orelse return null;
     if (model.scene.meshes == null or model.scene.mesh_count == 0) return null;
@@ -42,6 +194,18 @@ fn get_model_mesh_for_terrain(state: *EditorState, terr: *components.Terrain) ?*
     const local_index: u32 = terr.mesh_index - range.start;
     if (local_index >= model.scene.mesh_count) return null;
     return &model.scene.meshes.?[local_index];
+}
+
+fn get_model_bottom_mesh_for_terrain(state: *EditorState, terr: *components.Terrain) ?*engine.scene.CardinalMesh {
+    if (terr.thickness <= 0.01) return null;
+    const model = engine.model_manager.cardinal_model_manager_get_model(&state.runtime.model_manager, terr.model_id) orelse return null;
+    if (model.scene.meshes == null or model.scene.mesh_count == 0) return null;
+    const range = get_model_combined_mesh_range(state, terr.model_id) orelse return null;
+    if (terr.mesh_index < range.start) return null;
+    const local_top: u32 = terr.mesh_index - range.start;
+    const local_bottom: u32 = local_top + 1;
+    if (local_bottom >= model.scene.mesh_count) return null;
+    return &model.scene.meshes.?[local_bottom];
 }
 
 fn save_terrain_runtime_data(state: *EditorState, allocator: std.mem.Allocator, scene_path: []const u8) void {
@@ -89,14 +253,70 @@ fn save_terrain_runtime_data(state: *EditorState, allocator: std.mem.Allocator, 
 
         const hdr = TerrainFileHeader{
             .magic = .{ 'T', 'R', 'N', '1' },
-            .version = 1,
+            .version = 2,
             .dims = dims,
             .reserved = 0,
         };
         file.writeAll(std.mem.asBytes(&hdr)) catch continue;
         file.writeAll(std.mem.sliceAsBytes(td.height)) catch continue;
+        file.writeAll(std.mem.sliceAsBytes(td.bottom_height)) catch continue;
         file.writeAll(td.splat) catch continue;
         file.writeAll(alpha) catch continue;
+    }
+}
+
+fn save_volumetric_terrain_runtime_data(state: *EditorState, allocator: std.mem.Allocator, scene_path: []const u8) void {
+    const dir_path = terrain_data_dir_path(allocator, scene_path) orelse return;
+    defer allocator.free(dir_path);
+
+    std.fs.cwd().makePath(dir_path) catch {};
+
+    var view = state.runtime.registry.view(components.VolumetricTerrain);
+    var it = view.iterator();
+    while (it.next()) |entry| {
+        const ent = entry.entity;
+        const vt = entry.component;
+        ensure_volumetric_terrain_data_id(vt);
+
+        const td = volumetric_terrain.ensure_volumetric_terrain_data_for_entity(state, ent) orelse continue;
+        if (td.dims < 2) continue;
+        const vox: usize = @as(usize, td.dims) * @as(usize, td.dims) * @as(usize, td.dims);
+        if (vox == 0) continue;
+
+        const file_name = std.fmt.allocPrint(allocator, "vterrain_{d}.bin", .{vt.data_id}) catch continue;
+        defer allocator.free(file_name);
+        const file_path = std.fs.path.join(allocator, &[_][]const u8{ dir_path, file_name }) catch continue;
+        defer allocator.free(file_path);
+
+        const file = std.fs.cwd().createFile(file_path, .{}) catch continue;
+        defer file.close();
+
+        const hdr = VolumetricTerrainFileHeader{
+            .magic = .{ 'V', 'T', 'R', 'N' },
+            .version = 3,
+            .dims = td.dims,
+            .reserved = 0,
+        };
+        file.writeAll(std.mem.asBytes(&hdr)) catch continue;
+
+        const density_bytes = std.mem.sliceAsBytes(td.density);
+        const density_words = std.mem.bytesAsSlice(u32, density_bytes);
+        const density_enc = rle_encode_u32(allocator, density_words) orelse continue;
+        defer allocator.free(density_enc);
+        const splat_enc = rle_encode_u8(allocator, td.splat) orelse continue;
+        defer allocator.free(splat_enc);
+
+        var buf4: [4]u8 = undefined;
+        std.mem.writeInt(u32, &buf4, @intCast(density_bytes.len), .little);
+        file.writeAll(&buf4) catch continue;
+        std.mem.writeInt(u32, &buf4, @intCast(density_enc.len), .little);
+        file.writeAll(&buf4) catch continue;
+        std.mem.writeInt(u32, &buf4, @intCast(td.splat.len), .little);
+        file.writeAll(&buf4) catch continue;
+        std.mem.writeInt(u32, &buf4, @intCast(splat_enc.len), .little);
+        file.writeAll(&buf4) catch continue;
+        file.writeAll(density_enc) catch continue;
+        file.writeAll(splat_enc) catch continue;
     }
 }
 
@@ -124,26 +344,38 @@ fn load_terrain_runtime_data(state: *EditorState, allocator: std.mem.Allocator, 
         if (content.len < @sizeOf(TerrainFileHeader)) continue;
         const hdr = std.mem.bytesToValue(TerrainFileHeader, content[0..@sizeOf(TerrainFileHeader)]);
         if (!std.mem.eql(u8, hdr.magic[0..], "TRN1")) continue;
-        if (hdr.version != 1) continue;
+        if (hdr.version != 1 and hdr.version != 2 and hdr.version != 3) continue;
         if (hdr.dims < 2) continue;
 
         const td = terrain_panel.ensure_terrain_data_for_entity(state, ent) orelse continue;
         if (td.dims != hdr.dims) continue;
 
         const pix: usize = @as(usize, hdr.dims) * @as(usize, hdr.dims);
-        const need = @sizeOf(TerrainFileHeader) + pix * @sizeOf(f32) + pix * 4 + pix;
+        const layer_count: usize = if (hdr.version == 2) @as(usize, 2) else @as(usize, 1);
+        const need = @sizeOf(TerrainFileHeader) + pix * @sizeOf(f32) * layer_count + pix * 4 + pix;
         if (content.len < need) continue;
 
         const off_h = @sizeOf(TerrainFileHeader);
-        const off_s = off_h + pix * @sizeOf(f32);
+        const off_b = off_h + pix * @sizeOf(f32);
+        const has_bottom: usize = if (hdr.version == 2) @as(usize, 1) else @as(usize, 0);
+        const off_s = off_b + pix * @sizeOf(f32) * has_bottom;
         const off_a = off_s + pix * 4;
 
-        const height_bytes = content[off_h..off_s];
+        const height_bytes = content[off_h..off_b];
+        const bottom_bytes = if (hdr.version == 2) content[off_b..off_s] else &[_]u8{};
         const splat_bytes = content[off_s..off_a];
         const alpha_bytes = content[off_a .. off_a + pix];
 
         if (height_bytes.len == td.height.len * @sizeOf(f32)) {
             @memcpy(std.mem.sliceAsBytes(td.height), height_bytes);
+        }
+        if (hdr.version == 2 and bottom_bytes.len == td.bottom_height.len * @sizeOf(f32)) {
+            @memcpy(std.mem.sliceAsBytes(td.bottom_height), bottom_bytes);
+        } else {
+            var i_pix: usize = 0;
+            while (i_pix < pix and i_pix < td.height.len and i_pix < td.bottom_height.len) : (i_pix += 1) {
+                td.bottom_height[i_pix] = td.height[i_pix] - terr.thickness;
+            }
         }
         if (splat_bytes.len == td.splat.len) {
             @memcpy(td.splat, splat_bytes);
@@ -152,12 +384,22 @@ fn load_terrain_runtime_data(state: *EditorState, allocator: std.mem.Allocator, 
         const mesh = get_model_mesh_for_terrain(state, terr) orelse continue;
         if (mesh.vertices == null or mesh.vertex_count == 0) continue;
         const verts = @as([*]engine.scene.CardinalVertex, @ptrCast(mesh.vertices.?));
+        const bottom_mesh = get_model_bottom_mesh_for_terrain(state, terr);
+        var bottom_verts_opt: ?[*]engine.scene.CardinalVertex = null;
+        if (bottom_mesh) |bm| {
+            if (bm.vertices != null and bm.vertex_count == mesh.vertex_count) {
+                bottom_verts_opt = @as([*]engine.scene.CardinalVertex, @ptrCast(bm.vertices.?));
+            }
+        }
 
         var i_pix: usize = 0;
         while (i_pix < pix) : (i_pix += 1) {
             const vi: u32 = @intCast(i_pix);
             if (vi >= mesh.vertex_count) break;
             verts[vi].py = td.height[i_pix];
+            if (bottom_verts_opt) |bv| {
+                bv[vi].py = td.bottom_height[i_pix];
+            }
             const base: usize = i_pix * 4;
             const r = @as(f32, @floatFromInt(td.splat[base + 0])) / 255.0;
             const g = @as(f32, @floatFromInt(td.splat[base + 1])) / 255.0;
@@ -176,6 +418,77 @@ fn load_terrain_runtime_data(state: *EditorState, allocator: std.mem.Allocator, 
             td.splat_handle = std.math.maxInt(u32);
         }
         terrain_panel.bind_terrain_material(state, terr, td);
+        terrain_volume.update_terrain_volume_meshes(&state.runtime, ent.id);
+    }
+}
+
+fn load_volumetric_terrain_runtime_data(state: *EditorState, allocator: std.mem.Allocator, scene_path: []const u8) void {
+    const dir_path = terrain_data_dir_path(allocator, scene_path) orelse return;
+    defer allocator.free(dir_path);
+
+    var view = state.runtime.registry.view(components.VolumetricTerrain);
+    var it = view.iterator();
+    while (it.next()) |entry| {
+        const ent = entry.entity;
+        const vt = entry.component;
+        if (vt.data_id == 0) continue;
+
+        const file_name = std.fmt.allocPrint(allocator, "vterrain_{d}.bin", .{vt.data_id}) catch continue;
+        defer allocator.free(file_name);
+        const file_path = std.fs.path.join(allocator, &[_][]const u8{ dir_path, file_name }) catch continue;
+        defer allocator.free(file_path);
+
+        const file = std.fs.cwd().openFile(file_path, .{}) catch continue;
+        defer file.close();
+
+        const content = file.readToEndAlloc(allocator, std.math.maxInt(usize)) catch continue;
+        defer allocator.free(content);
+        if (content.len < @sizeOf(VolumetricTerrainFileHeader)) continue;
+
+        const hdr = std.mem.bytesToValue(VolumetricTerrainFileHeader, content[0..@sizeOf(VolumetricTerrainFileHeader)]);
+        if (!std.mem.eql(u8, hdr.magic[0..], "VTRN")) continue;
+        if (hdr.version != 1 and hdr.version != 2) continue;
+        if (hdr.dims < 2) continue;
+
+        const td = volumetric_terrain.ensure_volumetric_terrain_data_for_entity(state, ent) orelse continue;
+        if (td.dims != hdr.dims) continue;
+        const vox: usize = @as(usize, hdr.dims) * @as(usize, hdr.dims) * @as(usize, hdr.dims);
+        if (hdr.version == 3) {
+            const off = @sizeOf(VolumetricTerrainFileHeader);
+            if (content.len < off + 16) continue;
+            const density_un = std.mem.readInt(u32, content[off .. off + 4][0..4], .little);
+            const density_enc_len = std.mem.readInt(u32, content[off + 4 .. off + 8][0..4], .little);
+            const splat_un = std.mem.readInt(u32, content[off + 8 .. off + 12][0..4], .little);
+            const splat_enc_len = std.mem.readInt(u32, content[off + 12 .. off + 16][0..4], .little);
+            if (density_un != vox * @sizeOf(f32)) continue;
+            if (splat_un != vox * 4) continue;
+
+            const payload_off = off + 16;
+            const need = payload_off + @as(usize, density_enc_len) + @as(usize, splat_enc_len);
+            if (content.len < need) continue;
+            const density_enc = content[payload_off .. payload_off + @as(usize, density_enc_len)];
+            const splat_enc = content[payload_off + @as(usize, density_enc_len) .. need];
+
+            const out_words = std.mem.bytesAsSlice(u32, std.mem.sliceAsBytes(td.density));
+            if (!rle_decode_u32(density_enc, out_words)) continue;
+            if (!rle_decode_u8(splat_enc, td.splat)) continue;
+        } else {
+            const need = @sizeOf(VolumetricTerrainFileHeader) + vox * @sizeOf(f32) + if (hdr.version == 2) vox * 4 else 0;
+            if (content.len < need) continue;
+            const off = @sizeOf(VolumetricTerrainFileHeader);
+            const density_bytes = content[off .. off + vox * @sizeOf(f32)];
+            if (density_bytes.len == td.density.len * @sizeOf(f32)) {
+                @memcpy(std.mem.sliceAsBytes(td.density), density_bytes);
+            }
+            if (hdr.version == 2) {
+                const splat_off = off + vox * @sizeOf(f32);
+                const splat_bytes = content[splat_off .. splat_off + vox * 4];
+                if (splat_bytes.len == td.splat.len) {
+                    @memcpy(td.splat, splat_bytes);
+                }
+            }
+        }
+        // volumetric_terrain.remesh_volumetric_terrain(state, ent.id);
     }
 }
 
@@ -399,6 +712,7 @@ pub fn save_scene(state: *EditorState, allocator: std.mem.Allocator, path: []con
     defer if (root_path) |p| allocator.free(p);
 
     save_terrain_runtime_data(state, allocator, path);
+    save_volumetric_terrain_runtime_data(state, allocator, path);
 
     serializer.serialize(buffer.writer(allocator), root_path) catch |err| {
         log.cardinal_log_error("Failed to serialize scene: {}", .{err});
@@ -538,9 +852,17 @@ fn reset_state_for_scene_load(state: *EditorState, allocator: std.mem.Allocator)
                 }
             }
             allocator.free(entry.value_ptr.height);
+            allocator.free(entry.value_ptr.bottom_height);
             allocator.free(entry.value_ptr.splat);
         }
         state.runtime.terrain_data_by_entity.clearRetainingCapacity();
+    }
+    {
+        var it = state.runtime.volumetric_terrain_data_by_entity.iterator();
+        while (it.next()) |entry| {
+            allocator.free(entry.value_ptr.density);
+        }
+        state.runtime.volumetric_terrain_data_by_entity.clearRetainingCapacity();
     }
 
     state.runtime.registry.deinit();
@@ -607,6 +929,7 @@ pub fn load_scene(state: *EditorState, allocator: std.mem.Allocator, path: []con
     }
 
     load_terrain_runtime_data(state, allocator, path);
+    load_volumetric_terrain_runtime_data(state, allocator, path);
 
     if (state.runtime.combined_scene.mesh_count > 0) {
         state.runtime.pending_scene = state.runtime.combined_scene;

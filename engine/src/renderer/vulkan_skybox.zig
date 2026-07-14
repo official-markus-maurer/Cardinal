@@ -265,7 +265,7 @@ pub fn render(pipeline: *types.SkyboxPipeline, cmd: c.VkCommandBuffer, view: mat
     if (pipeline.descriptorManager) |mgr| {
         descriptor_mgr.vk_descriptor_manager_bind_sets(mgr, cmd, c.VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline.pipelineLayout, 0, 1, &sets, 0, null);
     } else {
-        c.vkCmdBindDescriptorSets(cmd, c.VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline.pipelineLayout, 0, 1, &sets, 0, null);
+        return;
     }
 
     var pc: SkyboxPushConstants = undefined;

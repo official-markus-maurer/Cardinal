@@ -10,6 +10,7 @@ layout(location = 2) in vec2 fragTexCoord;
 layout(location = 3) in flat uint fragMaterialIndex;
 layout(location = 4) in flat vec3 fragCameraPos;
 layout(location = 5) in vec2 fragTexCoord1; // Added if mesh shader supports it, or reuse fragTexCoord
+layout(location = 6) in vec4 fragColor;
 
 // Output
 layout(location = 0) out vec4 outColor;
@@ -130,6 +131,27 @@ vec2 applyTextureTransform(vec2 uv, uint texIndex) {
     transformedUV += center;
     transformedUV += offset;
     return transformedUV;
+}
+
+vec3 triplanarSampleBindless(uint idx, vec3 worldPos, vec3 normal, vec2 offset, vec2 scale) {
+    vec3 an = abs(normalize(normal));
+    vec3 w = an / max(an.x + an.y + an.z, 1e-6);
+
+    vec2 uvX = worldPos.zy * scale + offset;
+    vec2 uvY = worldPos.xz * scale + offset;
+    vec2 uvZ = worldPos.xy * scale + offset;
+
+    vec2 dxX = dFdxFine(worldPos.zy) * scale;
+    vec2 dyX = dFdyFine(worldPos.zy) * scale;
+    vec2 dxY = dFdxFine(worldPos.xz) * scale;
+    vec2 dyY = dFdyFine(worldPos.xz) * scale;
+    vec2 dxZ = dFdxFine(worldPos.xy) * scale;
+    vec2 dyZ = dFdyFine(worldPos.xy) * scale;
+
+    vec3 sx = textureGrad(bindlessTextures[nonuniformEXT(idx)], uvX, dxX, dyX).rgb;
+    vec3 sy = textureGrad(bindlessTextures[nonuniformEXT(idx)], uvY, dxY, dyY).rgb;
+    vec3 sz = textureGrad(bindlessTextures[nonuniformEXT(idx)], uvZ, dxZ, dyZ).rgb;
+    return sx * w.x + sy * w.y + sz * w.z;
 }
 
 // Enhanced normal mapping function
@@ -271,30 +293,83 @@ float ShadowCalculation(vec3 worldPos, vec3 N, vec3 L) {
 }
 
 void main() {
+    bool isTerrain = material.emissiveStrength < 0.0;
+    bool terrainVertexSplat = material.emissiveStrength < -1.5;
+
     // Albedo
     vec2 albedoUV = applyTextureTransform(getUV(getUVIndex(0)), 0);
     vec4 albedoSample = vec4(1.0);
-    if (canUseArray(material.albedoTextureIndex)) {
-        albedoSample = texture(bindlessTextures[nonuniformEXT(material.albedoTextureIndex)], albedoUV);
+    vec3 albedo = material.albedo.rgb;
+    float alpha = 1.0;
+    if (isTerrain) {
+        vec2 normalUV0 = applyTextureTransform(getUV(getUVIndex(1)), 1);
+        vec2 mrUV0 = applyTextureTransform(getUV(getUVIndex(2)), 2);
+        vec2 aoUV0 = applyTextureTransform(getUV(getUVIndex(3)), 3);
+        vec2 emissiveUV = applyTextureTransform(getUV(getUVIndex(4)), 4);
+
+        vec2 dx0 = dFdxFine(albedoUV);
+        vec2 dy0 = dFdyFine(albedoUV);
+        vec2 triOffset = material.textureTransforms[0].xy;
+        vec2 triScale = material.textureTransforms[0].zw;
+        vec3 triN = normalize(fragNormal);
+
+        vec4 splat = vec4(1.0, 0.0, 0.0, 0.0);
+        if (terrainVertexSplat) {
+            splat = fragColor;
+        } else if (canUseArray(material.emissiveTextureIndex)) {
+            vec2 dxs = dFdxFine(emissiveUV);
+            vec2 dys = dFdyFine(emissiveUV);
+            splat = textureGrad(bindlessTextures[nonuniformEXT(material.emissiveTextureIndex)], emissiveUV, dxs, dys);
+        }
+        splat = max(splat, 0.0);
+        float sum = splat.r + splat.g + splat.b + splat.a;
+        splat = (sum > 0.0) ? (splat / sum) : vec4(1.0, 0.0, 0.0, 0.0);
+
+        vec3 layer0 = vec3(0.31, 0.55, 0.31);
+        if (canUseArray(material.albedoTextureIndex)) {
+            layer0 = triplanarSampleBindless(material.albedoTextureIndex, fragWorldPos, triN, triOffset, triScale);
+        }
+
+        vec3 layer1 = vec3(0.47, 0.37, 0.24);
+        if (canUseArray(material.normalTextureIndex)) {
+            layer1 = triplanarSampleBindless(material.normalTextureIndex, fragWorldPos, triN, triOffset, triScale);
+        }
+
+        vec3 layer2 = vec3(0.51, 0.51, 0.51);
+        if (canUseArray(material.metallicRoughnessTextureIndex)) {
+            layer2 = triplanarSampleBindless(material.metallicRoughnessTextureIndex, fragWorldPos, triN, triOffset, triScale);
+        }
+
+        vec3 layer3 = vec3(0.78, 0.78, 0.63);
+        if (canUseArray(material.aoTextureIndex)) {
+            layer3 = triplanarSampleBindless(material.aoTextureIndex, fragWorldPos, triN, triOffset, triScale);
+        }
+
+        albedo = layer0 * splat.r + layer1 * splat.g + layer2 * splat.b + layer3 * splat.a;
+        alpha = 1.0;
+    } else {
+        if (canUseArray(material.albedoTextureIndex)) {
+            albedoSample = texture(bindlessTextures[nonuniformEXT(material.albedoTextureIndex)], albedoUV);
+        }
+        albedo *= albedoSample.rgb;
+        alpha = material.albedo.a * albedoSample.a;
     }
-    vec3 albedo = material.albedo.rgb * albedoSample.rgb;
-    float alpha = material.albedo.a * albedoSample.a;
 
     // Alpha Masking
-    uint alphaMode = material.packedInfo & 3u;
+    uint alphaMode = isTerrain ? 0u : (material.packedInfo & 3u);
     if (alphaMode == 1u) { // MASK
         if (alpha < material.metallicNormalAO.w) discard;
     }
 
     // Normal
     vec2 normalUV = applyTextureTransform(getUV(getUVIndex(1)), 1);
-    vec3 N = getNormalFromMap(normalUV);
+    vec3 N = isTerrain ? normalize(fragNormal) : getNormalFromMap(normalUV);
 
     // Metallic/Roughness
     vec2 mrUV = applyTextureTransform(getUV(getUVIndex(2)), 2);
-    float metallic = material.metallicNormalAO.x;
-    float roughness = material.emissiveAndRoughness.w;
-    if (canUseArray(material.metallicRoughnessTextureIndex)) {
+    float metallic = isTerrain ? 0.0 : material.metallicNormalAO.x;
+    float roughness = isTerrain ? 1.0 : material.emissiveAndRoughness.w;
+    if (!isTerrain && canUseArray(material.metallicRoughnessTextureIndex)) {
         vec4 mrSample = texture(bindlessTextures[nonuniformEXT(material.metallicRoughnessTextureIndex)], mrUV);
         metallic *= mrSample.b;
         roughness *= mrSample.g;
@@ -303,16 +378,15 @@ void main() {
     // AO
     vec2 aoUV = applyTextureTransform(getUV(getUVIndex(3)), 3);
     float ao = 1.0;
-    if (canUseArray(material.aoTextureIndex)) {
+    if (!isTerrain && canUseArray(material.aoTextureIndex)) {
         ao = texture(bindlessTextures[nonuniformEXT(material.aoTextureIndex)], aoUV).r;
+        ao = mix(1.0, ao, material.metallicNormalAO.z);
     }
-    // Scale AO
-    ao = mix(1.0, ao, material.metallicNormalAO.z);
 
     // Emissive
     vec2 emissiveUV = applyTextureTransform(getUV(getUVIndex(4)), 4);
-    vec3 emissive = material.emissiveAndRoughness.rgb;
-    if (canUseArray(material.emissiveTextureIndex)) {
+    vec3 emissive = isTerrain ? vec3(0.0) : material.emissiveAndRoughness.rgb;
+    if (!isTerrain && canUseArray(material.emissiveTextureIndex)) {
         emissive *= texture(bindlessTextures[nonuniformEXT(material.emissiveTextureIndex)], emissiveUV).rgb;
     }
     emissive *= material.emissiveStrength;
@@ -338,14 +412,17 @@ void main() {
             L = normalize(light.lightPosition.xyz - fragWorldPos);
             float distance = length(light.lightPosition.xyz - fragWorldPos);
             float range = light.params.x;
-            if (distance > range) continue;
-            
-            float falloff = clamp(1.0 - pow(distance / range, 4.0), 0.0, 1.0);
-            attenuation = falloff * falloff / (distance * distance + 1.0);
+            if (range > 0.001) {
+                if (distance > range) continue;
+                float falloff = clamp(1.0 - pow(distance / range, 4.0), 0.0, 1.0);
+                attenuation = falloff * falloff / max(distance * distance, 0.01);
+            } else {
+                attenuation = 1.0 / max(distance * distance, 0.01);
+            }
             
             if (type == 2) { // Spot
                 float theta = dot(L, normalize(-light.lightDirection.xyz));
-                float epsilon = light.params.y - light.params.z;
+                float epsilon = max(light.params.y - light.params.z, 0.001);
                 float intensity = clamp((theta - light.params.z) / epsilon, 0.0, 1.0);
                 attenuation *= intensity;
             }
@@ -356,7 +433,8 @@ void main() {
         
         // Shadow
         float shadow = 0.0;
-        if (type == 0) { // Directional lights only for now
+        bool shadowsEnabled = (ubo.viewPos.w < 0.5);
+        if (type == 0 && shadowsEnabled) { // Directional lights only for now
             // Fix: Pass negative light direction (vector TO light)
             shadow = ShadowCalculation(fragWorldPos, N, -light.lightDirection.xyz);
         }
@@ -384,7 +462,6 @@ void main() {
     vec3 ambient = ubo.ambientColor.rgb * albedo * ao;
     vec3 color = ambient + Lo + emissive;
 
-    bool isTerrain = material.emissiveStrength < 0.0;
     if (isTerrain && ubo.terrainBrushParams.w > 0.5) {
         float radius = max(ubo.terrainBrushPosRadius.w, 0.0001);
         vec2 d2 = fragWorldPos.xz - ubo.terrainBrushPosRadius.xz;
